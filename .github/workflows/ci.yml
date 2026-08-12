@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No dependencies to install — the whole toolchain is stdlib Node.
+      - name: Test
+        run: npm test
+
+  validate-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate plugin and marketplace manifests
+        run: claude plugin validate . --strict
+
+  cli-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The bin/ scripts are what land on a user's PATH, so exercise them as
+      # executables rather than importing the libraries they wrap.
+      - name: specflow surface
+        run: |
+          ./bin/specflow surface --changed src/Button.tsx docs/readme.md --json \
+            | grep -q '"needsManualTestPlan": true'
+      - name: specflow gate blocks on a blocker
+        run: |
+          echo '[{"dimension":"qa","findings":[{"severity":"blocker","file":"a.ts","title":"t","description":"d"}]}]' > /tmp/f.json
+          if ./bin/specflow gate --findings /tmp/f.json; then
+            echo "gate should have exited non-zero on a blocker"; exit 1
+          fi
+      - name: specflow waves caps fan-out
+        run: |
+          node -e '
+            const tasks = Array.from({length: 20}, (_, i) => ({
+              id: `1.${i+1}`, group: 1, description: "t",
+              tier: 2, model: "sonnet", isTestTask: false
+            }));
+            require("fs").writeFileSync("/tmp/c.json", JSON.stringify({tasks}));
+          '
+          ./bin/specflow waves --classified /tmp/c.json --max-parallel 8 --json \
+            | node -e '
+              let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+                const p = JSON.parse(s);
+                const widest = Math.max(...p.waves.flatMap(w => w.batches.map(b => b.length)));
+                if (widest > 8) { console.error("fan-out cap breached:", widest); process.exit(1); }
+                console.log("max batch size:", widest);
+              });
+            '
+      - name: specflow-graph builds a graph
+        run: |
+          ./bin/specflow-graph build . >/dev/null
+          test -f .claude/graph/graph.json
+          test -f .claude/graph/GRAPH_REPORT.md

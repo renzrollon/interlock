@@ -1,0 +1,23 @@
+{
+  "name": "specflow",
+  "version": "0.1.0",
+  "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "specflow": "./bin/specflow",
+    "specflow-graph": "./bin/specflow-graph"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'",
+    "validate": "claude plugin validate . --strict"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renzrollon/specflow.git"
+  }
+}

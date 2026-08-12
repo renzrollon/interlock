@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Node
+node_modules/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code runtime state — generated per-repo, never committed
+.claude/settings.local.json
+.claude/graph/
+.claude/autonomy.json
+.claude/testing/
+.claude/metrics/
+.claude/handoff/
+.claude/pending-approval/
+.claude/.cc-writes/
+
+# Backups produced by installers/tooling
+*.bak
+*.bak.*
