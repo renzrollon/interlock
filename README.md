@@ -43,34 +43,9 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**.
 
 One human stop. Everything else is automatic.
 
-```mermaid
-flowchart TB
-  subgraph once["Onboard — once per repo"]
-    B["/interlock:bootstrap<br/><i>code → understanding → graph</i>"]
-  end
-
-  subgraph loop["The loop"]
-    direction TB
-    S["/interlock:spec &lt;idea&gt;<br/><i>explore → artifacts → review</i>"]
-    H{{"You read the spec"}}
-    P["/interlock:ship<br/><i>waves → review → remediate → verify → commit</i>"]
-    M["/interlock:mr<br/><i>summary → merge request</i>"]
-
-    S --> H
-    H -->|"looks right"| P
-    H -.->|"revise idea"| S
-    P --> M
-  end
-
-  B --> S
-
-  classDef human fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#92400e
-  classDef cmd fill:#ecfdf5,stroke:#059669,stroke-width:1.5px,color:#065f46
-  classDef onboard fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af
-  class B onboard
-  class S,P,M cmd
-  class H human
-```
+<p align="center">
+  <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec → you read the spec → ship → mr" width="900">
+</p>
 
 **The gap between `spec` and `ship` is the product.** A spec is the cheapest place to catch a wrong idea, so that is the one place a person is *required* to look.
 
