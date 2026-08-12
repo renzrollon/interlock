@@ -1,5 +1,5 @@
 {
-  "name": "specflow",
+  "name": "interlock",
   "description": "Spec-driven development orchestration for Claude Code. Layers autonomous multi-agent workflows on top of OpenSpec: repo onboarding, reviewed specs, and start-to-commit shipping.",
   "owner": {
     "name": "Carl Rollon",
@@ -7,7 +7,7 @@
   },
   "plugins": [
     {
-      "name": "specflow",
+      "name": "interlock",
       "source": "./",
       "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec.",
       "version": "0.1.0",

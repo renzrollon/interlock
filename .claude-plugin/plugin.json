@@ -1,14 +1,14 @@
 {
-  "name": "specflow",
-  "displayName": "SpecFlow",
+  "name": "interlock",
+  "displayName": "Interlock",
   "version": "0.1.0",
   "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec. Onboard a repo, produce a reviewed spec, then ship it start-to-commit with parallel agents and a deterministic gate spine.",
   "author": {
     "name": "Carl Rollon",
     "url": "https://github.com/renzrollon"
   },
-  "homepage": "https://github.com/renzrollon/specflow",
-  "repository": "https://github.com/renzrollon/specflow",
+  "homepage": "https://github.com/renzrollon/interlock",
+  "repository": "https://github.com/renzrollon/interlock",
   "license": "MIT",
   "keywords": [
     "openspec",

@@ -2,9 +2,9 @@
 name: review-artifacts
 description: Review OpenSpec change artifacts before anyone writes code — architecture quality and design completeness, then spec completeness and testability. Catches a wrong idea at the cheapest possible moment. Use after generating proposal, design, tasks and delta specs, and before implementing.
 license: MIT
-compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled specflow CLI.
+compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[change-name]"
-allowed-tools: Bash(specflow *) Bash(openspec *) Read Glob Grep
+allowed-tools: Bash(interlock *) Bash(openspec *) Read Glob Grep
 metadata:
   type: review
   autonomy_level: L2
@@ -17,7 +17,7 @@ Review the change artifacts before implementation. This is the highest-leverage 
 Resolve the change:
 
 ```bash
-specflow validate [change-name] --json
+interlock validate [change-name] --json
 ```
 
 If it reports ambiguity, pick the change the user named. If they named none and several are active, review the most recently modified and **say which one you picked** — this skill runs inside automated chains where a question would stall the flow.
@@ -91,7 +91,7 @@ A change that updates one call site and leaves its siblings reading the raw form
 ✗ BLOCKER: [critical issue]
 
 SUMMARY: N blockers, N warnings, N suggestions
-Recommendation: [fix blockers | address warnings | proceed to /specflow:ship]
+Recommendation: [fix blockers | address warnings | proceed to /interlock:ship]
 ```
 
 Be specific — name files and sections. Do not pad with generic praise. If the artifacts are genuinely good, say so briefly and recommend proceeding.
@@ -105,7 +105,7 @@ Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` with `d
 Then let the deterministic gate decide, rather than deciding in prose:
 
 ```bash
-specflow gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json
+interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json
 ```
 
 Its exit status is the gate verdict: non-zero means blocked.

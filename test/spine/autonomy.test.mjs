@@ -11,7 +11,7 @@ let tmp
 
 before(() => {
   origCwd = process.cwd()
-  tmp = mkdtempSync(join(tmpdir(), 'specflow-autonomy-'))
+  tmp = mkdtempSync(join(tmpdir(), 'interlock-autonomy-'))
   process.chdir(tmp)
 })
 
@@ -105,7 +105,7 @@ test('transitive blame: a review-code blocker resets ship but does not cascade t
 })
 
 test('a root option isolates state to a given directory', () => {
-  const other = mkdtempSync(join(tmpdir(), 'specflow-autonomy-root-'))
+  const other = mkdtempSync(join(tmpdir(), 'interlock-autonomy-root-'))
   record('review-code', { blockers: 0 }, { root: other })
   assert.equal(getLevel('review-code', { root: other }), 'L2')
   assert.equal(getState({ root: other })['review-code'].runs, 1)

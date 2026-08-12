@@ -14,7 +14,7 @@ import {
 let root
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), 'specflow-artifacts-'))
+  root = mkdtempSync(join(tmpdir(), 'interlock-artifacts-'))
   const change = join(root, 'openspec', 'changes', 'add-auth')
   mkdirSync(join(change, 'specs', 'auth'), { recursive: true })
   writeFileSync(join(change, 'proposal.md'), '# Proposal\n')
@@ -55,7 +55,7 @@ test('resolveChange accepts an explicit name and rejects an unknown one', () => 
 })
 
 test('a lone change resolves without being named', () => {
-  const solo = mkdtempSync(join(tmpdir(), 'specflow-solo-'))
+  const solo = mkdtempSync(join(tmpdir(), 'interlock-solo-'))
   mkdirSync(join(solo, 'openspec', 'changes', 'only-one'), { recursive: true })
   assert.deepEqual(resolveChange(solo), { name: 'only-one' })
   rmSync(solo, { recursive: true, force: true })
@@ -103,7 +103,7 @@ test('prose and headings are not mistaken for tasks', () => {
 })
 
 test('a tasks.md with no checkboxes is flagged as a problem', () => {
-  const empty = mkdtempSync(join(tmpdir(), 'specflow-empty-'))
+  const empty = mkdtempSync(join(tmpdir(), 'interlock-empty-'))
   const c = join(empty, 'openspec', 'changes', 'x')
   mkdirSync(c, { recursive: true })
   for (const f of ['proposal.md', 'design.md']) writeFileSync(join(c, f), '# x\n')

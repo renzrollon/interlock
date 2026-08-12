@@ -1,0 +1,140 @@
+# When it stops
+
+This page tells you how to read a Interlock run that halted, or that finished with a warning banner you did not expect.
+
+There are two categories, and they are not the same thing.
+
+**Loud halt** — the run stops, nothing is committed, and it reports what completed and what you need to decide. Something was genuinely undecidable or unsafe.
+
+**Soft continue** — the run keeps going with a documented default, and prints a banner in the final summary saying what it degraded. The work is done, but a capability was missing or a check did not run. These are the lines people skim past; they are the ones worth reading.
+
+Almost everything is a soft continue. The halts are deliberately few.
+
+## The loud halts
+
+`/interlock:ship` has three hard halts, plus two preconditions that stop it before it starts.
+
+| Condition | What it means | What to do |
+|---|---|---|
+| `interlock validate` exits non-zero | The change is not implementable: an artifact is missing or empty, or `tasks.md` has no real checkbox tasks | Run `interlock validate <change-name>` yourself and read the reason. Usually the change was never fully specced — go back to [the checkpoint](./02-the-checkpoint.md) or re-run `/interlock:spec`. |
+| Subagents unavailable | `ship` orchestrates and never implements inline — context isolation is the entire point, so it stops rather than falling back | Usually your own permission settings restrict the `Agent` tool. Allow it and re-run. Do not work around it by asking the model to implement in the main conversation. |
+| Unresolved blockers after two remediation rounds | The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. |
+| Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
+| More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
+
+On any halt: nothing is committed, and it will not ask you a question. `ship` is a dynamic workflow, and the workflow runtime accepts no mid-run user input at all — there is no one listening, by construction rather than by policy. The report is the whole interface.
+
+Every one of those halts is a non-zero exit from a `interlock` subcommand rather than a judgement call: `validate` when the change is not implementable, `remediate` when blockers survive the verdict round, `verify unit` when the suite is red or was weakened, `wave-state record-*` when a recorded result halts the run. The workflow branches on the exit status, so a halt is not something the model can decide it has earned its way past.
+
+### `/interlock:spec` stops too
+
+**Blockers at the artifact review.** It reports them and stops rather than fixing and continuing, because a blocker there means the spec was wrong and you should see that.
+
+**Continuity paused.** Only on a run you started with `--continue`. The readiness gate exited non-zero, so `spec` did not invoke `ship`. You get a short list — the decisions still marked as needing a person, and the named blockers — and nothing else; you opted out of reading the spec, so it does not hand the spec back.
+
+Answer the questions and it writes them into the ledger, re-runs the gate, and continues if it now passes. To see the same verdict yourself:
+
+```bash
+interlock ready <change-name> --review <review-result.json> --paths <planned paths>
+interlock ledger <change-name>       # non-zero while a decision still needs a person
+interlock risk <change-name> --paths <planned paths>
+```
+
+`ready` fails closed: a check that could not run is a blocker, not a pass. If the answer is that the blast radius is too wide, that is not something to answer your way out of — read the spec and run `ship` yourself. [**05 — Continuity**](./05-continuity.md) explains what each check means.
+
+## When the run never starts, or stalls
+
+Two failure shapes that are about your environment rather than your change, and neither reads like the halts above.
+
+**`/interlock:ship` does not exist.** `ship` is a dynamic workflow, not a skill, so it needs Claude Code **v2.1.154+** with dynamic workflows enabled. Where they are off — `disableWorkflows`, an org policy, `CLAUDE_CODE_DISABLE_WORKFLOWS`, or a Pro plan where they have not been turned on in `/config` — **there is no ship path at all.** Not a degraded one: the command is not there. Everything else in Interlock still works, including `spec`, the reviews and `commit`, so you can implement the change another way, but the loop this tool is built around needs the workflow runtime.
+
+**The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner before a long run. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
+
+## The soft continues
+
+### `GRAPH UNAVAILABLE`
+
+The code knowledge graph is not usable: `/interlock:bootstrap` reports it when the build errors or indexes nothing, and `/interlock:ship` reports it when no graph was ever built for this repo. Either way the agents fall back to grepping — slower and more token-hungry, but correct.
+
+If the reason is `never built`, the fix is to run `/interlock:bootstrap` once.
+
+The most common cause is language coverage. **Structural indexing — import and symbol edges — covers JavaScript/TypeScript, Python, and shell only.** A Go, Rust, Java, or Ruby repo will produce little or no structural graph, and that is expected. Those projects still get docs and OpenSpec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph.
+
+If your repo *is* JS/TS, Python, or shell and the graph is still empty, build it directly and read the error:
+
+```bash
+interlock-graph build .
+interlock-graph report .
+```
+
+### `NO TEST PROFILE`
+
+There is no `.claude/testing/profile.json`, so `ship` had to infer how to run your tests. It will not interview you about it — that is a different skill's job, and `ship` could not ask even if it wanted to.
+
+Fix it once, and every later run is faster and more accurate:
+
+```bash
+/interlock:fix-tests --reconfigure
+```
+
+### `VERIFICATION SKIPPED`
+
+The inter-wave checks did not run, with a reason attached. The documented reasons are: no test or typecheck commands were detectable, the failures were pre-existing before the run started, or verification would have exceeded roughly a minute (in which case it degrades to typecheck only).
+
+This does not mean the final unit suite was skipped — that one is a hard halt when red. It means the fast between-waves feedback loop was missing, so problems surfaced later than they should have. A test profile usually fixes it.
+
+### `E2E FAILED (non-blocking by policy)`
+
+The end-to-end suite ran and went red, and the commit happened anyway. This is intentional: `ship` reports e2e failures and never repairs them. E2E failures are frequently environmental, and auto-fixing them is exactly how a real regression gets papered over.
+
+**You have to look at this one.** The commit is not a statement that e2e passed. Run the suite yourself, decide whether it is your change or your environment, and fix or revert before the MR merges. To skip e2e entirely on a run where you know the environment is broken:
+
+```bash
+/interlock:ship --skip-e2e
+```
+
+### No manual test plan
+
+If `interlock surface` classified every changed file as not UI-testable, `ship` skips the manual test plan and says why. A backend-only change does not get a UI test script. You can check the classification yourself:
+
+```bash
+interlock surface --changed src/Button.tsx docs/readme.md app/api/login/route.ts
+```
+
+## What is enforced, and what is followed
+
+Worth knowing when you are deciding how much to trust a clean run.
+
+**Enforced by the harness:**
+
+- The workflow runtime accepts no mid-run user input, so `ship` cannot stop to ask you anything. This is structural: there is no tool to remove, because there is nobody listening.
+- `commit` and `mr` set `disable-model-invocation: true` — the model cannot trigger them on its own; you invoke them.
+
+(A skill's `allowed-tools` is a pre-approval list, not a restriction — it stops mid-run permission prompts, it does not remove capabilities.)
+
+**Enforced by control flow**, in `workflows/ship.js`: the wave loop, the remediation rounds, the halt conditions, the order of verification. These used to be numbered headings a model was asked to follow. They are now a script, and a script does not talk itself into a third remediation round.
+
+**Enforced by code**, in the `interlock` CLI — every decision the script makes is a subcommand, and gating subcommands exit non-zero when they block:
+
+| Command | Decides |
+|---|---|
+| `validate` | Whether a change is implementable at all |
+| `waves`, `wave-state` | Wave order, per-task model, the parallel-agent cap, and what the run does next |
+| `gate`, `review` | Whether a review blocks, and which findings survive the skeptics and the quality band |
+| `remediate` | Whether another fix round is allowed, or the verdict has landed |
+| `verify plan\|judge\|unit\|cluster\|repair` | Which checks to run, what a result means, and when repair is out of budget |
+| `surface` | UI testability, and so whether a manual test plan is written |
+| `limits` | Every cap above, in one place, so nothing restates a number in prose |
+| `risk`, `ledger`, `ready` | Whether continuity may skip the human checkpoint |
+
+Run any of them yourself; they need no model and no network.
+
+**Left to the model**, because it is what a model should decide: how to classify a task, how to implement it, what a review finding means, and how to synthesize. The agents report structured results and the script branches on them — so if a run's summary does not mention a step, it is still worth checking, but the loop itself is no longer the thing you are trusting to remember.
+
+## Still stuck
+
+Re-read the final summary before re-running anything — it names every default that was applied. If the artifacts were the problem rather than the run, go back to [the checkpoint](./02-the-checkpoint.md) and re-spec; that is cheaper than a third ship attempt almost every time.
+
+## Next
+
+Back to [**01 — Your first hour**](./01-first-hour.md), or the [README](../README.md) for the full skill surface. If you got here from a paused continuity run, [**05 — Continuity**](./05-continuity.md) has the rest of that story.

@@ -2,9 +2,9 @@
 name: manual-test-plan
 description: Produce an expert-QA manual UI test plan from an OpenSpec change plus a git commit range — every touched file accounted for, spec scenarios and tasks mapped to numbered test cases, and non-UI-testable changes flagged rather than dropped. Use when asked for a manual test plan, QA checklist, or UI verification plan after implementing and before opening an MR.
 license: MIT
-compatibility: Requires git. Optional openspec CLI for change scoping. Node.js >= 18 for the bundled specflow CLI.
+compatibility: Requires git. Optional openspec CLI for change scoping. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[change-name] [commit-range]"
-allowed-tools: Bash(git *) Bash(specflow *) Bash(specflow-graph *) Bash(openspec *) Read Write Grep Glob
+allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Read Write Grep Glob
 metadata:
   type: generation
   autonomy_level: L2
@@ -21,7 +21,7 @@ Write for a junior tester who will not read the code: exact navigation paths, ex
 ## 1. Resolve scope
 
 ```bash
-specflow changes                                  # active changes
+interlock changes                                  # active changes
 git log --oneline "$FROM".."$TO"
 git diff --stat "$FROM" "$TO"
 git diff --name-status "$FROM" "$TO"
@@ -32,14 +32,14 @@ Default range: the merge base against the default branch. Read `proposal.md`, `d
 
 Optional context — do **not** preload all of `docs/`:
 - `.claude/graph/DOCS_DIGEST.md` if present
-- `specflow-graph context "<change> routes components forms" --budget 2000`
+- `interlock-graph context "<change> routes components forms" --budget 2000`
 
 ---
 
 ## 2. Classify the surface — deterministically
 
 ```bash
-specflow surface --changed <files> --json
+interlock surface --changed <files> --json
 ```
 
 This returns the tri-state per file, and it is authoritative. **Do not re-derive the classification in prose**; the whole reason it is a CLI is that this question used to get two different answers on the same diff.

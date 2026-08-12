@@ -2,7 +2,7 @@
 name: fix-tests
 description: Discover and persist how a project's tests run, then run the suite and repair failures by root cause — clustering failures by error signature, fixing the shared cause once, and asserting no test was weakened. Use when tests are failing, the suite is red, CI pasted a failure log, or someone asks to make the tests pass.
 license: MIT
-compatibility: Requires the project's own test tooling. Node.js >= 18 for the bundled specflow CLI.
+compatibility: Requires the project's own test tooling. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[--e2e] [--dry-run] [--baseline <ref>] [--from-log <path>] [--reconfigure]"
 allowed-tools: Bash Read Write Edit Glob Grep
 metadata:

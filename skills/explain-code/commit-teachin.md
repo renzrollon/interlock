@@ -8,7 +8,7 @@ Every source file touched in the commit range (skip binaries/lockfiles; cap ~25)
 
 ## Steps
 
-1. Retrieve domain context on demand — Read `.claude/graph/DOCS_DIGEST.md` if present; then `specflow-graph context` / `docs` as needed (`${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5).
+1. Retrieve domain context on demand — Read `.claude/graph/DOCS_DIGEST.md` if present; then `interlock-graph context` / `docs` as needed (`${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5).
 2. Resolve range: default `HEAD~1..HEAD`; `--commits N` → `HEAD~N..HEAD`; or an explicit hash/range from the user.
 3. Gather:
 ```bash
@@ -17,7 +17,7 @@ git diff --stat "$FROM" "$TO"
 git diff --name-status "$FROM" "$TO"
 git diff "$FROM" "$TO" -- <each source file>   # cap hunks ~300 lines/file
 ```
-4. **Blast radius per file** — files that reference the import-specifier stem (basename without extension). For generic stems (`index`, `route`, `page`, `layout`, `config`, `types`, `utils`, `constants`, `main`, `mod`, `SKILL`, `README`, `PROMPT`) qualify with parent directory. Prefer `rg -l` / `git grep -l`; exclude self. Optional: `specflow-graph consumers <symbol>` when the graph exists. Name-match may false-positive — note incidental hits.
+4. **Blast radius per file** — files that reference the import-specifier stem (basename without extension). For generic stems (`index`, `route`, `page`, `layout`, `config`, `types`, `utils`, `constants`, `main`, `mod`, `SKILL`, `README`, `PROMPT`) qualify with parent directory. Prefer `rg -l` / `git grep -l`; exclude self. Optional: `interlock-graph consumers <symbol>` when the graph exists. Name-match may false-positive — note incidental hits.
 5. For each changed source file, fill the **Change Context** block (required). Optionally add function breakdown only for complex new/changed logic a beginner needs.
 6. Write Commit Summary, Per-File Explanation, Change Flow, and Beginner Takeaway; write to the output path resolved in `SKILL.md`:
    - Scoped to an OpenSpec change (name passed, or an active change resolves via `openspec status --json`) → `openspec/changes/<change-name>/code-explanation.md`, alongside `manual-test-plan.md`

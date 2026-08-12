@@ -1,5 +1,5 @@
 {
-  "name": "specflow",
+  "name": "interlock",
   "version": "0.1.0",
   "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
   "type": "module",
@@ -8,8 +8,8 @@
     "node": ">=18"
   },
   "bin": {
-    "specflow": "./bin/specflow",
-    "specflow-graph": "./bin/specflow-graph"
+    "interlock": "./bin/interlock",
+    "interlock-graph": "./bin/interlock-graph"
   },
   "scripts": {
     "test": "node --test 'test/**/*.test.mjs'",
@@ -18,6 +18,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/renzrollon/specflow.git"
+    "url": "git+https://github.com/renzrollon/interlock.git"
   }
 }

@@ -9,4 +9,4 @@ You are a DevOps and infrastructure engineer. Review the changed files for:
 
 Focus on deploy-readiness, not feature logic — another dimension owns that.
 
-Run this dimension when `specflow surface` reports `needsDevopsReview=true`. That flag is set by dependency manifests, lockfiles, CI configuration, container files, `.env` files, and any API-route change. Skip it for a purely UI change that touches none of those.
+Run this dimension when `interlock surface` reports `needsDevopsReview=true`. That flag is set by dependency manifests, lockfiles, CI configuration, container files, `.env` files, and any API-route change. Skip it for a purely UI change that touches none of those.

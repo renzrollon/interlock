@@ -4,7 +4,7 @@ description: Explain code to a beginner in that stack — either a module walkth
 license: MIT
 compatibility: Requires git for commit teach-in mode. Optional openspec CLI for change scoping.
 argument-hint: "[path | --commit | --commits N]"
-allowed-tools: Bash(git *) Bash(specflow-graph *) Bash(openspec *) Read Write Grep Glob
+allowed-tools: Bash(git *) Bash(interlock-graph *) Bash(openspec *) Read Write Grep Glob
 metadata:
   type: teaching
   autonomy_level: L2
@@ -34,10 +34,10 @@ Resolve the destination before writing. Both modes use the same rule:
 | Scoped to an OpenSpec change — a change name was passed, or one resolves via `openspec status --json` | `openspec/changes/<change-name>/code-explanation.md` |
 | No change context (ad-hoc walkthrough) | `docs/CODE_EXPLANATION.md` |
 
-**Do not "simplify" this back to a single path.** A change-scoped explanation belongs beside `manual-test-plan.md` in its own change directory. Writing every run to `docs/CODE_EXPLANATION.md` overwrites the previous change's explanation — and because `docs/` is the corpus `/specflow:docs-digest` indexes, each rewrite permanently marks `.claude/graph/DOCS_DIGEST.md` stale through its `source_hashes`.
+**Do not "simplify" this back to a single path.** A change-scoped explanation belongs beside `manual-test-plan.md` in its own change directory. Writing every run to `docs/CODE_EXPLANATION.md` overwrites the previous change's explanation — and because `docs/` is the corpus `/interlock:docs-digest` indexes, each rewrite permanently marks `.claude/graph/DOCS_DIGEST.md` stale through its `source_hashes`.
 
 ## Shared rules
 
 - **Single agent, no fan-out.** Understanding builds sequentially; parallel investigators produce four disconnected fragments, which is the opposite of a walkthrough.
 - Write the full explanation to the resolved path (overwrite), then tell the user the file is ready with a 5–10 line summary.
-- Pull domain context on demand: `.claude/graph/DOCS_DIGEST.md` first, then `specflow-graph context` / `docs`. Never preload all of `docs/` — see `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5.
+- Pull domain context on demand: `.claude/graph/DOCS_DIGEST.md` first, then `interlock-graph context` / `docs`. Never preload all of `docs/` — see `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5.

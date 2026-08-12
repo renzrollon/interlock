@@ -1,6 +1,6 @@
 # Tool Economy — Locate Before You Read, Batch Your Bash, Read State Don't Re-Derive It
 
-Shared discipline for all specflow skills that investigate a codebase or
+Shared discipline for all interlock skills that investigate a codebase or
 gather project state. Companion to `CONTEXT-HYGIENE.md` and `INVARIANT-SWEEP.md`.
 Derived from token-utilization measurements across real sessions: sessions with
 heavy investigation and thin output (one observed run: 169 investigation tool
@@ -29,22 +29,22 @@ If `.claude/graph/graph.json` exists, treat it as the first locator for
 structural questions — “where is X”, “who uses Y”, “how does A reach B”:
 
 ```bash
-specflow-graph query "<tokens>" --budget 1500
-specflow-graph consumers <symbol-or-file>
-specflow-graph path <A> <B>
-specflow-graph explain <node>
+interlock-graph query "<tokens>" --budget 1500
+interlock-graph consumers <symbol-or-file>
+interlock-graph path <A> <B>
+interlock-graph explain <node>
 ```
 
-(`specflow-graph` is on PATH whenever this plugin is enabled — never probe for it.)
+(`interlock-graph` is on PATH whenever this plugin is enabled — never probe for it.)
 
 Read `.claude/graph/GRAPH_REPORT.md` once for hubs/modules when scoping a
 fan-out. Then Grep/Read only for detail the graph lacks (dynamic imports,
 stringly keys, generated code, languages outside the graph walk).
 
 If the graph is missing and the session will do heavy exploration, prefer
-`specflow-graph build .` (or `/specflow:graph rebuild`) once over repeated blind greps.
+`interlock-graph build .` (or `/interlock:graph rebuild`) once over repeated blind greps.
 Do **not** rebuild on every query when the graph already exists — use
-`specflow-graph update` after large merges.
+`interlock-graph update` after large merges.
 
 ## Rule 0.5 — Budgeted documentation retrieval (don't preload `docs/`)
 
@@ -59,12 +59,12 @@ upfront. Prefer the agent-only digest, then retrieve cited excerpts on demand.
 2. Task-specific drill-down → budgeted retrieve:
 
 ```bash
-specflow-graph context "<task tokens>" --budget 2000 --changed path/a.ts,path/b.ts
-specflow-graph docs "<domain terms>" --budget 800
+interlock-graph context "<task tokens>" --budget 2000 --changed path/a.ts,path/b.ts
+interlock-graph docs "<domain terms>" --budget 800
 ```
 
-3. If digest missing/stale and the session needs domain prose → run `/specflow:docs-digest`
-   (rebuilds via `specflow-graph docs-index` + compress), else proceed with `context` only.
+3. If digest missing/stale and the session needs domain prose → run `/interlock:docs-digest`
+   (rebuilds via `interlock-graph docs-index` + compress), else proceed with `context` only.
 4. Fallback when retrieve is empty (at most one query rewrite, then stop sprawl):
    - broaden terms once (`auth` → `authentication session`)
    - `grep` headings in `docs/` / `openspec/`, then Read spans
@@ -74,7 +74,7 @@ specflow-graph docs "<domain terms>" --budget 800
 
 | Command | Budget | Role |
 |---------|--------|------|
-| `DOCS_DIGEST.md` | ~2500 soft / ~3200 hard | Agent-only prose bootstrap (via `/specflow:docs-digest`) |
+| `DOCS_DIGEST.md` | ~2500 soft / ~3200 hard | Agent-only prose bootstrap (via `/interlock:docs-digest`) |
 | `context` | 2000 tokens | Combined structural + documentation bundle |
 | `docs` | 800 tokens | Prose/domain context only |
 | `query` / `consumers` | 1500 tokens | Structural navigation |
@@ -86,10 +86,10 @@ Treat graph `INFERRED` edges as hints; verify with Read spans before claims.
 **Authoritative artifact exception** — when implementing against an active OpenSpec
 change, still read **all** of `proposal.md`, `design.md`, `tasks.md`, and delta
 specs for that change first. Rule 0.5 replaces exploratory preload, not the
-implementation contract leash (`/specflow:ship`).
+implementation contract leash (`/interlock:ship`).
 
 **Batch gathers** — a non-interactive run that needs project prose should pull a
-single bounded bundle via `specflow-graph context`, never `find docs -exec cat`.
+single bounded bundle via `interlock-graph context`, never `find docs -exec cat`.
 If `context` fails, prefer `.claude/graph/DOCS_DIGEST.md` over reading the head
 of an architecture doc.
 
@@ -121,37 +121,37 @@ an open-task grep over `openspec/changes/*/tasks.md`, and the latest handoff.
 Front-load these in one pass. Read them,
 then act. Do not re-traverse the tree to reconstruct what they already tell you.
 
-**Explore brief as Rule-3 state:** when `/specflow:spec` runs after explore
+**Explore brief as Rule-3 state:** when `/interlock:spec` runs after explore
 (especially after `/clear` or prompt-cache expiry), read the latest matching
 `.claude/handoff/explore-*.md` first (see `EXPLORE-BRIEF.md`).
 Prefer the brief’s recommendations over re-deriving discovery from the codebase
 or chat. Reopen code only for gaps or contradictions. Writing that brief in
-autonomous explore is how explore pays forward — propose should not re-pay.
+autonomous explore is how explore pays forward — spec should not re-pay.
 
 ## When NOT to apply
 
 This targets *wasted* exploration, not legitimate reconnaissance:
 
 - Genuine cross-subsystem investigation still warrants a fan-out
-  (`/specflow:explore`). Rule 1 applies *within* each investigator; the
+  (`/interlock:explore`). Rule 1 applies *within* each investigator; the
   decision to fan out is unchanged.
 - The artifact leash still holds: when you're about to implement against a
-  proposal/design/tasks set, read all of it first (see `/specflow:ship`).
+  proposal/design/tasks set, read all of it first (see `/interlock:ship`).
   That is not the sprawl this file is about.
 
 ## Skill integration
 
-- **specflow-graph** — owns build/query/update of `.claude/graph/`; implements Rule 0
+- **interlock-graph** — owns build/query/update of `.claude/graph/`; implements Rule 0
   and Rule 0.5 (`context`, `docs` commands).
-- **/specflow:dispatch** — its step-0 pre-flight is Rules 2 and 3: front-load
+- **/interlock:dispatch** — its step-0 pre-flight is Rules 2 and 3: front-load
   state in one batched gather instead of an exploratory warm-up, and note
   whether the graph is present.
-- **/specflow:ship** — locate-before-Read, and batched or backgrounded Bash,
+- **/interlock:ship** — locate-before-Read, and batched or backgrounded Bash,
   during implementation and verification.
-- **/specflow:explore** — Rule 0 then Rule 1 inside each investigator; load
+- **/interlock:explore** — Rule 0 then Rule 1 inside each investigator; load
   `GRAPH_REPORT.md` before fanning out when present. Writes an explore brief,
   which is Rule 3 state for the spec phase.
-- **/specflow:spec** — auto-loads the latest `.claude/handoff/explore-*.md`
+- **/interlock:spec** — auto-loads the latest `.claude/handoff/explore-*.md`
   instead of re-deriving discovery (Rule 3).
 
 When adding a new skill that greps, reads, or sweeps project state, follow this

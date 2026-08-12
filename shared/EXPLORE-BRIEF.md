@@ -1,8 +1,8 @@
-# Explore Brief — Propose Contract
+# Explore Brief — Spec Contract
 
-Durable handoff from `/specflow:explore` / `/specflow:explore` into
-`/specflow:spec`. Lives on disk so propose can reload discovery after
-prompt-cache expiry or `/clear` without re-deriving it from chat.
+Durable handoff from `/interlock:explore` into `/interlock:spec`. Lives on disk
+so `/interlock:spec` can reload discovery after prompt-cache expiry or `/clear`
+without re-deriving it from chat.
 
 **Path:** `.claude/handoff/explore-<slug>-<YYYYMMDD-HHMMSS>.md`  
 Slug = topic or suggested change name in kebab-case. Same handoff directory
@@ -12,14 +12,14 @@ across a context reset.
 
 - **Required** in autonomous explore mode (exit criterion).
 - **Optional** in conversational explore when the user asks to “save
-  exploration” / “handoff for propose”.
+  exploration” / “handoff for spec”.
 
 **Bound the brief** (~2–6k tokens): cite paths and line refs; prefer
 pointers over pasted code; ASCII diagrams when useful.
 
 ---
 
-## Template (stable — propose depends on these headings)
+## Template (stable — `/interlock:spec` depends on these headings)
 
 ```markdown
 # Explore Brief: <slug>
@@ -30,7 +30,6 @@ pointers over pasted code; ASCII diagrams when useful.
 - created: <ISO-8601 timestamp>
 - suggested_change_name: <kebab-case or none>
 - related_change: <existing openspec change name or none>
-- source_grill: <path to .claude/handoff/grill-*.md or none>
 
 ## Problem / Intent
 <!-- Crystallized problem statement and desired outcome -->
@@ -57,7 +56,7 @@ pointers over pasted code; ASCII diagrams when useful.
 ## Risks / Gaps
 <!-- What could go wrong; layers not swept; contradictions -->
 
-## Propose Ready Checklist
+## Spec Ready Checklist
 - [ ] Problem / intent is clear enough to name a change
 - [ ] Recommended direction is stated (or options narrowed to ≤2)
 - [ ] Critical files listed with why
@@ -75,7 +74,7 @@ pointers over pasted code; ASCII diagrams when useful.
 | **Options Considered** | Tradeoffs + evidence. Mark recommended vs rejected with rationale. |
 | **Pending Clarifications** | Repo-unresolvable items only. Autonomous mode lists them; does not ask mid-explore. |
 | **Assumptions Made** | Prefer reasonable defaults over blocking; record them here. |
-| **Propose Ready Checklist** | If unchecked items remain that block a correct proposal, say so in chat when pointing at the brief. |
+| **Spec Ready Checklist** | If unchecked items remain that block a correct proposal, say so in chat when pointing at the brief. |
 
 ## Chat reply after write
 
@@ -83,11 +82,11 @@ Do **not** re-dump the full brief into chat. Reply with:
 
 1. Path to the brief
 2. A 3–5 line summary (intent + recommended direction + top risk)
-3. “Ready for `/specflow:spec`” (or the Copilot/VS Code equivalent)
+3. “Ready for `/interlock:spec`” (or the Copilot/VS Code equivalent)
 
-## Propose consumption
+## Spec consumption
 
-`/specflow:spec` auto-finds the latest matching brief under
+`/interlock:spec` auto-finds the latest matching brief under
 `.claude/handoff/explore-*.md` (see that skill). Override: user passes an
 explicit brief path. Prefer brief recommendations over re-exploring; reopen
 code only for gaps or contradictions.

@@ -18,9 +18,9 @@ Teach TypeScript/React/Next.js code to a frontend beginner. Not reviewing — te
 - Authentication services (better-auth sessions)
 
 **Context sources:**
-- If `.claude/graph/DOCS_DIGEST.md` exists, Read it once as the domain primer (agent-only; see `/specflow:docs-digest`)
-- Then use `specflow-graph context "<scope terms>" --budget 2000` for task-specific prose — do **not** read all of `docs/` upfront (see `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5)
-- If graph missing: `specflow-graph docs "<terms>" --budget 800`, or grep headings in `docs/` then Read spans
+- If `.claude/graph/DOCS_DIGEST.md` exists, Read it once as the domain primer (agent-only; see `/interlock:docs-digest`)
+- Then use `interlock-graph context "<scope terms>" --budget 2000` for task-specific prose — do **not** read all of `docs/` upfront (see `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md` Rule 0.5)
+- If graph missing: `interlock-graph docs "<terms>" --budget 800`, or grep headings in `docs/` then Read spans
 
 **Files to explain:**
 - **Module walkthrough:** every `.ts` / `.tsx` in the scoped tree (`src/`, `app/`, `lib/`, …)
@@ -35,10 +35,10 @@ Teach TypeScript/React/Next.js code to a frontend beginner. Not reviewing — te
 
 ## Steps
 
-1. Retrieve domain context on demand — Read `.claude/graph/DOCS_DIGEST.md` if present; then `specflow-graph context "<scope>" --budget 2000` (or `docs` with `--budget 800` if no graph). Do not preload every `docs/*.md`.
+1. Retrieve domain context on demand — Read `.claude/graph/DOCS_DIGEST.md` if present; then `interlock-graph context "<scope>" --budget 2000` (or `docs` with `--budget 800` if no graph). Do not preload every `docs/*.md`.
 2. If `$ARGUMENTS` specifies a directory or file, explain only that scope; pass paths to `--changed` when using `context`.
 3. If no arguments, use the graph to list modules/files in `app/`, `lib/`, `components/`, `types/`, and `prisma/` instead of blind `find`.
-4. Graph-backed scope and call links: if `.claude/graph/graph.json` exists, use `specflow-graph explain <file>` and `specflow-graph consumers <symbol>` for **Called by** / **Calls into**. If missing and scope is large, `specflow-graph build .` once first.
+4. Graph-backed scope and call links: if `.claude/graph/graph.json` exists, use `interlock-graph explain <file>` and `interlock-graph consumers <symbol>` for **Called by** / **Calls into**. If missing and scope is large, `interlock-graph build .` once first.
 5. Read each in-scope file; extract functions and logic blocks worth explaining (Read with offset/limit when locating via graph/grep).
 6. Trace imports only where the graph is incomplete.
 7. Order output: foundational files → data layer → components → pages/routes.

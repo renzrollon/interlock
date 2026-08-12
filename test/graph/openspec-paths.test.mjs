@@ -29,7 +29,7 @@ describe('openspec spec→file links on non-conventional layouts', () => {
   let graph;
 
   before(() => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-svc-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-svc-'));
     copyDir(FIXTURE, tmp);
     const result = buildGraph(tmp);
     writeGraphArtifacts(tmp, result);

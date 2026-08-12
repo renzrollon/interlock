@@ -11,7 +11,7 @@ import { buildDocsIndex } from '../../lib/graph/retrieve/docs-index.mjs'
 // clone of spf13/cobra, where the docs live in doc/ and the substantive
 // documentation is the root README.
 function repo(files) {
-  const root = mkdtempSync(join(tmpdir(), 'specflow-docs-'))
+  const root = mkdtempSync(join(tmpdir(), 'interlock-docs-'))
   for (const [path, content] of Object.entries(files)) {
     const full = join(root, path)
     mkdirSync(join(full, '..'), { recursive: true })

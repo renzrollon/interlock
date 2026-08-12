@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires git, plus glab (GitLab) or gh (GitHub) authenticated. Optional openspec CLI for change context.
 argument-hint: "[change-name] [--create] [--test-plan] [--explain]"
 disable-model-invocation: true
-allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(specflow *) Bash(specflow-graph *) Read Write Grep Glob
+allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Grep Glob
 metadata:
   type: generation
   autonomy_level: L2
@@ -51,7 +51,7 @@ gh pr view 2>/dev/null
 
 No open MR/PR and no `--create` → stop: *"No open merge request for this branch. Push the branch and re-run with `--create`."*
 
-Resolve the OpenSpec change with `specflow changes` and the branch name. If several are plausible, ask which one — a wrong change here produces a confidently wrong description.
+Resolve the OpenSpec change with `interlock changes` and the branch name. If several are plausible, ask which one — a wrong change here produces a confidently wrong description.
 
 ---
 
@@ -63,7 +63,7 @@ git diff --name-status <base>...HEAD
 git log --oneline <base>...HEAD
 ```
 
-Read `proposal.md` (the why), `design.md` (the how), `tasks.md` (what was done), and `specs/**/*.md`. Use `specflow-graph consumers <symbol>` to check blast radius when the graph exists.
+Read `proposal.md` (the why), `design.md` (the how), `tasks.md` (what was done), and `specs/**/*.md`. Use `interlock-graph consumers <symbol>` to check blast radius when the graph exists.
 
 ---
 
@@ -136,8 +136,8 @@ Updating **replaces the description entirely.** If the existing description cont
 
 ## 7. Optional comments
 
-**`--test-plan`** — reuse `openspec/changes/<change>/manual-test-plan.md` when it is fresh relative to HEAD; otherwise run `/specflow:manual-test-plan` first. Post it as a comment (`glab mr note -m` / `gh pr comment -b`). Split across comments if it exceeds the platform's size limit.
+**`--test-plan`** — reuse `openspec/changes/<change>/manual-test-plan.md` when it is fresh relative to HEAD; otherwise run `/interlock:manual-test-plan` first. Post it as a comment (`glab mr note -m` / `gh pr comment -b`). Split across comments if it exceeds the platform's size limit.
 
-**`--explain`** — run `/specflow:explain-code` in commit teach-in mode and post the walkthrough as a comment.
+**`--explain`** — run `/interlock:explain-code` in commit teach-in mode and post the walkthrough as a comment.
 
 Both are **comment-only, always.** Neither ever enters the description — a reviewer opening the MR should see the summary, not a 200-line test script.

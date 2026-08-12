@@ -41,7 +41,7 @@ describe('build + query on fixture', () => {
   let graph;
 
   before(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-'));
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-'));
     // Copy fixture into temp so we can write .claude/graph without dirtying repo
     copyDir(FIXTURE, tmp);
     const result = buildGraph(tmp);

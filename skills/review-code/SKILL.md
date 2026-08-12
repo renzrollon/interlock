@@ -4,7 +4,7 @@ description: Adversarially verified multi-dimensional review of a code diff. Run
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
 argument-hint: "[change-name] [--dimensions a,b,c]"
-allowed-tools: Bash(git *) Bash(specflow *) Bash(specflow-graph *) Bash(openspec *) Read Grep Glob
+allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: review
   autonomy_level: L2
@@ -21,12 +21,12 @@ The second half is the point. An unverified review reports everything it notices
 Resolve the change and the file set:
 
 ```bash
-specflow changes                        # active OpenSpec changes
+interlock changes                        # active OpenSpec changes
 git diff --name-only main...HEAD        # or the appropriate base
-specflow surface --changed <files> --json
+interlock surface --changed <files> --json
 ```
 
-`specflow surface` tells you whether the devops dimension is warranted (`needsDevopsReview`). Use it — do not re-derive that judgement in prose.
+`interlock surface` tells you whether the devops dimension is warranted (`needsDevopsReview`). Use it — do not re-derive that judgement in prose.
 
 If there are no changed files, stop and say so. A review of an empty diff is not a clean review.
 
@@ -98,15 +98,17 @@ Skeptics must **read the file**. A verdict reached from the finding text alone i
 Collect the survivors and hand them to the deterministic gate:
 
 ```bash
-specflow gate --findings <survivors.json> --json
+interlock gate --findings <survivors.json> --json
 ```
+
+The gate applies the **quality band** before it counts anything: survivors the skeptics scored too low on `qualityScore` are dropped, and the gate reports how many as `droppedByQuality`. The floor lives in the CLI (`--min-quality` overrides it, `--no-tolerance` disables it) — never restate the number here, never re-derive the band in prose, and never pre-filter weak findings yourself before the gate sees them.
 
 It returns `passed`, severity counts, the blocker list, the per-file remediation grouping, and `autonomyOutcome`. **Do not re-derive pass/fail in prose** — the gate blocks if and only if a surviving finding is a blocker, and that is a count, not a judgement.
 
 Record the outcome:
 
 ```bash
-specflow autonomy record review-code --blockers <n>   # or --blockers 0 when clean
+interlock autonomy record review-code --blockers <n>   # or --blockers 0 when clean
 ```
 
 A blocker here also resets `ship` via transitive blame — the gate blames whoever produced the bad code.
@@ -126,6 +128,6 @@ GATE BLOCKED — 2 blockers of 7 findings (4 dismissed by skeptics)
   → <suggestion>
 ```
 
-Always report **how many findings the skeptics dismissed**. That number is the evidence the review is worth trusting; hiding it makes a verified review look identical to an unverified one.
+Always report **how many findings the skeptics dismissed**, and separately the gate's `droppedByQuality` count. Those numbers are the evidence the review is worth trusting; hiding them makes a verified review look identical to an unverified one.
 
 Never report a dismissed finding "just in case". That defeats the entire mechanism.

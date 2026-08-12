@@ -82,7 +82,7 @@ describe('build + query on python/shell fixture', () => {
   let graph;
 
   before(() => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-py-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-py-'));
     copyDir(FIXTURE, tmp);
     const result = buildGraph(tmp);
     writeGraphArtifacts(tmp, result);

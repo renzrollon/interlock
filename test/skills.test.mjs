@@ -31,6 +31,12 @@ const ALLOWED = new Set([...SPEC_FIELDS, ...CLAUDE_EXTENSIONS])
 // listing, so anything past it is invisible to the model when it picks a skill.
 const LISTING_CAP = 1536
 
+const WORKFLOWS_DIR = join(ROOT, 'workflows')
+const workflowFiles = existsSync(WORKFLOWS_DIR)
+  ? readdirSync(WORKFLOWS_DIR).filter(f => f.endsWith('.js'))
+  : []
+const workflowNames = workflowFiles.map(f => f.replace(/\.js$/, ''))
+
 const skillDirs = readdirSync(SKILLS_DIR, { withFileTypes: true })
   .filter(e => e.isDirectory())
   .map(e => e.name)
@@ -59,7 +65,7 @@ function parseFrontmatter(text) {
 }
 
 test('every skill directory contains a SKILL.md', () => {
-  assert.ok(skillDirs.length >= 14, `expected at least 14 skills, found ${skillDirs.length}`)
+  assert.ok(skillDirs.length >= 13, `expected at least 13 skills, found ${skillDirs.length}`)
   for (const dir of skillDirs) {
     assert.ok(existsSync(join(SKILLS_DIR, dir, 'SKILL.md')), `${dir}/SKILL.md is missing`)
   }
@@ -105,13 +111,16 @@ for (const dir of skillDirs) {
   })
 }
 
-test('no skill references a skill that was not shipped', () => {
-  const shipped = new Set(skillDirs)
+test('no skill references a command that was not shipped', () => {
+  // `ship` is a workflow, not a skill, so the shipped set is the union of both.
+  // Plugin workflows are namespaced identically (`/interlock:<meta.name>`), which
+  // is why moving ship out of skills/ did not change a single call site.
+  const shipped = new Set([...skillDirs, ...workflowNames])
   const offenders = []
   for (const dir of skillDirs) {
     const text = readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8')
-    for (const m of text.matchAll(/\/specflow:([a-z-]+)/g)) {
-      if (!shipped.has(m[1])) offenders.push(`${dir} → /specflow:${m[1]}`)
+    for (const m of text.matchAll(/\/interlock:([a-z-]+)/g)) {
+      if (!shipped.has(m[1])) offenders.push(`${dir} → /interlock:${m[1]}`)
     }
   }
   assert.deepEqual(offenders, [], `dangling skill references: ${offenders.join(', ')}`)
@@ -129,7 +138,9 @@ test('no skill carries a reference to the private predecessor repo', () => {
 test('side-effecting skills are not model-invocable', () => {
   // ship, commit and mr all write to shared state or a remote. Claude must not
   // decide on its own that now is a good time to commit or open an MR.
-  for (const dir of ['ship', 'commit', 'mr']) {
+  // `ship` is absent here on purpose: it is a workflow, and the workflow runtime
+  // gives it a stronger guarantee than this flag does — see the workflow tests.
+  for (const dir of ['commit', 'mr']) {
     const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8'))
     assert.equal(
       fm.values['disable-model-invocation'],
@@ -139,13 +150,80 @@ test('side-effecting skills are not model-invocable', () => {
   }
 })
 
-test('ship cannot ask the user a question', () => {
-  // The zero-touch contract is enforced by the harness, not by prose.
-  const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8'))
-  assert.match(fm.values['disallowed-tools'] || '', /AskUserQuestion/)
+test('no skill claims to be ship', () => {
+  // Ship moved to workflows/. A skill of the same name would shadow the command
+  // and silently restore the prose loop this release replaced.
+  assert.ok(!skillDirs.includes('ship'), 'skills/ship must not exist — ship is a workflow')
 })
 
 test('shared contracts referenced by skills all exist', () => {
   const shared = readdirSync(join(ROOT, 'shared')).filter(f => f.endsWith('.md'))
   assert.ok(shared.length >= 5, `expected the shared contracts, found ${shared.length}`)
+})
+
+test('every skill that spawns subagents is allowed the Agent tool', () => {
+  // `allowed-tools` is a per-turn pre-approval, not a hard allowlist — Claude
+  // Code's docs are explicit that it "does not restrict which tools are
+  // available". So omitting Agent does not break fan-out; what it costs is a
+  // permission prompt under a user's own restrictive rules. That is worth a
+  // structural rule anyway, because `ship` runs with AskUserQuestion removed
+  // and is sold as a run that never touches the keyboard: stalling on an
+  // approval dialog halfway through wave execution breaks exactly the contract
+  // the disallowed-tools line is there to keep. Keeping the pre-approval list
+  // honest to what the body actually asks for is the cheapest way to hold it.
+  // The regex deliberately matches only *affirmative* spawn language:
+  // `explain-code` says "Single agent, no fan-out", which must not trip it.
+  const SPAWNS_AGENTS = /Agent tool|subagent|spawn (?:\w+ ){0,2}agents?|fan out (?:\w+ ){0,2}agents?/i
+  const offenders = []
+  for (const dir of skillDirs) {
+    const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8'))
+    if (!SPAWNS_AGENTS.test(fm.body)) continue
+    if (!/\bAgent\b/.test(fm.values['allowed-tools'] || '')) offenders.push(dir)
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `skills instruct spawning subagents but omit Agent from allowed-tools: ${offenders.join(', ')}`
+  )
+})
+
+// Same intent as the skill-level scan above, widened to the two other trees an
+// agent actually reads at runtime: the shared contracts skills load verbatim,
+// and the CLI output they consume. A stale predecessor skill name in a shared
+// contract sends the model looking for a command this plugin does not ship.
+// Patterns are word-boundary-anchored so ordinary English survives — "propose"
+// and "proposed" are legitimate words and are NOT banned.
+const BANNED_RESIDUE = [
+  /\bCarl Graph\b/,
+  /\bsource_grill\b/,
+  /\breview-ts\b/,
+  /\bopenspec-create-pr\b/,
+  /\bapply-change\b/
+]
+
+function filesUnder(dir, ext) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...filesUnder(abs, ext))
+    else if (entry.name.endsWith(ext)) out.push(abs)
+  }
+  return out
+}
+
+test('shared contracts and lib carry no predecessor skill names', () => {
+  const targets = [
+    ...filesUnder(join(ROOT, 'shared'), '.md'),
+    ...filesUnder(join(ROOT, 'lib'), '.mjs')
+  ]
+  assert.ok(targets.length >= 10, `expected shared + lib files, found ${targets.length}`)
+  const offenders = []
+  for (const abs of targets) {
+    const text = readFileSync(abs, 'utf8')
+    for (const pattern of BANNED_RESIDUE) {
+      const hit = pattern.exec(text)
+      if (hit) offenders.push(`${abs.slice(ROOT.length + 1)}: "${hit[0]}"`)
+    }
+  }
+  assert.deepEqual(offenders, [], `predecessor residue: ${offenders.join(', ')}`)
 })

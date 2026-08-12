@@ -1,7 +1,7 @@
 # Test Profile — Discovery & Persistence Contract
 
 Durable, machine-readable record of how a project's tests run. Owned by
-`/specflow:fix-tests` and reused by `/specflow:ship`, so neither has to
+`/interlock:fix-tests` and reused by `/interlock:ship`, so neither has to
 re-sniff `package.json` on every run.
 
 **Path:** `.claude/testing/profile.json`  
@@ -130,14 +130,14 @@ is absent):
 ```markdown
 ## Testing
 
-<!-- BEGIN specflow:testing -->
+<!-- BEGIN interlock:testing -->
 **Unit:** `<unit.command>` (cwd: `<unit.cwd>`)
 **Filter:** `<unit.filter_syntax>`
 **Single file:** `<unit.single_file>`
 **E2E:** `<e2e.command or "opt-in via /fix-tests --e2e (not configured)">`
 **Prerequisites:** <list or "none">
-**Profile:** `.claude/testing/profile.json` (managed by `/specflow:fix-tests`)
-<!-- END specflow:testing -->
+**Profile:** `.claude/testing/profile.json` (managed by `/interlock:fix-tests`)
+<!-- END interlock:testing -->
 ```
 
 **Idempotency rules**
@@ -148,7 +148,7 @@ is absent):
   only if they are clearly human-authored and outside a prior managed block).
 - If no `## Testing` section: append the full section (heading + markers) at
   end of file (or before `## Git` / `## Hooks` if those headings exist).
-- Never duplicate the managed block. A second `/specflow:fix-tests` run must leave a
+- Never duplicate the managed block. A second `/interlock:fix-tests` run must leave a
   single pair of markers.
 
 ---
@@ -158,17 +158,17 @@ is absent):
 Anything that needs to run this project's tests reads
 `.claude/testing/profile.json` first instead of sniffing `package.json`.
 
-- `/specflow:fix-tests` — owns discovery, and is the only skill allowed to
+- `/interlock:fix-tests` — owns discovery, and is the only skill allowed to
   interview the user to fill a field.
-- `/specflow:ship` — reads the profile during its test wave and final
+- `/interlock:ship` — reads the profile during its test wave and final
   verification. Where the discovery ladder would ask a question, ship leaves the
   field `null` and notes it. **Ship never interviews.**
 
-**Two writers, no fighting.** `/specflow:fix-tests` and `/specflow:ship` both write this file.
+**Two writers, no fighting.** `/interlock:fix-tests` and `/interlock:ship` both write this file.
 Each writes only the fields it actually resolved and preserves every other key
-verbatim — `/specflow:ship` never clears `known_flaky`, human-authored `notes`, or
-`e2e` settings it did not discover, and `/specflow:fix-tests` leaves `coverage` alone
+verbatim — `/interlock:ship` never clears `known_flaky`, human-authored `notes`, or
+`e2e` settings it did not discover, and `/interlock:fix-tests` leaves `coverage` alone
 unless it discovered coverage tooling itself. Neither writer interviews the user
-on behalf of the other: `/specflow:ship` is always headless and records
+on behalf of the other: `/interlock:ship` is always headless and records
 unresolvable fields as `null` plus a line in `notes`, where the ladder above
 would have asked.

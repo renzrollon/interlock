@@ -2,19 +2,20 @@
 name: explore
 description: Deep codebase reconnaissance with parallel read-only investigators — fans out automatically when a question spans multiple subsystems, options, or cross-cutting concerns, then synthesizes one coherent picture. Use before designing a change, when tracing how something works end to end, or when you need to know the blast radius of touching a shared value.
 license: MIT
-compatibility: Optional openspec CLI for change awareness. Node.js >= 18 for the bundled specflow-graph CLI.
+compatibility: Optional openspec CLI for change awareness. Node.js >= 18 for the bundled interlock-graph CLI.
 argument-hint: "[question] [--autonomous]"
-allowed-tools: Bash(specflow-graph *) Bash(openspec *) Read Grep Glob
+allowed-tools: Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: discovery
   autonomy_level: L2
   outputs:
     - .claude/handoff/explore-<slug>-<timestamp>.md
+    - openspec/changes/<name>/decisions.md
 ---
 
 Think deeply. Fan out when breadth is needed. Synthesize into understanding.
 
-**Explore is for thinking, not implementing.** Read files, search code, investigate freely — but never write code and never implement a feature here. If asked to implement, say so and point at `/specflow:spec`. Writing OpenSpec artifacts or an explore brief is capturing thinking, not implementing, and is allowed.
+**Explore is for thinking, not implementing.** Read files, search code, investigate freely — but never write code and never implement a feature here. If asked to implement, say so and point at `/interlock:spec`. Writing OpenSpec artifacts or an explore brief is capturing thinking, not implementing, and is allowed.
 
 ---
 
@@ -22,11 +23,11 @@ Think deeply. Fan out when breadth is needed. Synthesize into understanding.
 
 **Conversational (default).** A thinking partner. Ask the user which thread to pull when several look interesting. Iterate.
 
-**Autonomous.** Activate on `--autonomous`, "no questions", "don't ask me", "pursue all threads", or when `/specflow:spec` invokes this skill. Then:
+**Autonomous.** Activate on `--autonomous`, "no questions", "don't ask me", "pursue all threads", or when `/interlock:spec` invokes this skill. Then:
 
 1. **No user Q&A.** No AskUserQuestion, no "which thread interests you?" menus. Open threads are work items, not questions.
 2. **Fan out on every thread.** Each interesting thread or option gets a read-only investigator. Cap 2–5, merge in synthesis.
-3. **Prefer defaults.** Ambiguous product intent → pick a reasonable default, record it under Assumptions Made and Pending Clarifications. Non-blocking.
+3. **Prefer defaults.** Ambiguous product intent → pick a reasonable default, record it under Assumptions Made and Pending Clarifications. Non-blocking. Every one of them is also a ledger row — see below.
 4. **Write the explore brief.** Required exit criterion. Follow `${CLAUDE_PLUGIN_ROOT}/shared/EXPLORE-BRIEF.md`. Path: `.claude/handoff/explore-<slug>-<YYYYMMDD-HHMMSS>.md`.
 5. **Close short.** Brief path plus a 3–5 line summary. Do not re-dump findings into chat — they are in the brief.
 
@@ -40,15 +41,15 @@ If `.claude/graph/graph.json` exists (Rule 0 of `${CLAUDE_PLUGIN_ROOT}/shared/TO
 2. Seed investigator scopes with targeted queries:
 
 ```bash
-specflow-graph query "<subsystem tokens>" --budget 1500
-specflow-graph consumers <symbol-or-field>   # Pattern 4 / invariant sweep
-specflow-graph path <A> <B>                  # cross-cutting traces
+interlock-graph query "<subsystem tokens>" --budget 1500
+interlock-graph consumers <symbol-or-field>   # Pattern 4 / invariant sweep
+interlock-graph path <A> <B>                  # cross-cutting traces
 ```
 
 3. Scope investigators by **real module nodes and consumer lists**, not by guessed layers.
 4. Tell each investigator: locate via graph, then grep for string-keyed and dynamic readers, then Read spans.
 
-If the graph is missing and the question spans 3+ subsystems, build it once (`specflow-graph build .`) before fanning out. Never rebuild when it already exists.
+If the graph is missing and the question spans 3+ subsystems, build it once (`interlock-graph build .`) before fanning out. Never rebuild when it already exists.
 
 ---
 
@@ -149,8 +150,25 @@ When a change exists, read its artifacts via `openspec status --change "<name>" 
 
 ---
 
+## Every ambiguity becomes a ledger row
+
+An unknown you name in chat is an unknown nobody can act on. The durable record is the decision ledger, and its format, classes and evidence rules are the contract in `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md` — read it and follow it rather than restating it.
+
+What exploring owes that ledger:
+
+- Every item you put under `## Pending Clarifications` is a `needs_human` row.
+- Every item under `## Assumptions Made` is an `agent_resolved` row, and it needs evidence a reader can follow — the brief section or the file that justified it. `obvious` is not evidence, and an `agent_resolved` row without a real resolution and real evidence blocks exactly like `needs_human` does.
+- **Never only chat.** In conversational mode a question you asked and got answered still gets a row, with the human cited in `evidence`.
+
+Where it goes depends on whether a change exists yet:
+
+- **A change is active** (`openspec list --json`, or the brief's `related_change`) → write the rows into `openspec/changes/<change>/decisions.md` now, and verify with `interlock ledger <change>`. It exits non-zero while a `needs_human` row remains — which is the honest state of an exploration that found a real product question, not a failure.
+- **No change yet** — the usual case when `/interlock:spec` invoked this skill → the brief carries the rows. Number them `D1`, `D2`, … under the two headings and state each class, so `/interlock:spec` transcribes them into the ledger verbatim instead of re-deriving them. Ids are stable from here on: never renumber, never reuse one for a different question.
+
+---
+
 ## Exit
 
 Conversational mode ends when the user has what they need.
 
-Autonomous mode ends by writing the explore brief and reporting its path — the brief is what `/specflow:spec` reads instead of re-deriving discovery. Writing it is how explore pays forward.
+Autonomous mode ends by writing the explore brief and reporting its path — the brief is what `/interlock:spec` reads instead of re-deriving discovery. Writing it is how explore pays forward.

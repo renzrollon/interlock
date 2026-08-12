@@ -1,10 +1,10 @@
 # Invariant Sweep — The Unit of Work Is the Invariant, Not the File
 
-Shared discipline for all specflow skills that plan, review, or apply changes touching **shared or derived state**. Companion to `CONTEXT-HYGIENE.md`.
+Shared discipline for all interlock skills that plan, review, or apply changes touching **shared or derived state**. Companion to `CONTEXT-HYGIENE.md`.
 
 ## The problem
 
-Every gate after exploration is scope-leashed by design — `/specflow:spec` sees only artifacts, `review-code` / `review-ts` / `apply-change` see only the diff. That leash is correct for most changes and wrong for exactly one class: **a change that transforms a value read in more than one place.**
+Every gate after exploration is scope-leashed by design — `/interlock:spec` sees only artifacts, `/interlock:review-code` / `/interlock:ship` see only the diff. That leash is correct for most changes and wrong for exactly one class: **a change that transforms a value read in more than one place.**
 
 When a change normalizes, trims, encodes, or canonicalizes a value stored on shared/derived state, some code paths get updated and others don't. The updated paths are in the diff; the stale readers are not. A diff-scoped or artifact-scoped gate is **structurally blind** to the stale readers — it cannot see the bug, because the bug lives in a file the change never touched.
 
@@ -36,12 +36,12 @@ If none of these apply — the change is genuinely local, one reader, no shared 
 
 1. **Structural (deterministic):** enumerate every reader of the value — the field name, its getter, the map/cache key, the comparison sites. Prefer the graph when present:
    ```bash
-   specflow-graph consumers <field-or-symbol>
+   interlock-graph consumers <field-or-symbol>
    ```
    Then `grep`/search the whole repo to catch **dynamic/stringly** readers the graph misses (bracket access, computed keys, SQL, codegen). Enumerate exhaustively. This is a mechanical enumeration, not a judgment call.
 2. **Semantic (judgment):** for each reader found, decide — does it consume the **canonical** form, or the **raw** form? A reader on the raw form, or a case/format-sensitive comparison, is a defect.
 
-**When fanning out** (e.g. in `/specflow:explore` Pattern 4): assign **one agent per layer** — data / API / business-logic / frontend / tests — and make the layers **disjoint** so findings merge without overlap or double-counting. Seed each agent with the relevant `specflow-graph consumers` / module slice from `GRAPH_REPORT.md` when the graph exists. Each agent enumerates readers in its layer only; you merge and flag the raw-form readers in synthesis.
+**When fanning out** (e.g. in `/interlock:explore` Pattern 4): assign **one agent per layer** — data / API / business-logic / frontend / tests — and make the layers **disjoint** so findings merge without overlap or double-counting. Seed each agent with the relevant `interlock-graph consumers` / module slice from `GRAPH_REPORT.md` when the graph exists. Each agent enumerates readers in its layer only; you merge and flag the raw-form readers in synthesis.
 
 ## Severity
 
@@ -49,9 +49,9 @@ A reader consuming the raw form of a value the change canonicalized elsewhere is
 
 ## Skill integration
 
-- **specflow-graph** — `consumers` is the structural first pass when `.claude/graph/graph.json` exists.
-- **/specflow:explore** — Pattern 4 (Impact Analysis) is the mandatory fan-out for this class. It MUST fire on the signals above regardless of how the user phrased the question.
-- **/specflow:spec** — the BDD edge-case categories include casing/encoding/whitespace/Unicode; the design principle "normalize once at the boundary" is mandatory for identity/shared-value changes.
+- **interlock-graph** — `consumers` is the structural first pass when `.claude/graph/graph.json` exists.
+- **/interlock:explore** — Pattern 4 (Impact Analysis) is the mandatory fan-out for this class. It MUST fire on the signals above regardless of how the user phrased the question.
+- **/interlock:spec** — the BDD edge-case categories include casing/encoding/whitespace/Unicode; the design principle "normalize once at the boundary" is mandatory for identity/shared-value changes.
 - **review-code** — the "breaking API contracts" check is widened from shape to semantic value: graph consumers then grep repo-wide for raw-form readers and flag them BLOCKER. This gate is the licensed exception to the diff leash.
 
 When adding a new skill that plans or reviews changes to shared/derived state, wire it to this discipline.

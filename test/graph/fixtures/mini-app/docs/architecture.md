@@ -1,6 +1,6 @@
 # Mini App Architecture
 
-Overview of the sample authentication stack used in specflow-graph tests.
+Overview of the sample authentication stack used in interlock-graph tests.
 
 ## Authentication
 

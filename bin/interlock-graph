@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Entry point for the specflow-graph CLI.
+// Entry point for the interlock-graph CLI.
 // Claude Code adds a plugin's bin/ to the Bash tool's PATH while the plugin is
-// enabled, so skills invoke this as a bare `specflow-graph` command with no
+// enabled, so skills invoke this as a bare `interlock-graph` command with no
 // path resolution ladder.
 import './../lib/graph/cli.mjs';

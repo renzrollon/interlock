@@ -2,8 +2,8 @@
 name: docs-digest
 description: Compress a repo's docs and OpenSpec specs into one token-dense, agent-only primer at .claude/graph/DOCS_DIGEST.md — the prose twin of GRAPH_REPORT.md. Use when docs context is too large to load, after substantial docs or spec edits, or when asked to rebuild or refresh the docs digest. Not for producing human-readable documentation.
 license: MIT
-compatibility: Requires Node.js >= 18. The specflow-graph CLI ships with this plugin and is on PATH automatically.
-allowed-tools: Bash(specflow-graph *) Read Write
+compatibility: Requires Node.js >= 18. The interlock-graph CLI ships with this plugin and is on PATH automatically.
+allowed-tools: Bash(interlock-graph *) Read Write
 metadata:
   type: discovery
   autonomy_level: L2
@@ -29,7 +29,7 @@ Run this when: the digest is missing or stale, docs or living specs changed subs
 ### 1. Index (deterministic — no model judgement)
 
 ```bash
-specflow-graph docs-index . --write
+interlock-graph docs-index . --write
 ```
 
 Writes `.claude/graph/docs-index.json` covering `docs/` and `openspec/specs/`, with a `sha256` and heading spans per file.
@@ -87,7 +87,7 @@ source_hashes:
 
 Omit `## specs` entirely when the index contains no `openspec/specs/` files.
 
-**Style — this is read by agents, not people.** Telegraphic. Abbreviations fine. Lists and `→`. No tutorial tone, no narrative padding, no worked examples. Prefer a pointer over a paraphrase whenever the reader could drill down with `specflow-graph context` or a Read span.
+**Style — this is read by agents, not people.** Telegraphic. Abbreviations fine. Lists and `→`. No tutorial tone, no narrative padding, no worked examples. Prefer a pointer over a paraphrase whenever the reader could drill down with `interlock-graph context` or a Read span.
 
 **Budgets:** soft cap ~2500 tokens (`ceil(chars/4)`), hard stop ~3200. Drop lowest-priority content first. Never state a fact that isn't in the index or a span you actually read.
 
@@ -102,9 +102,9 @@ Output path, token estimate, file count split by `docs/` vs `openspec/specs/`, f
 | Need | Use |
 |------|-----|
 | Prose bootstrap / domain primer | This digest (`DOCS_DIGEST.md`) |
-| Structural bootstrap | `GRAPH_REPORT.md`, `specflow-graph query` |
-| Task-specific cited excerpts | `specflow-graph context` / `docs` |
+| Structural bootstrap | `GRAPH_REPORT.md`, `interlock-graph query` |
+| Task-specific cited excerpts | `interlock-graph context` / `docs` |
 | Active change artifacts | Read `openspec/changes/<name>/` directly — **never** this digest |
-| TOC and hashes for this skill | `specflow-graph docs-index` |
+| TOC and hashes for this skill | `interlock-graph docs-index` |
 
 Follow `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`.

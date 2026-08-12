@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires git. Optional openspec CLI for change context.
 argument-hint: "[ISSUE-REF] [--yes]"
 disable-model-invocation: true
-allowed-tools: Bash(git *) Bash(openspec *) Bash(specflow *) Read Glob
+allowed-tools: Bash(git *) Bash(openspec *) Bash(interlock *) Read Glob
 metadata:
   type: execution
   autonomy_level: L2
@@ -33,7 +33,7 @@ Extract an issue reference from the branch when one was not passed:
 `feat/RD-65-task-page` → `RD-65` · `fix/PROJ-123-login-bug` → `PROJ-123`
 
 If the branch looks like a feature branch but no reference was found:
-> ⚠️ No issue reference found. Branch `<name>` looks like a feature branch — pass one as `/specflow:commit <REF>` to avoid rewriting the message later.
+> ⚠️ No issue reference found. Branch `<name>` looks like a feature branch — pass one as `/interlock:commit <REF>` to avoid rewriting the message later.
 
 Interactive: wait for the user to confirm or supply one. Under `--yes`: emit that single line, **proceed without a ref**, and surface it again in the final report. On `main`, `develop`, or any branch without a `feat/`/`fix/` prefix, proceed silently — the reference is genuinely optional there.
 
@@ -97,4 +97,4 @@ Stage by naming **every path explicitly**, then commit.
 
 ## 5. Report
 
-Commit hash and subject, files committed, anything left unstaged, and the warning from step 1 if it fired. Suggest the next step: `/specflow:mr` to open or update the merge request.
+Commit hash and subject, files committed, anything left unstaged, and the warning from step 1 if it fired. Suggest the next step: `/interlock:mr` to open or update the merge request.

@@ -122,7 +122,7 @@ describe('docs-index', () => {
   });
 
   it('does not index openspec/changes/ even when present', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-docs-index-changes-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-docs-index-changes-'));
     copyDir(FIXTURE, tmp);
     const changeDir = path.join(tmp, 'openspec', 'changes', 'add-auth');
     fs.mkdirSync(changeDir, { recursive: true });
@@ -133,7 +133,7 @@ describe('docs-index', () => {
   });
 
   it('writes docs-index.json under .claude/graph/', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-docs-index-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-docs-index-'));
     copyDir(FIXTURE, tmp);
     const { index, path: outPath, written } = writeDocsIndex(tmp, { write: true });
     assert.equal(written, true);
@@ -151,7 +151,7 @@ describe('context retrieval', () => {
   let tmp;
 
   before(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-ctx-'));
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-ctx-'));
     copyDir(FIXTURE, tmp);
     const result = buildGraph(tmp);
     writeGraphArtifacts(tmp, result);
@@ -172,7 +172,7 @@ describe('context retrieval', () => {
   });
 
   it('falls back to docs-only when graph is missing', () => {
-    const noGraph = fs.mkdtempSync(path.join(os.tmpdir(), 'specflow-graph-nograph-'));
+    const noGraph = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-nograph-'));
     copyDir(FIXTURE, noGraph);
     fs.rmSync(path.join(noGraph, '.claude', 'graph'), { recursive: true, force: true });
 

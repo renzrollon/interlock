@@ -2,8 +2,8 @@
 name: graph
 description: Build and query a local, deterministic codebase knowledge graph (imports, symbols, OpenSpec specs, memory) so agents navigate with token-budgeted subgraphs instead of re-grepping. Use when indexing a repo, finding who consumes a symbol, tracing how one module reaches another, or before a deep explore or review sweep.
 license: MIT
-compatibility: Requires Node.js >= 18. The specflow-graph CLI ships with this plugin and is on PATH automatically.
-allowed-tools: Bash(specflow-graph *) Read Grep Glob
+compatibility: Requires Node.js >= 18. The interlock-graph CLI ships with this plugin and is on PATH automatically.
+allowed-tools: Bash(interlock-graph *) Read Grep Glob
 metadata:
   type: discovery
   autonomy_level: L2
@@ -26,7 +26,7 @@ Languages outside that set (Go, Rust, Java, Ruby) are **not** structurally index
 | `graph.json` | Node-link graph — the query source of truth |
 | `GRAPH_REPORT.md` | Cheap bootstrap: hubs, modules, inferred edges |
 | `docs-index.json` | Deterministic docs TOC + content hashes |
-| `DOCS_DIGEST.md` | Agent-only prose bootstrap (written by `/specflow:docs-digest`) |
+| `DOCS_DIGEST.md` | Agent-only prose bootstrap (written by `/interlock:docs-digest`) |
 | `manifest.json` | File hashes powering incremental `update` |
 
 Add `.claude/graph/` to `.gitignore` — these are generated per-checkout and should never be committed.
@@ -35,11 +35,11 @@ Add `.claude/graph/` to `.gitignore` — these are generated per-checkout and sh
 
 ## The CLI
 
-`specflow-graph` is on PATH whenever this plugin is enabled. Do not probe for it, do not build a fallback path, do not shell out to `node` with an absolute path.
+`interlock-graph` is on PATH whenever this plugin is enabled. Do not probe for it, do not build a fallback path, do not shell out to `node` with an absolute path.
 
 ```bash
-specflow-graph --help      # full subcommand list
-specflow-graph which       # print the resolved CLI path, if you need to report it
+interlock-graph --help      # full subcommand list
+interlock-graph which       # print the resolved CLI path, if you need to report it
 ```
 
 ---
@@ -49,7 +49,7 @@ specflow-graph which       # print the resolved CLI path, if you need to report 
 ### Build — when the graph is missing, or the user asks to index
 
 ```bash
-specflow-graph build .
+interlock-graph build .
 ```
 
 Then read `.claude/graph/GRAPH_REPORT.md` and summarize the top hub nodes and module boundaries. **Do not rebuild on every query.** If `graph.json` already exists, query it or update it.
@@ -57,7 +57,7 @@ Then read `.claude/graph/GRAPH_REPORT.md` and summarize the top hub nodes and mo
 ### Update — after merges, or when paths look stale
 
 ```bash
-specflow-graph update .
+interlock-graph update .
 ```
 
 No-ops when file hashes still match `manifest.json`.
@@ -70,10 +70,10 @@ For "where is X", "what connects to Y", "how does A reach B", "who uses Z":
 2. Run the matching subcommand:
 
 ```bash
-specflow-graph query "<tokens>" --budget 1500
-specflow-graph consumers <symbol-or-file>
-specflow-graph path <A> <B>
-specflow-graph explain <node>
+interlock-graph query "<tokens>" --budget 1500
+interlock-graph consumers <symbol-or-file>
+interlock-graph path <A> <B>
+interlock-graph explain <node>
 ```
 
 3. Answer from the returned subgraph. Cite `source_file:source_location`.
@@ -83,18 +83,18 @@ specflow-graph explain <node>
 
 Never read all of `docs/*.md` upfront.
 
-1. **Prose bootstrap** — if `.claude/graph/DOCS_DIGEST.md` exists, read it once. Rebuild with `/specflow:docs-digest` when it is missing or stale.
+1. **Prose bootstrap** — if `.claude/graph/DOCS_DIGEST.md` exists, read it once. Rebuild with `/interlock:docs-digest` when it is missing or stale.
 2. **Rebuild the deterministic TOC** the digest is derived from:
 
 ```bash
-specflow-graph docs-index . --write
+interlock-graph docs-index . --write
 ```
 
 3. **Task-specific excerpts:**
 
 ```bash
-specflow-graph context "<task tokens>" --budget 2000 --changed path/a.ts,path/b.ts
-specflow-graph docs "<domain terms>" --budget 800 --dirs docs,openspec/specs
+interlock-graph context "<task tokens>" --budget 2000 --changed path/a.ts,path/b.ts
+interlock-graph docs "<domain terms>" --budget 800 --dirs docs,openspec/specs
 ```
 
 `context` combines a structural subgraph (~45% of budget) with ranked Markdown sections (~55%). Sections cite `file — heading (Lstart-Lend)`.
@@ -111,7 +111,7 @@ This skill takes free text, treated as a query. Two forms are recognized ahead o
 | "update the graph" | `update .`, report what changed, stop |
 | anything else | Query mode |
 
-Note these map to CLI **subcommands**, not flags. There is no `--rebuild` or `--consumers` flag; `specflow-graph --rebuild` is an error.
+Note these map to CLI **subcommands**, not flags. There is no `--rebuild` or `--consumers` flag; `interlock-graph --rebuild` is an error.
 
 ---
 
@@ -120,7 +120,7 @@ Note these map to CLI **subcommands**, not flags. There is no `--rebuild` or `--
 | Situation | Command |
 |-----------|---------|
 | Session explore / architecture mapping | Read `GRAPH_REPORT.md`, then `query` per subsystem |
-| Domain prose bootstrap | Read `DOCS_DIGEST.md`; rebuild via `/specflow:docs-digest` if stale |
+| Domain prose bootstrap | Read `DOCS_DIGEST.md`; rebuild via `/interlock:docs-digest` if stale |
 | Invariant sweep, structural layer | `consumers <field-or-symbol>` first, then grep for string-keyed readers |
 | explain-code "called by" / "calls into" | `explain` / `consumers` / `path` |
 | Brownfield onboarding | `build`, then seed the architecture doc from report hubs and modules |
