@@ -23,6 +23,7 @@ __pycache__/
 .claude/handoff/
 .claude/pending-approval/
 .claude/.cc-writes/
+.claude/plans/
 
 # Backups produced by installers/tooling
 *.bak

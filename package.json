@@ -12,7 +12,7 @@
     "interlock-graph": "./bin/interlock-graph"
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.mjs'",
+    "test": "node --test $(find test -name '*.test.mjs' | sort)",
     "validate": "claude plugin validate . --strict"
   },
   "license": "MIT",
