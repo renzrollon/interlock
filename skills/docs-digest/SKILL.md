@@ -6,7 +6,6 @@ compatibility: Requires Node.js >= 18. The interlock-graph CLI ships with this p
 allowed-tools: Bash(interlock-graph *) Read Write
 metadata:
   type: discovery
-  autonomy_level: L2
   outputs:
     - .claude/graph/docs-index.json
     - .claude/graph/DOCS_DIGEST.md

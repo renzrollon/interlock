@@ -50,6 +50,16 @@ interlock-graph docs "<domain terms>" --budget 800
    - `grep` headings in `docs/` / `openspec/`, then Read spans
    - if graph missing: `docs` only, or read `docs/architecture.md` headings via grep
 
+> **Widening is a deliberate position, not an oversight.** [The Spec Growth
+> Engine](https://arxiv.org/abs/2606.27045) §5.3 argues the opposite: *"the
+> default repair for an insufficient context is to fix the spec graph, not to
+> widen the context."* That is right when every module is required to carry a
+> machine-readable contract — an empty retrieval then means the architecture has
+> a hole, and widening hides it. Interlock targets brownfield repos where the
+> spec graph is incomplete by construction, and "fix the spec graph" is not an
+> action available mid-task. So we widen once, bounded, and stop. Take the
+> paper's repair instead whenever the spec genuinely should have covered it.
+
 **Default budgets**
 
 | Command | Budget | Role |

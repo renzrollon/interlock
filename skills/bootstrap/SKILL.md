@@ -7,7 +7,6 @@ argument-hint: "[--quick] [--scope <path>]"
 allowed-tools: Bash(openspec *) Bash(interlock-graph *) Agent Read Write Glob Grep
 metadata:
   type: discovery
-  autonomy_level: L2
   outputs:
     - openspec/initial-architecture.md
     - openspec/specs/<feature>/spec.md

@@ -145,16 +145,35 @@ looks like, and Interlock has no way to pin them.
 
 Portability is one of six scored dimensions in the taxonomy paper. Interlock scores near the bottom.
 
-### 2. Spec drift is unanswered
+### 2. Spec drift — partly answered, and the position is now defensible
 
-The category's most-cited weakness, inherited from OpenSpec, whose answer reviewers describe as
+The category's most-cited weakness, inherited from OpenSpec, whose answer reviewers described as
 *"you will manage spec drift by hand."*
-
 [Thoughtworks](https://www.thoughtworks.com/en-us/insights/blog/agile-engineering-practices/spec-driven-development-unpacking-2025-new-engineering-practices)
 places SDD in "Assess," not "Adopt," largely over this. Kiro's answer is to delete specs once a
 feature ships. Tessl bet a company on solving it and has not shipped in nine months.
 
-Interlock's headline loop is bootstrap → spec → ship → mr. Sync and archive are not in it.
+`interlock drift` now reports unarchived changes, broken spec→file references, diff-scoped orphan
+code, and aging specs — at three explicitly different confidence levels, none of them blocking.
+That is a real answer to the "by hand" criticism, and the design is lifted from
+[the Spec Growth Engine](https://arxiv.org/abs/2606.27045) §5.4: compare structure, not recency.
+
+What remains open is the gate. The paper blocks a merge on intent/evidence disagreement; Interlock
+reports. That gap is not laziness — the paper's specs are machine-readable contracts with declared
+dependency edges, and OpenSpec's are prose whose file links are regex path-mentions. Closing it
+would mean changing the artifact format, which is OpenSpec's to change.
+
+**Where Interlock sits on Böckeler's axis.** The Spec Growth Engine's Table 5 positions Kiro as
+*spec-first*, Spec Kit as *"aspires to anchored, behaves spec-first"*, Tessl as *anchored/as-source*,
+and itself as **anchored, code-coupled**. Interlock belongs in that last square — the one the paper
+argues is the only tenable middle, because the extremes either let the spec go stale or buy
+synchronisation with nondeterminism. Worth stating in the README: it is the strongest external
+validation of the lifecycle position available, and nothing currently says it.
+
+Two other convergences worth citing. The paper's Engine is *"purely mechanical and never invents
+architecture"* while its agents author intent — the identical boundary to *the script holds the
+loop, the CLI holds the rules, the agents do the work*, derived independently. And §4.1's
+hardest-first slice ordering is the argument behind wave batches now running tier-descending.
 
 ### 3. No isolation for parallel writers
 

@@ -7,7 +7,6 @@ argument-hint: "[change-name]"
 allowed-tools: Bash(interlock *) Bash(openspec *) Read Glob Grep
 metadata:
   type: review
-  autonomy_level: L2
   outputs:
     - .claude/metrics/review-artifacts-<change>-<timestamp>.json
 ---

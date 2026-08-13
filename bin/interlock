@@ -45,6 +45,7 @@ import {
 } from '../lib/verify.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
+import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
@@ -58,7 +59,9 @@ Usage:
   interlock gate --findings <file>          Decide whether a review gate blocks
   interlock validate [change]               Inspect OpenSpec change artifacts
   interlock changes                         List active OpenSpec changes
-  interlock drift                           Report unarchived changes and stale living specs
+  interlock drift [--changed <files>]        Report unarchived changes, broken spec
+                                            references, aging specs, and orphan code
+  interlock conformance [change]            List the spec scenarios a change must satisfy
   interlock limits                          Print every cap the loop obeys
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
@@ -475,8 +478,23 @@ function main() {
     case 'drift': {
       // No exit(1) here, ever. Unlike every other gating subcommand, drift
       // reports and does not block — see the header of lib/drift.mjs for why.
-      const report = analyzeDrift(root)
+      //
+      // `--changed` absent and `--changed` empty are different: absent means the
+      // caller has no diff and orphan detection cannot run, empty means the diff
+      // was genuinely empty. Only the first is "not checked".
+      const changed = flags.changed === undefined ? null : splitPaths(flags.changed)
+      const report = analyzeDrift(root, changed ? { changed } : {})
       emit(json, report, formatDrift(report) + '\n')
+      break
+    }
+
+    case 'conformance': {
+      // Emits questions, never verdicts, and never exits non-zero — see the
+      // header of lib/conformance.mjs.
+      const name = typeof flags.change === 'string' ? flags.change : positional[1]
+      const changed = flags.changed === undefined ? [] : splitPaths(flags.changed)
+      const result = buildChecklist(root, name, { changed })
+      emit(json, result, formatChecklist(result) + '\n')
       break
     }
 

@@ -6,7 +6,6 @@ compatibility: Requires Node.js >= 18. The interlock-graph CLI ships with this p
 allowed-tools: Bash(interlock-graph *) Read Grep Glob
 metadata:
   type: discovery
-  autonomy_level: L2
   outputs:
     - .claude/graph/graph.json
     - .claude/graph/GRAPH_REPORT.md

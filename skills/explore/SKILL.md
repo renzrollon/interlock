@@ -7,7 +7,6 @@ argument-hint: "[question] [--autonomous]"
 allowed-tools: Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: discovery
-  autonomy_level: L2
   outputs:
     - .claude/handoff/explore-<slug>-<timestamp>.md
     - openspec/changes/<name>/decisions.md

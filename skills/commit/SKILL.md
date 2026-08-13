@@ -8,7 +8,6 @@ disable-model-invocation: true
 allowed-tools: Bash(git *) Bash(openspec *) Bash(interlock *) Read Glob
 metadata:
   type: execution
-  autonomy_level: L2
 ---
 
 Write one good commit for a completed change.

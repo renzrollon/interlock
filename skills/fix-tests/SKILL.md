@@ -7,7 +7,6 @@ argument-hint: "[--e2e] [--dry-run] [--baseline <ref>] [--from-log <path>] [--re
 allowed-tools: Bash Read Write Edit Glob Grep
 metadata:
   type: execution
-  autonomy_level: L2
   outputs:
     - .claude/testing/profile.json
     - .claude/metrics/fix-tests-<timestamp>.json

@@ -13,11 +13,16 @@ const f = (over = {}) => ({
 
 // Quality 4 by default so the tolerance band keeps the finding and survival
 // rules are what the assertion is actually measuring.
+//
+// `evidence` is present by default for the same reason: a not-real verdict only
+// dismisses when it cites what it read, and these tests are about the survival
+// rules, not about that gate. The uncited case has its own section below.
 const v = (over = {}) => ({
   findingTitle: 'something',
   isReal: true,
   confidence: 0.9,
   reasoning: 'checked it',
+  evidence: 'lib/a.ts:41-58',
   refinedSeverity: 'warning',
   qualityScore: 4,
   severityScore: 3,
@@ -53,14 +58,84 @@ test('a genuine majority against still dismisses', () => {
 
 test('vote tallies are attached to the resolved finding', () => {
   const r = resolveReview([f()], [v(), v({ isReal: false })])
-  assert.deepEqual(r.surviving[0].votes, { real: 1, notReal: 1, total: 2 })
+  assert.deepEqual(r.surviving[0].votes, { real: 1, notReal: 1, uncited: 0, total: 2 })
 })
 
 test('a finding nobody adjudicated survives — absence of a verdict is not dismissal', () => {
   const r = resolveReview([f({ title: 'unjudged' })], [])
   assert.equal(r.counts.surviving, 1)
   assert.equal(r.counts.dismissed, 0)
-  assert.deepEqual(r.surviving[0].votes, { real: 0, notReal: 0, total: 0 })
+  assert.deepEqual(r.surviving[0].votes, { real: 0, notReal: 0, uncited: 0, total: 0 })
+})
+
+// --- evidence gates the dismissing direction only --------------------------
+
+test('an uncited refutation does not dismiss', () => {
+  // The Refute-or-Promote failure mode: a confident skeptic talking the panel
+  // out of a real finding. Prose is what an LLM produces most reliably, so it
+  // is the one thing a dismissal must not rest on.
+  const r = resolveReview([f()], [
+    v({ isReal: false, evidence: undefined }),
+    v({ isReal: false, evidence: undefined })
+  ])
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+test('a cited refutation still dismisses', () => {
+  const r = resolveReview([f()], [
+    v({ isReal: false, evidence: 'lib/a.ts:10-20' }),
+    v({ isReal: false, evidence: 'lib/a.ts:10-20' })
+  ])
+  assert.equal(r.counts.dismissed, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+})
+
+test('whitespace is not evidence', () => {
+  const r = resolveReview([f()], [
+    v({ isReal: false, evidence: '   ' }),
+    v({ isReal: false, evidence: '' })
+  ])
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+test('voting a finding real needs no evidence', () => {
+  // Only the dismissing direction is gated. Keeping a finding already resolves
+  // toward a human reading it, which is the cheap error.
+  const r = resolveReview([f()], [
+    v({ isReal: true, evidence: undefined }),
+    v({ isReal: true, evidence: undefined })
+  ])
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+})
+
+test('an uncited refutation is a non-vote, not a deleted verdict', () => {
+  // Its quality score must still reach the band: a skeptic can be too lazy to
+  // cite and still be right that the finding is badly written.
+  const r = resolveReview([f()], [
+    v({ qualityScore: 1 }),
+    v({ isReal: false, evidence: undefined, qualityScore: 1 })
+  ])
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.droppedByQuality, 1, 'the uncited verdict still fed the band')
+})
+
+test('an uncited refutation is tallied separately from a real vote', () => {
+  const r = resolveReview([f()], [v(), v({ isReal: false, evidence: undefined })])
+  assert.deepEqual(r.surviving[0].votes, { real: 1, notReal: 0, uncited: 1, total: 2 })
+})
+
+test('the report says when a refutation was refused', () => {
+  // Silently downgrading a dismissal to a non-vote looks identical to a skeptic
+  // that simply agreed. The reader has to be able to see the rule fire.
+  const r = resolveReview([f()], [
+    v({ isReal: false, evidence: undefined }),
+    v({ isReal: false, evidence: undefined })
+  ])
+  assert.match(formatReview(r), /2 refutation\(s\) cited no evidence/)
 })
 
 // --- dismiss as a vote, not a severity ------------------------------------
@@ -139,7 +214,13 @@ test('quality drops and skeptic dismissals are counted separately', () => {
       v({ findingTitle: 'real', qualityScore: 5 })
     ]
   )
-  assert.deepEqual(r.counts, { raised: 3, dismissed: 1, droppedByQuality: 1, surviving: 1 })
+  assert.deepEqual(r.counts, {
+    raised: 3,
+    dismissed: 1,
+    droppedByQuality: 1,
+    surviving: 1,
+    dismissalsRejected: 0
+  })
   assert.equal(r.surviving[0].title, 'real')
 })
 
@@ -186,7 +267,13 @@ test('a verdict with no usable findingTitle is an anomaly rather than a crash', 
 test('degenerate input yields an empty, non-throwing result', () => {
   for (const input of [null, undefined, {}, [], 'nope', 42]) {
     const r = resolveReview(input, null)
-    assert.deepEqual(r.counts, { raised: 0, dismissed: 0, droppedByQuality: 0, surviving: 0 })
+    assert.deepEqual(r.counts, {
+      raised: 0,
+      dismissed: 0,
+      droppedByQuality: 0,
+      surviving: 0,
+      dismissalsRejected: 0
+    })
     assert.deepEqual(r.dimensionStats, {})
   }
 })

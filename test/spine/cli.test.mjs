@@ -85,11 +85,13 @@ before(() => {
   paths = {
     findings: file('findings.json', FINDINGS),
     cleanFindings: file('clean-findings.json', CLEAN_FINDINGS),
+    // The not-real verdicts cite evidence: a refutation without one does not
+    // dismiss, and these fixtures exist to exercise resolution, not that gate.
     verdicts: file('verdicts.json', [
       { findingTitle: 'unchecked null deref', isReal: true, refinedSeverity: 'blocker', qualityScore: 9 },
       { findingTitle: 'unchecked null deref', isReal: true, qualityScore: 8 },
-      { findingTitle: 'missing return type', isReal: false, qualityScore: 3 },
-      { findingTitle: 'add an empty-case test', isReal: false, qualityScore: 2 }
+      { findingTitle: 'missing return type', isReal: false, qualityScore: 3, evidence: 'src/a.ts:12' },
+      { findingTitle: 'add an empty-case test', isReal: false, qualityScore: 2, evidence: 'src/b.ts:5' }
     ]),
     classified: file('classified.json', CLASSIFIED),
     profile: file('profile.json', PROFILE),

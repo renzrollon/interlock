@@ -6,7 +6,6 @@ compatibility: Optional openspec CLI and git. Node.js >= 18 for the bundled inte
 allowed-tools: Bash(git *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Glob
 metadata:
   type: routing
-  autonomy_level: L2
 ---
 
 Figure out where the user actually is in the flow, then route. One cheap pre-flight beats an exploratory warm-up.

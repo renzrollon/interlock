@@ -7,7 +7,6 @@ argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--cont
 allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
 metadata:
   type: planning
-  autonomy_level: L2
   outputs:
     - openspec/changes/<name>/proposal.md
     - openspec/changes/<name>/design.md
@@ -76,9 +75,14 @@ interlock drift --json
 
 **Never blocks, never branches.** It exits 0 whatever it finds; read it and move on.
 
-If `unarchived` is non-empty, say so in one line before exploring — those changes finished but were never archived, so `openspec/specs/` does not describe what actually shipped, and both explore and this skill are about to read it as though it does. Name them and the command (`openspec archive <name>`), then continue. Do not stop, do not ask, and do not archive on the user's behalf: archiving rewrites the living specs, which is a decision that belongs to whoever merged the change.
+Two findings matter before exploring, because both mean `openspec/specs/` describes something other than the code you are about to spec against:
 
-`stale.specs` is inferred and rarely worth interrupting a spec run for — mention it only if it names a spec directly relevant to this change.
+- **`unarchived`** — changes that finished but were never archived, so the living specs never received their deltas. Name them and the command (`openspec archive <name>`).
+- **`stale.broken`** — a living spec cites a file that no longer exists. Evidence, not inference, and worth one line even when it looks unrelated: a spec pointing at a deleted file is the clearest sign the area you are about to spec has already moved.
+
+Then continue. Do not stop, do not ask, and do not archive on the user's behalf: archiving rewrites the living specs, which is a decision that belongs to whoever merged the change.
+
+`stale.aging` is inferred from dates and rarely worth interrupting a spec run for — mention it only if it names a spec directly relevant to this change. Orphan detection needs a diff, which this skill does not have; ignore that field here.
 
 ---
 

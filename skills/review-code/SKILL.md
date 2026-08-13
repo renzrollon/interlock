@@ -7,7 +7,6 @@ argument-hint: "[change-name] [--dimensions a,b,c]"
 allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: review
-  autonomy_level: L2
 ---
 
 Review a diff from several expert angles at once, then **attack your own findings** before reporting them.
@@ -79,6 +78,12 @@ Run both skeptics per finding, in parallel.
 
 **Skeptic 2 — second opinion.**
 > You are an independent reviewer giving a second opinion. Read the actual file. Assess independently: is this real? Is the severity right? Is the suggested fix appropriate?
+
+**Both must cite evidence to refute.** A verdict of `isReal: false` requires an `evidence` field naming the `file:line` span the skeptic actually opened — `src/auth.ts:41-58`. **An uncited refutation does not dismiss anything.** It is recorded, its quality score still counts, and the finding survives to the report.
+
+Voting a finding *real* needs no evidence: that direction already resolves toward a human reading it, which is the cheap error. Only the dismissing direction is gated, because a dismissed finding is invisible — nobody can catch the mistake.
+
+`interlock review` reports how many refutations were refused for citing nothing. A run where that number is high means the skeptics are asserting rather than reading.
 
 Both score the finding on two integer axes, 0–5:
 

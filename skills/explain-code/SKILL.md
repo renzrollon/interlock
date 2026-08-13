@@ -7,7 +7,6 @@ argument-hint: "[path | --commit | --commits N]"
 allowed-tools: Bash(git *) Bash(interlock-graph *) Bash(openspec *) Read Write Grep Glob
 metadata:
   type: teaching
-  autonomy_level: L2
 ---
 
 Teach code to someone new to this stack. **Not reviewing, not judging — teaching.**

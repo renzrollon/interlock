@@ -8,7 +8,6 @@ disable-model-invocation: true
 allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Grep Glob
 metadata:
   type: generation
-  autonomy_level: L2
   outputs:
     - openspec/changes/<change>/mr-summary.md
 ---
@@ -148,19 +147,23 @@ Both are **comment-only, always.** Neither ever enters the description — a rev
 
 This is the last point the change is in your hands, so it is where the spec lifecycle gets a mention.
 
+Pass the changed-file list you already resolved in §2:
+
 ```bash
-interlock drift --json
+interlock drift --changed <files> --json
 ```
 
 **Never blocks.** It exits 0 whatever it finds — do not branch on the exit code here, and do not refuse to publish because of it.
 
-Two things to report, and only when there is something to say:
+Four findings, in descending order of how much they deserve the reader's attention. Report only what is non-empty:
 
-- **`unarchived` is non-empty.** Earlier changes finished their tasks but were never archived, so their delta specs never reached `openspec/specs/` and the living specs no longer describe what shipped. Name them and give the command:
+- **`unarchived`** — earlier changes finished their tasks but were never archived, so their delta specs never reached `openspec/specs/` and the living specs no longer describe what shipped. Name them and give the command:
   ```bash
   openspec archive <change-name>
   ```
-- **`stale.specs` is non-empty.** Living specs whose linked files have newer commits. Say plainly that this comes from **inferred** graph edges — a path mentioned in spec prose, not a parsed contract — so it is worth a look, not a task.
+- **`stale.broken`** — a spec cites a file that no longer exists. This is **evidence**, not inference: the file was there when the graph was built. Report it as a real finding. If `stale.graphBuiltAt` is old, say so too — a rename against a stale graph looks identical to a deletion.
+- **`orphans.orphans`** — changed source files no spec describes. **Always report `orphans.coverage` alongside the count.** "2 files have no spec" is alarming; "2 of 6, in a repo where 34% of source files have one" is informative, and on a repo still being specced the second is the honest framing.
+- **`stale.aging`** — living specs older than files they cite. Weakest of the four: it compares dates on **inferred** edges, and a file can be refactored without the spec becoming wrong. Mention it only if it names a spec relevant to this change.
 
 Then close with the one line that matters for *this* change: once the MR merges, run `openspec archive <this-change>`. Interlock does not archive for you, and nothing downstream will notice if nobody does.
 

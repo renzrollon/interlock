@@ -52,12 +52,22 @@ The honest framing: OpenSpec gives you good artifacts. Interlock gives you a loo
 
 OpenSpec is **spec-anchored**: `openspec archive` merges a completed change's delta specs into `openspec/specs/`, so the living specs keep describing what the code actually does. That mechanism is OpenSpec's and Interlock does not replace it.
 
-What Interlock adds is noticing when it has not run. The failure is quiet and entirely ordinary: `ship` commits, the MR merges, nobody archives, and every later run reads living specs that describe a codebase that has moved on. `interlock drift` reports two things:
+What Interlock adds is noticing when it has not run. The failure is quiet and entirely ordinary: `ship` commits, the MR merges, nobody archives, and every later run reads living specs that describe a codebase that has moved on.
 
-- **Unarchived changes** — every task ticked, but the change still sits in `openspec/changes/`. Read off the filesystem, so this one is certain.
-- **Stale living specs** — a spec under `openspec/specs/` whose linked files have newer commits. Derived from the graph's `implements_spec` edges, which are `INFERRED` from path mentions in prose rather than parsed from a contract, so this one is a hint.
+`interlock drift` reports four things, and **keeps them at different confidence on purpose** — collapsing them into one number would launder the weakest signal through the strongest:
 
-**Neither blocks.** `drift` exits 0 whatever it finds. Every other gating subcommand exits non-zero when it blocks, so this is the exception worth remembering — a blocking gate built on inferred edges would be wrong often enough to get switched off, and a gate everyone disables protects nothing. Archiving rewrites the living specs, which is a decision for whoever merged the change, not for a tool that noticed a date.
+| Finding | Confidence | What it means |
+|---|---|---|
+| **Unarchived changes** | certain | Every task ticked, change still in `openspec/changes/`. Read off the filesystem. |
+| **Broken references** | evidence | A living spec cites a file that is not there. The file existed when the graph was built, so something moved and the spec did not. |
+| **Orphan code** (needs `--changed`) | evidence, scoped | Changed source files no spec describes. Always reported with a repo-wide coverage figure, because the count is meaningless without a denominator. |
+| **Aging specs** | inference | A spec is older than a file it cites that still exists. Compares dates, not behaviour. |
+
+The last row is the weak one and is printed last for that reason. A file can be refactored without the spec becoming wrong, so it is a prompt to look, not a defect.
+
+**Nothing here blocks.** `drift` exits 0 whatever it finds. Every other gating subcommand exits non-zero when it blocks, so this is the exception worth remembering — a blocking gate built on `INFERRED` edges would be wrong often enough to get switched off, and a gate everyone disables protects nothing. Archiving rewrites the living specs, which is a decision for whoever merged the change, not for a tool that noticed a date.
+
+The shape of this comes from [the Spec Growth Engine](https://arxiv.org/abs/2606.27045), whose drift validator compares an intent graph derived from specs against an evidence graph derived from code. It can block a merge on disagreement because its specs are machine-readable contracts with declared dependency edges. OpenSpec specs are prose, and Interlock's spec→file links are path mentions matched by a regex — so Interlock takes the comparison and leaves the gate.
 
 ## Why `/interlock:spec` drives the CLI instead of forking the skills
 

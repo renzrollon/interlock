@@ -37,6 +37,7 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**.
 | [02 — The checkpoint](docs/02-the-checkpoint.md) | How to read a spec in ten minutes |
 | [03 — OpenSpec vs Interlock](docs/03-openspec-vs-interlock.md) | What composes with what |
 | [04 — When it stops](docs/04-when-it-stops.md) | Every halt and banner, and what to do |
+| [06 — Why it works](docs/06-why-it-works.md) | The mechanisms, low-level, with the costs stated |
 
 ---
 
@@ -50,9 +51,9 @@ One human stop. Everything else is automatic.
 
 **The gap between `spec` and `ship` is the product.** A spec is the cheapest place to catch a wrong idea, so that is the one place a person is *required* to look.
 
-`/interlock:ship` is the one that truly asks nothing, and it is structurally incapable of it: ship is a **dynamic workflow**, and the workflow runtime takes no mid-run user input at all. The zero-touch contract is a property of the runtime rather than a promise in a prompt.
+`/interlock:ship` is the one that truly asks nothing, and it is structurally incapable of it: ship is a **dynamic workflow**, and the workflow runtime takes no mid-run user input at all. The zero-touch contract is a property of the runtime rather than a promise in a prompt. `commit` and `mr` set `disable-model-invocation: true` for the same reason — Claude cannot decide on its own that now is a good time to commit.
 
-The steps before it are conversational where they have to be — `bootstrap` confirms the feature list it discovered, and `spec` asks about intent, bug-fix evidence, and dependency versions it refuses to guess. Those are questions with no correct answer available in the repo, which is the only reason they exist. It is also why every decision that could need a human has to be settled *before* ship starts: once the workflow is running, there is nobody to ask.
+The steps before it are conversational where they have to be: `spec` asks about intent, bug-fix evidence, and dependency versions it refuses to guess — questions with no correct answer available in the repo. That is also why every decision that could need a human has to be settled *before* ship starts. Once the workflow is running, there is nobody to ask.
 
 ---
 
@@ -64,7 +65,7 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 
 | Command | Decides |
 |---|---|
-| `interlock waves` | Wave order, per-task model, and a **hard cap on parallel agents** |
+| `interlock waves` | Wave order, per-task model, a **hard cap on parallel agents**, and whether two tasks in one wave would edit the same file |
 | `interlock surface` | Whether a diff touches UI, and therefore needs a manual test plan |
 | `interlock gate` | Whether a review blocks, which findings are too weak to report, and how the rest partition for parallel fixers |
 | `interlock review` | Which findings survive two skeptics, and how many were dismissed versus dropped as too weak |
@@ -72,19 +73,13 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 | `interlock verify` | What to run, what a red result means, and which failures share a root cause |
 | `interlock wave-state` | What happens next in the wave loop, and when to stop |
 | `interlock risk` | How dangerous a change is, from its paths and artifacts |
-| `interlock drift` | Which completed changes were never archived, and which living specs the code has outrun |
+| `interlock drift` | Which completed changes were never archived, which specs cite files that are gone, and which changed files no spec describes |
+| `interlock conformance` | Which spec scenarios a change must be checked against — the questions, never the verdicts |
 | `interlock ready` | Whether a change may skip the human checkpoint — fail-closed |
 | `interlock validate` | Whether a change is actually implementable |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one |
 
-```bash
-$ interlock surface --changed src/Button.tsx docs/readme.md app/api/login/route.ts
-UI-TESTABLE      src/Button.tsx           (.tsx component)
-NOT-UI-TESTABLE  docs/readme.md           (docs file)
-UI-INDIRECT      app/api/login/route.ts   (API route path)
-
-needsManualTestPlan=true needsDevopsReview=true
-```
+Every one of them runs without a model and without the network, so you can check any decision the loop made yourself.
 
 **`interlock-graph`** — a local, deterministic code knowledge graph. No vector store, no network. Agents navigate with token-budgeted subgraphs instead of re-grepping:
 
@@ -94,11 +89,11 @@ interlock-graph consumers normalizeEmail
 interlock-graph path lib/auth app/api
 ```
 
-Everything genuinely requiring judgement — classification, implementation, review, synthesis — stays with the model. The split is the point.
+Everything genuinely requiring judgement — classification, implementation, review, synthesis — stays with the model. The split is the point: **the script holds the loop, the CLI holds the rules, the agents do the work.**
 
-Two guarantees come from the harness rather than from either side of that split: the workflow runtime accepts no mid-run input, so `ship` cannot ask you anything; and `commit` and `mr` set `disable-model-invocation: true`, so Claude cannot decide on its own that now is a good time to commit or open a merge request.
+The wave loop, the remediation rounds, the halt conditions and the verification order are `workflows/ship.js` — a script, not eleven numbered headings a model is asked to follow in order. Control flow written as prose is control flow the model can talk itself out of.
 
-The orchestration inside `ship` is a **workflow script**, not prose: the wave loop, the remediation rounds, the halt conditions and the verification order are `workflows/ship.js`, and every policy decision inside it is a `interlock` subcommand rather than a judgement the model re-derives. The script holds the loop; the CLI holds the rules; the agents do the work. What the model still decides is what it should decide — how to classify a task, how to implement it, what a review finding means.
+That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into its own wave. The prediction is a model's, so this narrows the race rather than closing it — but the assumption is now stated and checked instead of merely assumed.
 
 ---
 
@@ -108,7 +103,9 @@ The orchestration inside `ship` is a **workflow script**, not prose: the wave lo
 
 An unverified review reports everything it notices, so you learn to skim it. A review where every finding survived two adversaries is one you read line by line. The report always tells you how many findings were dismissed — that number is the evidence it's worth trusting.
 
-Surviving is not sufficient. `interlock gate` also applies a quality band: a finding the skeptics scored below 3 out of 5 for how well-grounded and actionable it is gets dropped before the gate counts blockers, so a vague blocker cannot hold up a change. That threshold lives in the CLI rather than in the review prose, which is what stops it from being quietly re-argued on each run.
+**A skeptic must cite what it read to dismiss a finding.** A verdict of "not real" carrying no `file:line` span does not dismiss anything: it is recorded, its quality score still counts, and the finding survives to you. Voting a finding *real* needs no citation, because that direction already ends with a human reading it — the cheap error. Only the dismissing direction is gated, because a wrongly dismissed finding is *invisible*, and nobody can catch a mistake they never see. [Research on adversarial review](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL vulnerability that did not exist. Confident prose is the one thing an LLM produces reliably, so it is the one thing a dismissal must not rest on.
+
+Surviving is not sufficient. `interlock gate` also applies a quality band: a finding the skeptics scored too low for how well-grounded and actionable it is gets dropped before the gate counts blockers, so a vague blocker cannot hold up a change. That threshold lives in the CLI rather than in the review prose, which is what stops it from being quietly re-argued on each run.
 
 ---
 
@@ -123,7 +120,7 @@ Four are the product:
 | `ship` | Reviewed change → commit, without asking you anything | **workflow** |
 | `mr` | Change → merge request | skill |
 
-`ship` is the odd one out on purpose. A skill is instructions Claude follows; a workflow is a script a runtime executes. The ship loop has real control flow — waves, bounded remediation rounds, halt conditions — and control flow written as prose is control flow the model can talk itself out of. Everything else in the list is genuinely a set of instructions, so it stays a skill.
+`ship` is the odd one out on purpose: a skill is instructions Claude follows, a workflow is a script a runtime executes. Everything else in the list is genuinely a set of instructions, so it stays a skill.
 
 <details>
 <summary><b>Advanced surface</b> — mostly called by the four above; reach for them directly only when you know why</summary>
@@ -153,13 +150,25 @@ What Interlock adds around it: parallel exploration with a durable brief, an evi
 
 Both sets of skills coexist. Plugin skills are namespaced, so `/openspec-propose` and `/interlock:spec` both stay available. Use `/interlock:spec` when you want the gates; use the stock skills when you want the plain artifact loop.
 
+### Specs that don't quietly rot
+
+Spec drift is the standing criticism of every tool in this category, and the usual answers are to delete the spec after shipping or to leave it to discipline. OpenSpec's `openspec archive` merges a completed change's deltas back into the living specs — Interlock never archives for you, it just stops the step being forgotten:
+
+```bash
+interlock drift --changed <files>
+```
+
+Four findings, deliberately kept at **different confidence** rather than averaged into one number: changes that finished but were never archived (certain — read off the filesystem); specs citing files that no longer exist (evidence — the file was there when the graph was built); changed source files no spec describes, always reported with a repo-wide coverage figure so the count means something; and specs older than code they cite (an inference from dates, printed last and labelled as such).
+
+`interlock conformance` is the other half: it lists the scenarios a change's delta specs promised, so each can be checked against what was actually built. It emits questions, never verdicts.
+
+**Neither blocks.** Every other subcommand exits non-zero when it blocks; these two never do. A gate built on regex-inferred spec→file links would be wrong often enough to get switched off, and a gate everyone disables protects nothing.
+
 ---
 
 ## Language support
 
 Structural graph indexing — import and symbol edges — covers **JavaScript/TypeScript, Python, and shell**. Other languages (Go, Rust, Java, Ruby) get everything else: docs and OpenSpec indexing, spec→file links, prose retrieval, and the full workflow. When `interlock-graph build` finds nothing to index it says so and explains why, rather than reporting an empty graph as success.
-
-Docs discovery adapts to your layout: it probes `docs/`, `doc/`, `documentation/`, `site/`, `guides/` and `wiki/`, and always includes root-level `README.md`, `ARCHITECTURE.md` and `CONTRIBUTING.md` — which on many projects are the only documentation there is.
 
 Everything else in the plugin is stack-agnostic. `bootstrap` reads your dependency manifest and phrases its explorer agents in your stack's vocabulary.
 
@@ -171,8 +180,9 @@ Most of the category competes on how much structure you write before coding — 
 
 - **Caps and gates are code.** Remediation rounds, the task-failure budget, parallelism, the review quality floor — all in a tested CLI, not in markdown a model can talk itself past.
 - **The zero-touch contract is the runtime's, not a prompt's.** `ship` is a workflow, so there is nobody to ask. Everyone else promises autonomy in prose.
-- **Review findings are attacked before you see them,** and the dismissal counts are printed. A review that hides how much it threw away is indistinguishable from one that threw away nothing.
+- **A dismissal must cite evidence; a report needn't.** Findings are attacked before you see them, dismissal counts are printed, and a refutation that cites nothing refutes nothing.
 - **The invariant sweep is the licensed exception to the diff leash** — a value canonicalized in one place and still read raw in three others is the one bug class every diff-scoped review is structurally blind to.
+- **Spec drift is measured, not hand-waved** — and reported at three separate confidence levels rather than one misleading number.
 
 The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one, because the guarantees above come from Claude Code's workflow runtime and its plugin surface. A portable version of this would be a folder of prompts, which is the thing it exists not to be.
 
@@ -180,9 +190,9 @@ The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one,
 
 ## Experimental
 
-**Earned autonomy.** `interlock autonomy` records, per gated path, how many consecutive clean runs it has had, resets that count on a blocker or a human override, and assigns blame transitively — a downstream gate blames whoever produced the bad artifact, so `spec` cannot earn trust by emitting shallow specs. It is well tested and skills record outcomes into it.
+**Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does** — the human checkpoint between `spec` and `ship` is not skippable at any level.
 
-It is **storage only.** Nothing reads the level to change what the workflow does, and the human checkpoint between `spec` and `ship` is not skippable at any level. Treat it as a ledger accumulating evidence for a decision that has not been made yet — earlier versions of this README described it as gating your workflow, which it does not. If and when a level changes a branch, that will ship as its own release note.
+They exist to answer, later and from evidence, whether any gate can safely be relaxed. That question stays open until there is a corpus to answer it with, and wiring a branch before then would be deciding without the data these were built to gather.
 
 ---
 
@@ -190,7 +200,7 @@ It is **storage only.** Nothing reads the level to change what the workflow does
 
 ```bash
 git clone https://github.com/renzrollon/interlock && cd interlock
-npm test                      # 538 tests, no dependencies
+npm test                      # 590 tests, no dependencies
 claude plugin validate . --strict
 claude --plugin-dir .         # load it without installing
 ```

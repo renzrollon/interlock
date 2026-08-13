@@ -97,6 +97,130 @@ test('a wide wave is split into batches of at most maxParallel', () => {
   assert.ok(plan.warnings.some(w => w.includes('30 tasks')))
 })
 
+test('the hardest tasks land in the first batch of a wide wave', () => {
+  // Boehm's riskiest-first, applied inside a wave. A tier-5 task that fails means
+  // the design was wrong; finding that out in batch 1 is cheaper than in batch 4,
+  // after the wave's budget is gone.
+  const tasks = [
+    ...Array.from({ length: 20 }, (_, i) => task({ id: `1.${i + 1}`, tier: 2 })),
+    task({ id: '1.90', tier: 5, model: 'opus' }),
+    task({ id: '1.91', tier: 4 })
+  ]
+  const plan = planWaves({ tasks }, { maxParallel: 8 })
+  const first = plan.waves[0].batches[0].map(t => t.id)
+  assert.equal(first[0], '1.90', 'the tier-5 task runs first')
+  assert.equal(first[1], '1.91', 'then the tier-4')
+})
+
+test('batch composition is deterministic for the same input', () => {
+  // Ties break on id, so a re-run of the same classified input produces the same
+  // batches. Without that nothing downstream of the plan is reproducible.
+  const tasks = Array.from({ length: 12 }, (_, i) => task({ id: `1.${i + 1}`, tier: 3 }))
+  const a = planWaves({ tasks }, { maxParallel: 5 })
+  const b = planWaves({ tasks: [...tasks].reverse() }, { maxParallel: 5 })
+  assert.deepEqual(
+    a.waves[0].batches.map(x => x.map(t => t.id)),
+    b.waves[0].batches.map(x => x.map(t => t.id))
+  )
+})
+
+// --- path collisions ------------------------------------------------------
+
+test('two tasks in one group claiming the same path are split apart', () => {
+  // Tasks in a group run in parallel in ONE working tree. Two agents editing
+  // one file concurrently is a lost write nothing downstream would notice.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/auth.ts', 'src/other.ts'] })
+    ]
+  })
+  const groupsOf = id =>
+    plan.waves.find(w => w.batches.flat().some(t => t.id === id)).group
+  assert.notEqual(groupsOf('1.1'), groupsOf('1.2'))
+  assert.ok(groupsOf('1.2') > groupsOf('1.1'), 'the later id yields its slot')
+})
+
+test('a collision is recorded in regrouped and in warnings', () => {
+  // Re-grouping silently would trade one invisible problem for another.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/auth.ts'] })
+    ]
+  })
+  assert.equal(plan.regrouped.length, 1)
+  assert.equal(plan.regrouped[0].id, '1.2')
+  assert.equal(plan.regrouped[0].path, 'src/auth.ts')
+  assert.equal(plan.regrouped[0].conflictsWith, '1.1')
+  assert.ok(plan.warnings.some(w => w.includes('1.2') && w.includes('src/auth.ts')))
+})
+
+test('disjoint paths in one group stay in one group', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/b.ts'] })
+    ]
+  })
+  assert.equal(plan.waveCount, 1)
+  assert.deepEqual(plan.regrouped, [])
+})
+
+test('tasks without paths are never re-grouped', () => {
+  // A classifier that cannot predict paths says nothing, and nothing happens.
+  // Guessing would cost a wave of parallelism for no reason.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1 }),
+      task({ id: '1.2', group: 1 }),
+      task({ id: '1.3', group: 1 })
+    ]
+  })
+  assert.equal(plan.waveCount, 1)
+  assert.deepEqual(plan.regrouped, [])
+})
+
+test('a collision among evicted tasks is split again', () => {
+  // Three tasks on one path cannot be fixed by one eviction. `ordered` is
+  // appended to during iteration so the new group is revisited.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.3', group: 1, paths: ['src/auth.ts'] })
+    ]
+  })
+  const groups = plan.waves.map(w => w.batches.flat().map(t => t.id))
+  assert.equal(plan.waveCount, 3, 'each gets its own wave')
+  assert.deepEqual(groups.flat().sort(), ['1.1', '1.2', '1.3'])
+})
+
+test('re-grouping preserves every task exactly once', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['a.ts'] }),
+      task({ id: '1.3', group: 1, paths: ['b.ts'] }),
+      task({ id: '2.1', group: 2, paths: ['a.ts'] })
+    ]
+  })
+  const ids = plan.waves.flatMap(w => w.batches.flat()).map(t => t.id)
+  assert.equal(ids.length, 4)
+  assert.equal(new Set(ids).size, 4)
+})
+
+test('paths must be an array of strings when present', () => {
+  assert.throws(
+    () => planWaves({ tasks: [task({ paths: 'src/auth.ts' })] }),
+    /paths must be an array of strings/
+  )
+  assert.throws(
+    () => planWaves({ tasks: [task({ paths: [1, 2] })] }),
+    /paths must be an array of strings/
+  )
+})
+
 test('every task survives batching exactly once', () => {
   const tasks = Array.from({ length: 17 }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
   const plan = planWaves({ tasks }, { maxParallel: 5 })

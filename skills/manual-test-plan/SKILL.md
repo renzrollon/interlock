@@ -7,7 +7,6 @@ argument-hint: "[change-name] [commit-range]"
 allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Read Write Grep Glob
 metadata:
   type: generation
-  autonomy_level: L2
   outputs:
     - openspec/changes/<change>/manual-test-plan.md
 ---

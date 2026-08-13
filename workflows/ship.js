@@ -216,7 +216,12 @@ const planned = await step(
   `For OpenSpec change "${change}": read proposal.md, design.md, tasks.md and specs/**/*.md in full — ` +
     `this is the artifact leash and is not subject to bounded retrieval.\n\n` +
     `Classify every UNCHECKED task with: id, group (wave number — tasks in a group must be ` +
-    `independent of each other), description, tier 1-5, model, isTestTask.\n\n` +
+    `independent of each other), description, tier 1-5, model, isTestTask, and paths.\n\n` +
+    `\`paths\` is your best prediction of the repo-relative files the task will edit. The planner ` +
+    `uses it for one thing: two tasks in the same group naming the same file cannot run in ` +
+    `parallel in one working tree, so it moves the later one to its own wave. Predict what you ` +
+    `can and OMIT the field when you genuinely cannot — an invented path costs a wave of ` +
+    `parallelism for nothing, while an omitted one only leaves things as they were.\n\n` +
     `Tier 1 trivial one-file edit → haiku. Tier 2 single-concern change. Tier 3 new logic in one ` +
     `domain. Tier 4 cross-file work following existing patterns — a mechanical refactor across many ` +
     `files is tier 4 sonnet, because breadth is not depth. Tier 5 only for genuinely novel ` +
@@ -408,9 +413,13 @@ const review = await step(
     `input handling or data exposure. Each writes findings as ` +
     `{ dimension, findings: [{ severity, file, line, title, description, suggestion }] }.\n\n` +
     `Then put TWO skeptics on every blocker and warning independently, each emitting ` +
-    `{ findingTitle, file, isReal, confidence, reasoning, refinedSeverity, qualityScore, severityScore }. ` +
+    `{ findingTitle, file, isReal, confidence, reasoning, evidence, refinedSeverity, qualityScore, severityScore }. ` +
     `Include the file — title alone is not unique, and two findings sharing a title in different ` +
     `files would otherwise share one verdict.\n\n` +
+    `A verdict of isReal:false MUST carry evidence — the file:line span the skeptic actually read, ` +
+    `such as "src/auth.ts:41-58". An uncited refutation dismisses nothing: it is recorded, its quality ` +
+    `score still counts, and the finding survives to the report. Voting a finding real needs no ` +
+    `evidence — only the dismissing direction is gated, because a dismissed finding is invisible.\n\n` +
     `Write findings to ${WORK}/findings.json and verdicts to ${WORK}/verdicts.json, then:\n` +
     `  interlock review --findings ${WORK}/findings.json --verdicts ${WORK}/verdicts.json --metrics ${change} --json > ${WORK}/review.json\n\n` +
     `The CLI decides survival and applies the quality band. Do not filter findings yourself and do ` +
@@ -541,6 +550,15 @@ const handoff = await step(
     `skip it and say why — a backend-only change does not get a UI test plan.\n\n` +
     `Then write openspec/changes/${change}/code-explanation.md as a commit teach-in: why each file ` +
     `changed, what changed, the blast radius, and what would break if it were left out.\n\n` +
+    `Next, spec conformance:\n` +
+    `  interlock conformance ${change} --changed <files changed by this run> --json\n` +
+    `That emits questions, never verdicts. For each scenario it lists, read the implementation and ` +
+    `answer whether the described behaviour was actually built, citing file:line. Write the answers ` +
+    `to openspec/changes/${change}/conformance.md with one section per scenario id. A scenario you ` +
+    `cannot confirm is recorded as unconfirmed with what you looked at — never as satisfied, and ` +
+    `never omitted. If the checklist is empty, say so and move on.\n\n` +
+    `This never halts the run: a prose scenario matched to code is a judgement, and a judgement ` +
+    `that stopped a ship run would be a gate built on a guess. Report it and let a person read it.\n\n` +
     `Finally, capture at most three learnings from fixes made during this run — recurring failure ` +
     `modes under .claude/memory/failure-modes/, module coupling under .claude/memory/coupling/ — ` +
     `each one small file, indexed in .claude/memory/MEMORY.md. Only genuinely recurring patterns; ` +
@@ -552,7 +570,9 @@ const handoff = await step(
       ok: { type: 'boolean' },
       manualTestPlan: { type: 'boolean' },
       skipReason: { type: 'string' },
-      learnings: { type: 'integer' }
+      learnings: { type: 'integer' },
+      scenariosChecked: { type: 'integer' },
+      scenariosUnconfirmed: { type: 'integer' }
     }
   }
 )
@@ -618,6 +638,13 @@ function finish() {
     lines.push(
       `  handoff: manual test plan ${summary.handoff.manualTestPlan ? 'written' : `skipped (${summary.handoff.skipReason || 'not UI-testable'})`}`
     )
+    if (summary.handoff.scenariosChecked) {
+      const unconfirmed = summary.handoff.scenariosUnconfirmed || 0
+      lines.push(
+        `  conformance: ${summary.handoff.scenariosChecked - unconfirmed}/${summary.handoff.scenariosChecked} scenarios confirmed` +
+          (unconfirmed ? ` — ${unconfirmed} unconfirmed, see conformance.md` : '')
+      )
+    }
   }
   if (summary.commit && summary.commit.ok) lines.push(`  commit: ${summary.commit.sha || 'created'}`)
   for (const note of summary.notes) lines.push(`  ${note}`)
