@@ -72,6 +72,7 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 | `interlock verify` | What to run, what a red result means, and which failures share a root cause |
 | `interlock wave-state` | What happens next in the wave loop, and when to stop |
 | `interlock risk` | How dangerous a change is, from its paths and artifacts |
+| `interlock drift` | Which completed changes were never archived, and which living specs the code has outrun |
 | `interlock ready` | Whether a change may skip the human checkpoint — fail-closed |
 | `interlock validate` | Whether a change is actually implementable |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one |

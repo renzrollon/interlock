@@ -68,6 +68,18 @@ Prefer a durable handoff over re-deriving discovery from chat. See `${CLAUDE_PLU
 
 No matching brief is fine — but if none exists and `--no-explore` was not passed, **run `/interlock:explore --autonomous` now** and use the brief it writes. A spec built on unexplored ground is the most expensive kind to get wrong.
 
+### 1c. Check the ground is current
+
+```bash
+interlock drift --json
+```
+
+**Never blocks, never branches.** It exits 0 whatever it finds; read it and move on.
+
+If `unarchived` is non-empty, say so in one line before exploring — those changes finished but were never archived, so `openspec/specs/` does not describe what actually shipped, and both explore and this skill are about to read it as though it does. Name them and the command (`openspec archive <name>`), then continue. Do not stop, do not ask, and do not archive on the user's behalf: archiving rewrites the living specs, which is a decision that belongs to whoever merged the change.
+
+`stale.specs` is inferred and rarely worth interrupting a spec run for — mention it only if it names a spec directly relevant to this change.
+
 ---
 
 ## 2. Create the change

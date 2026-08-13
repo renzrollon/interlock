@@ -44,6 +44,7 @@ import {
   VERIFY_CONTEXTS
 } from '../lib/verify.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
+import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
@@ -57,6 +58,7 @@ Usage:
   interlock gate --findings <file>          Decide whether a review gate blocks
   interlock validate [change]               Inspect OpenSpec change artifacts
   interlock changes                         List active OpenSpec changes
+  interlock drift                           Report unarchived changes and stale living specs
   interlock limits                          Print every cap the loop obeys
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
@@ -467,6 +469,14 @@ function main() {
     case 'changes': {
       const changes = listChanges(root)
       emit(json, { changes }, changes.length ? changes.join('\n') + '\n' : '(none)\n')
+      break
+    }
+
+    case 'drift': {
+      // No exit(1) here, ever. Unlike every other gating subcommand, drift
+      // reports and does not block — see the header of lib/drift.mjs for why.
+      const report = analyzeDrift(root)
+      emit(json, report, formatDrift(report) + '\n')
       break
     }
 

@@ -862,3 +862,40 @@ test('an unknown outcomes subcommand is an actionable error', () => {
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /frobnicate/)
 })
+
+test('drift exits 0 even when it has findings', () => {
+  // The load-bearing assertion for this subcommand. Every gate around it exits
+  // non-zero when it blocks, so a future edit that "makes drift consistent"
+  // would turn an advisory report into a merge blocker built on INFERRED edges.
+  const root = mkdtempSync(join(tmpdir(), 'sf-cli-drift-'))
+  try {
+    const change = join(root, 'openspec', 'changes', 'add-auth')
+    mkdirSync(change, { recursive: true })
+    writeFileSync(join(change, 'proposal.md'), '# Proposal\nwhy\n')
+    writeFileSync(join(change, 'design.md'), '# Design\nhow\n')
+    writeFileSync(join(change, 'tasks.md'), '- [x] 1.1 all done\n')
+
+    const r = run(['drift', '--root', root])
+    assert.equal(r.code, 0, `drift must never block, got exit ${r.code}`)
+    assert.match(r.stdout, /UNARCHIVED — 1 completed change/)
+    assert.match(r.stdout, /openspec archive add-auth/)
+    assert.match(r.stdout, /Nothing here blocks/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('drift --json reports both signals and stays exit 0', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sf-cli-drift-json-'))
+  try {
+    const out = runJson(['drift', '--root', root], 0)
+    assert.deepEqual(out.unarchived, [])
+    // No graph in this fixture: the stale signal must say it was skipped and why,
+    // rather than reporting an absent input as a clean one.
+    assert.equal(out.stale.skipped, true)
+    assert.match(out.stale.reason, /graph/i)
+    assert.equal(out.hasFindings, false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

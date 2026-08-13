@@ -141,3 +141,27 @@ Updating **replaces the description entirely.** If the existing description cont
 **`--explain`** — run `/interlock:explain-code` in commit teach-in mode and post the walkthrough as a comment.
 
 Both are **comment-only, always.** Neither ever enters the description — a reviewer opening the MR should see the summary, not a 200-line test script.
+
+---
+
+## 8. Close the loop: say what still needs archiving
+
+This is the last point the change is in your hands, so it is where the spec lifecycle gets a mention.
+
+```bash
+interlock drift --json
+```
+
+**Never blocks.** It exits 0 whatever it finds — do not branch on the exit code here, and do not refuse to publish because of it.
+
+Two things to report, and only when there is something to say:
+
+- **`unarchived` is non-empty.** Earlier changes finished their tasks but were never archived, so their delta specs never reached `openspec/specs/` and the living specs no longer describe what shipped. Name them and give the command:
+  ```bash
+  openspec archive <change-name>
+  ```
+- **`stale.specs` is non-empty.** Living specs whose linked files have newer commits. Say plainly that this comes from **inferred** graph edges — a path mentioned in spec prose, not a parsed contract — so it is worth a look, not a task.
+
+Then close with the one line that matters for *this* change: once the MR merges, run `openspec archive <this-change>`. Interlock does not archive for you, and nothing downstream will notice if nobody does.
+
+If `drift` reports nothing, say nothing. A clean lifecycle does not need a paragraph.
