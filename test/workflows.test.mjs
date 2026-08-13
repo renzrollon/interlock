@@ -109,6 +109,7 @@ test('ship.js keeps the degradation banner strings verbatim', () => {
   for (const banner of [
     'GRAPH UNAVAILABLE:',
     'NO TEST PROFILE:',
+    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
     'VERIFICATION SKIPPED: reason=',
     'E2E FAILED (non-blocking by policy):'
   ]) {
@@ -169,4 +170,38 @@ test('ship.js never assumes an outcome field it did not observe', () => {
   // Guessing unitGreen is how a corpus becomes confidently wrong.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /Leave a field out\s+entirely rather than guessing it|not a claim/)
+})
+
+test('ship.js folds record/replan into the next step via --write-state', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  for (const cmd of ['record-batch', 'record-verify', 'replan']) {
+    assert.match(
+      text,
+      new RegExp(`wave-state ${cmd}[^\\n]*--write-state`),
+      `ship.js ${cmd} must pass --write-state so stdout is the next step`
+    )
+  }
+})
+
+test('ship.js implementers follow tool economy and stop on green for tier 1-2', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /interlock-graph query/, 'implementers must locate via the graph before grep')
+  assert.match(text, /Do not re-read/, 'implementers must not re-read a file unless it changed')
+  assert.match(text, /schema only/, 'implementers must return the schema only')
+  assert.match(text, /tier is 1 or 2/, 'tier 1-2 must stop after checks pass')
+})
+
+test('ship.js uses haiku for mechanical control-plane steps', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /model:\s*'haiku'/, 'control-plane steps must pin haiku')
+  assert.match(text, /cheap\(\s*`next-/, 'next must go through the cheap wrapper')
+  assert.match(text, /cheap\(\s*`record-batch-/, 'record-batch must go through the cheap wrapper')
+  assert.match(text, /cheap\(\s*`inter-wave-verify-/, 'inter-wave verify must go through the cheap wrapper')
+  assert.match(text, /cheap\(\s*`replan-/, 'replan must go through the cheap wrapper')
+})
+
+test('ship.js review and remediate return counts only', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /do not paste dimension reports/i)
+  assert.match(text, /do not paste fixer or skeptic/i)
 })

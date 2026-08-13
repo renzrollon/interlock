@@ -35,21 +35,15 @@ Think deeply. Fan out when breadth is needed. Synthesize into understanding.
 
 ## Graph-first reconnaissance, before any fan-out
 
-If `.claude/graph/graph.json` exists (Rule 0 of `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`):
-
-1. Read `.claude/graph/GRAPH_REPORT.md` for hub nodes and module boundaries.
-2. Seed investigator scopes with targeted queries:
+Follow Rule 0 of `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`. If the graph exists, seed scopes then fan out:
 
 ```bash
 interlock-graph query "<subsystem tokens>" --budget 1500
-interlock-graph consumers <symbol-or-field>   # Pattern 4 / invariant sweep
-interlock-graph path <A> <B>                  # cross-cutting traces
+interlock-graph consumers <symbol-or-field>
+interlock-graph path <A> <B>
 ```
 
-3. Scope investigators by **real module nodes and consumer lists**, not by guessed layers.
-4. Tell each investigator: locate via graph, then grep for string-keyed and dynamic readers, then Read spans.
-
-If the graph is missing and the question spans 3+ subsystems, build it once (`interlock-graph build .`) before fanning out. Never rebuild when it already exists.
+Scope investigators by real module nodes and consumer lists. Each investigator: graph, then grep for string-keyed and dynamic readers, then Read spans. If the graph is missing and the question spans 3+ subsystems, build it once (`interlock-graph build .`). Never rebuild when it already exists.
 
 ---
 
@@ -89,7 +83,7 @@ When genuinely unsure, start single-threaded and escalate once you realize the q
 
 1. **Focused prompts.** Not "explore everything about X" — "trace the exact flow of Y through files A, B, C".
 2. **Read-only.** Investigators search, read, and report. They never write.
-3. **Structured returns.** Key files with paths and line numbers, how it works, connections to other systems, and open questions they could not resolve.
+3. **Structured returns.** JSON only (schema below). No narrative dump.
 4. **2–5 agents.** Fewer than 2 is not a fan-out; more than 5 means the decomposition is too granular.
 5. **Disjoint scopes.** Non-overlapping assignments so findings merge cleanly. For Pattern 4 this is load-bearing: partition the search space so no reader is missed or double-counted.
 6. **Label clearly** so progress is visible.
@@ -108,11 +102,8 @@ Look for:
 - [specific thing 1]
 - [specific thing 2]
 
-Report back:
-- Key files found (paths + line numbers)
-- How it works (brief)
-- Connections to other systems
-- Open questions or gaps you noticed
+Return JSON only:
+{ "files": [{ "path": "", "lines": "" }], "how": "", "connections": [], "gaps": [] }
 ```
 
 Resolve `[[SPECIFIC_QUESTION]]` and `[[BROADER_TOPIC]]` from session state at emit time. **An unresolved placeholder halts the fan-out — never gap-fill one.**
@@ -152,18 +143,13 @@ When a change exists, read its artifacts via `openspec status --change "<name>" 
 
 ## Every ambiguity becomes a ledger row
 
-An unknown you name in chat is an unknown nobody can act on. The durable record is the decision ledger, and its format, classes and evidence rules are the contract in `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md` — read it and follow it rather than restating it.
+Follow `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md`. Do not restate its format.
 
-What exploring owes that ledger:
+- `## Pending Clarifications` → `needs_human` rows.
+- `## Assumptions Made` → `agent_resolved` rows with followable evidence (`obvious` is not evidence).
+- Never only chat — a conversational answer still gets a row citing the human.
 
-- Every item you put under `## Pending Clarifications` is a `needs_human` row.
-- Every item under `## Assumptions Made` is an `agent_resolved` row, and it needs evidence a reader can follow — the brief section or the file that justified it. `obvious` is not evidence, and an `agent_resolved` row without a real resolution and real evidence blocks exactly like `needs_human` does.
-- **Never only chat.** In conversational mode a question you asked and got answered still gets a row, with the human cited in `evidence`.
-
-Where it goes depends on whether a change exists yet:
-
-- **A change is active** (`openspec list --json`, or the brief's `related_change`) → write the rows into `openspec/changes/<change>/decisions.md` now, and verify with `interlock ledger <change>`. It exits non-zero while a `needs_human` row remains — which is the honest state of an exploration that found a real product question, not a failure.
-- **No change yet** — the usual case when `/interlock:spec` invoked this skill → the brief carries the rows. Number them `D1`, `D2`, … under the two headings and state each class, so `/interlock:spec` transcribes them into the ledger verbatim instead of re-deriving them. Ids are stable from here on: never renumber, never reuse one for a different question.
+Active change → write `openspec/changes/<change>/decisions.md` now and run `interlock ledger <change>`. No change yet → number them `D1`, `D2`, … in the brief (class stated) so `/interlock:spec` transcribes them. Never renumber; never reuse an id.
 
 ---
 

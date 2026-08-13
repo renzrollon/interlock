@@ -79,6 +79,37 @@ const step = (name, prompt, schema, extra = {}) =>
     { label: name, schema, ...extra }
   )
 
+// Mechanical CLI pings: the script cannot run the binary, but they do not need
+// a large model. haiku is the same slug the planner already assigns to tier 1.
+const nextSchema = {
+  type: 'object',
+  required: ['action'],
+  properties: {
+    action: { type: 'string' },
+    reason: { type: 'string' },
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          description: { type: 'string' },
+          tier: { type: 'integer' },
+          model: { type: 'string' }
+        }
+      }
+    },
+    mode: { type: 'string' },
+    fixAttempt: { type: 'integer' },
+    wave: { type: 'integer' },
+    ok: { type: 'boolean' },
+    halted: { type: 'boolean' },
+    skipped: { type: 'boolean' }
+  }
+}
+
+const cheap = (name, prompt) => step(name, prompt, nextSchema, { model: 'haiku' })
+
 // Set once validate resolves the change. `halt` can fire before that, so the
 // outcome record reads this rather than the `change` binding below, which is
 // not initialized yet on the earliest failure path.
@@ -108,7 +139,8 @@ const recordOutcome = async () =>
       `Then run: interlock outcomes append --record ${WORK}/outcome.json --root .\n\n` +
       `This never fails a run: a non-zero exit or a written:false result is reported and ignored. ` +
       `Losing a corpus line must never fail the run that produced it.`,
-    ok
+    ok,
+    { model: 'haiku' }
   )
 
 const halt = async reason => {
@@ -127,6 +159,10 @@ const loaded = await step(
     `Run: interlock validate ${changeArg || ''} --json\n\n` +
     `A non-zero exit means the change is not implementable — report ok:false with the reason ` +
     `and stop; do not attempt repairs.\n\n` +
+    `Also run: printenv CLAUDE_CODE_SUBAGENT_MODEL\n` +
+    `If it prints a value, report it as subagentModelOverride. If it is unset the command exits ` +
+    `non-zero and prints nothing — that is the normal case, so leave the field out rather than ` +
+    `reporting an empty string.\n\n` +
     `Then create the working directory ${WORK}/ and report the resolved change name.`,
   {
     type: 'object',
@@ -137,7 +173,8 @@ const loaded = await step(
       detail: { type: 'string' },
       hasGraph: { type: 'boolean' },
       graphReason: { type: 'string' },
-      hasTestProfile: { type: 'boolean' }
+      hasTestProfile: { type: 'boolean' },
+      subagentModelOverride: { type: 'string' }
     }
   }
 )
@@ -156,6 +193,20 @@ if (loaded.hasGraph === false) {
 }
 if (loaded.hasTestProfile === false) {
   banners.push('NO TEST PROFILE: run /interlock:fix-tests --reconfigure once')
+}
+// CLAUDE_CODE_SUBAGENT_MODEL overrides both the session model and the per-agent
+// model this script asks for, so when it is set the planner's tier ladder — the
+// opus clamp, the haiku pings — is not in effect and the run costs whatever that
+// model costs. Nothing here can prevent that; it is the user's environment. But a
+// summary claiming no degradation while the entire model ladder was bypassed is
+// exactly the silence the banner block exists to remove.
+const subagentModel =
+  typeof loaded.subagentModelOverride === 'string' ? loaded.subagentModelOverride.trim() : ''
+if (subagentModel) {
+  banners.push(
+    `MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=${subagentModel} — every agent runs on ` +
+      `that model, so the per-tier assignment in the plan is not in effect`
+  )
 }
 
 // --- 2. classify, then let the planner decide -----------------------------
@@ -197,42 +248,21 @@ if (!planned || !planned.ok) {
 // Every branch below comes from `interlock wave-state next`. The script does not
 // decide when to verify, when a replan is allowed, or when accumulated failures
 // have exhausted the budget — it asks, and obeys.
+//
+// record-* / replan pass --write-state so their stdout IS the next step. That
+// saves a second agent turn after every batch. One `next` still starts the loop.
 
 let steps = 0
+let next = await cheap(
+  `next-1`,
+  `Run: interlock wave-state next --state ${STATE} --json\n\n` +
+    `Report the step verbatim. Do not interpret it, and do not act on it.`
+)
 
 while (steps++ < MAX_LOOP_STEPS) {
-  const next = await step(
-    `next-${steps}`,
-    `Run: interlock wave-state next --state ${STATE} --json\n\n` +
-      `Report the step verbatim. Do not interpret it, and do not act on it.`,
-    {
-      type: 'object',
-      required: ['action'],
-      properties: {
-        action: { type: 'string' },
-        reason: { type: 'string' },
-        tasks: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              description: { type: 'string' },
-              tier: { type: 'integer' },
-              model: { type: 'string' }
-            }
-          }
-        },
-        mode: { type: 'string' },
-        fixAttempt: { type: 'integer' },
-        wave: { type: 'integer' }
-      }
-    }
-  )
-
   if (!next) return await halt('the run state could not be read')
   if (next.action === 'done') break
-  if (next.action === 'halt') return await halt(next.reason || 'the run state halted')
+  if (next.action === 'halt' || next.halted) return await halt(next.reason || 'the run state halted')
 
   if (next.action === 'run-batch' || next.action === 'test-wave') {
     const tasks = Array.isArray(next.tasks) ? next.tasks : []
@@ -254,7 +284,11 @@ while (steps++ < MAX_LOOP_STEPS) {
           `- Implement ONLY this task. Do not modify files outside its scope.\n` +
           `- Do not fix unrelated problems you notice; report them instead.\n` +
           `- Run typecheck and lint on what you changed.\n` +
-          `- Do not commit, and do not edit tasks.md — the orchestrator owns both.\n\n` +
+          `- Do not commit, and do not edit tasks.md — the orchestrator owns both.\n` +
+          `- If .claude/graph/graph.json exists, interlock-graph query / consumers before grep.\n` +
+          `- Locate (graph or grep) then Read spans. Do not re-read a file unless it changed.\n` +
+          `- Return the schema only. No narrative.\n` +
+          `- If your tier is 1 or 2: after typecheck/lint pass, stop. Do not refactor or polish.\n\n` +
           `Report ok:false if you could not complete the task, with what blocked you.`,
         {
           label: task.id,
@@ -290,34 +324,23 @@ while (steps++ < MAX_LOOP_STEPS) {
       failed: reported.filter(r => !r.ok).length
     })
 
-    const recorded = await step(
+    next = await cheap(
       `record-batch-${steps}`,
       `Record this batch result against the run state.\n\n` +
         `Write this JSON to ${WORK}/batch.json:\n${JSON.stringify({ tasks: reported })}\n\n` +
         `Then run:\n` +
-        `  interlock wave-state record-batch --state ${STATE} --result ${WORK}/batch.json --json > ${WORK}/next-state.json\n` +
-        `  mv ${WORK}/next-state.json ${STATE}\n\n` +
-        `A non-zero exit means the recorded result halted the run — report halted:true with the reason.\n\n` +
+        `  interlock wave-state record-batch --state ${STATE} --result ${WORK}/batch.json --write-state ${STATE} --json\n\n` +
+        `Stdout is the next step (same shape as wave-state next). Report it verbatim. ` +
+        `A non-zero exit means the recorded result halted the run — report action:halt with the reason.\n\n` +
         `Then tick the checkbox in openspec/changes/${change}/tasks.md for every task that succeeded. ` +
-        `Do not tick a failed one.`,
-      {
-        type: 'object',
-        required: ['ok'],
-        properties: {
-          ok: { type: 'boolean' },
-          halted: { type: 'boolean' },
-          reason: { type: 'string' }
-        }
-      }
+        `Do not tick a failed one.`
     )
-
-    if (recorded && recorded.halted) return await halt(recorded.reason || 'the wave loop halted')
     continue
   }
 
   if (next.action === 'verify') {
     const mode = next.mode === 'fix' ? 'fix' : 'check'
-    const verified = await step(
+    next = await cheap(
       `inter-wave-verify-${steps}`,
       `Inter-wave verification for change "${change}"${mode === 'fix' ? `, fix attempt ${next.fixAttempt}` : ''}.\n\n` +
         `Run the project's fast checks against what the last wave changed: typecheck first, then ` +
@@ -332,46 +355,33 @@ while (steps++ < MAX_LOOP_STEPS) {
         `Then record it:\n` +
         `  write { "ok": <bool>, "errors": [...], "blocksNextWave": <bool> } — or ` +
         `{ "skipped": true, "reason": "<reason>" } — to ${WORK}/verify.json\n` +
-        `  interlock wave-state record-verify --state ${STATE} --result ${WORK}/verify.json --json > ${WORK}/next-state.json\n` +
-        `  mv ${WORK}/next-state.json ${STATE}\n\n` +
+        `  interlock wave-state record-verify --state ${STATE} --result ${WORK}/verify.json --write-state ${STATE} --json\n\n` +
+        `Stdout is the next step. Report it verbatim. A non-zero exit means action:halt.\n` +
+        `If you skipped, also set skipped:true and reason — that reason is printed to the user.\n\n` +
         `Skip verification when no commands are detectable, when the failures are pre-existing, or ` +
-        `when it would exceed the budget — but a skip ALWAYS carries a reason, because that reason ` +
-        `is printed to the user. Set blocksNextWave true only when the next wave genuinely cannot ` +
-        `build on this state.`,
-      {
-        type: 'object',
-        required: ['ok'],
-        properties: {
-          ok: { type: 'boolean' },
-          skipped: { type: 'boolean' },
-          reason: { type: 'string' },
-          halted: { type: 'boolean' }
-        }
-      }
+        `when it would exceed the budget — but a skip ALWAYS carries a reason. Set blocksNextWave true ` +
+        `only when the next wave genuinely cannot build on this state.`
     )
 
-    if (verified && verified.skipped && verified.reason) {
-      banners.push(`VERIFICATION SKIPPED: reason=${verified.reason}`)
-    }
-    if (verified && verified.halted) {
-      return await halt(verified.reason || 'inter-wave verification halted the run')
+    if (next && next.skipped && next.reason) {
+      banners.push(`VERIFICATION SKIPPED: reason=${next.reason}`)
     }
     continue
   }
 
   if (next.action === 'replan') {
-    const replanned = await step(
+    next = await cheap(
       `replan-${steps}`,
       `A completed wave may have invalidated later ones for change "${change}".\n\n` +
         `Revise ONLY groups that have not executed yet — the CLI rejects a revision to an executed ` +
         `group, and that rejection is correct, not an obstacle to work around.\n\n` +
-        `Write [{ "group": <n>, "tasks": [...] }] to ${WORK}/replan.json, then:\n` +
-        `  interlock wave-state replan --state ${STATE} --groups ${WORK}/replan.json --json > ${WORK}/next-state.json\n` +
-        `  mv ${WORK}/next-state.json ${STATE}\n\n` +
-        `If nothing actually needs revising, report ok:true with an empty group list — the run continues.`,
-      ok
+        `If you have revisions, write [{ "group": <n>, "tasks": [...] }] to ${WORK}/replan.json, then:\n` +
+        `  interlock wave-state replan --state ${STATE} --groups ${WORK}/replan.json --write-state ${STATE} --json\n` +
+        `Stdout is the next step. Report it verbatim.\n\n` +
+        `If nothing actually needs revising: run \`interlock wave-state next --state ${STATE} --json\` ` +
+        `and report that step. Do not invent groups.`
     )
-    if (!replanned) return await halt('the replan step returned no result')
+    if (!next) return await halt('the replan step returned no result')
     continue
   }
 
@@ -405,7 +415,7 @@ const review = await step(
     `  interlock review --findings ${WORK}/findings.json --verdicts ${WORK}/verdicts.json --metrics ${change} --json > ${WORK}/review.json\n\n` +
     `The CLI decides survival and applies the quality band. Do not filter findings yourself and do ` +
     `not restate a threshold — the numbers live in the CLI precisely so they are not re-argued here.\n\n` +
-    `Report the counts.`,
+    `Write JSON to the work files. Return the counts only — do not paste dimension reports or skeptic reasoning into this result.`,
   {
     type: 'object',
     required: ['ok'],
@@ -449,7 +459,8 @@ while (round <= 3) {
           `Fix blockers and warnings; never fix a suggestion. A finding you do not fix is recorded ` +
           `with its reason, never silently dropped.\n\n` +
           `Then re-review ONLY the dimensions the plan lists in reReviewDimensions, put two skeptics ` +
-          `on the new findings as before, and rewrite ${WORK}/review.json via interlock review.`),
+          `on the new findings as before, and rewrite ${WORK}/review.json via interlock review.\n\n` +
+          `Write JSON to the work files. Return the counts only — do not paste fixer or skeptic reasoning into this result.`),
     {
       type: 'object',
       required: ['ok'],
@@ -615,7 +626,9 @@ function finish() {
   if (banners.length) {
     for (const banner of banners) lines.push(banner)
   } else {
-    lines.push('No degradation banners — graph, test profile, verification and e2e were all clean.')
+    lines.push(
+      'No degradation banners — graph, test profile, model routing, verification and e2e were all clean.'
+    )
   }
 
   return lines.join('\n')

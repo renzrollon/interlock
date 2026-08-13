@@ -61,27 +61,24 @@ Then check whether `openspec/specs/` already has content. If it does:
 
 Spawn five explorer subagents via the Agent tool (`subagent_type: "Explore"`), or run them in sequence under `--quick`. Each returns structured JSON.
 
-**Before writing the prompts, establish the stack.** Read the dependency manifest (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml`, `Gemfile`, …) and the top-level layout. Then phrase each prompt in that stack's vocabulary. The categories below are universal; the examples in parentheses are *illustrative only* — replace them with the frameworks this repo actually uses. Asking a Go service about React hooks wastes a whole agent.
+**Before writing the prompts, establish the stack.** Read the dependency manifest (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml`, `Gemfile`, …) and the top-level layout. Then phrase each prompt in that stack's vocabulary. The categories below are universal; examples in your head are *illustrative only* — replace them with the frameworks this repo actually uses. Asking a Go service about React hooks wastes a whole agent.
 
-**Explorer 1 — Structure Mapper**
-> Map the directory layout. Prefer `.claude/graph/GRAPH_REPORT.md` modules and hubs where present, then verify on disk. Report: top-level organization pattern (by feature, by layer, hybrid); entry points and request/route structure; naming conventions for files, directories and exports; key config files and what each configures; whether this is a monorepo.
-> JSON: `{ organization, entryPoints[], conventions[], configFiles[], monorepo }`
+Shared skeleton — fill `{role}`, `{task}`, `{schema}` from the table:
 
-**Explorer 2 — Dependency & Data Model Analyzer**
-> Analyze the dependency graph and data layer. Prefer `interlock-graph query` / `path` when a graph exists. Report: key third-party dependencies grouped by role (persistence, auth, UI, state, testing); which internal layers import which; the persistence schema and data models however they are defined (ORM models, migrations, raw DDL, struct tags); entity relationships; outbound API/SDK integrations.
-> JSON: `{ dependencies[], internalLayers[], dataModels[], entityRelationships[], integrations[] }`
+```
+You are the {role} explorer for this repo. Phrase findings in this stack's vocabulary.
+{task}
+Prefer GRAPH_REPORT.md / interlock-graph when a graph exists; otherwise grep.
+Return JSON only: {schema}
+```
 
-**Explorer 3 — Pattern Extractor**
-> Read implementation code and identify recurring patterns. Report: how units of behavior are composed (whatever this stack's unit is — components, handlers, services, actors); state and lifecycle management; error handling strategy; authentication and authorization; how data is fetched and mutated; testing patterns — what is tested and how; code style conventions.
-> JSON: `{ compositionPatterns[], stateManagement, errorHandling, auth, dataFlow, testing, codeStyle }`
-
-**Explorer 4 — Interface Scanner**
-> Catalog every external-facing interface. Report: network endpoints and their protocol (REST, GraphQL, RPC, gRPC, message queue); mutation entry points; shared schemas and validators; public module exports and the SDK surface; real-time or streaming endpoints; CLI commands.
-> JSON: `{ endpoints[], mutations[], schemas[], publicExports[], realtime[], cli[] }`
-
-**Explorer 5 — Infrastructure & Config Reader**
-> Analyze build, environment and deployment configuration. Report: build system and task runner entry points; environment variables actually referenced by code; CI/CD configuration; deployment target; lint/format tooling; type checking or static analysis configuration.
-> JSON: `{ buildSystem, tasks[], envVars[], cicd, deployment, linting, staticAnalysis }`
+| Role | Task | JSON schema |
+|------|------|-------------|
+| Structure Mapper | Map layout. Prefer GRAPH_REPORT modules/hubs, then verify on disk. Report organization (feature/layer/hybrid), entry points and routes, naming conventions, key config files, monorepo yes/no. | `{ organization, entryPoints[], conventions[], configFiles[], monorepo }` |
+| Dependency & Data Model Analyzer | Prefer `interlock-graph query` / `path`. Report third-party deps by role, internal layer imports, persistence schema/models, entity relationships, outbound integrations. | `{ dependencies[], internalLayers[], dataModels[], entityRelationships[], integrations[] }` |
+| Pattern Extractor | Recurring composition (components/handlers/services), state/lifecycle, errors, auth, data fetch/mutate, testing, code style. | `{ compositionPatterns[], stateManagement, errorHandling, auth, dataFlow, testing, codeStyle }` |
+| Interface Scanner | External surface: endpoints and protocol, mutations, schemas/validators, public exports/SDK, realtime/streaming, CLI. | `{ endpoints[], mutations[], schemas[], publicExports[], realtime[], cli[] }` |
+| Infrastructure & Config Reader | Build/task-runner entry points, env vars referenced in code, CI/CD, deploy target, lint/format, typecheck/static analysis. | `{ buildSystem, tasks[], envVars[], cicd, deployment, linting, staticAnalysis }` |
 
 Cap: 8 agents in this phase.
 

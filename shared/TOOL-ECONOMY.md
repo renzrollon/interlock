@@ -2,26 +2,6 @@
 
 Shared discipline for all interlock skills that investigate a codebase or
 gather project state. Companion to `CONTEXT-HYGIENE.md` and `INVARIANT-SWEEP.md`.
-Derived from token-utilization measurements across real sessions: sessions with
-heavy investigation and thin output (one observed run: 169 investigation tool
-calls producing 18 edits).
-
-## The problem
-
-Investigation-heavy sessions burn context three ways, all avoidable:
-
-1. **Sequential single-command Bash.** One `git` call, wait, one `grep` call,
-   wait, one `ls` call — each an independent round-trip that could have shared a
-   turn.
-2. **Reading to find, not to understand.** Read-ing whole files one after another
-   to discover *where* something lives, when a single `grep` would have pointed
-   straight at the file and line.
-3. **Re-deriving known state.** Traversing the directory tree to reconstruct the
-   current task, when `git log` / `openspec status` / an open handoff already
-   report it.
-
-None of these are wrong occasionally. They become expensive when they are the
-*default* — the pattern that fills a context window before the first edit.
 
 ## Rule 0 — Query the graph before you Grep (when it exists)
 
@@ -138,21 +118,3 @@ This targets *wasted* exploration, not legitimate reconnaissance:
 - The artifact leash still holds: when you're about to implement against a
   proposal/design/tasks set, read all of it first (see `/interlock:ship`).
   That is not the sprawl this file is about.
-
-## Skill integration
-
-- **interlock-graph** — owns build/query/update of `.claude/graph/`; implements Rule 0
-  and Rule 0.5 (`context`, `docs` commands).
-- **/interlock:dispatch** — its step-0 pre-flight is Rules 2 and 3: front-load
-  state in one batched gather instead of an exploratory warm-up, and note
-  whether the graph is present.
-- **/interlock:ship** — locate-before-Read, and batched or backgrounded Bash,
-  during implementation and verification.
-- **/interlock:explore** — Rule 0 then Rule 1 inside each investigator; load
-  `GRAPH_REPORT.md` before fanning out when present. Writes an explore brief,
-  which is Rule 3 state for the spec phase.
-- **/interlock:spec** — auto-loads the latest `.claude/handoff/explore-*.md`
-  instead of re-deriving discovery (Rule 3).
-
-When adding a new skill that greps, reads, or sweeps project state, follow this
-discipline.

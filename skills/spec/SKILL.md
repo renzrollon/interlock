@@ -18,7 +18,7 @@ metadata:
 
 Turn an intent into a reviewed change that is ready to implement — and then **stop**.
 
-This skill writes specifications. It does not write code. By default it does not run `/interlock:ship` either: the gap between this skill and that one is the deliberate human checkpoint, because a spec is the cheapest place to catch a wrong idea, so that is where a person looks. `--continue` is an opt-in that trades that read for speed on changes a machine can prove are narrow — see §7. Without the flag, nothing here bridges the gap.
+This skill writes specifications. It does not write code. By default it does not run `/interlock:ship` either: the gap between this skill and that one is the deliberate human checkpoint, because a spec is the cheapest place to catch a wrong idea, so that is where a person looks. `--continue` is an opt-in that trades that read for speed on changes a machine can prove are narrow — if passed, Read `${CLAUDE_SKILL_DIR}/continuity.md`. Without the flag, nothing here bridges the gap.
 
 **This skill composes stock OpenSpec rather than replacing it.** Artifact scaffolding, ordering, templates and validation all come from the `openspec` CLI, which is the stable contract. What this adds is the discipline around it: evidence gates, explore handoff, invariant sweeps, a decision ledger, and a review before anyone writes code.
 
@@ -26,7 +26,7 @@ This skill writes specifications. It does not write code. By default it does not
 |------|--------|
 | `--no-explore` | Skip the explore phase (intent is already sharp, or a brief exists) |
 | `--brief <path>` | Use this explore brief; skip brief matching |
-| `--continue` | Advanced. After a clean artifact review, ask `interlock ready` whether the checkpoint may be skipped — and ship if it says yes (§7) |
+| `--continue` | Advanced. After a clean artifact review, Read `${CLAUDE_SKILL_DIR}/continuity.md` — ask `interlock ready` whether the checkpoint may be skipped, and ship if it says yes |
 | `--continue --force-checkpoint` | Opt back out mid-flight. Always stops at the checkpoint, whatever readiness would have said |
 
 ---
@@ -155,7 +155,7 @@ interlock autonomy clean review-artifacts explore spec
 
 A clean gate credits `explore` and `spec` too; a blocker resets them. That is what stops this skill earning autonomy by emitting shallow specs — the downstream gate blames whoever produced the bad artifact.
 
-**Keep the blocker and warning counts.** §7 needs them, and it will not accept a review it cannot see.
+**Keep the blocker and warning counts.** Continuity needs them, and it will not accept a review it cannot see.
 
 ---
 
@@ -173,65 +173,4 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 Do not run ship. Do not offer to "just start on the first task". The checkpoint is the point.
 
----
-
-## 7. `--continue` — the continuity path
-
-Only when the user passed `--continue`. Without it, the run ended at §6.
-
-Continuity does not decide anything itself. It asks one machine one question — *may this change skip the human read?* — and obeys the answer. The judgement is `interlock ready`, which is code; this section is only the wiring.
-
-**If `--force-checkpoint` was also passed, stop at §6 now.** Do not run readiness. The user opted back out, and the flag exists precisely so that changing your mind costs nothing.
-
-### 7a. Ask
-
-Write the artifact review result where the gate can read it — the counts from §5, not the review's findings file:
-
-```bash
-mkdir -p .claude/ready
-printf '{"blockers": <n>, "warnings": <n>}\n' > .claude/ready/<name>-review.json
-```
-
-Then ask:
-
-```bash
-interlock ready "<name>" --review .claude/ready/<name>-review.json --paths <planned paths> --json
-```
-
-`--paths` is the repo-relative paths `tasks.md` and `design.md` say this change will touch. They need not exist yet — the classifier reads planned paths. Passing none makes the blast radius unclassifiable, which fails closed to `high` and stops continuity, so pass them.
-
-### 7b. Branch on the exit code, never on the prose
-
-**Exit 0** (`ready: true`) — invoke `/interlock:ship`, telling it this run arrived through continuity so the outcome corpus records it as `continue` rather than `checkpoint`:
-
-```
-/interlock:ship <change-name> mode=continue
-```
-
-Say what you are doing and why it was allowed: the risk class, and that continuity was requested. Then hand over; from that point nothing can ask the user anything.
-
-The mode matters more than it looks. The corpus exists to compare continuity runs against checkpoint runs, and a continuity run filed as a checkpoint is worse than no record — it makes the comparison say the opposite of the truth.
-
-**Exit 1** (`ready: false`) — **do not ship.** Present *only* what blocks:
-
-- Every `needs_human` row from the ledger — id and question.
-- Every entry in the readiness `blockers[]` — the message, and its evidence line.
-
-Nothing else. **Do not dump the spec.** The user opted out of reading it; the point is to ask them the specific questions, not to hand back the reading they declined. Offer *"open the artifacts"* as a secondary action for anyone who wants it, and name the change directory so they can.
-
-Title it plainly: **Continuity paused — N decisions need you.** `AskUserQuestion` is available here for the ledger rows; this is not a zero-touch skill, and this is the last place a question is possible.
-
-### 7c. After the human answers
-
-1. Write the resolutions into `openspec/changes/<name>/decisions.md` — edit each row in place per `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md`: flip the class, write the answer into `resolution`, cite the human in `evidence`. Never delete a row.
-2. Update `design.md` where an answer changed a decision. A resolution the design contradicts is worse than an open question.
-3. Re-run the §7a command.
-4. Passes → ship. Still blocked → present the remaining rows the same way. If the second run blocks on something the human cannot answer in a sentence — an artifact is not implementable, the risk class is too high — stop and route to §6. Continuity is not a loop to grind against.
-
-### The rules that make this safe enough
-
-- **Fail closed. Any doubt stops.** `ready` exits non-zero when a check could not run, not only when one failed — an unread ledger, an absent review, a classifier that threw are all blockers. So branch on the **exit code**. Never on parsed prose, never on your own reading of the artifacts, and never on a partial pass because most checks were green.
-- **`ship` cannot ask anything.** It is a dynamic workflow, and the workflow runtime accepts no mid-run user input at all. Every interrupt therefore happens *here*, before ship starts. There is no "we will confirm that during implementation".
-- **Autonomy level does not imply continuity.** They answer different questions. Do not consult the ladder here, do not mention it as a reason, and do not offer `--continue` because a path is L3.
-- **Never offer `--continue` yourself.** It is opt-in, and a suggestion from the tool is not an opt-in. If the user has not asked for it, §6 is the end of the run.
-- **Continuity cannot catch a wrong idea.** Readiness proves the change is *implementable*, never that it is *right*. Only a person reading the spec can do that. Say so when a continuity run starts, rather than implying a green gate means a good change.
+If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Without that flag, the run ended here.

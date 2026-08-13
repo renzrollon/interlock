@@ -12,7 +12,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -577,6 +577,102 @@ test('a run state round-trips through the CLI as JSON', () => {
   const afterVerify = runJson(['wave-state', 'next', '--state', file('run2.json', state2)])
   assert.equal(afterVerify.action, 'run-batch')
   assert.equal(afterVerify.wave, 2)
+})
+
+test('record-batch --write-state writes the new state and stdout is the next step', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-ws.json', plan)])
+  const batch = file('ws-batch.json', { tasks: [{ id: '1.1', ok: true }, { id: '1.2', ok: true }] })
+  const outState = join(dir, 'ws-written.json')
+
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('ws-run0.json', state0),
+    '--result', batch,
+    '--write-state', outState
+  ])
+  assert.equal(step.action, 'verify', 'a following wave means an inter-wave check')
+  assert.equal(step.completed, undefined, 'stdout is the step, not the state')
+
+  const written = JSON.parse(readFileSync(outState, 'utf8'))
+  assert.deepEqual(written.completed, ['1.1', '1.2'])
+  assert.equal(written.cursor.phase, 'verify')
+})
+
+test('record-verify --write-state stdout is the next step after a green check', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-wv.json', plan)])
+  const afterBatch = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('wv-run0.json', state0),
+    '--result', file('wv-batch.json', { tasks: [{ id: '1.1', ok: true }, { id: '1.2', ok: true }] })
+  ])
+  const outState = join(dir, 'wv-written.json')
+
+  const step = runJson([
+    'wave-state', 'record-verify',
+    '--state', file('wv-run1.json', afterBatch),
+    '--result', file('wv-ok.json', { ok: true }),
+    '--write-state', outState
+  ])
+  assert.equal(step.action, 'run-batch')
+  assert.equal(step.wave, 2)
+
+  const written = JSON.parse(readFileSync(outState, 'utf8'))
+  assert.equal(written.cursor.waveIndex, 1)
+})
+
+test('replan --write-state writes the new state and stdout is the next step', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state = runJson(['wave-state', 'create', '--plan', file('plan-wr.json', plan)])
+  const groups = file('wr-groups.json', [
+    { group: 2, tasks: [{ id: '2.1', description: 'revised' }, { id: '2.2', description: 'new' }] }
+  ])
+  const outState = join(dir, 'wr-written.json')
+
+  const step = runJson([
+    'wave-state', 'replan',
+    '--state', file('wr-run0.json', state),
+    '--groups', groups,
+    '--write-state', outState
+  ])
+  assert.equal(typeof step.action, 'string')
+  assert.equal(step.replansUsed, undefined, 'stdout is the step, not the state')
+
+  const written = JSON.parse(readFileSync(outState, 'utf8'))
+  assert.equal(written.replansUsed, 1)
+  const wave2 = written.waves.find(w => w.group === 2)
+  assert.equal(wave2.taskCount, 2)
+})
+
+test('record-batch --write-state that halts still writes state and stdout is halt', () => {
+  const plan = runJson(['waves', '--classified', file('c3-ws.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false },
+      { id: '1.2', group: 1, description: 'b', tier: 2, model: 'sonnet', isTestTask: false },
+      { id: '1.3', group: 1, description: 'c', tier: 2, model: 'sonnet', isTestTask: false }
+    ]
+  })])
+  const state = runJson(['wave-state', 'create', '--plan', file('plan-halt-ws.json', plan)])
+  const allFail = file('all-fail-ws.json', {
+    tasks: [
+      { id: '1.1', ok: false, error: 'x' },
+      { id: '1.2', ok: false, error: 'y' },
+      { id: '1.3', ok: false, error: 'z' }
+    ]
+  })
+  const outState = join(dir, 'halt-written.json')
+
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('halt-run0.json', state),
+    '--result', allFail,
+    '--write-state', outState
+  ], 1)
+  assert.equal(step.action, 'halt')
+
+  const written = JSON.parse(readFileSync(outState, 'utf8'))
+  assert.ok(written.halt)
 })
 
 test('wave-state accepts a state on stdin', () => {

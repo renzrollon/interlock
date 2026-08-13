@@ -50,6 +50,19 @@ Two failure shapes that are about your environment rather than your change, and 
 
 **The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner before a long run. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
 
+**You stopped the run, and resuming re-ran more than you expected.** Resume from `/workflows` keeps completed agents' results, but two rules decide which ones survive, and the second one surprises people:
+
+- An agent still running when you stopped is not saved, so it starts over.
+- Replay follows the order agents *started*. Caching stops at the first agent that did not finish, and **every agent that started after it re-runs — even the ones that completed.**
+
+So stopping mid-wave costs the whole rest of that wave. This is one place Interlock's shape pays off: a run fanned out across many small agents preserves far more progress across a pause than one long agent would, because there is less work sitting behind the first unfinished agent.
+
+Resume also only works **within the same Claude Code session**. If you exit Claude Code while `ship` is running, the next session starts it fresh — no cached results, no partial credit. On a long run, leave the session open.
+
+**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A normal `ship` run crosses that easily — several waves of up to 8 implementers, four to six review dimensions, two skeptics per blocker and warning, then one fixer per file. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
+
+The related `workflowSizeGuideline` setting (`/config`, default `medium`) is advice Claude follows when it *writes* a workflow. `ship` ships as a pre-written script, so the guideline should not throttle it — but that is read from how the setting is documented rather than measured, so if you see wave sizes that disagree with `interlock limits`, that would be the first thing to check.
+
 ## The soft continues
 
 ### `GRAPH UNAVAILABLE`
@@ -76,6 +89,27 @@ Fix it once, and every later run is faster and more accurate:
 ```bash
 /interlock:fix-tests --reconfigure
 ```
+
+### `MODEL ROUTING OVERRIDDEN`
+
+You have `CLAUDE_CODE_SUBAGENT_MODEL` set in your environment, and it wins over everything the plan decided. Per the [workflow docs](https://code.claude.com/docs/en/workflows), that variable overrides both your session model *and* a per-agent model a script asks for — so every agent in the run used it, whatever tier the planner assigned.
+
+That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` for everything below tier 5, and lets `opus` survive only on genuinely novel architecture. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
+
+The work is still correct — this is a cost and latency degradation, not a quality one. To check and clear it:
+
+```bash
+printenv CLAUDE_CODE_SUBAGENT_MODEL
+unset CLAUDE_CODE_SUBAGENT_MODEL
+```
+
+Then confirm what the planner *would* have assigned:
+
+```bash
+interlock limits
+```
+
+If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
 
 ### `VERIFICATION SKIPPED`
 
@@ -119,7 +153,7 @@ Worth knowing when you are deciding how much to trust a clean run.
 | Command | Decides |
 |---|---|
 | `validate` | Whether a change is implementable at all |
-| `waves`, `wave-state` | Wave order, per-task model, the parallel-agent cap, and what the run does next |
+| `waves`, `wave-state` | Wave order, per-task model, the parallel-agent cap, and what the run does next. `record-*` / `replan --write-state` write the new state and emit that next step, so ship does not pay a second agent turn after every batch. |
 | `gate`, `review` | Whether a review blocks, and which findings survive the skeptics and the quality band |
 | `remediate` | Whether another fix round is allowed, or the verdict has landed |
 | `verify plan\|judge\|unit\|cluster\|repair` | Which checks to run, what a result means, and when repair is out of budget |

@@ -154,6 +154,12 @@ gained the fail-closed readiness gate it needs.
   rules, which in `ship` would interrupt a run that is contractually supposed to
   ask nothing.
 
+### Changed
+
+- **`wave-state --write-state`** on `record-batch`, `record-verify`, and `replan`: writes the new run state to a file and, with `--json`, emits the next step (same shape as `wave-state next`). Default stdout is still the new state.
+- **`workflows/ship.js`** folds that next step into the record/replan agent, so a batch no longer pays a second control-plane turn. Mechanical CLI pings (`next`, `record-*`, `replan`, `record-outcome`) pin `haiku`. Implementers locate via the graph before grep, return schema only, and stop after green on tier 1–2. Review and remediate write JSON files and return counts only.
+- Hot-path skill diet: `TOOL-ECONOMY.md` is rules-only; explore investigators return JSON; spec continuity lives in `skills/spec/continuity.md` and loads only on `--continue`; bootstrap explorers share one prompt skeleton plus a role table.
+
 ### Removed
 
 - `skills/ship/SKILL.md`. Its logic is `workflows/ship.js` and the CLI

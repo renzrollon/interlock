@@ -19,8 +19,9 @@ Then, in a repo:
 
 | Requirement | Why |
 |---|---|
-| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | `/interlock:ship` is a [dynamic workflow](https://code.claude.com/docs/en/workflows), not a skill |
+| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | `/interlock:ship` is a [dynamic workflow](https://code.claude.com/docs/en/workflows), not a skill. Known-good on 2.1.229 |
 | Dynamic workflows **enabled** | Off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` means no `ship`. On Pro, enable it in `/config` |
+| `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. It banners this rather than hiding it — see [when it stops](docs/04-when-it-stops.md) |
 | [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it does not replace it |
 | Node.js ≥ 18 | For the two bundled CLIs |
 
@@ -163,6 +164,19 @@ Everything else in the plugin is stack-agnostic. `bootstrap` reads your dependen
 
 ---
 
+## How it compares
+
+Most of the category competes on how much structure you write before coding — Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on a different axis: **how many decisions the model is not allowed to make.**
+
+- **Caps and gates are code.** Remediation rounds, the task-failure budget, parallelism, the review quality floor — all in a tested CLI, not in markdown a model can talk itself past.
+- **The zero-touch contract is the runtime's, not a prompt's.** `ship` is a workflow, so there is nobody to ask. Everyone else promises autonomy in prose.
+- **Review findings are attacked before you see them,** and the dismissal counts are printed. A review that hides how much it threw away is indistinguishable from one that threw away nothing.
+- **The invariant sweep is the licensed exception to the diff leash** — a value canonicalized in one place and still read raw in three others is the one bug class every diff-scoped review is structurally blind to.
+
+The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one, because the guarantees above come from Claude Code's workflow runtime and its plugin surface. A portable version of this would be a folder of prompts, which is the thing it exists not to be.
+
+---
+
 ## Experimental
 
 **Earned autonomy.** `interlock autonomy` records, per gated path, how many consecutive clean runs it has had, resets that count on a blocker or a human override, and assigns blame transitively — a downstream gate blames whoever produced the bad artifact, so `spec` cannot earn trust by emitting shallow specs. It is well tested and skills record outcomes into it.
@@ -175,7 +189,7 @@ It is **storage only.** Nothing reads the level to change what the workflow does
 
 ```bash
 git clone https://github.com/renzrollon/interlock && cd interlock
-npm test                      # 186 tests, no dependencies
+npm test                      # 538 tests, no dependencies
 claude plugin validate . --strict
 claude --plugin-dir .         # load it without installing
 ```

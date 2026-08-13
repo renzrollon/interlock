@@ -14,8 +14,8 @@
 // own — only the agents it spawns run commands. So a policy module that is not
 // wired to a subcommand here is a policy the model will improvise in prose.
 
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import {
   planWaves,
   formatPlan,
@@ -218,8 +218,11 @@ wave-state:
   record-verify --state <f> --result <f>   result: { ok, errors?, blocksNextWave? } or
                                            { skipped: true, reason }
   replan --state <f> --groups <f>          groups: [{ group, tasks: [...] }]
+  --write-state <file>   record-* / replan: write the new state to <file>;
+                         with --json, stdout is the NEXT STEP (same shape as "next")
   With --json, create / record-* / replan emit the NEW STATE — pipe it into the
-  next call. Only "next" emits a step instead.
+  next call. Only "next" emits a step instead. --write-state flips record-* /
+  replan to that step-on-stdout shape so a ship agent need not call next again.
 
 autonomy record:
   --blockers <n>         Blockers caught by this gate (default 0)
@@ -239,6 +242,7 @@ Examples:
   interlock waves --classified plan.json --json | interlock wave-state create --plan - --json > run.json
   interlock wave-state next --state run.json --json
   interlock wave-state record-batch --state run.json --result batch1.json --json > run2.json
+  interlock wave-state record-batch --state run.json --result batch1.json --write-state run.json --json
   interlock autonomy level review-code
 `
 
@@ -324,6 +328,27 @@ function warn(message) {
 
 function emit(json, obj, text) {
   process.stdout.write(json ? JSON.stringify(obj, null, 2) + '\n' : text)
+}
+
+/**
+ * record-* / replan: default stdout is the new state. --write-state writes that
+ * state to a file and stdout becomes nextStep() — the shape `wave-state next`
+ * already emits — so a ship agent can record and learn the next action in one turn.
+ */
+function emitRecordedState(json, flags, state) {
+  const dest = flags['write-state']
+  if (dest === true) die('--write-state requires a file path')
+  if (dest === '-') die('--write-state cannot be "-"')
+  if (dest) {
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, JSON.stringify(state, null, 2) + '\n')
+    const step = nextStep(state)
+    emit(json, step, formatRunState(state))
+    if (step.action === 'halt' || state.halt) process.exit(1)
+    return
+  }
+  emit(json, state, formatRunState(state))
+  if (state.halt) process.exit(1)
 }
 
 // --min-quality / --no-tolerance mean the same thing everywhere the tolerance
@@ -645,8 +670,7 @@ function main() {
           sub === 'record-batch'
             ? recordBatchResult(state, result)
             : recordVerifyResult(state, result)
-        emit(json, next, formatRunState(next))
-        if (next.halt) process.exit(1)
+        emitRecordedState(json, flags, next)
       } else if (sub === 'replan') {
         const state = readInput(flags.state, '--state <file|->')
         const groups = readInput(flags.groups, '--groups <file|->')
@@ -654,8 +678,7 @@ function main() {
           die('--groups must be a JSON array of { group, tasks } revisions')
         }
         const next = applyReplan(state, groups)
-        emit(json, next, formatRunState(next))
-        if (next.halt) process.exit(1)
+        emitRecordedState(json, flags, next)
       } else {
         die(
           `unknown wave-state subcommand: ${sub || '(none)'} — expected ` +
