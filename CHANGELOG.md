@@ -140,6 +140,8 @@ gained the fail-closed readiness gate it needs.
 
 ### Fixed
 
+- **`ship` no longer treats a hallucinated wave-state `action` as a halt worth cache-busting.** A haiku control-plane ping that invents `action: "report"` (the CLI never emits that) is retried once via `wave-state next` under a new `next-retry-*` label. Editing the prompt to resume was replaying every later implementer.
+
 - Agent-facing strings naming the private predecessor project: the graph report
   header, a walker comment, and four `shared/` contracts that still referred to
   `propose`, `grill`, `review-ts`, `apply-change` and `openspec-create-pr`.

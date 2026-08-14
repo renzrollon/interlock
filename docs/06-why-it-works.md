@@ -158,6 +158,8 @@ Within a group, tasks sort by tier descending before batching. Groups run in par
 
 `ship` does not decide what happens next. It asks `interlock wave-state next` and obeys one of six actions: `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt`.
 
+The ping is a copy, not an interpretation. A haiku agent that invents `action: "report"` (or any other value the state machine does not emit) is a relay miss: the script retries once with `wave-state next` under a new `next-retry-*` label, then halts if the retry is also unknown. It does not obey the invented value, and it does not require a human to edit the prompt — that would cache-miss every later implementer.
+
 Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `record-batch` and `replan` pass `--write-state`, so their stdout *is* the next step — saving one agent turn per batch.
 
 ---

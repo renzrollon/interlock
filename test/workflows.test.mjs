@@ -213,3 +213,40 @@ test('ship.js review and remediate return counts only', () => {
   assert.match(text, /do not paste dimension reports/i)
   assert.match(text, /do not paste fixer or skeptic/i)
 })
+
+test('ship.js control-plane pings copy stdout and do not say Report the step', () => {
+  // "Report the step verbatim" taught haiku to set action:"report". The ping
+  // must copy stdout, and the six real actions have to be named so it cannot
+  // treat an English verb as one of them.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(text, /Report the step/)
+  assert.match(text, /Copy stdout JSON into the result/)
+  assert.match(text, /Never invent action/)
+  for (const action of ['run-batch', 'test-wave', 'verify', 'replan', 'done', 'halt']) {
+    assert.match(
+      text,
+      new RegExp(`Allowed values:[^\\n]*${action}`),
+      `control-plane copy instructions must name ${action}`
+    )
+  }
+})
+
+test('ship.js retries an unknown wave-state action via next-retry- before halt', () => {
+  // An invented action is a relay miss. Re-reading state is pure; a new label
+  // cache-misses only the ping. Editing the prompt to resume would replay
+  // every later implementer.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /next-retry-/)
+  assert.match(text, /cheap\(\s*`next-retry-/)
+  const retryAt = text.indexOf('next-retry-')
+  const haltAt = text.indexOf('unrecognized step from the state machine')
+  assert.ok(retryAt !== -1 && haltAt !== -1, 'retry and halt must both exist')
+  assert.ok(retryAt < haltAt, 'retry must happen before the unrecognized-action halt')
+  assert.match(text, /wave-state next --state \$\{STATE\} --json/)
+})
+
+test('ship.js prefers parsed cliStdout over a mapped action', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /cliStdout/)
+  assert.match(text, /JSON\.parse/)
+})

@@ -82,18 +82,30 @@ const ok = {
 const step = (name, prompt, schema, extra = {}) =>
   agent(
     `${prompt}\n\nYou are one step of an automated ship run. Do not ask questions — ` +
-      `there is no one listening. If something is undecidable, report it in your ` +
-      `result rather than guessing at product intent.`,
+      `there is no one listening. If something is undecidable, put it in the result ` +
+      `fields rather than guessing at product intent.`,
     { label: name, schema, ...extra }
   )
 
 // Mechanical CLI pings: the script cannot run the binary, but they do not need
 // a large model. haiku is the same slug the planner already assigns to tier 1.
+//
+// Asking haiku to "report" a step taught it to set action:"report". The ping
+// copies stdout; an unknown action is a relay miss, not a new state-machine
+// verb. Do not enum-constrain action — a forced valid value is a silent wrong
+// branch, and a loud halt after one retry is cheaper than skipping a wave.
+const NEXT_ACTIONS = new Set(['run-batch', 'test-wave', 'verify', 'replan', 'done', 'halt'])
+const COPY_STDOUT =
+  'Copy stdout JSON into the result, including the raw stdout string in cliStdout. ' +
+  'action must be copied from stdout. Never invent action. ' +
+  'Allowed values: run-batch, test-wave, verify, replan, done, halt.'
+
 const nextSchema = {
   type: 'object',
   required: ['action'],
   properties: {
     action: { type: 'string' },
+    cliStdout: { type: 'string' },
     reason: { type: 'string' },
     tasks: {
       type: 'array',
@@ -117,6 +129,42 @@ const nextSchema = {
 }
 
 const cheap = (name, prompt) => step(name, prompt, nextSchema, { model: 'haiku' })
+
+function stepFromAgent(result) {
+  let resolved = null
+  if (result && typeof result.cliStdout === 'string') {
+    try {
+      const parsed = JSON.parse(result.cliStdout)
+      if (parsed && NEXT_ACTIONS.has(parsed.action)) resolved = parsed
+    } catch {
+      // stdout was not JSON; fall through to the mapped action
+    }
+  }
+  if (!resolved && result && NEXT_ACTIONS.has(result.action)) resolved = result
+  if (!resolved) return null
+  // record-verify's stdout is the *next* step, which has no skip flag.
+  // The agent still carries skipped/reason on its own result for the banner.
+  if (result.skipped && !resolved.skipped) {
+    return { ...resolved, skipped: result.skipped, reason: result.reason }
+  }
+  return resolved
+}
+
+// `steps` is the loop cursor, closed over so a retry gets a unique label.
+// nextStep is pure — re-reading state does not mutate it. A new label
+// cache-misses only this ping; implementer labels stay stable.
+async function readNext(raw) {
+  const resolved = stepFromAgent(raw)
+  if (resolved) return resolved
+  const retry = await cheap(
+    `next-retry-${steps}`,
+    `Run: interlock wave-state next --state ${STATE} --json\n\n` + COPY_STDOUT
+  )
+  const retried = stepFromAgent(retry)
+  if (retried) return retried
+  const invented = (retry && retry.action) || (raw && raw.action) || '(none)'
+  return { action: 'halt', reason: `unrecognized step from the state machine: ${invented}` }
+}
 
 // Set once validate resolves the change. `halt` can fire before that, so the
 // outcome record reads this rather than the `change` binding below, which is
@@ -264,12 +312,15 @@ if (!planned || !planned.ok) {
 //
 // record-* / replan pass --write-state so their stdout IS the next step. That
 // saves a second agent turn after every batch. One `next` still starts the loop.
+// An unknown action is retried once via `next-retry-*` (pure re-read, new label)
+// rather than treated as a policy halt.
 
 let steps = 0
-let next = await cheap(
-  `next-1`,
-  `Run: interlock wave-state next --state ${STATE} --json\n\n` +
-    `Report the step verbatim. Do not interpret it, and do not act on it.`
+let next = await readNext(
+  await cheap(
+    `next-1`,
+    `Run: interlock wave-state next --state ${STATE} --json\n\n` + COPY_STDOUT
+  )
 )
 
 while (steps++ < MAX_LOOP_STEPS) {
@@ -337,43 +388,48 @@ while (steps++ < MAX_LOOP_STEPS) {
       failed: reported.filter(r => !r.ok).length
     })
 
-    next = await cheap(
-      `record-batch-${steps}`,
-      `Record this batch result against the run state.\n\n` +
-        `Write this JSON to ${WORK}/batch.json:\n${JSON.stringify({ tasks: reported })}\n\n` +
-        `Then run:\n` +
-        `  interlock wave-state record-batch --state ${STATE} --result ${WORK}/batch.json --write-state ${STATE} --json\n\n` +
-        `Stdout is the next step (same shape as wave-state next). Report it verbatim. ` +
-        `A non-zero exit means the recorded result halted the run — report action:halt with the reason.\n\n` +
-        `Then tick the checkbox in openspec/changes/${change}/tasks.md for every task that succeeded. ` +
-        `Do not tick a failed one.`
+    next = await readNext(
+      await cheap(
+        `record-batch-${steps}`,
+        `Record this batch result against the run state.\n\n` +
+          `Write this JSON to ${WORK}/batch.json:\n${JSON.stringify({ tasks: reported })}\n\n` +
+          `Then run:\n` +
+          `  interlock wave-state record-batch --state ${STATE} --result ${WORK}/batch.json --write-state ${STATE} --json\n\n` +
+          COPY_STDOUT +
+          `\nA non-zero exit means the recorded result halted the run — copy action:halt with the reason.\n\n` +
+          `Then tick the checkbox in openspec/changes/${change}/tasks.md for every task that succeeded. ` +
+          `Do not tick a failed one.`
+      )
     )
     continue
   }
 
   if (next.action === 'verify') {
     const mode = next.mode === 'fix' ? 'fix' : 'check'
-    next = await cheap(
-      `inter-wave-verify-${steps}`,
-      `Inter-wave verification for change "${change}"${mode === 'fix' ? `, fix attempt ${next.fixAttempt}` : ''}.\n\n` +
-        `Run the project's fast checks against what the last wave changed: typecheck first, then ` +
-        `tests for the modified files, then lint if it is quick. Adapt to the stack.\n\n` +
-        (mode === 'fix'
-          ? `The previous check failed. Make ONE targeted fix and re-run only the failing step.\n\n`
-          : '') +
-        `Judge the outcome with:\n` +
-        `  interlock verify judge --plan <plan> --results <results> --context inter-wave --json\n` +
-        `The inter-wave context is load-bearing — a red typecheck stops the next wave here, though ` +
-        `it would not stop the commit later.\n\n` +
-        `Then record it:\n` +
-        `  write { "ok": <bool>, "errors": [...], "blocksNextWave": <bool> } — or ` +
-        `{ "skipped": true, "reason": "<reason>" } — to ${WORK}/verify.json\n` +
-        `  interlock wave-state record-verify --state ${STATE} --result ${WORK}/verify.json --write-state ${STATE} --json\n\n` +
-        `Stdout is the next step. Report it verbatim. A non-zero exit means action:halt.\n` +
-        `If you skipped, also set skipped:true and reason — that reason is printed to the user.\n\n` +
-        `Skip verification when no commands are detectable, when the failures are pre-existing, or ` +
-        `when it would exceed the budget — but a skip ALWAYS carries a reason. Set blocksNextWave true ` +
-        `only when the next wave genuinely cannot build on this state.`
+    next = await readNext(
+      await cheap(
+        `inter-wave-verify-${steps}`,
+        `Inter-wave verification for change "${change}"${mode === 'fix' ? `, fix attempt ${next.fixAttempt}` : ''}.\n\n` +
+          `Run the project's fast checks against what the last wave changed: typecheck first, then ` +
+          `tests for the modified files, then lint if it is quick. Adapt to the stack.\n\n` +
+          (mode === 'fix'
+            ? `The previous check failed. Make ONE targeted fix and re-run only the failing step.\n\n`
+            : '') +
+          `Judge the outcome with:\n` +
+          `  interlock verify judge --plan <plan> --results <results> --context inter-wave --json\n` +
+          `The inter-wave context is load-bearing — a red typecheck stops the next wave here, though ` +
+          `it would not stop the commit later.\n\n` +
+          `Then record it:\n` +
+          `  write { "ok": <bool>, "errors": [...], "blocksNextWave": <bool> } — or ` +
+          `{ "skipped": true, "reason": "<reason>" } — to ${WORK}/verify.json\n` +
+          `  interlock wave-state record-verify --state ${STATE} --result ${WORK}/verify.json --write-state ${STATE} --json\n\n` +
+          COPY_STDOUT +
+          `\nA non-zero exit means action:halt.\n` +
+          `If you skipped, also set skipped:true and reason — that reason is printed to the user.\n\n` +
+          `Skip verification when no commands are detectable, when the failures are pre-existing, or ` +
+          `when it would exceed the budget — but a skip ALWAYS carries a reason. Set blocksNextWave true ` +
+          `only when the next wave genuinely cannot build on this state.`
+      )
     )
 
     if (next && next.skipped && next.reason) {
@@ -383,16 +439,18 @@ while (steps++ < MAX_LOOP_STEPS) {
   }
 
   if (next.action === 'replan') {
-    next = await cheap(
-      `replan-${steps}`,
-      `A completed wave may have invalidated later ones for change "${change}".\n\n` +
-        `Revise ONLY groups that have not executed yet — the CLI rejects a revision to an executed ` +
-        `group, and that rejection is correct, not an obstacle to work around.\n\n` +
-        `If you have revisions, write [{ "group": <n>, "tasks": [...] }] to ${WORK}/replan.json, then:\n` +
-        `  interlock wave-state replan --state ${STATE} --groups ${WORK}/replan.json --write-state ${STATE} --json\n` +
-        `Stdout is the next step. Report it verbatim.\n\n` +
-        `If nothing actually needs revising: run \`interlock wave-state next --state ${STATE} --json\` ` +
-        `and report that step. Do not invent groups.`
+    next = await readNext(
+      await cheap(
+        `replan-${steps}`,
+        `A completed wave may have invalidated later ones for change "${change}".\n\n` +
+          `Revise ONLY groups that have not executed yet — the CLI rejects a revision to an executed ` +
+          `group, and that rejection is correct, not an obstacle to work around.\n\n` +
+          `If you have revisions, write [{ "group": <n>, "tasks": [...] }] to ${WORK}/replan.json, then:\n` +
+          `  interlock wave-state replan --state ${STATE} --groups ${WORK}/replan.json --write-state ${STATE} --json\n` +
+          COPY_STDOUT +
+          `\n\nIf nothing actually needs revising: run \`interlock wave-state next --state ${STATE} --json\` ` +
+          `and copy that step. Do not invent groups.`
+      )
     )
     if (!next) return await halt('the replan step returned no result')
     continue
