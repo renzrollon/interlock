@@ -58,6 +58,7 @@ Usage:
   interlock surface --changed <files...>    Classify UI testability of changed files
   interlock gate --findings <file>          Decide whether a review gate blocks
   interlock validate [change]               Inspect OpenSpec change artifacts
+                                            (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
@@ -373,6 +374,11 @@ function num(flags, key) {
   return n
 }
 
+function requestedName(positional, flags) {
+  if (typeof flags.change === 'string' && flags.change.trim()) return flags.change.trim()
+  return positional[1]
+}
+
 // One resolution path for every command that names a change, so "which change?"
 // fails the same actionable way each time.
 function requireChange(root, requested, json) {
@@ -462,7 +468,7 @@ function main() {
     }
 
     case 'validate': {
-      const name = requireChange(root, positional[1], json)
+      const name = requireChange(root, requestedName(positional, flags), json)
       const result = inspectChange(root, name)
       emit(json, result, formatInspection(result))
       if (!result.ready) process.exit(1)
@@ -558,7 +564,7 @@ function main() {
     }
 
     case 'ledger': {
-      const name = requireChange(root, positional[1], json)
+      const name = requireChange(root, requestedName(positional, flags), json)
       const parsed = readLedger(root, name)
       const summary = summarizeLedger(parsed)
       // `summary.invalid` is a count, so the rows behind it get their own key
@@ -573,7 +579,7 @@ function main() {
     }
 
     case 'ready': {
-      const name = requireChange(root, positional[1], json)
+      const name = requireChange(root, requestedName(positional, flags), json)
       const review = flags.review ? readInput(flags.review, '--review') : undefined
       const paths =
         typeof flags.paths === 'string'

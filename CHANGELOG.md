@@ -140,6 +140,8 @@ gained the fail-closed readiness gate it needs.
 
 ### Fixed
 
+- **`ship` dropped the change name when `args` was an array, and `interlock validate` ignored `--change`.** A Workflow payload of `["my-change"]` became `opts={}`, so validate ran nameless, hit "multiple active changes", and halted before any implementer. Skills already documented `validate --change <name>`; the CLI only read the positional. Both are wired now. Unchecked tasks are the work ship implements — they are not a halt.
+
 - **`ship` no longer treats a hallucinated wave-state `action` as a halt worth cache-busting.** A haiku control-plane ping that invents `action: "report"` (the CLI never emits that) is retried once via `wave-state next` under a new `next-retry-*` label. Editing the prompt to resume was replaying every later implementer.
 
 - Agent-facing strings naming the private predecessor project: the graph report

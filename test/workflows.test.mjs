@@ -191,12 +191,50 @@ test('ship.js implementers follow tool economy and stop on green for tier 1-2', 
   assert.match(text, /tier is 1 or 2/, 'tier 1-2 must stop after checks pass')
 })
 
+function parseInvocationFromSource(args) {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ PARSE_INVOCATION_START\n([\s\S]*?)\n\/\/ PARSE_INVOCATION_END/.exec(text)
+  assert.ok(m, 'ship.js must define parseInvocation between PARSE_INVOCATION markers')
+  return new Function('args', `${m[1]}; return parseInvocation(args)`)(args)
+}
+
 test('ship.js treats a raw string args as a change name, not a flag', () => {
   // Skill/slash often pass "my-change --no-commit" as a string. Dropping it
   // (opts={}) or stuffing it into flags loses the change name at validate.
+  const parsed = parseInvocationFromSource('my-change --no-commit')
+  assert.equal(parsed.changeArg, 'my-change')
+  assert.equal(parsed.noCommit, true)
+})
+
+test('ship.js reads a change name from an args array', () => {
+  // The Workflow tool docs pass lists as JSON arrays. Treating an array as
+  // opts={} used to drop the name, so validate ran nameless against every
+  // active change and halted.
+  const parsed = parseInvocationFromSource(['resilient-gitlab-rate-limiting'])
+  assert.equal(parsed.changeArg, 'resilient-gitlab-rate-limiting')
+})
+
+test('ship.js reads { change } and a JSON-encoded object string', () => {
+  assert.equal(
+    parseInvocationFromSource({ change: 'resilient-gitlab-rate-limiting' }).changeArg,
+    'resilient-gitlab-rate-limiting'
+  )
+  assert.equal(
+    parseInvocationFromSource('{"change":"resilient-gitlab-rate-limiting"}').changeArg,
+    'resilient-gitlab-rate-limiting'
+  )
+})
+
+test('ship.js validate threads a known change as --change, not a bare positional', () => {
+  // A positional after --json is easy for the validate agent to drop, and
+  // `interlock validate --change <name>` was documented but ignored by the CLI.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /typeof args === 'string'/, 'must read a string args payload')
-  assert.match(text, /rawTokens\.find\(t => !t\.startsWith\('-'\)\)/, 'first non-flag token is the change name')
+  assert.match(text, /interlock validate --change/)
+  assert.doesNotMatch(text, /interlock validate \$\{changeArg \|\| ''\} --json/)
+  assert.match(
+    text,
+    /Unchecked tasks are the work this run implements|0 checked|normal starting state/i
+  )
 })
 
 test('ship.js uses haiku for mechanical control-plane steps', () => {

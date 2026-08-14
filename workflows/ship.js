@@ -31,33 +31,56 @@ export const meta = {
 
 // --- run configuration -----------------------------------------------------
 
-// Slash / Skill invocation often passes a raw string ("my-change --no-commit")
-// rather than `{ change, flags }`. A string used to be dropped (opts became {})
-// or treated as a flag, so the change name never reached validate.
-const rawArgs = typeof args === 'string' ? args.trim() : ''
-const opts = typeof args === 'object' && args !== null && !Array.isArray(args) ? args : {}
-const rawTokens = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : []
-const flags = new Set(
-  (Array.isArray(opts.flags) ? opts.flags : [])
-    .concat(rawTokens.filter(t => t.startsWith('-')))
-    .map(String)
-)
-const has = name => flags.has(name) || flags.has(`--${name}`) || opts[name] === true
+// The Workflow tool delivers `args` as a string, a JSON array, or `{ change }`.
+// Treating an array as "not an object" used to drop the name, so validate ran
+// nameless against every active change and halted. parseInvocation is marked
+// so tests can eval it without the runtime.
+// PARSE_INVOCATION_START
+function parseInvocation(args) {
+  let value = args
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        value = JSON.parse(trimmed)
+      } catch {
+        value = trimmed
+      }
+    } else {
+      value = trimmed
+    }
+  }
+  const tokens = Array.isArray(value)
+    ? value.map(String)
+    : typeof value === 'string'
+      ? value.split(/\s+/).filter(Boolean)
+      : []
+  const opts = typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
+  const flags = new Set(
+    (Array.isArray(opts.flags) ? opts.flags : []).concat(tokens.filter(t => t.startsWith('-'))).map(String)
+  )
+  const has = name => flags.has(name) || flags.has(`--${name}`) || opts[name] === true
+  const named =
+    (typeof opts.change === 'string' && opts.change.trim()) ||
+    (typeof opts.name === 'string' && opts.name.trim()) ||
+    ''
+  return {
+    changeArg: named || tokens.find(t => !t.startsWith('-')) || '',
+    applyOnly: has('apply-only'),
+    noCommit: has('no-commit'),
+    skipE2e: has('skip-e2e'),
+    skipCoverage: has('skip-coverage'),
+    maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
+    mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
+  }
+}
+// PARSE_INVOCATION_END
 
-const changeArg =
-  typeof opts.change === 'string' && opts.change.trim()
-    ? opts.change.trim()
-    : (rawTokens.find(t => !t.startsWith('-')) || '')
-const applyOnly = has('apply-only')
-const noCommit = has('no-commit')
-const skipE2e = has('skip-e2e')
-const skipCoverage = has('skip-coverage')
-const maxParallel = Number.isInteger(opts.maxParallel) ? opts.maxParallel : null
-
-// How this run was reached. `spec --continue` sets it when it invokes ship after
-// a clean readiness gate; anything else is a run a human chose to start. The
-// corpus exists to compare those two populations, so ship must not assume.
-const mode = opts.mode === 'continue' ? 'continue' : 'checkpoint'
+const { changeArg, applyOnly, noCommit, skipE2e, skipCoverage, maxParallel, mode } =
+  parseInvocation(typeof args === 'undefined' ? undefined : args)
 
 // A structurally impossible run should stop before it burns agents, and a loop
 // whose exit condition depends on model output needs a backstop that does not.
@@ -209,12 +232,21 @@ const halt = async reason => {
 
 // --- 1. resolve and validate ----------------------------------------------
 
+const validateCmd = changeArg
+  ? `interlock validate --change ${changeArg} --json`
+  : 'interlock validate --json'
+
 const loaded = await step(
   'validate',
   `Resolve the OpenSpec change${changeArg ? ` named "${changeArg}"` : ' to ship'} and validate it.\n\n` +
-    `Run: interlock validate ${changeArg || ''} --json\n\n` +
-    `A non-zero exit means the change is not implementable — report ok:false with the reason ` +
+    `Run exactly: ${validateCmd}\n\n` +
+    (changeArg
+      ? `Do not omit --change ${changeArg}. Do not run a nameless validate. Do not list changes and pick one.\n\n`
+      : `If that exits because multiple changes are active, report ok:false with the candidates — do not pick one.\n\n`) +
+    `A non-zero exit means the change is not implementable — report ok:false with the CLI reason ` +
     `and stop; do not attempt repairs.\n\n` +
+    `Unchecked tasks are the work this run implements. A change with 0 checked boxes is the normal ` +
+    `starting state, not a reason to halt.\n\n` +
     `Also run: printenv CLAUDE_CODE_SUBAGENT_MODEL\n` +
     `If it prints a value, report it as subagentModelOverride. If it is unset the command exits ` +
     `non-zero and prints nothing — that is the normal case, so leave the field out rather than ` +

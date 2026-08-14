@@ -751,6 +751,30 @@ test('the pre-existing gating commands still exit 1 when they block', () => {
   assert.equal(notReady.code, 0, 'the fixture change is complete')
 })
 
+test('validate --change selects one change when several are active', () => {
+  // Skills and ship agents follow `interlock validate --change <name>`. If the
+  // CLI only reads positional[1], a nameless validate against 15 changes is
+  // exactly the halt that drops a name the caller did pass.
+  const root = join(dir, 'multi-validate')
+  for (const name of ['alpha', 'beta']) {
+    const change = join(root, 'openspec', 'changes', name)
+    mkdirSync(change, { recursive: true })
+    writeFileSync(join(change, 'proposal.md'), `# ${name}\n\nwhy\n`)
+    writeFileSync(join(change, 'design.md'), '# Design\nhow\n')
+    writeFileSync(join(change, 'tasks.md'), '- [ ] 1. do it\n')
+  }
+
+  const nameless = run(['validate', '--json', '--root', root])
+  assert.notEqual(nameless.code, 0, 'several changes and no name must not auto-pick')
+  const namelessBody = nameless.stdout + nameless.stderr
+  assert.match(namelessBody, /multiple active changes/)
+
+  const flagged = runJson(['validate', '--change', 'beta', '--root', root], 0)
+  assert.equal(flagged.change, 'beta')
+  assert.equal(flagged.ready, true)
+  assert.equal(flagged.tasks.done, 0, '0/N checkboxes is ready — that is what ship implements')
+})
+
 // --- ready: the gate that can skip a human --------------------------------
 //
 // Every assertion here is about failing closed. This is the one command whose

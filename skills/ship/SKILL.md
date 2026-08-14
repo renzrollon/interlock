@@ -16,7 +16,7 @@ The loop lives in that script on purpose: a skill is instructions a model can ta
 
 ## 1. Parse arguments
 
-From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. A bare string is a change name, never pass it through as `args` itself — the script would treat a string as a flag and lose the name.
+From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ change: "<name>" }`. A bare string or a one-element array is also a change name — the script accepts all three — but never omit the name when the user gave one. A nameless validate against several active changes is a halt, not a prompt.
 
 | Input | `args` field |
 |---|---|
