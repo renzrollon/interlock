@@ -2,17 +2,22 @@
 
 **Autonomous spec-driven development for Claude Code, layered on [OpenSpec](https://github.com/Fission-AI/OpenSpec).**
 
-Three commands, one human checkpoint. Onboard a repo, produce a reviewed spec, then ship it start-to-commit with parallel agents.
+One human checkpoint. Spec a change, read it, then ship it start-to-commit with parallel agents.
 
 ```bash
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
 ```
 
-Then, in a repo:
+Then, in a repo, onboard once:
 
 ```bash
-/interlock:bootstrap          # once — code → understanding → graph
+/interlock:bootstrap          # code → understanding → graph
+```
+
+Every change after that:
+
+```bash
 /interlock:spec "<idea>"      # explore → artifacts → review, then stops
 /interlock:ship               # waves → review → remediate → verify → commit
 ```
@@ -125,7 +130,7 @@ Surviving is not sufficient. `interlock gate` also applies a quality band: a fin
 
 ## Commands
 
-Four are the product:
+`bootstrap` once per repo. Then `spec` and `ship` on every change. `mr` when you want the merge request.
 
 | | | |
 |---|---|---|

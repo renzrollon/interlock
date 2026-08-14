@@ -1,6 +1,6 @@
 # Your first hour with Interlock
 
-This page takes you from install to one committed change, using three commands and nothing else.
+This page takes you from install to one committed change. Onboard the repo once, then spec, read, and ship.
 
 ## Before you start
 
@@ -113,11 +113,11 @@ This moves the completed change out of `openspec/changes/` and folds its delta s
 
 ## Do not run these yet
 
-Everything below is real and supported, but none of it is part of hour one. Each one adds concepts you do not need to complete a loop, and several are only meant to be called by the three commands above.
+Everything below is real and supported, but none of it is part of hour one. Each one adds concepts you do not need to complete a loop, and several are only meant to be called by the commands above.
 
 | Skill | Why it can wait |
 |---|---|
-| `/interlock:dispatch` | Routing help for when you have enough skills to be unsure. You have three. |
+| `/interlock:dispatch` | Routing help for when you have enough skills to be unsure. You have a loop, not a menu. |
 | `/interlock:graph` | Code knowledge graph. `bootstrap` already builds it for you. |
 | `/interlock:docs-digest` | Agent-only prose primer. Pure optimization. |
 | `/interlock:explore` | Standalone reconnaissance. `spec` runs it when it needs it. |
