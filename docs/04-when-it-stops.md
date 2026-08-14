@@ -65,6 +65,42 @@ Resume also only works **within the same Claude Code session**. If you exit Clau
 
 The related `workflowSizeGuideline` setting (`/config`, default `medium`) is advice Claude follows when it *writes* a workflow. `ship` ships as a pre-written script, so the guideline should not throttle it — but that is read from how the setting is documented rather than measured, so if you see wave sizes that disagree with `interlock limits`, that would be the first thing to check.
 
+## Retrigger and `/goal`
+
+There are three loops. Mixing them up is how leftover checkboxes burn a second 20+ agent `Workflow()` call.
+
+**Inner retries stay inside one `ship.js` run.** They are already capped (`interlock limits`): a one-shot `next-retry-*` when `wave-state` stdout is not a real action, inter-wave verify fix attempts, replan of unexecuted groups, remediation rounds 1–2 (round 3 is verdict-only), unit root-cause repair, and mechanical `interlock tasks tick` after a successful batch. Do not promote any of those to a second `Workflow()`.
+
+**Start a new outer run only when:**
+
+| Trigger | Why it is valid | Who says so |
+|---|---|---|
+| New user message `/interlock:ship` (or "ship leftover tasks") | New intent | Human |
+| After **SHIP HALTED**, you fix the cause (artifacts, allowlist, re-spec) then ship | A fail-closed gate can now pass | Human + CLI |
+| `spec --continue`: you answer the ledger, `interlock ready` exits 0, ship launches **once** | Continuity's one legal bridge | Human answers + `interlock ready` |
+| Resume the **same** workflow from `/workflows` after an interrupt | Cache replay, not a new plan | Human |
+
+**Never auto-retrigger.** Leftover `- [ ]` after `SHIP COMPLETE WITH LEFTOVERS` is a report (failed tasks under the halt cap). Unticked-but-done work is `interlock tasks tick`, not a second implementer pass. A classifier drop is a halt via `interlock tasks coverage`. Dispatch must not route "unchecked tasks → ship" after a workflow just returned. The `Large workflow` warning is advisory. Failed leftovers are retried only by a new human ship — preferably `--apply-only` so review and commit are not paid twice.
+
+Claude Code's [`/goal`](https://code.claude.com/docs/en/goal) is a *session* Stop hook: a transcript evaluator that starts a new parent turn when the condition is unmet. It does not run commands or read files. Interlock does not invoke `/goal`, and it does not ship a plugin Stop hook that blocks until boxes are empty — that re-creates the token leak and fights the eight-block cap.
+
+`finish()` and the spec checkpoint print a greppable line so a user-set `/goal` can stop:
+
+```text
+GOAL MET: interlock ship returned a terminal summary.
+GOAL MET: interlock spec stopped at the checkpoint.
+```
+
+Leftovers and a halt still print the ship line. They are terminal summaries, not a missing second ship.
+
+**Safe** (the evaluator can yes on the transcript):
+
+```text
+/goal The transcript contains "GOAL MET: interlock ship" or "GOAL MET: interlock spec". Leftover checkboxes and a second Workflow call are not required.
+```
+
+**Unsafe** (do not use — leftover boxes, a red e2e banner, or "keep going" will start another turn): `all tasks.md boxes checked`, `tests pass`, `keep implementing until done`.
+
 ## The soft continues
 
 ### `GRAPH UNAVAILABLE`

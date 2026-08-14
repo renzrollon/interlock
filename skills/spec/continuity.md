@@ -36,7 +36,7 @@ Workflow({
 
 If you invoke the skill instead, pass `mode=continue` in its arguments so the trampoline forwards `{ change, mode: "continue" }`.
 
-Say what you are doing and why it was allowed: the risk class, and that continuity was requested. Then hand over; from that point nothing can ask the user anything.
+Say what you are doing and why it was allowed: the risk class, and that continuity was requested. Then hand over; from that point nothing can ask the user anything. **Do not call Workflow again** after it returns. Leftover checkboxes are a report, not a second launch.
 
 The mode matters more than it looks. The corpus exists to compare continuity runs against checkpoint runs, and a continuity run filed as a checkpoint is worse than no record — it makes the comparison say the opposite of the truth.
 

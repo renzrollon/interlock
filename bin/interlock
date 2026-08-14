@@ -28,7 +28,7 @@ import {
 } from '../lib/waves.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
-import { inspectChange, resolveChange, listChanges, formatInspection } from '../lib/artifacts.mjs'
+import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
 import { LIMITS, RUNTIME, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
@@ -72,6 +72,8 @@ Usage:
   interlock ready [change]                  Decide whether continuity may skip the human
   interlock outcomes append --record <f>    Append one run outcome to the corpus
   interlock outcomes list                   Read the outcome corpus back
+  interlock tasks tick --ids <ids>          Tick succeeded task checkboxes by id
+  interlock tasks coverage --classified <f> Halt if classified.json omits an unchecked task
   interlock verify plan --profile <file>    Decide which verification commands to run
   interlock verify judge --plan <f> --results <f>
                                            Judge reported results against the plan
@@ -182,6 +184,17 @@ outcomes:
   list                   Read .claude/learning/outcomes.jsonl back
   Nothing gates on this corpus yet; it is recorded so that it can, later.
   Always exits 0 — losing a corpus line must never fail the run that made it.
+
+tasks:
+  tick --ids <ids>       Comma-separated task ids (the leading token of a
+                         checkbox, e.g. 1.1). Flips matching - [ ] to - [x].
+                         Already-checked matches are reported, not rewritten.
+                         Always exits 0 — a missed id is listed as missing.
+  coverage --classified <f>
+                         Remaining unchecked checkboxes vs classified.json.
+                         Exits 1 when an unchecked box has no matching id, so
+                         ship cannot start implementers on a partial plan.
+  [change] / --change    OpenSpec change name (resolved like validate)
 
 verify plan:
   --profile <file>       Parsed .claude/testing/profile.json. "-" for stdin.
@@ -612,6 +625,40 @@ function main() {
         emit(json, result, formatOutcomes(result))
       } else {
         die(`unknown outcomes subcommand: ${sub}`)
+      }
+      break
+    }
+
+    case 'tasks': {
+      const sub = positional[1]
+      if (sub === 'tick') {
+        const name = requireChange(root, requestedName(positional, flags), json)
+        const ids = splitPaths(flags.ids)
+        if (!ids.length) die('--ids is required')
+        const result = tickTasks(root, name, ids)
+        const text =
+          `ticked ${result.ticked.length}` +
+          (result.already.length ? `, already ${result.already.length}` : '') +
+          (result.missing.length ? `, missing ${result.missing.length}` : '') +
+          `\n`
+        emit(json, result, text)
+      } else if (sub === 'coverage') {
+        const name = requireChange(root, requestedName(positional, flags), json)
+        const classified = readInput(flags.classified, '--classified')
+        const inspection = inspectChange(root, name)
+        const listed = Array.isArray(classified)
+          ? classified
+          : Array.isArray(classified.tasks)
+            ? classified.tasks
+            : []
+        const result = { change: name, ...planCoverage(inspection.tasks.items, listed) }
+        const text = result.ok
+          ? `COVERAGE OK — ${result.classified} classified, ${result.remaining} remaining\n`
+          : `COVERAGE GAP — omitted: ${result.omitted.join(', ')}\n`
+        emit(json, result, text)
+        if (!result.ok) process.exit(1)
+      } else {
+        die(`unknown tasks subcommand: ${sub || '(none)'} — expected tick|coverage`)
       }
       break
     }

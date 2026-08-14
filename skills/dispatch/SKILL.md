@@ -52,7 +52,8 @@ The gap between `spec` and `ship` is deliberate. Never bridge it automatically �
 | Docs context too large, or the digest is stale | `/interlock:docs-digest` |
 | "How does X work?", "what breaks if I change Y?", tracing, comparing options | `/interlock:explore` |
 | "I want to build / fix X" — no change exists yet | `/interlock:spec` |
-| A change exists with reviewed artifacts and unchecked tasks | `/interlock:ship` |
+| A change exists with reviewed artifacts and unchecked tasks | `/interlock:ship` — only if the user asked to ship, and this conversation has not already run ship |
+| Leftover unchecked boxes after a ship workflow just returned | Report them. Do not route to ship. |
 | Implementation done, diff needs review | `/interlock:review-code` |
 | Artifacts written but not yet reviewed | `/interlock:review-artifacts` |
 | Suite is red, or a CI log was pasted | `/interlock:fix-tests` |
@@ -64,7 +65,7 @@ The gap between `spec` and `ship` is deliberate. Never bridge it automatically �
 
 **Prerequisite checks before routing:**
 
-- Routing to `ship` — run `interlock validate <change>` first. Not ready means route to `spec`, not ship.
+- Routing to `ship` — run `interlock validate <change>` first. Not ready means route to `spec`, not ship. If a ship workflow already returned in this conversation, leftover boxes are a report, not a retry.
 - Routing to `spec` with no explore brief and a question that spans subsystems — run `explore` first.
 - Routing to anything that reads the graph when `.claude/graph/` is absent — offer to build it once.
 

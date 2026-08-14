@@ -176,7 +176,9 @@ test('USAGE documents every subcommand this file exercises', () => {
     'interlock wave-state next',
     'interlock wave-state record-batch',
     'interlock wave-state record-verify',
-    'interlock wave-state replan'
+    'interlock wave-state replan',
+    'interlock tasks tick',
+    'interlock tasks coverage'
   ]) {
     assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
   }
@@ -887,6 +889,34 @@ test('an unknown outcomes subcommand is an actionable error', () => {
   const r = run(['outcomes', 'frobnicate', '--root', dir])
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /frobnicate/)
+})
+
+test('tasks tick flips matching checkboxes by id', () => {
+  const root = join(dir, 'tick-repo')
+  const change = join(root, 'openspec', 'changes', 'add-auth')
+  mkdirSync(change, { recursive: true })
+  writeFileSync(join(change, 'proposal.md'), '# P\nwhy\n')
+  writeFileSync(join(change, 'design.md'), '# D\nhow\n')
+  writeFileSync(join(change, 'tasks.md'), '- [ ] 1.1 scaffold\n- [ ] 1.2 wire\n')
+  const out = runJson(['tasks', 'tick', '--change', 'add-auth', '--ids', '1.1', '--root', root], 0)
+  assert.deepEqual(out.ticked, ['1.1'])
+  assert.match(readFileSync(join(change, 'tasks.md'), 'utf8'), /- \[x\] 1\.1 scaffold/)
+  assert.match(readFileSync(join(change, 'tasks.md'), 'utf8'), /- \[ \] 1\.2 wire/)
+})
+
+test('tasks coverage exits 1 when classified.json omits an unchecked task', () => {
+  const root = join(dir, 'cover-repo')
+  const change = join(root, 'openspec', 'changes', 'add-auth')
+  mkdirSync(change, { recursive: true })
+  writeFileSync(join(change, 'proposal.md'), '# P\nwhy\n')
+  writeFileSync(join(change, 'design.md'), '# D\nhow\n')
+  writeFileSync(join(change, 'tasks.md'), '- [ ] 1.1 scaffold\n- [ ] 1.2 wire\n')
+  const classified = file('classified-short.json', { tasks: [{ id: '1.1', group: 1, description: 'scaffold', tier: 2, model: 'sonnet', isTestTask: false }] })
+  const r = run(['tasks', 'coverage', '--change', 'add-auth', '--classified', classified, '--root', root, '--json'])
+  assert.equal(r.code, 1)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.ok, false)
+  assert.ok(out.omitted.some(t => String(t).includes('1.2')))
 })
 
 test('drift exits 0 even when it has findings', () => {

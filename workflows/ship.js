@@ -315,6 +315,9 @@ const planned = await step(
     `files is tier 4 sonnet, because breadth is not depth. Tier 5 only for genuinely novel ` +
     `architecture, and only tier 5 may be opus. When unsure, sonnet.\n\n` +
     `Write the classification to ${WORK}/classified.json, then run:\n` +
+    `  interlock tasks coverage --change ${change} --classified ${WORK}/classified.json --json\n` +
+    `A non-zero exit means you omitted an unchecked checkbox — add it and rewrite classified.json ` +
+    `before calling waves. Then:\n` +
     `  interlock waves --classified ${WORK}/classified.json --json${maxParallel ? ` --max-parallel ${maxParallel}` : ''} > ${WORK}/plan.json\n` +
     `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n\n` +
     `The planner is authoritative: it clamps over-eager opus, orders the waves, defers test tasks ` +
@@ -334,6 +337,42 @@ const planned = await step(
 
 if (!planned || !planned.ok) {
   return await halt(`wave planning failed: ${(planned && planned.detail) || 'no result from the planner step'}`)
+}
+
+const covered = await step(
+  'plan-coverage',
+  `Check that every remaining unchecked task for "${change}" was classified.\n\n` +
+    `Run: interlock tasks coverage --change ${change} --classified ${WORK}/classified.json --json\n\n` +
+    `Copy stdout JSON into the result, including ok and omitted. Never invent ok:true if the CLI ` +
+    `exited non-zero. A coverage gap means the classifier dropped a checkbox — report ok:false.`,
+  {
+    type: 'object',
+    required: ['ok'],
+    properties: {
+      ok: { type: 'boolean' },
+      omitted: { type: 'array', items: { type: 'string' } },
+      detail: { type: 'string' },
+      cliStdout: { type: 'string' }
+    }
+  },
+  { model: 'haiku' }
+)
+
+let coverageOk = Boolean(covered && covered.ok)
+let omitted = Array.isArray(covered && covered.omitted) ? covered.omitted : []
+if (covered && typeof covered.cliStdout === 'string') {
+  try {
+    const parsed = JSON.parse(covered.cliStdout)
+    if (parsed && typeof parsed.ok === 'boolean') coverageOk = parsed.ok
+    if (parsed && Array.isArray(parsed.omitted)) omitted = parsed.omitted
+  } catch {
+    // stdout was not JSON; keep the mapped fields
+  }
+}
+if (!coverageOk) {
+  return await halt(
+    `plan omitted unchecked tasks: ${omitted.join(', ') || (covered && covered.detail) || 'classified.json does not cover remaining checkboxes'}`
+  )
 }
 
 // --- 3. the wave loop ------------------------------------------------------
@@ -417,9 +456,11 @@ while (steps++ < MAX_LOOP_STEPS) {
       wave: next.wave,
       kind: next.action,
       ok: reported.filter(r => r.ok).length,
-      failed: reported.filter(r => !r.ok).length
+      failed: reported.filter(r => !r.ok).length,
+      failedIds: reported.filter(r => !r.ok).map(r => r.id)
     })
 
+    const succeededIds = reported.filter(r => r.ok).map(r => r.id)
     next = await readNext(
       await cheap(
         `record-batch-${steps}`,
@@ -429,8 +470,11 @@ while (steps++ < MAX_LOOP_STEPS) {
           `  interlock wave-state record-batch --state ${STATE} --result ${WORK}/batch.json --write-state ${STATE} --json\n\n` +
           COPY_STDOUT +
           `\nA non-zero exit means the recorded result halted the run — copy action:halt with the reason.\n\n` +
-          `Then tick the checkbox in openspec/changes/${change}/tasks.md for every task that succeeded. ` +
-          `Do not tick a failed one.`
+          (succeededIds.length
+            ? `Then tick succeeded ids (do not edit tasks.md by hand):\n` +
+              `  interlock tasks tick --change ${change} --ids ${succeededIds.join(',')} --json\n` +
+              `Tick stdout is not the next step — keep action from record-batch. Do not tick a failed id.\n`
+            : `No succeeded ids in this batch — do not tick anything.\n`)
       )
     )
     continue
@@ -709,13 +753,25 @@ return finish()
 
 // --- the summary -----------------------------------------------------------
 
+function leftoverIds() {
+  return summary.waves.flatMap(w => w.failedIds || [])
+}
+
 function finish() {
   // The banner block is always printed, on a halt and on a clean run alike.
   // Silence is the failure mode it exists to remove: a summary with no banner
   // section is indistinguishable from a run that degraded and hid it.
+  const leftover = leftoverIds()
   const lines = []
 
-  lines.push(summary.halted ? `SHIP HALTED — ${summary.halted}` : `SHIP COMPLETE — ${change || 'change'}`)
+  if (summary.halted) {
+    lines.push(`SHIP HALTED — ${summary.halted}`)
+  } else if (leftover.length) {
+    lines.push(`SHIP COMPLETE WITH LEFTOVERS — ${resolvedChange}`)
+    lines.push(`  leftover tasks (failed, boxes stay unchecked): ${leftover.join(', ')}`)
+  } else {
+    lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+  }
 
   for (const wave of summary.waves) {
     lines.push(`  wave ${wave.wave ?? '?'} (${wave.kind}): ${wave.ok} ok, ${wave.failed} failed`)
@@ -746,6 +802,9 @@ function finish() {
   }
   if (summary.commit && summary.commit.ok) lines.push(`  commit: ${summary.commit.sha || 'created'}`)
   for (const note of summary.notes) lines.push(`  ${note}`)
+
+  lines.push('Do not start another ship run unless the user asks.')
+  lines.push('GOAL MET: interlock ship returned a terminal summary.')
 
   lines.push('')
   if (banners.length) {

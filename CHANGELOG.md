@@ -140,7 +140,7 @@ gained the fail-closed readiness gate it needs.
 
 ### Fixed
 
-- **`ship` dropped the change name when `args` was an array, and `interlock validate` ignored `--change`.** A Workflow payload of `["my-change"]` became `opts={}`, so validate ran nameless, hit "multiple active changes", and halted before any implementer. Skills already documented `validate --change <name>`; the CLI only read the positional. Both are wired now. Unchecked tasks are the work ship implements — they are not a halt.
+- **`ship` no longer relaunches itself after leftover checkboxes.** The parent chat treated remaining `- [ ]` as “ship isn’t done” and called `Workflow(ship.js)` again — another 20+ agents, including a full review cycle. The trampoline and dispatch now forbid a second call in the same conversation. `finish()` prints `SHIP COMPLETE WITH LEFTOVERS` plus failed ids instead of a silent complete. Succeeded boxes are ticked by `interlock tasks tick`, not by haiku editing markdown. `interlock tasks coverage` halts before implementers if the classifier dropped an unchecked task. Terminal summaries now include `GOAL MET: interlock ship returned a terminal summary.` so a user-set `/goal` can stop; leftover boxes still count as met. Spec prints `GOAL MET: interlock spec stopped at the checkpoint.` and must not use `/goal` to skip the human read. Safe `/goal` recipes and the inner-vs-outer retrigger table live in [docs/04](docs/04-when-it-stops.md).
 
 - **`ship` no longer treats a hallucinated wave-state `action` as a halt worth cache-busting.** A haiku control-plane ping that invents `action: "report"` (the CLI never emits that) is retried once via `wave-state next` under a new `next-retry-*` label. Editing the prompt to resume was replaying every later implementer.
 

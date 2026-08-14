@@ -27,7 +27,7 @@ From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ c
 
 ## 2. Launch the workflow
 
-If the **Workflow tool** is available, this skill invocation is your authorization. Call it, then stop. Do not narrate the loop. Do not implement tasks. Do not commit yourself.
+If the **Workflow tool** is available, this skill invocation is your authorization. Call it **once**, then stop. Do not narrate the loop. Do not implement tasks. Do not commit yourself.
 
 ```
 Workflow({
@@ -35,6 +35,10 @@ Workflow({
   args: { change: "<name or omit>", mode: "checkpoint" | "continue", flags: ["..."] }
 })
 ```
+
+When it returns, you are done. Print the summary. **Do not call Workflow again in this conversation.** Leftover `- [ ]` boxes after a run are a report, not authorization to call Workflow again — those are failed or unticked tasks, and a second ship is a full new 20+ agent run. Only a **new user message** that explicitly asks to ship leftover tasks (or `/interlock:ship` again) is a relaunch.
+
+If a `/goal` is active, it is satisfied when the transcript contains `GOAL MET: interlock ship`. Leftover checkboxes do not continue the goal. Do not launch another Workflow to "finish the goal." Do not invoke `/goal` from this skill.
 
 `mode` matters more than it looks. The outcome corpus compares continuity runs against checkpoint runs; a continuity run filed as a checkpoint makes that comparison say the opposite of the truth.
 

@@ -220,6 +220,33 @@ function filesUnder(dir, ext) {
   return out
 }
 
+test('ship trampoline treats GOAL MET as satisfying an active /goal', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  assert.match(text, /GOAL MET: interlock ship/)
+  assert.match(text, /\/goal/)
+  assert.match(text, /Leftover.*not.*continue the goal|do not continue the goal/i)
+})
+
+test('spec checkpoint prints GOAL MET and does not use /goal to skip it', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.match(text, /GOAL MET: interlock spec stopped at the checkpoint/)
+  assert.match(text, /Do not (call|invoke|run) \/goal|\/goal must not skip the checkpoint|does not skip the checkpoint/i)
+})
+
+test('ship trampoline forbids a second Workflow call after the first returns', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  assert.match(text, /Do not call Workflow again/i)
+  assert.match(text, /Leftover.*not authorization|not authorization to call Workflow/i)
+})
+
+test('dispatch does not auto-route leftover boxes to ship after a run just returned', () => {
+  const dispatch = readFileSync(join(SKILLS_DIR, 'dispatch', 'SKILL.md'), 'utf8')
+  assert.match(dispatch, /Leftover unchecked|after a ship workflow/i)
+  assert.match(dispatch, /Do not route to ship/i)
+  const continuity = readFileSync(join(SKILLS_DIR, 'spec', 'continuity.md'), 'utf8')
+  assert.match(continuity, /Do not call Workflow again|never launch a second/i)
+})
+
 test('shared contracts and lib carry no predecessor skill names', () => {
   const targets = [
     ...filesUnder(join(ROOT, 'shared'), '.md'),

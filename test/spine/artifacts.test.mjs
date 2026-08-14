@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -8,7 +8,10 @@ import {
   listChanges,
   resolveChange,
   inspectChange,
-  parseTasks
+  parseTasks,
+  tickTasks,
+  planCoverage,
+  taskMatchesId
 } from '../../lib/artifacts.mjs'
 
 let root
@@ -100,6 +103,38 @@ test('prose and headings are not mistaken for tasks', () => {
   assert.equal(parseTasks('# Tasks\n\nSome prose.\n\n## Section\n').length, 0)
   assert.equal(parseTasks('').length, 0)
   assert.equal(parseTasks(null).length, 0)
+})
+
+test('taskMatchesId covers an id that is the whole text or a leading token', () => {
+  assert.equal(taskMatchesId('1.1 wire', '1.1'), true)
+  assert.equal(taskMatchesId('1.1', '1.1'), true)
+  assert.equal(taskMatchesId('1.10 extra', '1.1'), false)
+  assert.equal(taskMatchesId('2.1 wire', '1.1'), false)
+})
+
+test('tickTasks flips matching unchecked boxes and leaves others', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'interlock-tick-'))
+  const change = join(tmp, 'openspec', 'changes', 'add-auth')
+  mkdirSync(change, { recursive: true })
+  writeFileSync(join(change, 'tasks.md'), '# Tasks\n\n- [ ] 1.1 scaffold\n- [ ] 1.2 wire\n- [x] 1.3 done\n')
+  const r = tickTasks(tmp, 'add-auth', ['1.1', '1.3', '9.9'])
+  assert.deepEqual(r.ticked, ['1.1'])
+  assert.deepEqual(r.already, ['1.3'])
+  assert.deepEqual(r.missing, ['9.9'])
+  const md = readFileSync(join(change, 'tasks.md'), 'utf8')
+  assert.match(md, /- \[x\] 1\.1 scaffold/)
+  assert.match(md, /- \[ \] 1\.2 wire/)
+  rmSync(tmp, { recursive: true, force: true })
+})
+
+test('planCoverage fails when classified tasks omit an unchecked checkbox', () => {
+  const remaining = parseTasks('- [ ] 1.1 a\n- [ ] 1.2 b\n- [x] 1.3 c\n')
+  const miss = planCoverage(remaining, [{ id: '1.1' }])
+  assert.equal(miss.ok, false)
+  assert.deepEqual(miss.omitted, ['1.2 b'])
+  const full = planCoverage(remaining, [{ id: '1.1' }, { id: '1.2' }])
+  assert.equal(full.ok, true)
+  assert.deepEqual(full.omitted, [])
 })
 
 test('a tasks.md with no checkboxes is flagged as a problem', () => {

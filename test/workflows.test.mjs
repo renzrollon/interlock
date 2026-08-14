@@ -86,8 +86,11 @@ test('ship.js invokes only interlock subcommands that exist', () => {
   )
   assert.ok(dispatched.size > 5, 'failed to read the CLI dispatch table')
 
+  // GOAL MET lines name the workflow in prose (`interlock ship`) so a /goal
+  // evaluator can stop. They are not CLI invocations.
+  const withoutGoalMet = text.replace(/GOAL MET:.*$/gm, '')
   const invoked = new Set(
-    [...text.matchAll(/\binterlock ([a-z-]+)/g)]
+    [...withoutGoalMet.matchAll(/\binterlock ([a-z-]+)/g)]
       .map(m => m[1])
       // `interlock-graph` is a different binary; the capture picks up its suffix.
       .filter(name => name !== 'graph')
@@ -223,6 +226,38 @@ test('ship.js reads { change } and a JSON-encoded object string', () => {
     parseInvocationFromSource('{"change":"resilient-gitlab-rate-limiting"}').changeArg,
     'resilient-gitlab-rate-limiting'
   )
+})
+
+test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.match(docs, /GOAL MET: interlock ship/)
+  assert.match(docs, /GOAL MET: interlock spec/)
+  assert.match(docs, /Leftover checkboxes and a second Workflow call are not required/)
+  assert.match(docs, /Unsafe/)
+  assert.match(docs, /all tasks\.md boxes checked/)
+})
+
+test('ship.js does not claim a clean complete when a wave had failures', () => {
+  // One or two ok:false tasks stay under the halt cap and the run continues to
+  // commit. Printing SHIP COMPLETE with silent leftovers is what taught the
+  // parent to launch a second 20-agent workflow.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /failedIds/)
+  assert.match(text, /SHIP COMPLETE WITH LEFTOVERS/)
+  assert.match(text, /Do not start another ship run unless the user asks/)
+  assert.match(text, /GOAL MET: interlock ship returned a terminal summary/)
+})
+
+test('ship.js ticks succeeded tasks through the CLI, not by editing tasks.md', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /interlock tasks tick/)
+  assert.doesNotMatch(text, /Then tick the checkbox in openspec/)
+})
+
+test('ship.js halts when classified tasks omit an unchecked checkbox', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /interlock tasks coverage/)
+  assert.match(text, /plan-coverage/)
 })
 
 test('ship.js validate threads a known change as --change, not a bare positional', () => {

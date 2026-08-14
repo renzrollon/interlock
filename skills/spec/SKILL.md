@@ -187,6 +187,10 @@ This is where the default run ends. Close with:
 
 Then say plainly: **review the spec, and run `/interlock:ship` when it looks right.**
 
-Do not run ship. Do not offer to "just start on the first task". The checkpoint is the point.
+If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Without that flag, the run ended here.
+Without `--continue`, the run ended here. Print this greppable line so a session `/goal` can stop instead of wandering into implementation:
+
+`GOAL MET: interlock spec stopped at the checkpoint.`
+
+Do not run ship. Do not offer to "just start on the first task". The checkpoint is the point. Do not call `/goal` from this skill — a `/goal` does not skip the checkpoint and does not start ship. Continuity's only opt-in skip is `--continue` plus `interlock ready`.
