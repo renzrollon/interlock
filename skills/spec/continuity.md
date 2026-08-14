@@ -25,11 +25,16 @@ interlock ready "<name>" --review .claude/ready/<name>-review.json --paths <plan
 
 ## Branch on the exit code, never on the prose
 
-**Exit 0** (`ready: true`) — invoke `/interlock:ship`, telling it this run arrived through continuity so the outcome corpus records it as `continue` rather than `checkpoint`:
+**Exit 0** (`ready: true`) — invoke `/interlock:ship` (the trampoline skill). It launches the workflow; pass `mode: "continue"` so the outcome corpus is not misfiled as a checkpoint:
 
 ```
-/interlock:ship <change-name> mode=continue
+Workflow({
+  scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/ship.js",
+  args: { change: "<change-name>", mode: "continue" }
+})
 ```
+
+If you invoke the skill instead, pass `mode=continue` in its arguments so the trampoline forwards `{ change, mode: "continue" }`.
 
 Say what you are doing and why it was allowed: the risk class, and that continuity was requested. Then hand over; from that point nothing can ask the user anything.
 

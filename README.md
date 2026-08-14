@@ -19,7 +19,7 @@ Then, in a repo:
 
 | Requirement | Why |
 |---|---|
-| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | `/interlock:ship` is a [dynamic workflow](https://code.claude.com/docs/en/workflows), not a skill. Known-good on 2.1.229 |
+| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | `/interlock:ship` launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Known-good on 2.1.229 |
 | Dynamic workflows **enabled** | Off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` means no `ship`. On Pro, enable it in `/config` |
 | `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. It banners this rather than hiding it — see [when it stops](docs/04-when-it-stops.md) |
 | [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it does not replace it |
@@ -131,10 +131,10 @@ Four are the product:
 |---|---|---|
 | `bootstrap` | Onboard a repo — once | skill |
 | `spec` | Idea → reviewed, implementation-ready change | skill |
-| `ship` | Reviewed change → commit, without asking you anything | **workflow** |
+| `ship` | Reviewed change → commit, without asking you anything | **workflow** (skill trampoline) |
 | `mr` | Change → merge request | skill |
 
-`ship` is the odd one out on purpose: a skill is instructions Claude follows, a workflow is a script a runtime executes. Everything else in the list is genuinely a set of instructions, so it stays a skill.
+`ship` is the odd one out on purpose: a skill is instructions Claude follows, a workflow is a script a runtime executes. `/interlock:ship` is a thin skill that only launches `workflows/ship.js`, so the Skill tool can find it in any repo where the plugin is installed. The loop stays in the script.
 
 <details>
 <summary><b>Advanced surface</b> — mostly called by the four above; reach for them directly only when you know why</summary>

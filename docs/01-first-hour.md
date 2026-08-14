@@ -7,7 +7,7 @@ This page takes you from install to one committed change, using three commands a
 | Requirement | Why |
 |---|---|
 | [Claude Code](https://claude.com/claude-code) **v2.1.154+** | Interlock is a Claude Code plugin. Cursor and Copilot are not supported in 0.x. |
-| Dynamic workflows **enabled** | `/interlock:ship` is a [dynamic workflow](https://code.claude.com/docs/en/workflows), not a skill. Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — there is no ship path at all. |
+| Dynamic workflows **enabled** | `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start. |
 | The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. |
 | Node.js ≥ 18 | Runs the bundled `interlock` and `interlock-graph` CLIs. |
 | A git repo with code in it | `bootstrap` documents what already exists. |

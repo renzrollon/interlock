@@ -191,6 +191,14 @@ test('ship.js implementers follow tool economy and stop on green for tier 1-2', 
   assert.match(text, /tier is 1 or 2/, 'tier 1-2 must stop after checks pass')
 })
 
+test('ship.js treats a raw string args as a change name, not a flag', () => {
+  // Skill/slash often pass "my-change --no-commit" as a string. Dropping it
+  // (opts={}) or stuffing it into flags loses the change name at validate.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /typeof args === 'string'/, 'must read a string args payload')
+  assert.match(text, /rawTokens\.find\(t => !t\.startsWith\('-'\)\)/, 'first non-flag token is the change name')
+})
+
 test('ship.js uses haiku for mechanical control-plane steps', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /model:\s*'haiku'/, 'control-plane steps must pin haiku')

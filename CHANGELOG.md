@@ -144,6 +144,15 @@ gained the fail-closed readiness gate it needs.
   header, a walker comment, and four `shared/` contracts that still referred to
   `propose`, `grill`, `review-ts`, `apply-change` and `openspec-create-pr`.
   Tests now prevent regression.
+- **`/interlock:ship` was unknown in a consumer repo.** Moving the loop to
+  `workflows/ship.js` unregistered it from the Skill tool, so Claude Desktop
+  and `Skill(interlock:ship)` returned `Unknown skill` anywhere that was not
+  the plugin source tree. `skills/ship/SKILL.md` is restored as a trampoline
+  that only launches the script (`Workflow({ scriptPath })`) — the same
+  pattern Anthropic's own workflow plugins use. The loop stays in the script.
+  `plugin.json` now declares `"workflows": "./workflows"`. A raw string
+  `args` payload is treated as the change name rather than dropped or
+  stuffed into flags.
 - `Agent` added to `allowed-tools` on the skills that spawn subagents
   (`bootstrap`, `explore`, `review-code`; `ship` too, before it became a
   workflow and stopped needing frontmatter at all). To be precise about what this
@@ -162,8 +171,8 @@ gained the fail-closed readiness gate it needs.
 
 ### Removed
 
-- `skills/ship/SKILL.md`. Its logic is `workflows/ship.js` and the CLI
-  subcommands above; the `/interlock:ship` command name is unchanged.
+- The prose ship loop that used to live in `skills/ship/SKILL.md`. Control
+  flow is `workflows/ship.js`; the skill file is a trampoline only.
 
 ### Notes
 

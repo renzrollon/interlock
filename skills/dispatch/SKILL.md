@@ -39,7 +39,7 @@ graph → docs-digest → bootstrap        (once per repo)
 
 The gap between `spec` and `ship` is deliberate. Never bridge it automatically — if a spec is ready, say so and let the user start ship. The user can bridge it themselves with `/interlock:spec --continue`, but that is theirs to ask for; routing never offers it.
 
-`ship` is a dynamic workflow rather than a skill. The command name is unchanged, so route to it exactly as before — but it needs Claude Code v2.1.154+ with dynamic workflows enabled, and where they are off there is no ship path at all. If the user reports that `/interlock:ship` does not exist, that is the first thing to check.
+`ship` is a dynamic workflow. `/interlock:ship` is a skill trampoline that launches it via the Workflow tool (`scriptPath` → `workflows/ship.js`). Invoke the **skill** `interlock:ship` (or call Workflow with that scriptPath yourself). Do not treat a missing Workflow-namespaced command as "ship does not exist" — the skill is the entry point. If the trampoline halts because the Workflow tool is unavailable, that is the runtime gap (v2.1.154+, Dynamic workflows on in `/config`); do not implement the loop inline.
 
 ---
 

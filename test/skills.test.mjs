@@ -112,7 +112,7 @@ for (const dir of skillDirs) {
 }
 
 test('no skill references a command that was not shipped', () => {
-  // `ship` is a workflow, not a skill, so the shipped set is the union of both.
+  // `ship` is a workflow with a skill trampoline, so the shipped set is the union of both.
   // Plugin workflows are namespaced identically (`/interlock:<meta.name>`), which
   // is why moving ship out of skills/ did not change a single call site.
   const shipped = new Set([...skillDirs, ...workflowNames])
@@ -150,10 +150,19 @@ test('side-effecting skills are not model-invocable', () => {
   }
 })
 
-test('no skill claims to be ship', () => {
-  // Ship moved to workflows/. A skill of the same name would shadow the command
-  // and silently restore the prose loop this release replaced.
-  assert.ok(!skillDirs.includes('ship'), 'skills/ship must not exist — ship is a workflow')
+test('ship skill is a workflow trampoline, not the loop', () => {
+  // `/interlock:ship` must exist as a skill so the Skill tool can find it in a
+  // consumer repo. The loop itself stays in workflows/ship.js — a skill that
+  // reimplemented waves/review would shadow the workflow and restore prose
+  // control flow. The trampoline may only launch the script.
+  assert.ok(skillDirs.includes('ship'), 'skills/ship must exist as the Skill-tool entry point')
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  assert.match(text, /Workflow tool/, 'trampoline must invoke the Workflow tool')
+  assert.match(text, /workflows\/ship\.js/, 'trampoline must point at the script')
+  assert.match(text, /scriptPath/, 'trampoline must pass scriptPath, not reimplement the loop')
+  assert.doesNotMatch(text, /interlock waves/, 'trampoline must not run the wave planner')
+  assert.doesNotMatch(text, /interlock remediate/, 'trampoline must not run remediation')
+  assert.doesNotMatch(text, /cap two remediation/i, 'trampoline must not restate loop caps')
 })
 
 test('shared contracts referenced by skills all exist', () => {

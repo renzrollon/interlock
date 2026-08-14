@@ -31,15 +31,23 @@ export const meta = {
 
 // --- run configuration -----------------------------------------------------
 
-const opts = typeof args === 'object' && args !== null ? args : {}
+// Slash / Skill invocation often passes a raw string ("my-change --no-commit")
+// rather than `{ change, flags }`. A string used to be dropped (opts became {})
+// or treated as a flag, so the change name never reached validate.
+const rawArgs = typeof args === 'string' ? args.trim() : ''
+const opts = typeof args === 'object' && args !== null && !Array.isArray(args) ? args : {}
+const rawTokens = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : []
 const flags = new Set(
   (Array.isArray(opts.flags) ? opts.flags : [])
-    .concat(typeof opts === 'string' ? [opts] : [])
+    .concat(rawTokens.filter(t => t.startsWith('-')))
     .map(String)
 )
 const has = name => flags.has(name) || flags.has(`--${name}`) || opts[name] === true
 
-const changeArg = typeof opts.change === 'string' ? opts.change : ''
+const changeArg =
+  typeof opts.change === 'string' && opts.change.trim()
+    ? opts.change.trim()
+    : (rawTokens.find(t => !t.startsWith('-')) || '')
 const applyOnly = has('apply-only')
 const noCommit = has('no-commit')
 const skipE2e = has('skip-e2e')

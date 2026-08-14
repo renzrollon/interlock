@@ -17,5 +17,6 @@
     "multi-agent",
     "code-review",
     "knowledge-graph"
-  ]
+  ],
+  "workflows": "./workflows"
 }
