@@ -41,12 +41,12 @@ There is no penalty for mixing. A change proposed by `/openspec-propose` can be 
 | Artifact review before code exists | end of `spec` |
 | The human checkpoint as the product's one deliberate stop | between `spec` and `ship` |
 | Dependency-ordered wave execution with parallel subagents and context isolation | `ship` |
-| Adversarially verified diff review — two skeptics try to refute every finding | `ship` |
+| Adversarially verified diff review — two skeptics try to refute every finding | `ship --review` / `--strict`, or `/interlock:review-code` |
 | Deterministic decisions in code rather than prose: `interlock waves`, `surface`, `gate`, `validate` | throughout |
 | Repo onboarding for brownfield projects, plus a local code knowledge graph | `bootstrap` |
 | Spec-drift detection — completed changes never archived, and living specs older than the code they describe | `interlock drift`, surfaced in `spec` and `mr` |
 
-The honest framing: OpenSpec gives you good artifacts. Interlock gives you a loop that produces them under gates and then executes them without you.
+The honest framing: OpenSpec gives you good artifacts. Interlock gives you a loop that produces them under gates and then executes them without you. Default `ship` is that execute loop (waves, unit verify, commit). The review theater is optional.
 
 ## Spec drift, and who owns it
 

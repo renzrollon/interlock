@@ -38,6 +38,8 @@ If you invoke the skill instead, pass `mode=continue` in its arguments so the tr
 
 Say what you are doing and why it was allowed: the risk class, and that continuity was requested. Then hand over; from that point nothing can ask the user anything. **Do not call Workflow again** after it returns. Leftover checkboxes are a report, not a second launch.
 
+Ship is lean by default (waves → verify → commit). Continuity does **not** invent `--strict`. Pass `flags: ["strict"]` only when the user asked for the review/handoff tail.
+
 The mode matters more than it looks. The corpus exists to compare continuity runs against checkpoint runs, and a continuity run filed as a checkpoint is worse than no record — it makes the comparison say the opposite of the truth.
 
 **Exit 1** (`ready: false`) — **do not ship.** Present *only* what blocks:

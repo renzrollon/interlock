@@ -1,9 +1,9 @@
 ---
 name: ship
-description: Launch the Interlock ship workflow — take a reviewed OpenSpec change from tasks to commit in one uninterrupted run (waves, review, remediate, verify, commit). Use when the user ran /interlock:ship, asked to ship a reviewed change, or spec --continue passed the readiness gate. Never invoke after spec unless they asked.
+description: Launch the Interlock ship workflow — take a reviewed OpenSpec change from tasks to commit in one uninterrupted run (waves, verify, commit). Default is lean; pass --strict for review, handoff and conformance. Use when the user ran /interlock:ship, asked to ship a reviewed change, or spec --continue passed the readiness gate. Never invoke after spec unless they asked.
 license: MIT
 compatibility: Requires Claude Code v2.1.154+ with dynamic workflows enabled. Node.js >= 18 for the bundled interlock CLI.
-argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage]"
+argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage] [--review] [--handoff] [--conformance] [--strict]"
 disallowed-tools: AskUserQuestion
 allowed-tools: Read
 metadata:
@@ -14,6 +14,8 @@ This skill does not implement the ship loop. It launches `${CLAUDE_PLUGIN_ROOT}/
 
 The loop lives in that script on purpose: a skill is instructions a model can talk itself out of, and ship is sold as a run that asks nothing. Keep it that way.
 
+Default is **lean**: waves → unit verify → commit. Adversarial review, handoff artifacts and conformance are opt-in. `--strict` restores the previous full loop.
+
 ## 1. Parse arguments
 
 From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ change: "<name>" }`. A bare string or a one-element array is also a change name — the script accepts all three — but never omit the name when the user gave one. A nameless validate against several active changes is a halt, not a prompt.
@@ -23,7 +25,11 @@ From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ c
 | First non-flag token | `change` (omit if none — the script resolves the active change) |
 | `mode=continue` / this run is spec `--continue` | `mode: "continue"` (omit otherwise; the script defaults to `checkpoint`) |
 | `--apply-only` `--no-commit` `--skip-e2e` `--skip-coverage` | `flags: ["apply-only", ...]` |
+| `--review` `--handoff` `--conformance` | `flags: ["review", ...]` — enable that tail piece |
+| `--strict` | `flags: ["strict"]` — review + handoff + conformance + autonomy record (previous default) |
 | `--max-parallel N` | `maxParallel: N` |
+
+Do not invent `--strict` because the change looks large. Continuity (`spec --continue`) also launches default lean unless the user passed a tail flag.
 
 ## 2. Launch the workflow
 

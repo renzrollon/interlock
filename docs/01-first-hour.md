@@ -81,14 +81,15 @@ When the spec looks right:
 /interlock:ship
 ```
 
-This runs start-to-commit without asking you anything. It is a workflow rather than a skill, and the workflow runtime accepts no mid-run user input at all — the zero-touch contract is a property of the runtime, not a promise in a prompt, so it cannot stall waiting for you. It implements `tasks.md` in dependency-ordered waves with parallel subagents, reviews the diff, remediates findings, runs the unit suite, writes handoff artifacts, and makes one commit.
+This runs start-to-commit without asking you anything. It is a workflow rather than a skill, and the workflow runtime accepts no mid-run user input at all — the zero-touch contract is a property of the runtime, not a promise in a prompt, so it cannot stall waiting for you. It implements `tasks.md` in dependency-ordered waves with parallel subagents, runs the unit suite, and makes one commit. It does not review the diff or write handoff artifacts unless you ask.
 
 Useful flags for a first run:
 
 ```bash
-/interlock:ship --apply-only     # stop after the waves, before review
+/interlock:ship --apply-only     # stop after the waves, before verify and commit
 /interlock:ship --no-commit      # run everything, leave the commit to you
 /interlock:ship --skip-e2e       # don't run e2e even if it's configured
+/interlock:ship --strict         # previous default: review, handoff, conformance
 ```
 
 If it halts, it tells you what completed and what it needs from you. [**04 — When it stops**](./04-when-it-stops.md) decodes each case.
@@ -122,10 +123,10 @@ Everything below is real and supported, but none of it is part of hour one. Each
 | `/interlock:docs-digest` | Agent-only prose primer. Pure optimization. |
 | `/interlock:explore` | Standalone reconnaissance. `spec` runs it when it needs it. |
 | `/interlock:review-artifacts` | The gate `spec` already runs at the end of its own flow. |
-| `/interlock:review-code` | The gate `ship` already runs on the diff. |
+| `/interlock:review-code` | The adversarial gate. Default `ship` does not run it; pass `--review` or `--strict`, or run this after. |
 | `/interlock:fix-tests` | For a red suite. Come back when you have one. |
-| `/interlock:manual-test-plan` | `ship` emits this when the diff touches UI. |
-| `/interlock:explain-code` | `ship` writes the commit teach-in itself. |
+| `/interlock:manual-test-plan` | `ship --handoff` / `--strict` emits this when the diff touches UI. |
+| `/interlock:explain-code` | `ship --handoff` / `--strict` writes the commit teach-in. |
 | `/interlock:commit` | `ship` calls it. Calling it directly is for recovery. |
 | `/interlock:spec --continue` | The opt-out from Step 3. Skipping the read before you have done it once is skipping the part of the loop that earns the rest. [**05 — Continuity**](./05-continuity.md) when you are ready. |
 

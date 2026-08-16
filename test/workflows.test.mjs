@@ -207,6 +207,10 @@ test('ship.js treats a raw string args as a change name, not a flag', () => {
   const parsed = parseInvocationFromSource('my-change --no-commit')
   assert.equal(parsed.changeArg, 'my-change')
   assert.equal(parsed.noCommit, true)
+  assert.equal(parsed.review, false)
+  assert.equal(parsed.handoff, false)
+  assert.equal(parsed.conformance, false)
+  assert.equal(parsed.strict, false)
 })
 
 test('ship.js reads a change name from an args array', () => {
@@ -228,6 +232,49 @@ test('ship.js reads { change } and a JSON-encoded object string', () => {
   )
 })
 
+test('ship.js parseInvocation treats --review as review-only', () => {
+  const parsed = parseInvocationFromSource('my-change --review')
+  assert.equal(parsed.changeArg, 'my-change')
+  assert.equal(parsed.review, true)
+  assert.equal(parsed.handoff, false)
+  assert.equal(parsed.conformance, false)
+  assert.equal(parsed.strict, false)
+})
+
+test('ship.js parseInvocation treats --strict as the previous default tail', () => {
+  const parsed = parseInvocationFromSource('my-change --strict')
+  assert.equal(parsed.changeArg, 'my-change')
+  assert.equal(parsed.review, true)
+  assert.equal(parsed.handoff, true)
+  assert.equal(parsed.conformance, true)
+  assert.equal(parsed.strict, true)
+})
+
+test('ship.js parseInvocation reads --strict from a flags array', () => {
+  const parsed = parseInvocationFromSource({ change: 'add-auth', flags: ['strict'] })
+  assert.equal(parsed.changeArg, 'add-auth')
+  assert.equal(parsed.strict, true)
+  assert.equal(parsed.review, true)
+})
+
+test('ship.js default is lean: tail gated, LEAN SHIP banner, first next folded into plan', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /if \(review\)/)
+  assert.match(text, /if \(handoff \|\| conformance\)/)
+  assert.match(text, /LEAN SHIP:/)
+  assert.match(text, /pass --review \/ --handoff \/ --strict to enable/)
+  assert.match(text, /readNext\(planned\)/)
+  assert.doesNotMatch(text, /next-1/)
+})
+
+test('ship.js records autonomy only under --strict', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const autonomyAt = text.indexOf('interlock autonomy record')
+  const strictAt = text.lastIndexOf('(strict', autonomyAt)
+  assert.ok(autonomyAt !== -1, 'autonomy record must still exist for --strict')
+  assert.ok(strictAt !== -1 && strictAt < autonomyAt, 'autonomy record must sit behind the strict flag')
+})
+
 test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
   const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
   assert.match(docs, /GOAL MET: interlock ship/)
@@ -235,6 +282,7 @@ test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
   assert.match(docs, /Leftover checkboxes and a second Workflow call are not required/)
   assert.match(docs, /Unsafe/)
   assert.match(docs, /all tasks\.md boxes checked/)
+  assert.match(docs, /LEAN SHIP/)
 })
 
 test('ship.js does not claim a clean complete when a wave had failures', () => {
@@ -257,7 +305,8 @@ test('ship.js ticks succeeded tasks through the CLI, not by editing tasks.md', (
 test('ship.js halts when classified tasks omit an unchecked checkbox', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /interlock tasks coverage/)
-  assert.match(text, /plan-coverage/)
+  assert.match(text, /coverageOk/)
+  assert.doesNotMatch(text, /plan-coverage/, 'coverage is folded into plan-waves, not a second agent')
 })
 
 test('ship.js validate threads a known change as --change, not a bare positional', () => {

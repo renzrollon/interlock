@@ -7,7 +7,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-Two passes landed together.
+**Breaking:** `/interlock:ship` is **lean by default**. Waves, unit verification, and a commit always run. Adversarial review, remediation, handoff artifacts (`manual-test-plan.md`, `code-explanation.md`, memory), and spec conformance are opt-in via `--review`, `--handoff`, `--conformance`, or `--strict` (the previous default). A `LEAN SHIP:` banner lists what was skipped so a lean run cannot look like a strict one. Continuity (`spec --continue`) also launches lean unless a tail flag is passed. Coverage checking and the first `wave-state next` are folded into the planner (no extra `plan-coverage` or `next-1` agents). `interlock autonomy record` runs only under `--strict`.
+
+Two earlier passes landed together.
 
 The first was **honesty and adoption**: several things the 0.1.0 README described
 as enforced were prose, and one was not wired up at all. Those claims are now

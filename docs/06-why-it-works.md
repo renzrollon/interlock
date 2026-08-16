@@ -37,6 +37,8 @@ Three consequences follow, and none of them are available to a folder of prompts
 
 **Zero-touch becomes structural.** The runtime accepts no mid-run user input. There is no `AskUserQuestion` to remove because nothing is listening. This is why every decision that could need a human must be settled *before* `ship` starts — and why the checkpoint between `spec` and `ship` exists at all.
 
+Default `ship` is that loop through **waves → unit verify → commit**. Adversarial review, remediation, and handoff artifacts are `--review` / `--handoff` / `--strict` — optional cost, not the execute loop. The moat is the checkpoint plus caps that cannot be argued with, not a more expensive GSD-shaped tail.
+
 The runtime imposes its own ceilings: 16 concurrent agents, 1,000 per run, no module loading (a script containing `import()` fails before it starts), and no filesystem or shell access from the script itself. That last one shaped the whole design. The script cannot run `interlock`; it must ask an agent to. Which turned out to be a feature — every policy decision is a CLI invocation with a testable exit code, and the script *cannot* quietly reimplement a rule it was supposed to obey.
 
 ---
@@ -93,7 +95,7 @@ A twelve-task change is not twelve full artifact reads. It is nine task descript
 
 ### 4.2 Model routing, with a clamp
 
-Tier maps to model: tier 1 → `haiku`, tiers 2–4 → `sonnet`, tier 5 → `opus`. The mechanical control-plane steps (`wave-state next`, `record-batch`, `replan`, `record-outcome`) are pinned to `haiku` — they parse JSON and report it verbatim, which does not need a frontier model.
+Tier maps to model: tier 1 → `haiku`, tiers 2–4 → `sonnet`, tier 5 → `opus`. The mechanical control-plane steps (`record-batch`, `replan`, `record-outcome`, and `next-retry`) are pinned to `haiku` — they parse JSON and report it verbatim, which does not need a frontier model. The planner itself runs the first `wave-state next` (and the coverage check) in the same turn as classification, so the loop does not pay a separate `plan-coverage` or `next-1` agent.
 
 The clamp is the part that matters. Classifiers reliably over-assign `opus` to anything touching several files, so `lib/waves.mjs` overrides it:
 
@@ -160,7 +162,7 @@ Within a group, tasks sort by tier descending before batching. Groups run in par
 
 The ping is a copy, not an interpretation. A haiku agent that invents `action: "report"` (or any other value the state machine does not emit) is a relay miss: the script retries once with `wave-state next` under a new `next-retry-*` label, then halts if the retry is also unknown. It does not obey the invented value, and it does not require a human to edit the prompt — that would cache-miss every later implementer.
 
-Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `record-batch` and `replan` pass `--write-state`, so their stdout *is* the next step — saving one agent turn per batch.
+Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `record-batch` and `replan` pass `--write-state`, so their stdout *is* the next step — saving one agent turn per batch. The planner already ran the first `next`, so the loop starts from that result.
 
 ---
 
@@ -186,6 +188,8 @@ Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `
 ---
 
 ## 7. Review: making dismissal expensive
+
+This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — four to six dimensions, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
 
 ### 7.1 Why adversarial review at all
 
@@ -357,11 +361,13 @@ The same instinct, repeated across the codebase:
 
 **No published benchmark.** 590 tests prove the policy engine behaves as specified. They do not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
 
+**Review theater on the default path.** Until this release, every `ship` paid for adversarial review, handoff artifacts, and conformance whether the diff earned them or not. Default is now waves → verify → commit; `--strict` is the previous bill. A lean run prints `LEAN SHIP` so it cannot look like a strict one.
+
 ---
 
 ## 15. The one-paragraph version
 
-Most of this category competes on **how much structure you write before coding**. Interlock competes on **how many decisions the model is not allowed to make**. Control flow lives in a script the runtime executes, policy lives in a CLI you can run yourself with no model and no network, and judgement — classification, implementation, review, synthesis — stays with the model, which is what it is for. Every gate fails closed, every degradation is spoken aloud, and every claim an agent makes about its own work is audited against evidence: a decision needs a citation, a dismissal needs a span it actually read. What is left over is a loop you can check.
+Most of this category competes on **how much structure you write before coding**. Interlock competes on **how many decisions the model is not allowed to make**. Control flow lives in a script the runtime executes, policy lives in a CLI you can run yourself with no model and no network, and judgement — classification, implementation, review, synthesis — stays with the model, which is what it is for. Default `ship` is GSD-shaped waves whose caps cannot be argued with. The expensive tail is a flag. Every gate fails closed, every degradation is spoken aloud, and every claim an agent makes about its own work is audited against evidence: a decision needs a citation, a dismissal needs a span it actually read. What is left over is a loop you can check.
 
 ---
 

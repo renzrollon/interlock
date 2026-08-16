@@ -19,7 +19,8 @@ Every change after that:
 
 ```bash
 /interlock:spec "<idea>"      # explore → artifacts → review, then stops
-/interlock:ship               # waves → review → remediate → verify → commit
+/interlock:ship               # waves → verify → commit
+/interlock:ship --strict      # previous default: + review, handoff, conformance
 ```
 
 | Requirement | Why |
@@ -70,7 +71,7 @@ One human stop. Everything else is automatic.
 
 **The gap between `spec` and `ship` is the product.** A spec is the cheapest place to catch a wrong idea, so that is the one place a person is *required* to look.
 
-`/interlock:ship` is the one that truly asks nothing, and it is structurally incapable of it: ship is a **dynamic workflow**, and the workflow runtime takes no mid-run user input at all. The zero-touch contract is a property of the runtime rather than a promise in a prompt. `commit` and `mr` set `disable-model-invocation: true` for the same reason — Claude cannot decide on its own that now is a good time to commit.
+`/interlock:ship` is the one that truly asks nothing, and it is structurally incapable of it: ship is a **dynamic workflow**, and the workflow runtime takes no mid-run user input at all. The zero-touch contract is a property of the runtime rather than a promise in a prompt. Default ship is waves → unit verify → commit. Pass `--strict` when you want the adversarial review and handoff tail. `commit` and `mr` set `disable-model-invocation: true` for the same reason — Claude cannot decide on its own that now is a good time to commit.
 
 The steps before it are conversational where they have to be: `spec` asks about intent, bug-fix evidence, and dependency versions it refuses to guess — questions with no correct answer available in the repo. That is also why every decision that could need a human has to be settled *before* ship starts. Once the workflow is running, there is nobody to ask.
 
@@ -110,7 +111,7 @@ interlock-graph path lib/auth app/api
 
 Everything genuinely requiring judgement — classification, implementation, review, synthesis — stays with the model. The split is the point: **the script holds the loop, the CLI holds the rules, the agents do the work.**
 
-The wave loop, the remediation rounds, the halt conditions and the verification order are `workflows/ship.js` — a script, not eleven numbered headings a model is asked to follow in order. Control flow written as prose is control flow the model can talk itself out of.
+The wave loop, the halt conditions and the verification order are `workflows/ship.js` — a script, not numbered headings a model is asked to follow. Control flow written as prose is control flow the model can talk itself out of. Default `ship` is that loop through to a green unit suite and a commit. Adversarial review and handoff artifacts are `--strict` (or `--review` / `--handoff` on their own), not the execute loop itself.
 
 That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into its own wave. The prediction is a model's, so this narrows the race rather than closing it — but the assumption is now stated and checked instead of merely assumed.
 
@@ -136,7 +137,7 @@ Surviving is not sufficient. `interlock gate` also applies a quality band: a fin
 |---|---|---|
 | `bootstrap` | Onboard a repo — once | skill |
 | `spec` | Idea → reviewed, implementation-ready change | skill |
-| `ship` | Reviewed change → commit, without asking you anything | **workflow** (skill trampoline) |
+| `ship` | Reviewed change → commit (waves → verify → commit). `--strict` adds review and handoff | **workflow** (skill trampoline) |
 | `mr` | Change → merge request | skill |
 
 `ship` is the odd one out on purpose: a skill is instructions Claude follows, a workflow is a script a runtime executes. `/interlock:ship` is a thin skill that only launches `workflows/ship.js`, so the Skill tool can find it in any repo where the plugin is installed. The loop stays in the script.
@@ -149,7 +150,7 @@ Surviving is not sufficient. `interlock gate` also applies a quality band: a fin
 | | |
 |---|---|
 | `explore` | Parallel read-only reconnaissance, durable brief |
-| `review-code` · `review-artifacts` | The adversarial gates, run standalone |
+| `review-code` · `review-artifacts` | The adversarial gates, run standalone. Default `ship` does not run `review-code`; pass `--review` or `--strict`. |
 | `graph` · `docs-digest` | Build and query the local code graph and docs digest |
 | `fix-tests` | Discover the test setup, then repair failures by root cause |
 | `manual-test-plan` · `explain-code` · `commit` | Individual `ship` stages, run on their own |
@@ -165,7 +166,7 @@ None of these are part of a first loop — see [the first hour](docs/01-first-ho
 
 `openspec init` installs its own `openspec-propose`, `openspec-explore` and `openspec-apply-change` skills. Interlock does **not** fork them. `/interlock:spec` drives the `openspec` CLI directly — `openspec new change`, `openspec status --json`, `openspec instructions` — because the CLI is the stable contract and a forked skill drifts on every OpenSpec release.
 
-What Interlock adds around it: parallel exploration with a durable brief, an evidence gate for bug fixes, invariant sweeps, adversarial review, wave execution, and the deterministic spine above.
+What Interlock adds around it: parallel exploration with a durable brief, an evidence gate for bug fixes, invariant sweeps, wave execution with mechanical caps, optional adversarial review (`--strict` or `/interlock:review-code`), and the deterministic spine above.
 
 Both sets of skills coexist. Plugin skills are namespaced, so `/openspec-propose` and `/interlock:spec` both stay available. Use `/interlock:spec` when you want the gates; use the stock skills when you want the plain artifact loop.
 
@@ -198,8 +199,8 @@ Everything else in the plugin is stack-agnostic. `bootstrap` reads your dependen
 Most of the category competes on how much structure you write before coding — Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on a different axis: **how many decisions the model is not allowed to make.**
 
 - **Caps and gates are code.** Remediation rounds, the task-failure budget, parallelism, the review quality floor — all in a tested CLI, not in markdown a model can talk itself past.
-- **The zero-touch contract is the runtime's, not a prompt's.** `ship` is a workflow, so there is nobody to ask. Everyone else promises autonomy in prose.
-- **A dismissal must cite evidence; a report needn't.** Findings are attacked before you see them, dismissal counts are printed, and a refutation that cites nothing refutes nothing.
+- **The zero-touch contract is the runtime's, not a prompt's.** `ship` is a workflow, so there is nobody to ask. Everyone else promises autonomy in prose. Default ship is waves → verify → commit; `--strict` is the review/handoff tail.
+- **A dismissal must cite evidence; a report needn't.** On `--review` / `--strict` or `/interlock:review-code`, findings are attacked before you see them, dismissal counts are printed, and a refutation that cites nothing refutes nothing.
 - **The invariant sweep is the licensed exception to the diff leash** — a value canonicalized in one place and still read raw in three others is the one bug class every diff-scoped review is structurally blind to.
 - **Spec drift is measured, not hand-waved** — and reported at three separate confidence levels rather than one misleading number.
 
@@ -209,7 +210,7 @@ The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one,
 
 ## Experimental
 
-**Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does** — the human checkpoint between `spec` and `ship` is not skippable at any level.
+**Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes (`review-code`, artifact review, and `ship --strict`) and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does** — the human checkpoint between `spec` and `ship` is not skippable at any level.
 
 They exist to answer, later and from evidence, whether any gate can safely be relaxed. That question stays open until there is a corpus to answer it with, and wiring a branch before then would be deciding without the data these were built to gather.
 

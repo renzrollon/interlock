@@ -12,13 +12,13 @@ Almost everything is a soft continue. The halts are deliberately few.
 
 ## The loud halts
 
-`/interlock:ship` has three hard halts, plus two preconditions that stop it before it starts.
+`/interlock:ship` has two hard halts on the default (lean) path, plus two preconditions that stop it before it starts. `--review` / `--strict` adds a third halt: unresolved review blockers.
 
 | Condition | What it means | What to do |
 |---|---|---|
 | `interlock validate` exits non-zero | The change is not implementable: an artifact is missing or empty, or `tasks.md` has no real checkbox tasks | Run `interlock validate <change-name>` yourself and read the reason. Usually the change was never fully specced — go back to [the checkpoint](./02-the-checkpoint.md) or re-run `/interlock:spec`. |
 | Subagents unavailable | `ship` orchestrates and never implements inline — context isolation is the entire point, so it stops rather than falling back | Usually your own permission settings restrict the `Agent` tool. Allow it and re-run. Do not work around it by asking the model to implement in the main conversation. |
-| Unresolved blockers after two remediation rounds | The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. |
+| Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
 | Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
 
@@ -61,7 +61,7 @@ So stopping mid-wave costs the whole rest of that wave. This is one place Interl
 
 Resume also only works **within the same Claude Code session**. If you exit Claude Code while `ship` is running, the next session starts it fresh — no cached results, no partial credit. On a long run, leave the session open.
 
-**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A normal `ship` run crosses that easily — several waves of up to 8 implementers, four to six review dimensions, two skeptics per blocker and warning, then one fixer per file. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
+**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A **`--strict`** run crosses that easily — several waves of up to 8 implementers, four to six review dimensions, two skeptics per blocker and warning, then one fixer per file. Default (lean) ship is implementers plus verify plus commit, and usually stays under the warning. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
 
 The related `workflowSizeGuideline` setting (`/config`, default `medium`) is advice Claude follows when it *writes* a workflow. `ship` ships as a pre-written script, so the guideline should not throttle it — but that is read from how the setting is documented rather than measured, so if you see wave sizes that disagree with `interlock limits`, that would be the first thing to check.
 
@@ -100,6 +100,18 @@ Leftovers and a halt still print the ship line. They are terminal summaries, not
 ```
 
 **Unsafe** (do not use — leftover boxes, a red e2e banner, or "keep going" will start another turn): `all tasks.md boxes checked`, `tests pass`, `keep implementing until done`.
+
+## The skip receipt
+
+### `LEAN SHIP`
+
+Default `ship` skipped one or more of review, handoff, and conformance. This is not a degradation — it is the advertised default. The line lists what was skipped so a lean run cannot look like `--strict`.
+
+```text
+LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable
+```
+
+`--strict` (or all three flags together) omits this line. Continuity (`spec --continue`) also launches lean unless you pass a tail flag.
 
 ## The soft continues
 
@@ -167,7 +179,7 @@ The end-to-end suite ran and went red, and the commit happened anyway. This is i
 
 ### No manual test plan
 
-If `interlock surface` classified every changed file as not UI-testable, `ship` skips the manual test plan and says why. A backend-only change does not get a UI test script. You can check the classification yourself:
+Only on `--handoff` / `--strict`. If `interlock surface` classified every changed file as not UI-testable, `ship` skips the manual test plan and says why. A backend-only change does not get a UI test script. Default lean ship does not write a plan at all — run `/interlock:manual-test-plan` if you need one. You can check the classification yourself:
 
 ```bash
 interlock surface --changed src/Button.tsx docs/readme.md app/api/login/route.ts
@@ -184,7 +196,7 @@ Worth knowing when you are deciding how much to trust a clean run.
 
 (A skill's `allowed-tools` is a pre-approval list, not a restriction — it stops mid-run permission prompts, it does not remove capabilities.)
 
-**Enforced by control flow**, in `workflows/ship.js`: the wave loop, the remediation rounds, the halt conditions, the order of verification. These used to be numbered headings a model was asked to follow. They are now a script, and a script does not talk itself into a third remediation round.
+**Enforced by control flow**, in `workflows/ship.js`: the wave loop, the halt conditions, the order of verification, and (on `--review` / `--strict`) the remediation rounds. These used to be numbered headings a model was asked to follow. They are now a script, and a script does not talk itself into a third remediation round.
 
 **Enforced by code**, in the `interlock` CLI — every decision the script makes is a subcommand, and gating subcommands exit non-zero when they block:
 

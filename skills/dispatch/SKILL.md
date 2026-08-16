@@ -33,7 +33,7 @@ That is Rules 2 and 3 of `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`: read st
 ```
 graph → docs-digest → bootstrap        (once per repo)
 /interlock:spec    explore → artifacts → review     ⟵ STOPS. Human reviews.
-/interlock:ship    waves → review → verify → commit  (workflow, zero-touch)
+/interlock:ship    waves → verify → commit  (workflow, zero-touch; --strict adds review)
 /interlock:mr      summary → merge request
 ```
 

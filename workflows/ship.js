@@ -1,7 +1,7 @@
 export const meta = {
   name: 'ship',
   description:
-    'Take a reviewed OpenSpec change from tasks to commit in one uninterrupted run — dependency-ordered waves of parallel implementers, adversarial review, bounded remediation, verification, handoff artifacts, and a commit. Asks nothing.'
+    'Take a reviewed OpenSpec change from tasks to commit in one uninterrupted run — dependency-ordered waves of parallel implementers, unit verification, and a commit. Asks nothing. Pass --strict for the previous default (adversarial review, handoff, conformance).'
 }
 
 // ship — the loop, as a script.
@@ -67,20 +67,36 @@ function parseInvocation(args) {
     (typeof opts.change === 'string' && opts.change.trim()) ||
     (typeof opts.name === 'string' && opts.name.trim()) ||
     ''
+  const strict = has('strict')
   return {
     changeArg: named || tokens.find(t => !t.startsWith('-')) || '',
     applyOnly: has('apply-only'),
     noCommit: has('no-commit'),
     skipE2e: has('skip-e2e'),
     skipCoverage: has('skip-coverage'),
+    review: strict || has('review'),
+    handoff: strict || has('handoff'),
+    conformance: strict || has('conformance'),
+    strict,
     maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
     mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
   }
 }
 // PARSE_INVOCATION_END
 
-const { changeArg, applyOnly, noCommit, skipE2e, skipCoverage, maxParallel, mode } =
-  parseInvocation(typeof args === 'undefined' ? undefined : args)
+const {
+  changeArg,
+  applyOnly,
+  noCommit,
+  skipE2e,
+  skipCoverage,
+  review,
+  handoff,
+  conformance,
+  strict,
+  maxParallel,
+  mode
+} = parseInvocation(typeof args === 'undefined' ? undefined : args)
 
 // A structurally impossible run should stop before it burns agents, and a loop
 // whose exit condition depends on model output needs a backstop that does not.
@@ -316,21 +332,44 @@ const planned = await step(
     `architecture, and only tier 5 may be opus. When unsure, sonnet.\n\n` +
     `Write the classification to ${WORK}/classified.json, then run:\n` +
     `  interlock tasks coverage --change ${change} --classified ${WORK}/classified.json --json\n` +
-    `A non-zero exit means you omitted an unchecked checkbox — add it and rewrite classified.json ` +
-    `before calling waves. Then:\n` +
+    `Copy coverage ok and omitted into this result as coverageOk and omitted. Never invent ` +
+    `coverageOk:true if that CLI exited non-zero. A coverage gap means you omitted a checkbox — ` +
+    `add it and rewrite classified.json before calling waves.\n\n` +
+    `Then:\n` +
     `  interlock waves --classified ${WORK}/classified.json --json${maxParallel ? ` --max-parallel ${maxParallel}` : ''} > ${WORK}/plan.json\n` +
-    `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n\n` +
+    `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n` +
+    `  interlock wave-state next --state ${STATE} --json\n\n` +
+    COPY_STDOUT +
+    `\nThe last command's stdout is the first loop step (action, tasks, wave, cliStdout). ` +
+    `coverageOk is from the coverage command, not from next.\n\n` +
     `The planner is authoritative: it clamps over-eager opus, orders the waves, defers test tasks ` +
     `and splits wide waves into batches. Do not re-derive or override any of it.\n\n` +
     `Report the plan's wave count and total task count.`,
   {
     type: 'object',
-    required: ['ok', 'waveCount', 'taskCount'],
+    required: ['ok', 'waveCount', 'taskCount', 'coverageOk'],
     properties: {
       ok: { type: 'boolean' },
       waveCount: { type: 'integer' },
       taskCount: { type: 'integer' },
-      detail: { type: 'string' }
+      coverageOk: { type: 'boolean' },
+      omitted: { type: 'array', items: { type: 'string' } },
+      detail: { type: 'string' },
+      action: { type: 'string' },
+      cliStdout: { type: 'string' },
+      wave: { type: 'integer' },
+      tasks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            description: { type: 'string' },
+            tier: { type: 'integer' },
+            model: { type: 'string' }
+          }
+        }
+      }
     }
   }
 )
@@ -339,39 +378,11 @@ if (!planned || !planned.ok) {
   return await halt(`wave planning failed: ${(planned && planned.detail) || 'no result from the planner step'}`)
 }
 
-const covered = await step(
-  'plan-coverage',
-  `Check that every remaining unchecked task for "${change}" was classified.\n\n` +
-    `Run: interlock tasks coverage --change ${change} --classified ${WORK}/classified.json --json\n\n` +
-    `Copy stdout JSON into the result, including ok and omitted. Never invent ok:true if the CLI ` +
-    `exited non-zero. A coverage gap means the classifier dropped a checkbox — report ok:false.`,
-  {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean' },
-      omitted: { type: 'array', items: { type: 'string' } },
-      detail: { type: 'string' },
-      cliStdout: { type: 'string' }
-    }
-  },
-  { model: 'haiku' }
-)
-
-let coverageOk = Boolean(covered && covered.ok)
-let omitted = Array.isArray(covered && covered.omitted) ? covered.omitted : []
-if (covered && typeof covered.cliStdout === 'string') {
-  try {
-    const parsed = JSON.parse(covered.cliStdout)
-    if (parsed && typeof parsed.ok === 'boolean') coverageOk = parsed.ok
-    if (parsed && Array.isArray(parsed.omitted)) omitted = parsed.omitted
-  } catch {
-    // stdout was not JSON; keep the mapped fields
-  }
-}
+const coverageOk = Boolean(planned.coverageOk)
+const omitted = Array.isArray(planned.omitted) ? planned.omitted : []
 if (!coverageOk) {
   return await halt(
-    `plan omitted unchecked tasks: ${omitted.join(', ') || (covered && covered.detail) || 'classified.json does not cover remaining checkboxes'}`
+    `plan omitted unchecked tasks: ${omitted.join(', ') || planned.detail || 'classified.json does not cover remaining checkboxes'}`
   )
 }
 
@@ -382,17 +393,12 @@ if (!coverageOk) {
 // have exhausted the budget — it asks, and obeys.
 //
 // record-* / replan pass --write-state so their stdout IS the next step. That
-// saves a second agent turn after every batch. One `next` still starts the loop.
-// An unknown action is retried once via `next-retry-*` (pure re-read, new label)
-// rather than treated as a policy halt.
+// saves a second agent turn after every batch. The planner already ran the first
+// `next`, so the loop starts from that result. An unknown action is retried once
+// via `next-retry-*` (pure re-read, new label) rather than treated as a policy halt.
 
 let steps = 0
-let next = await readNext(
-  await cheap(
-    `next-1`,
-    `Run: interlock wave-state next --state ${STATE} --json\n\n` + COPY_STDOUT
-  )
-)
+let next = await readNext(planned)
 
 while (steps++ < MAX_LOOP_STEPS) {
   if (!next) return await halt('the run state could not be read')
@@ -545,100 +551,103 @@ if (applyOnly) {
   return finish()
 }
 
-// --- 4. review the diff ----------------------------------------------------
+// --- 4. review the diff (opt-in: --review / --strict) ----------------------
 
-const review = await step(
-  'review',
-  `Adversarially review the diff for change "${change}".\n\n` +
-    `Fan out one reviewer per dimension: language, architecture, qa and technical-lead always; ` +
-    `devops when the diff touches deploy, config or infrastructure; security when it touches auth, ` +
-    `input handling or data exposure. Each writes findings as ` +
-    `{ dimension, findings: [{ severity, file, line, title, description, suggestion }] }.\n\n` +
-    `Then put TWO skeptics on every blocker and warning independently, each emitting ` +
-    `{ findingTitle, file, isReal, confidence, reasoning, evidence, refinedSeverity, qualityScore, severityScore }. ` +
-    `Include the file — title alone is not unique, and two findings sharing a title in different ` +
-    `files would otherwise share one verdict.\n\n` +
-    `A verdict of isReal:false MUST carry evidence — the file:line span the skeptic actually read, ` +
-    `such as "src/auth.ts:41-58". An uncited refutation dismisses nothing: it is recorded, its quality ` +
-    `score still counts, and the finding survives to the report. Voting a finding real needs no ` +
-    `evidence — only the dismissing direction is gated, because a dismissed finding is invisible.\n\n` +
-    `Write findings to ${WORK}/findings.json and verdicts to ${WORK}/verdicts.json, then:\n` +
-    `  interlock review --findings ${WORK}/findings.json --verdicts ${WORK}/verdicts.json --metrics ${change} --json > ${WORK}/review.json\n\n` +
-    `The CLI decides survival and applies the quality band. Do not filter findings yourself and do ` +
-    `not restate a threshold — the numbers live in the CLI precisely so they are not re-argued here.\n\n` +
-    `Write JSON to the work files. Return the counts only — do not paste dimension reports or skeptic reasoning into this result.`,
-  {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean' },
-      raised: { type: 'integer' },
-      dismissed: { type: 'integer' },
-      droppedByQuality: { type: 'integer' },
-      surviving: { type: 'integer' },
-      blockers: { type: 'integer' },
-      detail: { type: 'string' }
-    }
-  }
-)
-
-if (!review || !review.ok) {
-  summary.notes.push(`review did not complete: ${(review && review.detail) || 'no result'}`)
-}
-summary.review = review || null
-
-// --- 5. remediation, bounded ----------------------------------------------
-//
-// Rounds 1..cap are fix passes; the round after the cap is the verdict, and it
-// is the only one that can halt. The script asks for the round it is on and
-// does not decide when the budget is spent.
-
-let round = 1
-let remediation = null
-
-while (round <= 3) {
-  const isVerdict = round === 3
-  remediation = await step(
-    `remediate-${round}`,
-    `Remediation ${isVerdict ? 'verdict' : `round ${round}`} for change "${change}".\n\n` +
-      `Run: interlock remediate --findings ${WORK}/review.json --round ${round} --json\n\n` +
-      (isVerdict
-        ? `This is the verdict round. It fixes nothing — it reports whether blockers survived the ` +
-          `budget. A non-zero exit means unresolved blockers; report halted:true with the reason.`
-        : `Fan out ONE fixer agent per file from the plan's byFile groups — those groups are ` +
-          `disjoint, so they are safe in parallel. Apply the unscoped group last, sequentially. ` +
-          `Fix blockers and warnings; never fix a suggestion. A finding you do not fix is recorded ` +
-          `with its reason, never silently dropped.\n\n` +
-          `Then re-review ONLY the dimensions the plan lists in reReviewDimensions, put two skeptics ` +
-          `on the new findings as before, and rewrite ${WORK}/review.json via interlock review.\n\n` +
-          `Write JSON to the work files. Return the counts only — do not paste fixer or skeptic reasoning into this result.`),
+if (review) {
+  const reviewResult = await step(
+    'review',
+    `Adversarially review the diff for change "${change}".\n\n` +
+      `Fan out one reviewer per dimension: language, architecture, qa and technical-lead always; ` +
+      `devops when the diff touches deploy, config or infrastructure; security when it touches auth, ` +
+      `input handling or data exposure. Each writes findings as ` +
+      `{ dimension, findings: [{ severity, file, line, title, description, suggestion }] }.\n\n` +
+      `Then put TWO skeptics on every blocker and warning independently, each emitting ` +
+      `{ findingTitle, file, isReal, confidence, reasoning, evidence, refinedSeverity, qualityScore, severityScore }. ` +
+      `Include the file — title alone is not unique, and two findings sharing a title in different ` +
+      `files would otherwise share one verdict.\n\n` +
+      `A verdict of isReal:false MUST carry evidence — the file:line span the skeptic actually read, ` +
+      `such as "src/auth.ts:41-58". An uncited refutation dismisses nothing: it is recorded, its quality ` +
+      `score still counts, and the finding survives to the report. Voting a finding real needs no ` +
+      `evidence — only the dismissing direction is gated, because a dismissed finding is invisible.\n\n` +
+      `Write findings to ${WORK}/findings.json and verdicts to ${WORK}/verdicts.json, then:\n` +
+      `  interlock review --findings ${WORK}/findings.json --verdicts ${WORK}/verdicts.json --metrics ${change} --json > ${WORK}/review.json\n\n` +
+      `The CLI decides survival and applies the quality band. Do not filter findings yourself and do ` +
+      `not restate a threshold — the numbers live in the CLI precisely so they are not re-argued here.\n\n` +
+      `Write JSON to the work files. Return the counts only — do not paste dimension reports or skeptic reasoning into this result.`,
     {
       type: 'object',
       required: ['ok'],
       properties: {
         ok: { type: 'boolean' },
-        halted: { type: 'boolean' },
-        reason: { type: 'string' },
-        fixed: { type: 'integer' },
-        deferred: { type: 'integer' },
-        blockersRemaining: { type: 'integer' }
+        raised: { type: 'integer' },
+        dismissed: { type: 'integer' },
+        droppedByQuality: { type: 'integer' },
+        surviving: { type: 'integer' },
+        blockers: { type: 'integer' },
+        detail: { type: 'string' }
       }
     }
   )
 
-  if (!remediation) return await halt(`remediation round ${round} returned no result`)
-  if (remediation.halted) return await halt(remediation.reason || 'unresolved blockers after remediation')
-  if (!isVerdict && remediation.blockersRemaining === 0) {
-    // Nothing left to fix; go straight to the verdict so the budget is still
-    // formally closed rather than assumed.
-    round = 3
-    continue
+  if (!reviewResult || !reviewResult.ok) {
+    summary.notes.push(`review did not complete: ${(reviewResult && reviewResult.detail) || 'no result'}`)
   }
-  round += 1
-}
+  summary.review = reviewResult || null
 
-summary.remediation = remediation
-summary.remediationRounds = Math.min(round, 2)
+  // --- 5. remediation, bounded ----------------------------------------------
+  //
+  // Rounds 1..cap are fix passes; the round after the cap is the verdict, and it
+  // is the only one that can halt. The script asks for the round it is on and
+  // does not decide when the budget is spent. This halt cannot fire on a lean
+  // run — review never ran.
+
+  let round = 1
+  let remediation = null
+
+  while (round <= 3) {
+    const isVerdict = round === 3
+    remediation = await step(
+      `remediate-${round}`,
+      `Remediation ${isVerdict ? 'verdict' : `round ${round}`} for change "${change}".\n\n` +
+        `Run: interlock remediate --findings ${WORK}/review.json --round ${round} --json\n\n` +
+        (isVerdict
+          ? `This is the verdict round. It fixes nothing — it reports whether blockers survived the ` +
+            `budget. A non-zero exit means unresolved blockers; report halted:true with the reason.`
+          : `Fan out ONE fixer agent per file from the plan's byFile groups — those groups are ` +
+            `disjoint, so they are safe in parallel. Apply the unscoped group last, sequentially. ` +
+            `Fix blockers and warnings; never fix a suggestion. A finding you do not fix is recorded ` +
+            `with its reason, never silently dropped.\n\n` +
+            `Then re-review ONLY the dimensions the plan lists in reReviewDimensions, put two skeptics ` +
+            `on the new findings as before, and rewrite ${WORK}/review.json via interlock review.\n\n` +
+            `Write JSON to the work files. Return the counts only — do not paste fixer or skeptic reasoning into this result.`),
+      {
+        type: 'object',
+        required: ['ok'],
+        properties: {
+          ok: { type: 'boolean' },
+          halted: { type: 'boolean' },
+          reason: { type: 'string' },
+          fixed: { type: 'integer' },
+          deferred: { type: 'integer' },
+          blockersRemaining: { type: 'integer' }
+        }
+      }
+    )
+
+    if (!remediation) return await halt(`remediation round ${round} returned no result`)
+    if (remediation.halted) return await halt(remediation.reason || 'unresolved blockers after remediation')
+    if (!isVerdict && remediation.blockersRemaining === 0) {
+      // Nothing left to fix; go straight to the verdict so the budget is still
+      // formally closed rather than assumed.
+      round = 3
+      continue
+    }
+    round += 1
+  }
+
+  summary.remediation = remediation
+  summary.remediationRounds = Math.min(round, 2)
+}
 
 // --- 6. verify -------------------------------------------------------------
 
@@ -681,45 +690,63 @@ if (verified.e2eFailed) {
 }
 if (verified.halted) return await halt(verified.reason || 'verification halted the run')
 
-// --- 7. handoff artifacts, explanation, learnings -------------------------
+// --- 7. handoff artifacts, explanation, learnings (opt-in) ----------------
 
-const handoff = await step(
-  'handoff',
-  `Produce the handoff artifacts for change "${change}".\n\n` +
-    `  interlock surface --changed <files changed by this run> --json\n\n` +
-    `If needsManualTestPlan is true, write openspec/changes/${change}/manual-test-plan.md covering ` +
-    `every touched file, with spec scenarios and tasks mapped to numbered cases. If it is false, ` +
-    `skip it and say why — a backend-only change does not get a UI test plan.\n\n` +
-    `Then write openspec/changes/${change}/code-explanation.md as a commit teach-in: why each file ` +
-    `changed, what changed, the blast radius, and what would break if it were left out.\n\n` +
-    `Next, spec conformance:\n` +
-    `  interlock conformance ${change} --changed <files changed by this run> --json\n` +
-    `That emits questions, never verdicts. For each scenario it lists, read the implementation and ` +
-    `answer whether the described behaviour was actually built, citing file:line. Write the answers ` +
-    `to openspec/changes/${change}/conformance.md with one section per scenario id. A scenario you ` +
-    `cannot confirm is recorded as unconfirmed with what you looked at — never as satisfied, and ` +
-    `never omitted. If the checklist is empty, say so and move on.\n\n` +
-    `This never halts the run: a prose scenario matched to code is a judgement, and a judgement ` +
-    `that stopped a ship run would be a gate built on a guess. Report it and let a person read it.\n\n` +
-    `Finally, capture at most three learnings from fixes made during this run — recurring failure ` +
-    `modes under .claude/memory/failure-modes/, module coupling under .claude/memory/coupling/ — ` +
-    `each one small file, indexed in .claude/memory/MEMORY.md. Only genuinely recurring patterns; ` +
-    `write nothing if nothing recurred. This is silent.`,
-  {
-    type: 'object',
-    required: ['ok'],
-    properties: {
-      ok: { type: 'boolean' },
-      manualTestPlan: { type: 'boolean' },
-      skipReason: { type: 'string' },
-      learnings: { type: 'integer' },
-      scenariosChecked: { type: 'integer' },
-      scenariosUnconfirmed: { type: 'integer' }
-    }
+if (handoff || conformance) {
+  const handoffParts = [
+    `Produce the handoff artifacts for change "${change}".\n`,
+    `  interlock surface --changed <files changed by this run> --json\n`
+  ]
+  if (handoff) {
+    handoffParts.push(
+      `If needsManualTestPlan is true, write openspec/changes/${change}/manual-test-plan.md covering ` +
+        `every touched file, with spec scenarios and tasks mapped to numbered cases. If it is false, ` +
+        `skip it and say why — a backend-only change does not get a UI test plan.\n\n` +
+        `Then write openspec/changes/${change}/code-explanation.md as a commit teach-in: why each file ` +
+        `changed, what changed, the blast radius, and what would break if it were left out.\n`
+    )
   }
-)
+  if (conformance) {
+    handoffParts.push(
+      `Spec conformance:\n` +
+        `  interlock conformance ${change} --changed <files changed by this run> --json\n` +
+        `That emits questions, never verdicts. For each scenario it lists, read the implementation and ` +
+        `answer whether the described behaviour was actually built, citing file:line. Write the answers ` +
+        `to openspec/changes/${change}/conformance.md with one section per scenario id. A scenario you ` +
+        `cannot confirm is recorded as unconfirmed with what you looked at — never as satisfied, and ` +
+        `never omitted. If the checklist is empty, say so and move on.\n\n` +
+        `This never halts the run: a prose scenario matched to code is a judgement, and a judgement ` +
+        `that stopped a ship run would be a gate built on a guess. Report it and let a person read it.\n`
+    )
+  }
+  if (handoff) {
+    handoffParts.push(
+      `Finally, capture at most three learnings from fixes made during this run — recurring failure ` +
+        `modes under .claude/memory/failure-modes/, module coupling under .claude/memory/coupling/ — ` +
+        `each one small file, indexed in .claude/memory/MEMORY.md. Only genuinely recurring patterns; ` +
+        `write nothing if nothing recurred. This is silent.`
+    )
+  }
 
-summary.handoff = handoff
+  const handoffResult = await step(
+    'handoff',
+    handoffParts.join('\n'),
+    {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean' },
+        manualTestPlan: { type: 'boolean' },
+        skipReason: { type: 'string' },
+        learnings: { type: 'integer' },
+        scenariosChecked: { type: 'integer' },
+        scenariosUnconfirmed: { type: 'integer' }
+      }
+    }
+  )
+
+  summary.handoff = handoffResult
+}
 
 if (noCommit) {
   summary.notes.push('--no-commit: everything ran, the commit is yours')
@@ -734,11 +761,13 @@ const committed = await step(
   `Commit change "${change}" as ONE feature-level commit.\n\n` +
     `Read the change artifacts and write a verb-phrase conventional-commit message with a short ` +
     `outcome summary. Stage only the files this run touched — never \`git add -A\`, never amend, ` +
-    `never push.\n\n` +
-    `Then record the outcome for the ladder:\n` +
-    `  interlock autonomy record review-code --blockers <surviving blocker count>\n` +
-    `That record is storage only. Never print an autonomy level, L2/L3, or anything about a ladder — ` +
-    `it is experimental and means nothing to the reader.`,
+    `never push.` +
+    (strict
+      ? `\n\nThen record the outcome for the ladder:\n` +
+        `  interlock autonomy record review-code --blockers <surviving blocker count>\n` +
+        `That record is storage only. Never print an autonomy level, L2/L3, or anything about a ladder — ` +
+        `it is experimental and means nothing to the reader.`
+      : ''),
   {
     type: 'object',
     required: ['ok'],
@@ -789,9 +818,11 @@ function finish() {
     )
   }
   if (summary.handoff) {
-    lines.push(
-      `  handoff: manual test plan ${summary.handoff.manualTestPlan ? 'written' : `skipped (${summary.handoff.skipReason || 'not UI-testable'})`}`
-    )
+    if (handoff) {
+      lines.push(
+        `  handoff: manual test plan ${summary.handoff.manualTestPlan ? 'written' : `skipped (${summary.handoff.skipReason || 'not UI-testable'})`}`
+      )
+    }
     if (summary.handoff.scenariosChecked) {
       const unconfirmed = summary.handoff.scenariosUnconfirmed || 0
       lines.push(
@@ -807,6 +838,18 @@ function finish() {
   lines.push('GOAL MET: interlock ship returned a terminal summary.')
 
   lines.push('')
+  // A lean run must not look like --strict. Silence here is the same failure
+  // mode the degradation block exists to remove.
+  const skipped = []
+  if (!review) skipped.push('review')
+  if (!handoff) skipped.push('handoff')
+  if (!conformance) skipped.push('conformance')
+  if (skipped.length) {
+    lines.push(
+      `LEAN SHIP: skipped ${skipped.join(', ')} — pass --review / --handoff / --strict to enable`
+    )
+  }
+
   if (banners.length) {
     for (const banner of banners) lines.push(banner)
   } else {
