@@ -100,6 +100,9 @@ one you need. When Rule 0 applies, graph query/consumers counts as “locate.”
 - **Reserve `&&` for dependency-ordered chains** where a later step is meaningless
   if an earlier one failed — e.g. `npm run typecheck && npm run lint && npm test
   && npm run build`.
+- **Quote shell globs** in filter arguments (`--include='*.ts'`,
+  `--glob '*.ts'`) so zsh does not expand them before the command sees them.
+  Prefer the Grep tool for `--include`-style file filtering when available.
 - **Background the long-running.** Builds, full test suites, and installs run with
   `run_in_background` so you can continue other work while they execute.
 

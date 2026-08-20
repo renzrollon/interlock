@@ -65,7 +65,7 @@ Prefer a durable handoff over re-deriving discovery from chat. See `${CLAUDE_PLU
 5. From `## Pending Clarifications`, ask only what genuinely blocks a correct proposal. Skip anything already covered by `## Assumptions Made` that the user does not contest.
 6. If `suggested_change_name` is set and the user gave no name, use it.
 
-No matching brief is fine — but if none exists and `--no-explore` was not passed, **run `/interlock:explore --autonomous` now** and use the brief it writes. A spec built on unexplored ground is the most expensive kind to get wrong.
+No matching brief is fine — but if none exists and `--no-explore` was not passed, **run `/interlock:explore --autonomous` now** and require a decision-oriented brief: conclusions, a recommended direction, options with a winner, assumptions, pending clarifications, and only cited `file:line` spans. Do not ask for an inventory of every file touched. Use the brief it writes. A spec built on unexplored ground is the most expensive kind to get wrong.
 
 ### 1c. Check the ground is current
 
@@ -107,10 +107,15 @@ Parse `applyRequires` (artifacts needed before implementation), `artifacts` (eac
 Then loop, in dependency order, over every artifact that is `ready`:
 
 ```bash
-openspec instructions <artifact-id> --change "<name>" --json
+openspec instructions <artifact-id> --change "<name>" --json | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+keep=("instruction","template","resolvedOutputPath","context","rules")
+print(json.dumps({k:d[k] for k in keep if d.get(k)}, separators=(",",":")))
+'
 ```
 
-The response carries `context` (project background), `rules` (artifact-specific constraints), `template` (the structure to fill), `instruction` (schema guidance), `resolvedOutputPath`, and `dependencies`.
+Filter each ready artifact independently; do not dump the full instructions response or prefetch every artifact. The compact response carries `instruction` (schema guidance), `template` (the structure to fill), `resolvedOutputPath`, and non-empty `context` / `rules`.
 
 - Read completed dependency artifacts before writing a new one.
 - Write to `resolvedOutputPath`, using `template` as the structure.

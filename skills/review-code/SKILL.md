@@ -63,6 +63,8 @@ Every dimension agent returns findings in this shape:
 
 `severity`, `file`, `title` and `description` are required. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
+This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
+
 ---
 
 ## 3. Adversarial verification

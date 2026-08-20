@@ -14,8 +14,10 @@ across a context reset.
 - **Optional** in conversational explore when the user asks to “save
   exploration” / “handoff for spec”.
 
-**Bound the brief** (~2–6k tokens): cite paths and line refs; prefer
-pointers over pasted code; ASCII diagrams when useful.
+**Bound the brief** (~2–6k tokens): make it decision-oriented; cite paths and
+line refs; prefer pointers over pasted code; ASCII diagrams when useful. The
+brief carries conclusions into `/interlock:spec`, not an inventory of every
+file the investigators touched.
 
 ---
 
@@ -35,7 +37,8 @@ pointers over pasted code; ASCII diagrams when useful.
 <!-- Crystallized problem statement and desired outcome -->
 
 ## Codebase Findings
-<!-- Grounded discoveries: how it works today, constraints, patterns -->
+<!-- Decision-relevant conclusions about how it works today, constraints and
+     patterns. Cite file:line spans; do not enumerate every file touched. -->
 
 ## Critical Files
 <!-- path:line — why it matters (citations over pasted code) -->
@@ -70,6 +73,7 @@ pointers over pasted code; ASCII diagrams when useful.
 
 | Section | Rule |
 |---------|------|
+| **Codebase Findings** | Conclusions + cited `file:line` spans only. Omit exhaustive file inventories and raw investigator output. |
 | **Critical Files** | Paths + line refs + why. No large code dumps. |
 | **Options Considered** | Tradeoffs + evidence. Mark recommended vs rejected with rationale. |
 | **Pending Clarifications** | Repo-unresolvable items only. Autonomous mode lists them; does not ask mid-explore. |

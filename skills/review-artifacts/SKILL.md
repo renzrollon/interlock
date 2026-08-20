@@ -99,7 +99,20 @@ Be specific — name files and sections. Do not pad with generic praise. If the 
 
 ## Emit structured findings
 
-Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` with `dimension: "artifacts"` and a `findings` array matching the schema in `${CLAUDE_PLUGIN_ROOT}/lib/findings.mjs`. Map BLOCKER→`blocker`, WARNING→`warning`, SUGGESTION→`suggestion`. Create `.claude/metrics/` if it does not exist.
+Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` in this shape:
+
+```json
+{ "dimension": "artifacts",
+  "findings": [
+    { "severity": "blocker|warning|suggestion",
+      "file": "path/to/artifact.md", "line": 42,
+      "title": "short claim",
+      "description": "what is wrong and why",
+      "suggestion": "how to fix it" }
+  ] }
+```
+
+`severity`, `file`, `title` and `description` are required; `line` and `suggestion` are optional. Map BLOCKER→`blocker`, WARNING→`warning`, SUGGESTION→`suggestion`. Create `.claude/metrics/` if it does not exist. This is the complete emit contract — do not read `lib/findings.mjs` to rediscover it.
 
 Then let the deterministic gate decide, rather than deciding in prose:
 
@@ -107,4 +120,4 @@ Then let the deterministic gate decide, rather than deciding in prose:
 interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json
 ```
 
-Its exit status is the gate verdict: non-zero means blocked.
+The gate blocks if and only if at least one finding is a `blocker`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose.
