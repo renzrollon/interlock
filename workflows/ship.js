@@ -167,7 +167,11 @@ const nextSchema = {
   }
 }
 
-const cheap = (name, prompt) => step(name, prompt, nextSchema, { model: 'haiku' })
+// bedrock.claude-haiku-4-5 is not reachable in every account (Bedrock model
+// access is opt-in per model), and a step that cannot run halts the whole
+// loop at the same point on every retry. Omitting `model` lets these pings
+// inherit the session model instead of hard-failing on an inaccessible one.
+const cheap = (name, prompt) => step(name, prompt, nextSchema)
 
 function stepFromAgent(result) {
   let resolved = null
