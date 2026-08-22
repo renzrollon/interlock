@@ -7,6 +7,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Removed
+
+- **`/interlock:session-retro`** moved to [renzrollon/shippable-skills](https://github.com/renzrollon/shippable-skills). It is no longer part of this plugin. Install it with `npx skills add renzrollon/shippable-skills` (or the Claude Code plugin on that repo). The live-session retro was never Interlock-specific; shipping it here blocked Cursor, Copilot, and Codex.
+
+### Changed
+
 **Breaking:** `/interlock:ship` is **lean by default**. Waves, unit verification, and a commit always run. Adversarial review, remediation, handoff artifacts (`manual-test-plan.md`, `code-explanation.md`, memory), and spec conformance are opt-in via `--review`, `--handoff`, `--conformance`, or `--strict` (the previous default). A `LEAN SHIP:` banner lists what was skipped so a lean run cannot look like a strict one. Continuity (`spec --continue`) also launches lean unless a tail flag is passed. Coverage checking and the first `wave-state next` are folded into the planner (no extra `plan-coverage` or `next-1` agents). `interlock autonomy record` runs only under `--strict`.
 
 Two earlier passes landed together.
@@ -27,6 +33,15 @@ gained the fail-closed readiness gate it needs.
 
 ### Added
 
+- **Wave-boundary cost.** Path collisions stay in the classified group as later batches instead of overflow waves. Inter-wave verification is capped (`LIMITS.interWaveVerifications`, default 3) and skipped for docs-only waves. `formatPlan` prints a projected agent count and warns on effectively serial plans. `verify plan` accepts `--context inter-wave` and `--changed`; docs-only `--changed` emits no steps. Ship fuses a following verify into the `record-batch` ping and records every remaining batch of a wave in one ping. Cheap pings use haiku when a one-time Bedrock probe says it is reachable. Wave-entry `wave-state next` logs one `agent-spawn` per task in `remainingBatches` so the ship-run trajectory matches the implementers the loop actually launches.
+- **`/interlock:session-retro`** — a retro that runs while the transcript is still
+  in context. Scores the live session against a new session-shapes taxonomy
+  (`shared/SESSION-SHAPES.md`), flags where it wasted tokens against
+  `shared/TOOL-ECONOMY.md` in relative magnitude (never fabricated counts), and
+  writes wire-in notes under `.claude/handoff/` that fold repeatable steps back into
+  the skills and workflows the session actually called. New-skill proposals use
+  `shared/SKILL-CANDIDATE-BRIEF.md`. Standalone and current-session-only: it never
+  reads the on-disk transcript. Later moved out of this plugin (see Unreleased).
 - **`docs/` — four human-facing pages.** [The first hour](docs/01-first-hour.md)
   (install → `bootstrap` → one `spec` → read it → `ship` → archive, plus an
   explicit do-not-run-yet list), [the checkpoint](docs/02-the-checkpoint.md)

@@ -24,7 +24,22 @@ __pycache__/
 .claude/pending-approval/
 .claude/.cc-writes/
 .claude/plans/
+.claude/commands/
+.claude/memory/
+.claude/ship/
+
+# Cursor IDE
+.cursor/
+
+#Copilot
+.github/agents/
+.github/prompts/
+.github/workflows/
+.github/skills/
 
 # Backups produced by installers/tooling
 *.bak
 *.bak.*
+
+# temp documentation
+.docs/

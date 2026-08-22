@@ -41,8 +41,10 @@ import {
   clusterFailures,
   nextRepairAction,
   formatVerification,
+  checkResultFieldSizes,
   VERIFY_CONTEXTS
 } from '../lib/verify.mjs'
+import { spillBytes } from '../lib/spill.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
@@ -50,6 +52,16 @@ import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/l
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { appendOutcome, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
+import {
+  appendRunLogEvent,
+  readRunLog,
+  listRunLogs,
+  queryRunLog,
+  checkRunLog,
+  formatRunLog,
+  formatRunLogList,
+  formatRunLogCheck
+} from '../lib/run-log.mjs'
 
 const USAGE = `interlock — deterministic decisions for the spec-driven flow
 
@@ -69,15 +81,24 @@ Usage:
                                            Resolve a review against skeptic verdicts
   interlock risk [change]                   Classify blast radius for the continuity gate
   interlock ledger [change]                 Summarize the decision ledger
-  interlock ready [change]                  Decide whether continuity may skip the human
+  interlock ready [change] --findings <f>    Decide whether continuity may skip the human
   interlock outcomes append --record <f>    Append one run outcome to the corpus
   interlock outcomes list                   Read the outcome corpus back
+  interlock run-log append --event <f>      Append one ship-run trajectory event
+  interlock run-log list [--change <name>]  List recorded ship runs
+  interlock run-log show <runId>            Print one run's events in order
+  interlock run-log query --run <id>        Filter one run's events
+  interlock run-log check --state <file>    Reconstructability gate: exit 1 on
+                                            a gap, a missing start, or a
+                                            missing run-halt/run-complete
   interlock tasks tick --ids <ids>          Tick succeeded task checkboxes by id
   interlock tasks coverage --classified <f> Halt if classified.json omits an unchecked task
   interlock verify plan --profile <file>    Decide which verification commands to run
   interlock verify judge --plan <f> --results <f>
                                            Judge reported results against the plan
   interlock verify unit --result <file>     Judge a unit result on its own
+  interlock verify spill --run-id <id> --kind <k> --input <f>
+                                           Spill oversized stdout/stderr to disk
   interlock verify cluster --failures <f>   Group failures by root-cause signature
   interlock verify repair --state <file>    Decide repair / halt / accept next
   interlock wave-state create --plan <file> Start a run state from a wave plan
@@ -102,13 +123,20 @@ Exit codes:
     gate                     surviving findings block the gate
     validate                 the change is not ready
     remediate                blockers survive the verdict round
-    verify judge             a halting kind failed in this context
-    verify unit              the unit suite is red or was weakened
+    verify judge             a halting kind failed in this context, a result
+                             field exceeded the preview budget, or (with
+                             --state/--run-id) the trajectory append failed
+    verify unit              the unit suite is red or was weakened, or a
+                             result field exceeded the preview budget
     verify repair            the root-cause repair budget is spent
-    ledger                   needs_human or invalid rows remain
+    ledger                   the ledger is missing or unparseable, or
+                             needs_human or invalid rows remain
     ready                    the change may not skip the human checkpoint
-    wave-state next          the run has halted
-    wave-state record-*      the recorded result halted the run
+    tasks tick               an id could not be marked complete
+    wave-state next          the run has halted, or the trajectory append failed
+    wave-state record-*      the recorded result halted the run, or the
+                             trajectory append failed
+    run-log check            the run's trajectory is not reconstructable
   risk never exits non-zero — branch on "continuityAllowed" instead, so a
   high-risk classification is a checkpoint rather than a failed command.
 
@@ -148,9 +176,17 @@ review:
   --metrics <change>     Also append the counts to .claude/metrics/ under this
                          change name. A metrics failure prints its reason and is
                          never fatal — the exit code is unaffected.
+  --changed <p1,p2|->    The reviewed diff. A verdict that DISMISSES a finding
+                         must cite "path:line" (or "path:start-end") naming a
+                         path in this set — an uncited or unlocatable refutation
+                         is a non-vote and the finding survives. Omit it and
+                         only the citation shape is checked, never membership.
+                         A verdict that a finding IS real needs no citation.
   --min-quality <n>      Quality-band floor, as for gate
   --no-tolerance         Disable the quality band
   Always exits 0; feed "surviving" to gate to decide whether it blocks.
+  "dismissalsRejected" counts refutations refused for want of a citation — a
+  high number means the skeptics are asserting rather than reading.
 
 risk:
   [change]               OpenSpec change name (resolved like validate when omitted)
@@ -162,16 +198,29 @@ risk:
 
 ledger:
   [change]               OpenSpec change name (resolved like validate when omitted)
-  Reads openspec/changes/<change>/decisions.md. A missing ledger is "none
-  recorded", not an error. Exits 1 when a needs_human row remains or a row is
-  invalid — an unsubstantiated agent_resolved row blocks exactly like a
-  needs_human one.
+  Reads openspec/changes/<change>/decisions.md. Exits 1 when a needs_human row
+  remains, when a row is invalid, or when the ledger is MISSING — an absent
+  ledger is a failure of the audit, not an empty result, because an empty
+  result reads as "nothing needs a human". The JSON distinguishes missing,
+  unparseable, and present-and-empty.
+  An agent_resolved row is audited: it needs a written resolution, evidence a
+  reader can follow (a hedge such as "obvious" counts as blank), and its id must
+  appear in the change's design.md. An absent or unreadable design.md makes
+  every reference unresolvable rather than resolving all of them.
 
 ready:
   [change]               OpenSpec change name (resolved like validate when omitted)
-  --review <file|->      The artifact-review result: { blockers, warnings }.
-                         REQUIRED in practice — an omitted review is an UNRUN
-                         check, not a clean one, and blocks the gate.
+  --findings <file|->    The artifact review's own findings output. The blocker
+                         count is DERIVED from it by the same evaluation
+                         "interlock gate" uses. REQUIRED — absent, empty and
+                         unparseable all mean the review did not run, never
+                         zero blockers.
+  --review <file|->      DEPRECATED: a transcribed { blockers, warnings } count.
+                         Warns, and no longer satisfies the review-blockers
+                         check on its own — the party writing that number is
+                         the party being gated. When both are passed and they
+                         disagree, --findings decides and the disagreement is
+                         reported.
   --paths <p1,p2|->      Changed or planned repo-relative paths, for the risk class
   Fails closed: every check must affirmatively pass. A check that could not run
   is never a pass, and an error while gathering evidence becomes a blocker.
@@ -185,11 +234,47 @@ outcomes:
   Nothing gates on this corpus yet; it is recorded so that it can, later.
   Always exits 0 — losing a corpus line must never fail the run that made it.
 
+run-log:
+  append --event <f|->   One trajectory event; type must be one of run-start,
+                         wave-action, cli-exit, agent-spawn, verify-judgement,
+                         run-halt, run-complete. Written to
+                         .claude/ship/runs/<runId>.jsonl, seq assigned by the
+                         writer. Never throws — an unwritable log is reported
+                         on stderr, not raised.
+  list [--change <name>] List every run with a trajectory file: runId, change,
+                         halted (with reason) or complete or in-progress, and
+                         event/skipped counts. Filter to one change with
+                         --change. Tolerates a torn or garbage line the same
+                         way "outcomes list" does — skips it, reports it.
+  show <runId>           Print one run's events in sequence order.
+  query --run <id> [--type <t>] [--halted]
+                         Filter one run's events. --type keeps only that event
+                         type. --halted keeps only the events that explain a
+                         halt — the run-halt line, plus any verify-judgement
+                         that itself halted — combine with --type to narrow
+                         further.
+  Session-query (list/show/query) is read-only and never-throws, like
+  "outcomes list": a missing run, a torn final line, or an unreadable log is
+  reported, never an exception. Always exits 0 — reading the trajectory is
+  never itself a gate.
+  check --state <file> | --run-id <id>
+                         The reconstructability gate. Exits 1 unless the run's
+                         trajectory has contiguous seq from 1, a run-start, a
+                         run-halt or run-complete, and a cli-exit for every
+                         wave-state / verify-judge invocation. Once this gate
+                         is wired into "wave-state" and "verify judge" (see
+                         those sections), a trajectory write failure on either
+                         is itself a non-zero exit — the never-throw contract
+                         above stays true only for "append"/"list"/"show"/
+                         "query", not for the mutating commands the gate covers.
+
 tasks:
   tick --ids <ids>       Comma-separated task ids (the leading token of a
                          checkbox, e.g. 1.1). Flips matching - [ ] to - [x].
                          Already-checked matches are reported, not rewritten.
-                         Always exits 0 — a missed id is listed as missing.
+                         Exits 1 and names every id it could not mark: a
+                         completed task left silently unchecked reads
+                         downstream as a failed task.
   coverage --classified <f>
                          Remaining unchecked checkboxes vs classified.json.
                          Exits 1 when an unchecked box has no matching id, so
@@ -208,6 +293,10 @@ verify plan:
   --pre-existing         The suite was already red before this change
   --elapsed-ms <n>       Verification time already spent this run
   --budget-ms <n>        Soft budget (default ${LIMITS.interWaveVerifyBudgetMs}ms); past it, typecheck only
+  --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')}. inter-wave omits e2e and
+                         coverage by default (typecheck, unit, lint only).
+  --changed <files...>   Repo-relative paths the last wave touched. When every
+                         path is documentation, the plan emits no steps.
 
 verify judge:
   --plan <file>          JSON from "interlock verify plan --json". "-" for stdin.
@@ -219,7 +308,19 @@ verify judge:
   --baseline <file>      Counts captured before the change, for the weakened-suite check
   --pre-existing         Excuse every failure as pre-existing
   --pre-existing-signatures <file>   JSON array of signatures known red beforehand
-  Exits 1 when the verdict halts.
+  --state <file>         Read "runId" from this wave-state file and append a
+                         verify-judgement + cli-exit trajectory event pair
+                         tagged with it. Omit --state and --run-id and no
+                         event is logged; this command's exit code then never
+                         depends on logging. Given either, a failed append now
+                         ALSO exits 1 — the reconstructability gate (see
+                         "run-log check") means a lost trajectory line here is
+                         a halt, not a reported no-op.
+  --run-id <id>          Same, when you have a run id but not a state file.
+                         --state wins if both are given.
+  --change <name>        Tag the logged event with this change name.
+  Exits 1 when the verdict halts, or when --state/--run-id was given and the
+  trajectory append failed.
 
 verify unit / cluster / repair:
   --result <file>        verify unit: one unit result object. Exits 1 on halt.
@@ -227,21 +328,53 @@ verify unit / cluster / repair:
   --state <file>         verify repair: { iterationsUsed, clusters, halt, weakened,
                          preExisting, maxIterations }. Exits 1 when it halts.
 
+verify judge / unit — the anti-swallow check:
+  Before judging, every result's "detail", "cliStdout", "reason", "stdout",
+  "stderr", "output", and each "failures[]" entry is checked against the
+  verify preview budget (\`interlock limits\`). A field over budget is
+  rejected outright — reason "oversized result field(s)" — rather than
+  judged: a verify agent must spill it with \`interlock verify spill\` and
+  pass the preview instead. Exits 1, same as any other halt.
+
+verify spill:
+  --run-id <id>          Run id the spilled output belongs to (required)
+  --kind <k>             Step kind, e.g. unit/e2e/lint — becomes part of the
+                         file name (required)
+  --input <file|->       Raw combined stdout/stderr to spill (required)
+  Writes the bytes to .claude/ship/spill/<runId>/<seq>-<kind>.log and prints
+  { locator, bytes, preview, truncated, sha256 } — put locator + preview in the
+  result the workflow's verify prompt writes, never the full text. Preview is a
+  head/tail slice bounded by \`interlock limits\`' verify preview budget.
+  Always exits 0.
+
 wave-state:
   The run state machine, passed as JSON on stdin/stdout because the workflow
   script cannot hold state across agent calls — each agent reads the state in
   and writes the next one out.
   create --plan <file>              Plan from "interlock waves --json"; --max-parallel <n>
   next --state <file>               --json emits the STEP to take
-  record-batch --state <f> --result <f>    result: { tasks: [{id, ok, error?}], replanSuggested? }
+  record-batch --state <f> --result <f>    result: { tasks: [{id, ok, error?, handoff?}], replanSuggested? }
+                                           handoff: { schema: "interlock.wave-handoff/1", taskId,
+                                           status: ok|blocked|partial, summary, evidence[], next,
+                                           blocker }. A task claiming ok:true without a valid,
+                                           in-budget packet is recorded as failed ("invalid
+                                           handoff: ..."); see "interlock limits" for the cap.
+                                           The next wave's step carries these as previousHandoffs.
   record-verify --state <f> --result <f>   result: { ok, errors?, blocksNextWave? } or
                                            { skipped: true, reason }
   replan --state <f> --groups <f>          groups: [{ group, tasks: [...] }]
   --write-state <file>   record-* / replan: write the new state to <file>;
                          with --json, stdout is the NEXT STEP (same shape as "next")
+  --change <name>        Tag the trajectory events below with this change name
+                         (default "unnamed"); has no effect on the state itself.
   With --json, create / record-* / replan emit the NEW STATE — pipe it into the
   next call. Only "next" emits a step instead. --write-state flips record-* /
   replan to that step-on-stdout shape so a ship agent need not call next again.
+  Every subcommand also appends a wave-action + cli-exit event to
+  .claude/ship/runs/<runId>.jsonl (runId read from the state). A failed append
+  is reported on stderr AND now exits 1 (the reconstructability gate) — a lost
+  trajectory line here is a halt, not a bookkeeping miss. "next" additionally
+  logs one agent-spawn per task on a run-batch/test-wave step, same gate.
 
 autonomy record:
   --blockers <n>         Blockers caught by this gate (default 0)
@@ -275,7 +408,8 @@ const BOOLEAN_FLAGS = new Set([
   'no-coverage',
   'no-lint',
   'no-profile',
-  'pre-existing'
+  'pre-existing',
+  'halted'
 ])
 
 function parseArgs(argv) {
@@ -336,6 +470,14 @@ function readInput(value, what) {
   }
 }
 
+// Like `readInput`, but for a payload that is bytes to spill rather than JSON
+// to parse — `verify spill` hands this raw suite output, which is exactly the
+// text the rest of the CLI must never try to JSON.parse.
+function readRawInput(value, what) {
+  if (!value || value === true) die(`${what} is required`)
+  return value === '-' ? readStdin() : readFileSync(value, 'utf8')
+}
+
 function die(message) {
   process.stderr.write(`interlock: ${message}\n`)
   process.exit(1)
@@ -354,7 +496,7 @@ function emit(json, obj, text) {
  * state to a file and stdout becomes nextStep() — the shape `wave-state next`
  * already emits — so a ship agent can record and learn the next action in one turn.
  */
-function emitRecordedState(json, flags, state) {
+function emitRecordedState(json, flags, state, { root, change, logOk = true, source } = {}) {
   const dest = flags['write-state']
   if (dest === true) die('--write-state requires a file path')
   if (dest === '-') die('--write-state cannot be "-"')
@@ -362,12 +504,194 @@ function emitRecordedState(json, flags, state) {
     mkdirSync(dirname(dest), { recursive: true })
     writeFileSync(dest, JSON.stringify(state, null, 2) + '\n')
     const step = nextStep(state)
+    const spawnOk = logAgentSpawns(root, {
+      runId: runIdOf(state),
+      change,
+      step,
+      source
+    })
     emit(json, step, formatRunState(state))
-    if (step.action === 'halt' || state.halt) process.exit(1)
+    if (step.action === 'halt' || state.halt || !logOk || !spawnOk) process.exit(1)
     return
   }
   emit(json, state, formatRunState(state))
-  if (state.halt) process.exit(1)
+  if (state.halt || !logOk) process.exit(1)
+}
+
+// `state.runId` travels on the frozen wave-state (design.md decision 1) — read
+// the same defensive way `logWaveMutation` does, since a malformed state must
+// not crash the CLI, only fail the (never-throw) trajectory append.
+function runIdOf(state) {
+  return state && typeof state.runId === 'string' ? state.runId : undefined
+}
+
+// `wave-state next` / `--write-state` both surface the state machine's next
+// step. A `run-batch`/`test-wave` step carries `tasks[]` (current batch) and
+// `remainingBatches` (rest of the wave). ship.js runs remainingBatches
+// sequentially before the next record ping, so the reconstructable spawn list
+// is remainingBatches — not only tasks[]. Mid-wave record-batch --write-state
+// is cursor catch-up and MUST NOT duplicate those events.
+function spawnTasksOf(step) {
+  if (Array.isArray(step.remainingBatches) && step.remainingBatches.length) {
+    return step.remainingBatches.flat().filter(t => t && typeof t === 'object')
+  }
+  return Array.isArray(step.tasks) ? step.tasks : []
+}
+
+function logAgentSpawns(root, { runId, change, step, source }) {
+  if (!step || (step.action !== 'run-batch' && step.action !== 'test-wave')) return true
+  if (source === 'record-batch' && Number(step.batchIndex) > 0) return true
+  const tasks = spawnTasksOf(step)
+  let ok = true
+  for (const task of tasks) {
+    const taskId = task && typeof task.id === 'string' ? task.id : undefined
+    const spawn = appendRunLogEvent(root, {
+      runId,
+      change,
+      type: 'agent-spawn',
+      label: taskId,
+      model: task && typeof task.model === 'string' ? task.model : undefined,
+      kind: 'implementer',
+      taskId
+    })
+    if (!spawn.written) {
+      process.stderr.write(`interlock: agent-spawn not recorded: ${spawn.reason}\n`)
+      ok = false
+    }
+  }
+  return ok
+}
+
+// The anti-swallow check (design.md §3.3): a verify agent that pasted a
+// spilled suite log into a result field instead of using the locator+preview
+// `interlock verify spill` handed it is rejected before its result reaches a
+// judgement, never judged as if the oversized text were a legitimate report.
+function rejectOversized(results, context) {
+  const check = checkResultFieldSizes(results)
+  if (check.ok) return null
+  const reason =
+    `oversized result field(s): ${check.violations
+      .map(v => `${v.kind}.${v.field} (${v.length} chars, budget ${v.limit})`)
+      .join(', ')} — spill it with \`interlock verify spill\` and pass the preview instead`
+  return {
+    halt: true,
+    reason,
+    context: context || null,
+    haltingKinds: [],
+    unit: null,
+    e2e: null,
+    coverage: null,
+    signals: [{ level: 'halt', kind: 'oversized-result', message: reason }],
+    banners: [reason],
+    skipped: []
+  }
+}
+
+// `verify judge` logs a trajectory event only when it can identify the run: a
+// `--run-id` given directly, or one read from `--state`'s frozen `runId` field
+// (design.md decision 4 — "the run id cannot drift" when it comes from the
+// same state file the caller is already threading through the loop). Neither
+// present means this judge call is not part of a logged ship run — e.g. a
+// person running `interlock verify judge` by hand — so nothing is logged and
+// nothing is required to be.
+function runIdFromFlags(flags) {
+  if (typeof flags['run-id'] === 'string' && flags['run-id'].trim()) return flags['run-id'].trim()
+  const stateFile = flags.state
+  if (typeof stateFile === 'string' && stateFile !== '-') {
+    try {
+      const parsed = JSON.parse(readFileSync(stateFile, 'utf8'))
+      if (parsed && typeof parsed.runId === 'string') return parsed.runId
+    } catch {
+      // Unreadable or malformed state: no run id to log against, and this is
+      // not the command that should fail the run over a logging concern.
+    }
+  }
+  return undefined
+}
+
+// A `verify-judgement` line never carries the suite transcript: only the
+// verdict's own short reason and status, plus locators for whatever the
+// verify helper already spilled (task 3.3) — never the results' raw text.
+// Returns whether the trajectory was written, so the reconstructability gate
+// (task 6.2) can turn a failed append into a non-zero exit once it is wired
+// in — a caller with no runId gets `true` back, since nothing was owed.
+function logVerifyJudgement(root, { runId, change, verdict, results }) {
+  if (!runId) return true
+  const spill = Array.isArray(results)
+    ? results.filter(r => r && typeof r.locator === 'string' && r.locator).map(r => r.locator)
+    : []
+  const logged = appendRunLogEvent(root, {
+    runId,
+    change,
+    type: 'verify-judgement',
+    context: verdict.context,
+    halt: verdict.halt,
+    reason: verdict.reason || (verdict.halt ? 'verification halted' : 'verification ok'),
+    unitStatus: verdict.unit ? verdict.unit.status : null,
+    spill
+  })
+  if (!logged.written) {
+    process.stderr.write(`interlock: verify-judgement not recorded: ${logged.reason}\n`)
+  }
+  // Mirrors what `logWaveMutation` does for `wave-state`: a `cli-exit` alongside
+  // the semantic event, so the reconstructability check (task 6.1) can require
+  // "a cli-exit per wave-state / verify judge invocation" uniformly, without
+  // special-casing verify.
+  const exit = appendRunLogEvent(root, {
+    runId,
+    change,
+    type: 'cli-exit',
+    command: 'verify judge',
+    exitCode: verdict.halt ? 1 : 0
+  })
+  if (!exit.written) {
+    process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
+  }
+  return logged.written && exit.written
+}
+
+// `wave-state create|next|record-*|replan` all append their own trajectory
+// events (design.md decision 1: `runId` is created once, in createRunState,
+// and travels on the frozen state — no new flag needed) so a ship agent never
+// spends a turn calling `run-log append` itself for a wave-state mutation.
+// `nextStep(state)` already knows the state-machine action, wave, and cursor
+// this event describes; callers that also need `step` for their own stdout
+// (e.g. `next`) get it back instead of computing it twice. `ok` reports
+// whether both appends were written, so the reconstructability gate (task
+// 6.2) can turn a failed trajectory write into a non-zero exit.
+function logWaveMutation(root, { source, change, state }) {
+  const step = nextStep(state)
+  const runId = state && typeof state.runId === 'string' ? state.runId : undefined
+  const changeName = typeof change === 'string' && change.trim() ? change.trim() : undefined
+  const wave = appendRunLogEvent(root, {
+    runId,
+    change: changeName,
+    type: 'wave-action',
+    source,
+    action: step.action,
+    // `step.wave` is `wave.group` from lib/waves.mjs — a plan-assigned integer,
+    // not a label — so it is stringified for the text field rather than dropped.
+    wave: step.wave === undefined || step.wave === null ? null : String(step.wave),
+    waveIndex: Number.isInteger(step.waveIndex) ? step.waveIndex : null,
+    batchIndex: Number.isInteger(step.batchIndex) ? step.batchIndex : null,
+    phase: state && state.cursor ? state.cursor.phase : null
+  })
+  if (!wave.written) {
+    process.stderr.write(`interlock: wave-action not recorded: ${wave.reason}\n`)
+  }
+  const exit = appendRunLogEvent(root, {
+    runId,
+    change: changeName,
+    type: 'cli-exit',
+    command: `wave-state ${source}`,
+    // `nextStep` returns action:'halt' exactly when state.halt is set, so this
+    // mirrors the exit code every call site below actually produces.
+    exitCode: state && state.halt ? 1 : 0
+  })
+  if (!exit.written) {
+    process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
+  }
+  return { step, ok: wave.written && exit.written }
 }
 
 // --min-quality / --no-tolerance mean the same thing everywhere the tolerance
@@ -534,7 +858,15 @@ function main() {
     case 'review': {
       const findings = readInput(flags.findings, '--findings')
       const verdicts = readInput(flags.verdicts, '--verdicts')
-      const result = resolveReview(findings, verdicts, { band: parseBand(flags) })
+      // The reviewed diff. A dismissing verdict has to cite a path that is in
+      // it — shape alone is satisfied by inventing `lib/nowhere.ts:1`. Optional
+      // because a caller that cannot name the changed files must still get the
+      // shape half rather than no gate at all.
+      const changedPaths = splitPaths(flags.changed)
+      const result = resolveReview(findings, verdicts, {
+        band: parseBand(flags),
+        changedPaths
+      })
 
       // Metrics are bookkeeping: they report their own failure and never touch
       // the exit code, so a read-only checkout cannot fail a review.
@@ -587,13 +919,29 @@ function main() {
         { change: name, path: parsed.path, ...summary, rows: parsed.rows, invalidRows: parsed.invalid },
         formatLedger(parsed)
       )
+      // A missing ledger exits non-zero and says *missing*, not *empty*. The
+      // audit's likeliest failure is that it was never written, and an empty
+      // result reads as "nothing needs a human" — which is the one conclusion
+      // an absent file cannot support. `summary.missing` / `summary.unparseable`
+      // keep the three cases distinguishable in the JSON.
       if (summary.blocking) process.exit(1)
       break
     }
 
     case 'ready': {
       const name = requireChange(root, requestedName(positional, flags), json)
+      // Read RAW, not parsed: an unreadable findings file must reach the gate
+      // as "the review did not run" and become a blocker with a reason, rather
+      // than dying in the argument parser with a message nobody records.
+      const findings = flags.findings ? readRawInput(flags.findings, '--findings') : undefined
       const review = flags.review ? readInput(flags.review, '--review') : undefined
+      if (review !== undefined && findings === undefined) {
+        warn(
+          '--review is deprecated and no longer satisfies the review-blockers check on its own: ' +
+            'its provenance is the agent being gated. Pass the artifact review\'s own findings ' +
+            'file to --findings instead.'
+        )
+      }
       const paths =
         typeof flags.paths === 'string'
           ? (flags.paths === '-' ? readStdin() : flags.paths)
@@ -601,7 +949,7 @@ function main() {
               .map(s => s.trim())
               .filter(Boolean)
           : undefined
-      const result = assessReadiness(root, name, { review, changedPaths: paths })
+      const result = assessReadiness(root, name, { findings, review, changedPaths: paths })
       emit(json, result, formatReadiness(result))
       // Fail closed: not-ready is a non-zero exit, so a caller that forgets to
       // read the JSON still cannot walk past the gate.
@@ -629,6 +977,46 @@ function main() {
       break
     }
 
+    case 'run-log': {
+      const sub = positional[1]
+      if (sub === 'append') {
+        const record = readInput(flags.event, '--event <file|->')
+        const { written, path, reason } = appendRunLogEvent(root, record)
+        if (!written) {
+          // Never fatal: losing a trajectory line must not fail the run that
+          // produced it. Say so on stderr and exit 0.
+          process.stderr.write(`interlock: event not recorded: ${reason}\n`)
+        }
+        emit(json, { written, path, reason }, `${written ? `recorded → ${path}` : `not recorded: ${reason}`}\n`)
+      } else if (sub === 'list') {
+        const change = typeof flags.change === 'string' ? flags.change : undefined
+        const runs = listRunLogs(root, { change })
+        emit(json, { runs }, formatRunLogList(runs))
+      } else if (sub === 'show') {
+        const runId = positional[2]
+        if (!runId) die('run-log show requires a runId')
+        const result = readRunLog(root, runId)
+        emit(json, result, formatRunLog(result))
+      } else if (sub === 'query') {
+        const runId = typeof flags.run === 'string' ? flags.run : undefined
+        if (!runId) die('--run is required')
+        const result = queryRunLog(root, runId, {
+          type: typeof flags.type === 'string' ? flags.type : undefined,
+          halted: flags.halted === true
+        })
+        emit(json, result, formatRunLog(result))
+      } else if (sub === 'check') {
+        const runId = runIdFromFlags(flags)
+        if (!runId) die('run-log check requires --state <file> (with a runId) or --run-id <id>')
+        const result = checkRunLog(root, runId)
+        emit(json, result, formatRunLogCheck(result))
+        if (!result.ok) process.exit(1)
+      } else {
+        die(`unknown run-log subcommand: ${sub || '(none)'} — expected append|list|show|query|check`)
+      }
+      break
+    }
+
     case 'tasks': {
       const sub = positional[1]
       if (sub === 'tick') {
@@ -639,9 +1027,21 @@ function main() {
         const text =
           `ticked ${result.ticked.length}` +
           (result.already.length ? `, already ${result.already.length}` : '') +
-          (result.missing.length ? `, missing ${result.missing.length}` : '') +
+          (result.missing.length ? `, missing ${result.missing.join(', ')}` : '') +
           `\n`
         emit(json, result, text)
+        // An id that could not be marked exits non-zero and names itself. A
+        // completed task left silently unchecked reads downstream as a failed
+        // task, so the caller has to be able to see the difference — and an
+        // empty id set is refused above, which keeps "nothing to mark" distinct
+        // from "marking failed".
+        if (result.missing.length) {
+          process.stderr.write(
+            `interlock: could not mark ${result.missing.length} task id(s) complete in ` +
+              `${result.path}: ${result.missing.join(', ')} — no matching checkbox\n`
+          )
+          process.exit(1)
+        }
       } else if (sub === 'coverage') {
         const name = requireChange(root, requestedName(positional, flags), json)
         const classified = readInput(flags.classified, '--classified')
@@ -682,6 +1082,19 @@ function main() {
         if (elapsedMs !== undefined) opts.elapsedMs = elapsedMs
         const budgetMs = num(flags, 'budget-ms')
         if (budgetMs !== undefined) opts.budgetMs = budgetMs
+        const context = flags.context === undefined ? undefined : String(flags.context)
+        if (context !== undefined) {
+          if (!Object.prototype.hasOwnProperty.call(VERIFY_CONTEXTS, context)) {
+            die(
+              `--context must be one of ${Object.keys(VERIFY_CONTEXTS).join('|')} (got "${context}")`
+            )
+          }
+          opts.context = context
+          if (context === 'inter-wave') opts.coverage = false
+        }
+        if (flags.changed !== undefined) {
+          opts.changed = Array.isArray(flags.changed) ? flags.changed : splitPaths(flags.changed)
+        }
 
         const plan = planVerification(profile, opts)
         emit(json, plan, formatVerification(plan))
@@ -700,15 +1113,43 @@ function main() {
             `--context must be one of ${Object.keys(VERIFY_CONTEXTS).join('|')} (got "${context}")`
           )
         }
+        const rejection = rejectOversized(results, context)
+        if (rejection) {
+          emit(json, rejection, formatVerification(rejection))
+          process.exit(1)
+        }
         const opts = { context, ...verifyJudgeOpts(flags) }
         const verdict = judgeVerification(plan, results, opts)
+        const logOk = logVerifyJudgement(root, {
+          runId: runIdFromFlags(flags),
+          change: typeof flags.change === 'string' ? flags.change : undefined,
+          verdict,
+          results
+        })
         emit(json, verdict, formatVerification(verdict))
-        if (verdict.halt) process.exit(1)
+        if (verdict.halt || !logOk) process.exit(1)
       } else if (sub === 'unit') {
         const result = readInput(flags.result, '--result <file|->')
+        const rejection = rejectOversized([result])
+        if (rejection) {
+          emit(json, rejection, formatVerification(rejection))
+          process.exit(1)
+        }
         const judgement = judgeUnitResult(result, verifyJudgeOpts(flags))
         emit(json, judgement, formatVerification(judgement))
         if (judgement.halt) process.exit(1)
+      } else if (sub === 'spill') {
+        const runId = typeof flags['run-id'] === 'string' ? flags['run-id'].trim() : ''
+        if (!runId) die('--run-id is required')
+        const kind = typeof flags.kind === 'string' ? flags.kind.trim() : ''
+        if (!kind) die('--kind is required')
+        const raw = readRawInput(flags.input, '--input <file|->')
+        const result = spillBytes(root, { runId, kind, bytes: raw })
+        emit(
+          json,
+          result,
+          `spilled ${result.bytes} byte(s) → ${result.locator}${result.truncated ? ' (truncated preview)' : ''}\n`
+        )
       } else if (sub === 'cluster') {
         const failures = readInput(flags.failures, '--failures <file|->')
         if (!Array.isArray(failures)) {
@@ -726,7 +1167,7 @@ function main() {
         if (action.action === 'halt') process.exit(1)
       } else {
         die(
-          `unknown verify subcommand: ${sub || '(none)'} — expected plan|judge|unit|cluster|repair`
+          `unknown verify subcommand: ${sub || '(none)'} — expected plan|judge|unit|spill|cluster|repair`
         )
       }
       break
@@ -734,16 +1175,25 @@ function main() {
 
     case 'wave-state': {
       const sub = positional[1]
+      const change = typeof flags.change === 'string' ? flags.change : undefined
       if (sub === 'create') {
         const plan = readInput(flags.plan, '--plan <file|->')
         const maxParallel = num(flags, 'max-parallel')
         const state = createRunState(plan, { maxParallel })
+        const { ok: logOk } = logWaveMutation(root, { source: 'create', change, state })
         emit(json, state, formatRunState(state))
+        if (!logOk) process.exit(1)
       } else if (sub === 'next') {
         const state = readInput(flags.state, '--state <file|->')
-        const step = nextStep(state)
+        const { step, ok: logOk } = logWaveMutation(root, { source: 'next', change, state })
+        const spawnOk = logAgentSpawns(root, {
+          runId: runIdOf(state),
+          change,
+          step,
+          source: 'next'
+        })
         emit(json, step, formatRunState(state))
-        if (step.action === 'halt') process.exit(1)
+        if (step.action === 'halt' || !logOk || !spawnOk) process.exit(1)
       } else if (sub === 'record-batch' || sub === 'record-verify') {
         const state = readInput(flags.state, '--state <file|->')
         const result = readInput(flags.result, '--result <file|->')
@@ -751,7 +1201,8 @@ function main() {
           sub === 'record-batch'
             ? recordBatchResult(state, result)
             : recordVerifyResult(state, result)
-        emitRecordedState(json, flags, next)
+        const { ok: logOk } = logWaveMutation(root, { source: sub, change, state: next })
+        emitRecordedState(json, flags, next, { root, change, logOk, source: sub })
       } else if (sub === 'replan') {
         const state = readInput(flags.state, '--state <file|->')
         const groups = readInput(flags.groups, '--groups <file|->')
@@ -759,7 +1210,8 @@ function main() {
           die('--groups must be a JSON array of { group, tasks } revisions')
         }
         const next = applyReplan(state, groups)
-        emitRecordedState(json, flags, next)
+        const { ok: logOk } = logWaveMutation(root, { source: 'replan', change, state: next })
+        emitRecordedState(json, flags, next, { root, change, logOk, source: 'replan' })
       } else {
         die(
           `unknown wave-state subcommand: ${sub || '(none)'} — expected ` +

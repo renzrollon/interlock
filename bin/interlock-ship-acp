@@ -1,0 +1,764 @@
+#!/usr/bin/env node
+// interlock-ship-acp — lean ship, hosted over the Agent Client Protocol.
+//
+// This is the second driver of the same loop, and the reason it is allowed to
+// exist is that it drives the same engine: every decision below arrives as the
+// exit code and stdout of `bin/interlock`. What differs from
+// `workflows/ship.js` is only *where the agents come from* — an ACP subprocess
+// instead of the Claude Code workflow runtime — which is precisely the seam
+// `lib/host.mjs` exists to isolate.
+//
+// Unlike the workflow script, this file is ordinary Node: it may `import()`,
+// read files and spawn processes. That is why it can do the mechanical work the
+// script has to delegate to a "cheap ping" agent — writing plan.json, appending
+// a trajectory event, assembling a verify result — with no model in the loop at
+// all. The model is spawned for judgement only: classify the tasks, implement a
+// task, run and report the suites, write the commit.
+//
+// Scope, stated plainly (design.md decision 2): **lean ship only.**
+// waves → verify → commit. `--strict` and its pieces (`--review`, `--handoff`,
+// `--conformance`) are Claude Code–only until a follow-on change, and this
+// driver REFUSES them rather than silently running something smaller than what
+// was asked for. Interlock is sold on not degrading quietly.
+//
+// Usage:
+//   INTERLOCK_ACP_COMMAND="my-acp-agent" interlock-ship-acp <change> [flags]
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createAcpHost, ACP_COMMAND_ENV } from '../lib/host/acp.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PLUGIN_ROOT = join(HERE, '..')
+const SHIP_SCRIPT = join(PLUGIN_ROOT, 'workflows', 'ship.js')
+
+const WORK = '.claude/ship'
+const STATE = `${WORK}/state.json`
+const PROFILE = '.claude/testing/profile.json'
+
+// Same backstop as the workflow script: a loop whose exit condition depends on
+// model output needs one that does not.
+const MAX_LOOP_STEPS = 200
+
+const USAGE = `interlock-ship-acp — lean ship over an ACP agent (experimental second host)
+
+Usage:
+  interlock-ship-acp [<change>] [flags]
+
+Flags:
+  --change <name>        change to ship (same as the positional)
+  --acp-command <cmd>    ACP agent command; defaults to $${ACP_COMMAND_ENV}
+  --root <dir>           repo root (default: cwd)
+  --max-parallel <n>     cap the planner's batch width
+  --apply-only           stop after the waves
+  --no-commit            run everything, leave the commit
+  --skip-e2e             final verification skips e2e
+  --skip-coverage        final verification skips coverage
+  --verbose              print ACP host events as they happen
+
+Not supported on this host:
+  --strict --review --handoff --conformance
+      The adversarial review tail is Claude Code–only until a follow-on change.
+      Run /interlock:ship --strict there; this driver refuses rather than
+      quietly shipping lean when strict was asked for.
+
+Exit codes:
+  0  ran to a terminal summary
+  1  the run halted
+  2  the invocation is not supported on this host
+`
+
+// --- invocation -------------------------------------------------------------
+
+const VALUE_FLAGS = new Set(['change', 'acp-command', 'root', 'max-parallel', 'timeout-ms'])
+const REFUSED_FLAGS = ['strict', 'review', 'handoff', 'conformance']
+
+function parseArgv(argv) {
+  const flags = {}
+  const positional = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (!arg.startsWith('--')) {
+      positional.push(arg)
+      continue
+    }
+    const body = arg.slice(2)
+    const eq = body.indexOf('=')
+    if (eq !== -1) {
+      flags[body.slice(0, eq)] = body.slice(eq + 1)
+      continue
+    }
+    if (VALUE_FLAGS.has(body) && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+      flags[body] = argv[++i]
+      continue
+    }
+    flags[body] = true
+  }
+  return { flags, positional }
+}
+
+const { flags, positional } = parseArgv(process.argv.slice(2))
+
+if (flags.help || flags.h) {
+  process.stdout.write(USAGE)
+  process.exit(0)
+}
+
+const refused = REFUSED_FLAGS.filter(name => flags[name])
+if (refused.length) {
+  process.stderr.write(
+    `interlock-ship-acp: --${refused.join(', --')} is not implemented on the ACP host.\n` +
+      `The adversarial review / handoff / conformance tail is Claude Code–only until a follow-on ` +
+      `change. Run /interlock:ship ${refused.map(f => `--${f}`).join(' ')} there.\n` +
+      `Refusing rather than running lean under a strict invocation.\n`
+  )
+  process.exit(2)
+}
+
+const root = typeof flags.root === 'string' ? flags.root : process.cwd()
+const changeArg = typeof flags.change === 'string' ? flags.change : positional[0] || ''
+const maxParallel = Number.parseInt(String(flags['max-parallel'] ?? ''), 10)
+const applyOnly = flags['apply-only'] === true
+const noCommit = flags['no-commit'] === true
+const skipE2e = flags['skip-e2e'] === true
+const skipCoverage = flags['skip-coverage'] === true
+const verbose = flags.verbose === true
+
+let host
+try {
+  host = createAcpHost({
+    command: typeof flags['acp-command'] === 'string' ? flags['acp-command'] : undefined,
+    cwd: root,
+    timeoutMs: Number.isInteger(Number.parseInt(String(flags['timeout-ms'] ?? ''), 10))
+      ? Number.parseInt(String(flags['timeout-ms']), 10)
+      : undefined,
+    onEvent: event => {
+      if (verbose) process.stderr.write(`acp: ${JSON.stringify(event)}\n`)
+    }
+  })
+} catch (err) {
+  process.stderr.write(`interlock-ship-acp: ${err.message}\n\n${USAGE}`)
+  process.exit(2)
+}
+
+// --- plumbing ---------------------------------------------------------------
+
+const banners = [
+  'ACP HOST (experimental): /interlock:ship on Claude Code is the supported path',
+  // The honest counterpart of ship.js's MODEL ROUTING OVERRIDDEN banner. ACP v1
+  // has no per-prompt model selector, so the planner's tier ladder is not in
+  // effect here and the run costs whatever the configured agent costs.
+  'MODEL ROUTING UNAVAILABLE (ACP host): the plan\'s per-tier model assignment is not in effect'
+]
+const summary = { waves: [], halted: null, notes: [] }
+let resolvedChange = changeArg || '(unresolved)'
+let runId = null
+
+function workPath(rel) {
+  return `${WORK}/${rel}`
+}
+
+/** Write a work file and return the repo-relative path the CLI is given. */
+function write(rel, data) {
+  const abs = join(root, rel)
+  mkdirSync(dirname(abs), { recursive: true })
+  writeFileSync(abs, typeof data === 'string' ? data : JSON.stringify(data, null, 2) + '\n')
+  return rel
+}
+
+function readJson(rel) {
+  try {
+    return JSON.parse(readFileSync(join(root, rel), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Run the CLI through the host port and parse `--json` stdout when present. */
+async function cli(argv) {
+  const result = await host.runCli(argv)
+  let json = null
+  if (result.stdout.trim()) {
+    try {
+      json = JSON.parse(result.stdout)
+    } catch {
+      json = null
+    }
+  }
+  return { ...result, json }
+}
+
+function log(line) {
+  process.stdout.write(`${line}\n`)
+}
+
+/**
+ * A spawn this driver performs that `wave-state` cannot know about — the
+ * planner, the verify runner, the commit. Implementer spawns are logged by the
+ * CLI itself from the step it emitted, so logging them here would double-count.
+ * Never fails the run: losing a trajectory line must not lose the run.
+ */
+async function logSpawn(label, kind, model) {
+  if (!runId) return
+  const event = write(
+    workPath(`spawn-${label}.json`),
+    { type: 'agent-spawn', runId, change: resolvedChange, label, kind, ...(model ? { model } : {}) }
+  )
+  await cli(['run-log', 'append', '--event', event, '--root', '.', '--json'])
+}
+
+async function spawn(label, kind, prompt, schema, model) {
+  await logSpawn(label, kind, model)
+  return host.spawn({
+    label,
+    prompt:
+      `${prompt}\n\nYou are one step of an automated ship run. Do not ask questions — there is ` +
+      `no one listening. If something is undecidable, put it in the result fields rather than ` +
+      `guessing at product intent.`,
+    schema,
+    model
+  })
+}
+
+// --- the implementer prompt -------------------------------------------------
+//
+// Read out of `workflows/ship.js` between its ASSEMBLE_IMPLEMENTER_PROMPT
+// markers and eval'd — the same trick test/spine/implementer-prompt.test.mjs
+// uses. The script cannot import a shared module (the workflow runtime rejects
+// import()), so the only way for this driver to brief an implementer with the
+// *same* tier ladder, tool-economy rules and handoff contract is to use the
+// script's own text. A second copy here is exactly the drift the snapshots
+// exist to catch, and it would be invisible: both hosts would look fine.
+function loadImplementerAssembler() {
+  const text = readFileSync(SHIP_SCRIPT, 'utf8')
+  const m =
+    /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_START\n([\s\S]*?)\n\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/.exec(text)
+  if (!m) {
+    throw new Error(
+      `${SHIP_SCRIPT} has no ASSEMBLE_IMPLEMENTER_PROMPT block — the ACP host briefs implementers ` +
+        `with the workflow script's prompt and must not carry a second copy`
+    )
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function('input', `${m[1]}; return assembleImplementerPrompt(input)`)
+}
+
+const assembleImplementerPrompt = loadImplementerAssembler()
+
+const IMPLEMENTER_SCHEMA = {
+  type: 'object',
+  required: ['id', 'ok', 'handoff'],
+  properties: {
+    id: { type: 'string' },
+    ok: { type: 'boolean' },
+    filesChanged: { type: 'array', items: { type: 'string' } },
+    error: { type: 'string' },
+    handoff: {
+      type: 'object',
+      required: ['taskId', 'status', 'summary', 'next'],
+      properties: {
+        schema: { type: 'string' },
+        taskId: { type: 'string' },
+        status: { type: 'string' },
+        summary: { type: 'string' },
+        evidence: { type: 'array', items: { type: 'string' } },
+        next: { type: 'string' },
+        blocker: { type: ['string', 'null'] }
+      }
+    }
+  }
+}
+
+const VERIFY_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['results'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['kind', 'exitCode'],
+        properties: {
+          kind: { type: 'string' },
+          exitCode: { type: 'integer' },
+          total: { type: 'integer' },
+          passed: { type: 'integer' },
+          failed: { type: 'integer' },
+          failures: { type: 'array', items: { type: 'string' } },
+          locator: { type: 'string' },
+          preview: { type: 'string' }
+        }
+      }
+    },
+    detail: { type: 'string' }
+  }
+}
+
+// --- exits ------------------------------------------------------------------
+
+async function recordOutcome() {
+  // `lib/outcomes.mjs` builds the stored record key by key, so only fields it
+  // names survive. There is no host column in the corpus yet — an ACP run is
+  // filed as an ordinary checkpoint run rather than pretending otherwise.
+  const record = {
+    change: resolvedChange,
+    mode: 'checkpoint',
+    ship: {
+      ok: !summary.halted,
+      remediationRounds: 0,
+      codeBlockersSurviving: 0,
+      unitGreen: summary.unitGreen === true
+    }
+  }
+  await cli(['outcomes', 'append', '--record', write(workPath('outcome.json'), record), '--root', '.', '--json'])
+
+  if (runId) {
+    const close = summary.halted
+      ? { type: 'run-halt', runId, change: resolvedChange, reason: summary.halted }
+      : {
+          type: 'run-complete',
+          runId,
+          change: resolvedChange,
+          leftoverTaskIds: summary.waves.flatMap(w => w.failedIds || [])
+        }
+    await cli(['run-log', 'append', '--event', write(workPath('run-log-close.json'), close), '--root', '.', '--json'])
+
+    const check = await cli(['run-log', 'check', '--state', STATE, '--json'])
+    if (check.code !== 0 && !summary.halted) {
+      const problems = (check.json && check.json.problems) || []
+      summary.halted = `ship-run trajectory is not reconstructable: ${problems.join('; ') || 'see interlock run-log check'}`
+    }
+  }
+}
+
+async function halt(reason) {
+  summary.halted = reason
+  await recordOutcome()
+  finish()
+  process.exit(1)
+}
+
+function finish() {
+  const leftover = summary.waves.flatMap(w => w.failedIds || [])
+  const lines = []
+
+  if (summary.halted) lines.push(`SHIP HALTED — ${summary.halted}`)
+  else if (leftover.length) {
+    lines.push(`SHIP COMPLETE WITH LEFTOVERS — ${resolvedChange}`)
+    lines.push(`  leftover tasks (failed, boxes stay unchecked): ${leftover.join(', ')}`)
+  } else lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+
+  for (const wave of summary.waves) {
+    lines.push(`  wave ${wave.wave ?? '?'} (${wave.kind}): ${wave.ok} ok, ${wave.failed} failed`)
+  }
+  if (summary.commit && summary.commit.ok) lines.push(`  commit: ${summary.commit.sha || 'created'}`)
+  for (const note of summary.notes) lines.push(`  ${note}`)
+
+  lines.push('')
+  lines.push('LEAN SHIP: skipped review, handoff, conformance — not available on the ACP host')
+  for (const banner of banners) lines.push(banner)
+
+  log(lines.join('\n'))
+}
+
+// --- 1. validate ------------------------------------------------------------
+
+const validated = await cli([
+  'validate',
+  ...(changeArg ? ['--change', changeArg] : []),
+  '--json'
+])
+if (validated.code !== 0) {
+  const problems = (validated.json && validated.json.problems) || []
+  await halt(
+    `validate failed: ${problems.join('; ') || validated.stderr.trim() || 'the change is not implementable'}`
+  )
+}
+const change = (validated.json && validated.json.change) || changeArg
+resolvedChange = change
+
+// --- 2. classify, then let the planner decide -------------------------------
+
+const classifiedPath = workPath('classified.json')
+const planned = await spawn(
+  'plan-waves',
+  'planner',
+  `For OpenSpec change "${change}": read proposal.md, design.md, tasks.md and specs/**/*.md in full — ` +
+    `this is the artifact leash and is not subject to bounded retrieval.\n\n` +
+    `Classify every UNCHECKED task with: id, group (wave number), description, tier 1-5, model, ` +
+    `isTestTask, and paths.\n\n` +
+    `GROUPING — three rules, in order:\n` +
+    `  1. Default group to the numbered tasks.md section (1.x → group 1, 2.x → group 2).\n` +
+    `  2. A shared file is NOT a reason for a new group. Put the predicted edit paths in \`paths\` ` +
+    `and let the planner serialize colliding tasks into later batches of the SAME wave.\n` +
+    `  3. Only add a group when a later task needs an earlier task's output to already exist.\n\n` +
+    // The same tier policy the workflow driver states, in the same words.
+    // `lib/host.mjs` forbids a host from carrying its own policy, and this is
+    // the one place that drifted: the two drivers described tier 4 differently,
+    // so the same task could classify differently depending on which host ran
+    // it. test/spine/planner-prompt.test.mjs compares the extracted boundaries
+    // and the routing rule across both drivers.
+    `Tier 1 trivial one-file edit → haiku. Tier 2 single-concern change. Tier 3 new logic in one ` +
+    `domain. Tier 4 cross-file work following existing patterns — a mechanical refactor across many ` +
+    `files is tier 4 sonnet, because breadth is not depth. Tier 5 only for genuinely novel ` +
+    `architecture, and only tier 5 may be opus. When unsure, sonnet.\n\n` +
+    `Write the classification as { "tasks": [...] } to ${classifiedPath} in the repo root. ` +
+    `Do NOT run the interlock CLI yourself — this driver runs the planner, the coverage check and the ` +
+    `state machine. Report only whether the file was written and how many tasks it holds.`,
+  {
+    type: 'object',
+    required: ['ok'],
+    properties: {
+      ok: { type: 'boolean' },
+      taskCount: { type: 'integer' },
+      detail: { type: 'string' }
+    }
+  }
+)
+
+if (!planned || !planned.ok || !readJson(classifiedPath)) {
+  await halt(
+    `wave planning failed: ${(planned && planned.detail) || `no readable ${classifiedPath} from the planner step`}`
+  )
+}
+
+const coverage = await cli(['tasks', 'coverage', '--change', change, '--classified', classifiedPath, '--json'])
+if (coverage.code !== 0) {
+  const omitted = (coverage.json && coverage.json.omitted) || []
+  await halt(
+    `plan omitted unchecked tasks: ${omitted.join(', ') || coverage.stderr.trim() || 'coverage gap'}`
+  )
+}
+
+const wavePlan = await cli([
+  'waves',
+  '--classified',
+  classifiedPath,
+  ...(Number.isInteger(maxParallel) ? ['--max-parallel', String(maxParallel)] : []),
+  '--json'
+])
+if (wavePlan.code !== 0 || !wavePlan.json) {
+  await halt(`waves failed: ${wavePlan.stderr.trim() || 'the planner produced no plan'}`)
+}
+const planPath = write(workPath('plan.json'), wavePlan.json)
+
+const created = await cli([
+  'wave-state',
+  'create',
+  '--plan',
+  planPath,
+  '--change',
+  change,
+  '--root',
+  '.',
+  '--json'
+])
+if (created.code !== 0 || !created.json) {
+  await halt(`wave-state create failed: ${created.stderr.trim() || 'no state'}`)
+}
+write(STATE, created.json)
+runId = created.json.runId || null
+
+await cli([
+  'run-log',
+  'append',
+  '--event',
+  write(workPath('run-start.json'), {
+    type: 'run-start',
+    runId,
+    change,
+    mode: 'checkpoint',
+    strict: false,
+    host: 'acp'
+  }),
+  '--root',
+  '.',
+  '--json'
+])
+
+log(
+  `ACP ship: ${change} — ${wavePlan.json.waves ? wavePlan.json.waves.length : '?'} wave(s) via ${host.command}`
+)
+
+// --- 3. the wave loop -------------------------------------------------------
+//
+// Every branch comes from `interlock wave-state`. This driver does not decide
+// when to verify, when a replan is allowed, or when accumulated failures have
+// spent the budget — it asks, and obeys. `--write-state` means a record and the
+// next step are one CLI call, the same fusion ship.js uses.
+
+const profileFlags = () => (existsSync(join(root, PROFILE)) ? ['--profile', PROFILE] : ['--no-profile'])
+
+async function stepFromCli(argv) {
+  const result = await cli(argv)
+  if (!result.json) {
+    return { action: 'halt', reason: `no step from ${argv.slice(0, 2).join(' ')}: ${result.stderr.trim()}` }
+  }
+  return result.json
+}
+
+/** Run the planned checks through one agent, judge them with the CLI. */
+async function runVerification({ label, context, changed, e2e, coverage: wantCoverage }) {
+  const plan = await cli([
+    'verify',
+    'plan',
+    ...profileFlags(),
+    '--context',
+    context,
+    ...(changed && changed.length ? ['--changed', ...changed] : []),
+    ...(e2e ? ['--e2e'] : []),
+    ...(wantCoverage === false ? ['--no-coverage'] : []),
+    '--json'
+  ])
+  if (!plan.json) {
+    return { verdict: { halt: true, reason: `verify plan failed: ${plan.stderr.trim()}` }, skipped: null }
+  }
+  const planPathRel = write(workPath('vplan.json'), plan.json)
+
+  if (!plan.json.steps.length) {
+    const reason = (plan.json.skipped[0] && plan.json.skipped[0].reason) || 'no detectable commands'
+    return { verdict: { halt: false, reason: null }, skipped: reason }
+  }
+
+  const ran = await spawn(
+    label,
+    'verify',
+    `Run these verification steps for change "${change}" and report what happened.\n\n` +
+      plan.json.steps.map(s => `  ${s.kind}: ${s.command}`).join('\n') +
+      `\n\nRun ONLY these steps — do not invent extra suites, and do not repair anything on a ` +
+      `${context === 'inter-wave' ? 'first' : ''} failure unless the step is red for a reason you can fix ` +
+      `by root cause without weakening a test.\n\n` +
+      `If a step's combined stdout/stderr exceeds the spill threshold (\`interlock limits\`), spill it:\n` +
+      `  interlock verify spill --run-id ${runId || '<runId>'} --kind <kind> --input <raw-output-file> --json\n` +
+      `and report that step's locator and preview instead of the text. Never paste a suite log into a ` +
+      `result field — the judge rejects oversized fields.\n\n` +
+      `Report one entry per step with kind, exitCode and the counts you can read.`,
+    VERIFY_RESULT_SCHEMA
+  )
+
+  const results = ran && Array.isArray(ran.results) ? ran.results : []
+  const resultsPath = write(workPath('vresults.json'), results)
+  const judged = await cli([
+    'verify',
+    'judge',
+    '--plan',
+    planPathRel,
+    '--results',
+    resultsPath,
+    '--context',
+    context,
+    '--state',
+    STATE,
+    '--json'
+  ])
+  const verdict = judged.json || {
+    halt: judged.code !== 0,
+    reason: judged.stderr.trim() || 'verify judge produced no verdict'
+  }
+  for (const banner of verdict.banners || []) banners.push(banner)
+  return { verdict, skipped: null, results }
+}
+
+let steps = 0
+let next = await stepFromCli(['wave-state', 'next', '--state', STATE, '--json'])
+
+while (steps++ < MAX_LOOP_STEPS) {
+  if (!next) await halt('the run state could not be read')
+  if (next.action === 'done') break
+  if (next.action === 'halt' || next.halted) await halt(next.reason || 'the run state halted')
+
+  if (next.action === 'run-batch' || next.action === 'test-wave') {
+    const remaining =
+      Array.isArray(next.remainingBatches) && next.remainingBatches.length
+        ? next.remainingBatches
+        : [Array.isArray(next.tasks) ? next.tasks : []]
+    const previousHandoffs = Array.isArray(next.previousHandoffs) ? next.previousHandoffs : []
+    const accumulated = []
+
+    for (let i = 0; i < remaining.length; i++) {
+      const tasks = remaining[i]
+      if (!tasks.length) await halt('the state machine asked for a batch with no tasks')
+
+      // One agent per task, in parallel, always. A task implemented in the
+      // driver's own process would defeat the entire point of waves.
+      const results = await host.mapPipeline(tasks, task =>
+        host.spawn({
+          label: task.id,
+          model: task.model,
+          schema: IMPLEMENTER_SCHEMA,
+          prompt: assembleImplementerPrompt({ change, task, previousHandoffs })
+        })
+      )
+
+      const reported = tasks.map((task, j) => {
+        const r = results[j]
+        if (!r) return { id: task.id, ok: false, error: 'agent returned no result' }
+        return { id: r.id || task.id, ok: Boolean(r.ok), error: r.error, handoff: r.handoff }
+      })
+      accumulated.push(reported)
+
+      summary.waves.push({
+        wave: next.wave,
+        kind: next.action,
+        ok: reported.filter(r => r.ok).length,
+        failed: reported.filter(r => !r.ok).length,
+        failedIds: reported.filter(r => !r.ok).map(r => r.id)
+      })
+
+      const anyFailed = reported.some(r => !r.ok)
+      if (!anyFailed && i !== remaining.length - 1) continue
+
+      let recorded = null
+      for (let n = 0; n < accumulated.length; n++) {
+        const batchPath = write(workPath(`batch-${n}.json`), { tasks: accumulated[n] })
+        recorded = await stepFromCli([
+          'wave-state',
+          'record-batch',
+          '--state',
+          STATE,
+          '--result',
+          batchPath,
+          '--write-state',
+          STATE,
+          '--change',
+          change,
+          '--root',
+          '.',
+          '--json'
+        ])
+        if (recorded.action === 'halt') break
+      }
+
+      const succeeded = accumulated.flat().filter(r => r.ok).map(r => r.id)
+      if (succeeded.length) {
+        await cli(['tasks', 'tick', '--change', change, '--ids', succeeded.join(','), '--json'])
+      }
+
+      next = recorded
+      break
+    }
+    continue
+  }
+
+  if (next.action === 'verify') {
+    const { verdict, skipped } = await runVerification({
+      label: `inter-wave-verify-${steps}`,
+      context: 'inter-wave',
+      changed: Array.isArray(next.changed) ? next.changed : [],
+      coverage: false
+    })
+    const result = skipped
+      ? { skipped: true, reason: skipped }
+      : { ok: !verdict.halt, errors: verdict.halt ? [verdict.reason || 'verification failed'] : [], blocksNextWave: Boolean(verdict.halt) }
+    if (skipped) banners.push(`VERIFICATION SKIPPED: reason=${skipped}`)
+
+    next = await stepFromCli([
+      'wave-state',
+      'record-verify',
+      '--state',
+      STATE,
+      '--result',
+      write(workPath('verify.json'), result),
+      '--write-state',
+      STATE,
+      '--change',
+      change,
+      '--root',
+      '.',
+      '--json'
+    ])
+    continue
+  }
+
+  if (next.action === 'replan') {
+    const revision = await spawn(
+      `replan-${steps}`,
+      'ping',
+      `A completed wave may have invalidated later ones for change "${change}".\n\n` +
+        `Revise ONLY groups that have not executed yet — the CLI rejects a revision to an executed ` +
+        `group, and that rejection is correct.\n\n` +
+        `If anything needs revising, write [{ "group": <n>, "tasks": [...] }] to ${workPath('replan.json')} ` +
+        `and report revised:true. If nothing does, report revised:false and write nothing. ` +
+        `Do not invent groups, and do not run interlock — this driver applies the revision.`,
+      {
+        type: 'object',
+        required: ['revised'],
+        properties: { revised: { type: 'boolean' }, detail: { type: 'string' } }
+      }
+    )
+
+    next =
+      revision && revision.revised && readJson(workPath('replan.json'))
+        ? await stepFromCli([
+            'wave-state',
+            'replan',
+            '--state',
+            STATE,
+            '--groups',
+            workPath('replan.json'),
+            '--write-state',
+            STATE,
+            '--change',
+            change,
+            '--root',
+            '.',
+            '--json'
+          ])
+        : await stepFromCli(['wave-state', 'next', '--state', STATE, '--json'])
+    continue
+  }
+
+  await halt(`unrecognized step from the state machine: ${next.action}`)
+}
+
+if (steps >= MAX_LOOP_STEPS) {
+  await halt(`the wave loop exceeded ${MAX_LOOP_STEPS} steps without reaching a terminal state`)
+}
+
+if (applyOnly) {
+  summary.notes.push('--apply-only: stopped after the waves')
+  await recordOutcome()
+  finish()
+  process.exit(0)
+}
+
+// --- 4. final verification --------------------------------------------------
+
+const final = await runVerification({
+  label: 'verify',
+  context: 'final',
+  e2e: !skipE2e,
+  coverage: !skipCoverage
+})
+if (final.skipped) banners.push(`VERIFICATION SKIPPED: reason=${final.skipped}`)
+summary.unitGreen = !final.verdict.halt && !final.skipped
+if (final.verdict.halt) await halt(final.verdict.reason || 'verification halted the run')
+
+if (noCommit) {
+  summary.notes.push('--no-commit: everything ran, the commit is yours')
+  await recordOutcome()
+  finish()
+  process.exit(0)
+}
+
+// --- 5. commit --------------------------------------------------------------
+
+const committed = await spawn(
+  'commit',
+  'commit',
+  `Commit change "${change}" as ONE feature-level commit.\n\n` +
+    `Read the change artifacts and write a verb-phrase conventional-commit message with a short ` +
+    `outcome summary. Stage only the files this run touched — never \`git add -A\`, never amend, ` +
+    `never push.`,
+  {
+    type: 'object',
+    required: ['ok'],
+    properties: { ok: { type: 'boolean' }, sha: { type: 'string' }, detail: { type: 'string' } }
+  }
+)
+summary.commit = committed
+
+await recordOutcome()
+finish()
+process.exit(summary.halted ? 1 : 0)

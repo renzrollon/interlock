@@ -8,18 +8,17 @@ Continuity does not decide anything itself. It asks one machine one question —
 
 ## Ask
 
-Write the artifact review result where the gate can read it — the counts from the artifact review, not the review's findings file:
+Hand the gate the artifact review's **own findings file** — the one `/interlock:review-artifacts` wrote. Do not compose a file containing a blocker count, and do not transcribe the count anywhere: the gate derives it, using the same evaluation `interlock gate` uses.
+
+That is the whole point. The number that decides whether a human reads this spec must not be written by the agent being gated.
 
 ```bash
-mkdir -p .claude/ready
-printf '{"blockers": <n>, "warnings": <n>}\n' > .claude/ready/<name>-review.json
+interlock ready "<name>" --findings <path to the artifact review's findings JSON> --paths <planned paths> --json
 ```
 
-Then ask:
+If the artifact review wrote no findings file, **the review has not run.** Stop at the human checkpoint (SKILL.md §6) and say so. Do not synthesise a findings file, and do not fall back to a count — an absent, empty or unparseable findings file is a blocker, never zero blockers.
 
-```bash
-interlock ready "<name>" --review .claude/ready/<name>-review.json --paths <planned paths> --json
-```
+`--review <file>` (a hand-written `{blockers, warnings}`) is **deprecated**. It warns, and on its own it no longer satisfies the review-blockers check.
 
 `--paths` is the repo-relative paths `tasks.md` and `design.md` say this change will touch. They need not exist yet — the classifier reads planned paths. Passing none makes the blast radius unclassifiable, which fails closed to `high` and stops continuity, so pass them.
 
@@ -54,7 +53,7 @@ Title it plainly: **Continuity paused — N decisions need you.** `AskUserQuesti
 ## After the human answers
 
 1. Write the resolutions into `openspec/changes/<name>/decisions.md` — edit each row in place per `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md`: flip the class, write the answer into `resolution`, cite the human in `evidence`. Never delete a row.
-2. Update `design.md` where an answer changed a decision. A resolution the design contradicts is worse than an open question.
+2. Update `design.md` where an answer changed a decision, **and record the resolved decision there by its id** (`D2`). `interlock ledger` now checks that: an `agent_resolved` row whose id appears nowhere in `design.md` is invalid and blocks exactly like `needs_human`. A resolution the design contradicts is worse than an open question; a resolution the design never mentions is one nobody can find.
 3. Re-run the Ask command.
 4. Passes → ship. Still blocked → present the remaining rows the same way. If the second run blocks on something the human cannot answer in a sentence — an artifact is not implementable, the risk class is too high — stop and route to the default checkpoint. Continuity is not a loop to grind against.
 

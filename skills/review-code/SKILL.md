@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security and delivery, then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening an MR, or when a diff is high-stakes enough that false positives would waste real time.
+description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security and technical-lead, then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening an MR, or when a diff is high-stakes enough that false positives would waste real time.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
 argument-hint: "[change-name] [--dimensions a,b,c]"
@@ -46,7 +46,11 @@ Spawn one agent per dimension, in parallel. Each dimension's brief is a bundled 
 | devops | `${CLAUDE_SKILL_DIR}/dimensions/devops.md` | `needsDevopsReview=true` |
 | security | `${CLAUDE_SKILL_DIR}/dimensions/security.md` | any auth, input-handling, or data-exposure surface in the diff |
 
-`--dimensions a,b,c` overrides the selection.
+`--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the six, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not.
+
+(This used to bite: the fourth always-on dimension was called `delivery` here and in `README.md` while its brief file was `technical-lead.md`, so `--dimensions delivery` matched nothing at all and said nothing about it.)
+
+A dimension whose brief file cannot be read is **not** dispatched with an empty rubric either. Report it as unavailable — a reviewer given a dimension name and no criteria produces findings that two skeptics then spend their budget verifying.
 
 Every dimension agent returns findings in this shape:
 
@@ -82,6 +86,14 @@ Run both skeptics per finding, in parallel.
 > You are an independent reviewer giving a second opinion. Read the actual file. Assess independently: is this real? Is the severity right? Is the suggested fix appropriate?
 
 **Both must cite evidence to refute.** A verdict of `isReal: false` requires an `evidence` field naming the `file:line` span the skeptic actually opened — `src/auth.ts:41-58`. **An uncited refutation does not dismiss anything.** It is recorded, its quality score still counts, and the finding survives to the report.
+
+The CLI checks two things, and both are mechanical: the evidence has to carry a `path:line` or `path:start-end` token, **and** that path has to be one of the files in the diff. Pass the diff with `--changed` so the second half can run:
+
+```bash
+interlock review --findings <f> --verdicts <f> --changed <the changed files> --json
+```
+
+Neither half is optional theatre. Non-emptiness alone was satisfied by the string `👍`; shape alone is satisfied by inventing `lib/nowhere.ts:1`. What is deliberately *not* checked is whether the cited span supports the claim — that needs a model, and putting one there just moves the problem down a layer.
 
 Voting a finding *real* needs no evidence: that direction already resolves toward a human reading it, which is the cheap error. Only the dismissing direction is gated, because a dismissed finding is invisible — nobody can catch the mistake.
 

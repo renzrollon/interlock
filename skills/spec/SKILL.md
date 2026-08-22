@@ -136,7 +136,7 @@ What this skill owes the ledger:
 
 1. **Every ambiguity that surfaces mid-flight becomes a row, before it is acted on.** Never resolve an ambiguity silently in the design prose. A decision that exists only in chat does not exist.
 2. **Carry forward what explore wrote.** Transcribe the rows from the brief's `Pending Clarifications` and `Assumptions Made` — ids, questions and classes as explore assigned them — as the first write to this file. Do not start a fresh ledger and do not renumber.
-3. **`agent_resolved` is a claim, and it is audited.** It requires a written resolution *and* evidence a reader can follow, *and* the assumption must also appear in `design.md`, referenced by its id. A row that says `agent_resolved` with an empty resolution or empty evidence is treated as blocking, exactly like `needs_human`.
+3. **`agent_resolved` is a claim, and `interlock ledger` audits all three parts of it.** It requires a written resolution, evidence a reader can follow, *and* the row's id appearing in `design.md`. Each is checked: an empty resolution, an empty evidence cell, a hedge that asserts nothing (`obvious`, `standard practice`, `see above` — the whole cell, not a word inside a real citation), or an id `design.md` never mentions all make the row invalid, and an invalid row blocks exactly like `needs_human`. A missing `design.md` makes every reference unresolvable rather than resolving all of them.
 4. **When in doubt, `needs_human`.** A wrong `agent_resolved` ships an unreviewed product decision; a needless `needs_human` costs one question.
 
 Check the file rather than trusting that you wrote it well:
@@ -145,7 +145,9 @@ Check the file rather than trusting that you wrote it well:
 interlock ledger "<name>"
 ```
 
-It exits non-zero when the ledger blocks — a `needs_human` row remains, or a row is invalid. That is not a failure of this skill: an honest blocking ledger is the correct output for a change that hit a real product question. It is only a failure if the questions never got written down.
+It exits non-zero when the ledger blocks — a `needs_human` row remains, a row is invalid, or **the ledger is missing entirely**. An absent `decisions.md` is a failure of the audit, not an empty result: "no rows" reads as "nothing needs a human", which is the one conclusion a file that was never written cannot support. The output distinguishes *missing* from *present and empty* from *unparseable*.
+
+A blocking ledger with rows in it is not a failure of this skill: an honest blocking ledger is the correct output for a change that hit a real product question. It is only a failure if the questions never got written down.
 
 ---
 

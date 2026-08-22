@@ -12,7 +12,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +48,25 @@ function file(name, contents) {
   writeFileSync(p, typeof contents === 'string' ? contents : JSON.stringify(contents))
   return p
 }
+
+/**
+ * A task result claiming success. `record-batch` fails a task that claims
+ * ok:true without a valid handoff, so the packet is part of the fixture, not
+ * an optional extra.
+ */
+const okTask = id => ({
+  id,
+  ok: true,
+  handoff: {
+    schema: 'interlock.wave-handoff/1',
+    taskId: id,
+    status: 'ok',
+    summary: `did ${id}`,
+    evidence: [`src/${id}.ts:1-10`],
+    next: `the next wave can build on ${id}`,
+    blocker: null
+  }
+})
 
 // --- fixtures -------------------------------------------------------------
 
@@ -195,7 +214,7 @@ test('an unknown subcommand names the ones that exist', () => {
   const verify = run(['verify', 'wat'])
   assert.notEqual(verify.code, 0)
   assert.match(verify.stderr, /unknown verify subcommand: wat/)
-  assert.match(verify.stderr, /plan\|judge\|unit\|cluster\|repair/)
+  assert.match(verify.stderr, /plan\|judge\|unit\|spill\|cluster\|repair/)
 
   const wave = run(['wave-state', 'wat'])
   assert.notEqual(wave.code, 0)
@@ -345,6 +364,25 @@ test('verify plan --no-profile reports hasProfile:false rather than guessing', (
   assert.ok(plan.banners.some(b => /NO TEST PROFILE/.test(b)))
 })
 
+test('verify plan --context inter-wave --changed docs skips every step', () => {
+  const plan = runJson([
+    'verify', 'plan', '--no-profile', '--context', 'inter-wave',
+    '--changed', 'docs/foo.md', 'README.md'
+  ])
+  assert.deepEqual(plan.steps, [])
+  assert.ok(plan.skipped.every(s => s.reason === 'docs-only-changes'))
+})
+
+test('verify plan --context inter-wave omits e2e and coverage', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--context', 'inter-wave',
+    '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  assert.ok(plan.steps.some(s => s.kind === 'unit'))
+  assert.ok(plan.steps.every(s => s.kind !== 'e2e'))
+  assert.ok(plan.steps.every(s => s.kind !== 'coverage'))
+})
+
 test('verify plan without --profile or --no-profile says which it wanted', () => {
   const r = run(['verify', 'plan'])
   assert.notEqual(r.code, 0)
@@ -414,6 +452,157 @@ test('verify judge rejects a --plan that did not come from verify plan', () => {
   const r = run(['verify', 'judge', '--plan', bogus, '--results', paths.greenResults])
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /--plan must be the JSON output of `interlock verify plan --json`/)
+})
+
+// --- verify judge trajectory wiring (add-ship-run-inspectability) ----------
+
+test('verify judge appends a verify-judgement event when --state carries a runId, without suite stdout', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-log.json', plan)
+
+  const wavePlan = runJson(['waves', '--classified', paths.classified])
+  const state = runJson(['wave-state', 'create', '--plan', file('plan-vlog.json', wavePlan), '--root', dir])
+  const stateFile = file('state-vlog.json', state)
+
+  const resultsWithSecrets = [
+    {
+      kind: 'unit',
+      exitCode: 1,
+      total: 10,
+      passed: 8,
+      failed: 2,
+      failures: ['SECRET-STDOUT-LINE'],
+      locator: '.claude/ship/spill/x/1-unit.log'
+    }
+  ]
+  const resultsFile = file('results-vlog.json', resultsWithSecrets)
+
+  const r = run([
+    'verify', 'judge', '--plan', planFile, '--results', resultsFile,
+    '--context', 'final', '--state', stateFile, '--root', dir
+  ])
+  assert.equal(r.code, 1)
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', `${state.runId}.jsonl`)
+  const raw = readFileSync(logPath, 'utf8')
+  const events = raw.split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const judgement = events.find(e => e.type === 'verify-judgement')
+  assert.ok(judgement, 'expected a verify-judgement event')
+  assert.equal(judgement.runId, state.runId)
+  assert.equal(judgement.context, 'final')
+  assert.equal(judgement.halt, true)
+  assert.deepEqual(judgement.spill, ['.claude/ship/spill/x/1-unit.log'])
+  assert.doesNotMatch(raw, /SECRET-STDOUT-LINE/, 'suite failure text leaked onto the trajectory line')
+})
+
+test('verify judge appends a verify-judgement event from --run-id directly', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-runid.json', plan)
+
+  const r = run([
+    'verify', 'judge', '--plan', planFile, '--results', paths.greenResults,
+    '--run-id', 'manual-run-1', '--change', 'add-widget', '--root', dir
+  ])
+  assert.equal(r.code, 0)
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', 'manual-run-1.jsonl')
+  const events = readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.deepEqual(events.map(e => e.type), ['verify-judgement', 'cli-exit'])
+  assert.equal(events[0].change, 'add-widget')
+  assert.equal(events[0].halt, false)
+  assert.equal(events[1].command, 'verify judge')
+  assert.equal(events[1].exitCode, 0)
+})
+
+test('verify judge without --state or --run-id logs nothing and still exits normally', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-nolog.json', plan)
+  const nologRoot = join(dir, 'nolog-root')
+  mkdirSync(nologRoot, { recursive: true })
+
+  const r = run([
+    'verify', 'judge', '--plan', planFile, '--results', paths.greenResults, '--root', nologRoot
+  ])
+  assert.equal(r.code, 0)
+  assert.equal(existsSync(join(nologRoot, '.claude', 'ship', 'runs')), false)
+})
+
+test('verify spill writes bytes to disk and prints locator, preview, hash', () => {
+  const inputFile = join(dir, 'raw-suite-output.txt')
+  writeFileSync(inputFile, 'x'.repeat(10_000))
+  const result = runJson([
+    'verify', 'spill', '--run-id', 'spill-run-1', '--kind', 'unit', '--input', inputFile, '--root', dir
+  ])
+  assert.equal(result.bytes, 10_000)
+  assert.equal(result.truncated, true)
+  assert.equal(result.locator, '.claude/ship/spill/spill-run-1/1-unit.log')
+  assert.equal(readFileSync(join(dir, result.locator), 'utf8'), 'x'.repeat(10_000))
+  assert.match(result.sha256, /^[0-9a-f]{64}$/)
+})
+
+test('verify spill requires --run-id and --kind', () => {
+  const inputFile = file('spill-input.txt', 'hello')
+  const noRunId = run(['verify', 'spill', '--kind', 'unit', '--input', inputFile, '--root', dir])
+  assert.notEqual(noRunId.code, 0)
+  assert.match(noRunId.stderr, /--run-id is required/)
+
+  const noKind = run(['verify', 'spill', '--run-id', 'x', '--input', inputFile, '--root', dir])
+  assert.notEqual(noKind.code, 0)
+  assert.match(noKind.stderr, /--kind is required/)
+})
+
+test('verify judge rejects a result field that pastes spilled bytes instead of a preview', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-oversized.json', plan)
+  const oversized = [
+    { kind: 'unit', exitCode: 1, total: 1, passed: 0, failed: 1, cliStdout: 'y'.repeat(5000) }
+  ]
+  const r = run(['verify', 'judge', '--plan', planFile, '--results', file('oversized.json', oversized)])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /oversized result field\(s\)/)
+  assert.match(r.stdout, /unit\.cliStdout/)
+  assert.match(r.stdout, /verify spill/)
+})
+
+test('verify judge rejects an oversized failures[] entry the same way', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-oversized-fail.json', plan)
+  const oversized = [
+    { kind: 'unit', exitCode: 1, total: 1, passed: 0, failed: 1, failures: ['z'.repeat(5000)] }
+  ]
+  const r = run(['verify', 'judge', '--plan', planFile, '--results', file('oversized-fail.json', oversized)])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /oversized result field\(s\)/)
+  assert.match(r.stdout, /failures\[0\]/)
+})
+
+test('verify judge accepts a preview-sized field the same shape would have produced', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const planFile = file('vplan-preview-ok.json', plan)
+  const withPreview = [
+    { kind: 'unit', exitCode: 0, total: 10, passed: 10, failed: 0, cliStdout: 'ok'.repeat(100) }
+  ]
+  const r = runJson(['verify', 'judge', '--plan', planFile, '--results', file('preview-ok.json', withPreview)], 0)
+  assert.equal(r.halt, false)
+})
+
+test('verify unit rejects an oversized field before judging', () => {
+  const oversized = file('unit-oversized.json', { exitCode: 1, detail: 'd'.repeat(5000) })
+  const r = run(['verify', 'unit', '--result', oversized])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /oversized result field\(s\)/)
 })
 
 test('verify unit judges one result on its own and exits 1 when red', () => {
@@ -490,10 +679,30 @@ test('risk fails closed to high when there is nothing to classify', () => {
 
 // --- ledger ---------------------------------------------------------------
 
-test('a missing ledger is "none recorded" and exits 0', () => {
+test('a missing ledger exits 1 and says MISSING, not "empty"', () => {
+  // An absent ledger used to exit 0 as "none recorded", which reads as
+  // "nothing needs a human" — the one conclusion an absent file cannot
+  // support, and the audit's likeliest failure.
   const r = run(['ledger', 'add-auth', '--root', paths.root])
-  assert.equal(r.code, 0, r.stderr)
-  assert.match(r.stdout, /DECISIONS — none recorded/)
+  assert.equal(r.code, 1, r.stderr)
+  assert.match(r.stdout, /DECISIONS MISSING/)
+  const out = runJson(['ledger', 'add-auth', '--root', paths.root], 1)
+  assert.equal(out.missing, true)
+  assert.equal(out.exists, false)
+  assert.equal(out.blocking, true)
+})
+
+test('a present-but-empty ledger is reported distinguishably from a missing one', () => {
+  writeFileSync(
+    join(paths.change, 'decisions.md'),
+    '# Decisions — add-auth\n\n| id | question | class | resolution | evidence |\n|----|----|----|----|----|\n'
+  )
+  const out = runJson(['ledger', 'add-auth', '--root', paths.root], 0)
+  assert.equal(out.missing, false)
+  assert.equal(out.exists, true)
+  assert.equal(out.total, 0)
+  assert.equal(out.blocking, false)
+  rmSync(join(paths.change, 'decisions.md'))
 })
 
 test('ledger exits 1 on a needs_human row and on an unsubstantiated agent_resolved row', () => {
@@ -510,6 +719,10 @@ test('ledger exits 1 on a needs_human row and on an unsubstantiated agent_resolv
       ''
     ].join('\n')
   )
+  // D1 is a well-formed agent_resolved row, so design.md has to record it by
+  // id — otherwise the reference audit would make this test about the wrong
+  // failure. D3 is the unsubstantiated one, and it is the point here.
+  writeFileSync(join(paths.change, 'design.md'), '# Design\n\nD1: postgres, already running.\n')
   const r = run(['ledger', 'add-auth', '--root', paths.root])
   assert.equal(r.code, 1, 'a needs_human row must block')
   assert.match(r.stdout, /DECISIONS BLOCKING/)
@@ -523,7 +736,7 @@ test('ledger exits 1 on a needs_human row and on an unsubstantiated agent_resolv
   assert.equal(out.invalidRows.length, 1)
 })
 
-test('a fully resolved ledger exits 0', () => {
+test('a fully resolved ledger exits 0 when design.md records the decision by id', () => {
   writeFileSync(
     join(paths.change, 'decisions.md'),
     [
@@ -535,9 +748,31 @@ test('a fully resolved ledger exits 0', () => {
       ''
     ].join('\n')
   )
+  writeFileSync(join(paths.change, 'design.md'), '# Design\n\nD1: postgres, which is already running.\n')
   const out = runJson(['ledger', 'add-auth', '--root', paths.root], 0)
   assert.equal(out.blocking, false)
   assert.equal(out.agentResolved, 1)
+})
+
+test('an agent_resolved row whose id design.md never mentions exits 1', () => {
+  // shared/DECISION-LEDGER.md has always said the assumption must appear in
+  // design.md, referenced by id. Nothing checked it until now.
+  writeFileSync(
+    join(paths.change, 'decisions.md'),
+    [
+      '# Decisions — add-auth',
+      '',
+      '| id | question | class | resolution | evidence |',
+      '|----|----|----|----|----|',
+      '| D9 | session store? | agent_resolved | postgres | design.md:12 |',
+      ''
+    ].join('\n')
+  )
+  writeFileSync(join(paths.change, 'design.md'), '# Design\n\nNothing is assumed here.\n')
+  const r = run(['ledger', 'add-auth', '--root', paths.root])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /\[invalid\] D9/)
+  assert.match(r.stdout, /design\.md/)
 })
 
 test('ledger names the candidates when the change does not resolve', () => {
@@ -564,7 +799,7 @@ test('a run state round-trips through the CLI as JSON', () => {
   // The clamp is applied by the planner, so it survives into the state.
   assert.deepEqual(step.tasks.map(t => t.model), ['sonnet', 'sonnet'])
 
-  const batch = file('batch1.json', { tasks: [{ id: '1.1', ok: true }, { id: '1.2', ok: true }] })
+  const batch = file('batch1.json', { tasks: [okTask('1.1'), okTask('1.2')] })
   const state1 = runJson([
     'wave-state', 'record-batch', '--state', file('run0b.json', state0), '--result', batch
   ])
@@ -583,10 +818,109 @@ test('a run state round-trips through the CLI as JSON', () => {
   assert.equal(afterVerify.wave, 2)
 })
 
+test('create → record-batch produces a JSONL with contiguous seq and a reconstructable walk', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const planFile = file('plan-traj.json', plan)
+
+  const state0 = runJson(['wave-state', 'create', '--plan', planFile, '--change', 'add-widget', '--root', dir])
+  const runId = state0.runId
+  assert.ok(runId, 'createRunState must stamp a runId onto the state')
+
+  runJson(['wave-state', 'next', '--state', file('traj-run0.json', state0), '--change', 'add-widget', '--root', dir])
+
+  const batch = file('traj-batch.json', { tasks: [okTask('1.1'), okTask('1.2')] })
+  runJson([
+    'wave-state', 'record-batch',
+    '--state', file('traj-run0b.json', state0),
+    '--result', batch,
+    '--change', 'add-widget',
+    '--root', dir
+  ])
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`)
+  const events = readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+
+  // Contiguous seq from 1, no gaps, every event tagged with the same runId.
+  assert.deepEqual(events.map(e => e.seq), events.map((_, i) => i + 1))
+  for (const e of events) {
+    assert.equal(e.runId, runId)
+    assert.equal(e.change, 'add-widget')
+  }
+
+  // Every wave-state mutation logs both halves — the action it took and the
+  // CLI exit that produced it — so a reader can replay the walk in order.
+  const kinds = events.map(e => e.type)
+  assert.deepEqual(kinds, [
+    'wave-action', 'cli-exit', // create
+    'wave-action', 'cli-exit', // next
+    'agent-spawn', 'agent-spawn', // next's run-batch step names both tasks
+    'wave-action', 'cli-exit' // record-batch
+  ])
+
+  const waveActions = events.filter(e => e.type === 'wave-action')
+  assert.deepEqual(waveActions.map(e => e.source), ['create', 'next', 'record-batch'])
+  assert.deepEqual(waveActions.map(e => e.action), ['run-batch', 'run-batch', 'verify'])
+
+  const spawns = events.filter(e => e.type === 'agent-spawn')
+  assert.deepEqual(spawns.map(e => e.taskId), ['1.1', '1.2'])
+  assert.deepEqual(spawns.map(e => e.kind), ['implementer', 'implementer'])
+
+  const exits = events.filter(e => e.type === 'cli-exit')
+  assert.deepEqual(exits.map(e => e.command), ['wave-state create', 'wave-state next', 'wave-state record-batch'])
+  assert.deepEqual(exits.map(e => e.exitCode), [0, 0, 0])
+})
+
+test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
+  const classified = file('classified-serial.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'auth a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.2', group: 1, description: 'auth b', tier: 2, model: 'haiku', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.3', group: 1, description: 'auth c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] }
+    ]
+  })
+  const plan = runJson(['waves', '--classified', classified])
+  assert.equal(plan.waves[0].batches.length, 3, 'same-file tasks must serialize into three batches')
+
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-serial.json', plan), '--change', 'add-widget', '--root', dir])
+  const runId = state0.runId
+  const first = runJson(['wave-state', 'next', '--state', file('serial-run0.json', state0), '--change', 'add-widget', '--root', dir])
+  assert.equal(first.remainingBatches.length, 3)
+  assert.deepEqual(first.remainingBatches.map(b => b.map(t => t.id)), [['1.1'], ['1.2'], ['1.3']])
+
+  const afterNext = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.deepEqual(
+    afterNext.filter(e => e.type === 'agent-spawn').map(e => e.taskId),
+    ['1.1', '1.2', '1.3'],
+    'wave-entry next must spawn every remaining batch, not only tasks[]'
+  )
+  assert.deepEqual(
+    afterNext.filter(e => e.type === 'agent-spawn').map(e => e.model),
+    ['sonnet', 'haiku', 'sonnet']
+  )
+
+  const written = join(dir, 'serial-written.json')
+  runJson([
+    'wave-state', 'record-batch',
+    '--state', file('serial-run0b.json', state0),
+    '--result', file('serial-batch0.json', { tasks: [okTask('1.1')] }),
+    '--write-state', written,
+    '--change', 'add-widget',
+    '--root', dir
+  ])
+  const afterRecord = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.deepEqual(
+    afterRecord.filter(e => e.type === 'agent-spawn').map(e => e.taskId),
+    ['1.1', '1.2', '1.3'],
+    'mid-wave record-batch --write-state must not duplicate later-batch spawns'
+  )
+})
+
 test('record-batch --write-state writes the new state and stdout is the next step', () => {
   const plan = runJson(['waves', '--classified', paths.classified])
   const state0 = runJson(['wave-state', 'create', '--plan', file('plan-ws.json', plan)])
-  const batch = file('ws-batch.json', { tasks: [{ id: '1.1', ok: true }, { id: '1.2', ok: true }] })
+  const batch = file('ws-batch.json', { tasks: [okTask('1.1'), okTask('1.2')] })
   const outState = join(dir, 'ws-written.json')
 
   const step = runJson([
@@ -609,7 +943,7 @@ test('record-verify --write-state stdout is the next step after a green check', 
   const afterBatch = runJson([
     'wave-state', 'record-batch',
     '--state', file('wv-run0.json', state0),
-    '--result', file('wv-batch.json', { tasks: [{ id: '1.1', ok: true }, { id: '1.2', ok: true }] })
+    '--result', file('wv-batch.json', { tasks: [okTask('1.1'), okTask('1.2')] })
   ])
   const outState = join(dir, 'wv-written.json')
 
@@ -785,7 +1119,10 @@ test('validate --change selects one change when several are active', () => {
 function readyRepo(name = 'add-thing', over = {}) {
   const base = `openspec/changes/${name}`
   file(`${base}/proposal.md`, over.proposal ?? '# Add thing\n\nWhy: because.\n')
-  file(`${base}/design.md`, over.design ?? '# Design\n\nUse the existing helper.\n')
+  file(
+    `${base}/design.md`,
+    over.design ?? '# Design\n\nD1: use the existing helper rather than adding one.\n'
+  )
   file(`${base}/tasks.md`, over.tasks ?? '# Tasks\n\n- [ ] 1. Add the thing to docs/guide.md\n')
   file(
     `${base}/decisions.md`,
@@ -799,9 +1136,62 @@ function readyRepo(name = 'add-thing', over = {}) {
 
 test('ready passes a clean, low-risk change and exits 0', () => {
   const name = readyRepo('ready-clean')
-  const review = file('review-clean.json', { blockers: 0, warnings: 1 })
-  const out = runJson(['ready', name, '--root', dir, '--review', review], 0)
+  const findings = file('findings-clean.json', [
+    {
+      dimension: 'qa',
+      findings: [
+        {
+          severity: 'warning',
+          file: 'docs/guide.md',
+          title: 'wording',
+          description: 'could be clearer',
+          qualityScore: 4
+        }
+      ]
+    }
+  ])
+  const out = runJson(['ready', name, '--root', dir, '--findings', findings], 0)
   assert.equal(out.ready, true)
+})
+
+test('ready derives the blocker count from the findings, and says so', () => {
+  const name = readyRepo('ready-derived')
+  const findings = file('findings-blocker.json', [
+    {
+      dimension: 'qa',
+      findings: [
+        {
+          severity: 'blocker',
+          file: 'docs/guide.md',
+          title: 'unimplementable as written',
+          description: 'the task names no file',
+          qualityScore: 4
+        }
+      ]
+    }
+  ])
+  const r = run(['ready', name, '--root', dir, '--findings', findings])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /REVIEW_BLOCKERS/)
+  assert.match(r.stdout, /1 artifact-review blocker/)
+})
+
+test('ready warns on the deprecated --review and refuses to pass on it alone', () => {
+  const name = readyRepo('ready-deprecated')
+  const review = file('review-dep.json', { blockers: 0, warnings: 0 })
+  const r = run(['ready', name, '--root', dir, '--review', review])
+  assert.equal(r.code, 1, 'a count written by the gated agent is not a review result')
+  assert.match(r.stderr, /--review is deprecated/)
+  assert.match(r.stdout, /REVIEW_SELF_REPORTED/)
+})
+
+test('ready fails closed on an unreadable findings file rather than dying in the parser', () => {
+  const name = readyRepo('ready-badjson')
+  const findings = join(dir, 'findings-bad.json')
+  writeFileSync(findings, '{ not json at all')
+  const r = run(['ready', name, '--root', dir, '--findings', findings])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /REVIEW_NOT_RUN/)
 })
 
 test('ready exits 1 when the artifact review was never run', () => {
@@ -819,8 +1209,8 @@ test('ready exits 1 on a needs_human row', () => {
       '# Decisions — ready-human\n\n| id | question | class | resolution | evidence |\n' +
       '|----|----|----|----|----|\n| D1 | Pin zod version? | needs_human | — | — |\n'
   })
-  const review = file('review-h.json', { blockers: 0 })
-  const r = run(['ready', name, '--root', dir, '--review', review])
+  const findings = file('findings-h.json', [])
+  const r = run(['ready', name, '--root', dir, '--findings', findings])
   assert.equal(r.code, 1)
 })
 
@@ -882,6 +1272,194 @@ test('outcomes list is empty and calm before anything is recorded', () => {
     assert.deepEqual(out.records, [])
   } finally {
     rmSync(empty, { recursive: true, force: true })
+  }
+})
+
+// --- run-log session query (add-ship-run-inspectability §5) ---------------
+
+test('run-log list / show / query read a fixture trajectory with a halt and a spilled verify judgement', () => {
+  const rlRoot = join(dir, 'run-log-root')
+  mkdirSync(rlRoot, { recursive: true })
+
+  const events = [
+    { type: 'run-start', runId: 'run-fixture-1', change: 'add-widget', mode: 'checkpoint' },
+    { type: 'wave-action', runId: 'run-fixture-1', change: 'add-widget', action: 'run-batch', source: 'create' },
+    { type: 'cli-exit', runId: 'run-fixture-1', change: 'add-widget', command: 'wave-state create', exitCode: 0 },
+    {
+      type: 'agent-spawn',
+      runId: 'run-fixture-1',
+      change: 'add-widget',
+      label: '1.1',
+      model: 'sonnet',
+      kind: 'implementer',
+      taskId: '1.1'
+    },
+    {
+      type: 'verify-judgement',
+      runId: 'run-fixture-1',
+      change: 'add-widget',
+      context: 'final',
+      halt: true,
+      reason: 'unit suite is red (2 failing, 1 root-cause cluster(s))',
+      unitStatus: 'red',
+      spill: ['.claude/ship/spill/run-fixture-1/1-unit.log']
+    },
+    { type: 'run-halt', runId: 'run-fixture-1', change: 'add-widget', reason: 'unit suite is red' }
+  ]
+  for (const event of events) {
+    const r = run(['run-log', 'append', '--event', file('rl-event.json', event), '--root', rlRoot])
+    assert.equal(r.code, 0)
+  }
+
+  // A second, unrelated, non-halted run for a different change — list/filter
+  // must tell the two apart.
+  run([
+    'run-log', 'append',
+    '--event', file('rl-event-2.json', { type: 'run-start', runId: 'run-fixture-2', change: 'other-change', mode: 'continue' }),
+    '--root', rlRoot
+  ])
+  run([
+    'run-log', 'append',
+    '--event', file('rl-event-3.json', { type: 'run-complete', runId: 'run-fixture-2', change: 'other-change', leftoverTaskIds: [] }),
+    '--root', rlRoot
+  ])
+
+  // list
+  const listAll = runJson(['run-log', 'list', '--root', rlRoot])
+  assert.equal(listAll.runs.length, 2)
+  const fixture1 = listAll.runs.find(r => r.runId === 'run-fixture-1')
+  const fixture2 = listAll.runs.find(r => r.runId === 'run-fixture-2')
+  assert.equal(fixture1.halted, true)
+  assert.equal(fixture1.change, 'add-widget')
+  assert.equal(fixture1.events, 6)
+  assert.equal(fixture2.halted, false)
+  assert.equal(fixture2.complete, true)
+
+  const listFiltered = runJson(['run-log', 'list', '--change', 'add-widget', '--root', rlRoot])
+  assert.deepEqual(listFiltered.runs.map(r => r.runId), ['run-fixture-1'])
+
+  // show
+  const shown = runJson(['run-log', 'show', 'run-fixture-1', '--root', rlRoot])
+  assert.equal(shown.exists, true)
+  assert.equal(shown.records.length, 6)
+  assert.deepEqual(shown.records.map(r => r.seq), [1, 2, 3, 4, 5, 6])
+  assert.equal(shown.skipped.length, 0)
+
+  // query --type
+  const onlyJudgements = runJson(['run-log', 'query', '--run', 'run-fixture-1', '--type', 'verify-judgement', '--root', rlRoot])
+  assert.equal(onlyJudgements.records.length, 1)
+  assert.equal(onlyJudgements.records[0].type, 'verify-judgement')
+  assert.deepEqual(onlyJudgements.records[0].spill, ['.claude/ship/spill/run-fixture-1/1-unit.log'])
+
+  // query --halted
+  const haltRelated = runJson(['run-log', 'query', '--run', 'run-fixture-1', '--halted', '--root', rlRoot])
+  assert.deepEqual(haltRelated.records.map(r => r.type), ['verify-judgement', 'run-halt'])
+
+  // show on an unknown run is empty, not an error
+  const missing = runJson(['run-log', 'show', 'no-such-run', '--root', rlRoot])
+  assert.equal(missing.exists, false)
+  assert.deepEqual(missing.records, [])
+})
+
+test('run-log show tolerates a torn final line and reports the skipped line', () => {
+  const rlRoot = join(dir, 'run-log-torn')
+  mkdirSync(rlRoot, { recursive: true })
+  run(['run-log', 'append', '--event', file('rl-torn-1.json', { type: 'run-start', runId: 'torn-run', change: 'x', mode: 'checkpoint' }), '--root', rlRoot])
+  const logPath = join(rlRoot, '.claude', 'ship', 'runs', 'torn-run.jsonl')
+  writeFileSync(logPath, readFileSync(logPath, 'utf8') + '{"schema":"interlock.ship-run/1","type":"wave-')
+
+  const shown = runJson(['run-log', 'show', 'torn-run', '--root', rlRoot])
+  assert.equal(shown.records.length, 1)
+  assert.equal(shown.skipped.length, 1)
+  assert.equal(shown.skipped[0].line, 2)
+})
+
+test('run-log check exits 0 on a reconstructable run and 1 on a broken one', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const rlRoot = join(dir, 'run-log-check-root')
+  mkdirSync(rlRoot, { recursive: true })
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-check.json', plan), '--root', rlRoot])
+  const runId = state0.runId
+
+  const beforeStart = run(['run-log', 'check', '--run-id', runId, '--root', rlRoot])
+  // create alone has no run-start or closing event yet — ship.js only appends
+  // run-start from the plan-waves step, a level above wave-state itself.
+  assert.equal(beforeStart.code, 1)
+  assert.match(beforeStart.stdout, /missing a run-start/)
+
+  const start = file('rl-start.json', { type: 'run-start', runId, change: 'unnamed', mode: 'checkpoint' })
+  run(['run-log', 'append', '--event', start, '--root', rlRoot])
+  const ok = run(['run-log', 'check', '--run-id', runId, '--root', rlRoot])
+  assert.equal(ok.code, 1)
+  assert.match(ok.stdout, /missing a run-halt or run-complete/)
+
+  const complete = file('rl-close.json', { type: 'run-complete', runId, change: 'unnamed', leftoverTaskIds: [] })
+  run(['run-log', 'append', '--event', complete, '--root', rlRoot])
+  const nowOk = run(['run-log', 'check', '--run-id', runId, '--root', rlRoot])
+  assert.equal(nowOk.code, 0)
+  assert.match(nowOk.stdout, /RECONSTRUCTABLE/)
+
+  const missing = run(['run-log', 'check', '--run-id', 'no-such-run', '--root', rlRoot])
+  assert.equal(missing.code, 1)
+  assert.match(missing.stdout, /no trajectory file found/)
+})
+
+test('run-log check reads runId from --state, same as verify judge', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const rlRoot = join(dir, 'run-log-check-state-root')
+  mkdirSync(rlRoot, { recursive: true })
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-check2.json', plan), '--root', rlRoot])
+  run(['run-log', 'append', '--event', file('rl-start2.json', { type: 'run-start', runId: state0.runId, mode: 'checkpoint' }), '--root', rlRoot])
+  run(['run-log', 'append', '--event', file('rl-close2.json', { type: 'run-complete', runId: state0.runId, leftoverTaskIds: [] }), '--root', rlRoot])
+
+  const r = run(['run-log', 'check', '--state', file('state-check.json', state0), '--root', rlRoot])
+  assert.equal(r.code, 0)
+})
+
+test('run-log check requires --state or --run-id', () => {
+  const r = run(['run-log', 'check', '--root', dir])
+  assert.notEqual(r.code, 0)
+  assert.match(r.stderr, /requires --state.*or --run-id/)
+})
+
+test('the reconstructability gate: an unwritable ship dir turns wave-state and verify judge write failures into a halt, but never outcomes', { skip: isRoot() }, () => {
+  const gateRoot = join(dir, 'gate-root')
+  mkdirSync(gateRoot, { recursive: true })
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-gate.json', plan), '--root', gateRoot])
+
+  // Lock the run's own trajectory file after the first (successful) create,
+  // so the NEXT wave-state mutation's append to that same file fails to write
+  // — a directory-level chmod would not do it, since appendFileSync only
+  // needs write permission on the file it is already appending to.
+  const logFile = join(gateRoot, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`)
+  chmodSync(logFile, 0o400)
+  try {
+    const step = run(['wave-state', 'next', '--state', file('state-gate.json', state0), '--root', gateRoot])
+    assert.equal(step.code, 1, 'a trajectory write failure on wave-state must now halt, not just report')
+    assert.match(step.stderr, /wave-action not recorded|cli-exit not recorded/)
+
+    // Verify judge's own trajectory write fails the same way when it cannot
+    // append — exercised directly against the locked directory.
+    const vplan = runJson(['verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'tsc'])
+    const vr = run([
+      'verify', 'judge',
+      '--plan', file('plan-gate-v.json', vplan),
+      '--results', paths.greenResults,
+      '--run-id', state0.runId,
+      '--root', gateRoot
+    ])
+    assert.equal(vr.code, 1, 'a trajectory write failure on verify judge must now halt too')
+
+    // Outcomes lives in a completely different file (.claude/learning/), so
+    // locking the trajectory does not touch it — it keeps writing normally,
+    // which is the point: the two corpora have separate failure policies, and
+    // gating one must never gate the other.
+    const outcomeRecord = file('outcome-gate.json', { change: 'x', mode: 'checkpoint' })
+    const oc = runJson(['outcomes', 'append', '--record', outcomeRecord, '--root', gateRoot])
+    assert.equal(oc.written, true)
+  } finally {
+    chmodSync(logFile, 0o700)
   }
 })
 
@@ -955,3 +1533,7 @@ test('drift --json reports both signals and stays exit 0', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+function isRoot() {
+  return typeof process.getuid === 'function' && process.getuid() === 0
+}

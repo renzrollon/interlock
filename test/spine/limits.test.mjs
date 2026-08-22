@@ -6,7 +6,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { LIMITS, RUNTIME, clampParallel, formatLimits } from '../../lib/limits.mjs'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 test('every cap is a positive integer', () => {
   for (const [name, value] of Object.entries(LIMITS)) {
@@ -25,6 +30,22 @@ test('the documented ship caps are the ones the prose promised', () => {
   assert.equal(LIMITS.replansPerRun, 2)
   assert.equal(LIMITS.rootCauseIterations, 5)
   assert.equal(LIMITS.taskFailureHalt, 2)
+  assert.equal(LIMITS.interWaveVerifications, 3)
+})
+
+test('the spill caps match design.md — 8192 byte threshold, 4096 char preview', () => {
+  // add-ship-run-inspectability design.md §3 pins these numbers; lib/spill.mjs
+  // falls back to the same defaults independently, so a drift here would leave
+  // the two modules silently disagreeing.
+  assert.equal(LIMITS.verifySpillBytes, 8192)
+  assert.equal(LIMITS.verifyPreviewChars, 4096)
+})
+
+test('the wave handoff budget is pinned at 2000 characters', () => {
+  // add-wave-handoff-and-prompt-snapshots design.md §2. Changing this is a
+  // product decision about how much one wave may tell the next — update it here
+  // deliberately, the same way remediationRounds would be.
+  assert.equal(LIMITS.maxHandoffChars, 2000)
 })
 
 test('the default fan-out sits under the runtime concurrency ceiling', () => {
@@ -60,5 +81,56 @@ test('formatLimits names every cap it prints', () => {
   assert.match(text, /max parallel agents/)
   assert.match(text, /remediation rounds/)
   assert.match(text, new RegExp(String(RUNTIME.maxAgentsPerRun)))
+  assert.match(text, /verify spill threshold/)
+  assert.match(text, /verify preview budget/)
+  assert.match(text, /inter-wave verifications/)
+  // The handoff cap has to be readable from the CLI: the workflow prompt tells
+  // implementers to look it up there rather than restating the number.
+  assert.match(text, /wave handoff budget/)
+  assert.match(text, new RegExp(String(LIMITS.maxHandoffChars)))
   assert.ok(text.endsWith('\n'))
+})
+
+// --- every printed cap is enforced by code (spec: ship/cap-authority) ------
+//
+// The failure this closes: `interlock limits` advertised two caps no code
+// obeyed. `memoryEntriesPerRun` had zero references outside this module and
+// its prose, and `verifySpillBytes` was read only by a test asserting it
+// equals 8192. A printed cap that nothing reads is the same failure as a cap
+// written in prose — which is the failure this module was created to end.
+//
+// A test that pins a cap's VALUE is deliberately not counted as a reader. That
+// is what let the spill threshold look alive: it exercises the number, not the
+// behaviour the number governs.
+
+test('every cap the limits surface prints is read by the code path it governs', () => {
+  const dirs = ['lib', 'bin', 'workflows']
+  const sources = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (path !== join('lib', 'limits.mjs')) sources.push(readFileSync(path, 'utf8'))
+    }
+  }
+  for (const dir of dirs) walk(join(ROOT, dir))
+
+  const unread = Object.keys(LIMITS).filter(
+    cap => !sources.some(text => text.includes(`LIMITS.${cap}`))
+  )
+  assert.deepEqual(
+    unread,
+    [],
+    `these caps are printed but nothing reads them: ${unread.join(', ')}. ` +
+      `Wire each to the path it governs, or remove it from LIMITS and from the printed ` +
+      `surface together — a cap with no reader is a cap written in prose.`
+  )
+})
+
+test('a removed cap is gone from the object and from the printed surface together', () => {
+  assert.ok(
+    !('memoryEntriesPerRun' in LIMITS),
+    'memoryEntriesPerRun has no enforcement point; it must not be advertised'
+  )
+  assert.doesNotMatch(formatLimits(), /memory entries/)
 })

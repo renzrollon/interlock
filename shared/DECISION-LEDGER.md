@@ -79,10 +79,12 @@ the row; the history of what needed a person is the point.
 
 `agent_resolved` is a **claim**, and it is audited.
 
-A row is **invalid** when it claims `agent_resolved` and either:
+`interlock ledger <change>` checks all three parts of the claim. A row is
+**invalid** when it claims `agent_resolved` and any of these is true:
 
 - `resolution` is empty (`—`, `-`, `n/a`, `tbd`, blank), or
-- `evidence` is empty.
+- `evidence` is empty, or
+- the row's `id` appears nowhere in the change's `design.md`.
 
 An invalid row is treated as **unresolved** and blocks continuity exactly like
 `needs_human`. Writing the word `agent_resolved` is not a decision; saying what
@@ -95,7 +97,17 @@ Good evidence is a pointer someone else can follow:
 - `openspec/specs/auth/spec.md §Scenario: expired token`
 - `human decision 2026-08-12`
 
-Not evidence: `obvious`, `standard practice`, `see above`, an empty cell.
+Not evidence: `obvious`, `standard practice`, `see above`, an empty cell. These
+are matched as the **whole cell**, after casing, surrounding whitespace and a
+trailing period are folded — so `Obvious.` is rejected the same way `obvious`
+is, while `lib/session.ts:42 — the obvious existing helper` is real evidence and
+is accepted.
+
+**The `design.md` reference.** The id is matched as a token anywhere in
+`design.md`, not as a heading: this contract does not say *where* in the design
+a decision has to be recorded, only that it is. A `design.md` that is missing or
+cannot be read makes every reference **unresolvable** — it is never treated as a
+document that happens to contain every id.
 
 ---
 
@@ -107,13 +119,18 @@ Continuity stops when **any** of these is true:
 2. One or more rows are invalid — bad class, missing id or question, wrong
    column count, or an unsubstantiated `agent_resolved`.
 
+3. The ledger is **missing**, or present and unparseable.
+
 A ledger that cannot be parsed is never reported as empty. An empty ledger
 reads as "nothing needs a human", so unreadable rows are surfaced and blocking,
 not dropped.
 
-An absent `decisions.md` means no decisions were recorded — which is only
-honest if the change genuinely raised no ambiguity. If explore or spec hit a
-question, the file must exist.
+**An absent `decisions.md` is a failure of the audit, not an empty result.**
+`interlock ledger` exits non-zero and says *missing* — distinguishably from
+*present and empty*, and from *unparseable*. The likeliest way this audit fails
+is that nobody wrote the file, so that is the case it refuses to pass. If a
+change genuinely raised no ambiguity, write the ledger with its heading and no
+rows: an empty ledger is a statement, an absent one is a silence.
 
 ---
 

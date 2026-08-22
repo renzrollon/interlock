@@ -56,11 +56,15 @@ test('skeptic dismissals remove findings and are counted', () => {
   assert.equal(r.dismissedCount, 1)
 })
 
-test('severity counts include an unknown bucket rather than silently dropping', () => {
+test('an unrecognised severity is reported, and never silently dropped', () => {
+  // This used to assert `counts.unknown === 1` with `passed: true` — an
+  // out-of-enum severity landing in a bucket the gate does not block on. The
+  // finding is still surfaced, but it now blocks rather than passing; see the
+  // severity section at the end of this file.
   const r = evaluateGate([f({ severity: 'nit' })])
-  assert.equal(r.counts.unknown, 1)
-  assert.equal(r.total, 1)
-  assert.equal(r.passed, true)
+  assert.equal(r.malformed.length, 1)
+  assert.equal(r.total, 0, 'a finding the gate cannot interpret is not a counted finding')
+  assert.equal(r.passed, false)
 })
 
 test('autonomyOutcome feeds straight into the ladder', () => {
@@ -247,4 +251,60 @@ test('formatGate names each blocker with its location', () => {
   const out = formatGate(r)
   assert.match(out, /GATE BLOCKED/)
   assert.match(out, /app\/x\.ts:9 — Boom/)
+})
+
+// --- severity is in the enum or it is rejected (spec: review/evidence-gate) --
+//
+// The bug this closes runs the wrong way round: a reviewer emitting "critical"
+// — a *more* alarming word than the enum's maximum — used to land in the
+// `unknown` bucket, which the gate does not block on. So the scarier word
+// passed the gate more easily than `blocker` did.
+
+test('an out-of-enum severity is rejected, not counted into a bucket the gate ignores', () => {
+  const r = evaluateGate([f({ severity: 'critical', title: 'scary' })])
+  assert.equal(r.passed, false, '"critical" must not pass the gate')
+  assert.equal(r.malformed.length, 1)
+  assert.equal(r.malformed[0].title, 'scary')
+  assert.match(r.malformed[0].reason, /critical/)
+  assert.ok(
+    !r.counts.unknown,
+    'an unrecognised severity must not be silently counted into an ignored bucket'
+  )
+})
+
+test('every out-of-enum shape is rejected the same way', () => {
+  for (const severity of ['critical', 'fatal', 'info', 'nit', '', null, undefined, 7]) {
+    const r = evaluateGate([f({ severity })])
+    assert.equal(r.passed, false, `severity ${JSON.stringify(severity)} must not pass`)
+    assert.equal(r.malformed.length, 1, `severity ${JSON.stringify(severity)} must be reported`)
+  }
+})
+
+test('casing and whitespace variants resolve to the one canonical severity', () => {
+  for (const severity of ['BLOCKER', 'Blocker', '  blocker  ', '\tblocker\n']) {
+    const r = evaluateGate([f({ severity })])
+    assert.equal(r.malformed.length, 0, `${JSON.stringify(severity)} is a blocker, not malformed`)
+    assert.equal(r.counts.blocker, 1)
+    assert.equal(r.passed, false)
+    assert.equal(r.blockers[0].severity, 'blocker', 'the surviving finding carries the canonical value')
+  }
+  for (const severity of [' Warning ', 'SUGGESTION']) {
+    const r = evaluateGate([f({ severity })])
+    assert.equal(r.malformed.length, 0)
+    assert.equal(r.passed, true)
+  }
+})
+
+test('an in-enum blocker still blocks and is still counted', () => {
+  const r = evaluateGate([f({ severity: 'blocker' }), f({ severity: 'warning', title: 'b' })])
+  assert.equal(r.passed, false)
+  assert.equal(r.counts.blocker, 1)
+  assert.equal(r.counts.warning, 1)
+  assert.deepEqual(r.malformed, [])
+})
+
+test('formatGate names a malformed severity rather than hiding it in a count', () => {
+  const text = formatGate(evaluateGate([f({ severity: 'critical', title: 'scary' })]))
+  assert.match(text, /malformed/i)
+  assert.match(text, /scary/)
 })

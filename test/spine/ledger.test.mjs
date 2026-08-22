@@ -315,7 +315,10 @@ test('formatLedger reports invalid rows and the absent-file case', () => {
   assert.match(bad, /DECISIONS BLOCKING/)
   assert.match(bad, /\[invalid\] D1:/)
 
-  assert.match(formatLedger(readLedger(root, 'no-ledger')), /none recorded/)
+  // An absent ledger is reported as MISSING, not as "none recorded": the two
+  // read identically to a human and only one of them is honest about what the
+  // audit knows.
+  assert.match(formatLedger(readLedger(root, 'no-ledger')), /DECISIONS MISSING/)
 })
 
 // --- a missing change is not an empty ledger -------------------------------
@@ -362,4 +365,118 @@ test('summarize reports the invalid count under both keys, unambiguously', () =>
   assert.equal(s.invalid, 1)
   assert.ok(Array.isArray(parsed.invalid), 'the parse result keeps invalid as rows')
   assert.equal(typeof s.invalidCount, 'number')
+})
+
+// --- the design.md reference (spec: spec/decision-ledger) ------------------
+//
+// shared/DECISION-LEDGER.md has advertised this rule since it was written:
+// "Every `agent_resolved` decision must also appear as a written assumption in
+// `design.md`, referenced by id (`D2`)." Nothing checked it. A documented audit
+// that does not run is worse than no audit, because it is cited as if it did.
+
+const RESOLVED = (id = 'D2') =>
+  `# Decisions — c\n\n| id | question | class | resolution | evidence |\n` +
+  `|----|----|----|----|----|\n` +
+  `| ${id} | Reuse the Session helper? | agent_resolved | Reuse lib/session.ts | lib/session.ts:42 |\n`
+
+test('an agent_resolved row whose id appears in the design text is valid', () => {
+  const p = parseLedger(RESOLVED(), {
+    designText: '# Design\n\nAssumption D2: the existing Session helper is reused.\n'
+  })
+  assert.deepEqual(p.invalid, [])
+  assert.equal(p.rows[0].valid, true)
+})
+
+test('an agent_resolved row whose id appears nowhere in the design text is invalid', () => {
+  const p = parseLedger(RESOLVED(), { designText: '# Design\n\nNothing is assumed here.\n' })
+  assert.equal(p.invalid.length, 1)
+  assert.match(p.invalid[0].reason, /D2/)
+  assert.match(p.invalid[0].reason, /design/i)
+  assert.equal(summarize(p).blocking, true, 'an unresolvable reference blocks like needs_human')
+})
+
+test('an absent or unreadable design document makes every reference unresolvable', () => {
+  for (const designText of [null, '']) {
+    const p = parseLedger(RESOLVED(), { designText })
+    assert.equal(p.invalid.length, 1, `designText ${JSON.stringify(designText)} must not validate`)
+    assert.ok(
+      !/contains every id/.test(p.invalid[0].reason),
+      'an unreadable design document is not one that contains every id'
+    )
+  }
+})
+
+test('the reference is matched as a token, not as a substring of a longer word', () => {
+  const p = parseLedger(RESOLVED('D2'), { designText: '# Design\n\nSee D21 for the store.\n' })
+  assert.equal(p.invalid.length, 1, '"D21" does not resolve a reference to "D2"')
+})
+
+test('omitting the design argument entirely leaves parseLedger a pure parse', () => {
+  // `parseLedger`/`serializeLedger` are pure by contract; the fs wrapper is what
+  // resolves design.md. A caller that passes no design text is not asserting
+  // that the design document is missing.
+  assert.deepEqual(parseLedger(RESOLVED()).invalid, [])
+})
+
+// --- hedges that assert nothing --------------------------------------------
+
+const HEDGES = ['obvious', 'Obvious', '  obvious  ', 'obvious.', 'OBVIOUS.', 'standard practice', 'see above']
+
+for (const hedge of HEDGES) {
+  test(`evidence of "${hedge}" counts as empty`, () => {
+    assert.equal(isEmptyCell(hedge), true)
+    const p = parseLedger(
+      `# Decisions — c\n\n| id | question | class | resolution | evidence |\n` +
+        `|----|----|----|----|----|\n` +
+        `| D1 | why? | agent_resolved | Reuse it | ${hedge} |\n`,
+      { designText: 'D1 is assumed.' }
+    )
+    assert.equal(p.invalid.length, 1)
+    assert.match(p.invalid[0].reason, /evidence/)
+  })
+}
+
+test('a substantive citation that merely contains a rejected word is accepted', () => {
+  assert.equal(isEmptyCell('lib/session.ts:42 — the obvious existing helper'), false)
+  const p = parseLedger(
+    `# Decisions — c\n\n| id | question | class | resolution | evidence |\n` +
+      `|----|----|----|----|----|\n` +
+      `| D1 | why? | agent_resolved | Reuse it | lib/session.ts:42 — the obvious existing helper |\n`,
+    { designText: 'D1 is assumed.' }
+  )
+  assert.deepEqual(p.invalid, [])
+})
+
+// --- missing vs present-and-empty vs unparseable ---------------------------
+
+test('a missing ledger is reported as missing, distinguishably from an empty one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sf-ledger-shape-'))
+  try {
+    mkdirSync(join(dir, 'openspec', 'changes', 'c'), { recursive: true })
+    const missing = summarize(readLedger(dir, 'c'))
+    assert.equal(missing.exists, false)
+    assert.equal(missing.missing, true)
+    assert.equal(missing.blocking, true, 'an absent ledger is a failure, not an empty result')
+    assert.match(formatLedger(readLedger(dir, 'c')), /MISSING/)
+
+    writeFileSync(
+      join(dir, 'openspec', 'changes', 'c', LEDGER_FILE),
+      '# Decisions — c\n\n| id | question | class | resolution | evidence |\n|----|----|----|----|----|\n'
+    )
+    const empty = summarize(readLedger(dir, 'c'))
+    assert.equal(empty.exists, true)
+    assert.equal(empty.missing, false)
+    assert.equal(empty.total, 0)
+    assert.doesNotMatch(formatLedger(readLedger(dir, 'c')), /MISSING/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a ledger with no recognizable table is reported as unparseable, not as empty', () => {
+  const p = parseLedger('some prose that is not a decision ledger at all\n')
+  assert.equal(p.parseable, false)
+  const s = summarize({ ...p, exists: true })
+  assert.equal(s.unparseable, true)
+  assert.equal(s.blocking, true)
 })

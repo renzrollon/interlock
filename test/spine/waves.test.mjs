@@ -11,7 +11,11 @@ import {
   applyReplan,
   formatRunState,
   HALT_TASK_FAILURES,
-  HALT_INTER_WAVE_VERIFY
+  HALT_INTER_WAVE_VERIFY,
+  SKIP_VERIFY_DOCS,
+  SKIP_VERIFY_CAP,
+  HANDOFF_SCHEMA,
+  isDocsOnlyWave
 } from '../../lib/waves.mjs'
 import { LIMITS, RUNTIME } from '../../lib/limits.mjs'
 
@@ -126,33 +130,31 @@ test('batch composition is deterministic for the same input', () => {
 
 // --- path collisions ------------------------------------------------------
 
-test('two tasks in one group claiming the same path are split apart', () => {
-  // Tasks in a group run in parallel in ONE working tree. Two agents editing
-  // one file concurrently is a lost write nothing downstream would notice.
+test('two tasks in one group claiming the same path stay in one wave, later batch', () => {
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
       task({ id: '1.2', group: 1, paths: ['src/auth.ts', 'src/other.ts'] })
     ]
   })
-  const groupsOf = id =>
-    plan.waves.find(w => w.batches.flat().some(t => t.id === id)).group
-  assert.notEqual(groupsOf('1.1'), groupsOf('1.2'))
-  assert.ok(groupsOf('1.2') > groupsOf('1.1'), 'the later id yields its slot')
+  assert.equal(plan.waveCount, 1)
+  assert.equal(plan.waves[0].batches.length, 2)
+  assert.deepEqual(plan.waves[0].batches[0].map(t => t.id), ['1.1'])
+  assert.deepEqual(plan.waves[0].batches[1].map(t => t.id), ['1.2'])
 })
 
-test('a collision is recorded in regrouped and in warnings', () => {
-  // Re-grouping silently would trade one invisible problem for another.
+test('a collision is recorded in serialized and in warnings', () => {
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
       task({ id: '1.2', group: 1, paths: ['src/auth.ts'] })
     ]
   })
-  assert.equal(plan.regrouped.length, 1)
-  assert.equal(plan.regrouped[0].id, '1.2')
-  assert.equal(plan.regrouped[0].path, 'src/auth.ts')
-  assert.equal(plan.regrouped[0].conflictsWith, '1.1')
+  assert.equal(plan.serialized.length, 1)
+  assert.equal(plan.serialized[0].id, '1.2')
+  assert.equal(plan.serialized[0].path, 'src/auth.ts')
+  assert.equal(plan.serialized[0].conflictsWith, '1.1')
+  assert.equal(plan.serialized[0].group, 1)
   assert.ok(plan.warnings.some(w => w.includes('1.2') && w.includes('src/auth.ts')))
 })
 
@@ -164,7 +166,7 @@ test('disjoint paths in one group stay in one group', () => {
     ]
   })
   assert.equal(plan.waveCount, 1)
-  assert.deepEqual(plan.regrouped, [])
+  assert.deepEqual(plan.serialized, [])
 })
 
 test('tasks without paths are never re-grouped', () => {
@@ -178,12 +180,10 @@ test('tasks without paths are never re-grouped', () => {
     ]
   })
   assert.equal(plan.waveCount, 1)
-  assert.deepEqual(plan.regrouped, [])
+  assert.deepEqual(plan.serialized, [])
 })
 
-test('a collision among evicted tasks is split again', () => {
-  // Three tasks on one path cannot be fixed by one eviction. `ordered` is
-  // appended to during iteration so the new group is revisited.
+test('a collision among three tasks on one path is three batches of one wave', () => {
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
@@ -191,12 +191,15 @@ test('a collision among evicted tasks is split again', () => {
       task({ id: '1.3', group: 1, paths: ['src/auth.ts'] })
     ]
   })
-  const groups = plan.waves.map(w => w.batches.flat().map(t => t.id))
-  assert.equal(plan.waveCount, 3, 'each gets its own wave')
-  assert.deepEqual(groups.flat().sort(), ['1.1', '1.2', '1.3'])
+  assert.equal(plan.waveCount, 1, 'collisions stay in the classified group')
+  assert.equal(plan.waves[0].batches.length, 3)
+  assert.deepEqual(
+    plan.waves[0].batches.map(b => b.map(t => t.id)),
+    [['1.1'], ['1.2'], ['1.3']]
+  )
 })
 
-test('re-grouping preserves every task exactly once', () => {
+test('serializing preserves every task exactly once', () => {
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, paths: ['a.ts'] }),
@@ -279,6 +282,18 @@ test('formatPlan renders waves, clamps and warnings', () => {
   assert.match(out, /Wave 2: 1 task/)
   assert.match(out, /Test wave: 1 task/)
   assert.match(out, /clamped 1\.1: opus → sonnet \(tier 2\)/)
+  assert.match(out, /projected agents:/)
+})
+
+test('formatPlan warns when the plan is effectively serial', () => {
+  const tasks = Array.from({ length: 10 }, (_, i) =>
+    task({ id: `${i + 1}.1`, group: i + 1 })
+  )
+  const plan = planWaves({ tasks })
+  assert.equal(plan.waveCount, 10)
+  assert.ok(plan.warnings.some(w => /effectively serial/.test(w)))
+  assert.match(formatPlan(plan), /projected agents: /)
+  assert.match(formatPlan(plan), /warning: effectively serial/)
 })
 
 // ===========================================================================
@@ -296,7 +311,24 @@ function simplePlan(groups = [1, 2], testTasks = 0, opts) {
   return planOf(tasks, opts)
 }
 
-const allOk = step => ({ tasks: step.tasks.map(t => ({ id: t.id, ok: true })) })
+/**
+ * A valid handoff for one task. Claiming ok:true without one fails the task,
+ * so every successful result in these tests carries a packet.
+ */
+const handoffFor = (id, over = {}) => ({
+  schema: HANDOFF_SCHEMA,
+  taskId: id,
+  status: 'ok',
+  summary: `did ${id}`,
+  evidence: [`src/${id}.ts:1-10`],
+  next: `wave n+1 can build on ${id}`,
+  blocker: null,
+  ...over
+})
+
+const okTask = id => ({ id, ok: true, handoff: handoffFor(id) })
+
+const allOk = step => ({ tasks: step.tasks.map(t => okTask(t.id)) })
 
 /**
  * Walk the machine to completion, collecting every step it asked for.
@@ -426,6 +458,220 @@ test('a skipped check must state its reason, and surfaces as a banner', () => {
   assert.equal(nextStep(skipped).action, 'run-batch', 'a skip advances the run')
 })
 
+test('nextStep includes remainingBatches from the current index', () => {
+  const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
+  const start = createRunState(planOf(tasks, { maxParallel: 2 }))
+  const first = nextStep(start)
+  assert.equal(first.remainingBatches.length, 3)
+  assert.deepEqual(first.tasks.map(t => t.id), first.remainingBatches[0].map(t => t.id))
+  const after = recordBatchResult(start, allOk(first))
+  const second = nextStep(after)
+  assert.equal(second.remainingBatches.length, 2)
+})
+
+// --- handoffs at the wave boundary ----------------------------------------
+
+test('record-batch fails a task that claims success without a handoff', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const step = nextStep(start)
+  const after = recordBatchResult(start, { tasks: [{ id: step.tasks[0].id, ok: true }] })
+
+  assert.deepEqual(after.completed, [], 'an unreported success is not a success')
+  assert.equal(after.failures.length, 1)
+  assert.match(after.failures[0].error, /^invalid handoff: /)
+  assert.deepEqual(after.handoffs, {}, 'nothing to hand the next wave')
+})
+
+test('an invalid packet fails the task and counts toward the failure halt', () => {
+  // Three tasks, all claiming success, all with unusable packets. That is over
+  // LIMITS.taskFailureHalt, so the run stops — a wave whose reports are all
+  // unreadable has not produced a coherent change.
+  const tasks = Array.from({ length: LIMITS.taskFailureHalt + 1 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1 })
+  )
+  const start = createRunState(planOf(tasks))
+  const step = nextStep(start)
+  const after = recordBatchResult(start, {
+    tasks: step.tasks.map(t => ({
+      id: t.id,
+      ok: true,
+      handoff: handoffFor(t.id, { status: 'blocked', blocker: '' })
+    }))
+  })
+  assert.equal(after.failures.length, LIMITS.taskFailureHalt + 1)
+  assert.equal(after.halt.kind, HALT_TASK_FAILURES)
+  for (const f of after.failures) assert.match(f.error, /non-empty blocker/)
+})
+
+test('an over-budget packet fails the task rather than being trimmed', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const step = nextStep(start)
+  const id = step.tasks[0].id
+  const after = recordBatchResult(start, {
+    tasks: [{ id, ok: true, handoff: handoffFor(id, { summary: 'x'.repeat(2500) }) }]
+  })
+  assert.equal(after.failures.length, 1)
+  assert.match(after.failures[0].error, /invalid handoff: .*the cap is/)
+  assert.deepEqual(after.handoffs, {})
+})
+
+test('a null agent result keeps its own reason and is not asked for a packet', () => {
+  // ship.js reports a stopped or crashed agent as ok:false with no handoff.
+  // Overwriting that with an invalid-handoff complaint would hide why it failed.
+  const start = createRunState(simplePlan([1, 2]))
+  const step = nextStep(start)
+  const after = recordBatchResult(start, {
+    tasks: [{ id: step.tasks[0].id, ok: false, error: 'agent returned no result' }]
+  })
+  assert.equal(after.failures[0].error, 'agent returned no result')
+})
+
+test('a blocked task keeps its packet so the next wave is told why', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const step = nextStep(start)
+  const id = step.tasks[0].id
+  const after = recordBatchResult(start, {
+    tasks: [
+      {
+        id,
+        ok: false,
+        error: 'could not finish',
+        handoff: handoffFor(id, { status: 'blocked', blocker: 'no migration runner' })
+      }
+    ]
+  })
+  assert.equal(after.failures[0].error, 'could not finish')
+  assert.equal(after.handoffs[id].blocker, 'no migration runner')
+})
+
+test('nextStep hands the next wave the previous wave, and only the previous wave', () => {
+  const start = createRunState(simplePlan([1, 2, 3]))
+
+  const wave1 = recordBatchResult(start, allOk(nextStep(start)))
+  const atWave2 = recordVerifyResult(wave1, { ok: true })
+  const step2 = nextStep(atWave2)
+  assert.equal(step2.wave, 2)
+  assert.deepEqual(step2.previousHandoffs.map(h => h.taskId), ['1.1'])
+  assert.equal(step2.previousHandoffs[0].summary, 'did 1.1')
+
+  const wave2 = recordBatchResult(atWave2, allOk(step2))
+  const atWave3 = recordVerifyResult(wave2, { ok: true })
+  const step3 = nextStep(atWave3)
+  assert.equal(step3.wave, 3)
+  assert.deepEqual(
+    step3.previousHandoffs.map(h => h.taskId),
+    ['2.1'],
+    'wave 3 gets wave 2 only — packets do not accumulate across the run'
+  )
+})
+
+test('the first wave has no previous wave to be handed', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  assert.deepEqual(nextStep(start).previousHandoffs, [])
+})
+
+test('every remaining batch of a wave shares the previous wave, not each other', () => {
+  // Three same-file tasks in wave 2 serialize into three batches that ship.js
+  // runs from a single `next`. They must all see wave 1 and none of them each
+  // other, or two batches of one wave would be running under different
+  // contracts depending on where they happened to land.
+  const plan = planOf([
+    task({ id: '1.1', group: 1 }),
+    task({ id: '2.1', group: 2, paths: ['src/auth.ts'] }),
+    task({ id: '2.2', group: 2, paths: ['src/auth.ts'] }),
+    task({ id: '2.3', group: 2, paths: ['src/auth.ts'] })
+  ])
+  const start = createRunState(plan)
+  const afterWave1 = recordBatchResult(start, allOk(nextStep(start)))
+  const atWave2 = recordVerifyResult(afterWave1, { ok: true })
+
+  const batch0 = nextStep(atWave2)
+  assert.equal(batch0.remainingBatches.length, 3)
+  assert.deepEqual(batch0.previousHandoffs.map(h => h.taskId), ['1.1'])
+
+  const afterBatch0 = recordBatchResult(atWave2, allOk(batch0))
+  const batch1 = nextStep(afterBatch0)
+  assert.equal(batch1.batchIndex, 1)
+  assert.deepEqual(
+    batch1.previousHandoffs.map(h => h.taskId),
+    ['1.1'],
+    'batch 1 must not receive batch 0\'s handoff — that is a different contract'
+  )
+})
+
+test('a wave whose tasks all failed hands the next wave nothing', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const step = nextStep(start)
+  const after = recordBatchResult(start, {
+    tasks: [{ id: step.tasks[0].id, ok: false, error: 'gave up' }]
+  })
+  const atWave2 = recordVerifyResult(after, { ok: true })
+  assert.deepEqual(nextStep(atWave2).previousHandoffs, [])
+})
+
+test('stored handoffs survive the freeze and the JSON round-trip', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, allOk(nextStep(start)))
+  assert.ok(Object.isFrozen(after.handoffs['1.1']))
+  assert.deepEqual(JSON.parse(JSON.stringify(after)).handoffs['1.1'], after.handoffs['1.1'])
+})
+
+test('a state written before handoffs existed still records and reads them', () => {
+  // Migration: an in-flight .claude/ship/state.json has no "handoffs" key.
+  const start = createRunState(simplePlan([1, 2]))
+  const legacy = JSON.parse(JSON.stringify(start))
+  delete legacy.handoffs
+  const after = recordBatchResult(legacy, allOk(nextStep(legacy)))
+  assert.equal(after.handoffs['1.1'].taskId, '1.1')
+})
+
+test('createRunState keeps collision batches instead of merging them under maxParallel', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/auth.ts'] }),
+      task({ id: '1.3', group: 1, paths: ['src/auth.ts'] })
+    ]
+  })
+  assert.equal(plan.waves[0].batches.length, 3)
+  const start = createRunState(plan)
+  assert.equal(start.waves[0].batches.length, 3, 'a higher runtime cap must not co-schedule colliding tasks')
+  const step = nextStep(start)
+  assert.equal(step.remainingBatches.length, 3)
+  assert.deepEqual(
+    step.remainingBatches.map(b => b.map(t => t.id)),
+    [['1.1'], ['1.2'], ['1.3']]
+  )
+})
+
+test('a docs-only wave skips verify and does not consume the cap', () => {
+  const plan = planOf([
+    task({ id: '1.1', group: 1, paths: ['docs/foo.md'] }),
+    task({ id: '2.1', group: 2, paths: ['src/auth.ts'] })
+  ])
+  const start = createRunState(plan)
+  const after = recordBatchResult(start, allOk(nextStep(start)))
+  assert.equal(nextStep(after).action, 'run-batch')
+  assert.equal(after.skippedVerifications[0].reason, SKIP_VERIFY_DOCS)
+  assert.equal(after.verificationsUsed, 0)
+})
+
+test('missing paths are not treated as docs-only', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, allOk(nextStep(start)))
+  assert.equal(nextStep(after).action, 'verify')
+})
+
+test('the inter-wave verify cap skips further checkpoints', () => {
+  const groups = Array.from({ length: LIMITS.interWaveVerifications + 2 }, (_, i) => i + 1)
+  const start = createRunState(simplePlan(groups))
+  const { actions, state } = drive(start)
+  const verifies = actions.filter(a => a === 'verify').length
+  assert.equal(verifies, LIMITS.interWaveVerifications)
+  assert.ok(state.skippedVerifications.some(s => s.reason === SKIP_VERIFY_CAP))
+  assert.equal(actions.at(-1), 'done')
+})
+
 // --- task-failure halt ----------------------------------------------------
 
 test(`exactly LIMITS.taskFailureHalt task failures continue; one more halts`, () => {
@@ -436,7 +682,9 @@ test(`exactly LIMITS.taskFailureHalt task failures continue; one more halts`, ()
 
   const first = nextStep(start)
   const atCap = recordBatchResult(start, {
-    tasks: first.tasks.map((t, i) => ({ id: t.id, ok: i >= LIMITS.taskFailureHalt }))
+    tasks: first.tasks.map((t, i) =>
+      i >= LIMITS.taskFailureHalt ? okTask(t.id) : { id: t.id, ok: false }
+    )
   })
   assert.equal(atCap.failures.length, LIMITS.taskFailureHalt)
   assert.equal(atCap.halt, null)
@@ -705,4 +953,246 @@ test('formatRunState reports position, failures and the next step', () => {
   assert.match(out, /failed 1\.1 in wave 1: import path broke/)
   assert.match(out, new RegExp(`0/${LIMITS.replansPerRun} replans used`))
   assert.match(out, /next: verify after wave 1/)
+})
+
+// --- path canonicalization (spec: ship/wave-isolation) ---------------------
+//
+// The collision guarantee is the one this repository advertises most
+// prominently, and it exists to stop two implementers writing one file in one
+// working tree. A check keyed on the raw predicted string prevents concurrent
+// writes only to one *spelling*: `src/a.ts` and `./src/a.ts` are different keys
+// for the same file, so the two tasks land in the same batch and race.
+
+/** Two tasks in one group, each predicting the file under a different spelling. */
+function collidingPlan(pathA, pathB) {
+  return planWaves({
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'first',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: [pathA]
+      },
+      {
+        id: '1.2',
+        group: 1,
+        description: 'second',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: [pathB]
+      }
+    ]
+  })
+}
+
+const batchOf = (plan, id) =>
+  plan.waves[0].batches.findIndex(batch => batch.some(t => t.id === id))
+
+test('two tasks predicting the same file, spelled identically, are serialized', () => {
+  const plan = collidingPlan('lib/waves.mjs', 'lib/waves.mjs')
+  assert.equal(plan.waves.length, 1, 'a collision is a later batch, never a new wave')
+  assert.notEqual(batchOf(plan, '1.1'), batchOf(plan, '1.2'))
+  assert.equal(plan.serialized.length, 1)
+  assert.equal(plan.serialized[0].id, '1.2')
+  assert.equal(plan.serialized[0].conflictsWith, '1.1')
+  assert.equal(plan.serialized[0].group, 1)
+})
+
+// Every spelling in ship/wave-isolation's edge-case scenario.
+const SAME_FILE_SPELLINGS = [
+  ['a leading ./', 'src/a.ts', './src/a.ts'],
+  ['a redundant foo/../ segment', 'src/a.ts', 'src/foo/../a.ts'],
+  ['duplicated separators', 'src/a.ts', 'src//a.ts'],
+  ['a trailing separator on a directory prefix', 'src/a.ts', 'src/./a.ts'],
+  ['mixed separator characters', 'src/a.ts', 'src\\a.ts'],
+  ['all of them at once', 'src/a.ts', './src\\foo/..//a.ts']
+]
+
+for (const [name, spelt, variant] of SAME_FILE_SPELLINGS) {
+  test(`a collision survives ${name}`, () => {
+    const plan = collidingPlan(spelt, variant)
+    assert.notEqual(
+      batchOf(plan, '1.1'),
+      batchOf(plan, '1.2'),
+      `"${spelt}" and "${variant}" denote one file, so the two tasks must not share a batch`
+    )
+    assert.equal(plan.serialized.length, 1, `no serialization was recorded for ${name}`)
+  })
+}
+
+test('paths that genuinely denote different files are not merged', () => {
+  for (const [a, b] of [
+    ['src/a.ts', 'src/b.ts'],
+    ['src/a.ts', 'src/sub/a.ts'],
+    ['src/a.ts', 'srcx/a.ts'],
+    ['lib/a.mjs', 'lib/a.mts']
+  ]) {
+    const plan = collidingPlan(a, b)
+    assert.equal(
+      plan.serialized.length,
+      0,
+      `"${a}" and "${b}" are different files and must stay in one batch`
+    )
+    assert.equal(batchOf(plan, '1.1'), batchOf(plan, '1.2'))
+  }
+})
+
+test('the serialization report keeps the spelling the task author wrote', () => {
+  // A report naming a path the author does not recognize is a worse report.
+  const plan = collidingPlan('lib/verify.mjs', './lib/verify.mjs')
+  assert.equal(plan.serialized[0].path, './lib/verify.mjs')
+  assert.match(plan.warnings.join('\n'), /\.\/lib\/verify\.mjs/)
+})
+
+test('an absolute or root-escaping predicted path is rejected, never rewritten into scope', () => {
+  const plan = planWaves({
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'first',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['/etc/passwd', '../outside/a.ts']
+      }
+    ]
+  })
+  const warnings = plan.warnings.join('\n')
+  assert.match(warnings, /\/etc\/passwd/, 'an absolute path must be reported as unusable')
+  assert.match(warnings, /\.\.\/outside\/a\.ts/, 'an escaping path must be reported as unusable')
+  assert.ok(
+    Array.isArray(plan.rejectedPaths) && plan.rejectedPaths.length === 2,
+    'the plan must record which predicted paths could not be used for collision keying'
+  )
+})
+
+test('a task that predicts no paths contends with nothing', () => {
+  const plan = planWaves({
+    tasks: [
+      { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false },
+      {
+        id: '1.2',
+        group: 1,
+        description: 'b',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/a.mjs']
+      }
+    ]
+  })
+  assert.equal(plan.serialized.length, 0)
+  assert.equal(batchOf(plan, '1.1'), batchOf(plan, '1.2'))
+})
+
+test('the changed-file list a verification receives deduplicates by canonical path', () => {
+  const plan = planWaves({
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'a',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/a.mjs']
+      },
+      {
+        id: '1.2',
+        group: 1,
+        description: 'b',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['./lib/a.mjs', 'lib//b.mjs']
+      },
+      {
+        id: '2.1',
+        group: 2,
+        description: 'c',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/c.mjs']
+      }
+    ]
+  })
+  const state = createRunState(plan)
+  let step = nextStep(state)
+  let cursor = state
+  while (step.action === 'run-batch') {
+    cursor = recordBatchResult(cursor, {
+      tasks: step.tasks.map(t => ({ id: t.id, ok: true, handoff: handoffFor(t.id) }))
+    })
+    step = nextStep(cursor)
+  }
+  assert.equal(step.action, 'verify')
+  assert.deepEqual(
+    step.changed,
+    ['lib/a.mjs', 'lib//b.mjs'],
+    'one file spelled twice appears once, in the spelling its task author used'
+  )
+})
+
+test('a run-batch step carries the wave changed-file list too', () => {
+  // ship.js builds the fused inter-wave `verify plan --changed` list from the
+  // step it is already holding. Recomputing it from raw task.paths is how
+  // duplicate spellings inflate the changed set.
+  const plan = collidingPlan('lib/a.mjs', './lib/a.mjs')
+  const step = nextStep(createRunState(plan))
+  assert.equal(step.action, 'run-batch')
+  assert.deepEqual(step.changed, ['lib/a.mjs'])
+})
+
+test('a docs-only wave is recognized whatever the path spelling', () => {
+  const plan = planWaves({
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'a',
+        tier: 1,
+        model: 'haiku',
+        isTestTask: false,
+        paths: ['./docs/06-why-it-works.md']
+      },
+      {
+        id: '2.1',
+        group: 2,
+        description: 'b',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/a.mjs']
+      }
+    ]
+  })
+  assert.equal(isDocsOnlyWave(plan.waves[0]), true)
+  assert.equal(isDocsOnlyWave(plan.waves[1]), false)
+})
+
+test('a wave whose only path is unusable is never treated as docs-only', () => {
+  const plan = planWaves({
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'a',
+        tier: 1,
+        model: 'haiku',
+        isTestTask: false,
+        paths: ['/absolute/docs/x.md']
+      }
+    ]
+  })
+  assert.equal(
+    isDocsOnlyWave(plan.waves[0]),
+    false,
+    'a path we cannot place in the repo is unknown, not documentation'
+  )
 })

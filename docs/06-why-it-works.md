@@ -55,7 +55,7 @@ interlock CLI       what the loop is allowed to do next
 agents              read files, write code, run commands, form opinions
 ```
 
-Two properties fall out. The policy is testable without a model — 590 tests, no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
+Two properties fall out. The policy is testable without a model — 760 tests, no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
 
 `lib/limits.mjs` is the clearest instance:
 
@@ -67,12 +67,17 @@ export const LIMITS = {
   remediationRounds: 2,        // review → fix → re-review cycles
   rootCauseIterations: 5,      // repair attempts against a red unit suite
   taskFailureHalt: 2,          // strictly more than this halts the run
-  memoryEntriesPerRun: 3,
-  interWaveVerifyBudgetMs: 60_000
+  interWaveVerifyBudgetMs: 60_000,
+  verifySpillBytes: 8192,      // past this, verify output spills to disk
+  verifyPreviewChars: 4096,    // ceiling on every text field of a result
+  interWaveVerifications: 3,
+  maxHandoffChars: 2000
 }
 ```
 
 Skills cite `interlock limits`; they never restate a number. When a cap changes, it changes once.
+
+Two rules keep that true rather than aspirational, and both are tested. **A bound derived from a cap is still the cap** — `workflows/ship.js` reads the remediation budget from the CLI rather than writing `round <= 3`, which is `remediationRounds + 1` and would silently stop being the verdict round the moment the cap moved. And **every cap printed here has a reader**: `memoryEntriesPerRun` used to sit in this list with zero references anywhere in the implementation, and `verifySpillBytes` was read only by a test asserting it equals 8192. The first was removed, the second was wired to `lib/spill.mjs`. A test now walks `lib/`, `bin/` and `workflows/` and fails on any cap nothing reads — a value-pinning test explicitly does not count as a reader, because counting it is what let the spill threshold look alive.
 
 ---
 
@@ -140,17 +145,20 @@ This also determines what a pause costs. The runtime's resume rule: **replay fol
 
 Tasks in a wave run concurrently **in one working tree**. Their independence was asserted by the classifier and verified by nothing — two agents editing one file concurrently is a lost write that nothing downstream notices.
 
-The classifier now predicts a `paths` list per task, and `lib/waves.mjs` refuses to schedule a collision: the first claimant of a path keeps its slot, later ids move to a trailing wave. Recorded in `plan.regrouped` and in warnings, never silent.
+The classifier now predicts a `paths` list per task, and `lib/waves.mjs` refuses to schedule a collision as concurrent work: the first claimant of a path keeps the earlier batch, later ids wait in a later **batch of the same wave**. Ordering is free; a new wave is a checkpoint. Recorded in `plan.serialized` and in warnings, never silent.
+
+The comparison is on the **canonical** path, from the single transform in `lib/risk.mjs` (`canonicalizePath`). That matters more than it sounds: the check exists to prevent two concurrent writes to one *file*, and keyed on raw text it prevented two concurrent writes to one *string* — `src/a.ts` and `./src/a.ts` were different keys, so both tasks joined the same batch and one overwrote the other. Three readers in `lib/waves.mjs` consume that one form — the collision key, the changed-file dedup, and the docs-only test — because fixing the reported call site while its siblings stayed on the raw form is how the original bug survives its own fix. Reports keep the spelling the task author wrote; only comparison is canonical. A predicted path that is absolute, or that escapes the repo root, is **rejected and reported** rather than rewritten into scope.
 
 ```
-Wave 1: 1.1, 1.3
-Wave 3: 1.2
-  regrouped 1.2: wave 1 → 3 (src/auth.ts held by 1.1)
+Wave 1: 1.1, 1.3 in batch 1; 1.2 in batch 2
+  serialized 1.2: later batch in wave 1 (src/auth.ts held by 1.1)
 ```
 
 **What this does not do:** `paths` is a model's prediction, so a task editing a file it never named is still unguarded. This narrows the race; it does not close it. The value is that the assumption is now *stated and checked* rather than assumed — an unpredicted collision is a wrong prediction, which is a thing that can be improved, rather than a silent property of the design.
 
-`paths` is optional by design. A classifier that cannot predict must be able to say nothing: an invented path costs a wave of parallelism for no reason, while an omitted one leaves things exactly as they were.
+`paths` is optional by design. A classifier that cannot predict must be able to say nothing: an invented path serializes a batch for no reason, while an omitted one leaves things exactly as they were.
+
+Inter-wave verification is capped (`LIMITS.interWaveVerifications`) and skipped for docs-only waves. A wave boundary is not automatically a checkpoint.
 
 ### 5.3 Hardest first
 
@@ -163,6 +171,12 @@ Within a group, tasks sort by tier descending before batching. Groups run in par
 The ping is a copy, not an interpretation. A haiku agent that invents `action: "report"` (or any other value the state machine does not emit) is a relay miss: the script retries once with `wave-state next` under a new `next-retry-*` label, then halts if the retry is also unknown. It does not obey the invented value, and it does not require a human to edit the prompt — that would cache-miss every later implementer.
 
 Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `record-batch` and `replan` pass `--write-state`, so their stdout *is* the next step — saving one agent turn per batch. The planner already ran the first `next`, so the loop starts from that result.
+
+### 5.5 Inspectability: a run leaves a transcript
+
+`state.json` is a cursor, not a history — every `wave-state` mutation overwrites it, so a halted run's *walk* was previously reconstructable only from the final summary and whatever the model happened to say. `lib/run-log.mjs` fixes that the same way `lib/outcomes.mjs` fixed continuity's blind spot: an append-only JSON Lines file, one line per wave-state action, agent spawn, and verify judgement, written as a side effect of commands agents already run — `wave-state` and `verify judge` log themselves, so `ship.js` never spends an extra turn on it. `interlock run-log show <runId>` replays the whole thing after the fact.
+
+Verify agents used to be the one place token economy was optional: a red suite's full stdout was exactly the kind of thing §4.3 says never to paste into context, and nothing stopped it. `lib/spill.mjs` spills anything over 8KB to `.claude/ship/spill/`, handing back a locator, a head-and-tail preview, and a hash; `interlock verify judge` rejects a result outright if a field pastes more than the preview budget anyway, so spilling is not a suggestion. And reconstructability is not optional either: once a run's trajectory exists, a failed append is a halt, not a bookkeeping miss — the same fail-closed instinct as `interlock ready` (§12), applied to whether the run can be read back at all.
 
 ---
 
@@ -209,6 +223,8 @@ Every ambiguous case therefore resolves toward reporting. Concretely, in `lib/re
 [Refute-or-Promote](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: 80+ agents, dedicated adversarial reviewers among them, unanimously endorsing a Bleichenbacher padding oracle in OpenSSL's CMS module **that did not exist**. Self-preference bias in LLM self-review is separately well established. Confident prose is the single thing an LLM produces most reliably, so it is the one thing a dismissal must not rest on.
 
 So: **a not-real verdict must cite a `file:line` span the skeptic actually opened. A real verdict needs nothing.** Only the dismissing direction is gated, because only that direction ends in silence.
+
+The check is two conditions, and both are deterministic: the evidence must carry a `path:line` or `path:start-end` token, **and** that path must canonicalize to one present in the reviewed diff. Either alone is defeated — non-emptiness was satisfied by the string `"👍"`, and shape alone is satisfied by inventing `lib/nowhere.ts:1`. Deliberately *not* semantic: judging whether a cited span actually supports the claim needs a model, and putting one there recreates the problem one layer down. The line is not required to still exist in the file, because a review runs against a diff and a valid citation to a deleted line must not be rejected.
 
 The implementation detail matters. An uncited refutation is a **non-vote, not a deleted verdict**:
 
@@ -355,11 +371,11 @@ The same instinct, repeated across the codebase:
 
 **A moving substrate.** Dynamic workflows require v2.1.154+. The plugin contract has been stable, but observable behaviour above it — agent caps, size guidelines, warning thresholds, resume semantics — has moved across patch versions, and none of it can be pinned.
 
-**Surface area.** Fourteen skills, two CLIs, six shared protocol documents, thirteen subcommands. Four commands are the product and the rest is called by them, but the machinery underneath is not small.
+**Surface area.** Fifteen skills, three CLIs, eight shared protocol documents, nineteen subcommands. Four commands are the product and the rest is called by them, but the machinery underneath is not small.
 
 **Prediction-shaped inputs.** Wave path collision detection, tier classification, and spec conformance all depend on a model predicting something. The *checks* on those predictions are deterministic; the predictions are not.
 
-**No published benchmark.** 590 tests prove the policy engine behaves as specified. They do not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
+**No published benchmark.** 760 tests prove the policy engine behaves as specified. They do not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
 
 **Review theater on the default path.** Until this release, every `ship` paid for adversarial review, handoff artifacts, and conformance whether the diff earned them or not. Default is now waves → verify → commit; `--strict` is the previous bill. A lean run prints `LEAN SHIP` so it cannot look like a strict one.
 

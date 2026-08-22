@@ -13,7 +13,8 @@ import {
   SKIP_REASONS,
   BANNERS,
   VERIFY_CONTEXTS,
-  DEFAULT_VERIFY_CONTEXT
+  DEFAULT_VERIFY_CONTEXT,
+  checkResultFieldSizes
 } from '../../lib/verify.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
@@ -444,6 +445,39 @@ test('the budget comes from LIMITS, not from a hardcoded number', () => {
   assert.equal(overridden.budgetExceeded, true)
 })
 
+test('docs-only --changed skips every kind', () => {
+  const plan = planVerification(profile(), {
+    changed: ['docs/foo.md', 'README.md'],
+    context: 'inter-wave',
+    typecheckCommand: 'tsc --noEmit'
+  })
+  assert.deepEqual(plan.steps, [])
+  for (const kind of ['typecheck', 'unit', 'lint', 'coverage', 'e2e']) {
+    assert.equal(skipFor(plan, kind).reason, SKIP_REASONS.DOCS_ONLY)
+  }
+})
+
+test('inter-wave context omits e2e and coverage by default', () => {
+  const plan = planVerification(
+    profile({ coverage: { enabled: true, command: 'pnpm coverage' } }),
+    { context: 'inter-wave', typecheckCommand: 'tsc --noEmit' }
+  )
+  assert.ok(stepFor(plan, 'unit'))
+  assert.ok(stepFor(plan, 'typecheck'))
+  assert.equal(skipFor(plan, 'e2e').reason, SKIP_REASONS.E2E_NOT_REQUESTED)
+  assert.equal(skipFor(plan, 'coverage').reason, SKIP_REASONS.CALLER_OPTED_OUT)
+})
+
+test('a source --changed path still plans typecheck and unit', () => {
+  const plan = planVerification(profile(), {
+    changed: ['lib/waves.mjs'],
+    context: 'inter-wave',
+    typecheckCommand: 'tsc --noEmit'
+  })
+  assert.ok(stepFor(plan, 'typecheck'))
+  assert.ok(stepFor(plan, 'unit'))
+})
+
 test('a suite that was already red before the change skips the unit step', () => {
   const plan = planVerification(profile(), { preExistingFailures: true })
   assert.equal(stepFor(plan, 'unit'), null)
@@ -661,4 +695,61 @@ test('formatVerification renders a unit judgement, a verdict and a repair action
 test('formatVerification rejects something it cannot render', () => {
   assert.throws(() => formatVerification(null), /nothing to format/)
   assert.throws(() => formatVerification({ nope: true }), /expects a plan/)
+})
+
+// --- the oversized-result allowlist (spec: ship/cap-authority) -------------
+//
+// checkResultFieldSizes is the anti-swallow check: an agent that pastes a whole
+// red suite into a result field is rejected rather than judged. It had four
+// unguarded doors — `summary`, `message`, `error` and `notes` were absent from
+// RESULT_TEXT_FIELDS — and no direct test at all.
+
+const CEILING = LIMITS.verifyPreviewChars
+const text = (n) => 'x'.repeat(n)
+
+const TEXT_FIELDS = [
+  'detail',
+  'cliStdout',
+  'reason',
+  'stdout',
+  'stderr',
+  'output',
+  'summary',
+  'message',
+  'error',
+  'notes'
+]
+
+for (const field of TEXT_FIELDS) {
+  test(`an oversized "${field}" is a violation naming the field and its length`, () => {
+    const r = checkResultFieldSizes([{ kind: 'unit', [field]: text(CEILING + 1) }])
+    assert.equal(r.ok, false, `${field} is text-bearing and must be checked`)
+    assert.equal(r.violations.length, 1)
+    assert.deepEqual(r.violations[0], {
+      kind: 'unit',
+      field,
+      length: CEILING + 1,
+      limit: CEILING
+    })
+  })
+}
+
+test('the ceiling is a boundary in both directions', () => {
+  assert.equal(checkResultFieldSizes([{ kind: 'unit', summary: text(CEILING) }]).ok, true)
+  assert.equal(checkResultFieldSizes([{ kind: 'unit', summary: text(CEILING + 1) }]).ok, false)
+})
+
+test('the ceiling defaults to the published cap and honours an override', () => {
+  assert.equal(checkResultFieldSizes([{ kind: 'unit', notes: text(10) }], { maxChars: 5 }).ok, false)
+  assert.equal(checkResultFieldSizes([{ kind: 'unit', notes: text(10) }]).ok, true)
+})
+
+test('an ordinary result passes and non-objects are skipped rather than thrown on', () => {
+  const r = checkResultFieldSizes([
+    null,
+    'nonsense',
+    { kind: 'unit', summary: 'ok', error: '', notes: 'short', message: 'fine' }
+  ])
+  assert.deepEqual(r, { ok: true, violations: [] })
+  assert.throws(() => checkResultFieldSizes('not an array'), /must be an array/)
 })

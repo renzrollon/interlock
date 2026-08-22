@@ -29,7 +29,9 @@ const CHANGE = 'add-widget'
 // one thing and watch that one blocker appear.
 const CLEAN = {
   'proposal.md': '# Add widget list\n\nShow the stored widgets on the dashboard page.\n',
-  'design.md': '# Design\n\nRender the widget list from the values already held in the dashboard store.\n',
+  'design.md':
+    '# Design\n\nRender the widget list from the values already held in the dashboard store.\n\n' +
+    'Assumption D1: the existing dashboard store is reused rather than replaced.\n',
   'tasks.md': [
     '# Tasks',
     '',
@@ -77,7 +79,10 @@ function makeChange(files = {}, { profile = '{"version": 1}' } = {}) {
   return dir
 }
 
-const OPTS = { review: { blockers: 0, warnings: 0 }, changedPaths: ['lib/widget.mjs'] }
+// The artifact review's own findings — the input the gate derives its blocker
+// count from. An empty list is a review that ran and found nothing, which is
+// what every test below that is not about the review itself needs.
+const OPTS = { findings: [], changedPaths: ['lib/widget.mjs'] }
 
 const assess = (opts = {}) => assessReadiness(tmp, CHANGE, { ...OPTS, ...opts })
 
@@ -190,16 +195,31 @@ test('incomplete artifacts block', () => {
   assert.ok(r.blockers.find(b => b.code === 'ARTIFACTS_INCOMPLETE').evidence.length > 0)
 })
 
+// A finding as an artifact reviewer emits it. Quality 4 so the tolerance band
+// keeps it and these tests measure the gate, not the band.
+const reviewFinding = (over = {}) => ({
+  severity: 'blocker',
+  file: 'openspec/changes/add-widget/design.md',
+  title: 'the design does not say where the store lives',
+  description: 'unimplementable as written',
+  qualityScore: 4,
+  ...over
+})
+
 test('artifact-review blockers block', () => {
   makeChange()
-  const r = assess({ review: { blockers: 2, warnings: 0 } })
+  const r = assess({
+    findings: [reviewFinding(), reviewFinding({ title: 'second blocker' })]
+  })
   assert.equal(r.ready, false)
   assert.deepEqual(codes(r), ['REVIEW_BLOCKERS'])
 })
 
 test('artifact-review warnings alone do NOT block under balanced', () => {
   makeChange()
-  const r = assess({ review: { blockers: 0, warnings: 3 } })
+  const r = assess({
+    findings: [1, 2, 3].map(n => reviewFinding({ severity: 'warning', title: `warn ${n}` }))
+  })
   assert.equal(r.ready, true, formatReadiness(r))
   assert.deepEqual(
     r.warnings.map(w => w.code),
@@ -216,20 +236,28 @@ test('an omitted review result blocks — it is never read as zero blockers', ()
   assert.equal(checkFor(r, 'artifacts.review-blockers').status, 'fail')
 })
 
-test('every shape that is not a usable blocker count counts as "the review did not run"', () => {
+test('every shape that is not usable findings counts as "the review did not run"', () => {
   makeChange()
-  for (const review of [undefined, null, true, 'clean', {}, [], { warnings: 0 }, { blockers: 'none' }, { blockers: -1 }, { blockers: NaN }]) {
-    const r = assess({ review })
-    assert.equal(r.ready, false, `review=${JSON.stringify(review)} should not be ready`)
-    assert.ok(codes(r).includes('REVIEW_NOT_RUN'), `review=${JSON.stringify(review)}`)
+  for (const findings of [undefined, null, true, 'clean', '', '   ', '{oops', 42]) {
+    const r = assess({ findings })
+    assert.equal(r.ready, false, `findings=${JSON.stringify(findings)} should not be ready`)
+    assert.ok(codes(r).includes('REVIEW_NOT_RUN'), `findings=${JSON.stringify(findings)}`)
   }
 })
 
-test('a review result may report its counts as the arrays it counted', () => {
+test('findings may arrive per-dimension, as raw text, or as a bare array', () => {
   makeChange()
-  const r = assess({ review: { blockers: [], warnings: [{ title: 'x' }] } })
-  assert.equal(r.ready, true, formatReadiness(r))
-  assert.deepEqual(r.warnings.map(w => w.code), ['REVIEW_WARNINGS'])
+  const one = reviewFinding({ severity: 'warning', title: 'x' })
+  for (const findings of [
+    [one],
+    { dimension: 'qa', findings: [one] },
+    [{ dimension: 'qa', findings: [one] }],
+    JSON.stringify([{ dimension: 'qa', findings: [one] }])
+  ]) {
+    const r = assess({ findings })
+    assert.equal(r.ready, true, formatReadiness(r))
+    assert.deepEqual(r.warnings.map(w => w.code), ['REVIEW_WARNINGS'])
+  }
 })
 
 // --- C: scenario → task mapping -----------------------------------------
@@ -457,7 +485,7 @@ test('unreadable artifacts fail every check that depended on them', () => {
 
 test('several independent failures are all reported, not just the first', () => {
   makeChange({ 'decisions.md': null }, { profile: null })
-  const r = assess({ review: undefined, changedPaths: ['src/auth/login.ts'] })
+  const r = assess({ findings: undefined, review: undefined, changedPaths: ['src/auth/login.ts'] })
   assert.equal(r.ready, false)
   assert.deepEqual(codes(r).sort(), [
     'LEDGER_MISSING',
@@ -513,4 +541,113 @@ test('formatReadiness names the risk class and strictness when ready', () => {
   makeChange()
   const text = formatReadiness(assess())
   assert.match(text, /^READY — add-widget may continue \(risk medium, strictness balanced\)/)
+})
+
+// --- the blocker count's provenance (spec: spec/continuity-provenance) -----
+//
+// This is the one number in the loop the *gated party* used to write down.
+// skills/spec/continuity.md had the agent `printf` a blocker count into a file
+// and `lib/ready.mjs` validated its shape but never its provenance, while
+// lib/findings.mjs already computed the real count from the real findings and
+// discarded it.
+
+const finding = (over = {}) => ({
+  severity: 'blocker',
+  file: 'lib/widget.mjs',
+  title: 'the renderer drops the last widget',
+  description: 'off by one in the loop bound',
+  qualityScore: 4,
+  ...over
+})
+
+const withFindings = (findings, extra = {}) =>
+  assessReadiness(tmp, CHANGE, {
+    changedPaths: ['lib/widget.mjs'],
+    findings,
+    ...extra
+  })
+
+test('a findings file with no blockers passes the review-blockers check', () => {
+  makeChange()
+  const r = withFindings([{ dimension: 'language', findings: [finding({ severity: 'warning' })] }])
+  const check = checkFor(r, 'artifacts.review-blockers')
+  assert.equal(check.status, 'pass', formatReadiness(r))
+  assert.match(check.detail, /findings/, 'the checklist must say where the count came from')
+  assert.equal(r.ready, true, formatReadiness(r))
+})
+
+test('a findings file containing a surviving blocker blocks and names the count', () => {
+  makeChange()
+  const r = withFindings([{ dimension: 'language', findings: [finding()] }])
+  assert.equal(r.ready, false)
+  assert.ok(codes(r).includes('REVIEW_BLOCKERS'), codes(r).join(', '))
+  assert.match(r.blockers.find(b => b.code === 'REVIEW_BLOCKERS').message, /1/)
+})
+
+test('absent, empty and unparseable findings all resolve to "the review did not run"', () => {
+  makeChange()
+  for (const findings of [undefined, null, '', '   ', 'not json at all', '{oops']) {
+    const r = withFindings(findings)
+    assert.equal(r.ready, false, `findings ${JSON.stringify(findings)} must not be ready`)
+    assert.ok(
+      codes(r).includes('REVIEW_NOT_RUN'),
+      `findings ${JSON.stringify(findings)} resolved to something other than "did not run": ${codes(r)}`
+    )
+  }
+})
+
+test('an empty findings list is a review that ran and found nothing', () => {
+  makeChange()
+  const r = withFindings([])
+  assert.equal(checkFor(r, 'artifacts.review-blockers').status, 'pass', formatReadiness(r))
+})
+
+test('a transcribed count alone no longer satisfies the review-blockers check', () => {
+  makeChange()
+  const r = assessReadiness(tmp, CHANGE, {
+    changedPaths: ['lib/widget.mjs'],
+    review: { blockers: 0, warnings: 0 }
+  })
+  assert.equal(r.ready, false, 'a count written by the gated agent is not the review result')
+  assert.ok(codes(r).includes('REVIEW_SELF_REPORTED'), codes(r).join(', '))
+  assert.match(
+    r.blockers.find(b => b.code === 'REVIEW_SELF_REPORTED').message,
+    /provenance|self-reported|agent/i
+  )
+})
+
+test('when both inputs are supplied the findings decide, and the disagreement is reported', () => {
+  makeChange()
+  const r = assessReadiness(tmp, CHANGE, {
+    changedPaths: ['lib/widget.mjs'],
+    findings: [{ dimension: 'language', findings: [finding()] }],
+    review: { blockers: 0, warnings: 0 }
+  })
+  assert.equal(r.ready, false, 'the findings say 1 blocker, so the gate blocks')
+  assert.ok(codes(r).includes('REVIEW_BLOCKERS'))
+  assert.ok(
+    r.warnings.some(w => w.code === 'REVIEW_COUNT_DISAGREEMENT'),
+    `the disagreement must be reported, not resolved silently: ${JSON.stringify(r.warnings)}`
+  )
+})
+
+test('agreement between the two inputs is not reported as a disagreement', () => {
+  makeChange()
+  const r = assessReadiness(tmp, CHANGE, {
+    changedPaths: ['lib/widget.mjs'],
+    findings: [],
+    review: { blockers: 0, warnings: 0 }
+  })
+  assert.ok(!r.warnings.some(w => w.code === 'REVIEW_COUNT_DISAGREEMENT'))
+  assert.equal(r.ready, true, formatReadiness(r))
+})
+
+test('the quality band applies to the readiness count, exactly as it does at the gate', () => {
+  // Reusing evaluateGate is the point: a second counting implementation would
+  // let the readiness gate and the review gate disagree about one file.
+  makeChange()
+  const weak = withFindings([
+    { dimension: 'language', findings: [finding({ qualityScore: 1 })] }
+  ])
+  assert.equal(checkFor(weak, 'artifacts.review-blockers').status, 'pass', formatReadiness(weak))
 })

@@ -55,3 +55,5 @@ If a `/goal` is active, it is satisfied when the transcript contains `GOAL MET: 
 `/interlock:ship` needs Claude Code **v2.1.154+** with Dynamic workflows enabled (`/config`). They are also off under `disableWorkflows`, org policy, `CLAUDE_CODE_DISABLE_WORKFLOWS`, or a Pro plan that has not turned the row on. Some IDE surfaces never expose the Workflow tool.
 
 Tell the user that, and that everything else in Interlock still works — `spec`, the reviews, `commit`. Do not offer to "just start on the first task".
+
+There is a second, experimental host — `bin/interlock-ship-acp`, which runs the lean loop over the Agent Client Protocol — but it is a **separate binary this skill never invokes**, and it is not a fallback for a missing Workflow tool. A user runs it themselves from a terminal; `/interlock:ship` is Claude Code only, and `--strict` stays Claude Code only.

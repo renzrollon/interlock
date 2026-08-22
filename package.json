@@ -9,7 +9,8 @@
   },
   "bin": {
     "interlock": "./bin/interlock",
-    "interlock-graph": "./bin/interlock-graph"
+    "interlock-graph": "./bin/interlock-graph",
+    "interlock-ship-acp": "./bin/interlock-ship-acp"
   },
   "scripts": {
     "test": "node --test $(find test -name '*.test.mjs' | sort)",

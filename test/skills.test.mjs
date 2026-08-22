@@ -165,6 +165,43 @@ test('ship skill is a workflow trampoline, not the loop', () => {
   assert.doesNotMatch(text, /cap two remediation/i, 'trampoline must not restate loop caps')
 })
 
+test('ship trampoline halts without the Workflow tool and never auto-starts the ACP host', () => {
+  // add-interlock-acp-host §2: a second host must not weaken the default one.
+  // The failure mode this guards is not "ACP is broken" — it is a trampoline
+  // that quietly reaches for *any* other way to run the loop when the Workflow
+  // tool is missing, whether that is the ACP driver or the parent conversation.
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /\*\*Halt\.\*\*/, 'a missing Workflow tool must halt')
+  assert.match(
+    text,
+    /Do not fall back to implementing the change in this conversation/i,
+    'the halt must forbid the inline fallback explicitly'
+  )
+  assert.match(
+    text,
+    /interlock-ship-acp/,
+    'the trampoline must name the ACP driver as a separate binary'
+  )
+  assert.match(
+    text,
+    /separate binary this skill never invokes/i,
+    'the ACP pointer must say the skill does not launch it'
+  )
+  assert.match(text, /not a fallback for a missing Workflow tool/i)
+
+  // The loop itself, in any host's vocabulary, stays out of the trampoline.
+  for (const forbidden of [
+    /interlock wave-state/,
+    /interlock verify/,
+    /INTERLOCK_ACP_COMMAND/,
+    /createAcpHost/,
+    /mapPipeline/
+  ]) {
+    assert.doesNotMatch(text, forbidden, `trampoline must not run the loop itself: ${forbidden}`)
+  }
+})
+
 test('shared contracts referenced by skills all exist', () => {
   const shared = readdirSync(join(ROOT, 'shared')).filter(f => f.endsWith('.md'))
   assert.ok(shared.length >= 5, `expected the shared contracts, found ${shared.length}`)

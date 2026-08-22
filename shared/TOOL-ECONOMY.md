@@ -121,6 +121,28 @@ Prefer the brief’s recommendations over re-deriving discovery from the codebas
 or chat. Reopen code only for gaps or contradictions. Writing that brief in
 autonomous explore is how explore pays forward — spec should not re-pay.
 
+## Rule 4 — Spilled verify output: locator then Read spans, never the whole file
+
+`interlock verify spill` writes a command's full stdout/stderr to
+`.claude/ship/spill/<runId>/<seq>-<kind>.log` once it passes
+`LIMITS.verifySpillBytes`, and hands back `{ locator, preview, bytes, sha256 }`.
+The `preview` is already a head-and-tail slice bounded by
+`LIMITS.verifyPreviewChars` — read it from the result, do not re-open the
+locator to get what the preview already gives you.
+
+Only reopen the locator when the preview genuinely does not answer the
+question (a failure whose stack trace was in the omitted middle). Then Read it
+the same way Rule 1 says: with `offset`/`limit` around the span you need, not
+the whole file. A spilled suite log can be hundreds of KB — reading it in full
+defeats the reason it was spilled instead of pasted into the result.
+
+Never paste spilled bytes back into a verify result field (`detail`,
+`cliStdout`, `reason`, `stdout`, `stderr`, `output`, or a `failures[]` entry).
+`interlock verify judge` / `verify unit` check every one of those fields
+against the preview budget and reject the result outright — "oversized result
+field(s)" — if any exceeds it. The locator is not a courtesy; the anti-swallow
+check enforces it.
+
 ## When NOT to apply
 
 This targets *wasted* exploration, not legitimate reconnaissance:

@@ -417,3 +417,103 @@ test('the key separator cannot be forged from a title and file', () => {
   assert.equal(r.counts.dismissed, 1)
   assert.equal(r.dismissed[0].title, 'a')
 })
+
+// --- the citation shape (spec: review/evidence-gate) -----------------------
+//
+// The rule README.md stakes its strongest claim on. Before this, `hasEvidence`
+// was `trim().length > 0`, so the string "👍" dismissed a blocker — a review
+// whose dismissals are unauditable is worse than no review, because the
+// dismissal count is cited as if the dismissals were checked.
+//
+// The predicate is deliberately a *shape* check plus diff membership. A
+// semantic check would relocate the judgement to another model, which is the
+// problem one layer down.
+
+const DIFF = ['lib/a.ts', 'src/my file.ts', 'lib/b.ts']
+const blocker = () => f({ severity: 'blocker', title: 'real bug' })
+const refute = (evidence) =>
+  v({ findingTitle: 'real bug', file: 'lib/a.ts', isReal: false, refinedSeverity: 'dismiss', evidence })
+
+const resolveAgainstDiff = (verdicts) =>
+  resolveReview([blocker()], verdicts, { changedPaths: DIFF })
+
+const UNCITED = [
+  ['a single emoji', '👍'],
+  ['a single word', 'ok'],
+  ['a single letter', 'x'],
+  ['a bare filename with no line', 'lib/a.ts'],
+  ['confident prose', 'I read the whole module carefully and this is simply not a real problem.']
+]
+
+for (const [name, evidence] of UNCITED) {
+  test(`${name} does not dismiss a blocker — it is a non-vote`, () => {
+    const r = resolveAgainstDiff([refute(evidence)])
+    assert.equal(r.counts.dismissed, 0, `"${evidence}" must not dismiss anything`)
+    assert.equal(r.counts.surviving, 1, 'the finding survives to the report')
+    assert.equal(r.counts.dismissalsRejected, 1, 'the refusal must be reported, never silent')
+    // Recorded, not deleted: the verdict's quality score still reaches the band.
+    assert.deepEqual(r.surviving[0].votes, { real: 0, notReal: 0, uncited: 1, total: 1 })
+    assert.ok(
+      (r.surviving[0].qualityScores || []).includes(4),
+      'an uncited skeptic can still be right that the finding is badly written'
+    )
+  })
+}
+
+const CITED = [
+  ['a path and a line', 'lib/a.ts:41'],
+  ['a path and a line range', 'lib/a.ts:41-58'],
+  ['a column suffix after the line', 'lib/a.ts:41:9'],
+  ['a path containing spaces', 'src/my file.ts:12'],
+  ['the same path with a leading ./', './lib/a.ts:41'],
+  ['a citation inside a sentence', 'I opened lib/a.ts:41-58 and the guard is already there.']
+]
+
+for (const [name, evidence] of CITED) {
+  test(`${name} is accepted as a citation`, () => {
+    const r = resolveAgainstDiff([refute(evidence), refute(evidence)])
+    assert.equal(r.counts.dismissed, 1, `"${evidence}" should have dismissed the finding`)
+    assert.equal(r.counts.dismissalsRejected, 0)
+  })
+}
+
+test('a shape-valid citation naming a path absent from the diff is rejected', () => {
+  // Shape alone is defeated by inventing `lib/nowhere.ts:1`. Diff membership is
+  // the cheap half that makes the citation refer to the work under review.
+  const r = resolveAgainstDiff([refute('lib/nowhere.ts:1'), refute('lib/nowhere.ts:1')])
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+test('an uncited confirming verdict still keeps the finding', () => {
+  // The asymmetry is deliberate: requiring a citation to *report* would drop
+  // real findings, which is the expensive error.
+  const r = resolveAgainstDiff([v({ findingTitle: 'real bug', file: 'lib/a.ts', evidence: '' })])
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+  assert.deepEqual(r.surviving[0].votes, { real: 1, notReal: 0, uncited: 0, total: 1 })
+})
+
+test('one cited dismissal and one uncited confirmation: the non-vote is excluded', () => {
+  const r = resolveAgainstDiff([
+    refute('lib/a.ts:41-58'),
+    v({ findingTitle: 'real bug', file: 'lib/a.ts', evidence: '' })
+  ])
+  // 1 real vs 1 notReal — the tie keeps the finding, and all three counts show.
+  assert.deepEqual(r.surviving[0].votes, { real: 1, notReal: 1, uncited: 0, total: 2 })
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('with no diff supplied the citation shape alone still gates dismissal', () => {
+  // The membership half needs a diff; the shape half never does. A caller that
+  // cannot supply the changed files must not thereby reopen the emoji hole.
+  const bare = (verdicts) => resolveReview([blocker()], verdicts)
+  assert.equal(bare([refute('👍'), refute('👍')]).counts.dismissed, 0)
+  assert.equal(bare([refute('lib/a.ts:41'), refute('lib/a.ts:41')]).counts.dismissed, 1)
+})
+
+test('formatReview names the refusals so a reader can see the rule fired', () => {
+  const r = resolveAgainstDiff([refute('nope')])
+  assert.match(formatReview(r), /1 refutation\(s\) cited no evidence/)
+})

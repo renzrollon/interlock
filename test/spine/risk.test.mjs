@@ -6,7 +6,8 @@ import {
   maxClass,
   RISK_CLASSES,
   CONTINUITY_ALLOWED_CLASSES,
-  UNCLASSIFIABLE_CLASS
+  UNCLASSIFIABLE_CLASS,
+  canonicalizePath
 } from '../../lib/risk.mjs'
 
 // classifyRisk is pure, so every case is "signals in, class out".
@@ -260,4 +261,87 @@ test('formatRisk renders class, signals and reasons', () => {
   assert.match(out, /\[critical\] payment:/)
   assert.match(out, /reason:/)
   assert.ok(out.endsWith('\n'))
+})
+
+// --- the one canonical path transform (spec: ship/wave-isolation) ----------
+//
+// Exported from here because this module already owns path interpretation for
+// the repo (DOC_PATH, isDocsPath, the risk path regexes). Every consumer that
+// compares two paths reads this and nothing else — scattering the transform
+// across call sites is precisely how `lib/waves.mjs` ended up keying its
+// collision map on raw text while its sibling read a normalized form.
+
+test('canonicalizePath collapses every spelling of one file to one key', () => {
+  const cases = [
+    ['src/a.ts', 'src/a.ts'],
+    ['  src/a.ts  ', 'src/a.ts'],
+    ['./src/a.ts', 'src/a.ts'],
+    ['././src/a.ts', 'src/a.ts'],
+    ['src/foo/../a.ts', 'src/a.ts'],
+    ['src//a.ts', 'src/a.ts'],
+    ['src///a.ts', 'src/a.ts'],
+    ['src\\a.ts', 'src/a.ts'],
+    ['src/./a.ts', 'src/a.ts'],
+    ['./src\\foo/..//a.ts', 'src/a.ts'],
+    ['src/a.ts/', 'src/a.ts'],
+    ['lib/', 'lib']
+  ]
+  for (const [input, expected] of cases) {
+    assert.equal(canonicalizePath(input), expected, `canonicalizePath(${JSON.stringify(input)})`)
+  }
+})
+
+test('canonicalizePath keeps genuinely different files apart', () => {
+  const distinct = ['src/a.ts', 'src/b.ts', 'src/sub/a.ts', 'srcx/a.ts', 'lib/a.mts']
+  const seen = new Set(distinct.map(canonicalizePath))
+  assert.equal(seen.size, distinct.length, 'canonicalization must not merge distinct files')
+})
+
+test('canonicalizePath rejects rather than rewrites what it cannot place in the repo', () => {
+  for (const input of [
+    '/etc/passwd',
+    '/',
+    'C:/Windows/system32',
+    'c:\\Windows',
+    '../outside/a.ts',
+    '..',
+    'src/../../outside.ts',
+    '.',
+    './',
+    '',
+    '   ',
+    null,
+    undefined,
+    42,
+    ['src/a.ts']
+  ]) {
+    assert.equal(
+      canonicalizePath(input),
+      null,
+      `${JSON.stringify(input)} must be rejected, never silently rewritten into scope`
+    )
+  }
+})
+
+test('the transform is idempotent — canonicalizing a canonical path changes nothing', () => {
+  for (const input of ['src/a.ts', './src//foo/../a.ts', 'docs/06-why-it-works.md']) {
+    const once = canonicalizePath(input)
+    assert.equal(canonicalizePath(once), once)
+  }
+})
+
+test('classifyRisk still classifies a path canonicalization would reject', () => {
+  // Keying and classification want opposite things from an unusable path.
+  // Dropping an absolute payments path here would *lower* the blast radius of a
+  // change that touches payments, which is the one fail-open this module
+  // cannot afford.
+  assert.equal(canonicalizePath('/srv/payments/charge.ts'), null)
+  assert.equal(classOf({ changedPaths: ['/srv/payments/charge.ts'] }), 'critical')
+})
+
+test('classifyRisk is unchanged by the stronger transform', () => {
+  assert.equal(classOf({ changedPaths: ['./docs/06-why-it-works.md'] }), 'low')
+  assert.equal(classOf({ changedPaths: ['docs/06-why-it-works.md'] }), 'low')
+  assert.equal(classOf({ changedPaths: ['lib\\auth\\session.ts'] }), 'high')
+  assert.equal(classOf({ changedPaths: ['lib/foo/../auth/session.ts'] }), 'high')
 })

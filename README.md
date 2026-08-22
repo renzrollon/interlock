@@ -29,7 +29,7 @@ Every change after that:
 | Dynamic workflows **enabled** | Off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` means no `ship`. On Pro, enable it in `/config` |
 | `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. It banners this rather than hiding it — see [when it stops](docs/04-when-it-stops.md) |
 | [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it does not replace it |
-| Node.js ≥ 18 | For the two bundled CLIs |
+| Node.js ≥ 18 | For the three bundled CLIs |
 
 ### Installing the OpenSpec dependency
 
@@ -45,11 +45,11 @@ cd your-project && openspec init
 
 OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them.
 
-**Interlock is a Claude Code plugin.** It relies on Claude Code's skill frontmatter, plugin `bin/` PATH injection, subagent fan-out, and the workflow runtime — Cursor and Copilot are not supported in 0.x.
+**Interlock is a Claude Code plugin.** It relies on Claude Code's skill frontmatter, plugin `bin/` PATH injection, subagent fan-out, and the workflow runtime — Cursor and Copilot are not supported in 0.x. Claude Code is the **default and supported host**, and `/interlock:ship` launches the workflow there or halts; it never falls back to anything else. There is one experimental second host — an [ACP](https://agentclientprotocol.com) driver you invoke yourself, described under [Experimental](#experimental) — and no slash command starts it for you.
 
 Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
-New here? Start with **[the first hour](docs/01-first-hour.md)**.
+New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have only ever prompted a coding agent — no skills, no specs, no gates — read **[09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md)** first: every term defined once, ending at why `ship` is a script and not a prompt. Then **[10](docs/10-agentic-workflow-ship-and-spec.md)** for this repo's loop reviewed in depth.
 
 | Doc | |
 |---|---|
@@ -57,7 +57,11 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**.
 | [02 — The checkpoint](docs/02-the-checkpoint.md) | How to read a spec in ten minutes |
 | [03 — OpenSpec vs Interlock](docs/03-openspec-vs-interlock.md) | What composes with what |
 | [04 — When it stops](docs/04-when-it-stops.md) | Every halt and banner, and what to do |
+| [05 — Continuity](docs/05-continuity.md) | When `--continue` may skip the human read |
 | [06 — Why it works](docs/06-why-it-works.md) | The mechanisms, low-level, with the costs stated |
+| [08 — The harness landscape](docs/08-harness-landscape.md) | OpenClaw, Hermes Agent and DeepSeek Harness, and which layer each sits at |
+| [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
+| [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Agentic-workflow primer, review of spec+ship, token and quality tactics |
 
 ---
 
@@ -96,7 +100,10 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 | `interlock drift` | Which completed changes were never archived, which specs cite files that are gone, and which changed files no spec describes |
 | `interlock conformance` | Which spec scenarios a change must be checked against — the questions, never the verdicts |
 | `interlock ready` | Whether a change may skip the human checkpoint — fail-closed |
+| `interlock ledger` | Whether the decision ledger still holds an unanswered product question |
 | `interlock validate` | Whether a change is actually implementable |
+| `interlock tasks` | Whether the wave plan covers every unchecked box, and which ids may be ticked |
+| `interlock run-log` | Whether a finished run's trajectory can actually be replayed |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one |
 
 Every one of them runs without a model and without the network, so you can check any decision the loop made yourself.
@@ -113,17 +120,17 @@ Everything genuinely requiring judgement — classification, implementation, rev
 
 The wave loop, the halt conditions and the verification order are `workflows/ship.js` — a script, not numbered headings a model is asked to follow. Control flow written as prose is control flow the model can talk itself out of. Default `ship` is that loop through to a green unit suite and a commit. Adversarial review and handoff artifacts are `--strict` (or `--review` / `--handoff` on their own), not the execute loop itself.
 
-That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into its own wave. The prediction is a model's, so this narrows the race rather than closing it — but the assumption is now stated and checked instead of merely assumed.
+That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave — ordering inside a wave is free, while a new wave is a checkpoint. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file rather than two keys; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. The prediction is still a model's, so this narrows the race rather than closing it — but the assumption is now stated and checked instead of merely assumed.
 
 ---
 
 ## Reviews you can actually read
 
-`/interlock:review-code` fans out up to six dimensions in parallel — language, architecture, QA and delivery always; devops and security when the diff earns them — then **puts two skeptics on every blocker and warning and tries to refute it.** Findings that don't survive are never shown to you.
+`/interlock:review-code` fans out up to six dimensions in parallel — language, architecture, QA and technical-lead always; devops and security when the diff earns them — then **puts two skeptics on every blocker and warning and tries to refute it.** Findings that don't survive are never shown to you.
 
 An unverified review reports everything it notices, so you learn to skim it. A review where every finding survived two adversaries is one you read line by line. The report always tells you how many findings were dismissed — that number is the evidence it's worth trusting.
 
-**A skeptic must cite what it read to dismiss a finding.** A verdict of "not real" carrying no `file:line` span does not dismiss anything: it is recorded, its quality score still counts, and the finding survives to you. Voting a finding *real* needs no citation, because that direction already ends with a human reading it — the cheap error. Only the dismissing direction is gated, because a wrongly dismissed finding is *invisible*, and nobody can catch a mistake they never see. [Research on adversarial review](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL vulnerability that did not exist. Confident prose is the one thing an LLM produces reliably, so it is the one thing a dismissal must not rest on.
+**A skeptic must cite what it read to dismiss a finding.** A verdict of "not real" has to carry a `file:line` (or `file:start-end`) span naming a path that is actually in the reviewed diff — a shape a machine can check, not a judgement call handed to another model. A dismissal that fails either half does not dismiss anything: it is recorded, its quality score still counts, and the finding survives to you. The report says how many refutations were refused, so you can see the rule fire. Voting a finding *real* needs no citation, because that direction already ends with a human reading it — the cheap error. Only the dismissing direction is gated, because a wrongly dismissed finding is *invisible*, and nobody can catch a mistake they never see. [Research on adversarial review](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL vulnerability that did not exist. Confident prose is the one thing an LLM produces reliably, so it is the one thing a dismissal must not rest on.
 
 Surviving is not sufficient. `interlock gate` also applies a quality band: a finding the skeptics scored too low for how well-grounded and actionable it is gets dropped before the gate counts blockers, so a vague blocker cannot hold up a change. That threshold lives in the CLI rather than in the review prose, which is what stops it from being quietly re-argued on each run.
 
@@ -157,6 +164,8 @@ Surviving is not sufficient. `interlock gate` also applies a quality band: a fin
 | `dispatch` | One batched pre-flight, then routes you to the right skill |
 
 None of these are part of a first loop — see [the first hour](docs/01-first-hour.md).
+
+Live-session retro (`session-retro`) now ships from [shippable-skills](https://github.com/renzrollon/shippable-skills) so it can run on Cursor, Copilot, Codex, and Claude Code. Install with `npx skills add renzrollon/shippable-skills`.
 
 </details>
 
@@ -206,13 +215,30 @@ Most of the category competes on how much structure you write before coding — 
 
 The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one, because the guarantees above come from Claude Code's workflow runtime and its plugin surface. A portable version of this would be a folder of prompts, which is the thing it exists not to be.
 
+That is a bet, not a wall. The part of Interlock that is host-specific turns out to be small — spawn an agent, run the CLI, branch on its exit code — so it is now a stated contract with a second implementation behind it (below). Everything the loop actually decides lives in a CLI any host shells out to. Portability here means *a second host adapter*, not thirty prompt templates.
+
 ---
 
 ## Experimental
 
-**Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes (`review-code`, artifact review, and `ship --strict`) and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does** — the human checkpoint between `spec` and `ship` is not skippable at any level.
+**Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes (`review-code`, artifact review, and `ship --strict`) and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does**. No autonomy level and no accumulated outcome ever relaxes a gate. The only path that skips the checkpoint is the explicit `--continue` flag on `spec`, which is fail-closed and accounted for in [continuity](docs/05-continuity.md) — never something the ladder earns on your behalf.
 
 They exist to answer, later and from evidence, whether any gate can safely be relaxed. That question stays open until there is a corpus to answer it with, and wiring a branch before then would be deciding without the data these were built to gather.
+
+**A second host, over ACP.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-ship-acp` is the second implementation of it, over the [Agent Client Protocol](https://agentclientprotocol.com): it spawns your ACP agent as a subprocess per task and shells out to the same CLI for every decision.
+
+```bash
+INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-ship-acp <change-name>
+```
+
+What it is for: proving the boundary is real. A host contract with one implementation is a comment. What it is honestly not: the supported path.
+
+- **Lean only.** waves → verify → commit. `--strict`, `--review`, `--handoff` and `--conformance` **exit `2`** rather than quietly shipping something smaller than you asked for.
+- **No per-tier model routing.** ACP v1 has no per-prompt model selector, so the planner's tier ladder is not in effect and the run banners `MODEL ROUTING UNAVAILABLE (ACP host)`. The cost story is a Claude Code property.
+- **The zero-touch contract is weaker.** On Claude Code nobody can interrupt a run because the runtime has no channel for it. Here the driver just declines to ask — a policy in a file, not a property of a runtime.
+- **`/interlock:ship` is untouched.** No flag, no auto-detect, no fallback: when the Workflow tool is missing the trampoline still halts. See [when it stops](docs/04-when-it-stops.md).
+
+**Code Mode is out of scope.** Running the loop as generated code against a tool API is interesting and it is not this: it would need Interlock to own a runtime to execute that code in, which it does not. Future work, contingent on that, not a supported ship host today.
 
 ---
 
@@ -220,7 +246,7 @@ They exist to answer, later and from evidence, whether any gate can safely be re
 
 ```bash
 git clone https://github.com/renzrollon/interlock && cd interlock
-npm test                      # 590 tests, no dependencies
+npm test                      # 760 tests, no dependencies
 claude plugin validate . --strict
 claude --plugin-dir .         # load it without installing
 ```

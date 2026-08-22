@@ -21,10 +21,26 @@ Almost everything is a soft continue. The halts are deliberately few.
 | Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
 | Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
+| Ship-run trajectory is not reconstructable | The `record-outcome` ping ran `interlock run-log check --state` and it exited non-zero — a sequence gap, a missing `run-start`, or a `wave-state`/`verify judge` invocation with no logged `cli-exit`. An otherwise-clean run still halts on this, because an unreconstructable run defeats the reason this file exists. | Read the reported problems with `interlock run-log check --run-id <id>` yourself. Usually a write to `.claude/ship/` failed mid-run (disk full, permissions) — fix that and re-run. This is new: until this halt existed, the writer degraded silently on a failed append. |
 
 On any halt: nothing is committed, and it will not ask you a question. `ship` is a dynamic workflow, and the workflow runtime accepts no mid-run user input at all — there is no one listening, by construction rather than by policy. The report is the whole interface.
 
 Every one of those halts is a non-zero exit from a `interlock` subcommand rather than a judgement call: `validate` when the change is not implementable, `remediate` when blockers survive the verdict round, `verify unit` when the suite is red or was weakened, `wave-state record-*` when a recorded result halts the run. The workflow branches on the exit status, so a halt is not something the model can decide it has earned its way past.
+
+### Reading a `SHIP HALTED` run
+
+The final summary tells you *that* a run halted and why in one sentence. To see the whole walk that led there — every wave-state action, every agent the loop spawned, every verify judgement — read the run's trajectory instead of re-deriving it from git history or from the summary alone:
+
+```bash
+interlock run-log list                       # every recorded run: change, halted?, event/skip counts
+interlock run-log show <runId>                # one run's events, in sequence order
+interlock run-log query --run <runId> --halted   # only the events that explain the halt
+interlock run-log query --run <runId> --type verify-judgement   # e.g. just the verify verdicts
+```
+
+The trajectory lives at `.claude/ship/runs/<runId>.jsonl` — an append-only JSON Lines file, one line per wave-state action, CLI exit, agent spawn, and verify judgement. `list` prints every run's id, so if you do not have the run id handy, start there. `run-log show`/`query` never fail on a torn or unreadable line — they skip it and say so, the same way `outcomes list` does, so a crash mid-append costs you at most that one record, not the read.
+
+A `verify-judgement` line never carries the raw suite log — a red unit suite's full stdout lives under `.claude/ship/spill/<runId>/`, and the trajectory line points at it with a locator and a short preview instead. If a judgement's preview does not tell you enough, open the locator with `offset`/`limit` rather than reading the whole file — it can be hundreds of KB.
 
 ### `/interlock:spec` stops too
 
@@ -47,6 +63,14 @@ interlock risk <change-name> --paths <planned paths>
 Two failure shapes that are about your environment rather than your change, and neither reads like the halts above.
 
 **`/interlock:ship` is unknown, or the trampoline halts.** `/interlock:ship` is a skill that launches `workflows/ship.js` on the Workflow runtime. The Skill tool will find the command in any repo where the plugin is installed. What still has to be true for the *run* to start: Claude Code **v2.1.154+** with dynamic workflows enabled. Where they are off — `disableWorkflows`, an org policy, `CLAUDE_CODE_DISABLE_WORKFLOWS`, a Pro plan that has not turned them on in `/config`, or an IDE that never exposes the Workflow tool — the trampoline **halts rather than implementing the loop in conversation.** Everything else in Interlock still works, including `spec`, the reviews and `commit`, so you can implement the change another way, but the loop this tool is built around needs the workflow runtime.
+
+That halt is unchanged by the existence of a second host. There is now an experimental ACP driver that runs the same lean loop off the workflow runtime — but it is **a separate path you invoke yourself, not a fallback.** The trampoline will never reach for it: an automatic downgrade from "the runtime guarantees nobody can interrupt this" to "some other agent is driving it" is exactly the quiet degradation this file exists to make impossible. If you want it, run it deliberately:
+
+```bash
+INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-ship-acp <change-name>
+```
+
+It ships lean only, and it **refuses** `--strict`, `--review`, `--handoff` and `--conformance` with exit code `2` rather than running something smaller than what you asked for. Exit `0` is a terminal summary, `1` is a halt, `2` is "not supported on this host". Its two banners are in [the soft continues](#acp-host-experimental--model-routing-unavailable-acp-host) below, and the README's Experimental section says what it is for.
 
 **The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner before a long run. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
 
@@ -161,6 +185,14 @@ interlock limits
 
 If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
 
+### `ACP HOST (experimental)` / `MODEL ROUTING UNAVAILABLE (ACP host)`
+
+Only from `interlock-ship-acp`, never from `/interlock:ship`. The first banner prints on every run of that driver: it is saying that you are on the second host, and that the supported path has more around it.
+
+The second is the one worth reading, and it is a different failure from `MODEL ROUTING OVERRIDDEN` above — nothing in your environment caused it. ACP v1 has no per-prompt model selector, so the planner's tier ladder — the thing most of the cost story rests on — **is not in effect on this host**. The plan still assigns a tier per task, and the slug still travels to the agent as a hint it is free to ignore, but whatever model your ACP agent is configured with is the model every task gets. `interlock limits` still prints what the planner decided; on this host, read it as intent rather than as what ran.
+
+There is nothing to fix, and no flag that restores it. If per-tier routing matters for the run — a long change with forty tier-1 tasks — run it on Claude Code.
+
 ### `VERIFICATION SKIPPED`
 
 The inter-wave checks did not run, with a reason attached. The documented reasons are: no test or typecheck commands were detectable, the failures were pre-existing before the run started, or verification would have exceeded roughly a minute (in which case it degrades to typecheck only).
@@ -191,7 +223,7 @@ Worth knowing when you are deciding how much to trust a clean run.
 
 **Enforced by the harness:**
 
-- The workflow runtime accepts no mid-run user input, so `ship` cannot stop to ask you anything. This is structural: there is no tool to remove, because there is nobody listening.
+- The workflow runtime accepts no mid-run user input, so `ship` cannot stop to ask you anything. This is structural: there is no tool to remove, because there is nobody listening. This one is the *Claude Code* runtime's guarantee, and it is the main thing the experimental ACP driver does not inherit — that driver answers its agent's permission requests itself and never prompts you, which is a policy in a file rather than a property of a runtime. It is the honest reason ACP is not the default.
 - `commit` and `mr` set `disable-model-invocation: true` — the model cannot trigger them on its own; you invoke them.
 
 (A skill's `allowed-tools` is a pre-approval list, not a restriction — it stops mid-run permission prompts, it does not remove capabilities.)
@@ -210,6 +242,7 @@ Worth knowing when you are deciding how much to trust a clean run.
 | `surface` | UI testability, and so whether a manual test plan is written |
 | `limits` | Every cap above, in one place, so nothing restates a number in prose |
 | `risk`, `ledger`, `ready` | Whether continuity may skip the human checkpoint |
+| `run-log check` | Whether the ship-run trajectory is reconstructable — `wave-state` and `verify judge` now exit non-zero on their own failed trajectory appends too, not just on `record-outcome`'s closing check |
 
 Run any of them yourself; they need no model and no network.
 

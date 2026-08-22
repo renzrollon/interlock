@@ -186,12 +186,83 @@ test('ship.js folds record/replan into the next step via --write-state', () => {
   }
 })
 
+test('ship.js classifier prompt forbids collision-as-group', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /Default group to the numbered tasks\.md section/)
+  assert.match(text, /shared file is NOT a reason for a new group/)
+  assert.match(text, /needs an earlier task's output to already exist/)
+})
+
+test('ship.js fuses verify plan into the record-batch ping', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /remainingBatches/)
+  assert.match(text, /verify plan --no-profile --context inter-wave/)
+  assert.match(text, /If that last stdout has action:"verify"/)
+  assert.match(text, /pingExtra\.model = 'haiku'/)
+})
+
 test('ship.js implementers follow tool economy and stop on green for tier 1-2', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /interlock-graph query/, 'implementers must locate via the graph before grep')
   assert.match(text, /Do not re-read/, 'implementers must not re-read a file unless it changed')
   assert.match(text, /schema only/, 'implementers must return the schema only')
   assert.match(text, /tier is 1 or 2/, 'tier 1-2 must stop after checks pass')
+})
+
+test('ship.js implementers go through assembleImplementerPrompt, never an inline template', () => {
+  // The extracted function is the only reason the snapshots in
+  // test/spine/implementer-prompt.test.mjs mean anything. An agent() call that
+  // rebuilt the prompt inline would drift past every one of them.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_START/)
+  assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/)
+  assert.match(
+    text,
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, task, previousHandoffs \}\)/,
+    'the implementer agent() must be handed the assembled prompt, not a literal'
+  )
+  const calls = [...text.matchAll(/assembleImplementerPrompt\(/g)]
+  assert.equal(calls.length, 2, 'exactly one definition and one call site')
+
+  // Assembly has to stay in the script: the runtime rejects import(), so a
+  // shared lib/ module would have to be copied back in here — the drift this
+  // whole extraction exists to catch.
+  assert.doesNotMatch(text, /\bimport\s*\(/, 'ship.js must not import()')
+  assert.doesNotMatch(text, /node:fs/, 'ship.js must not touch the filesystem itself')
+})
+
+test('ship.js requires a handoff from implementers and threads the previous wave in', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(
+    text,
+    /required:\s*\['id',\s*'ok',\s*'handoff'\]/,
+    'the implementer schema must require a handoff packet'
+  )
+  // The projection into batch-N.json is what record-batch actually reads. A
+  // handoff dropped there is a handoff the CLI never sees.
+  assert.match(text, /ok: Boolean\(r\.ok\), error: r\.error, handoff: r\.handoff/)
+  // previousHandoffs rides beside remainingBatches on the same step.
+  assert.match(text, /previousHandoffs:\s*\{[\s\S]{0,80}type: 'array'/)
+  assert.match(text, /Array\.isArray\(next\.previousHandoffs\)/)
+  assert.match(text, /PREVIOUS WAVE \(schema-validated; do not re-derive from git\)/)
+})
+
+test('ship.js does not restate the handoff cap that lives in the CLI', () => {
+  // Same rule as every other cap: the number lives in lib/limits.mjs and the
+  // prompt cites `interlock limits`. A copy here is a copy that drifts.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /character cap \\?`interlock limits\\?` publishes/)
+  assert.doesNotMatch(text, /maxHandoffChars|2000 characters/)
+})
+
+test('ship.js does not use --handoff to mean the wave packet', () => {
+  // `--handoff` is the opt-in strict tail (manual-test-plan.md,
+  // code-explanation.md, memory). Overloading it would make one flag mean two
+  // unrelated things.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /handoff: strict \|\| has\('handoff'\)/)
+  assert.match(text, /manual-test-plan\.md/)
+  assert.match(text, /if \(handoff \|\| conformance\)/)
 })
 
 function parseInvocationFromSource(args) {
@@ -273,6 +344,27 @@ test('ship.js records autonomy only under --strict', () => {
   const strictAt = text.lastIndexOf('(strict', autonomyAt)
   assert.ok(autonomyAt !== -1, 'autonomy record must still exist for --strict')
   assert.ok(strictAt !== -1 && strictAt < autonomyAt, 'autonomy record must sit behind the strict flag')
+})
+
+test('the docs frame ACP as an opt-in second host and Code Mode as out of scope', () => {
+  // The change's own scenario: a reader must not come away thinking Code Mode
+  // is a ship host, or that the ACP driver is what happens when the Workflow
+  // tool is missing. Both are one sentence away from being read that way, so
+  // both are asserted rather than trusted to survive the next docs edit.
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /interlock-ship-acp/)
+  assert.match(readme, /Code Mode is out of scope/)
+  assert.match(readme, /default and supported host/)
+
+  const codeMode = readme.slice(readme.indexOf('Code Mode is out of scope'))
+  assert.ok(
+    !/Code Mode[^.]*\bsupported (ship )?host\b(?! today)/.test(codeMode),
+    'Code Mode must never be described as a supported ship host'
+  )
+
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.match(docs, /not a fallback/)
+  assert.match(docs, /MODEL ROUTING UNAVAILABLE \(ACP host\)/)
 })
 
 test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
@@ -367,8 +459,302 @@ test('ship.js retries an unknown wave-state action via next-retry- before halt',
   assert.match(text, /wave-state next --state \$\{STATE\} --json/)
 })
 
+test('ship.js logs the ship-run trajectory through run-log, never by touching fs itself', () => {
+  // The trajectory writer is a CLI side effect (lib/run-log.mjs via `interlock
+  // run-log`), never a script-side fs.appendFile — the runtime gives the
+  // script no filesystem of its own, so this is the only way it could log
+  // anything at all. This is the same "no import()/fs" guarantee the generic
+  // per-file test above already asserts; this test additionally pins that
+  // run-log specifically shows up among the dispatched subcommands ship.js
+  // actually calls, and that the CLI dispatch table recognizes it.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const usage = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+
+  assert.match(text, /interlock run-log append --event/, 'ship.js must log trajectory events via the CLI')
+  assert.doesNotMatch(text, /\bimport\s*\(/, 'ship.js must not import()')
+  assert.doesNotMatch(text, /node:fs/, 'ship.js must not touch the filesystem itself')
+
+  const dispatched = new Set([...usage.matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1]))
+  assert.ok(dispatched.has('run-log'), 'the CLI must dispatch a "run-log" subcommand')
+})
+
+// --- the two hosts, against one engine ------------------------------------
+//
+// add-interlock-acp-host accepts one duplicated loop (a workflow script and a
+// Node driver) on the explicit condition that both drive the same CLI. These
+// tests are that condition, written down: the same subcommands on both sides,
+// and no second copy of the rules or of the implementer briefing on the ACP
+// side. Without them, "the shared source of truth is the CLI" is a comment.
+
+const ACP_DRIVER = join(ROOT, 'bin', 'interlock-ship-acp')
+
+/** Subcommands a driver invokes, however it spells the invocation. */
+function invokedSubcommands(text) {
+  const withoutGoalMet = text.replace(/GOAL MET:.*$/gm, '')
+  const names = new Set()
+  // Prose form, as an agent is told to run it: `interlock wave-state next`.
+  for (const m of withoutGoalMet.matchAll(/\binterlock ([a-z-]+)/g)) names.add(m[1])
+  // Node form, as the driver runs it itself: `cli(['wave-state', ...])`.
+  for (const m of withoutGoalMet.matchAll(/(?:host\.runCli|\bcli)\(\[\s*'([a-z-]+)'/g)) names.add(m[1])
+  names.delete('graph') // interlock-graph is a different binary
+  names.delete('ship') // interlock-ship-acp is this one
+  return names
+}
+
+test('the ACP driver and ship.js drive the same interlock subcommands', () => {
+  const script = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  const dispatched = new Set(
+    [...readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8').matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1])
+  )
+
+  const fromScript = invokedSubcommands(script)
+  const fromDriver = invokedSubcommands(driver)
+
+  // The lean path, named explicitly. A host that stopped calling one of these
+  // is a host that started deciding it for itself.
+  for (const required of ['validate', 'wave-state', 'verify', 'outcomes']) {
+    assert.ok(fromScript.has(required), `ship.js no longer invokes interlock ${required}`)
+    assert.ok(fromDriver.has(required), `the ACP driver does not invoke interlock ${required}`)
+  }
+
+  const missing = [...fromDriver].filter(name => !dispatched.has(name))
+  assert.deepEqual(missing, [], `the ACP driver invokes subcommand(s) the CLI does not implement: ${missing}`)
+})
+
+test('the ACP driver holds no second copy of the halt rules', () => {
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+
+  // It may import the host port. It may not import the policy — a driver that
+  // loaded lib/waves.mjs or lib/limits.mjs could answer "may I continue"
+  // itself, which is the entire thing this change is not doing.
+  const imports = [...driver.matchAll(/from '([^']+)'/g)].map(m => m[1])
+  assert.ok(imports.length > 0, 'failed to read the driver imports')
+  for (const specifier of imports) {
+    assert.ok(
+      specifier.startsWith('node:') || /^\.\.\/lib\/host(\/|\.)/.test(specifier),
+      `the ACP driver may only import node builtins and the host port, not ${specifier}`
+    )
+  }
+
+  // Halt reasons and caps are the CLI's words, never restated here.
+  for (const forbidden of [
+    /task failures accumulated/,
+    /maxTaskFailures/,
+    /interWaveFixAttempts/,
+    /rootCauseIterations/,
+    /more than two/i
+  ]) {
+    assert.doesNotMatch(driver, forbidden, `the ACP driver restates a CLI rule: ${forbidden}`)
+  }
+})
+
+test('the ACP driver briefs implementers with ship.js own prompt', () => {
+  // The tier ladder is snapshotted against test/fixtures/prompts/ for exactly
+  // one assembler. A second copy in the driver would drift silently and both
+  // hosts would still look correct.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /ASSEMBLE_IMPLEMENTER_PROMPT_START/)
+  assert.match(driver, /assembleImplementerPrompt\(\{ change, task, previousHandoffs \}\)/)
+  for (const copied of [/Your tier is/, /tier 1: the task description alone/, /interlock\.wave-handoff\/1/]) {
+    assert.doesNotMatch(driver, copied, `the ACP driver copies implementer prompt text: ${copied}`)
+  }
+})
+
+test('the ACP driver refuses --strict instead of quietly shipping lean', () => {
+  // The MVP is lean ship. Running lean under a strict invocation would be the
+  // silent degradation every banner in this repo exists to prevent.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /REFUSED_FLAGS = \['strict', 'review', 'handoff', 'conformance'\]/)
+  assert.match(driver, /is not implemented on the ACP host/)
+  assert.match(driver, /process\.exit\(2\)/)
+  assert.match(driver, /LEAN SHIP:/, 'the summary must still say what was skipped')
+  assert.doesNotMatch(driver, /interlock review /, 'the review tail is Claude Code-only for now')
+  assert.doesNotMatch(driver, /interlock remediate/, 'remediation is Claude Code-only for now')
+})
+
 test('ship.js prefers parsed cliStdout over a mapped action', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /cliStdout/)
   assert.match(text, /JSON\.parse/)
+})
+
+// --- the loop, executed (spec: ship/cap-authority, ship/completion-gate) ----
+//
+// Everything above reads ship.js as text. That catches a deleted sentence and
+// misses a wrong branch, so the tests below run the script against stubbed
+// agents (test/helpers/ship-harness.mjs) and assert on what it actually did.
+
+const LIMITS_MODULE = await import('../lib/limits.mjs')
+const { LIMITS } = LIMITS_MODULE
+const { runShip, stepResult } = await import('./helpers/ship-harness.mjs')
+
+function remediationBudgetFromSource(input) {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ REMEDIATION_BUDGET_START\n([\s\S]*?)\n\/\/ REMEDIATION_BUDGET_END/.exec(text)
+  assert.ok(m, 'ship.js must define remediationBudget between REMEDIATION_BUDGET markers')
+  return new Function('input', `${m[1]}; return remediationBudget(input)`)(input)
+}
+
+test('the remediation bound is derived from the cap, never written as a literal', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(
+    text,
+    /round\s*<=\s*\d/,
+    'the remediation loop must not restate the cap as a literal — that is what lib/limits.mjs exists to prevent'
+  )
+  assert.doesNotMatch(text, /round === 3/)
+
+  const cap = LIMITS.remediationRounds
+  // Rounds 1..cap fix; the round after the cap is the verdict.
+  for (let round = 1; round <= cap; round++) {
+    assert.equal(
+      remediationBudgetFromSource({ round, roundCap: cap, blockersRemaining: 1 }).phase,
+      'fix',
+      `round ${round} of ${cap} must still be a fixing round`
+    )
+  }
+  assert.equal(remediationBudgetFromSource({ round: cap + 1, roundCap: cap }).phase, 'verdict')
+
+  // Raising the cap by one buys exactly one more fixing round, and the verdict
+  // round moves with it. This is the property a literal silently breaks.
+  assert.equal(
+    remediationBudgetFromSource({ round: cap + 1, roundCap: cap + 1, blockersRemaining: 1 }).phase,
+    'fix'
+  )
+  assert.equal(remediationBudgetFromSource({ round: cap + 2, roundCap: cap + 1 }).phase, 'verdict')
+})
+
+test('a cap lowered to its minimum leaves exactly one verdict round', () => {
+  assert.equal(remediationBudgetFromSource({ round: 1, roundCap: 1, blockersRemaining: 1 }).phase, 'fix')
+  assert.equal(remediationBudgetFromSource({ round: 2, roundCap: 1 }).phase, 'verdict')
+})
+
+test('a bound the CLI never stated is not a bound', () => {
+  for (const roundCap of [undefined, null, 0, -1, 'two']) {
+    assert.equal(remediationBudgetFromSource({ round: 1, roundCap }).phase, 'unknown')
+  }
+})
+
+/** The remediationRounds figure ship.js hands the outcome corpus. */
+function recordedRounds(prompts) {
+  const outcome = prompts.find(p => p.label === 'record-outcome')
+  assert.ok(outcome, 'the run assembled no record-outcome prompt')
+  const m = /"remediationRounds":(\d+)/.exec(outcome.prompt)
+  assert.ok(m, `record-outcome carries no remediationRounds:\n${outcome.prompt}`)
+  return Number(m[1])
+}
+
+test('recorded round consumption differs between a one-round and a two-round run', async () => {
+  // `Math.min(round, 2)` where round is always one past the bound at loop exit
+  // is a constant, and a fictional field in the outcomes corpus makes the one
+  // question that corpus exists to answer unanswerable.
+  const cap = LIMITS.remediationRounds
+  const cleared = await runShip({
+    args: 'demo-change --strict',
+    responses: { 'remediate-': { ok: true, blockersRemaining: 0, roundCap: cap } }
+  })
+  const persisted = await runShip({
+    args: 'demo-change --strict',
+    responses: {
+      'remediate-': (label, n) => ({
+        ok: true,
+        blockersRemaining: n === 1 ? 2 : 0,
+        roundCap: cap
+      })
+    }
+  })
+  assert.equal(recordedRounds(cleared.prompts), 1)
+  assert.equal(recordedRounds(persisted.prompts), 2)
+})
+
+test('a lean run records no remediation rounds, distinguishably from "ran and used none"', async () => {
+  const { prompts } = await runShip({})
+  assert.equal(recordedRounds(prompts), 0)
+})
+
+// --- the completion gate ---------------------------------------------------
+
+const verifyRun = (verify) => runShip({ responses: { verify } })
+
+test('a green verification proceeds to the commit', async () => {
+  const { output, calls } = await verifyRun({ ok: true, unitGreen: true, skipReasons: [] })
+  assert.ok(calls.includes('commit'), 'a green verification must reach the commit step')
+  assert.match(output, /SHIP COMPLETE/)
+})
+
+test('a red verification halts even without a self-reported halt flag', async () => {
+  const { output, calls } = await verifyRun({ ok: false, unitGreen: false })
+  assert.ok(!calls.includes('commit'), 'no commit may be created on a red verification')
+  assert.match(output, /SHIP HALTED/)
+  assert.match(output, /verif/i, 'the halt must name the verification verdict as the reason')
+})
+
+test('an absent verdict field is treated as not-verified, never as a pass', async () => {
+  for (const verify of [
+    { ok: true },
+    { ok: true, unitGreen: undefined },
+    { unitGreen: true },
+    { ok: true, unitGreen: false },
+    { ok: false, unitGreen: true }
+  ]) {
+    const { output, calls } = await verifyRun(verify)
+    assert.ok(
+      !calls.includes('commit'),
+      `${JSON.stringify(verify)} reached the commit — an absent or false verdict is not a passing verdict`
+    )
+    assert.match(output, /SHIP HALTED/)
+  }
+})
+
+// --- the degradation block, derived rather than accumulated ----------------
+
+test('a clean run says so, and says it from the recorded conditions', async () => {
+  const { output } = await runShip({})
+  assert.match(output, /No degradation banners/)
+})
+
+test('a cap-exhausted verification is named in the degradation block', async () => {
+  const { output } = await runShip({
+    responses: {
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        capExhaustedVerifications: 1,
+        skippedVerificationReasons: ['verify-cap-reached']
+      }
+    }
+  })
+  assert.doesNotMatch(
+    output,
+    /No degradation banners/,
+    'a run that skipped a checkpoint must not report itself as clean'
+  )
+  assert.match(output, /verify-cap-reached/)
+})
+
+test('unresolved errors carried past a wave are named', async () => {
+  const { output } = await runShip({
+    responses: {
+      'record-outcome': { ok: true, reconstructable: true, unresolvedErrors: 2 }
+    }
+  })
+  assert.doesNotMatch(output, /No degradation banners/)
+  assert.match(output, /unresolved/i)
+})
+
+test('a missing closing outcome is named as unknown, not treated as clean', async () => {
+  const { output } = await runShip({ responses: { 'record-outcome': null } })
+  assert.doesNotMatch(output, /No degradation banners/)
+  assert.match(output, /UNKNOWN|unknown/)
+})
+
+test('a failed task tick is surfaced rather than discarded', async () => {
+  const { output } = await runShip({
+    responses: {
+      'record-batch-': stepResult({ action: 'done' }, { tickFailed: true, tickMissing: ['1.1'] })
+    }
+  })
+  assert.doesNotMatch(output, /No degradation banners/)
+  assert.match(output, /1\.1/)
 })
