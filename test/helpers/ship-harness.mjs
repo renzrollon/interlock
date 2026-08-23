@@ -75,6 +75,7 @@ export function coercionArtifacts(prompt) {
  */
 export const EXPECTED_PROMPT_LABELS = Object.freeze([
   'validate',
+  'plan-reuse',
   'plan-waves',
   'record-batch-',
   'next-retry-',
@@ -120,21 +121,50 @@ export function stepResult(step, extra = {}) {
   return { ...step, ...extra, cliStdout: JSON.stringify(step) }
 }
 
-const RUN_BATCH = stepResult({
+export const RUN_BATCH = stepResult({
   action: 'run-batch',
   wave: 1,
   waveIndex: 0,
   waveKind: 'impl',
   batchIndex: 0,
   batchCount: 1,
-  tasks: [task('1.1')],
-  remainingBatches: [[task('1.1')]],
+  // A batch holds LANES, and a lane holds tasks: one agent per lane. The
+  // default is one lane of one task, which is the shape every pre-lane fixture
+  // described and the shape a cap of 1 still produces.
+  tasks: [[task('1.1')]],
+  remainingBatches: [[[task('1.1')]]],
   previousHandoffs: [],
   changed: ['lib/a.mjs'],
   maxParallel: 8
 })
 
-const DONE = stepResult({ action: 'done' })
+export const DONE = stepResult({ action: 'done' })
+
+/**
+ * What the plan-reuse probe reports when the stored plan matched: the CLI's
+ * verdict AND the first loop step, because the probe that establishes reuse is
+ * the same ping that adopts the plan.
+ */
+export function reuseAdopted(step = RUN_BATCH, over = {}) {
+  return {
+    ...step,
+    reuse: true,
+    reuseStatus: 'match',
+    reason: 'the stored plan still matches every input it was built from',
+    noRemainingWork: false,
+    ...over
+  }
+}
+
+/** What it reports when there is nothing to reuse — the first-run default. */
+export function reuseRebuilt(over = {}) {
+  return {
+    reuse: false,
+    reuseStatus: 'no-plan',
+    reason: 'no stored plan at .claude/ship/plan.json',
+    ...over
+  }
+}
 
 /**
  * The default answers. Every key is an agent label (or a label prefix ending in
@@ -149,7 +179,17 @@ export function defaultResponses() {
       hasTestProfile: true,
       haikuAvailable: true
     },
-    'plan-waves': { ok: true, waveCount: 1, taskCount: 1, coverageOk: true, ...RUN_BATCH },
+    // The default is a first run: nothing stored, so the classifier runs. Tests
+    // that want the reuse path answer this label with `reuseAdopted()`.
+    'plan-reuse': reuseRebuilt(),
+    'plan-waves': {
+      ok: true,
+      waveCount: 1,
+      taskCount: 1,
+      coverageOk: true,
+      fingerprintWritten: true,
+      ...RUN_BATCH
+    },
     '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1') },
     'record-batch-': DONE,
     'inter-wave-verify-': DONE,
@@ -274,6 +314,10 @@ export function coverageRuns() {
         'replan-': { action: 'report' },
         'next-retry-': DONE
       }
-    }
+    },
+    // The reuse path: the probe matched and adopted the plan, so the classifier
+    // never runs. Enumerated here so the cheaper path is covered rather than
+    // only the one every other run happens to take.
+    { responses: { 'plan-reuse': reuseAdopted() } }
   ]
 }

@@ -109,14 +109,17 @@ test('a fake host drives a batch through the CLI and the next step comes from st
     (await host.runCli(['wave-state', 'next', '--state', file('run0.json', state), '--json'])).stdout
   )
   assert.equal(step.action, 'run-batch')
-  assert.deepEqual(step.tasks.map(t => t.id), ['1.1', '1.2'])
+  // `tasks` is the batch, and a batch holds LANES. These two tasks predict no
+  // paths, so they cannot be shown to collide and each is its own lane.
+  assert.deepEqual(step.tasks.map(lane => lane.map(t => t.id)), [['1.1'], ['1.2']])
 
   // The stub stands in for the model. It reports task results; it does not get
-  // to say what happens next.
-  const results = await host.mapPipeline(step.tasks, task => host.spawn({
-    label: task.id,
-    prompt: `implement ${task.id}`,
-    model: task.model,
+  // to say what happens next. One spawn per LANE — a host that fanned out per
+  // task would pay a spawn prefix for work already forced to be sequential.
+  const results = await host.mapPipeline(step.tasks, lane => host.spawn({
+    label: lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`,
+    prompt: `implement ${lane.map(t => t.id).join(', ')}`,
+    model: lane[0].model,
     schema: { type: 'object' }
   }))
   assert.deepEqual(results.map(r => r.id), ['1.1', '1.2'])
@@ -150,8 +153,8 @@ test('halt reasons come from the CLI exit status, not from the host', async () =
     (await failing.runCli(['wave-state', 'next', '--state', file('halt-run0.json', state), '--json'])).stdout
   )
 
-  const results = await failing.mapPipeline(step.tasks, task =>
-    failing.spawn({ label: task.id, prompt: `implement ${task.id}` })
+  const results = await failing.mapPipeline(step.tasks, lane =>
+    failing.spawn({ label: lane[0].id, prompt: `implement ${lane[0].id}` })
   )
   assert.equal(results.filter(r => r && r.ok === false).length, 3)
 

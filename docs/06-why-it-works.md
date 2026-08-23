@@ -137,7 +137,9 @@ Retrieval is explicitly budgeted, in tokens estimated as `ceil(chars / 4)`:
 
 ### 5.1 Isolation is the point
 
-One agent per task, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its task, its tier's slice of the artifacts, and nothing about the other eleven tasks.
+One agent per **lane**, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its lane, its tier's slice of the artifacts, and nothing about the other eleven tasks.
+
+A lane is an ordered task list one agent runs start to finish, and most lanes hold exactly one task — that case is the old "one agent per task" rule, unchanged. A lane holds more than one only when a path collision had *already* forced those tasks to run one after another. Isolating a task from the other edits to the file it is about to edit is not isolation; it is one spawn prefix and one re-read of that file per task, bought for nothing. So the planner folds that chain into one lane, and `LIMITS.maxTasksPerAgent` bounds how long a lane may get. **That cap is the rollback lever: set it to 1 and the run is one agent per task again, exactly as before** — which is why a one-task lane's prompt is byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`.
 
 That window is also supposed to be clean of the *host catalog*. Claude Code's workflow `agent()` starts a fresh conversation, but the tools-and-system-prompt prefix still inherits the parent tool list and the Skill listing — on a loaded operator machine, ~30k tokens of system/MCP schemas plus ~10k of skill descriptions, **per spawn**. A 24-task lean run pays that floor ~30 times before any task prompt. Isolation of tasks is not isolation of prefix.
 
@@ -149,14 +151,24 @@ This also determines what a pause costs. The runtime's resume rule: **replay fol
 
 Tasks in a wave run concurrently **in one working tree**. Their independence was asserted by the classifier and verified by nothing — two agents editing one file concurrently is a lost write that nothing downstream notices.
 
-The classifier now predicts a `paths` list per task, and `lib/waves.mjs` refuses to schedule a collision as concurrent work: the first claimant of a path keeps the earlier batch, later ids wait in a later **batch of the same wave**. Ordering is free; a new wave is a checkpoint. Recorded in `plan.serialized` and in warnings, never silent.
+The classifier now predicts a `paths` list per task, and `lib/waves.mjs` refuses to schedule a collision as concurrent work: tasks joined by a shared canonical path become one **lane of the same wave**, run in task-id order by a single agent. A lane is a connected component over those collisions, not a chain of pairs — with tasks A[x,y], B[x] and C[y], pairwise chaining would leave B and C running beside A's writes. Ordering is free; a new wave is a checkpoint; a second agent for work that was already sequential is neither. Recorded in `plan.serialized`, in `plan.lanes` and in warnings, never silent.
+
+Two deferral kinds that used to look identical are now distinct, and that distinction is what makes folding safe. A task pushed out of a batch because the batch hit `maxParallel` is path-*disjoint* from everything in it, so it stays its own lane and waits for a later batch; only a task pushed out by a collision joins a lane. Folding a width-deferred task would serialize work the planner deliberately parallelized. A component longer than the cap splits into lanes that stay sequential relative to each other — every task present exactly once, in order.
 
 The comparison is on the **canonical** path, from the single transform in `lib/risk.mjs` (`canonicalizePath`). That matters more than it sounds: the check exists to prevent two concurrent writes to one *file*, and keyed on raw text it prevented two concurrent writes to one *string* — `src/a.ts` and `./src/a.ts` were different keys, so both tasks joined the same batch and one overwrote the other. Three readers in `lib/waves.mjs` consume that one form — the collision key, the changed-file dedup, and the docs-only test — because fixing the reported call site while its siblings stayed on the raw form is how the original bug survives its own fix. Reports keep the spelling the task author wrote; only comparison is canonical. A predicted path that is absolute, or that escapes the repo root, is **rejected and reported** rather than rewritten into scope.
 
 ```
-Wave 1: 1.1, 1.3 in batch 1; 1.2 in batch 2
-  serialized 1.2: later batch in wave 1 (src/auth.ts held by 1.1)
+Wave 1: lane [1.1 → 1.2] and lane [1.3] in batch 1
+  serialized 1.2: same lane in wave 1 (src/auth.ts held by 1.1)
+  lane 1.1 → 1.2: 2 tasks in wave 1 on one sonnet/T2 agent
+  folded 2.1: 1-task wave 2 → later batch of wave 1
 ```
+
+The second line is the same move applied to the other over-split. A classifier that mints a group per sequential slice of one file turns 22 tasks into 15 waves, most of them one task — and each of those still buys a record ping and, until the cap, an inter-wave verification. A 1-task wave expresses one thing, "run after the previous wave", which a later **batch** of that wave expresses for free. So `planWaves` folds it there, keeps the order, drops the checkpoint, and reports it in `plan.folded`. A leading singleton has nothing to fold onto and stays; two waves that each hold real parallel work are left alone; the trailing test wave is never folded in either direction. Because a folded task's path usually does *not* collide with anything, `createRunState` may only **split** planned batches, never re-pack them — re-packing would find no collision and co-schedule the task with the work it was ordered after.
+
+The serial-plan warning is measured after the fold and counted in **lanes**, so a staircase the planner already collapsed — into one wave, or into one lane — is reported as folds rather than as waves you still have to fix. The projected agent bill counts lanes too: a lane is one agent however many tasks it carries, and billing it per task is what would make the saving invisible.
+
+A lane reports an outcome per task — `ok`, `failed`, or `not-attempted` — and stops at the first task it cannot complete. The three are not interchangeable: `interlock tasks tick` must not mark a task nobody ran, and the failure budget must not be spent on one, or a single early blocker in a four-task lane would halt a run that has one real problem. A lane result that omits a task it was given fails every task in that lane closed. What is genuinely traded away is that an agent can now drift across a task boundary inside its own lane; the per-task packets with evidence locators make that visible in the record rather than silent, which narrows the risk without pretending to remove it.
 
 **What this does not do:** `paths` is a model's prediction, so a task editing a file it never named is still unguarded. This narrows the race; it does not close it. The value is that the assumption is now *stated and checked* rather than assumed — an unpredicted collision is a wrong prediction, which is a thing that can be improved, rather than a silent property of the design.
 
@@ -166,7 +178,7 @@ Inter-wave verification is capped (`LIMITS.interWaveVerifications`) and skipped 
 
 ### 5.3 Hardest first
 
-Within a group, tasks sort by tier descending before batching. Groups run in parallel, so this only bites when a group exceeds `maxParallel` and splits — and then it decides which tasks are in batch one. The tier-5 task is the one whose failure means the design was wrong; discovering that in batch 1 rather than batch 4 saves the rest of the wave. This is Boehm's spiral ordering applied inside a wave. Ties break on id, so the same classified input always produces the same batches.
+Within a group, lanes sort by tier descending — a lane's tier is the highest among its tasks, because one agent has to be capable of its hardest work — before batching. Hardest-first orders lanes only: inside a lane, order is task-id order, since sequential same-file work is ordered work and a tier is not a proxy for what depends on what. Groups run in parallel, so this only bites when a group exceeds `maxParallel` and splits — and then it decides which tasks are in batch one. The tier-5 task is the one whose failure means the design was wrong; discovering that in batch 1 rather than batch 4 saves the rest of the wave. This is Boehm's spiral ordering applied inside a wave. Ties break on id, so the same classified input always produces the same batches.
 
 ### 5.4 The loop is a state machine
 

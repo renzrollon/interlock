@@ -95,7 +95,19 @@ function parseInvocation(args) {
 // loads modules at all, so a shared module would have to be duplicated here —
 // and a duplicated string is the drift this exists to catch.
 // ASSEMBLE_IMPLEMENTER_PROMPT_START
-function assembleImplementerPrompt({ change, task, previousHandoffs }) {
+function assembleImplementerPrompt({ change, lane, task, previousHandoffs }) {
+  // A lane is the unit now; a bare `task` is still accepted and means a lane of
+  // one. That is not politeness to old callers — a one-task lane MUST assemble
+  // byte-identically to the pre-lane prompt, and sharing one code path is the
+  // only way that stays true as this text is edited.
+  const tasks = (Array.isArray(lane) && lane.length ? lane : [task]).filter(
+    t => t && typeof t === 'object'
+  )
+  const first = tasks[0] || { id: '(unknown)', description: '', tier: 1 }
+  // The lane runs on its hardest task's ladder: one agent must be briefed for
+  // everything it is about to do, and a tier is a floor, not an average.
+  const tier = tasks.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0) || 1
+
   const packets = (Array.isArray(previousHandoffs) ? previousHandoffs : []).filter(
     h => h && typeof h === 'object'
   )
@@ -116,40 +128,204 @@ function assembleImplementerPrompt({ change, task, previousHandoffs }) {
       `\n`
     : ''
 
+  // A lane of one renders exactly the text it rendered before lanes existed —
+  // the single-task fixtures are the pin that keeps that honest.
+  const single = tasks.length === 1
+
+  const heading = single
+    ? `Implement exactly one task from OpenSpec change "${change}".\n\n` +
+      `TASK ${first.id}: ${first.description}\n\n`
+    : `Implement ${tasks.length} tasks from OpenSpec change "${change}", IN THIS ORDER. They edit ` +
+      `the same files, so they are one lane run by you alone — nobody else is touching them ` +
+      `while you work.\n\n` +
+      tasks.map((t, i) => `TASK ${i + 1}/${tasks.length} — ${t.id}: ${t.description}`).join('\n') +
+      `\n\n`
+
+  const scope = single
+    ? `- Implement ONLY this task. Do not modify files outside its scope.\n`
+    : `- Implement ONLY these tasks, in the order listed. Do not modify files outside their scope.\n` +
+      `- Finish a task before starting the next one. Do not skip ahead, and do not do a later ` +
+      `task's work under an earlier task's name.\n` +
+      `- STOP at the first task you cannot complete. Report it as failed and report every task ` +
+      `after it as not-attempted — do not continue past a failure.\n`
+
+  const handoff = single
+    ? `\nHANDOFF — the next wave reads your packet instead of reconstructing your work ` +
+      `from git, so every result MUST carry one:\n` +
+      `  { "schema": "interlock.wave-handoff/1", "taskId": "${first.id}", ` +
+      `"status": "ok" | "blocked" | "partial",\n` +
+      `    "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null }\n`
+    : `\nHANDOFF — the next wave reads your packets instead of reconstructing your work ` +
+      `from git. Report an outcome for EVERY task you were given:\n` +
+      `  { "tasks": [ { "id": "<task id>", "outcome": "ok" | "failed" | "not-attempted",\n` +
+      `      "handoff": { "schema": "interlock.wave-handoff/1", "taskId": "<same id>", ` +
+      `"status": "ok" | "blocked" | "partial",\n` +
+      `        "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null } } ] }\n` +
+      `- One packet per task you ATTEMPTED, keyed by its own id. One packet cannot stand in for ` +
+      `several tasks.\n` +
+      `- A "not-attempted" task carries no packet. That absence is expected, not an error.\n` +
+      `- A result that omits a task you were given fails every task in this lane, so report all ` +
+      `${tasks.length}.\n` +
+      `- Do not pass a packet between your own tasks — you already know what you just did.\n`
+
   return (
-    `Implement exactly one task from OpenSpec change "${change}".\n\n` +
-    `TASK ${task.id}: ${task.description}\n\n` +
+    heading +
     `CONTEXT — read only what your tier needs:\n` +
     `  tier 1: the task description alone\n` +
     `  tier 2+: the relevant section of openspec/changes/${change}/design.md\n` +
     `  tier 3+: the relevant file under openspec/changes/${change}/specs/\n` +
     `  tier 4+: design.md and the specs in full\n` +
-    `Your tier is ${task.tier}.\n\n` +
+    `Your tier is ${tier}.\n\n` +
     `RULES:\n` +
-    `- Implement ONLY this task. Do not modify files outside its scope.\n` +
+    scope +
     `- Do not fix unrelated problems you notice; report them instead.\n` +
     `- Run typecheck and lint on what you changed.\n` +
     `- Do not commit, and do not edit tasks.md — the orchestrator owns both.\n` +
     `- If .claude/graph/graph.json exists, interlock-graph query / consumers before grep.\n` +
     `- Locate (graph or grep) then Read spans. Do not re-read a file unless it changed.\n` +
     `- Return the schema only. No narrative.\n` +
-    (task.tier <= 2
+    (tier <= 2
       ? `- If your tier is 1 or 2: after typecheck/lint pass, stop. Do not refactor or polish.\n`
       : '') +
     previous +
-    `\nHANDOFF — the next wave reads your packet instead of reconstructing your work ` +
-    `from git, so every result MUST carry one:\n` +
-    `  { "schema": "interlock.wave-handoff/1", "taskId": "${task.id}", ` +
-    `"status": "ok" | "blocked" | "partial",\n` +
-    `    "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null }\n` +
+    handoff +
     `- status "ok" means blocker is null; "blocked" and "partial" need a non-empty blocker.\n` +
     `- evidence is at most 8 locators (path, path:line, path:start-end) — never file bodies.\n` +
     `- Keep it terse. A packet over the character cap \`interlock limits\` publishes fails the ` +
     `task, and it is never truncated for you.\n\n` +
-    `Report ok:false if you could not complete the task, with what blocked you.`
+    (single
+      ? `Report ok:false if you could not complete the task, with what blocked you.`
+      : `Report outcome "failed" for the task that blocked you, with what blocked you.`)
   )
 }
 // ASSEMBLE_IMPLEMENTER_PROMPT_END
+
+// --- lanes -----------------------------------------------------------------
+//
+// A batch holds lanes; a lane is an ordered task list one agent runs start to
+// finish. The planner owns which tasks share a lane (lib/waves.mjs) — this
+// script only dispatches what it is handed, which is why none of the logic
+// below decides anything about membership.
+
+// LANE_DISPATCH_START
+/** The model a lane runs on: the one its hardest task was assigned. */
+function laneModel(lane) {
+  const tier = lane.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0)
+  const hardest = lane.find(t => t.tier === tier) || lane[0]
+  return hardest && hardest.model
+}
+
+/** Stable across replays, so a resumed run cache-hits the lane it already ran. */
+function laneLabel(lane) {
+  return lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`
+}
+
+const HANDOFF_SCHEMA_SHAPE = {
+  type: 'object',
+  required: ['taskId', 'status', 'summary', 'next'],
+  properties: {
+    schema: { type: 'string' },
+    taskId: { type: 'string' },
+    status: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: { type: 'array', items: { type: 'string' } },
+    next: { type: 'string' },
+    blocker: { type: ['string', 'null'] }
+  }
+}
+
+// filesChanged is what the agent touched; evidence is where the next wave
+// should look. Neither substitutes for the other.
+const SINGLE_TASK_SCHEMA = {
+  type: 'object',
+  required: ['id', 'ok', 'handoff'],
+  properties: {
+    id: { type: 'string' },
+    ok: { type: 'boolean' },
+    filesChanged: { type: 'array', items: { type: 'string' } },
+    error: { type: 'string' },
+    note: { type: 'string' },
+    handoff: HANDOFF_SCHEMA_SHAPE
+  }
+}
+
+// One outcome per task, with `not-attempted` distinct from `failed`: the tick
+// must not mark a task nobody ran, and the failure budget must not be spent on
+// one.
+const LANE_SCHEMA = {
+  type: 'object',
+  required: ['tasks'],
+  properties: {
+    tasks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'outcome'],
+        properties: {
+          id: { type: 'string' },
+          outcome: { type: 'string' },
+          filesChanged: { type: 'array', items: { type: 'string' } },
+          error: { type: 'string' },
+          note: { type: 'string' },
+          handoff: HANDOFF_SCHEMA_SHAPE
+        }
+      }
+    }
+  }
+}
+
+// Turn one lane's agent result into an outcome per task it was given.
+//
+// Fails CLOSED, in one direction only: a result that does not account for every
+// task in the lane fails all of them, because a lane that reported on two of
+// its three tasks has told us nothing about the third — and "nothing" read as
+// success is how a task silently ships unimplemented. `not-attempted` is the
+// one outcome that is neither: it is reported, ticked nowhere, and counted
+// nowhere.
+function laneOutcomes(lane, result) {
+  const failAll = error => lane.map(t => ({ id: t.id, outcome: 'failed', error, handoff: null }))
+  if (!result) return failAll('agent returned no result')
+
+  if (lane.length === 1) {
+    const [only] = lane
+    return [
+      {
+        id: result.id || only.id,
+        outcome: result.ok ? 'ok' : 'failed',
+        error: result.error,
+        handoff: result.handoff
+      }
+    ]
+  }
+
+  const entries = Array.isArray(result.tasks) ? result.tasks : null
+  if (!entries) return failAll('lane result carried no per-task outcomes')
+
+  const byId = new Map()
+  for (const e of entries) {
+    if (e && typeof e === 'object' && typeof e.id === 'string') byId.set(e.id, e)
+  }
+  const missing = lane.filter(t => !byId.has(t.id)).map(t => t.id)
+  if (missing.length) {
+    return failAll(`lane result omitted an outcome for ${missing.join(', ')}`)
+  }
+
+  return lane.map(t => {
+    const e = byId.get(t.id)
+    if (e.outcome === 'ok') return { id: t.id, outcome: 'ok', error: e.error, handoff: e.handoff }
+    if (e.outcome === 'not-attempted') return { id: t.id, outcome: 'not-attempted' }
+    // Anything else — including a value the schema let through — is a failure.
+    // Guessing which of three named outcomes an unnamed one meant is exactly
+    // the inference this schema exists to remove.
+    return {
+      id: t.id,
+      outcome: 'failed',
+      error: e.error || `lane reported outcome ${JSON.stringify(e.outcome)}`,
+      handoff: e.handoff
+    }
+  })
+}
+// LANE_DISPATCH_END
 
 // A reviewer used to be handed a dimension NAME and nothing else, while 6,833
 // bytes of written criteria sat unread in skills/review-code/dimensions/. Six
@@ -214,7 +390,10 @@ const {
 const MAX_LOOP_STEPS = 200
 
 const banners = []
-const summary = { waves: [], halted: null, notes: [], closing: null }
+// `plan` starts null rather than assuming a path: a run that halted before the
+// reuse check reported has to say so, because "we never found out" and "there
+// was no prior plan" are different facts and only one of them is free.
+const summary = { waves: [], halted: null, notes: [], closing: null, plan: null }
 
 const STATE = '.claude/ship/state.json'
 const WORK = '.claude/ship'
@@ -263,20 +442,8 @@ const nextSchema = {
     action: { type: 'string' },
     cliStdout: { type: 'string' },
     reason: { type: 'string' },
+    // The current batch, which is `remainingBatches[0]`: an array of lanes.
     tasks: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          description: { type: 'string' },
-          tier: { type: 'integer' },
-          model: { type: 'string' },
-          paths: { type: 'array', items: { type: 'string' } }
-        }
-      }
-    },
-    remainingBatches: {
       type: 'array',
       items: {
         type: 'array',
@@ -288,6 +455,28 @@ const nextSchema = {
             tier: { type: 'integer' },
             model: { type: 'string' },
             paths: { type: 'array', items: { type: 'string' } }
+          }
+        }
+      }
+    },
+    // batches → lanes → tasks. The middle level is the lane: one agent runs
+    // everything inside it, in order. Flattening it here would put the run back
+    // on one agent per task without anything saying so.
+    remainingBatches: {
+      type: 'array',
+      items: {
+        type: 'array',
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              description: { type: 'string' },
+              tier: { type: 'integer' },
+              model: { type: 'string' },
+              paths: { type: 'array', items: { type: 'string' } }
+            }
           }
         }
       }
@@ -323,7 +512,16 @@ const nextSchema = {
     // reports that here so the loop can name it, rather than a completed task
     // silently staying unchecked and reading downstream as a failure.
     tickFailed: { type: 'boolean' },
-    tickMissing: { type: 'array', items: { type: 'string' } }
+    tickMissing: { type: 'array', items: { type: 'string' } },
+    // The plan-reuse probe reports on the same ping that adopts the plan, so
+    // its answer travels on this schema rather than on one of its own. `reuse`
+    // is the only affirmative: anything else — including a missing field — is a
+    // rebuild, and `reuseStatus` names which of the CLI's outcomes it was.
+    reuse: { type: 'boolean' },
+    reuseStatus: { type: 'string' },
+    noRemainingWork: { type: 'boolean' },
+    taskCount: { type: 'integer' },
+    laneCount: { type: 'integer' }
   }
 }
 
@@ -574,9 +772,87 @@ if (subagentModel) {
   pingExtra.model = 'haiku'
 }
 
-// --- 2. classify, then let the planner decide -----------------------------
+// --- 2. reuse the plan if it provably still fits, otherwise classify -------
+//
+// `plan-waves` is the most expensive fixed step of a run: it reads proposal.md,
+// design.md, tasks.md and every delta spec in full, and it used to re-run
+// unconditionally — including on a second invocation of the same change minutes
+// later. So the run first asks whether the stored plan still matches the inputs
+// it was built from, and only classifies when that cannot be established.
+//
+// Reuse is never assumed. `interlock plan reuse` exits 0 either way and names
+// its outcome, and this script treats anything other than an affirmative match
+// as a rebuild — including an error while checking. The direction is deliberate:
+// failing to prove reuse costs a classifier run, which is exactly what happens
+// today, while wrongly reusing would run the wrong plan.
 
-const planned = await step(
+const maxParallelFlag = maxParallel ? ` --max-parallel ${maxParallel}` : ''
+
+const reuseProbe = await cheap(
+  'plan-reuse',
+  `Decide whether the stored execution plan for change "${change}" can be reused.\n\n` +
+    `Run: interlock plan reuse --change ${change}${maxParallelFlag} --json\n\n` +
+    `That command never fails: it prints { reuse, status, reason, noRemainingWork, narrowedPath }. ` +
+    `Copy reuse into this result as reuse, status as reuseStatus, reason as reason, and ` +
+    `noRemainingWork as noRemainingWork. Copy them as printed — never infer reuse:true from a ` +
+    `plan file existing, and never rewrite the reason.\n\n` +
+    `If reuse is false, or noRemainingWork is true, STOP THERE. Do not create a run state, do not ` +
+    `classify anything, and leave action out of your result.\n\n` +
+    `If reuse is true and noRemainingWork is false, adopt the plan in this same turn using the ` +
+    `narrowedPath from that JSON:\n` +
+    `  interlock wave-state create --plan <narrowedPath> --json${maxParallelFlag} > ${STATE}\n\n` +
+    `Log the run start: read "runId" from ${STATE}, write ` +
+    `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
+    `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
+    `interlock run-log append --event ${WORK}/run-start.json --root .\n` +
+    `This never fails the run: a non-zero exit or written:false is reported and ignored.\n\n` +
+    `  interlock wave-state next --state ${STATE} --json\n\n` +
+    COPY_STDOUT +
+    `\nThat last stdout is the first loop step. If any command in the adopt sequence exits ` +
+    `non-zero, report reuse:false with the reason — a plan that cannot be turned into a run state ` +
+    `is not a plan that was reused.`
+)
+
+const reused = Boolean(reuseProbe && reuseProbe.reuse === true)
+const reuseStatus =
+  (reuseProbe && typeof reuseProbe.reuseStatus === 'string' && reuseProbe.reuseStatus) ||
+  (reuseProbe ? 'unreported' : 'check-failed')
+const reuseReason =
+  (reuseProbe && typeof reuseProbe.reason === 'string' && reuseProbe.reason.trim()) ||
+  (reuseProbe
+    ? 'the plan-reuse check reported no reason'
+    : 'the plan-reuse step returned no result')
+
+// Every task in the stored plan is already ticked. That is not an empty run to
+// dispatch — it is a change with nothing left to do, and creating a zero-batch
+// run would report a clean ship that implemented nothing.
+if (reused && reuseProbe.noRemainingWork === true) {
+  summary.plan = { reused: true, status: reuseStatus, reason: reuseReason }
+  summary.notes.push(
+    'NO REMAINING WORK: every task in the stored plan is already complete — nothing was dispatched'
+  )
+  await recordOutcome()
+  return finish()
+}
+
+// The adopted step, when the probe both matched AND turned the plan into a run
+// state. A probe claiming reuse without producing a step is a rebuild: the plan
+// was never adopted, whatever it said about matching.
+const adopted = reused ? stepFromAgent(reuseProbe) : null
+
+summary.plan = adopted
+  ? { reused: true, status: reuseStatus, reason: reuseReason }
+  : {
+      reused: false,
+      status: reused ? 'adopt-failed' : reuseStatus,
+      reason: reused
+        ? `the matching plan could not be turned into a run state (${reuseReason})`
+        : reuseReason
+    }
+
+const planned = adopted
+  ? null
+  : await step(
   'plan-waves',
   `For OpenSpec change "${change}": read proposal.md, design.md, tasks.md and specs/**/*.md in full — ` +
     `this is the artifact leash and is not subject to bounded retrieval.\n\n` +
@@ -585,10 +861,13 @@ const planned = await step(
     `GROUPING — three rules, in order:\n` +
     `  1. Default group to the numbered tasks.md section (1.x → group 1, 2.x → group 2).\n` +
     `  2. A shared file is NOT a reason for a new group. Put the predicted edit paths in \`paths\` ` +
-    `and let the planner serialize colliding tasks into later batches of the SAME wave. Inventing ` +
-    `a new group to avoid a file clash costs a verification cycle; naming the path does not.\n` +
-    `  3. Only add a group when a later task needs an earlier task's output to already exist ` +
-    `(not merely to share a file). Groups run sequentially; tasks in a group are otherwise independent.\n\n` +
+    `and let the planner fold colliding tasks into one LANE of the SAME wave — an ordered task ` +
+    `list run by a single agent. Inventing a new group to avoid a file clash costs a verification ` +
+    `cycle; naming the path costs nothing and saves a spawn.\n` +
+    `  3. Only add a group for a LATER NUMBERED SECTION that needs an earlier section's output ` +
+    `to already exist. The next sequential slice of the same file is NOT a new group — it stays ` +
+    `in that file's section group and becomes a later batch. Groups run sequentially; tasks in a ` +
+    `group are otherwise independent.\n\n` +
     `\`paths\` is your best prediction of the repo-relative files the task will edit. Predict what you ` +
     `can and OMIT the field when you genuinely cannot — an invented path serializes a batch for ` +
     `nothing, while an omitted one only leaves things as they were.\n\n` +
@@ -607,7 +886,12 @@ const planned = await step(
     `coverageOk:true if that CLI exited non-zero. A coverage gap means you omitted a checkbox — ` +
     `add it and rewrite classified.json before calling waves.\n\n` +
     `Then:\n` +
-    `  interlock waves --classified ${WORK}/classified.json --json${maxParallel ? ` --max-parallel ${maxParallel}` : ''} > ${WORK}/plan.json\n` +
+    `  interlock waves --classified ${WORK}/classified.json --json${maxParallelFlag} > ${WORK}/plan.json\n` +
+    `  interlock plan fingerprint --change ${change} --write${maxParallelFlag} --json\n` +
+    `That stores the fingerprint of the artifacts this plan was derived from, so a later run of the ` +
+    `same unedited change reuses this plan instead of re-reading everything. Report its "written" ` +
+    `value as fingerprintWritten. It never fails the run: a non-zero exit or written:false costs the ` +
+    `NEXT run a classifier pass, which is what every run used to pay.\n` +
     `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n\n` +
     `Log the run start: read "runId" from ${STATE}, write ` +
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
@@ -630,6 +914,7 @@ const planned = await step(
       taskCount: { type: 'integer' },
       coverageOk: { type: 'boolean' },
       omitted: { type: 'array', items: { type: 'string' } },
+      fingerprintWritten: { type: 'boolean' },
       detail: { type: 'string' },
       action: { type: 'string' },
       cliStdout: { type: 'string' },
@@ -650,16 +935,35 @@ const planned = await step(
   }
 )
 
-if (!planned || !planned.ok) {
-  return await halt(`wave planning failed: ${(planned && planned.detail) || 'no result from the planner step'}`)
-}
+// Both gates below belong to the classifier and are skipped on the reuse path —
+// not as a shortcut, but because neither question applies: there is no fresh
+// classification to have failed, and coverage was checked when this plan was
+// built. What guards the reused plan is the fingerprint: an added, removed,
+// reordered or reworded task changes the hash and sends the run back through the
+// classifier, which is where coverage is enforced.
+if (planned) {
+  if (!planned.ok) {
+    return await halt(`wave planning failed: ${planned.detail || 'no result from the planner step'}`)
+  }
 
-const coverageOk = Boolean(planned.coverageOk)
-const omitted = Array.isArray(planned.omitted) ? planned.omitted : []
-if (!coverageOk) {
-  return await halt(
-    `plan omitted unchecked tasks: ${omitted.join(', ') || planned.detail || 'classified.json does not cover remaining checkboxes'}`
-  )
+  const coverageOk = Boolean(planned.coverageOk)
+  const omitted = Array.isArray(planned.omitted) ? planned.omitted : []
+  if (!coverageOk) {
+    return await halt(
+      `plan omitted unchecked tasks: ${omitted.join(', ') || planned.detail || 'classified.json does not cover remaining checkboxes'}`
+    )
+  }
+  if (planned.fingerprintWritten === false) {
+    banners.push(
+      'PLAN FINGERPRINT NOT STORED: this plan cannot be proven current later, so the next run ' +
+        'will re-classify every artifact from scratch'
+    )
+  }
+} else if (!adopted) {
+  // Unreachable by construction — `planned` is null only when `adopted` is a
+  // step — but a loop entered with neither would run zero waves and report a
+  // clean ship, so it is refused rather than trusted.
+  return await halt('neither a reused plan nor a fresh classification produced a first step')
 }
 
 // --- 3. the wave loop ------------------------------------------------------
@@ -674,7 +978,10 @@ if (!coverageOk) {
 // via `next-retry-*` (pure re-read, new label) rather than treated as a policy halt.
 
 let steps = 0
-let next = await readNext(planned)
+// On the reuse path the first step came from the probe that adopted the plan; on
+// the rebuild path it came from the classifier's final `wave-state next`. Either
+// way the loop starts from a step somebody already paid for.
+let next = adopted || (await readNext(planned))
 
 while (steps++ < MAX_LOOP_STEPS) {
   if (!next) return await halt('the run state could not be read')
@@ -694,50 +1001,33 @@ while (steps++ < MAX_LOOP_STEPS) {
     const wavePaths = Array.isArray(next.changed) ? next.changed.filter(p => typeof p === 'string' && p.trim()) : []
 
     for (let i = 0; i < remaining.length; i++) {
-      const tasks = remaining[i]
-      if (!tasks.length) return await halt('the state machine asked for a batch with no tasks')
+      const lanes = remaining[i]
+      if (!lanes.length) return await halt('the state machine asked for a batch with no lanes')
+      if (lanes.some(lane => !Array.isArray(lane) || !lane.length)) {
+        return await halt('the state machine asked for a batch holding an empty lane')
+      }
 
-      // One agent per task, in parallel, always. Context isolation is the entire
-      // point of waves — a task implemented in the orchestrator's context defeats it.
+      // One agent per LANE, in parallel, always. A lane is work a path collision
+      // already forced to run in order, so isolating its tasks from each other
+      // isolates nothing and pays a spawn prefix per task. Isolation between
+      // lanes is the property waves exist for and is untouched.
       // Every batch of this wave gets the SAME previous-wave packets: the whole
       // wave came out of one `next`, so batch 2 is not entitled to batch 1's
       // report. `previousHandoffs` is dropped by the ping when the state had
       // none, and the assembler renders nothing for an empty list.
       const previousHandoffs = Array.isArray(next.previousHandoffs) ? next.previousHandoffs : []
 
-      const results = await pipeline(tasks, task =>
+      const results = await pipeline(lanes, lane =>
         agent(
-          assembleImplementerPrompt({ change, task, previousHandoffs }),
+          assembleImplementerPrompt({ change, lane, previousHandoffs }),
           {
-            label: task.id,
-            model: task.model,
+            label: laneLabel(lane),
+            model: laneModel(lane),
             ...workerExtra,
-            schema: {
-              type: 'object',
-              required: ['id', 'ok', 'handoff'],
-              properties: {
-                id: { type: 'string' },
-                ok: { type: 'boolean' },
-                filesChanged: { type: 'array', items: { type: 'string' } },
-                error: { type: 'string' },
-                note: { type: 'string' },
-                // filesChanged is what the agent touched; evidence is where the
-                // next wave should look. Neither substitutes for the other.
-                handoff: {
-                  type: 'object',
-                  required: ['taskId', 'status', 'summary', 'next'],
-                  properties: {
-                    schema: { type: 'string' },
-                    taskId: { type: 'string' },
-                    status: { type: 'string' },
-                    summary: { type: 'string' },
-                    evidence: { type: 'array', items: { type: 'string' } },
-                    next: { type: 'string' },
-                    blocker: { type: ['string', 'null'] }
-                  }
-                }
-              }
-            }
+            // A one-task lane keeps the pre-lane result shape, because its
+            // prompt is the pre-lane prompt byte for byte and a schema asking
+            // for something else would contradict it.
+            schema: lane.length === 1 ? SINGLE_TASK_SCHEMA : LANE_SCHEMA
           }
         )
       )
@@ -753,19 +1043,35 @@ while (steps++ < MAX_LOOP_STEPS) {
       // A null result gets no handoff on purpose: an agent that never returned
       // could not have written one, and demanding a packet from it would
       // replace "agent returned no result" with a complaint about the report.
-      const reported = tasks.map((task, j) => {
-        const r = results[j]
-        if (!r) return { id: task.id, ok: false, error: 'agent returned no result' }
-        return { id: r.id || task.id, ok: Boolean(r.ok), error: r.error, handoff: r.handoff }
+      const reported = []
+      const unattempted = []
+      lanes.forEach((lane, j) => {
+        const outcomes = laneOutcomes(lane, results[j])
+        for (const o of outcomes) {
+          if (o.outcome === 'not-attempted') unattempted.push(o.id)
+          else reported.push({ id: o.id, ok: o.outcome === 'ok', error: o.error, handoff: o.handoff })
+        }
       })
       accumulated.push(reported)
+
+      // A task nobody ran is not a task that failed. It is left unticked and
+      // uncounted on purpose — spending the failure budget on the three tasks
+      // sitting behind one real blocker would halt a run that has one problem.
+      if (unattempted.length) {
+        banners.push(
+          `LANE STOPPED EARLY: ${unattempted.join(', ')} not attempted after an earlier task in ` +
+            `the same lane failed — not counted as failures, and still unchecked in tasks.md`
+        )
+      }
 
       summary.waves.push({
         wave: next.wave,
         kind: next.action,
+        lanes: lanes.length,
         ok: reported.filter(r => r.ok).length,
         failed: reported.filter(r => !r.ok).length,
-        failedIds: reported.filter(r => !r.ok).map(r => r.id)
+        failedIds: reported.filter(r => !r.ok).map(r => r.id),
+        notAttempted: unattempted
       })
 
       const anyFailed = reported.some(r => !r.ok)
@@ -1243,6 +1549,23 @@ function finish() {
     lines.push(`  leftover tasks (failed, boxes stay unchecked): ${leftover.join(', ')}`)
   } else {
     lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+  }
+
+  // Which path the plan took, always, in both directions. A run that silently
+  // changed its own cost is the failure mode this block exists to remove, and
+  // "there was no prior plan" is a reason like any other — reported, not passed
+  // over because it is the common case.
+  if (summary.plan) {
+    lines.push(
+      summary.plan.reused
+        ? `  PLAN REUSED (${summary.plan.status}): ${summary.plan.reason}`
+        : `  PLAN REBUILT (${summary.plan.status}): ${summary.plan.reason}`
+    )
+  } else {
+    lines.push(
+      '  PLAN UNKNOWN: the run ended before the plan-reuse check reported, so whether the ' +
+        'classifier ran was never observed'
+    )
   }
 
   for (const wave of summary.waves) {

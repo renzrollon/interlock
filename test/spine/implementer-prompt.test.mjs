@@ -69,6 +69,89 @@ test('the same inputs always produce the same prompt', () => {
   assert.equal(assembleFromSource(forTier(3)), assembleFromSource(forTier(3)))
 })
 
+// --- lanes ----------------------------------------------------------------
+//
+// A lane is what an implementer is dispatched on now: an ordered task list one
+// agent runs start to finish. A lane of ONE must assemble byte-identically to
+// the pre-lane prompt — that is what makes `maxTasksPerAgent: 1` a true rollback
+// lever rather than a differently-worded run — so the tier fixtures above are
+// re-asserted through the lane input, unmodified.
+
+const laneOf = (tier, ids = ['1.1', '1.3', '1.4']) => ({
+  change: 'add-widget',
+  lane: ids.map((id, i) => ({
+    id,
+    description: i === 0 ? 'sessions table' : `step ${i + 1}`,
+    tier,
+    model: tier === 5 ? 'opus' : tier === 1 ? 'haiku' : 'sonnet'
+  })),
+  previousHandoffs: []
+})
+
+for (const tier of TIERS) {
+  test(`a lane of one task is byte-identical to the tier ${tier} snapshot`, () => {
+    const expected = readFileSync(join(FIXTURES, `implementer-tier-${tier}.txt`), 'utf8')
+    assert.equal(
+      assembleFromSource(laneOf(tier, ['1.1'])),
+      expected,
+      `a one-task lane must render the pre-lane prompt exactly. The fixtures are NOT regenerated ` +
+        `for lanes: if this fails, the single-task path diverged and a cap of 1 no longer ` +
+        `reproduces the old behaviour.`
+    )
+  })
+
+  test(`a multi-task lane matches its tier ${tier} snapshot exactly`, () => {
+    const expected = readFileSync(join(FIXTURES, `implementer-lane-tier-${tier}.txt`), 'utf8')
+    assert.equal(
+      assembleFromSource(laneOf(tier)),
+      expected,
+      `the tier ${tier} lane prompt changed. If that was intended, regenerate ` +
+        `test/fixtures/prompts/implementer-lane-tier-${tier}.txt deliberately — this is a ` +
+        `cap-style pin.`
+    )
+  })
+}
+
+test('a lane prompt names every task in execution order', () => {
+  const prompt = assembleFromSource(laneOf(2))
+  assert.match(prompt, /Implement 3 tasks from OpenSpec change "add-widget", IN THIS ORDER/)
+  const order = ['TASK 1/3 — 1.1', 'TASK 2/3 — 1.3', 'TASK 3/3 — 1.4'].map(s => prompt.indexOf(s))
+  assert.ok(order.every(i => i > -1), `every task must be named: ${JSON.stringify(order)}`)
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'and named in execution order')
+})
+
+test('a lane prompt carries the stop-at-first-failure instruction and per-task outcomes', () => {
+  const prompt = assembleFromSource(laneOf(3))
+  assert.match(prompt, /STOP at the first task you cannot complete/)
+  assert.match(prompt, /report every task after it as not-attempted/)
+  assert.match(prompt, /"outcome": "ok" \| "failed" \| "not-attempted"/)
+  assert.match(prompt, /omits a task you were given fails every task in this lane/)
+  assert.match(
+    prompt,
+    /Do not pass a packet between your own tasks/,
+    'intra-lane handoffs are the token saving; asking for them would spend it'
+  )
+})
+
+test('a one-task lane is never told about lanes at all', () => {
+  const prompt = assembleFromSource(laneOf(2, ['1.1']))
+  assert.doesNotMatch(prompt, /not-attempted/)
+  assert.doesNotMatch(prompt, /IN THIS ORDER/)
+  assert.match(prompt, /Implement exactly one task/)
+})
+
+test('a mixed-tier lane is briefed at its highest tier', () => {
+  const input = laneOf(2)
+  input.lane[1] = { ...input.lane[1], tier: 4 }
+  const prompt = assembleFromSource(input)
+  assert.match(prompt, /Your tier is 4\./, 'one agent must be briefed for its hardest task')
+  assert.doesNotMatch(
+    prompt,
+    /after typecheck\/lint pass, stop/,
+    'stop-on-green is a tier 1-2 rule and a tier-4 task in the lane withdraws it'
+  )
+})
+
 test('tier 1 is briefed on the task alone and told to stop on green', () => {
   const prompt = assembleFromSource(forTier(1))
   assert.match(prompt, /TASK 1\.1: sessions table/)

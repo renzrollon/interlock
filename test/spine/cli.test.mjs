@@ -80,11 +80,16 @@ const CLEAN_FINDINGS = [
   { dimension: 'qa', severity: 'suggestion', title: 'add an empty-case test', file: 'src/b.ts' }
 ]
 
+// Two implementation tasks per group on purpose: a group holding one task is
+// folded onto the wave before it, so a one-task group 2 would leave this
+// fixture with a single implementation wave and no inter-wave boundary for the
+// wave-state tests below to walk across.
 const CLASSIFIED = {
   tasks: [
     { id: '1.1', group: 1, description: 'sessions table', tier: 3, model: 'opus', isTestTask: false },
     { id: '1.2', group: 1, description: 'login route', tier: 2, model: 'sonnet', isTestTask: false },
     { id: '2.1', group: 2, description: 'middleware', tier: 3, model: 'sonnet', isTestTask: false },
+    { id: '2.2', group: 2, description: 'logout route', tier: 2, model: 'sonnet', isTestTask: false },
     { id: '3.1', group: 3, description: 'session tests', tier: 2, model: 'sonnet', isTestTask: true }
   ]
 }
@@ -795,9 +800,10 @@ test('a run state round-trips through the CLI as JSON', () => {
   const step = runJson(['wave-state', 'next', '--state', file('run0.json', state0)])
   assert.equal(step.action, 'run-batch')
   assert.equal(step.wave, 1)
-  assert.deepEqual(step.tasks.map(t => t.id), ['1.1', '1.2'])
+  // `tasks` is the current batch, which holds LANES: [[task], [task]].
+  assert.deepEqual(step.tasks.flat().map(t => t.id), ['1.1', '1.2'])
   // The clamp is applied by the planner, so it survives into the state.
-  assert.deepEqual(step.tasks.map(t => t.model), ['sonnet', 'sonnet'])
+  assert.deepEqual(step.tasks.flat().map(t => t.model), ['sonnet', 'sonnet'])
 
   const batch = file('batch1.json', { tasks: [okTask('1.1'), okTask('1.2')] })
   const state1 = runJson([
@@ -861,8 +867,10 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(waveActions.map(e => e.source), ['create', 'next', 'record-batch'])
   assert.deepEqual(waveActions.map(e => e.action), ['run-batch', 'run-batch', 'verify'])
 
+  // Two disjoint tasks are two lanes, so two spawns — one per agent.
   const spawns = events.filter(e => e.type === 'agent-spawn')
   assert.deepEqual(spawns.map(e => e.taskId), ['1.1', '1.2'])
+  assert.deepEqual(spawns.map(e => e.label), ['1.1', '1.2'])
   assert.deepEqual(spawns.map(e => e.kind), ['implementer', 'implementer'])
 
   const exits = events.filter(e => e.type === 'cli-exit')
@@ -871,21 +879,27 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
 })
 
 test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
+  // Width-deferred at maxParallel 1 rather than path-serialized: same-file tasks
+  // are now ONE lane in one batch, so a collision fixture would leave a single
+  // batch and nothing to prove about later ones.
   const classified = file('classified-serial.json', {
     tasks: [
-      { id: '1.1', group: 1, description: 'auth a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] },
-      { id: '1.2', group: 1, description: 'auth b', tier: 2, model: 'haiku', isTestTask: false, paths: ['src/auth.ts'] },
-      { id: '1.3', group: 1, description: 'auth c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] }
+      { id: '1.1', group: 1, description: 'auth a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+      { id: '1.2', group: 1, description: 'auth b', tier: 2, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] },
+      { id: '1.3', group: 1, description: 'auth c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] }
     ]
   })
-  const plan = runJson(['waves', '--classified', classified])
-  assert.equal(plan.waves[0].batches.length, 3, 'same-file tasks must serialize into three batches')
+  const plan = runJson(['waves', '--classified', classified, '--max-parallel', '1'])
+  assert.equal(plan.waves[0].batches.length, 3, 'one lane per batch at maxParallel 1')
 
-  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-serial.json', plan), '--change', 'add-widget', '--root', dir])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-serial.json', plan), '--max-parallel', '1', '--change', 'add-widget', '--root', dir])
   const runId = state0.runId
   const first = runJson(['wave-state', 'next', '--state', file('serial-run0.json', state0), '--change', 'add-widget', '--root', dir])
   assert.equal(first.remainingBatches.length, 3)
-  assert.deepEqual(first.remainingBatches.map(b => b.map(t => t.id)), [['1.1'], ['1.2'], ['1.3']])
+  assert.deepEqual(
+    first.remainingBatches.map(b => b.map(l => l.map(t => t.id))),
+    [[['1.1']], [['1.2']], [['1.3']]]
+  )
 
   const afterNext = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
     .split('\n').filter(Boolean).map(l => JSON.parse(l))
@@ -914,6 +928,48 @@ test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does n
     afterRecord.filter(e => e.type === 'agent-spawn').map(e => e.taskId),
     ['1.1', '1.2', '1.3'],
     'mid-wave record-batch --write-state must not duplicate later-batch spawns'
+  )
+})
+
+test('spawns are counted per lane, not per task', () => {
+  // The scenario from the lanes delta spec: a wave holding one 3-task lane and
+  // one 1-task lane logs TWO agent-spawns, not four. Counting per task would
+  // report a fold that never happened.
+  const classified = file('classified-lanes.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'auth a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.2', group: 1, description: 'auth b', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.3', group: 1, description: 'auth c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.4', group: 1, description: 'billing', tier: 1, model: 'haiku', isTestTask: false, paths: ['src/billing.ts'] }
+    ]
+  })
+  const plan = runJson(['waves', '--classified', classified])
+  assert.deepEqual(
+    plan.waves[0].batches.map(b => b.map(l => l.map(t => t.id))),
+    [[['1.1', '1.2', '1.3'], ['1.4']]],
+    'one lane of three, one lane of one, both in the same batch'
+  )
+
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-lanes.json', plan),
+    '--change', 'add-widget', '--root', dir
+  ])
+  runJson([
+    'wave-state', 'next', '--state', file('lanes-run0.json', state0),
+    '--change', 'add-widget', '--root', dir
+  ])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+  const spawns = events.filter(e => e.type === 'agent-spawn')
+  assert.equal(spawns.length, 2, `four tasks, two agents; got ${spawns.length} spawns`)
+  assert.deepEqual(spawns.map(e => e.label), ['1.1+2', '1.4'])
+  assert.deepEqual(
+    spawns.map(e => e.model),
+    ['sonnet', 'haiku'],
+    'a lane runs on its hardest task\'s model'
   )
 })
 
@@ -1532,6 +1588,85 @@ test('drift --json reports both signals and stays exit 0', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// --- plan fingerprint / reuse ---------------------------------------------
+//
+// Reuse never blocks: `plan reuse` exits 0 whether it matched or not, because
+// not reusing is the normal first-run outcome and an error while checking is a
+// reason to re-plan rather than a reason to stop. The caller branches on
+// "reuse", and the summary reports "reason" either way.
+
+test('plan fingerprint --write stores a fingerprint of every planning input', () => {
+  const fp = runJson(['plan', 'fingerprint', 'add-auth', '--root', paths.root, '--write'])
+  assert.equal(fp.ok, true)
+  assert.equal(fp.written.written, true)
+  assert.deepEqual(fp.inputs.map(i => i.path), [
+    'proposal.md',
+    'design.md',
+    'tasks.md',
+    'specs/auth/spec.md'
+  ])
+  assert.ok(existsSync(join(paths.root, '.claude', 'ship', 'plan-fingerprint.json')))
+})
+
+test('plan reuse reports no-plan on a first run and still exits 0', () => {
+  const out = runJson(['plan', 'reuse', 'add-auth', '--root', paths.root])
+  assert.equal(out.reuse, false)
+  assert.equal(out.status, 'no-plan')
+  assert.match(out.reason, /no stored plan/)
+})
+
+test('plan reuse matches a stored plan, narrows it, and writes the narrowed copy', () => {
+  // Build a real plan for add-auth's two tasks, store it where ship keeps it,
+  // fingerprint it, then tick one task and ask for reuse.
+  const classified = file('classified-reuse.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'sessions table', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+      { id: '1.2', group: 1, description: 'login route', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] }
+    ]
+  })
+  const plan = runJson(['waves', '--classified', classified])
+  mkdirSync(join(paths.root, '.claude', 'ship'), { recursive: true })
+  writeFileSync(join(paths.root, '.claude', 'ship', 'plan.json'), JSON.stringify(plan))
+  runJson(['plan', 'fingerprint', 'add-auth', '--root', paths.root, '--write'])
+
+  const matched = runJson(['plan', 'reuse', 'add-auth', '--root', paths.root])
+  assert.equal(matched.reuse, true)
+  assert.equal(matched.status, 'match')
+  assert.equal(matched.taskCount, 2)
+  assert.ok(matched.narrowedPath, 'the narrowed plan is staged for wave-state create')
+  const narrowed = JSON.parse(readFileSync(join(paths.root, matched.narrowedPath), 'utf8'))
+  assert.deepEqual(
+    narrowed.waves[0].batches.map(b => b.map(l => l.map(t => t.id))),
+    [[['1.1', '1.2']]]
+  )
+
+  // Ticking a task keeps the match and drops the ticked task from the plan.
+  writeFileSync(join(paths.change, 'tasks.md'), '- [x] 1.1 sessions table\n- [ ] 1.2 login route\n')
+  const ticked = runJson(['plan', 'reuse', 'add-auth', '--root', paths.root])
+  assert.equal(ticked.reuse, true, 'progress is not a change of plan')
+  assert.deepEqual(ticked.droppedTaskIds, ['1.1'])
+  assert.equal(ticked.taskCount, 1)
+
+  // Every task complete is "no remaining work", never an empty run.
+  writeFileSync(join(paths.change, 'tasks.md'), '- [x] 1.1 sessions table\n- [x] 1.2 login route\n')
+  const done = runJson(['plan', 'reuse', 'add-auth', '--root', paths.root])
+  assert.equal(done.reuse, true)
+  assert.equal(done.noRemainingWork, true)
+  assert.equal(done.narrowedPath, null, 'nothing is staged for a run with no work in it')
+
+  // Editing an artifact invalidates, and the CLI names why.
+  writeFileSync(join(paths.change, 'design.md'), '# Design\nA JWT after all.\n')
+  const stale = runJson(['plan', 'reuse', 'add-auth', '--root', paths.root])
+  assert.equal(stale.reuse, false)
+  assert.equal(stale.status, 'inputs-changed')
+})
+
+test('plan rejects an unknown subcommand instead of guessing', () => {
+  const r = run(['plan', 'sniff', '--root', paths.root])
+  assert.notEqual(r.code, 0)
+  assert.match(r.stderr, /unknown plan subcommand: sniff/)
 })
 
 function isRoot() {

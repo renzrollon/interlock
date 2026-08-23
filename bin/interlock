@@ -49,6 +49,16 @@ import { classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
+import {
+  computeFingerprint,
+  writeFingerprint,
+  resolvePlanReuse,
+  formatFingerprint,
+  formatPlanReuse,
+  PLAN_PATH,
+  FINGERPRINT_PATH,
+  NARROWED_PLAN_PATH
+} from '../lib/plan-fingerprint.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { appendOutcome, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
@@ -101,6 +111,9 @@ Usage:
                                            Spill oversized stdout/stderr to disk
   interlock verify cluster --failures <f>   Group failures by root-cause signature
   interlock verify repair --state <file>    Decide repair / halt / accept next
+  interlock plan fingerprint [change]      Fingerprint a change's planning inputs
+  interlock plan reuse [change]            Decide whether the stored plan may be
+                                           reused, and narrow it if so
   interlock wave-state create --plan <file> Start a run state from a wave plan
   interlock wave-state next --state <file>  Ask what the run should do next
   interlock wave-state record-batch --state <f> --result <f>
@@ -347,6 +360,32 @@ verify spill:
   head/tail slice bounded by \`interlock limits\`' verify preview budget.
   Always exits 0.
 
+plan:
+  fingerprint [change]   Hash the inputs a plan for this change is derived from:
+                         proposal.md, design.md, tasks.md (with checkbox markers
+                         normalized, so ticking a task does not invalidate the
+                         plan), every delta spec, the change name, --max-parallel,
+                         the lane cap, and the plan format version. --write
+                         stores it at ${FINGERPRINT_PATH}.
+  reuse [change]         Compare a stored fingerprint against a fresh one and, on
+                         a match, narrow the stored plan to incomplete tasks and
+                         write it to --out (default ${NARROWED_PLAN_PATH}).
+                         Reports "status" as one of match, inputs-changed,
+                         no-plan, no-fingerprint, unreadable-plan,
+                         unreadable-fingerprint, plan-format-changed,
+                         check-failed — a named outcome, never a bare boolean.
+                         "noRemainingWork" means every task in the plan is
+                         already complete; do not create a run from it.
+  --plan <file>          Stored plan to check (default ${PLAN_PATH})
+  --fingerprint <file>   Stored fingerprint (default ${FINGERPRINT_PATH})
+  --out <file>           Where "reuse" writes the narrowed plan
+  --max-parallel <n>     The cap the plan was (or will be) built with; it is part
+                         of the fingerprint, so asking for a different width
+                         re-plans rather than reusing a differently-shaped plan.
+  Never exits non-zero: every failure to establish a match — including an error
+  raised while checking — is a reason to re-plan, which is what happens today.
+  Branch on "reuse", and report "reason" either way.
+
 wave-state:
   The run state machine, passed as JSON on stdin/stdout because the workflow
   script cannot hold state across agent calls — each agent reads the state in
@@ -391,6 +430,8 @@ Examples:
   interlock ledger add-auth || echo "a human still owes a decision"
   interlock verify plan --profile .claude/testing/profile.json --typecheck-command "npx tsc --noEmit" --json > vplan.json
   interlock verify judge --plan vplan.json --results results.json --context inter-wave || echo "halt"
+  interlock plan reuse add-auth --json || true
+  interlock plan fingerprint add-auth --write --json
   interlock waves --classified plan.json --json | interlock wave-state create --plan - --json > run.json
   interlock wave-state next --state run.json --json
   interlock wave-state record-batch --state run.json --result batch1.json --json > run2.json
@@ -409,7 +450,8 @@ const BOOLEAN_FLAGS = new Set([
   'no-lint',
   'no-profile',
   'pre-existing',
-  'halted'
+  'halted',
+  'write'
 ])
 
 function parseArgs(argv) {
@@ -526,33 +568,58 @@ function runIdOf(state) {
 }
 
 // `wave-state next` / `--write-state` both surface the state machine's next
-// step. A `run-batch`/`test-wave` step carries `tasks[]` (current batch) and
-// `remainingBatches` (rest of the wave). ship.js runs remainingBatches
-// sequentially before the next record ping, so the reconstructable spawn list
-// is remainingBatches — not only tasks[]. Mid-wave record-batch --write-state
-// is cursor catch-up and MUST NOT duplicate those events.
-function spawnTasksOf(step) {
-  if (Array.isArray(step.remainingBatches) && step.remainingBatches.length) {
-    return step.remainingBatches.flat().filter(t => t && typeof t === 'object')
-  }
-  return Array.isArray(step.tasks) ? step.tasks : []
+// step. A `run-batch`/`test-wave` step carries `tasks[]` (the current batch, as
+// LANES) and `remainingBatches` (rest of the wave, as batches of lanes). ship.js
+// runs remainingBatches sequentially before the next record ping, so the
+// reconstructable spawn list is remainingBatches — not only tasks[]. Mid-wave
+// record-batch --write-state is cursor catch-up and MUST NOT duplicate those
+// events.
+//
+// One spawn per LANE, because a lane is one agent. Counting per task would
+// report four spawns for a wave that ran two, which is the fold this change
+// exists for reported as if it never happened.
+function spawnLanesOf(step) {
+  const lanes =
+    Array.isArray(step.remainingBatches) && step.remainingBatches.length
+      ? step.remainingBatches.flat(1)
+      : Array.isArray(step.tasks)
+        ? step.tasks
+        : []
+  return lanes
+    .map(lane => (Array.isArray(lane) ? lane.filter(t => t && typeof t === 'object') : []))
+    .filter(lane => lane.length)
+}
+
+// The label the workflow gives the same agent (`workflows/ship.js` laneLabel), so
+// a trajectory line and the agent it describes carry one name rather than two.
+function laneLabelOf(lane) {
+  return lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`
+}
+
+// The model the lane runs on: its hardest task's. A lane is one agent and that
+// agent has to be capable of everything in it.
+function laneModelOf(lane) {
+  const tier = lane.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0)
+  const hardest = lane.find(t => t.tier === tier) || lane[0]
+  return hardest && typeof hardest.model === 'string' ? hardest.model : undefined
 }
 
 function logAgentSpawns(root, { runId, change, step, source }) {
   if (!step || (step.action !== 'run-batch' && step.action !== 'test-wave')) return true
   if (source === 'record-batch' && Number(step.batchIndex) > 0) return true
-  const tasks = spawnTasksOf(step)
   let ok = true
-  for (const task of tasks) {
-    const taskId = task && typeof task.id === 'string' ? task.id : undefined
+  for (const lane of spawnLanesOf(step)) {
     const spawn = appendRunLogEvent(root, {
       runId,
       change,
       type: 'agent-spawn',
-      label: taskId,
-      model: task && typeof task.model === 'string' ? task.model : undefined,
+      label: laneLabelOf(lane),
+      model: laneModelOf(lane),
       kind: 'implementer',
-      taskId
+      // The lane's anchor task. A multi-task lane's later ids are recoverable
+      // from the plan and from its per-task record-batch results; what this line
+      // is for is naming the AGENT, and there is one of those per lane.
+      taskId: typeof lane[0].id === 'string' ? lane[0].id : undefined
     })
     if (!spawn.written) {
       process.stderr.write(`interlock: agent-spawn not recorded: ${spawn.reason}\n`)
@@ -1169,6 +1236,97 @@ function main() {
         die(
           `unknown verify subcommand: ${sub || '(none)'} — expected plan|judge|unit|spill|cluster|repair`
         )
+      }
+      break
+    }
+
+    case 'plan': {
+      const sub = positional[1]
+      // `requestedName` reads positional[1], which here is the SUBCOMMAND — so
+      // the change is positional[2] or --change, and a bare `interlock plan
+      // reuse` resolves the single active change the same way validate does.
+      const requested =
+        typeof flags.change === 'string' && flags.change.trim() ? flags.change.trim() : positional[2]
+      const maxParallel = num(flags, 'max-parallel')
+
+      if (sub === 'fingerprint') {
+        const name = requireChange(root, requested, json)
+        const fp = computeFingerprint(root, name, { maxParallel })
+        let written = null
+        if (flags.write === true) {
+          const dest = typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
+          written = writeFingerprint(root, fp, { path: dest })
+          if (!written.written) warn(`fingerprint not written: ${written.reason}`)
+        }
+        const text =
+          formatFingerprint(fp) +
+          (written
+            ? `  ${written.written ? `written → ${written.path}` : `not written (${written.reason})`}\n`
+            : '')
+        emit(json, written ? { ...fp, written } : fp, text)
+        // Always exit 0. A fingerprint that could not be computed means the next
+        // run re-plans, which is today's behaviour — not a reason to fail the run
+        // that just produced a working plan.
+      } else if (sub === 'reuse') {
+        const name = requireChange(root, requested, json)
+        const result = resolvePlanReuse(root, name, {
+          maxParallel,
+          planPath: typeof flags.plan === 'string' ? flags.plan : undefined,
+          fingerprintPath: typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
+        })
+
+        // The narrowed plan is written to its OWN path: overwriting the stored
+        // plan with a narrowed copy would make the next run's fingerprint check
+        // compare against a plan that no longer covers the tasks it was hashed
+        // for.
+        let narrowedPath = null
+        if (result.reuse && result.narrowed && !result.noRemainingWork) {
+          narrowedPath =
+            typeof flags.out === 'string' && flags.out.trim() ? flags.out.trim() : NARROWED_PLAN_PATH
+          const dest = join(root, narrowedPath)
+          try {
+            mkdirSync(dirname(dest), { recursive: true })
+            writeFileSync(dest, JSON.stringify(result.narrowed, null, 2) + '\n')
+          } catch (err) {
+            // Cannot stage the narrowed plan → cannot reuse it. Say which, and
+            // fall back to the classifier rather than to a plan nobody can read.
+            const failed = {
+              change: name,
+              reuse: false,
+              status: 'check-failed',
+              reason: `the narrowed plan could not be written to ${narrowedPath}: ${err.message}`,
+              narrowedPath: null
+            }
+            emit(json, failed, formatPlanReuse(failed))
+            break
+          }
+        }
+
+        const payload = {
+          change: name,
+          reuse: result.reuse,
+          status: result.status,
+          reason: result.reason,
+          noRemainingWork: Boolean(result.noRemainingWork),
+          narrowedPath,
+          planPath: result.planPath,
+          fingerprintPath: result.fingerprintPath,
+          waveCount: result.waveCount ?? null,
+          laneCount: result.laneCount ?? null,
+          taskCount: result.taskCount ?? null,
+          droppedTaskIds: result.droppedTaskIds || []
+        }
+        emit(
+          json,
+          payload,
+          formatPlanReuse(result) +
+            (narrowedPath ? `  narrowed plan → ${narrowedPath}\n` : '')
+        )
+        // Always exit 0, in both directions: not reusing is the normal, correct
+        // outcome on a first run, and an error while checking is a reason to
+        // re-plan rather than a reason to stop.
+      } else {
+        die(`unknown plan subcommand: ${sub || '(none)'} — expected fingerprint|reuse`)
       }
       break
     }

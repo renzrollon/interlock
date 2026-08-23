@@ -61,6 +61,8 @@ Detect the stack from the artifacts and the dependency manifest, and skip framew
 - Does `tasks.md` pair a test task with every feature task?
 - Is the ordering right — do dependencies precede dependents?
 - Is each task small enough for one focused session?
+- **Same-file staircase.** Do consecutive checkboxes name the same production path — one per TDD beat, comment move or trap? That is one checkbox, not five. Report it as a warning naming the repeated path. It is not a ship halt: `planWaves` folds the resulting 1-task waves back together, so the cost is implementer count and lost parallelism, not checkpoints.
+- Does each numbered section hold work that could share a wave? Independent files belong in one section; a new section is only an output-exists boundary.
 
 **Delta spec quality**
 - Are ADDED / MODIFIED / REMOVED sections used correctly?

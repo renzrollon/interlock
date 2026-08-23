@@ -53,8 +53,11 @@ Tasks feed the wave planner directly, so vagueness here becomes vagueness in the
 - Feature tasks have paired test tasks.
 - A bug fix lands the **failing repro test as task 1**, and later tasks stay on the root cause.
 - If the change transforms a shared value — a normalized identity, a cache or dedup key, a canonicalized field — there is a task for **every** consumer of it, not just the one that motivated the change.
+- A numbered `## N.` section is one wave. Sequential edits to one file are **one** checkbox, and a new section is only for work that needs the previous section's output to already exist.
 
 **Looks wrong:** "update accordingly", "handle edge cases", "refactor as needed", "etc." Those phrases mean the decision was deferred to an implementer who will not have you available. One call site fixed and its siblings left reading the raw value is the same bug surviving its own fix.
+
+**Also looks wrong:** consecutive checkboxes that each name the same production file — one per TDD beat, one per comment move, one per trap. Collapse them into one. The planner folds the 1-task waves that shape produces, so it no longer costs you checkpoints, but it still buys an agent per beat and hides which files could actually have run in parallel.
 
 ### `specs/**` — can this be verified?
 

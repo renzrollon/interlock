@@ -1,10 +1,4 @@
-# implementer-prompts Specification
-
-## Purpose
-
-Treats the assembled implementer prompt as a frozen contract so silent tier-ladder or stop-rule drift is caught by the same test stack that already pins `interlock limits`.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Assembled implementer prompt is deterministic
 

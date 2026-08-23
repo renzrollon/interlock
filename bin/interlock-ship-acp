@@ -248,29 +248,25 @@ function loadImplementerAssembler() {
 
 const assembleImplementerPrompt = loadImplementerAssembler()
 
-const IMPLEMENTER_SCHEMA = {
-  type: 'object',
-  required: ['id', 'ok', 'handoff'],
-  properties: {
-    id: { type: 'string' },
-    ok: { type: 'boolean' },
-    filesChanged: { type: 'array', items: { type: 'string' } },
-    error: { type: 'string' },
-    handoff: {
-      type: 'object',
-      required: ['taskId', 'status', 'summary', 'next'],
-      properties: {
-        schema: { type: 'string' },
-        taskId: { type: 'string' },
-        status: { type: 'string' },
-        summary: { type: 'string' },
-        evidence: { type: 'array', items: { type: 'string' } },
-        next: { type: 'string' },
-        blocker: { type: ['string', 'null'] }
-      }
-    }
+// Lane dispatch comes from the workflow script for the same reason the prompt
+// does: a second copy of "which model does this lane run on" or "what does a
+// missing outcome mean" would drift, and both hosts would still look correct.
+function loadLaneDispatch() {
+  const text = readFileSync(SHIP_SCRIPT, 'utf8')
+  const m = /\/\/ LANE_DISPATCH_START\n([\s\S]*?)\n\/\/ LANE_DISPATCH_END/.exec(text)
+  if (!m) {
+    throw new Error(
+      `${SHIP_SCRIPT} has no LANE_DISPATCH block — the ACP host dispatches the same lanes the ` +
+        `workflow script does and must not carry a second copy`
+    )
   }
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    `${m[1]}; return { laneModel, laneLabel, laneOutcomes, SINGLE_TASK_SCHEMA, LANE_SCHEMA }`
+  )()
 }
+
+const { laneModel, laneLabel, laneOutcomes, SINGLE_TASK_SCHEMA, LANE_SCHEMA } = loadLaneDispatch()
 
 const VERIFY_RESULT_SCHEMA = {
   type: 'object',
@@ -393,7 +389,7 @@ const planned = await spawn(
     `GROUPING — three rules, in order:\n` +
     `  1. Default group to the numbered tasks.md section (1.x → group 1, 2.x → group 2).\n` +
     `  2. A shared file is NOT a reason for a new group. Put the predicted edit paths in \`paths\` ` +
-    `and let the planner serialize colliding tasks into later batches of the SAME wave.\n` +
+    `and let the planner fold colliding tasks into one LANE of the SAME wave.\n` +
     `  3. Only add a group when a later task needs an earlier task's output to already exist.\n\n` +
     // The same tier policy the workflow driver states, in the same words.
     // `lib/host.mjs` forbids a host from carrying its own policy, and this is
@@ -579,34 +575,54 @@ while (steps++ < MAX_LOOP_STEPS) {
     const accumulated = []
 
     for (let i = 0; i < remaining.length; i++) {
-      const tasks = remaining[i]
-      if (!tasks.length) await halt('the state machine asked for a batch with no tasks')
+      const lanes = remaining[i]
+      if (!lanes.length) await halt('the state machine asked for a batch with no lanes')
+      if (lanes.some(lane => !Array.isArray(lane) || !lane.length)) {
+        await halt('the state machine asked for a batch holding an empty lane')
+      }
 
-      // One agent per task, in parallel, always. A task implemented in the
-      // driver's own process would defeat the entire point of waves.
-      const results = await host.mapPipeline(tasks, task =>
+      // One agent per LANE, in parallel, always. A lane's tasks already had to
+      // run in order, so one agent for them costs nothing in parallelism; a
+      // lane implemented in the driver's own process would defeat the entire
+      // point of waves.
+      const results = await host.mapPipeline(lanes, lane =>
         host.spawn({
-          label: task.id,
-          model: task.model,
-          schema: IMPLEMENTER_SCHEMA,
-          prompt: assembleImplementerPrompt({ change, task, previousHandoffs }),
+          label: laneLabel(lane),
+          model: laneModel(lane),
+          schema: lane.length === 1 ? SINGLE_TASK_SCHEMA : LANE_SCHEMA,
+          prompt: assembleImplementerPrompt({ change, lane, previousHandoffs }),
           ...spawnPrefix('implementer')
         })
       )
 
-      const reported = tasks.map((task, j) => {
-        const r = results[j]
-        if (!r) return { id: task.id, ok: false, error: 'agent returned no result' }
-        return { id: r.id || task.id, ok: Boolean(r.ok), error: r.error, handoff: r.handoff }
+      const reported = []
+      const unattempted = []
+      lanes.forEach((lane, j) => {
+        for (const o of laneOutcomes(lane, results[j])) {
+          if (o.outcome === 'not-attempted') unattempted.push(o.id)
+          else reported.push({ id: o.id, ok: o.outcome === 'ok', error: o.error, handoff: o.handoff })
+        }
       })
       accumulated.push(reported)
+
+      // A task nobody ran is neither complete nor failed. It stays unticked and
+      // out of the failure budget, and it is said out loud rather than inferred
+      // from a checkbox that never moved.
+      if (unattempted.length) {
+        banners.push(
+          `LANE STOPPED EARLY: ${unattempted.join(', ')} not attempted after an earlier task in ` +
+            `the same lane failed — not counted as failures, and still unchecked in tasks.md`
+        )
+      }
 
       summary.waves.push({
         wave: next.wave,
         kind: next.action,
+        lanes: lanes.length,
         ok: reported.filter(r => r.ok).length,
         failed: reported.filter(r => !r.ok).length,
-        failedIds: reported.filter(r => !r.ok).map(r => r.id)
+        failedIds: reported.filter(r => !r.ok).map(r => r.id),
+        notAttempted: unattempted
       })
 
       const anyFailed = reported.some(r => !r.ok)

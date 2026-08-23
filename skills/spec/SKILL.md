@@ -128,6 +128,16 @@ Filter each ready artifact independently; do not dump the full instructions resp
 - **Pinned versions.** If the design names a dependency without a version, ask for it. **Do not gap-fill a version number** — a plausible-looking wrong pin is worse than an open question.
 - **Genuine ambiguity.** Ask when it blocks a correct proposal. Otherwise take a reasonable default to keep momentum. Either way, write the row — see below.
 
+### Task shape for ship
+
+`tasks.md` is the wave plan. A numbered `## N.` section is one wave. Follow these three rules when writing it:
+
+1. Default grouping is the numbered section (`1.x` share a wave, `2.x` share the next).
+2. Sequential same-file work is one checkbox — not one checkbox per TDD beat, comment move, or trap on the same production path.
+3. Start a new numbered section only when a later set of tasks needs the previous section's output to already exist. Independent files that do not need each other belong in the same section so they can share a batch.
+
+These rules apply even when `openspec instructions tasks` injects no `rules.tasks`. Path collisions inside a section are the planner's problem (`paths`), not a reason to increment the section number.
+
 ### 3a. The decision ledger
 
 Write `openspec/changes/<name>/decisions.md`. The format, the two classes, and what makes a row invalid are the contract in `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md` — read it and follow it; do not restate it here or invent a third class.

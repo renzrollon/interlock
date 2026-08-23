@@ -2,6 +2,15 @@ schema: spec-driven
 githubCopilot:
   cloudAgent: true
 
+# `tasks.md` is the wave plan that `/interlock:ship` executes, so its shape is a
+# contract, not a style preference. Mirrored in skills/spec/SKILL.md so a
+# consumer repo with an empty config still gets the rules.
+rules:
+  tasks:
+    - Default grouping is the numbered section — a `## N.` section is one wave (`1.x` share a wave, `2.x` share the next).
+    - Sequential same-file work is one checkbox — not one checkbox per TDD beat, comment move, or trap on the same production path.
+    - Start a new numbered section only when a later set of tasks needs the previous section's output to already exist. Independent files that do not need each other belong in the same section so they can share a batch.
+
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.

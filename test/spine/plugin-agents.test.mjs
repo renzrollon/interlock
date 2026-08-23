@@ -122,7 +122,7 @@ test('ship.js restates the host spawn-prefix literals and uses them on every age
   assert.match(text, /cheap = \(name, prompt\) => step\(name, prompt, nextSchema, pingExtra\)/)
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, task, previousHandoffs \}\)/
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/
   )
   assert.match(text, /\.\.\.workerExtra/)
 

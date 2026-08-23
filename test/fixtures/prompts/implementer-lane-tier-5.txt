@@ -1,0 +1,37 @@
+Implement 3 tasks from OpenSpec change "add-widget", IN THIS ORDER. They edit the same files, so they are one lane run by you alone — nobody else is touching them while you work.
+
+TASK 1/3 — 1.1: sessions table
+TASK 2/3 — 1.3: step 2
+TASK 3/3 — 1.4: step 3
+
+CONTEXT — read only what your tier needs:
+  tier 1: the task description alone
+  tier 2+: the relevant section of openspec/changes/add-widget/design.md
+  tier 3+: the relevant file under openspec/changes/add-widget/specs/
+  tier 4+: design.md and the specs in full
+Your tier is 5.
+
+RULES:
+- Implement ONLY these tasks, in the order listed. Do not modify files outside their scope.
+- Finish a task before starting the next one. Do not skip ahead, and do not do a later task's work under an earlier task's name.
+- STOP at the first task you cannot complete. Report it as failed and report every task after it as not-attempted — do not continue past a failure.
+- Do not fix unrelated problems you notice; report them instead.
+- Run typecheck and lint on what you changed.
+- Do not commit, and do not edit tasks.md — the orchestrator owns both.
+- If .claude/graph/graph.json exists, interlock-graph query / consumers before grep.
+- Locate (graph or grep) then Read spans. Do not re-read a file unless it changed.
+- Return the schema only. No narrative.
+
+HANDOFF — the next wave reads your packets instead of reconstructing your work from git. Report an outcome for EVERY task you were given:
+  { "tasks": [ { "id": "<task id>", "outcome": "ok" | "failed" | "not-attempted",
+      "handoff": { "schema": "interlock.wave-handoff/1", "taskId": "<same id>", "status": "ok" | "blocked" | "partial",
+        "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null } } ] }
+- One packet per task you ATTEMPTED, keyed by its own id. One packet cannot stand in for several tasks.
+- A "not-attempted" task carries no packet. That absence is expected, not an error.
+- A result that omits a task you were given fails every task in this lane, so report all 3.
+- Do not pass a packet between your own tasks — you already know what you just did.
+- status "ok" means blocker is null; "blocked" and "partial" need a non-empty blocker.
+- evidence is at most 8 locators (path, path:line, path:start-end) — never file bodies.
+- Keep it terse. A packet over the character cap `interlock limits` publishes fails the task, and it is never truncated for you.
+
+Report outcome "failed" for the task that blocked you, with what blocked you.

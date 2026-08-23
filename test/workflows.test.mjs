@@ -190,7 +190,10 @@ test('ship.js classifier prompt forbids collision-as-group', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /Default group to the numbered tasks\.md section/)
   assert.match(text, /shared file is NOT a reason for a new group/)
-  assert.match(text, /needs an earlier task's output to already exist/)
+  // Rule 3 spans two concatenated literals, so its full sentence only exists in
+  // the assembled prompt — asserted there, in "the assembled plan-waves prompt
+  // does not increment group for a later same-file slice".
+  assert.match(text, /LATER NUMBERED SECTION/)
 })
 
 test('ship.js fuses verify plan into the record-batch ping', () => {
@@ -229,7 +232,7 @@ test('ship.js implementers go through assembleImplementerPrompt, never an inline
   assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/)
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, task, previousHandoffs \}\)/,
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/,
     'the implementer agent() must be handed the assembled prompt, not a literal'
   )
   const calls = [...text.matchAll(/assembleImplementerPrompt\(/g)]
@@ -250,8 +253,14 @@ test('ship.js requires a handoff from implementers and threads the previous wave
     'the implementer schema must require a handoff packet'
   )
   // The projection into batch-N.json is what record-batch actually reads. A
-  // handoff dropped there is a handoff the CLI never sees.
-  assert.match(text, /ok: Boolean\(r\.ok\), error: r\.error, handoff: r\.handoff/)
+  // handoff dropped there is a handoff the CLI never sees. It is keyed off the
+  // per-task OUTCOME now, because a lane reports one of three values per task
+  // and only `ok` may be recorded as success.
+  assert.match(
+    text,
+    /ok: o\.outcome === 'ok', error: o\.error, handoff: o\.handoff/,
+    'the batch-N.json projection must derive ok from the per-task outcome'
+  )
   // previousHandoffs rides beside remainingBatches on the same step.
   assert.match(text, /previousHandoffs:\s*\{[\s\S]{0,80}type: 'array'/)
   assert.match(text, /Array\.isArray\(next\.previousHandoffs\)/)
@@ -566,7 +575,7 @@ test('the ACP driver briefs implementers with ship.js own prompt', () => {
   // hosts would still look correct.
   const driver = readFileSync(ACP_DRIVER, 'utf8')
   assert.match(driver, /ASSEMBLE_IMPLEMENTER_PROMPT_START/)
-  assert.match(driver, /assembleImplementerPrompt\(\{ change, task, previousHandoffs \}\)/)
+  assert.match(driver, /assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/)
   for (const copied of [/Your tier is/, /tier 1: the task description alone/, /interlock\.wave-handoff\/1/]) {
     assert.doesNotMatch(driver, copied, `the ACP driver copies implementer prompt text: ${copied}`)
   }
@@ -598,7 +607,9 @@ test('ship.js prefers parsed cliStdout over a mapped action', () => {
 
 const LIMITS_MODULE = await import('../lib/limits.mjs')
 const { LIMITS } = LIMITS_MODULE
-const { runShip, stepResult } = await import('./helpers/ship-harness.mjs')
+const { runShip, stepResult, reuseAdopted, reuseRebuilt, RUN_BATCH, DONE } = await import(
+  './helpers/ship-harness.mjs'
+)
 
 function remediationBudgetFromSource(input) {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
@@ -718,6 +729,282 @@ test('an absent verdict field is treated as not-verified, never as a pass', asyn
   }
 })
 
+// --- lanes: one agent per lane, not per task (spec: lanes) -----------------
+//
+// The whole point of a lane is that N tasks forced to run in order cost ONE
+// spawn prefix instead of N. That is a property of what the script dispatches,
+// so it is asserted by running the script and counting the agents it actually
+// asked for — a source-text check would pass on a loop that flattened lanes.
+
+const laneTask = (id, over = {}) => ({
+  id,
+  description: `task ${id}`,
+  tier: 2,
+  model: 'sonnet',
+  paths: ['lib/a.mjs'],
+  ...over
+})
+
+/** The label ship.js gives a lane: its first task id, plus how many follow. */
+const labelFor = lane => (lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`)
+
+/** Run one wave holding exactly one lane, answered by `laneResult`. */
+function runLane(lane, laneResult, extra = {}) {
+  const step = stepResult({
+    action: 'run-batch',
+    wave: 1,
+    waveIndex: 0,
+    waveKind: 'impl',
+    batchIndex: 0,
+    batchCount: 1,
+    tasks: [lane],
+    remainingBatches: [[lane]],
+    previousHandoffs: [],
+    changed: ['lib/a.mjs'],
+    maxParallel: 8
+  })
+  return runShip({
+    responses: {
+      'plan-waves': {
+        ok: true,
+        waveCount: 1,
+        taskCount: lane.length,
+        coverageOk: true,
+        fingerprintWritten: true,
+        ...step
+      },
+      [labelFor(lane)]: laneResult,
+      ...extra
+    }
+  })
+}
+
+const laneHandoff = id => ({
+  schema: 'interlock.wave-handoff/1',
+  taskId: id,
+  status: 'ok',
+  summary: `did ${id}`,
+  evidence: ['lib/a.mjs:1-2'],
+  next: 'nothing',
+  blocker: null
+})
+
+/** The record-batch ping's prompt, which carries the batch JSON and the tick. */
+function recordPrompt(prompts) {
+  const found = prompts.find(p => p.label.startsWith('record-batch-'))
+  assert.ok(found, 'the run assembled no record-batch prompt')
+  return found.prompt
+}
+
+test('a three-task lane spawns one implementer, not three', async () => {
+  const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
+  const { calls, prompts } = await runLane(lane, {
+    tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) }))
+  })
+  const implementers = calls.filter(c => c === labelFor(lane))
+  assert.equal(implementers.length, 1, `expected one lane agent, got calls: ${calls.join(', ')}`)
+  for (const id of ['1.2', '1.3']) {
+    assert.ok(!calls.includes(id), `${id} must not get its own agent — it is inside the lane`)
+  }
+  const prompt = prompts.find(p => p.label === labelFor(lane)).prompt
+  assert.match(prompt, /Implement 3 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
+  assert.match(recordPrompt(prompts), /--ids 1\.1,1\.2,1\.3/, 'all three succeeded, so all three tick')
+})
+
+test('a mid-lane failure ticks the earlier task and counts one failure', async () => {
+  const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
+  const { output, prompts } = await runLane(lane, {
+    tasks: [
+      { id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') },
+      { id: '1.2', outcome: 'failed', error: 'no migration runner' },
+      { id: '1.3', outcome: 'not-attempted' }
+    ]
+  })
+  const prompt = recordPrompt(prompts)
+  assert.match(prompt, /--ids 1\.1\b/, 'the task that succeeded is ticked')
+  assert.doesNotMatch(prompt, /--ids [^\n]*1\.2/, 'a failed task is never ticked')
+  assert.doesNotMatch(prompt, /--ids [^\n]*1\.3/, 'and neither is one nobody ran')
+
+  const batch = /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(prompt)
+  assert.ok(batch, `the record ping carries no batch JSON:\n${prompt}`)
+  const recorded = JSON.parse(batch[1])
+  assert.deepEqual(
+    recorded.tasks.map(t => [t.id, t.ok]),
+    [['1.1', true], ['1.2', false]],
+    'a not-attempted task is neither ticked nor recorded as a failure — spending the failure ' +
+      'budget on the tasks sitting behind one blocker would halt a run that has one problem'
+  )
+
+  assert.match(output, /wave 1 \(run-batch\): 1 ok, 1 failed/)
+  assert.match(output, /LANE STOPPED EARLY: 1\.3 not attempted/)
+  assert.match(output, /SHIP HALTED|SHIP COMPLETE WITH LEFTOVERS/, 'the failure is still visible')
+})
+
+test('a lane result with no per-task outcomes fails every task in the lane', async () => {
+  const lane = [laneTask('1.1'), laneTask('1.2')]
+  const { output, prompts } = await runLane(lane, { note: 'I did some things' })
+  const batch = /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(
+    recordPrompt(prompts)
+  )
+  const recorded = JSON.parse(batch[1])
+  assert.deepEqual(recorded.tasks.map(t => t.ok), [false, false])
+  for (const t of recorded.tasks) {
+    assert.match(t.error, /carried no per-task outcomes/)
+  }
+  assert.match(output, /wave 1 \(run-batch\): 0 ok, 2 failed/)
+})
+
+test('a lane result that omits one task fails all of them, closed', async () => {
+  const lane = [laneTask('1.1'), laneTask('1.2')]
+  const { prompts } = await runLane(lane, {
+    tasks: [{ id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') }]
+  })
+  const prompt = recordPrompt(prompts)
+  const recorded = JSON.parse(
+    /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(prompt)[1]
+  )
+  assert.deepEqual(recorded.tasks.map(t => t.ok), [false, false])
+  assert.match(recorded.tasks[0].error, /omitted an outcome for 1\.2/)
+  assert.match(prompt, /No succeeded ids/, 'nothing may be ticked from a result nobody can trust')
+})
+
+test('a one-task lane keeps the pre-lane label, schema and result shape', async () => {
+  const lane = [laneTask('1.1')]
+  const { calls, prompts } = await runLane(lane, { id: '1.1', ok: true, handoff: laneHandoff('1.1') })
+  assert.ok(calls.includes('1.1'), 'the label is the bare task id, so a replay still cache-hits')
+  assert.match(
+    prompts.find(p => p.label === '1.1').prompt,
+    /Implement exactly one task/,
+    'and the prompt is the pre-lane prompt'
+  )
+})
+
+test('the lane cap is stated once, read by the planner, and never restated in the script', () => {
+  // Same rule as every other cap (openspec/specs/ship/cap-authority): the number
+  // lives in lib/limits.mjs, the planner obeys it, `interlock limits` prints it,
+  // and no prompt or script restates it.
+  const waves = readFileSync(join(ROOT, 'lib', 'waves.mjs'), 'utf8')
+  assert.match(
+    waves,
+    /LIMITS\.maxTasksPerAgent/,
+    'lib/waves.mjs must read the lane cap — a cap only a test reads is a cap in prose'
+  )
+  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /maxTasksPerAgent:/)
+  assert.match(cli, /interlock limits/, 'the CLI publishes the caps it reads')
+
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(
+    ship,
+    /maxTasksPerAgent/,
+    'the script must not carry the lane cap: it dispatches the lanes the planner built'
+  )
+})
+
+// --- plan reuse (spec: plan-reuse) -----------------------------------------
+//
+// The classifier is the most expensive fixed step in a run. Reuse is only
+// correct when a match was affirmatively established, and the run has to say
+// which path it took either way — a run that silently changed its own cost is
+// the failure the banner block exists to remove.
+
+test('a matching fingerprint skips the classifier entirely', async () => {
+  const { calls, output } = await runShip({ responses: { 'plan-reuse': reuseAdopted() } })
+  assert.ok(calls.includes('plan-reuse'), 'the reuse check always runs')
+  assert.ok(
+    !calls.includes('plan-waves'),
+    `the classifier must not run when the plan was reused: ${calls.join(', ')}`
+  )
+  assert.match(output, /PLAN REUSED \(match\)/)
+  assert.ok(calls.includes('commit'), 'and the run still finishes')
+})
+
+test('the reuse probe asks the CLI and never decides for itself', async () => {
+  const { prompts } = await runShip({})
+  const probe = prompts.find(p => p.label === 'plan-reuse')
+  assert.ok(probe, 'ship.js assembled no plan-reuse prompt')
+  assert.match(probe.prompt, /interlock plan reuse --change demo-change/)
+  assert.match(probe.prompt, /never infer reuse:true from a plan file existing/)
+  assert.match(probe.prompt, /If reuse is false, or noRemainingWork is true, STOP THERE/)
+})
+
+test('every non-match rebuilds, and the summary names which non-match it was', async () => {
+  const cases = [
+    ['no-plan', 'no stored plan at .claude/ship/plan.json'],
+    ['unreadable-plan', 'the stored plan at .claude/ship/plan.json could not be read: bad JSON'],
+    ['unreadable-fingerprint', 'the stored fingerprint carries no hash'],
+    ['inputs-changed', "the change's artifacts have been edited since the plan was built"],
+    ['plan-format-changed', 'the stored plan was written for another plan format'],
+    ['check-failed', 'the reuse check itself failed: EACCES']
+  ]
+  for (const [status, reason] of cases) {
+    const { calls, output } = await runShip({
+      responses: { 'plan-reuse': reuseRebuilt({ reuseStatus: status, reason }) }
+    })
+    assert.ok(calls.includes('plan-waves'), `${status} must fall back to the classifier`)
+    assert.match(output, new RegExp(`PLAN REBUILT \\(${status}\\)`), status)
+    assert.ok(output.includes(reason), `the reason must be reported verbatim for ${status}`)
+  }
+})
+
+test('a probe that returns nothing at all rebuilds rather than reusing', async () => {
+  const { calls, output } = await runShip({ responses: { 'plan-reuse': null } })
+  assert.ok(calls.includes('plan-waves'))
+  assert.match(output, /PLAN REBUILT \(check-failed\)/)
+})
+
+test('a probe claiming a match without producing a step is not a reuse', async () => {
+  // `reuse: true` with no adopted step means the plan was never turned into run
+  // state. Trusting the claim would start a wave loop with no state file.
+  const { calls, output } = await runShip({
+    responses: { 'plan-reuse': { reuse: true, reuseStatus: 'match', reason: 'matched' } }
+  })
+  assert.ok(calls.includes('plan-waves'), 'it falls back to the classifier')
+  assert.match(output, /PLAN REBUILT \(adopt-failed\)/)
+  assert.match(output, /could not be turned into a run state/)
+})
+
+test('an all-complete plan reports no remaining work instead of an empty run', async () => {
+  const { calls, output } = await runShip({
+    responses: { 'plan-reuse': reuseAdopted(DONE, { noRemainingWork: true }) }
+  })
+  assert.match(output, /NO REMAINING WORK: every task in the stored plan is already complete/)
+  assert.ok(!calls.includes('plan-waves'), 'nothing to classify')
+  assert.ok(!calls.includes('commit'), 'and nothing to commit — no work was dispatched')
+  assert.ok(calls.includes('record-outcome'), 'the run still records its outcome')
+})
+
+test('the classifier stores the fingerprint, and says so when it could not', async () => {
+  const { prompts } = await runShip({})
+  const planner = prompts.find(p => p.label === 'plan-waves')
+  assert.match(planner.prompt, /interlock plan fingerprint --change demo-change --write/)
+  assert.match(planner.prompt, /Report its "written" value as fingerprintWritten/)
+
+  const { output } = await runShip({
+    responses: {
+      'plan-waves': {
+        ok: true,
+        waveCount: 1,
+        taskCount: 1,
+        coverageOk: true,
+        fingerprintWritten: false,
+        ...RUN_BATCH
+      }
+    }
+  })
+  assert.match(output, /PLAN FINGERPRINT NOT STORED/)
+})
+
+test('a run that halts before the reuse check says the plan path is unknown', async () => {
+  const { output } = await runShip({ responses: { validate: { ok: false, detail: 'nope' } } })
+  assert.match(output, /SHIP HALTED/)
+  assert.match(
+    output,
+    /PLAN UNKNOWN: the run ended before the plan-reuse check reported/,
+    '"we never found out" and "there was no prior plan" are different facts'
+  )
+})
+
 // --- the degradation block, derived rather than accumulated ----------------
 
 test('a clean run says so, and says it from the recorded conditions', async () => {
@@ -768,4 +1055,103 @@ test('a failed task tick is surfaced rather than discarded', async () => {
   })
   assert.doesNotMatch(output, /No degradation banners/)
   assert.match(output, /1\.1/)
+})
+
+// --- task shape for ship --------------------------------------------------
+//
+// `tasks.md` is the wave plan, so the rules that keep it wave-shaped are a
+// contract across three surfaces: the Interlock spec skill (which applies even
+// when a consumer repo's config.yaml is empty), this repo's own
+// `openspec/config.yaml` task rules (which the OpenSpec CLI injects into stock
+// propose), and the classifier prompt that reads whatever tasks.md ended up
+// saying. A rule surviving on only one of them has already started drifting.
+//
+// The stock OpenSpec propose skill is deliberately not asserted on: it is
+// OpenSpec's generic artifact writer, it has no waves, and a fork of it here
+// would not ship with the Interlock plugin anyway.
+
+const SPEC_SKILL = join(ROOT, 'skills', 'spec', 'SKILL.md')
+const OPENSPEC_CONFIG = join(ROOT, 'openspec', 'config.yaml')
+
+/** The `rules: tasks:` list items from openspec/config.yaml, as raw strings. */
+function configTaskRules() {
+  const lines = readFileSync(OPENSPEC_CONFIG, 'utf8').split('\n')
+  const start = lines.findIndex(l => /^\s{2,}tasks:\s*$/.test(l))
+  if (start === -1) return []
+  const out = []
+  for (const line of lines.slice(start + 1)) {
+    const item = /^\s+-\s+(.+)$/.exec(line)
+    if (!item) break
+    out.push(item[1].trim())
+  }
+  return out
+}
+
+test('skills/spec states the ship task shape, including the same-file rule', () => {
+  const text = readFileSync(SPEC_SKILL, 'utf8')
+  assert.match(
+    text,
+    /^#+ Task shape for ship\s*$/m,
+    'skills/spec/SKILL.md omitted the "Task shape for ship" heading — that section is what ' +
+      'carries these rules when a consumer repo\'s config.yaml injects nothing'
+  )
+  assert.match(
+    text,
+    /sequential same-file work is one checkbox/i,
+    'skills/spec/SKILL.md omitted "sequential same-file work is one checkbox"'
+  )
+  assert.match(
+    text,
+    /section is one wave/i,
+    'skills/spec/SKILL.md omitted the rule that a numbered section is one wave'
+  )
+})
+
+test('openspec/config.yaml task rules carry the same three sentences', () => {
+  const rules = configTaskRules()
+  assert.ok(
+    rules.length >= 3,
+    `openspec/config.yaml declares no rules.tasks list (found ${rules.length} item(s)) — ` +
+      `openspec instructions tasks is what injects them for this repo`
+  )
+  const joined = rules.join('\n')
+  assert.match(
+    joined,
+    /sequential same-file work is one checkbox/i,
+    'openspec/config.yaml task rules omitted "sequential same-file work is one checkbox"'
+  )
+  assert.match(joined, /numbered section/i, 'the default-grouping rule is missing')
+  assert.match(
+    joined,
+    /needs the previous section's output to already exist/i,
+    'the output-exists boundary rule is missing'
+  )
+})
+
+test('the assembled plan-waves prompt does not increment group for a later same-file slice', async () => {
+  // Asserted on the assembled string rather than the source bytes: a
+  // concatenation defect drops an instruction out of the prompt and leaves the
+  // sentence intact in the file, where a grep passes on the broken script.
+  const { prompts } = await runShip({})
+  const found = prompts.find(p => p.label === 'plan-waves')
+  assert.ok(found, 'ship.js assembled no prompt labelled "plan-waves"')
+  const prompt = found.prompt
+
+  assert.match(
+    prompt,
+    /LATER NUMBERED SECTION that needs an earlier section's output/,
+    `the classifier is not told that a new group is only a later numbered section.\n` +
+      `Assembled prompt:\n${prompt}`
+  )
+  assert.match(
+    prompt,
+    /next sequential slice of the same file is NOT a new group/i,
+    `the classifier is not told to keep sequential same-file slices in one group.\n` +
+      `Assembled prompt:\n${prompt}`
+  )
+  assert.doesNotMatch(
+    prompt,
+    /add a group when a later task needs an earlier task's output/i,
+    'the old task-scoped wording is what let the model mint a group per sequential slice'
+  )
 })
