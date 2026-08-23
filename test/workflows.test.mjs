@@ -607,9 +607,8 @@ test('ship.js prefers parsed cliStdout over a mapped action', () => {
 
 const LIMITS_MODULE = await import('../lib/limits.mjs')
 const { LIMITS } = LIMITS_MODULE
-const { runShip, stepResult, reuseAdopted, reuseRebuilt, RUN_BATCH, DONE } = await import(
-  './helpers/ship-harness.mjs'
-)
+const { runShip, stepResult, stepResultNoStdout, reuseAdopted, reuseRebuilt, RUN_BATCH, DONE } =
+  await import('./helpers/ship-harness.mjs')
 
 function remediationBudgetFromSource(input) {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
@@ -898,6 +897,127 @@ test('the lane cap is stated once, read by the planner, and never restated in th
     ship,
     /maxTasksPerAgent/,
     'the script must not carry the lane cap: it dispatches the lanes the planner built'
+  )
+})
+
+// --- the step transport ----------------------------------------------------
+//
+// The script has no shell, so it never reads `wave-state` stdout itself: every
+// step arrives transcribed by an agent into a schema. That makes the schema the
+// only thing telling the agent what to copy, and makes a returned step a claim
+// about a shape rather than the shape itself.
+//
+// Both halves of that failed once, together. The classifier's schema still
+// declared the pre-lane `tasks` and never declared `remainingBatches` at all —
+// an undeclared property passes validation holding anything — and the loop then
+// called `.some` on what came back. A batch transcribed as a list of task ids
+// is a string with a truthy `length`, so it walked past the empty-batch guard
+// and threw, outside `halt`: no outcome recorded, no trajectory closed.
+
+/** The step-shape helpers, evaluated out of their marked region in ship.js. */
+const stepShape = (() => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ STEP_SHAPE_START\n([\s\S]*?)\n\/\/ STEP_SHAPE_END/.exec(text)
+  assert.ok(m, 'ship.js must define the step-shape helpers between STEP_SHAPE markers')
+  return new Function(`${m[1]}; return { batchesOf, dispatchableShape }`)()
+})()
+
+/** RUN_BATCH as the CLI printed it, with the authoritative stdout removed. */
+function bareStep(over = {}) {
+  const { cliStdout, ...step } = RUN_BATCH
+  return { ...step, ...over }
+}
+
+/** A classifier result carrying a first step. */
+function classified(step) {
+  return { ok: true, waveCount: 1, taskCount: 1, coverageOk: true, fingerprintWritten: true, ...step }
+}
+
+test('the step task shape is stated once, not restated per schema', () => {
+  // Same rule as every cap (openspec/specs/ship/cap-authority), applied to a
+  // shape: two statements of one transport is how only one of them got widened
+  // when batches became lanes.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const statements = text.match(/tier: \{ type: 'integer' \}/g) || []
+  assert.equal(
+    statements.length,
+    1,
+    `the task shape is written ${statements.length} times; every schema carrying a step must ` +
+      `read the one statement instead`
+  )
+  assert.match(text, /\.\.\.STEP_FIELDS/, 'and the schemas must spread it rather than copy it')
+})
+
+test('a dispatchable step must carry batches of lanes of tasks', () => {
+  const { batchesOf, dispatchableShape } = stepShape
+  const lane = [{ id: '1.1' }]
+
+  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[lane]] }), true)
+  assert.equal(dispatchableShape({ action: 'run-batch', tasks: [lane] }), true)
+  assert.equal(dispatchableShape({ action: 'test-wave', remainingBatches: [[lane]] }), true)
+
+  // The production failure: a batch transcribed as a list of task ids.
+  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: ['1.1', '1.2'] }), false)
+  // The pre-lane shape the classifier's schema still described: one level short.
+  assert.equal(dispatchableShape({ action: 'run-batch', tasks: [{ id: '1.1' }] }), false)
+  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[[]]] }), false)
+  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[[{}]]] }), false)
+  assert.equal(dispatchableShape({ action: 'run-batch' }), false)
+  assert.equal(dispatchableShape(null), false)
+
+  // A step that dispatches nothing is not judged on batches it never carries.
+  for (const action of ['verify', 'replan', 'done', 'halt']) {
+    assert.equal(dispatchableShape({ action }), true, action)
+  }
+
+  // The check and the loop must read the same field, or one passes what the
+  // other rejects.
+  assert.deepEqual(batchesOf({ tasks: [lane] }), [[lane]], 'tasks is the single remaining batch')
+  const two = [[lane], [[{ id: '2.1' }]]]
+  assert.deepEqual(batchesOf({ remainingBatches: two, tasks: [lane] }), two)
+})
+
+test('a classifier step transcribed without stdout still carries lanes', async () => {
+  const { calls } = await runShip({
+    responses: { 'plan-waves': classified(stepResultNoStdout(bareStep())) }
+  })
+  assert.ok(
+    !calls.some(c => c.startsWith('next-retry-')),
+    `a well-shaped transcription needs no re-read: ${calls.join(', ')}`
+  )
+  assert.ok(calls.includes('1.1'), 'the wave runs from the transcription alone')
+  assert.ok(calls.includes('commit'))
+})
+
+test('a batch transcribed as a list of task ids is re-read, not crashed on', async () => {
+  const { calls, output } = await runShip({
+    responses: {
+      'plan-waves': classified(bareStep({ remainingBatches: ['1.1'], tasks: ['1.1'] })),
+      // The re-read is pure — `wave-state next` again — so it comes back with
+      // the CLI's own stdout and the run continues from it.
+      'next-retry-': RUN_BATCH
+    }
+  })
+  assert.ok(
+    calls.some(c => c.startsWith('next-retry-')),
+    `a misshapen step must trigger the one pure re-read: ${calls.join(', ')}`
+  )
+  assert.ok(calls.includes('1.1'), 'and the wave then runs normally')
+  assert.ok(calls.includes('commit'))
+  assert.doesNotMatch(output, /SHIP HALTED/)
+})
+
+test('a step that stays misshapen halts by name, with the outcome still recorded', async () => {
+  const bad = bareStep({ remainingBatches: ['1.1'] })
+  const { calls, output } = await runShip({
+    responses: { 'plan-waves': classified(bad), 'next-retry-': bad }
+  })
+  assert.match(output, /SHIP HALTED — misshapen run-batch step from the state machine/)
+  assert.match(output, /batches of lanes of tasks/, 'the halt names the shape that was missing')
+  assert.ok(!calls.includes('1.1'), 'nothing is dispatched from a step nobody could read')
+  assert.ok(
+    calls.includes('record-outcome'),
+    'the throw skipped this; a halt writes the corpus line on the way out'
   )
 })
 

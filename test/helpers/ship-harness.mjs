@@ -121,6 +121,19 @@ export function stepResult(step, extra = {}) {
   return { ...step, ...extra, cliStdout: JSON.stringify(step) }
 }
 
+/**
+ * The same step with no `cliStdout` — the agent's own transcription, and
+ * nothing authoritative to prefer over it.
+ *
+ * Every other fixture here attaches stdout, which is the path the script
+ * prefers and the only path these tests used to exercise. That is how a step
+ * schema could go stale for a whole release: the fallback branch was reachable
+ * in production on any turn the ping dropped the field, and unreachable here.
+ */
+export function stepResultNoStdout(step, extra = {}) {
+  return { ...step, ...extra }
+}
+
 export const RUN_BATCH = stepResult({
   action: 'run-batch',
   wave: 1,

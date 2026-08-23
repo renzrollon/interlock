@@ -435,79 +435,78 @@ const COPY_STDOUT =
   'action must be copied from stdout. Never invent action. ' +
   'Allowed values: run-batch, test-wave, verify, replan, done, halt.'
 
+// A step reaches this script transcribed by an agent — the script has no shell,
+// so nothing here ever reads `wave-state` stdout itself. The schema is therefore
+// the only thing telling that agent which shape to copy, and a step travels on
+// more than one schema: the control-plane pings use `nextSchema`, and the
+// classifier reports the first step on its own result.
+//
+// When batches widened from `Task[][]` to `Lane[][]`, only `nextSchema` was
+// widened. The classifier kept the pre-lane `tasks` and never declared
+// `remainingBatches` at all — and an undeclared property passes validation
+// holding anything, so a model told to "copy stdout JSON" with no slot to copy
+// into wrote a list of task ids and the wave loop crashed on it. Hence one
+// statement of the shape, read by every schema that carries a step.
+const TASK_SHAPE = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    description: { type: 'string' },
+    tier: { type: 'integer' },
+    model: { type: 'string' },
+    paths: { type: 'array', items: { type: 'string' } }
+  }
+}
+/** A batch: the lanes scheduled together. One agent runs one lane, in order. */
+const BATCH_SHAPE = { type: 'array', items: { type: 'array', items: TASK_SHAPE } }
+/**
+ * batches → lanes → tasks. The middle level is the lane: one agent runs
+ * everything inside it, in order. Flattening any level here would put the run
+ * back on one agent per task without anything saying so.
+ */
+const REMAINING_BATCHES_SHAPE = { type: 'array', items: BATCH_SHAPE }
+
+const STEP_FIELDS = {
+  action: { type: 'string' },
+  cliStdout: { type: 'string' },
+  wave: { type: 'integer' },
+  // The current batch, which is `remainingBatches[0]`: an array of lanes.
+  tasks: BATCH_SHAPE,
+  remainingBatches: REMAINING_BATCHES_SHAPE,
+  // Sits beside remainingBatches because it belongs to the same step: one
+  // `next` hands over a whole wave plus what the wave before it reported.
+  // If the ping drops the field the implementers simply get no previous-wave
+  // block — inventing "reconstruct it from git log" instructions instead
+  // would put back exactly the inference this replaced.
+  previousHandoffs: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        schema: { type: 'string' },
+        taskId: { type: 'string' },
+        status: { type: 'string' },
+        summary: { type: 'string' },
+        evidence: { type: 'array', items: { type: 'string' } },
+        next: { type: 'string' },
+        blocker: { type: ['string', 'null'] }
+      }
+    }
+  },
+  changed: { type: 'array', items: { type: 'string' } }
+}
+
 const nextSchema = {
   type: 'object',
   required: ['action'],
   properties: {
-    action: { type: 'string' },
-    cliStdout: { type: 'string' },
+    ...STEP_FIELDS,
     reason: { type: 'string' },
-    // The current batch, which is `remainingBatches[0]`: an array of lanes.
-    tasks: {
-      type: 'array',
-      items: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            description: { type: 'string' },
-            tier: { type: 'integer' },
-            model: { type: 'string' },
-            paths: { type: 'array', items: { type: 'string' } }
-          }
-        }
-      }
-    },
-    // batches → lanes → tasks. The middle level is the lane: one agent runs
-    // everything inside it, in order. Flattening it here would put the run back
-    // on one agent per task without anything saying so.
-    remainingBatches: {
-      type: 'array',
-      items: {
-        type: 'array',
-        items: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              description: { type: 'string' },
-              tier: { type: 'integer' },
-              model: { type: 'string' },
-              paths: { type: 'array', items: { type: 'string' } }
-            }
-          }
-        }
-      }
-    },
-    // Sits beside remainingBatches because it belongs to the same step: one
-    // `next` hands over a whole wave plus what the wave before it reported.
-    // If the ping drops the field the implementers simply get no previous-wave
-    // block — inventing "reconstruct it from git log" instructions instead
-    // would put back exactly the inference this replaced.
-    previousHandoffs: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          schema: { type: 'string' },
-          taskId: { type: 'string' },
-          status: { type: 'string' },
-          summary: { type: 'string' },
-          evidence: { type: 'array', items: { type: 'string' } },
-          next: { type: 'string' },
-          blocker: { type: ['string', 'null'] }
-        }
-      }
-    },
     mode: { type: 'string' },
     fixAttempt: { type: 'integer' },
-    wave: { type: 'integer' },
     ok: { type: 'boolean' },
     halted: { type: 'boolean' },
     skipped: { type: 'boolean' },
-    changed: { type: 'array', items: { type: 'string' } },
     // `interlock tasks tick` exits non-zero on an id it cannot mark. The ping
     // reports that here so the loop can name it, rather than a completed task
     // silently staying unchecked and reading downstream as a failure.
@@ -546,17 +545,62 @@ const pingSpawnLine = (label, kind = 'ping') =>
   `interlock run-log append --event ${WORK}/spawn-${label}.json --root .\n` +
   `This never fails the run: a non-zero exit or written:false is reported and ignored.\n\n`
 
-function stepFromAgent(result) {
-  let resolved = null
+// STEP_SHAPE_START
+/**
+ * The batches the wave loop will dispatch from a step.
+ *
+ * Stated here rather than inline at the loop so the check below and the loop
+ * itself cannot disagree about which field they are looking at — a validator
+ * that passes a payload the loop then rejects is worse than no validator.
+ */
+function batchesOf(step) {
+  return step && Array.isArray(step.remainingBatches) && step.remainingBatches.length
+    ? step.remainingBatches
+    : [step && Array.isArray(step.tasks) ? step.tasks : []]
+}
+
+/**
+ * Whether a step carries work the loop can actually dispatch: batches → lanes →
+ * tasks, every level a non-empty array, every task an object with an id.
+ *
+ * Named an action is not the same as carries a wave. A `run-batch` transcribed
+ * as a list of task ids satisfies every schema that never declared the field,
+ * and it used to reach `lanes.some(...)` and throw — killing the run outside
+ * `halt`, so no outcome was recorded and no trajectory was closed. Steps that
+ * dispatch nothing (`verify`, `replan`, `done`, `halt`) carry no batches and
+ * are not judged on them.
+ */
+function dispatchableShape(step) {
+  if (!step) return false
+  if (step.action !== 'run-batch' && step.action !== 'test-wave') return true
+  const batches = batchesOf(step)
+  const taskOk = t => t && typeof t === 'object' && typeof t.id === 'string' && t.id.trim()
+  const laneOk = lane => Array.isArray(lane) && lane.length > 0 && lane.every(taskOk)
+  const batchOk = lanes => Array.isArray(lanes) && lanes.length > 0 && lanes.every(laneOk)
+  return batches.length > 0 && batches.every(batchOk)
+}
+// STEP_SHAPE_END
+
+/**
+ * The step objects an agent's result could be, in the order they are trusted:
+ * the CLI's own stdout first, then the fields the agent mapped by hand.
+ */
+function stepCandidates(result) {
+  const candidates = []
   if (result && typeof result.cliStdout === 'string') {
     try {
       const parsed = JSON.parse(result.cliStdout)
-      if (parsed && NEXT_ACTIONS.has(parsed.action)) resolved = parsed
+      if (parsed && NEXT_ACTIONS.has(parsed.action)) candidates.push(parsed)
     } catch {
       // stdout was not JSON; fall through to the mapped action
     }
   }
-  if (!resolved && result && NEXT_ACTIONS.has(result.action)) resolved = result
+  if (result && NEXT_ACTIONS.has(result.action)) candidates.push(result)
+  return candidates
+}
+
+function stepFromAgent(result) {
+  const resolved = stepCandidates(result).find(dispatchableShape) || null
   if (!resolved) return null
   // record-verify's stdout is the *next* step, which carries neither the skip
   // flag nor the tick outcome. The agent still reports both on its own result,
@@ -598,6 +642,20 @@ async function readNext(raw) {
   )
   const retried = stepFromAgent(retry)
   if (retried) return retried
+  // Both reads were refused, for one of two different reasons, and naming the
+  // wrong one sends the next person to the wrong place. A known action that was
+  // still refused is a shape failure: the step said run-batch and did not carry
+  // batches of lanes of tasks.
+  const misshapen = [retry, raw].flatMap(stepCandidates)[0]
+  if (misshapen) {
+    return {
+      action: 'halt',
+      reason:
+        `misshapen ${misshapen.action} step from the state machine: a dispatchable step must ` +
+        `carry batches of lanes of tasks, and this one did not — state was re-read once and ` +
+        `came back the same`
+    }
+  }
   const invented = (retry && retry.action) || (raw && raw.action) || '(none)'
   return { action: 'halt', reason: `unrecognized step from the state machine: ${invented}` }
 }
@@ -916,21 +974,13 @@ const planned = adopted
       omitted: { type: 'array', items: { type: 'string' } },
       fingerprintWritten: { type: 'boolean' },
       detail: { type: 'string' },
-      action: { type: 'string' },
-      cliStdout: { type: 'string' },
-      wave: { type: 'integer' },
-      tasks: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            description: { type: 'string' },
-            tier: { type: 'integer' },
-            model: { type: 'string' }
-          }
-        }
-      }
+      // This result carries the first loop step, so it declares the step shape
+      // from the same statement the pings use. It used to declare its own,
+      // narrower version: `tasks` as a flat task list and no `remainingBatches`
+      // whatsoever. `additionalProperties` is deliberately left open — the
+      // classifier legitimately reports fields a step does not have, and a
+      // rejected result costs a whole classifier pass.
+      ...STEP_FIELDS
     }
   }
 )
@@ -989,10 +1039,7 @@ while (steps++ < MAX_LOOP_STEPS) {
   if (next.action === 'halt' || next.halted) return await halt(next.reason || 'the run state halted')
 
   if (next.action === 'run-batch' || next.action === 'test-wave') {
-    const remaining =
-      Array.isArray(next.remainingBatches) && next.remainingBatches.length
-        ? next.remainingBatches
-        : [Array.isArray(next.tasks) ? next.tasks : []]
+    const remaining = batchesOf(next)
     const accumulated = []
     // The wave's changed-file set, taken from the plan rather than recomputed
     // from raw `task.paths`. `wave-state next` canonicalizes and deduplicates
@@ -1002,7 +1049,13 @@ while (steps++ < MAX_LOOP_STEPS) {
 
     for (let i = 0; i < remaining.length; i++) {
       const lanes = remaining[i]
-      if (!lanes.length) return await halt('the state machine asked for a batch with no lanes')
+      // `readNext` refuses a misshapen step before it reaches here, but `adopted`
+      // does not pass through it, so the batch is still checked rather than
+      // assumed. A non-array with a truthy `length` — a string of task ids is
+      // exactly that — used to walk past this guard and throw on the next line.
+      if (!Array.isArray(lanes) || !lanes.length) {
+        return await halt('the state machine asked for a batch with no lanes')
+      }
       if (lanes.some(lane => !Array.isArray(lane) || !lane.length)) {
         return await halt('the state machine asked for a batch holding an empty lane')
       }

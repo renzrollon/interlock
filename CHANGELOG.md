@@ -7,6 +7,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fresh ship run could die with `TypeError: lanes.some is not a function` instead of running its first wave.** A step never reaches `workflows/ship.js` from the CLI — the script has no shell, so every step arrives transcribed by an agent into a JSON schema. Two schemas carry a step, and only one of them was widened when batches became lanes: the `plan-waves` classifier still declared the pre-lane flat `tasks` and never declared `remainingBatches` at all. An undeclared property passes validation holding anything, so an agent told to copy `wave-state next` stdout with no slot to copy into wrote a list of task ids, and the wave loop called `.some` on a string. The throw happened outside `halt`, so the run lost its outcome record, its trajectory close event, and its banners along with the wave. The step shape is now stated once (`STEP_FIELDS`) and read by every schema that carries a step; `stepFromAgent` accepts a step only if the loop can actually dispatch it, so a bad transcription takes the existing single `next-retry-` re-read of state rather than the loop; and a step that stays misshapen halts by name. Test fixtures no longer always attach `cliStdout`, which is why the transcription fallback was reachable in production and unreachable in tests.
+
 ### Removed
 
 - **`/interlock:session-retro`** moved to [renzrollon/shippable-skills](https://github.com/renzrollon/shippable-skills). It is no longer part of this plugin. Install it with `npx skills add renzrollon/shippable-skills` (or the Claude Code plugin on that repo). The live-session retro was never Interlock-specific; shipping it here blocked Cursor, Copilot, and Codex.
