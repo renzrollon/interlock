@@ -33,6 +33,7 @@ gained the fail-closed readiness gate it needs.
 
 ### Added
 
+- **Slim spawn prefix.** Every `/interlock:ship` `agent()` call names a plugin agent (`interlock:ping` / `interlock:worker`) and passes a tools allowlist that excludes Skill, Agent, and MCP, so workers stop inheriting the parent session's ~40k tool-and-skill catalog. ACP prepends `--agent <type>` when the command is the Claude Code CLI.
 - **Wave-boundary cost.** Path collisions stay in the classified group as later batches instead of overflow waves. Inter-wave verification is capped (`LIMITS.interWaveVerifications`, default 3) and skipped for docs-only waves. `formatPlan` prints a projected agent count and warns on effectively serial plans. `verify plan` accepts `--context inter-wave` and `--changed`; docs-only `--changed` emits no steps. Ship fuses a following verify into the `record-batch` ping and records every remaining batch of a wave in one ping. Cheap pings use haiku when a one-time Bedrock probe says it is reachable. Wave-entry `wave-state next` logs one `agent-spawn` per task in `remainingBatches` so the ship-run trajectory matches the implementers the loop actually launches.
 - **`/interlock:session-retro`** — a retro that runs while the transcript is still
   in context. Scores the live session against a new session-shapes taxonomy

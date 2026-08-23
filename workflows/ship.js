@@ -219,6 +219,19 @@ const summary = { waves: [], halted: null, notes: [], closing: null }
 const STATE = '.claude/ship/state.json'
 const WORK = '.claude/ship'
 
+// Spawn prefix. Dual-write `type` (plugin agent) and `tools` (allowlist) so a
+// runtime that ignores one key still shrinks the inherited catalog. Unknown
+// keys are ignored; an omitted tools list is the ~40k floor (system tools plus
+// the Skill listing). Keep these four literals identical to lib/host.mjs
+// PING_AGENT / WORKER_AGENT / PING_TOOLS / WORKER_TOOLS — the workflow runtime
+// rejects module loading, so these cannot live in lib/host.mjs alone.
+const PING_AGENT = 'interlock:ping'
+const WORKER_AGENT = 'interlock:worker'
+const PING_TOOLS = ['Bash', 'Read', 'Write']
+const WORKER_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash']
+const workerExtra = { type: WORKER_AGENT, tools: WORKER_TOOLS }
+const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
+
 // Agents report structured results so the script can branch on a value rather
 // than on a sentence. Every schema below is deliberately small: anything the
 // script does not branch on stays in the agent's own context.
@@ -227,7 +240,7 @@ const step = (name, prompt, schema, extra = {}) =>
     `${prompt}\n\nYou are one step of an automated ship run. Do not ask questions — ` +
       `there is no one listening. If something is undecidable, put it in the result ` +
       `fields rather than guessing at product intent.`,
-    { label: name, schema, ...extra }
+    { label: name, schema, ...workerExtra, ...extra }
   )
 
 // Mechanical CLI pings: the script cannot run the binary, but they do not need
@@ -319,8 +332,7 @@ const nextSchema = {
 // loop at the same point on every retry. Validate probes reachability once;
 // when haiku is available, pingExtra.model is set so these pings do not inherit
 // a sonnet session. Mutate pingExtra rather than rebinding it — cheap closes
-// over the object.
-const pingExtra = {}
+// over the object. type and tools were set above; do not replace the object.
 const cheap = (name, prompt) => step(name, prompt, nextSchema, pingExtra)
 
 // `wave-state next` only logs the *implementer* spawns it names in its own
@@ -699,6 +711,7 @@ while (steps++ < MAX_LOOP_STEPS) {
           {
             label: task.id,
             model: task.model,
+            ...workerExtra,
             schema: {
               type: 'object',
               required: ['id', 'ok', 'handoff'],

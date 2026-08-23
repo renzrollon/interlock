@@ -139,6 +139,10 @@ Retrieval is explicitly budgeted, in tokens estimated as `ceil(chars / 4)`:
 
 One agent per task, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its task, its tier's slice of the artifacts, and nothing about the other eleven tasks.
 
+That window is also supposed to be clean of the *host catalog*. Claude Code's workflow `agent()` starts a fresh conversation, but the tools-and-system-prompt prefix still inherits the parent tool list and the Skill listing — on a loaded operator machine, ~30k tokens of system/MCP schemas plus ~10k of skill descriptions, **per spawn**. A 24-task lean run pays that floor ~30 times before any task prompt. Isolation of tasks is not isolation of prefix.
+
+The repair is a named plugin agent plus an allowlist on every `agent()` call. `interlock:ping` (Bash, Read, Write) is `cheap()`. `interlock:worker` (Read, Write, Edit, Grep, Glob, Bash) is implementers, plan-waves, verify, review, commit. Neither lists `Skill` or `Agent`; both deny MCP. The script dual-writes `type` and `tools` so a runtime that ignores one key still shrinks the other. ACP prepends `--agent <type>` when the command is the Claude Code CLI. Sibling prompt-cache still helps; a smaller prefix makes both the cache write and the cache-read cheaper. This is independent of how many waves the planner emits — `collapse-singleton-waves` cuts spawn *count*; this cuts spawn *weight*.
+
 This also determines what a pause costs. The runtime's resume rule: **replay follows the order agents started, caching stops at the first agent that did not finish, and every agent started after it re-runs.** A run fanned out across many small agents therefore preserves far more progress across an interruption than one long agent — the work sitting behind the first unfinished agent is bounded by batch width, not by the whole task.
 
 ### 5.2 Independence is now checked

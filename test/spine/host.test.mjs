@@ -210,6 +210,19 @@ test('a spawn stub that is omitted returns null for every agent', async () => {
   assert.equal(host.spawns.length, 1)
 })
 
+test('a fake host records type and tools on the spawn request', async () => {
+  const host = createFakeHost({ cwd: dir, spawn: req => ({ id: req.label, ok: true, type: req.type }) })
+  const result = await host.spawn({
+    label: '1.1',
+    prompt: 'implement',
+    type: 'interlock:worker',
+    tools: ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash']
+  })
+  assert.equal(result.type, 'interlock:worker')
+  assert.deepEqual(host.spawns[0].type, 'interlock:worker')
+  assert.deepEqual(host.spawns[0].tools, ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'])
+})
+
 test('runCli refuses an empty argv and resolves a non-zero exit instead of throwing', async () => {
   await assert.rejects(() => runCli([]), /at least one interlock subcommand/)
   const bad = await runCli(['wave-state', 'wat'], { cwd: dir })

@@ -25,7 +25,9 @@ import {
   ACP_PROTOCOL_VERSION,
   createAcpHost,
   formatSpawnPrompt,
-  parseAcpCommand
+  parseAcpCommand,
+  isClaudeCodeBinary,
+  spawnArgsForAgent
 } from '../../lib/host/acp.mjs'
 import { HOST_PORTS } from '../../lib/host.mjs'
 
@@ -143,6 +145,30 @@ test('parseAcpCommand handles quotes and refuses an empty command', () => {
   assert.throws(() => parseAcpCommand(''), new RegExp(ACP_COMMAND_ENV))
   assert.throws(() => parseAcpCommand(undefined), new RegExp(ACP_COMMAND_ENV))
   assert.throws(() => parseAcpCommand('agent "unterminated'), /unterminated/)
+})
+
+test('spawnArgsForAgent forwards --agent only for the Claude Code CLI', () => {
+  assert.equal(isClaudeCodeBinary('claude'), true)
+  assert.equal(isClaudeCodeBinary('/usr/local/bin/claude-code'), true)
+  assert.equal(isClaudeCodeBinary('claude.exe'), true)
+  assert.equal(isClaudeCodeBinary('npx'), false)
+  assert.equal(isClaudeCodeBinary('claude-code-acp'), false)
+
+  assert.deepEqual(spawnArgsForAgent({ command: 'claude', args: ['--acp'] }, 'interlock:ping'), [
+    '--agent',
+    'interlock:ping',
+    '--acp'
+  ])
+  assert.deepEqual(spawnArgsForAgent({ command: 'npx', args: ['some-acp-agent', '--acp'] }, 'interlock:worker'), [
+    'some-acp-agent',
+    '--acp'
+  ])
+  assert.deepEqual(
+    spawnArgsForAgent({ command: 'claude', args: ['--agent', 'other', '--acp'] }, 'interlock:ping'),
+    ['--agent', 'other', '--acp']
+  )
+  assert.deepEqual(spawnArgsForAgent({ command: 'claude', args: ['--acp'] }, ''), ['--acp'])
+  assert.deepEqual(spawnArgsForAgent({ command: 'claude', args: ['--acp'] }, undefined), ['--acp'])
 })
 
 test('formatSpawnPrompt adds a result contract only when there is a schema', () => {

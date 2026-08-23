@@ -201,6 +201,17 @@ test('ship.js fuses verify plan into the record-batch ping', () => {
   assert.match(text, /pingExtra\.model = 'haiku'/)
 })
 
+test('ship.js dual-writes type and tools on every agent() spawn', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /type: PING_AGENT/)
+  assert.match(text, /type: WORKER_AGENT/)
+  assert.match(text, /tools: PING_TOOLS/)
+  assert.match(text, /tools: WORKER_TOOLS/)
+  assert.match(text, /\.\.\.workerExtra, \.\.\.extra/)
+  assert.match(text, /cheap = \(name, prompt\) => step\(name, prompt, nextSchema, pingExtra\)/)
+  assert.doesNotMatch(text, /tools:\s*\[[^\]]*(Skill|Agent)/)
+})
+
 test('ship.js implementers follow tool economy and stop on green for tier 1-2', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /interlock-graph query/, 'implementers must locate via the graph before grep')

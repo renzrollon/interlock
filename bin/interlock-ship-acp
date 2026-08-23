@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpHost, ACP_COMMAND_ENV } from '../lib/host/acp.mjs'
+import { spawnPrefix } from '../lib/host.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..')
@@ -217,7 +218,8 @@ async function spawn(label, kind, prompt, schema, model) {
       `no one listening. If something is undecidable, put it in the result fields rather than ` +
       `guessing at product intent.`,
     schema,
-    model
+    model,
+    ...spawnPrefix(kind)
   })
 }
 
@@ -587,7 +589,8 @@ while (steps++ < MAX_LOOP_STEPS) {
           label: task.id,
           model: task.model,
           schema: IMPLEMENTER_SCHEMA,
-          prompt: assembleImplementerPrompt({ change, task, previousHandoffs })
+          prompt: assembleImplementerPrompt({ change, task, previousHandoffs }),
+          ...spawnPrefix('implementer')
         })
       )
 
