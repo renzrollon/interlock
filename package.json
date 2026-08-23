@@ -1,6 +1,6 @@
 {
   "name": "interlock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
   "type": "module",
   "private": true,
