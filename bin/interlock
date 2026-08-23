@@ -546,12 +546,7 @@ function emitRecordedState(json, flags, state, { root, change, logOk = true, sou
     mkdirSync(dirname(dest), { recursive: true })
     writeFileSync(dest, JSON.stringify(state, null, 2) + '\n')
     const step = nextStep(state)
-    const spawnOk = logAgentSpawns(root, {
-      runId: runIdOf(state),
-      change,
-      step,
-      source
-    })
+    const spawnOk = logAgentSpawns(root, { state, change, step, source })
     emit(json, step, formatRunState(state))
     if (step.action === 'halt' || state.halt || !logOk || !spawnOk) process.exit(1)
     return
@@ -565,6 +560,27 @@ function emitRecordedState(json, flags, state, { root, change, logOk = true, sou
 // not crash the CLI, only fail the (never-throw) trajectory append.
 function runIdOf(state) {
   return state && typeof state.runId === 'string' ? state.runId : undefined
+}
+
+// `state.change` travels the same way `state.runId` does, and is read the same
+// defensive way. It is the AUTHORITY over `--change` (design.md decision 2): the
+// state's name was fixed when the run was created, while the flag is
+// per-invocation and is the mechanism that demonstrably drifted. Preferring the
+// flag would let one mislabeled call relabel part of a trajectory, producing a
+// log whose lines disagree about which change they belong to — worse than a
+// uniformly unnamed one, because it looks correct.
+function changeOf(state) {
+  const name = state && typeof state.change === 'string' ? state.change.trim() : ''
+  return name || undefined
+}
+
+// The name to stamp on this invocation's events: the state's, else the flag's
+// (a state.json written before the name was carried on state). Neither leaves it
+// undefined, and `appendRunLogEvent` writes the absent-name placeholder rather
+// than failing — losing a trajectory label must not lose the run.
+function changeFor(state, flagChange) {
+  const flag = typeof flagChange === 'string' && flagChange.trim() ? flagChange.trim() : undefined
+  return changeOf(state) || flag
 }
 
 // `wave-state next` / `--write-state` both surface the state machine's next
@@ -604,14 +620,19 @@ function laneModelOf(lane) {
   return hardest && typeof hardest.model === 'string' ? hardest.model : undefined
 }
 
-function logAgentSpawns(root, { runId, change, step, source }) {
+// Takes the run's `state` rather than a runId, so the change name is resolved
+// from it the same way `logWaveMutation` does instead of being threaded in by a
+// caller who may not have been given one.
+function logAgentSpawns(root, { state, change, step, source }) {
   if (!step || (step.action !== 'run-batch' && step.action !== 'test-wave')) return true
   if (source === 'record-batch' && Number(step.batchIndex) > 0) return true
+  const runId = runIdOf(state)
+  const changeName = changeFor(state, change)
   let ok = true
   for (const lane of spawnLanesOf(step)) {
     const spawn = appendRunLogEvent(root, {
       runId,
-      change,
+      change: changeName,
       type: 'agent-spawn',
       label: laneLabelOf(lane),
       model: laneModelOf(lane),
@@ -661,19 +682,21 @@ function rejectOversized(results, context) {
 // present means this judge call is not part of a logged ship run — e.g. a
 // person running `interlock verify judge` by hand — so nothing is logged and
 // nothing is required to be.
+function stateFromFlags(flags) {
+  const stateFile = flags.state
+  if (typeof stateFile !== 'string' || stateFile === '-') return undefined
+  try {
+    return JSON.parse(readFileSync(stateFile, 'utf8'))
+  } catch {
+    // Unreadable or malformed state: no run identity to log against, and this
+    // is not the command that should fail the run over a logging concern.
+    return undefined
+  }
+}
+
 function runIdFromFlags(flags) {
   if (typeof flags['run-id'] === 'string' && flags['run-id'].trim()) return flags['run-id'].trim()
-  const stateFile = flags.state
-  if (typeof stateFile === 'string' && stateFile !== '-') {
-    try {
-      const parsed = JSON.parse(readFileSync(stateFile, 'utf8'))
-      if (parsed && typeof parsed.runId === 'string') return parsed.runId
-    } catch {
-      // Unreadable or malformed state: no run id to log against, and this is
-      // not the command that should fail the run over a logging concern.
-    }
-  }
-  return undefined
+  return runIdOf(stateFromFlags(flags))
 }
 
 // A `verify-judgement` line never carries the suite transcript: only the
@@ -728,8 +751,8 @@ function logVerifyJudgement(root, { runId, change, verdict, results }) {
 // 6.2) can turn a failed trajectory write into a non-zero exit.
 function logWaveMutation(root, { source, change, state }) {
   const step = nextStep(state)
-  const runId = state && typeof state.runId === 'string' ? state.runId : undefined
-  const changeName = typeof change === 'string' && change.trim() ? change.trim() : undefined
+  const runId = runIdOf(state)
+  const changeName = changeFor(state, change)
   const wave = appendRunLogEvent(root, {
     runId,
     change: changeName,
@@ -1189,7 +1212,9 @@ function main() {
         const verdict = judgeVerification(plan, results, opts)
         const logOk = logVerifyJudgement(root, {
           runId: runIdFromFlags(flags),
-          change: typeof flags.change === 'string' ? flags.change : undefined,
+          // Same precedence as every wave-state append site: the state names the
+          // run, the flag is only the pre-state-name fallback.
+          change: changeFor(stateFromFlags(flags), flags.change),
           verdict,
           results
         })
@@ -1337,19 +1362,16 @@ function main() {
       if (sub === 'create') {
         const plan = readInput(flags.plan, '--plan <file|->')
         const maxParallel = num(flags, 'max-parallel')
-        const state = createRunState(plan, { maxParallel })
+        // The one place the name enters the run: from here it travels on the
+        // state, and no later wave-state invocation needs the flag.
+        const state = createRunState(plan, { maxParallel, change })
         const { ok: logOk } = logWaveMutation(root, { source: 'create', change, state })
         emit(json, state, formatRunState(state))
         if (!logOk) process.exit(1)
       } else if (sub === 'next') {
         const state = readInput(flags.state, '--state <file|->')
         const { step, ok: logOk } = logWaveMutation(root, { source: 'next', change, state })
-        const spawnOk = logAgentSpawns(root, {
-          runId: runIdOf(state),
-          change,
-          step,
-          source: 'next'
-        })
+        const spawnOk = logAgentSpawns(root, { state, change, step, source: 'next' })
         emit(json, step, formatRunState(state))
         if (step.action === 'halt' || !logOk || !spawnOk) process.exit(1)
       } else if (sub === 'record-batch' || sub === 'record-verify') {

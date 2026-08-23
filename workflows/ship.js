@@ -858,7 +858,7 @@ const reuseProbe = await cheap(
     `classify anything, and leave action out of your result.\n\n` +
     `If reuse is true and noRemainingWork is false, adopt the plan in this same turn using the ` +
     `narrowedPath from that JSON:\n` +
-    `  interlock wave-state create --plan <narrowedPath> --json${maxParallelFlag} > ${STATE}\n\n` +
+    `  interlock wave-state create --plan <narrowedPath> --change ${change} --json${maxParallelFlag} > ${STATE}\n\n` +
     `Log the run start: read "runId" from ${STATE}, write ` +
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
@@ -950,7 +950,7 @@ const planned = adopted
     `same unedited change reuses this plan instead of re-reading everything. Report its "written" ` +
     `value as fingerprintWritten. It never fails the run: a non-zero exit or written:false costs the ` +
     `NEXT run a classifier pass, which is what every run used to pay.\n` +
-    `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n\n` +
+    `  interlock wave-state create --plan ${WORK}/plan.json --change ${change} --json > ${STATE}\n\n` +
     `Log the run start: read "runId" from ${STATE}, write ` +
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +

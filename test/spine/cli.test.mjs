@@ -878,6 +878,109 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(exits.map(e => e.exitCode), [0, 0, 0])
 })
 
+// --- the change name travels on the state ----------------------------------
+//
+// The name is named ONCE, at create. Every later invocation reads it off the
+// frozen state, because a flag that must be repeated at eleven prompt-embedded
+// call sites is a flag that gets dropped — and it was, in both hosts.
+
+test('a mutation invoked without --change still names its events from the state', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-carry.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  const runId = state0.runId
+
+  // No --change here, nor below: this is the caller the fix exists for.
+  runJson(['wave-state', 'next', '--state', file('carry-run0.json', state0), '--root', dir])
+  runJson([
+    'wave-state', 'record-batch',
+    '--state', file('carry-run0b.json', state0),
+    '--result', file('carry-batch.json', { tasks: [okTask('1.1'), okTask('1.2')] }),
+    '--root', dir
+  ])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const named = events.filter(e => e.type === 'wave-action' || e.type === 'cli-exit')
+  assert.ok(named.length >= 6, `expected create+next+record events, got ${named.length}`)
+  for (const e of named) {
+    assert.equal(e.change, 'add-widget-export', `${e.type} (${e.source || e.command}) lost the change name`)
+  }
+})
+
+test('agent-spawn events take the change name from the state too', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-carry-spawn.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  runJson(['wave-state', 'next', '--state', file('carry-spawn-run0.json', state0), '--root', dir])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const spawns = events.filter(e => e.type === 'agent-spawn')
+  assert.equal(spawns.length, 2, 'the run-batch step spawns one agent per lane')
+  for (const e of spawns) assert.equal(e.change, 'add-widget-export')
+})
+
+test('the state wins over a per-invocation --change that disagrees with it', () => {
+  // design.md decision 2: one mislabeled invocation must not relabel part of a
+  // trajectory. A log whose lines disagree about which change they belong to is
+  // worse than a uniformly unnamed one, because it looks correct.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-disagree.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  runJson([
+    'wave-state', 'next', '--state', file('disagree-run0.json', state0),
+    '--change', 'some-other-change', '--root', dir
+  ])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  for (const e of events) assert.equal(e.change, 'add-widget-export')
+})
+
+test('a state with no name and no flag records the placeholder and the append succeeds', () => {
+  // A state.json written before the name was carried on state. Losing a
+  // trajectory label must never lose the run.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-legacy.json', plan), '--root', dir])
+  const legacy = { ...state0 }
+  delete legacy.change
+
+  const step = runJson(['wave-state', 'next', '--state', file('legacy-run0.json', legacy), '--root', dir])
+  assert.equal(step.action, 'run-batch')
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.ok(events.length > 0, 'the append must succeed even with no name available')
+  for (const e of events) assert.equal(e.change, 'unnamed')
+})
+
+test('a legacy state with no name falls back to the per-invocation --change', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-fallback.json', plan), '--root', dir])
+  const legacy = { ...state0 }
+  delete legacy.change
+
+  runJson([
+    'wave-state', 'next', '--state', file('fallback-run0.json', legacy),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+
+  // Only the `next` invocation's events: `create` above ran with no name at all,
+  // so its lines are legitimately the placeholder.
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+    .filter(e => e.source === 'next' || e.command === 'wave-state next' || e.type === 'agent-spawn')
+  assert.ok(events.length >= 2, `expected the next invocation's events, got ${events.length}`)
+  for (const e of events) assert.equal(e.change, 'add-widget-export')
+})
+
 test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
   // Width-deferred at maxParallel 1 rather than path-serialized: same-file tasks
   // are now ONE lane in one batch, so a collision fixture would leave a single

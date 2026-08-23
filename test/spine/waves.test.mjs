@@ -1344,6 +1344,37 @@ test('a run state holds nothing the caller can reach or mutate through the plan'
   assert.equal(state.waves[0].batches[0][0][0].model, 'sonnet')
 })
 
+// --- the change name on the state ------------------------------------------
+
+test('createRunState carries the change name onto the frozen state', () => {
+  const state = createRunState(simplePlan([1, 2]), { change: '  add-widget-export  ' })
+  assert.equal(state.change, 'add-widget-export', 'the name is trimmed and kept')
+})
+
+test('the change name survives record-batch, record-verify and replan', () => {
+  // The name is fixed at create and must reach the last event of the run, so
+  // every mutation path is walked rather than only the one the happy path uses.
+  const start = createRunState(simplePlan([1, 2, 3]), { change: 'add-widget-export' })
+
+  const afterBatch = recordBatchResult(start, allOk(nextStep(start)))
+  assert.equal(afterBatch.change, 'add-widget-export', 'recordBatchResult dropped the name')
+
+  const afterVerify = recordVerifyResult(afterBatch, { ok: true })
+  assert.equal(afterVerify.change, 'add-widget-export', 'recordVerifyResult dropped the name')
+
+  const replanned = applyReplan(afterBatch, [{ group: 3, tasks: [task({ id: '3.9', group: 3 })] }])
+  assert.equal(replanned.change, 'add-widget-export', 'applyReplan dropped the name')
+})
+
+test('createRunState without a change name is not an error', () => {
+  const state = createRunState(simplePlan([1, 2]))
+  assert.equal(state.change, undefined)
+  assert.equal(nextStep(state).action, 'run-batch', 'an unnamed run still walks')
+
+  const blank = createRunState(simplePlan([1, 2]), { change: '   ' })
+  assert.equal(blank.change, undefined, 'a blank name is no name, not an empty one')
+})
+
 // --- caps, clamps and guards ---------------------------------------------
 
 test('parallelism is clamped to the runtime ceiling, and wide batches re-split', () => {
