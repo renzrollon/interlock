@@ -268,6 +268,50 @@ function loadLaneDispatch() {
 
 const { laneModel, laneLabel, laneOutcomes, SINGLE_TASK_SCHEMA, LANE_SCHEMA } = loadLaneDispatch()
 
+// And the adjudication of claim against recorded verdict comes from there for
+// the same reason again: which of two disagreeing observations a tick and a
+// tally are built from is not a per-host choice. This host reads the CLI's
+// stdout directly, with no agent in the path — the only difference from the
+// workflow script is the transport.
+function loadRecordedVerdict() {
+  const text = readFileSync(SHIP_SCRIPT, 'utf8')
+  const m = /\/\/ RECORDED_VERDICT_START\n([\s\S]*?)\n\/\/ RECORDED_VERDICT_END/.exec(text)
+  if (!m) {
+    throw new Error(
+      `${SHIP_SCRIPT} has no RECORDED_VERDICT block — both hosts tick and tally from the outcomes ` +
+        `record-batch recorded, and this one must not carry a second copy of that rule`
+    )
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    `${m[1]}; return { recordedOutcomes, adjudicateBatches, overrideBanner, claimDerivedBanner }`
+  )()
+}
+
+const { recordedOutcomes, adjudicateBatches, overrideBanner, claimDerivedBanner } =
+  loadRecordedVerdict()
+
+// The receipt payload comes from the workflow script for the third time and the
+// same reason: a reader must not be able to tell which host wrote a receipt, and
+// two implementations of "what the run observed" could only agree by luck. The
+// difference between the hosts is the transport — the workflow script has to
+// hand its receipt to an agent, this driver writes the file itself — and the
+// transport is a host concern, not a record concern.
+function loadReceiptBuilder() {
+  const text = readFileSync(SHIP_SCRIPT, 'utf8')
+  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
+  if (!m) {
+    throw new Error(
+      `${SHIP_SCRIPT} has no BUILD_RECEIPT block — both hosts write the same run-receipt event and ` +
+        `this one must not carry a second copy of its field list`
+    )
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(`${m[1]}; return { buildReceipt, closingFromWaveState }`)()
+}
+
+const { buildReceipt, closingFromWaveState } = loadReceiptBuilder()
+
 const VERIFY_RESULT_SCHEMA = {
   type: 'object',
   required: ['results'],
@@ -295,7 +339,60 @@ const VERIFY_RESULT_SCHEMA = {
 
 // --- exits ------------------------------------------------------------------
 
+/**
+ * Every task id still unticked in tasks.md, asked of the CLI at close.
+ *
+ * "Left behind" is not "failed". A halt at verification leaves whole waves that
+ * never ran, and deriving leftovers from the failure list reported none of them
+ * — a halted receipt that lists nothing reads as a halt that cost nothing. The
+ * checkbox is the authority on what got done, so it is what gets asked.
+ *
+ * Unreadable output leaves the field unobserved rather than empty: `null` reads
+ * as unknown, and `[]` would claim the run finished everything.
+ */
+async function unticked() {
+  const result = await cli(['validate', '--change', resolvedChange, '--root', '.', '--json'])
+  const items = result.json && result.json.tasks && result.json.tasks.items
+  if (!Array.isArray(items)) return null
+  return items.filter(t => t && !t.done && typeof t.id === 'string').map(t => t.id)
+}
+
+/**
+ * The run's receipt, written straight to the trajectory.
+ *
+ * The three run conditions the workflow host asks its closing agent to read
+ * back out of the wave state are read here directly, from that same state file
+ * — same facts, one fewer hop. An unreadable state leaves them unobserved
+ * rather than zero: `null` reads as unknown, and a receipt that reported an
+ * unread state as a clean one would flatter the runs least deserving of it.
+ */
+async function appendReceipt() {
+  const receipt = buildReceipt({
+    change: resolvedChange,
+    summary: { ...summary, closing: closingFromWaveState(readJson(STATE)) },
+    // The same list `finish()` prints, not a second derivation of it.
+    degradations: banners,
+    planFingerprint: (readJson(workPath('plan-fingerprint.json')) || {}).hash,
+    // Resolved once by recordOutcome, so the printed line, the close event and
+    // the receipt are the same list rather than three derivations of it.
+    leftoverTaskIds: summary.leftoverTaskIds
+  })
+  await cli([
+    'run-log',
+    'append',
+    '--event',
+    write(workPath('run-receipt.json'), { ...receipt, runId }),
+    '--root',
+    '.',
+    '--json'
+  ])
+}
+
 async function recordOutcome() {
+  // Asked once, here, because every reader below needs the same answer and the
+  // checkbox can still be read at this point on every exit path.
+  summary.leftoverTaskIds = await unticked()
+
   // `lib/outcomes.mjs` builds the stored record key by key, so only fields it
   // names survive. There is no host column in the corpus yet — an ACP run is
   // filed as an ordinary checkpoint run rather than pretending otherwise.
@@ -318,9 +415,15 @@ async function recordOutcome() {
           type: 'run-complete',
           runId,
           change: resolvedChange,
-          leftoverTaskIds: summary.waves.flatMap(w => w.failedIds || [])
+          leftoverTaskIds: summary.leftoverTaskIds || []
         }
     await cli(['run-log', 'append', '--event', write(workPath('run-log-close.json'), close), '--root', '.', '--json'])
+
+    // Appended after the close event, because the run conditions it reports are
+    // only complete once the loop is over. No agent in the path: this driver can
+    // write the file, so nothing transports the payload and nothing can alter a
+    // value in transit. The event itself is identical to the workflow host's.
+    await appendReceipt()
 
     const check = await cli(['run-log', 'check', '--state', STATE, '--json'])
     if (check.code !== 0 && !summary.halted) {
@@ -338,14 +441,21 @@ async function halt(reason) {
 }
 
 function finish() {
-  const leftover = summary.waves.flatMap(w => w.failedIds || [])
+  // The same list the receipt records. A run that halted before recordOutcome
+  // has no answer from the checkbox, so it falls back to what it does know.
+  const leftover = summary.leftoverTaskIds || summary.waves.flatMap(w => w.failedIds || [])
   const lines = []
 
   if (summary.halted) lines.push(`SHIP HALTED — ${summary.halted}`)
-  else if (leftover.length) {
-    lines.push(`SHIP COMPLETE WITH LEFTOVERS — ${resolvedChange}`)
-    lines.push(`  leftover tasks (failed, boxes stay unchecked): ${leftover.join(', ')}`)
-  } else lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+  else if (leftover.length) lines.push(`SHIP COMPLETE WITH LEFTOVERS — ${resolvedChange}`)
+  else lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+
+  // On a halt as well, for the same reason the workflow host does it: the
+  // receipt records this list on every path and the banner must not be quieter
+  // than the record.
+  if (leftover.length) {
+    lines.push(`  leftover tasks (boxes still unchecked): ${leftover.join(', ')}`)
+  }
 
   for (const wave of summary.waves) {
     lines.push(`  wave ${wave.wave ?? '?'} (${wave.kind}): ${wave.ok} ok, ${wave.failed} failed`)
@@ -457,6 +567,15 @@ if (created.code !== 0 || !created.json) {
 }
 write(STATE, created.json)
 runId = created.json.runId || null
+
+// Said rather than left unobserved: this host has no plan-reuse probe, so it
+// classifies and rebuilds every time. A receipt that left the field null would
+// claim the run never found out, which is a different fact from this one.
+summary.plan = {
+  reused: false,
+  status: 'not-supported',
+  reason: 'the ACP host does not check plan reuse — the plan was rebuilt'
+}
 
 await cli([
   'run-log',
@@ -573,6 +692,14 @@ while (steps++ < MAX_LOOP_STEPS) {
         : [Array.isArray(next.tasks) ? next.tasks : []]
     const previousHandoffs = Array.isArray(next.previousHandoffs) ? next.previousHandoffs : []
     const accumulated = []
+    // What a summary line needs that the recorded outcomes do not carry. Held
+    // until the record commands have reported what they recorded: a tally
+    // pushed before then could only count what the agents claimed.
+    const pending = []
+    // Captured before the record loop replaces `next` with the step after this
+    // wave.
+    const waveNumber = next.wave
+    const waveKind = next.action
 
     for (let i = 0; i < remaining.length; i++) {
       const lanes = remaining[i]
@@ -604,6 +731,7 @@ while (steps++ < MAX_LOOP_STEPS) {
         }
       })
       accumulated.push(reported)
+      pending.push({ lanes: lanes.length, notAttempted: unattempted })
 
       // A task nobody ran is neither complete nor failed. It stays unticked and
       // out of the failure budget, and it is said out loud rather than inferred
@@ -615,20 +743,14 @@ while (steps++ < MAX_LOOP_STEPS) {
         )
       }
 
-      summary.waves.push({
-        wave: next.wave,
-        kind: next.action,
-        lanes: lanes.length,
-        ok: reported.filter(r => r.ok).length,
-        failed: reported.filter(r => !r.ok).length,
-        failedIds: reported.filter(r => !r.ok).map(r => r.id),
-        notAttempted: unattempted
-      })
-
       const anyFailed = reported.some(r => !r.ok)
       if (!anyFailed && i !== remaining.length - 1) continue
 
       let recorded = null
+      // The verdicts, accumulated in command order — one array per command, so
+      // a catch-up loop of three batches reports three batches' outcomes.
+      const verdicts = []
+      let verdictMissing = false
       for (let n = 0; n < accumulated.length; n++) {
         const batchPath = write(workPath(`batch-${n}.json`), { tasks: accumulated[n] })
         recorded = await stepFromCli([
@@ -646,12 +768,39 @@ while (steps++ < MAX_LOOP_STEPS) {
           '.',
           '--json'
         ])
+        const outcomes = recordedOutcomes(recorded)
+        if (outcomes) verdicts.push(...outcomes)
+        else verdictMissing = true
+        // A halt leaves the batches behind this one unrecorded, so their claims
+        // are all this run knows about them — which the fallback says out loud
+        // rather than presenting as recorded.
         if (recorded.action === 'halt') break
       }
 
-      const succeeded = accumulated.flat().filter(r => r.ok).map(r => r.id)
-      if (succeeded.length) {
-        await cli(['tasks', 'tick', '--change', change, '--ids', succeeded.join(','), '--json'])
+      // The tick list and the tallies, from one authority: what the run
+      // recorded. A task recorded failed or not-attempted is not ticked, and a
+      // claim the run had to override is named rather than quietly corrected.
+      const verdict = adjudicateBatches(accumulated, verdictMissing ? null : verdicts)
+      if (verdict.claimDerived) banners.push(claimDerivedBanner())
+      if (verdict.overrides.length) banners.push(overrideBanner(verdict.overrides))
+      verdict.waves.forEach((counts, n) => {
+        const batch = pending[n] || { lanes: 0, notAttempted: [] }
+        summary.waves.push({
+          wave: waveNumber,
+          kind: waveKind,
+          lanes: batch.lanes,
+          ok: counts.ok,
+          failed: counts.failed,
+          failedIds: counts.failedIds,
+          notAttempted: [
+            ...batch.notAttempted,
+            ...counts.recordedNotAttempted.filter(id => !batch.notAttempted.includes(id))
+          ]
+        })
+      })
+
+      if (verdict.tickIds.length) {
+        await cli(['tasks', 'tick', '--change', change, '--ids', verdict.tickIds.join(','), '--json'])
       }
 
       next = recorded
@@ -737,6 +886,8 @@ if (steps >= MAX_LOOP_STEPS) {
 
 if (applyOnly) {
   summary.notes.push('--apply-only: stopped after the waves')
+  // Chose not to commit, distinctly from never having found out.
+  summary.commitSkipped = true
   await recordOutcome()
   finish()
   process.exit(0)
@@ -756,6 +907,7 @@ if (final.verdict.halt) await halt(final.verdict.reason || 'verification halted 
 
 if (noCommit) {
   summary.notes.push('--no-commit: everything ran, the commit is yours')
+  summary.commitSkipped = true
   await recordOutcome()
   finish()
   process.exit(0)

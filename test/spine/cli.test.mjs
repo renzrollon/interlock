@@ -884,6 +884,73 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
 // frozen state, because a flag that must be repeated at eleven prompt-embedded
 // call sites is a flag that gets dropped — and it was, in both hosts.
 
+// --- evidence audit at record-batch ---------------------------------------
+//
+// `record-batch` is the only moment the working tree still matches what the
+// implementer just claimed, so it is where the observed changed-path set is
+// read. `--root` here is a temporary directory that is not a repository, which
+// is exactly the case that must degrade rather than fail: git exits non-zero,
+// the audit falls back to the task's own report, and the batch records normally.
+
+test('a git failure falls back to the reported path set and records the batch anyway', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-audit.json', plan), '--root', dir])
+
+  const reported = {
+    tasks: [
+      { ...okTask('1.1'), filesChanged: ['src/1.1.ts'] },
+      { ...okTask('1.2'), filesChanged: ['src/other.ts'] }
+    ]
+  }
+  const r = run([
+    'wave-state', 'record-batch',
+    '--state', file('audit-run0.json', state0),
+    '--result', file('audit-batch.json', reported),
+    '--root', dir,
+    '--json'
+  ])
+  assert.equal(r.code, 0, `the audit must not fail the batch: ${r.stderr}`)
+  const state1 = JSON.parse(r.stdout)
+
+  assert.deepEqual(state1.completed, ['1.1', '1.2'], 'both tasks still succeeded')
+  assert.equal(state1.failures.length, 0)
+  assert.equal(state1.halt, null)
+
+  // okTask cites `src/<id>.ts:1-10`, so 1.1 matches its own report and 1.2 does
+  // not. Both verdicts must say the set was self-reported, never observed.
+  for (const id of ['1.1', '1.2']) {
+    const audit = state1.evidenceAudits[id]
+    assert.ok(audit, `no verdict stored for ${id}`)
+    assert.ok(
+      audit.source === 'reported' || audit.verdict === 'not-audited',
+      `${id} must not claim an observed path set: ${JSON.stringify(audit)}`
+    )
+  }
+  assert.equal(state1.evidenceAudits['1.1'].verdict, 'confirmed')
+  assert.equal(state1.evidenceAudits['1.2'].verdict, 'unconfirmed')
+  assert.deepEqual(state1.reportedPaths['1.2'], ['src/other.ts'])
+})
+
+test('formatRunState shows the verdicts a halt reader would ask about', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-audit-text.json', plan), '--root', dir])
+  const r = run([
+    'wave-state', 'record-batch',
+    '--state', file('audit-text-run0.json', state0),
+    '--result', file('audit-text-batch.json', {
+      tasks: [
+        { ...okTask('1.1'), filesChanged: ['src/1.1.ts'] },
+        { ...okTask('1.2'), filesChanged: ['src/other.ts'] }
+      ]
+    }),
+    '--root', dir
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /evidence audit: 1 confirmed, 1 unconfirmed, 0 not audited/)
+  assert.match(r.stdout, /recorded only — never gates the run/)
+  assert.match(r.stdout, /unconfirmed 1\.2 \[reported\]/)
+})
+
 test('a mutation invoked without --change still names its events from the state', () => {
   const plan = runJson(['waves', '--classified', paths.classified])
   const state0 = runJson([
@@ -1094,6 +1161,64 @@ test('record-batch --write-state writes the new state and stdout is the next ste
   const written = JSON.parse(readFileSync(outState, 'utf8'))
   assert.deepEqual(written.completed, ['1.1', '1.2'])
   assert.equal(written.cursor.phase, 'verify')
+})
+
+test('record-batch --write-state reports the per-task outcomes it just recorded', () => {
+  // The verdict and the claim can differ — an invalid packet fails a task that
+  // claimed success — and a caller that receives only the next action has no
+  // way to learn which. Without this field a host ticks and tallies from the
+  // claim, which is how a task ships unimplemented behind a `- [x]`.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-ro.json', plan)])
+  const bad = {
+    ...okTask('1.2').handoff,
+    status: 'done' // outside ok|blocked|partial — the live defect's shape
+  }
+  const batch = file('ro-batch.json', {
+    tasks: [okTask('1.1'), { id: '1.2', ok: true, handoff: bad }]
+  })
+
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('ro-run0.json', state0),
+    '--result', batch,
+    '--write-state', join(dir, 'ro-written.json')
+  ])
+
+  assert.deepEqual(
+    step.recorded.map(o => [o.id, o.outcome]),
+    [['1.1', 'ok'], ['1.2', 'failed']],
+    'one entry per task in the batch, carrying what the state machine recorded'
+  )
+  assert.equal(step.recorded[0].reason, undefined, 'a succeeded task owes no reason')
+  assert.match(step.recorded[1].reason, /invalid handoff: .*status/)
+  assert.ok(
+    step.recorded[1].reason.length < 400,
+    'the reason is an adjudication string, not a transcript — it is copied through an agent'
+  )
+
+  // Additive: every field the step already emitted still means what it meant.
+  assert.equal(step.action, 'verify', 'a following wave means an inter-wave check')
+  assert.equal(step.completed, undefined, 'stdout is still the step, not the state')
+  assert.equal(step.wave, 1)
+  assert.equal(step.waveIndex, 0)
+})
+
+test('record-batch reports a task the batch never accounted for as not-attempted', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-rn.json', plan)])
+  // Wave 1 holds 1.1 and 1.2; the result reports only 1.1.
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('rn-run0.json', state0),
+    '--result', file('rn-batch.json', { tasks: [okTask('1.1')] }),
+    '--write-state', join(dir, 'rn-written.json')
+  ])
+  assert.deepEqual(
+    step.recorded.map(o => [o.id, o.outcome]),
+    [['1.1', 'ok'], ['1.2', 'not-attempted']],
+    'not-attempted is distinct from failed: it is ticked nowhere and counted nowhere'
+  )
 })
 
 test('record-verify --write-state stdout is the next step after a green check', () => {

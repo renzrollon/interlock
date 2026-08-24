@@ -14,6 +14,7 @@
 // own — only the agents it spawns run commands. So a policy module that is not
 // wired to a subcommand here is a policy the model will improvise in prose.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
@@ -24,7 +25,8 @@ import {
   recordBatchResult,
   recordVerifyResult,
   applyReplan,
-  formatRunState
+  formatRunState,
+  batchOutcomes
 } from '../lib/waves.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
@@ -250,13 +252,22 @@ outcomes:
 run-log:
   append --event <f|->   One trajectory event; type must be one of run-start,
                          wave-action, cli-exit, agent-spawn, verify-judgement,
-                         run-halt, run-complete. Written to
+                         run-halt, run-complete, run-receipt. Written to
                          .claude/ship/runs/<runId>.jsonl, seq assigned by the
                          writer. Never throws — an unwritable log is reported
                          on stderr, not raised.
+                         run-receipt is what the run observed about itself —
+                         wave tallies, plan fingerprint, review counts,
+                         degradations, commit identifier — so a trajectory can
+                         be read without the repository beside it. Its fields
+                         are copied by name like every other type's, so a run
+                         may hand it a whole summary object. Absent means
+                         unobserved, never zero: a run that halted before its
+                         review reports no review counts rather than none.
   list [--change <name>] List every run with a trajectory file: runId, change,
-                         halted (with reason) or complete or in-progress, and
-                         event/skipped counts. Filter to one change with
+                         halted (with reason) or complete or in-progress, the
+                         commit identifier, event/skipped counts, and whether a
+                         receipt was recorded. Filter to one change with
                          --change. Tolerates a torn or garbage line the same
                          way "outcomes list" does — skips it, reports it.
   show <runId>           Print one run's events in sequence order.
@@ -274,7 +285,10 @@ run-log:
                          The reconstructability gate. Exits 1 unless the run's
                          trajectory has contiguous seq from 1, a run-start, a
                          run-halt or run-complete, and a cli-exit for every
-                         wave-state / verify-judge invocation. Once this gate
+                         wave-state / verify-judge invocation. A run-receipt is
+                         not required — a run that died before its close could
+                         not have written one — but two of them is a problem,
+                         since a run has one close. Once this gate
                          is wired into "wave-state" and "verify judge" (see
                          those sections), a trajectory write failure on either
                          is itself a non-zero exit — the never-throw contract
@@ -538,20 +552,27 @@ function emit(json, obj, text) {
  * state to a file and stdout becomes nextStep() — the shape `wave-state next`
  * already emits — so a ship agent can record and learn the next action in one turn.
  */
-function emitRecordedState(json, flags, state, { root, change, logOk = true, source } = {}) {
+function emitRecordedState(json, flags, state, { root, change, logOk = true, source, recorded } = {}) {
   const dest = flags['write-state']
   if (dest === true) die('--write-state requires a file path')
   if (dest === '-') die('--write-state cannot be "-"')
+  // The per-task verdicts this call recorded, reported to the caller that
+  // recorded them. Additive, on both paths: without it a host learns the next
+  // action and never learns that a task it was told succeeded was failed on
+  // arrival — so it ticks the box anyway. Never written to the state file: the
+  // outcomes describe one batch, and a resumed run must not read them as its
+  // own. (`mutable()` strips one that was piped back in.)
+  const carry = obj => (recorded ? { ...obj, recorded } : obj)
   if (dest) {
     mkdirSync(dirname(dest), { recursive: true })
     writeFileSync(dest, JSON.stringify(state, null, 2) + '\n')
     const step = nextStep(state)
     const spawnOk = logAgentSpawns(root, { state, change, step, source })
-    emit(json, step, formatRunState(state))
+    emit(json, carry(step), formatRunState(state))
     if (step.action === 'halt' || state.halt || !logOk || !spawnOk) process.exit(1)
     return
   }
-  emit(json, state, formatRunState(state))
+  emit(json, carry(state), formatRunState(state))
   if (state.halt || !logOk) process.exit(1)
 }
 
@@ -782,6 +803,58 @@ function logWaveMutation(root, { source, change, state }) {
     process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
   }
   return { step, ok: wave.written && exit.written }
+}
+
+/**
+ * The changed-path set as VERSION CONTROL sees it, for auditing handoff
+ * evidence at `record-batch`.
+ *
+ * Read here rather than in `lib/waves.mjs` because that module is pure, and
+ * read at THIS moment because it is the only one that means anything: the
+ * working tree still matches what the implementer just claimed. Audited later,
+ * the tree has moved and a `confirmed` verdict is worthless.
+ *
+ * Never throws, following `lib/drift.mjs`'s `gitLastCommit` precedent. Missing
+ * git, a non-repository directory, a worktree in a state git dislikes — all
+ * mean "no observed set", which is a documented fallback to the task's own
+ * report, never a failed batch. Recording a wave's work must not depend on git
+ * being cooperative.
+ *
+ * `-z` because a path with a space, a quote or a tab is a path, not a parse
+ * error; `--untracked-files=all` because a new file inside a new directory
+ * would otherwise be reported as the directory and match no locator.
+ */
+function observedChangedPaths(root) {
+  let raw
+  try {
+    raw = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+  } catch {
+    return []
+  }
+
+  const fields = raw.split('\0').filter(f => f.length)
+  const paths = []
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i]
+    // "XY path". Anything shorter carries no path.
+    if (field.length < 4) continue
+    const status = field.slice(0, 2)
+    const path = field.slice(3)
+    if (path) paths.push(path)
+    // A rename or copy carries its SOURCE in the following field. Both sides are
+    // paths this run changed, so both are kept — and the source has to be
+    // consumed here or the next iteration would read it as a status line and
+    // slice three characters off the front of a real path.
+    if (/[RC]/.test(status) && fields[i + 1]) {
+      paths.push(fields[i + 1])
+      i += 1
+    }
+  }
+  return paths
 }
 
 // --min-quality / --no-tolerance mean the same thing everywhere the tolerance
@@ -1377,12 +1450,18 @@ function main() {
       } else if (sub === 'record-batch' || sub === 'record-verify') {
         const state = readInput(flags.state, '--state <file|->')
         const result = readInput(flags.result, '--result <file|->')
+        // The observed path set is passed as an argument, never read from
+        // `result`: `result` is written by the agent being audited, and an audit
+        // whose input its subject supplies is not an audit.
         const next =
           sub === 'record-batch'
-            ? recordBatchResult(state, result)
+            ? recordBatchResult(state, result, { changedPaths: observedChangedPaths(root) })
             : recordVerifyResult(state, result)
         const { ok: logOk } = logWaveMutation(root, { source: sub, change, state: next })
-        emitRecordedState(json, flags, next, { root, change, logOk, source: sub })
+        // Derived from the two states rather than returned by the recorder, so
+        // `recordBatchResult`'s signature and every other caller are untouched.
+        const recorded = sub === 'record-batch' ? batchOutcomes(state, next) : undefined
+        emitRecordedState(json, flags, next, { root, change, logOk, source: sub, recorded })
       } else if (sub === 'replan') {
         const state = readInput(flags.state, '--state <file|->')
         const groups = readInput(flags.groups, '--groups <file|->')

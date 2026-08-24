@@ -6,6 +6,10 @@ import { join } from 'node:path'
 import {
   appendRunLogEvent,
   checkRunLog,
+  formatRunLog,
+  formatRunLogList,
+  listRunLogs,
+  readRunLog,
   runLogPath,
   runLogDir,
   RUN_LOG_SCHEMA,
@@ -331,4 +335,336 @@ test('a torn final line is reported by name, and the healthy records before it s
   assert.equal(result.ok, false)
   assert.ok(result.problems.some(p => /unreadable line/.test(p)))
   assert.equal(result.events, 4)
+})
+
+// --- the run receipt ---------------------------------------------------------
+//
+// The receipt is the largest payload in the table and the one built from the
+// orchestrator's whole `summary` object — which holds a review result with
+// finding bodies and a verify result with suite output. So the leak test below
+// is not a formality: it is the reason the whitelist is the integrity boundary
+// that makes transporting a receipt through an agent acceptable at all.
+
+/** A receipt payload with every field observed. */
+function fullReceipt(over = {}) {
+  return {
+    runId: RUN_ID,
+    change: 'add-widget',
+    type: 'run-receipt',
+    waves: [
+      { wave: 1, ok: 3, failed: 0, notAttempted: [] },
+      { wave: 2, ok: 1, failed: 1, notAttempted: ['2.3'] }
+    ],
+    planReused: true,
+    planStatus: 'match',
+    planReason: 'the stored plan still matches every input it was built from',
+    planFingerprint: 'f'.repeat(64),
+    reviewRaised: 4,
+    reviewSurviving: 2,
+    reviewBlockers: 1,
+    reviewWarnings: 1,
+    remediationRounds: 2,
+    skippedVerifications: 1,
+    capExhaustedVerifications: 1,
+    unresolvedErrors: 0,
+    leftoverTaskIds: ['2.2'],
+    halted: false,
+    haltReason: null,
+    committed: true,
+    commit: 'deadbee',
+    degradations: ['VERIFY CAP EXHAUSTED: 1 inter-wave checkpoint(s) were skipped'],
+    ...over
+  }
+}
+
+test('a receipt records every field it was handed, per-wave tallies included', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt())
+  assert.equal(r.written, true)
+  const record = JSON.parse(lines(r.path)[0])
+
+  assert.equal(record.type, 'run-receipt')
+  assert.deepEqual(record.waves, [
+    { wave: '1', ok: 3, failed: 0, notAttempted: 0 },
+    { wave: '2', ok: 1, failed: 1, notAttempted: 1 }
+  ])
+  assert.equal(record.planReused, true)
+  assert.equal(record.planStatus, 'match')
+  assert.equal(record.planFingerprint, 'f'.repeat(64))
+  assert.equal(record.reviewBlockers, 1)
+  assert.equal(record.reviewWarnings, 1)
+  assert.equal(record.remediationRounds, 2)
+  assert.equal(record.capExhaustedVerifications, 1)
+  assert.deepEqual(record.leftoverTaskIds, ['2.2'])
+  assert.equal(record.halted, false)
+  assert.equal(record.committed, true)
+  assert.equal(record.commit, 'deadbee')
+  assert.equal(record.degradations.length, 1)
+})
+
+test('a fat summary object cannot leak finding bodies or suite output into a receipt', () => {
+  // The exact object shape `workflows/ship.js` accumulates: `summary.review` is
+  // a review result and `summary.closing` a verify/closing result, both of which
+  // carry text nobody wants in a corpus future agents read back.
+  const r = appendRunLogEvent(tmp, {
+    ...fullReceipt(),
+    review: {
+      blockers: 1,
+      findings: [{ title: 'SECRET-FINDING-TITLE', description: 'SECRET-FINDING-BODY' }]
+    },
+    verification: { suiteOutput: 'SECRET-SUITE-LOG', failures: ['SECRET-FAILURE'] },
+    diff: 'SECRET-DIFF',
+    prompt: 'SECRET-PROMPT',
+    // A nested group carrying content on the same objects the tallies come from:
+    // element-by-element coercion is what stops this, not the top-level list.
+    waves: [{ wave: 1, ok: 1, failed: 0, notAttempted: [], handoffs: ['SECRET-HANDOFF'], diff: 'SECRET-WAVE-DIFF' }]
+  })
+
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(Object.keys(record.waves[0]).sort(), ['failed', 'notAttempted', 'ok', 'wave'])
+  assert.equal(record.review, undefined)
+  assert.equal(record.verification, undefined)
+
+  const raw = readFileSync(r.path, 'utf8')
+  for (const secret of [
+    'SECRET-FINDING-TITLE',
+    'SECRET-FINDING-BODY',
+    'SECRET-SUITE-LOG',
+    'SECRET-FAILURE',
+    'SECRET-DIFF',
+    'SECRET-PROMPT',
+    'SECRET-HANDOFF',
+    'SECRET-WAVE-DIFF'
+  ]) {
+    assert.doesNotMatch(raw, new RegExp(secret), `${secret} reached the trajectory`)
+  }
+})
+
+test('a receipt writes the same field set however thin the input was', () => {
+  // Shape is fixed by the whitelist, not by what the caller happened to know —
+  // which is what lets two hosts write "the same" receipt and a reader stay
+  // unable to tell which one produced it.
+  const full = appendRunLogEvent(tmp, fullReceipt())
+  const thin = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt' })
+  const [a, b] = lines(full.path).map(l => JSON.parse(l))
+  assert.deepEqual(Object.keys(a).sort(), Object.keys(b).sort())
+  assert.equal(thin.written, true)
+})
+
+test('review counts nobody observed read as absent, never as zero blockers', () => {
+  // A run that halted before its review step. Reporting 0 blockers here would
+  // make the corpus flatter exactly the runs it exists to explain.
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    halted: true,
+    haltReason: 'wave 2 failed every task',
+    waves: [{ wave: 1, ok: 2, failed: 0, notAttempted: [] }]
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.reviewBlockers, null)
+  assert.equal(record.reviewWarnings, null)
+  assert.equal(record.reviewRaised, null)
+  assert.equal(record.reviewSurviving, null)
+  assert.equal(record.remediationRounds, null)
+  assert.equal(record.skippedVerifications, null)
+  assert.equal(record.unresolvedErrors, null)
+  assert.equal(record.planReused, null, 'an unobserved plan verdict is not a rebuild')
+})
+
+test('"did not commit" and "never found out" are different receipts', () => {
+  const declined = appendRunLogEvent(tmp, fullReceipt({ committed: false, commit: null }))
+  const unobserved = appendRunLogEvent(tmp, fullReceipt({ committed: undefined, commit: undefined }))
+  const [a, b] = lines(declined.path).map(l => JSON.parse(l))
+
+  assert.equal(a.committed, false, 'a --no-commit run says so')
+  assert.equal(a.commit, null)
+  assert.equal(b.committed, null, 'a run that never reached its commit step says only that')
+  assert.equal(b.commit, null)
+  assert.notEqual(a.committed, b.committed)
+  assert.equal(unobserved.written, true)
+})
+
+test('a commit step that reported failure yields no fabricated identifier', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt({ committed: false, commit: '' }))
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.committed, false)
+  assert.equal(record.commit, null, 'an empty sha is absent, not an identifier')
+})
+
+test('a halted receipt names the halt and lists what was left', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      halted: true,
+      haltReason: 'wave 2: two tasks failed and the fix budget was spent',
+      leftoverTaskIds: ['2.1', '2.2'],
+      committed: undefined,
+      commit: undefined
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.halted, true)
+  assert.match(record.haltReason, /wave 2/)
+  assert.deepEqual(record.leftoverTaskIds, ['2.1', '2.2'])
+  assert.equal(record.commit, null)
+})
+
+test('a receipt append failure is reported, never raised', () => {
+  // Same contract as every other append: losing the receipt must not lose the
+  // run that earned it.
+  const r = appendRunLogEvent(join(tmp, 'nope'), fullReceipt())
+  assert.equal(r.written, false)
+  assert.match(r.reason, /root does not exist/)
+})
+
+// --- the receipt, read back --------------------------------------------------
+
+test('a run with a receipt passes reconstructability', () => {
+  seed('run-start', 'wave-action', 'cli-exit')
+  appendRunLogEvent(tmp, fullReceipt())
+  seed('run-complete')
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.deepEqual(result.problems, [])
+  assert.equal(result.ok, true)
+})
+
+test('a closed run with no receipt still reconstructs, and says it has none', () => {
+  // A run that died between its closing step and the receipt append. The gate
+  // must not withhold the trajectory a reader most needs — but the absence is
+  // a finding, so a reader listing the run can still see it.
+  seed('run-start', 'wave-action', 'cli-exit', 'run-complete')
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.equal(result.ok, true, result.problems.join('; '))
+  assert.equal(
+    result.problems.some(p => /receipt/.test(p)),
+    false,
+    'a missing receipt is not a reconstructability problem'
+  )
+
+  const [listed] = listRunLogs(tmp)
+  assert.equal(listed.receipt, false)
+  assert.match(formatRunLogList([listed]), /no receipt recorded/)
+})
+
+test('two receipts on one run is reported: a run has one close', () => {
+  seed('run-start', 'wave-action', 'cli-exit')
+  appendRunLogEvent(tmp, fullReceipt())
+  appendRunLogEvent(tmp, fullReceipt())
+  seed('run-complete')
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.equal(result.ok, false)
+  assert.ok(result.problems.some(p => /one close and therefore one receipt/.test(p)))
+})
+
+test('the list surfaces the commit identifier and the halt from the receipt', () => {
+  seed('run-start')
+  appendRunLogEvent(tmp, fullReceipt())
+  seed('run-complete')
+  const [listed] = listRunLogs(tmp)
+  assert.equal(listed.commit, 'deadbee')
+  assert.equal(listed.committed, true)
+  assert.equal(listed.receipt, true)
+  assert.match(formatRunLogList([listed]), /commit=deadbee/)
+})
+
+test('a halted receipt is enough for the list to report the halt', () => {
+  // The halt event and the receipt agree by construction, but a trajectory
+  // missing the run-halt line still has the receipt's own account of it.
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', mode: 'checkpoint' })
+  appendRunLogEvent(tmp, fullReceipt({ halted: true, haltReason: 'verification halted the run' }))
+  const [listed] = listRunLogs(tmp)
+  assert.equal(listed.halted, true)
+  assert.match(listed.haltReason, /verification halted/)
+})
+
+test('a receipt renders absent fields as unknown, never as 0 or blank', () => {
+  appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    halted: true,
+    haltReason: 'wave 1 failed',
+    waves: [{ wave: 1, ok: 0, failed: 2, notAttempted: ['1.3'] }]
+  })
+  const rendered = formatRunLog(readRunLog(tmp, RUN_ID))
+
+  assert.match(rendered, /halted: wave 1 failed/)
+  assert.match(rendered, /plan: unknown \(unknown\)/)
+  assert.match(rendered, /fingerprint unknown/)
+  assert.match(rendered, /review: unknown raised, unknown surviving, unknown blockers, unknown warnings/)
+  assert.match(rendered, /remediation rounds: unknown/)
+  assert.match(rendered, /commit: unknown/)
+  assert.match(rendered, /wave 1: 0 ok, 2 failed, 1 not attempted/)
+  assert.match(rendered, /degradations: none recorded/)
+  assert.doesNotMatch(rendered, /review: 0 raised/, 'an unobserved review must not read as a clean one')
+})
+
+// --- portable without the repository ----------------------------------------
+
+test('a trajectory copied off its machine still answers what the run did', () => {
+  // No checkout, no change artifacts, no test suite: only the file. Everything
+  // asserted here is read out of the copy, not out of `tmp`.
+  appendRunLogEvent(tmp, { runId: RUN_ID, change: 'add-widget', type: 'run-start', mode: 'checkpoint' })
+  appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      halted: true,
+      haltReason: 'wave 2: unresolved blockers after remediation',
+      leftoverTaskIds: ['2.1', '2.2'],
+      committed: false,
+      commit: null
+    })
+  )
+  appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    change: 'add-widget',
+    type: 'run-halt',
+    reason: 'wave 2: unresolved blockers after remediation'
+  })
+
+  const elsewhere = mkdtempSync(join(tmpdir(), 'interlock-run-log-copy-'))
+  try {
+    mkdirSync(join(elsewhere, RUN_LOG_DIR), { recursive: true })
+    writeFileSync(runLogPath(elsewhere, RUN_ID), readFileSync(runLogPath(tmp, RUN_ID)))
+
+    const [listed] = listRunLogs(elsewhere)
+    assert.equal(listed.change, 'add-widget')
+    assert.equal(listed.halted, true)
+    assert.match(listed.haltReason, /unresolved blockers/)
+    assert.equal(listed.committed, false)
+
+    const rendered = formatRunLog(readRunLog(elsewhere, RUN_ID))
+    assert.match(rendered, /wave 1: 3 ok, 0 failed, 0 not attempted/)
+    assert.match(rendered, /wave 2: 1 ok, 1 failed, 1 not attempted/)
+    assert.match(rendered, /leftover tasks: 2\.1, 2\.2/)
+    assert.match(rendered, /commit: no commit was made/)
+    assert.match(rendered, /VERIFY CAP EXHAUSTED/)
+    assert.match(rendered, /fingerprint f{64}/)
+  } finally {
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test('two runs of one plan match on the fingerprint and carry no plan contents', () => {
+  const hash = 'c'.repeat(64)
+  const first = 'run-first'
+  const second = 'run-second'
+  for (const runId of [first, second]) {
+    appendRunLogEvent(tmp, { runId, type: 'run-start', change: 'add-widget', mode: 'checkpoint' })
+    appendRunLogEvent(tmp, {
+      ...fullReceipt({ planFingerprint: hash }),
+      runId,
+      // What a caller holding the whole plan would hand the writer.
+      plan: { waves: [{ group: 1, tasks: [{ id: '1.1', description: 'PLAN-CONTENTS' }] }] }
+    })
+  }
+  const a = JSON.parse(readFileSync(runLogPath(tmp, first), 'utf8').split('\n')[1])
+  const b = JSON.parse(readFileSync(runLogPath(tmp, second), 'utf8').split('\n')[1])
+
+  assert.equal(a.planFingerprint, b.planFingerprint)
+  assert.equal(a.planFingerprint, hash)
+  for (const runId of [first, second]) {
+    const raw = readFileSync(runLogPath(tmp, runId), 'utf8')
+    assert.doesNotMatch(raw, /PLAN-CONTENTS/, 'the receipt carries a plan identity, not a plan')
+    assert.doesNotMatch(raw, /"plan":/)
+  }
 })

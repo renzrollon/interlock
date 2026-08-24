@@ -99,6 +99,17 @@ test('parses checked and unchecked task lines with line numbers', () => {
   assert.equal(tasks[0].line, 3)
 })
 
+test('each task line carries the id a caller would tick', () => {
+  // Resolved once, here, so a host reporting what is still unchecked never has
+  // to split the text itself. The id is whatever `taskMatchesId` would match,
+  // including a bare section number; a line that opens with prose has none.
+  const tasks = parseTasks('- [ ] 1.1 alpha\n- [x] 2.10.3 beta\n- [ ] rename the module\n- [ ] 3 files need renaming\n')
+  assert.deepEqual(tasks.map(t => t.id), ['1.1', '2.10.3', null, '3'])
+  for (const t of tasks) {
+    if (t.id) assert.ok(taskMatchesId(t.text, t.id), `${t.id} must be tickable on its own line`)
+  }
+})
+
 test('prose and headings are not mistaken for tasks', () => {
   assert.equal(parseTasks('# Tasks\n\nSome prose.\n\n## Section\n').length, 0)
   assert.equal(parseTasks('').length, 0)
