@@ -78,6 +78,7 @@ export const EXPECTED_PROMPT_LABELS = Object.freeze([
   'plan-reuse',
   'plan-waves',
   'record-batch-',
+  'tick-',
   'next-retry-',
   'inter-wave-verify-',
   'replan-',
@@ -86,7 +87,8 @@ export const EXPECTED_PROMPT_LABELS = Object.freeze([
   'verify',
   'handoff',
   'commit',
-  'record-outcome'
+  'record-outcome',
+  'record-receipt'
 ])
 
 /** ship.js with its `export const meta` block removed, so it can be evaluated. */
@@ -116,9 +118,31 @@ function task(id, over = {}) {
   return { id, description: `task ${id}`, tier: 2, model: 'sonnet', paths: ['lib/a.mjs'], ...over }
 }
 
-/** A `wave-state next` step, as the CLI would print it, wrapped for the ping. */
-export function stepResult(step, extra = {}) {
-  return { ...step, ...extra, cliStdout: JSON.stringify(step) }
+/**
+ * One per-task verdict, as `wave-state record-batch` reports it and the ping
+ * copies it back.
+ */
+export function recordedOutcome(id, outcome = 'ok', reason) {
+  return reason === undefined ? { id, outcome } : { id, outcome, reason }
+}
+
+/**
+ * A `wave-state next` step, as the CLI would print it, wrapped for the ping.
+ *
+ * `recorded` is the third argument rather than a key in `extra` because it is
+ * the one field these fixtures exist to be able to CONTRADICT (design.md —
+ * Decision 7). Every response here used to be derived from the same lane
+ * fixture as the agent's own claim, so a run where the agent claimed success
+ * and the CLI recorded failure — routine in production — was unreachable in
+ * tests, and the defect this change fixes passed the whole suite. It rides
+ * beside `cliStdout` rather than inside it on purpose: the ping accumulates the
+ * arrays of EVERY record-batch command it ran, while stdout is only the last
+ * one's.
+ */
+export function stepResult(step, extra = {}, recorded = null) {
+  const wrapped = { ...step, ...extra, cliStdout: JSON.stringify(step) }
+  if (recorded) wrapped.recorded = recorded
+  return wrapped
 }
 
 /**
@@ -152,6 +176,16 @@ export const RUN_BATCH = stepResult({
 })
 
 export const DONE = stepResult({ action: 'done' })
+
+/**
+ * What the record-batch ping reports on the default one-task run: the run is
+ * over, and the CLI recorded 1.1 as succeeded.
+ *
+ * The verdict is part of the DEFAULT fixture because a run whose recorded
+ * outcomes never arrived is a degraded run that says so — so a default response
+ * without it would make every unrelated test assert a claim-derived banner.
+ */
+export const RECORD_DONE = stepResult({ action: 'done' }, {}, [recordedOutcome('1.1', 'ok')])
 
 /**
  * What the plan-reuse probe reports when the stored plan matched: the CLI's
@@ -204,7 +238,10 @@ export function defaultResponses() {
       ...RUN_BATCH
     },
     '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1') },
-    'record-batch-': DONE,
+    'record-batch-': RECORD_DONE,
+    // The tick runs on its own ping, after the record ping has reported what
+    // the CLI recorded — the loop cannot know which ids to tick until then.
+    'tick-': { ok: true },
     'inter-wave-verify-': DONE,
     'replan-': DONE,
     'next-retry-': DONE,
@@ -213,7 +250,74 @@ export function defaultResponses() {
     verify: { ok: true, unitGreen: true, skipReasons: [] },
     handoff: { ok: true, manualTestPlan: false, skipReason: 'backend only' },
     commit: { ok: true, sha: 'deadbee' },
-    'record-outcome': { ok: true, reconstructable: true }
+    'record-outcome': {
+      ok: true,
+      reconstructable: true,
+      skippedVerificationReasons: [],
+      capExhaustedVerifications: 0,
+      unresolvedErrors: 0,
+      planFingerprint: 'a'.repeat(64)
+    },
+    'record-receipt': { ok: true }
+  }
+}
+
+/**
+ * The receipt JSON a run handed its `record-receipt` ping, parsed back out of
+ * the assembled prompt.
+ *
+ * Read from the prompt rather than from the script's internals on purpose: the
+ * payload only matters if it survives assembly, and the transport is the one
+ * step of the receipt's path that an agent can see.
+ */
+export function receiptFrom(prompts) {
+  const prompt = prompts.find(p => p.label === 'record-receipt')
+  if (!prompt) return null
+  const m = /\{"type":"run-receipt".*?\}\n\n/s.exec(prompt.prompt)
+  if (!m) return null
+  return JSON.parse(m[0].trim())
+}
+
+/**
+ * The corpus line a run handed its closing ping, parsed back out of the
+ * assembled prompt.
+ *
+ * Read from the prompt for the same reason `receiptFrom` is: the payload only
+ * matters if it survives assembly. It carries the reported half only — the
+ * observed half is read off the receipt by `interlock outcomes append`, so a
+ * test asserting on an observed value asserts on the receipt instead.
+ */
+export function outcomeFrom(prompts) {
+  const prompt = prompts.find(p => p.label === 'record-receipt')
+  if (!prompt) return null
+  const m = /\{"change":.*?\}\nThen run: interlock outcomes append/s.exec(prompt.prompt)
+  if (!m) return null
+  return JSON.parse(m[0].slice(0, m[0].lastIndexOf('}') + 1))
+}
+
+/**
+ * A stand-in for the workflow runtime's `budget`, whose cumulative counter
+ * advances by `perRead` on every read.
+ *
+ * Monotonic and never repeating, so a per-wave delta that landed on the wrong
+ * boundary produces a different number rather than the same one — a fixture
+ * returning a constant would make every wrong attribution look right.
+ *
+ * `total` is null on purpose: that is what the runtime reports when no token
+ * target was set, and it is the case a guard written against `budget.total`
+ * would blank.
+ */
+export function countingBudget(perRead = 100) {
+  let spent = 0
+  const reads = []
+  return {
+    total: null,
+    spent() {
+      spent += perRead
+      reads.push(spent)
+      return spent
+    },
+    reads
   }
 }
 
@@ -228,10 +332,11 @@ function lookup(responses, label) {
 /**
  * Execute ship.js with stubbed agents.
  *
- * @param {{args?: unknown, responses?: object}} [opts]
+ * @param {{args?: unknown, responses?: object, budget?: {total: number|null, spent: () => number}}} [opts]
  *   `responses` is merged over `defaultResponses()`. A value may be a function
  *   `(label, callIndex) => result` so a label answered twice can answer
- *   differently the second time.
+ *   differently the second time. `budget` stands in for the workflow runtime's
+ *   token accounting; omitted, the script sees no such global at all.
  * @returns {Promise<{prompts: Array<{label: string, prompt: string, model?: string}>,
  *   output: string, calls: string[]}>}
  */
@@ -263,6 +368,12 @@ export async function runShip(opts = {}) {
   const parallel = async thunks => Promise.all((thunks || []).map(t => t()))
   const noop = () => {}
 
+  // `budget` is a workflow-runtime global the script reads for token spend. It
+  // is a parameter here rather than a fixture default so BOTH shapes are
+  // reachable: a runtime that exposes accounting, and one that does not. Left
+  // out, the parameter is `undefined` and `typeof budget === 'undefined'` holds
+  // inside the script — which is the degrade path the ACP host actually takes,
+  // and the one a bare reference would have thrown on.
   const run = new Function(
     'agent',
     'pipeline',
@@ -270,6 +381,7 @@ export async function runShip(opts = {}) {
     'log',
     'phase',
     'args',
+    'budget',
     `return (async () => {\n${shipSource()}\n})()`
   )
 
@@ -279,7 +391,8 @@ export async function runShip(opts = {}) {
     parallel,
     noop,
     noop,
-    opts.args === undefined ? 'demo-change' : opts.args
+    opts.args === undefined ? 'demo-change' : opts.args,
+    opts.budget
   )
   return { prompts, output: String(output ?? ''), calls }
 }

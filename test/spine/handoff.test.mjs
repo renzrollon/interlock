@@ -9,7 +9,14 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { validateHandoff, HANDOFF_SCHEMA } from '../../lib/waves.mjs'
+import {
+  validateHandoff,
+  auditHandoffEvidence,
+  HANDOFF_SCHEMA,
+  AUDIT_CONFIRMED,
+  AUDIT_UNCONFIRMED,
+  AUDIT_NOT_AUDITED
+} from '../../lib/waves.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
 const packet = (over = {}) => ({
@@ -173,4 +180,138 @@ test('validateHandoff does not mutate or alias the packet it was given', () => {
   assert.equal(JSON.stringify(input), before, 'validateHandoff mutated its input')
   got.handoff.evidence.push('src/leak.ts')
   assert.equal(input.evidence.length, 2, 'the stored packet aliases the caller\'s array')
+})
+
+// --- auditing the evidence, not just its shape -----------------------------
+//
+// `validateHandoff` above proves an entry LOOKS like a locator. That is the
+// half `lib/review-core.mjs` already documented as defeatable on its own: the
+// string `lib/nowhere.mjs:1` has perfect shape and points nowhere. The audit
+// adds the second, independent condition — the cited path is one that actually
+// changed — and records the answer without ever gating on it.
+
+const evidencePacket = (evidence, over = {}) =>
+  packet({ evidence, ...over })
+
+test('every locator naming a changed path is confirmed, and the source is named', () => {
+  const got = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs:40-58']),
+    ['lib/export.mjs', 'test/export.test.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_CONFIRMED)
+  assert.equal(got.source, 'observed')
+  assert.deepEqual(got.unmatched, [])
+})
+
+test('a locator naming an untouched path is unconfirmed and says which one failed', () => {
+  const got = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs:40', 'lib/nowhere.mjs:1']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_UNCONFIRMED)
+  assert.deepEqual(got.unmatched, ['lib/nowhere.mjs:1'])
+  assert.match(got.reason, /lib\/nowhere\.mjs:1/)
+})
+
+test('no path set from either source is not-audited, never confirmed', () => {
+  // "We could not check" and "we checked and it failed" are different facts. An
+  // unavailable git binary must not read as a fabricating agent.
+  for (const empty of [[], undefined, null]) {
+    const got = auditHandoffEvidence(evidencePacket(['lib/export.mjs:40']), empty)
+    assert.equal(got.verdict, AUDIT_NOT_AUDITED, `${JSON.stringify(empty)} must not be auditable`)
+    assert.notEqual(got.verdict, AUDIT_CONFIRMED)
+    assert.equal(got.source, null, 'a verdict that did not run must not name a source')
+    assert.match(got.reason, /no changed-path set/)
+  }
+})
+
+test('a packet citing nothing is not-audited rather than blamed', () => {
+  const got = auditHandoffEvidence(evidencePacket([]), ['lib/export.mjs'], { source: 'observed' })
+  assert.equal(got.verdict, AUDIT_NOT_AUDITED)
+  assert.match(got.reason, /cites no evidence locators/)
+})
+
+test('a leading ./ is canonicalized away and the locator is confirmed', () => {
+  const got = auditHandoffEvidence(
+    evidencePacket(['./lib/export.mjs:12']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_CONFIRMED)
+})
+
+test('a case-differing locator is not confirmed by a differently-cased path', () => {
+  const got = auditHandoffEvidence(
+    evidencePacket(['lib/Export.mjs:12']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_UNCONFIRMED)
+  assert.deepEqual(got.unmatched, ['lib/Export.mjs:12'])
+})
+
+test('an unlabelled path set is recorded as reported — the weaker claim is the default', () => {
+  // Defaulting the other way would label a self-reported set as observed, which
+  // is the exact misrepresentation the source field exists to prevent.
+  const got = auditHandoffEvidence(evidencePacket(['lib/export.mjs:1']), ['lib/export.mjs'])
+  assert.equal(got.verdict, AUDIT_CONFIRMED)
+  assert.equal(got.source, 'reported')
+})
+
+test('the task\'s own reported-set match is recorded separately from the verdict', () => {
+  // The observed set is run-scoped: a sibling task's path confirms membership.
+  // The reported-set match is the narrower question, so both are kept.
+  const sibling = auditHandoffEvidence(
+    evidencePacket(['lib/sibling.mjs:3']),
+    ['lib/export.mjs', 'lib/sibling.mjs'],
+    { source: 'observed', reportedPaths: ['lib/export.mjs'] }
+  )
+  assert.equal(sibling.verdict, AUDIT_CONFIRMED, 'the run did change that path')
+  assert.equal(sibling.reportedMatch, false, 'but this task never claimed it')
+
+  const own = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs:3']),
+    ['lib/export.mjs', 'lib/sibling.mjs'],
+    { source: 'observed', reportedPaths: ['lib/export.mjs'] }
+  )
+  assert.equal(own.reportedMatch, true)
+
+  const silent = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs:3']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(silent.reportedMatch, null, 'no reported set is not a failed match')
+})
+
+test('a shaped-but-unplaceable locator cannot match anything', () => {
+  // An identity that could not be computed is not an identity that matches.
+  const got = auditHandoffEvidence(
+    evidencePacket(['../outside.mjs:1']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_UNCONFIRMED)
+})
+
+test('the audit reads a path with no line number as a locator too', () => {
+  const got = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_CONFIRMED)
+})
+
+test('the audit never asks whether the cited line exists', () => {
+  // A wave that moved or deleted the cited line has not invalidated the
+  // citation, so a line far past the end of any real file still confirms.
+  const got = auditHandoffEvidence(
+    evidencePacket(['lib/export.mjs:99999-100000']),
+    ['lib/export.mjs'],
+    { source: 'observed' }
+  )
+  assert.equal(got.verdict, AUDIT_CONFIRMED)
 })

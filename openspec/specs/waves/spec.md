@@ -213,3 +213,77 @@ When the state machine asks for the next `run-batch` or `test-wave` after a prio
 
 - **WHEN** wave 2 has three path-serialized batches and `wave-state next` is at batch 0
 - **THEN** `previousHandoffs` is wave 1's packets on that step, every remaining batch's implementer prompt receives those same packets, and batch 1 does not receive batch 0's handoff
+
+### Requirement: A recorded batch SHALL retain the paths each task changed
+
+Recording a batch result SHALL store, per task, the set of paths that task reported changing, alongside the task's handoff packet. This set is currently requested from every implementer and discarded; it MUST be retained, because it is the cross-check against the packet's own evidence and it cannot be recovered later once the working tree moves on.
+
+The retained set MUST be treated as a report, distinct from an observed path set, and MUST NOT be presented as evidence that those paths changed.
+
+#### Scenario: Happy path — reported paths survive the recording
+
+- **GIVEN** a task result reporting `filesChanged: ["lib/export.mjs", "test/export.test.mjs"]` with a valid packet
+- **WHEN** the batch result is recorded
+- **THEN** the stored state carries both paths for that task alongside its packet
+
+#### Scenario: Failure — a task reporting no paths is recorded without inventing any
+
+- **GIVEN** a task result with a valid `ok` packet and no reported changed paths
+- **WHEN** the batch result is recorded
+- **THEN** the stored entry carries an empty reported-path set for that task
+- **AND** the recording does not substitute the packet's evidence locators for the missing report
+
+#### Scenario: Edge case — a task not attempted retains no path set
+
+- **GIVEN** a lane of three tasks in which the second fails and the third is never attempted
+- **WHEN** the batch result is recorded
+- **THEN** the third task has no reported-path entry, and that absence is not itself an error
+
+### Requirement: Retaining paths and verdicts SHALL NOT add a way for a run to stop
+
+Storing reported paths and evidence-audit verdicts on the run state SHALL leave every existing halt condition, failure budget, verification cap, and replan rule unchanged. No new field introduced for auditing may be read by a halt decision.
+
+#### Scenario: Happy path — halt conditions are unchanged by the new fields
+
+- **GIVEN** a run whose accumulated task failures are one below the failure-budget halt
+- **WHEN** a batch records successfully with unconfirmed audit verdicts on every packet
+- **THEN** the run does not halt and the failure count is unchanged
+
+#### Scenario: Failure — an oversized or invalid packet still fails closed as before
+
+- **GIVEN** a task returning a packet whose counted characters exceed the published handoff cap
+- **WHEN** the batch result is recorded
+- **THEN** the task is recorded as failed with the over-budget reason exactly as before, and no audit verdict is stored for it
+
+#### Scenario: Edge case — a state written before these fields existed records normally
+
+- **GIVEN** an in-flight run state written before reported paths and audit verdicts were retained
+- **WHEN** a further batch result is recorded against it
+- **THEN** the missing containers are initialized rather than treated as a malformed state, and the run continues
+### Requirement: A recorded batch SHALL report its per-task outcomes to its caller
+
+Recording a batch result SHALL report, to the caller that recorded it, the outcome the state machine assigned to each task in that batch: the task id, whether it was recorded as succeeded, failed, or not attempted, and the reason when it was not succeeded. The report SHALL describe only the batch just recorded, not the run's accumulated history.
+
+This exists because the recorded verdict and the reported claim can differ, and today only the claim reaches the caller. A batch result may be adjudicated on arrival — an invalid or over-budget handoff packet fails its task, a lane result that omits an outcome fails every task in the lane — and a caller that receives only the next action has no way to learn that a task it was told succeeded was recorded as failed. Every downstream decision that asks "what did this task do" is then made against the wrong answer.
+
+The reason SHALL be a short adjudication reason, not a transcript: it MUST be safe to place in a machine-copied payload, and MUST NOT carry handoff bodies, suite output, or diffs.
+
+#### Scenario: Happy path — a fully succeeded batch reports each task as recorded
+
+- **GIVEN** a batch of two tasks whose results are both valid and successful
+- **WHEN** the batch result is recorded
+- **THEN** the caller receives an outcome for each of the two task ids, both recorded as succeeded, alongside the next action
+
+#### Scenario: Failure — an adjudicated task reports as failed with its reason
+
+- **GIVEN** a batch of two tasks in which one reports success with a handoff packet whose status is outside the accepted set
+- **WHEN** the batch result is recorded
+- **THEN** the caller receives that task's id as recorded-failed, with the adjudication reason naming the invalid status
+- **AND** the other task's id is reported as recorded-succeeded, so one bad packet does not blur the batch into a single verdict
+
+#### Scenario: Edge case — a batch whose tasks were all not attempted reports them as such
+
+- **GIVEN** a lane whose first task failed, leaving the two behind it reported as not attempted
+- **WHEN** the batch result is recorded
+- **THEN** the two tasks are reported as recorded not-attempted, distinct from recorded-failed
+- **AND** the report distinguishes them from tasks absent from the batch entirely, which are not reported at all

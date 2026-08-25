@@ -154,7 +154,15 @@ test('ship.js records an outcome on the way out of a halt', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   const haltBody = /const halt = async[\s\S]*?\n}/.exec(text)
   assert.ok(haltBody, 'ship.js no longer has a recognizable halt()')
-  assert.match(haltBody[0], /await recordOutcome\(\)/, 'halt() must record before returning')
+  // The close is one sequence — outcome, then receipt, then the summary — so
+  // halt() goes through it rather than recording on its own. A halted run that
+  // took a shortcut past the close would be the least explicable run in the
+  // corpus and the least explained.
+  assert.match(haltBody[0], /return closeRun\(\)/, 'halt() must close the run before returning')
+  const closeBody = /const closeRun = async[\s\S]*?\n}/.exec(text)
+  assert.ok(closeBody, 'ship.js no longer has a recognizable closeRun()')
+  assert.match(closeBody[0], /await recordOutcome\(\)/, 'the close must record the outcome')
+  assert.match(closeBody[0], /await appendReceipt\(\)/, 'and then the receipt')
 })
 
 test('ship.js does not file a continuity run as a checkpoint', () => {
@@ -260,6 +268,15 @@ test('ship.js requires a handoff from implementers and threads the previous wave
     text,
     /ok: o\.outcome === 'ok', error: o\.error, handoff: o\.handoff/,
     'the batch-N.json projection must derive ok from the per-task outcome'
+  )
+  // Same rule, second field: `filesChanged` was requested from every
+  // implementer, returned, and dropped in this projection, which left the
+  // packet's evidence with nothing to be cross-checked against. Dropping it
+  // again would silently empty every stored reported-path set.
+  assert.match(
+    text,
+    /filesChanged: o\.filesChanged/,
+    'the batch-N.json projection must carry the reported changed paths'
   )
   // previousHandoffs rides beside remainingBatches on the same step.
   assert.match(text, /previousHandoffs:\s*\{[\s\S]{0,80}type: 'array'/)
@@ -607,8 +624,21 @@ test('ship.js prefers parsed cliStdout over a mapped action', () => {
 
 const LIMITS_MODULE = await import('../lib/limits.mjs')
 const { LIMITS } = LIMITS_MODULE
-const { runShip, stepResult, stepResultNoStdout, reuseAdopted, reuseRebuilt, RUN_BATCH, DONE } =
-  await import('./helpers/ship-harness.mjs')
+const {
+  runShip,
+  stepResult,
+  stepResultNoStdout,
+  reuseAdopted,
+  reuseRebuilt,
+  receiptFrom,
+  outcomeFrom,
+  coercionArtifacts,
+  recordedOutcome,
+  countingBudget,
+  handoffFor,
+  RUN_BATCH,
+  DONE
+} = await import('./helpers/ship-harness.mjs')
 
 function remediationBudgetFromSource(input) {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
@@ -657,13 +687,22 @@ test('a bound the CLI never stated is not a bound', () => {
   }
 })
 
-/** The remediationRounds figure ship.js hands the outcome corpus. */
+/**
+ * The remediationRounds figure ship.js hands the outcome corpus.
+ *
+ * Read from the receipt, because that is now the only place it is stated: the
+ * corpus line's observed half is derived from the receipt by
+ * `interlock outcomes append`, so a run cannot report one number here and a
+ * different one there.
+ */
 function recordedRounds(prompts) {
-  const outcome = prompts.find(p => p.label === 'record-outcome')
-  assert.ok(outcome, 'the run assembled no record-outcome prompt')
-  const m = /"remediationRounds":(\d+)/.exec(outcome.prompt)
-  assert.ok(m, `record-outcome carries no remediationRounds:\n${outcome.prompt}`)
-  return Number(m[1])
+  const receipt = receiptFrom(prompts)
+  assert.ok(receipt, 'the run assembled no receipt payload')
+  // Absent, not zero: a lean run never reached a remediation step, and
+  // "measured none" is a different fact from "never found out".
+  return Object.prototype.hasOwnProperty.call(receipt, 'remediationRounds')
+    ? receipt.remediationRounds
+    : null
 }
 
 test('recorded round consumption differs between a one-round and a two-round run', async () => {
@@ -690,8 +729,13 @@ test('recorded round consumption differs between a one-round and a two-round run
 })
 
 test('a lean run records no remediation rounds, distinguishably from "ran and used none"', async () => {
+  // A lean run skips review, so no remediation step ever ran and there is no
+  // count to report. The corpus reads that as unobserved rather than as zero:
+  // it holds the checkpoint runs as a control group, and defaulting an absence
+  // to a clean value would bias exactly that group.
   const { prompts } = await runShip({})
-  assert.equal(recordedRounds(prompts), 0)
+  assert.equal(recordedRounds(prompts), null)
+  assert.notEqual(recordedRounds(prompts), 0, 'a run that never remediated did not remediate zero times')
 })
 
 // --- the completion gate ---------------------------------------------------
@@ -795,11 +839,27 @@ function recordPrompt(prompts) {
   return found.prompt
 }
 
+/**
+ * The tick ping's prompt. The tick is its own step: the loop cannot know which
+ * ids to mark until the record ping has reported what the CLI recorded, so a
+ * tick fused into the record ping could only ever tick what the agent claimed.
+ */
+function tickPrompt(prompts) {
+  const found = prompts.find(p => p.label.startsWith('tick-'))
+  return found ? found.prompt : null
+}
+
+/** What the record ping reports when the CLI recorded these ids as succeeded. */
+const recordedOk = ids =>
+  stepResult({ action: 'done' }, {}, ids.map(id => recordedOutcome(id, 'ok')))
+
 test('a three-task lane spawns one implementer, not three', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
-  const { calls, prompts } = await runLane(lane, {
-    tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) }))
-  })
+  const { calls, prompts } = await runLane(
+    lane,
+    { tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) },
+    { 'record-batch-': recordedOk(['1.1', '1.2', '1.3']) }
+  )
   const implementers = calls.filter(c => c === labelFor(lane))
   assert.equal(implementers.length, 1, `expected one lane agent, got calls: ${calls.join(', ')}`)
   for (const id of ['1.2', '1.3']) {
@@ -807,22 +867,32 @@ test('a three-task lane spawns one implementer, not three', async () => {
   }
   const prompt = prompts.find(p => p.label === labelFor(lane)).prompt
   assert.match(prompt, /Implement 3 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
-  assert.match(recordPrompt(prompts), /--ids 1\.1,1\.2,1\.3/, 'all three succeeded, so all three tick')
+  assert.match(tickPrompt(prompts), /--ids 1\.1,1\.2,1\.3/, 'all three succeeded, so all three tick')
 })
 
 test('a mid-lane failure ticks the earlier task and counts one failure', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
-  const { output, prompts } = await runLane(lane, {
-    tasks: [
-      { id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') },
-      { id: '1.2', outcome: 'failed', error: 'no migration runner' },
-      { id: '1.3', outcome: 'not-attempted' }
-    ]
-  })
+  const { output, prompts } = await runLane(
+    lane,
+    {
+      tasks: [
+        { id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') },
+        { id: '1.2', outcome: 'failed', error: 'no migration runner' },
+        { id: '1.3', outcome: 'not-attempted' }
+      ]
+    },
+    {
+      'record-batch-': stepResult({ action: 'done' }, {}, [
+        recordedOutcome('1.1', 'ok'),
+        recordedOutcome('1.2', 'failed', 'no migration runner')
+      ])
+    }
+  )
   const prompt = recordPrompt(prompts)
-  assert.match(prompt, /--ids 1\.1\b/, 'the task that succeeded is ticked')
-  assert.doesNotMatch(prompt, /--ids [^\n]*1\.2/, 'a failed task is never ticked')
-  assert.doesNotMatch(prompt, /--ids [^\n]*1\.3/, 'and neither is one nobody ran')
+  const tick = tickPrompt(prompts)
+  assert.match(tick, /--ids 1\.1\b/, 'the task that succeeded is ticked')
+  assert.doesNotMatch(tick, /--ids [^\n]*1\.2/, 'a failed task is never ticked')
+  assert.doesNotMatch(tick, /--ids [^\n]*1\.3/, 'and neither is one nobody ran')
 
   const batch = /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(prompt)
   assert.ok(batch, `the record ping carries no batch JSON:\n${prompt}`)
@@ -837,6 +907,65 @@ test('a mid-lane failure ticks the earlier task and counts one failure', async (
   assert.match(output, /wave 1 \(run-batch\): 1 ok, 1 failed/)
   assert.match(output, /LANE STOPPED EARLY: 1\.3 not attempted/)
   assert.match(output, /SHIP HALTED|SHIP COMPLETE WITH LEFTOVERS/, 'the failure is still visible')
+})
+
+// --- claim versus recorded verdict ----------------------------------------
+//
+// The defect these three tests exist for: a run ticked and tallied from what
+// the implementing agent CLAIMED, so five tasks the state machine failed for
+// invalid handoff packets got their boxes ticked beside a halt naming them as
+// failures. The claim is the input that was adjudicated, not a second opinion.
+
+test('a claim the CLI recorded as failed is neither ticked nor counted as ok', async () => {
+  const lane = [laneTask('1.1'), laneTask('1.2')]
+  const { output, prompts } = await runLane(
+    lane,
+    // The agent claims both succeeded, with packets it believes are valid.
+    { tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) },
+    {
+      // The CLI disagrees: both packets carried a status outside the accepted
+      // set, so `record-batch` failed both tasks.
+      'record-batch-': stepResult({ action: 'done' }, {}, [
+        recordedOutcome('1.1', 'failed', 'invalid handoff: status must be one of ok|blocked|partial'),
+        recordedOutcome('1.2', 'failed', 'invalid handoff: status must be one of ok|blocked|partial')
+      ])
+    }
+  )
+
+  for (const p of prompts) {
+    assert.doesNotMatch(
+      p.prompt,
+      /--ids [^\n]*1\.[12]/,
+      `a task the run recorded as failed must never reach a tick:\n${p.label}`
+    )
+  }
+  assert.equal(tickPrompt(prompts), null, 'nothing was recorded as succeeded, so nothing ticks')
+  assert.match(
+    output,
+    /wave 1 \(run-batch\): 0 ok, 2 failed/,
+    'the tally counts the recorded outcomes, not the claims'
+  )
+  assert.match(output, /CLAIM OVERRIDDEN: 1\.1, 1\.2/, 'overriding a claim is a finding, not a silent fix')
+  const receipt = receiptFrom(prompts)
+  assert.deepEqual(receipt.waves, [{ wave: 1, ok: 0, failed: 2, notAttempted: [] }])
+  assert.ok(
+    receipt.degradations.some(d => /CLAIM OVERRIDDEN/.test(d)),
+    `the override never reached the receipt: ${JSON.stringify(receipt.degradations)}`
+  )
+})
+
+test('recorded outcomes that never arrived fall back to the claim, loudly', async () => {
+  const lane = [laneTask('1.1')]
+  // An older CLI, or a ping that dropped the field: the run tallies from the
+  // claim as it always did, and says that is what it did.
+  const { output, prompts } = await runLane(
+    lane,
+    { id: '1.1', ok: true, handoff: laneHandoff('1.1') },
+    { 'record-batch-': DONE }
+  )
+  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
+  assert.match(tickPrompt(prompts), /--ids 1\.1\b/)
+  assert.match(output, /CLAIM-DERIVED TALLIES/, 'a silent fallback would reintroduce the defect')
 })
 
 test('a lane result with no per-task outcomes fails every task in the lane', async () => {
@@ -864,7 +993,11 @@ test('a lane result that omits one task fails all of them, closed', async () => 
   )
   assert.deepEqual(recorded.tasks.map(t => t.ok), [false, false])
   assert.match(recorded.tasks[0].error, /omitted an outcome for 1\.2/)
-  assert.match(prompt, /No succeeded ids/, 'nothing may be ticked from a result nobody can trust')
+  assert.equal(
+    tickPrompt(prompts),
+    null,
+    'nothing may be ticked from a result nobody can trust — so there is no tick step at all'
+  )
 })
 
 test('a one-task lane keeps the pre-lane label, schema and result shape', async () => {
@@ -1170,7 +1303,7 @@ test('a missing closing outcome is named as unknown, not treated as clean', asyn
 test('a failed task tick is surfaced rather than discarded', async () => {
   const { output } = await runShip({
     responses: {
-      'record-batch-': stepResult({ action: 'done' }, { tickFailed: true, tickMissing: ['1.1'] })
+      'tick-': { ok: true, tickFailed: true, tickMissing: ['1.1'] }
     }
   })
   assert.doesNotMatch(output, /No degradation banners/)
@@ -1274,4 +1407,672 @@ test('the assembled plan-waves prompt does not increment group for a later same-
     /add a group when a later task needs an earlier task's output/i,
     'the old task-scoped wording is what let the model mint a group per sequential slice'
   )
+})
+
+// --- the run receipt (spec: ship-run) ---------------------------------------
+//
+// The receipt is the run's own account of itself, and the only reason it can be
+// trusted is that nothing re-derives it: the fields come from the `summary` the
+// run already accumulated, the degradation list is the one the banner printed,
+// and `lib/run-log.mjs` copies the whole thing by name. So these tests assert
+// the two properties an agent in the transport path cannot protect — that the
+// payload is built at all, on every exit, and that it says the same thing the
+// printed summary does.
+
+test('every exit path appends a receipt after closing the run', async () => {
+  const exits = {
+    'a clean run': {},
+    '--apply-only': { args: 'demo-change --apply-only' },
+    '--no-commit': { args: 'demo-change --no-commit' },
+    'a halt': { responses: { verify: { ok: false, unitGreen: false } } },
+    'nothing left to do': { responses: { 'plan-reuse': reuseAdopted(RUN_BATCH, { noRemainingWork: true }) } }
+  }
+  for (const [name, run] of Object.entries(exits)) {
+    const { calls } = await runShip(run)
+    assert.ok(calls.includes('record-receipt'), `${name} closed without a receipt`)
+    assert.ok(
+      calls.indexOf('record-outcome') < calls.indexOf('record-receipt'),
+      `${name} built its receipt before the closing step reported — the skip reasons, cap ` +
+        `exhaustion and unresolved-error counts are not complete until then`
+    )
+    assert.equal(
+      calls.filter(c => c === 'record-receipt').length,
+      1,
+      `${name} appended more than one receipt — a run has one close`
+    )
+  }
+})
+
+test('the receipt carries the tallies, the plan verdict and the commit the summary printed', async () => {
+  const { prompts, output } = await runShip({})
+  const receipt = receiptFrom(prompts)
+  assert.ok(receipt, 'no receipt payload reached the record-receipt prompt')
+
+  assert.equal(receipt.type, 'run-receipt')
+  assert.equal(receipt.change, 'demo-change')
+  assert.deepEqual(receipt.waves, [{ wave: 1, ok: 1, failed: 0, notAttempted: [] }])
+  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
+  assert.equal(receipt.planReused, false, 'the default run rebuilds — and says which')
+  assert.equal(receipt.planStatus, 'no-plan')
+  assert.equal(receipt.halted, false)
+  assert.equal(receipt.committed, true)
+  assert.equal(receipt.commit, 'deadbee')
+  assert.match(output, /commit: deadbee/)
+  assert.deepEqual(receipt.leftoverTaskIds, [])
+})
+
+test('the receipt carries the plan fingerprint hash and never the plan', async () => {
+  const { prompts } = await runShip({})
+  const receipt = receiptFrom(prompts)
+  assert.equal(receipt.planFingerprint, 'a'.repeat(64))
+  assert.equal(receipt.plan, undefined, 'plan identity travels as a hash, not as 46 KB of plan')
+
+  const closing = prompts.find(p => p.label === 'record-outcome').prompt
+  assert.match(closing, /plan-fingerprint\.json/)
+  assert.match(closing, /Report the hash only — never the plan's contents/)
+})
+
+// --- the corpus line's provenance ------------------------------------------
+//
+// The closing step used to be handed the run's own measurements under "Correct
+// any field that does not match what actually happened". That is the assessed
+// party writing the assessment's inputs, in the file whose whole purpose is to
+// answer "should we have skipped the human that time?".
+
+test('the corpus line carries the reported half only — never a measurement', async () => {
+  const { prompts } = await runShip({
+    responses: {
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        unitGreen: true,
+        skippedVerificationReasons: ['docs-only-wave'],
+        capExhaustedVerifications: 1,
+        unresolvedErrors: 2,
+        planFingerprint: 'a'.repeat(64)
+      }
+    }
+  })
+  const outcome = outcomeFrom(prompts)
+  assert.ok(outcome, 'the run handed its closing ping no corpus line')
+  assert.deepEqual(Object.keys(outcome).sort(), ['change', 'mode', 'reported'])
+  assert.deepEqual(outcome.reported, {
+    unitGreen: true,
+    skippedVerificationReasons: ['docs-only-wave'],
+    capExhaustedVerifications: 1,
+    unresolvedErrors: 2
+  })
+  assert.equal(outcome.ship, undefined, 'the flat group is gone from the transport too')
+  assert.equal(outcome.observed, undefined, 'the observed half is not transportable')
+})
+
+test('a reported value the closing step never read is left out, not sent as clean', async () => {
+  const { prompts } = await runShip({ responses: { 'record-outcome': { ok: true, reconstructable: true } } })
+  const outcome = outcomeFrom(prompts)
+  assert.deepEqual(outcome.reported, {}, 'an omitted field is unknown; [] and false are claims')
+})
+
+test('the corpus line is recorded after the receipt, and reads its measurements from it', async () => {
+  const { prompts } = await runShip({})
+  const closing = prompts.find(p => p.label === 'record-receipt').prompt
+  assert.ok(
+    closing.indexOf('run-log append --event') < closing.indexOf('outcomes append --record'),
+    'the receipt must be on the trajectory before the command that derives from it runs'
+  )
+  assert.match(closing, /outcomes append --record \S+ --state \S+ --root \./)
+  assert.match(closing, /read by that command from the receipt you just appended/)
+})
+
+test('the printed degradation banners and the receipt are the same list', async () => {
+  // Computed once and used twice (design.md — Decision 3). Two derivations
+  // could only agree by luck, and a banner disagreeing with the record is the
+  // same class of defect one level up from the one degradationLines() removes.
+  const { prompts, output } = await runShip({
+    responses: {
+      validate: { ok: true, change: 'demo-change', hasGraph: false, hasTestProfile: false, haikuAvailable: true },
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        skippedVerificationReasons: ['docs-only-wave'],
+        capExhaustedVerifications: 2,
+        unresolvedErrors: 1,
+        planFingerprint: 'b'.repeat(64)
+      }
+    }
+  })
+  const receipt = receiptFrom(prompts)
+  assert.ok(receipt.degradations.length >= 4, `too few degradations: ${JSON.stringify(receipt.degradations)}`)
+
+  for (const line of receipt.degradations) {
+    assert.ok(
+      output.includes(line),
+      `the receipt carries a degradation the summary never printed:\n${line}\n\nSummary:\n${output}`
+    )
+  }
+  // And the counts behind them come from the same closing result.
+  assert.equal(receipt.skippedVerifications, 1)
+  assert.equal(receipt.capExhaustedVerifications, 2)
+  assert.equal(receipt.unresolvedErrors, 1)
+  assert.match(output, /VERIFY CAP EXHAUSTED: 2/)
+  assert.match(output, /UNRESOLVED ERRORS CARRIED PAST A WAVE: 1/)
+})
+
+test('a clean run reports no degradations in the receipt and none in the banner', async () => {
+  const { prompts, output } = await runShip({})
+  assert.deepEqual(receiptFrom(prompts).degradations, [])
+  assert.match(output, /No degradation banners/)
+})
+
+test('a halted run records a receipt naming the halt and every task left behind', async () => {
+  // The spec's scenario: a halt partway through the second wave with two tasks
+  // unticked. A halted run is the most informative record in the corpus, so it
+  // must not be the one that skips its receipt.
+  const waveTwo = [laneTask('2.1'), laneTask('2.2')]
+  // Counted across labels, not within one: each loop step gets its own
+  // `record-batch-N` label, so a per-label counter would answer "wave 2" every
+  // time and the loop would never leave it.
+  let records = 0
+  const { prompts, output } = await runShip({
+    responses: {
+      'record-batch-': () =>
+        ++records === 1
+          ? stepResult({
+              action: 'run-batch',
+              wave: 2,
+              waveIndex: 1,
+              waveKind: 'impl',
+              batchIndex: 0,
+              batchCount: 1,
+              tasks: [waveTwo],
+              remainingBatches: [[waveTwo]],
+              previousHandoffs: [],
+              changed: ['lib/a.mjs'],
+              maxParallel: 8
+            })
+          : DONE,
+      [labelFor(waveTwo)]: {
+        tasks: [
+          { id: '2.1', outcome: 'failed', error: 'no migration runner' },
+          { id: '2.2', outcome: 'failed', error: 'no migration runner' }
+        ]
+      },
+      verify: { ok: false, unitGreen: false }
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  assert.equal(receipt.halted, true)
+  assert.ok(receipt.haltReason, 'a halted receipt with no reason is the record nobody can use')
+  assert.match(output, new RegExp(`SHIP HALTED — ${receipt.haltReason.slice(0, 20)}`))
+  assert.deepEqual(receipt.leftoverTaskIds, ['2.1', '2.2'])
+  assert.deepEqual(receipt.waves.map(w => [w.wave, w.ok, w.failed]), [[1, 1, 0], [2, 0, 2]])
+  assert.equal(receipt.commit, undefined, 'a halted run has no commit identifier to carry')
+  assert.equal(
+    receipt.committed,
+    undefined,
+    'and it never found out whether it would have committed — which is not the same as declining to'
+  )
+})
+
+// --- token spend, measured on the host that can ------------------------------
+//
+// The figure comes from the workflow runtime's own cumulative counter, read by
+// the SCRIPT at wave boundaries and merely carried by an agent. That is what
+// keeps it a measurement rather than a self-report — and it holds only as long
+// as the transport does not invite the carrier to adjust it, which the last test
+// in this block is about.
+
+/** A `wave-state next` step for a wave holding one lane. */
+function waveStep(wave, lane) {
+  return stepResult({
+    action: 'run-batch',
+    wave,
+    waveIndex: wave - 1,
+    waveKind: 'impl',
+    batchIndex: 0,
+    batchCount: 1,
+    tasks: [lane],
+    remainingBatches: [[lane]],
+    previousHandoffs: [],
+    changed: ['lib/a.mjs'],
+    maxParallel: 8
+  }, {}, lane.map(t => recordedOutcome(t.id, 'ok')))
+}
+
+test('a run of three waves records three wave figures and one run total', async () => {
+  const waveTwo = [laneTask('2.1')]
+  const waveThree = [laneTask('3.1')]
+  let records = 0
+  const { prompts } = await runShip({
+    budget: countingBudget(1000),
+    responses: {
+      'record-batch-': () => {
+        records += 1
+        if (records === 1) return waveStep(2, waveTwo)
+        if (records === 2) return waveStep(3, waveThree)
+        return stepResult({ action: 'done' }, {}, [recordedOutcome('3.1', 'ok')])
+      },
+      [labelFor(waveTwo)]: { id: '2.1', ok: true, handoff: handoffFor('2.1') },
+      [labelFor(waveThree)]: { id: '3.1', ok: true, handoff: handoffFor('3.1') }
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  assert.deepEqual(receipt.spend.map(s => s.wave), ['1', '2', '3'])
+  for (const entry of receipt.spend) {
+    assert.equal(typeof entry.outputTokens, 'number', `wave ${entry.wave} recorded no figure`)
+    assert.ok(entry.outputTokens > 0, `wave ${entry.wave} recorded ${entry.outputTokens}`)
+  }
+  assert.equal(typeof receipt.outputTokens, 'number')
+  assert.ok(receipt.outputTokens > 0)
+
+  // Each wave's figure is its own span, not the cumulative reading: three waves
+  // in a row that all reported the running total would be the boundary-drift
+  // defect, and every number would still look plausible.
+  const cumulative = receipt.spend.reduce((sum, s) => sum + s.outputTokens, 0)
+  assert.ok(cumulative <= receipt.outputTokens, 'the wave spans sum to no more than the run')
+})
+
+test('a verification-only span records its measured delta, not an assumed zero', async () => {
+  // No implementer was spawned, which is exactly the wave a reader would expect
+  // to be free — and it is not: the orchestrator's own turns are in the span.
+  let records = 0
+  const { prompts } = await runShip({
+    budget: countingBudget(500),
+    responses: {
+      'record-batch-': () => {
+        records += 1
+        return records === 1
+          ? stepResult({
+              action: 'verify',
+              wave: 2,
+              waveIndex: 1,
+              waveKind: 'impl',
+              mode: 'initial',
+              fixAttempt: 0,
+              errors: [],
+              changed: ['lib/a.mjs']
+            })
+          : DONE
+      },
+      'inter-wave-verify-': DONE
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  const verifyWave = receipt.spend.find(s => s.wave === '2')
+  assert.ok(verifyWave, 'the verification span is recorded as its own wave figure')
+  assert.notEqual(verifyWave.outputTokens, 0, 'a span with no implementer is not a span with no cost')
+  assert.ok(verifyWave.outputTokens > 0)
+})
+
+test('a runtime with no token accounting records unknown rather than throwing', async () => {
+  // The harness passes no `budget` here, so the script sees no such global at
+  // all — the ACP host's case, and the one a bare reference would have died on.
+  const { prompts, output } = await runShip()
+  const receipt = receiptFrom(prompts)
+
+  assert.deepEqual(receipt.spend, [{ wave: '1', outputTokens: null }])
+  assert.equal(receipt.outputTokens, null)
+  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run still finished')
+})
+
+test('a budget with no target set is still measured — the guard is on spent(), not total', async () => {
+  // `budget.total` is null whenever no token target was given, while `spent()`
+  // stays meaningful. A guard written against `total` would blank the
+  // measurement on every ordinary run and nothing would say so.
+  const budget = countingBudget(250)
+  assert.equal(budget.total, null)
+  const { prompts } = await runShip({ budget })
+  const receipt = receiptFrom(prompts)
+  assert.equal(typeof receipt.outputTokens, 'number')
+  assert.ok(receipt.outputTokens > 0)
+})
+
+test('a runtime that stops exposing accounting mid-run degrades rather than failing the run', async () => {
+  let reads = 0
+  let spent = 0
+  const budget = {
+    total: null,
+    spent() {
+      // Exposed for the first few reads, then gone.
+      if (++reads > 2) throw new Error('accounting withdrawn')
+      spent += 400
+      return spent
+    }
+  }
+  const { prompts, output } = await runShip({ budget })
+  const receipt = receiptFrom(prompts)
+
+  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run must not fail over a measurement')
+  assert.ok(Array.isArray(receipt.spend))
+  for (const entry of receipt.spend) {
+    assert.ok(
+      entry.outputTokens === null || entry.outputTokens >= 0,
+      `wave ${entry.wave} recorded ${entry.outputTokens}`
+    )
+  }
+})
+
+test('the receipt prompt forbids the carrier from touching the measurements', async () => {
+  // The whole basis for calling this a measurement rather than a self-report is
+  // that the script computed it and the agent only carried it. One sentence
+  // inviting a sanity-check would undo that, which is how the same defect got
+  // into `recordOutcome`.
+  const { prompts } = await runShip({ budget: countingBudget(100) })
+  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
+  assert.match(prompt, /"spend" and "outputTokens" were read from the runtime's own counter/)
+  assert.match(prompt, /sanity-checked, corrected or\s+re-derived/)
+  assert.doesNotMatch(prompt, /check that the (spend|token)/i)
+})
+
+// --- what a halt left behind ------------------------------------------------
+//
+// Found by running the thing (tasks.md 7.3), not by reading it: a real halt at
+// verification produced a receipt with `leftoverTaskIds: []` while three boxes
+// sat unchecked in tasks.md. Leftovers had been derived from the failure list,
+// and a wave the halt stopped from ever running has no failures in it — so the
+// receipt of the run that most needed to say what it dropped said nothing.
+
+test('a halt names every unchecked task, not only the ones that failed', async () => {
+  // 2.1 and 2.2 failed; 3.1 never ran. All three are still unchecked, and all
+  // three are what a later reader has to be told.
+  const waveTwo = [laneTask('2.1'), laneTask('2.2')]
+  let records = 0
+  const { prompts, output } = await runShip({
+    responses: {
+      'record-batch-': () =>
+        ++records === 1
+          ? stepResult({
+              action: 'run-batch',
+              wave: 2,
+              waveIndex: 1,
+              waveKind: 'impl',
+              batchIndex: 0,
+              batchCount: 1,
+              tasks: [waveTwo],
+              remainingBatches: [[waveTwo]],
+              previousHandoffs: [],
+              changed: ['lib/a.mjs'],
+              maxParallel: 8
+            })
+          : DONE,
+      [labelFor(waveTwo)]: {
+        tasks: [
+          { id: '2.1', outcome: 'failed', error: 'no migration runner' },
+          { id: '2.2', outcome: 'failed', error: 'no migration runner' }
+        ]
+      },
+      verify: { ok: false, unitGreen: false },
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        leftoverTaskIds: ['2.1', '2.2', '3.1']
+      }
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  assert.equal(receipt.halted, true)
+  assert.deepEqual(
+    receipt.leftoverTaskIds,
+    ['2.1', '2.2', '3.1'],
+    'a task the halt stopped from running is left behind exactly as much as one that failed'
+  )
+  // And the banner a human reads is the same list, not the failure subset.
+  assert.match(output, /3\.1/)
+})
+
+test('an unread checkbox leaves leftovers as what the run does know, never as none', async () => {
+  // The closing step could not read tasks.md, so it left the field out. The
+  // fallback is the failure list — smaller than the truth, but observed. What
+  // it must never become is `[]`, which would read as "finished everything".
+  const waveTwo = [laneTask('2.1')]
+  let records = 0
+  const { prompts } = await runShip({
+    responses: {
+      'record-batch-': () =>
+        ++records === 1
+          ? stepResult({
+              action: 'run-batch',
+              wave: 2,
+              waveIndex: 1,
+              waveKind: 'impl',
+              batchIndex: 0,
+              batchCount: 1,
+              tasks: [waveTwo],
+              remainingBatches: [[waveTwo]],
+              previousHandoffs: [],
+              changed: ['lib/a.mjs'],
+              maxParallel: 8
+            })
+          : DONE,
+      [labelFor(waveTwo)]: { id: '2.1', ok: false, error: 'no migration runner', handoff: null },
+      verify: { ok: false, unitGreen: false },
+      'record-outcome': { ok: true, reconstructable: true }
+    }
+  })
+
+  assert.deepEqual(receiptFrom(prompts).leftoverTaskIds, ['2.1'])
+})
+
+test('the closing step reads unchecked ids from the CLI rather than deriving them', async () => {
+  const { prompts } = await runShip({})
+  const prompt = prompts.find(p => p.label === 'record-outcome').prompt
+
+  assert.match(prompt, /interlock validate --change demo-change --json/)
+  assert.match(prompt, /every "id" from its tasks\.items whose "done" is false/)
+  assert.match(
+    prompt,
+    /Do not derive them from tasks\.md yourself/,
+    'the checkbox is the CLI\'s to read — an agent counting boxes is an agent that can miscount'
+  )
+  assert.match(
+    prompt,
+    /omitted means unknown, and unknown must never be reported as an empty list/,
+    'an empty list claims the run finished everything'
+  )
+})
+
+test('--no-commit and --apply-only record "did not commit", not "never found out"', async () => {
+  for (const args of ['demo-change --no-commit', 'demo-change --apply-only']) {
+    const { prompts } = await runShip({ args })
+    const receipt = receiptFrom(prompts)
+    assert.equal(receipt.committed, false, `${args}: the run chose not to commit and must say so`)
+    assert.equal(receipt.commit, undefined, `${args}: and carries no identifier`)
+    assert.equal(receipt.halted, false, `${args}: an early return is not a halt`)
+  }
+})
+
+test('a run that never reviewed reports no review counts rather than zero blockers', async () => {
+  const lean = receiptFrom((await runShip({})).prompts)
+  assert.equal(lean.reviewBlockers, undefined, 'a lean run never reviewed — 0 blockers would be a lie')
+  assert.equal(lean.reviewRaised, undefined)
+
+  const strict = receiptFrom((await runShip({ args: 'demo-change --strict' })).prompts)
+  assert.equal(strict.reviewRaised, 2)
+  assert.equal(strict.reviewSurviving, 1)
+  assert.equal(strict.reviewBlockers, 0)
+  assert.equal(strict.reviewWarnings, 1, 'surviving minus blockers, from two counts that were observed')
+})
+
+test('the receipt prompt asks for verbatim transport and invites no correction', async () => {
+  const { prompts } = await runShip({})
+  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
+
+  assert.match(prompt, /exactly as given, byte for byte/)
+  assert.match(prompt, /Do not adjust, correct, re-derive, reorder or add to any field/)
+  assert.match(prompt, /interlock run-log append --event \.claude\/ship\/run-receipt\.json/)
+  assert.match(prompt, /never fails a run/, 'losing the receipt must not fail the run that earned it')
+  // The closing prompt's own invitation to correct fields is right for an
+  // outcome record the agent observed and wrong for a payload the run measured.
+  assert.doesNotMatch(prompt, /Correct any field/)
+  assert.doesNotMatch(prompt, /starting point/)
+})
+
+test('the receipt payload survives assembly with no coercion artifacts', async () => {
+  const { prompts } = await runShip({})
+  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
+  assert.deepEqual(
+    coercionArtifacts(prompt.replace(/\{"type":"run-receipt".*?\}\n\n/s, '')),
+    [],
+    'the record-receipt prompt lost an interpolation somewhere'
+  )
+})
+
+test('the ACP driver writes the same receipt from ship.js own builder', async () => {
+  // A second implementation of "what the run observed" is drift a reader could
+  // never see: both hosts would look correct and their trajectories would not
+  // agree. So the driver evaluates the marked block instead of copying it.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /\/\/ BUILD_RECEIPT_START/, 'ship.js must mark its receipt builder')
+  assert.match(driver, /BUILD_RECEIPT_START/)
+  assert.match(driver, /buildReceipt\(\{/)
+  for (const copied of [/reviewBlockers:/, /capExhaustedVerifications:\s*closing/, /planReused:/]) {
+    assert.doesNotMatch(driver, copied, `the ACP driver copies receipt fields: ${copied}`)
+  }
+  // And it appends the event itself — no agent in the path.
+  assert.match(driver, /'run-log',\s*\n\s*'append',\s*\n\s*'--event',\s*\n\s*write\(workPath\('run-receipt\.json'\)/)
+})
+
+test('the ACP driver ticks and tallies from what the CLI recorded, from ship.js own block', async () => {
+  // The defect was in both hosts because both computed "what succeeded" from
+  // the agent's `ok` field. Fixing it in one and copying the rule into the
+  // other would leave two implementations of which observation is the run's.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /\/\/ RECORDED_VERDICT_START/, 'ship.js must mark the adjudication')
+  assert.match(driver, /RECORDED_VERDICT_START/)
+  assert.match(driver, /adjudicateBatches\(accumulated, verdictMissing \? null : verdicts\)/)
+  assert.match(driver, /verdict\.tickIds\.join\(','\)/)
+  assert.doesNotMatch(
+    driver,
+    /accumulated\.flat\(\)\.filter\(r => r\.ok\)/,
+    'the tick list must not be rebuilt from the agents own claims'
+  )
+  assert.doesNotMatch(
+    driver,
+    /ok: reported\.filter\(r => r\.ok\)\.length/,
+    'and neither must the per-wave tally'
+  )
+
+  const m = /\/\/ RECORDED_VERDICT_START\n([\s\S]*?)\n\/\/ RECORDED_VERDICT_END/.exec(text)
+  const api = new Function(
+    `${m[1]}; return { recordedOutcomes, adjudicateBatches, claimDerivedBanner }`
+  )()
+  const claims = [[{ id: '1.1', ok: true }, { id: '1.2', ok: true }]]
+  const verdict = api.adjudicateBatches(
+    claims,
+    api.recordedOutcomes({
+      recorded: [{ id: '1.1', outcome: 'failed', reason: 'invalid handoff' }, { id: '1.2', outcome: 'ok' }]
+    })
+  )
+  assert.deepEqual(verdict.tickIds, ['1.2'])
+  assert.deepEqual(verdict.waves, [{ ok: 1, failed: 1, failedIds: ['1.1'], recordedNotAttempted: [] }])
+  assert.equal(verdict.claimDerived, false)
+  assert.deepEqual(verdict.overrides.map(o => o.id), ['1.1'])
+
+  // A payload covering only some of the claims is no payload: tallying the rest
+  // from the claim while reading as recorded is the same defect one level down.
+  const partial = api.adjudicateBatches(claims, api.recordedOutcomes({ recorded: [{ id: '1.1', outcome: 'ok' }] }))
+  assert.equal(partial.claimDerived, true)
+  assert.match(api.claimDerivedBanner(), /CLAIM-DERIVED TALLIES/)
+})
+
+test('the ACP driver asks the CLI what is unchecked instead of listing failures', async () => {
+  // Same rule as the workflow host, reached without an agent: this driver can
+  // run the CLI itself. What both must not do is call the failure list the
+  // leftover list — a halt leaves waves that never ran and never failed.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /async function unticked\(\)/)
+  assert.match(driver, /'validate',\s*'--change',\s*resolvedChange/)
+  assert.match(driver, /items\.filter\(t => t && !t\.done/)
+  assert.match(driver, /if \(!Array\.isArray\(items\)\) return null/, 'unreadable is unknown, not none')
+  assert.doesNotMatch(
+    driver,
+    /leftoverTaskIds: summary\.waves\.flatMap/,
+    'the failure list is not the leftover list'
+  )
+})
+
+test('the ACP driver receipt builder loads and produces the whitelisted shape', async () => {
+  // Evaluated the way the driver evaluates it, so a marker block that no longer
+  // stands alone fails here rather than at the end of somebody's ship run.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
+  assert.ok(m, 'ship.js must define buildReceipt between BUILD_RECEIPT markers')
+  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
+
+  const empty = build({})
+  assert.equal(empty.type, 'run-receipt')
+  assert.equal(empty.halted, false)
+  assert.deepEqual(empty.waves, [])
+  assert.equal(empty.committed, undefined, 'an empty summary never found out anything')
+
+  const filled = build({
+    change: 'add-widget',
+    summary: {
+      waves: [{ wave: 2, ok: 1, failed: 1, notAttempted: ['2.3'], handoffs: ['SECRET'] }],
+      plan: { reused: true, status: 'match', reason: 'still matches' },
+      review: { raised: 3, surviving: 2, blockers: 1, findings: ['SECRET'] },
+      remediationRounds: 1,
+      closing: { skippedVerificationReasons: ['docs-only-wave'], capExhaustedVerifications: 0, unresolvedErrors: 2 },
+      commit: { ok: true, sha: 'cafe123' },
+      halted: null
+    },
+    degradations: ['VERIFICATION SKIPPED: reason=docs-only-wave'],
+    planFingerprint: 'd'.repeat(64),
+    leftoverTaskIds: ['2.2']
+  })
+  assert.equal(filled.planReused, true)
+  assert.equal(filled.reviewWarnings, 1)
+  assert.equal(filled.skippedVerifications, 1)
+  assert.equal(filled.unresolvedErrors, 2)
+  assert.equal(filled.committed, true)
+  assert.equal(filled.commit, 'cafe123')
+  assert.deepEqual(Object.keys(filled.waves[0]).sort(), ['failed', 'notAttempted', 'ok', 'wave'])
+  assert.doesNotMatch(JSON.stringify(filled), /SECRET/)
+})
+
+test('an ACP-produced receipt reads as a host that could not measure, not a run that spent nothing', async () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
+  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
+
+  // What the driver hands the shared builder: a spend row per wave, every figure
+  // explicitly absent, and an absent run total.
+  const waves = [
+    { wave: 1, ok: 2, failed: 0, notAttempted: [] },
+    { wave: 2, ok: 1, failed: 0, notAttempted: [] }
+  ]
+  const acp = build({
+    change: 'add-widget',
+    summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: null })), outputTokens: null }
+  })
+  assert.deepEqual(acp.spend, [
+    { wave: 1, outputTokens: null },
+    { wave: 2, outputTokens: null }
+  ])
+  assert.equal(acp.outputTokens, null)
+
+  // The distinction the whole field exists for: unknown is not zero.
+  const measuredNothing = build({
+    change: 'add-widget',
+    summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: 0 })), outputTokens: 0 }
+  })
+  assert.notEqual(acp.spend[0].outputTokens, measuredNothing.spend[0].outputTokens)
+  assert.notEqual(acp.outputTokens, measuredNothing.outputTokens)
+})
+
+test('the ACP driver declares its lack of token accounting rather than estimating it', async () => {
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /spend: summary\.waves\.map\(wave => \(\{ wave: wave\.wave, outputTokens: null \}\)\)/)
+  assert.match(driver, /outputTokens: null/)
+  // The temptation is concrete — ship.js carries a per-agent token constant for
+  // another purpose — so the absence of an estimate here is asserted, not hoped
+  // for. A fabricated figure in this corpus costs it the only thing it has.
+  const figures = [...driver.matchAll(/outputTokens:\s*(\S+)/g)].map(m => m[1].replace(/[^A-Za-z0-9.]/g, ''))
+  assert.deepEqual(figures, ['null', 'null'], 'the ACP host must never compute a spend figure')
+  assert.match(driver, /It is NOT estimated/, 'the refusal is written down, not left to be rediscovered')
 })

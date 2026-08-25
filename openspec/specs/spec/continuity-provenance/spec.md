@@ -2,7 +2,9 @@
 
 ## Purpose
 
-Makes the blocker count that decides whether a human reads a specification come from the artifact review's own findings, rather than from a number the reviewed agent wrote down. This is the one number in the loop where the party being gated currently reports its own result.
+Makes the blocker count that decides whether a human reads a specification come from the artifact review's own findings, rather than from a number the reviewed agent wrote down.
+
+This capability covers one instance of a defect class: **a value the loop acts on being reported by the party that value assesses**. It is not the only instance. The ship run's outcome record carried the same defect — its closing step was handed the run's halt state, remediation rounds and surviving blocker count under an instruction to correct any field that looked wrong — and is addressed by `ship/outcome-provenance`, which applies the same two-layer stance this one does: derive the value from an independent record, and forbid the procedure from asking an agent to write it. When looking for further instances, treat this list as incomplete rather than exhaustive.
 
 ## Requirements
 

@@ -16,7 +16,14 @@ import {
   SKIP_VERIFY_DOCS,
   SKIP_VERIFY_CAP,
   HANDOFF_SCHEMA,
-  isDocsOnlyWave
+  AUDIT_CONFIRMED,
+  AUDIT_UNCONFIRMED,
+  AUDIT_NOT_AUDITED,
+  isDocsOnlyWave,
+  batchOutcomes,
+  OUTCOME_OK,
+  OUTCOME_FAILED,
+  OUTCOME_NOT_ATTEMPTED
 } from '../../lib/waves.mjs'
 import { LIMITS, RUNTIME } from '../../lib/limits.mjs'
 
@@ -922,6 +929,84 @@ test('a blocked task keeps its packet so the next wave is told why', () => {
   assert.equal(after.handoffs[id].blocker, 'no migration runner')
 })
 
+// --- what a batch recorded, reported back ---------------------------------
+//
+// The adjudication was always right and always private: `record-batch` failed
+// the task and told its caller only what to do next. Both ship hosts therefore
+// ticked and tallied from the agent's claim, and a run could tick five boxes
+// beside a halt naming those same five tasks as failures.
+
+test('a recorded batch reports an outcome per task, with the reason it failed', () => {
+  const before = createRunState(simplePlan([1, 2]))
+  const step = nextStep(before)
+  const [first, second] = stepTasks(step).map(t => t.id)
+  const after = recordBatchResult(before, {
+    tasks: [
+      okTask(first),
+      // Claims success, packet is unusable — the live defect's exact shape.
+      { id: second, ok: true, handoff: handoffFor(second, { status: 'done' }) }
+    ]
+  })
+
+  const outcomes = batchOutcomes(before, after)
+  assert.deepEqual(
+    outcomes.map(o => [o.id, o.outcome]),
+    [[first, OUTCOME_OK], [second, OUTCOME_FAILED]],
+    'one bad packet fails its own task, not the batch'
+  )
+  assert.equal(outcomes[0].reason, undefined, 'a succeeded task owes no reason')
+  assert.match(outcomes[1].reason, /invalid handoff: .*status/)
+  assert.ok(outcomes[1].reason.length <= 300, 'the reason is an adjudication string, not a transcript')
+})
+
+test('a batch reports only itself, never the run accumulated so far', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const afterOne = recordBatchResult(start, allOk(nextStep(start)))
+  const afterVerify = recordVerifyResult(afterOne, { ok: true })
+  const secondStep = nextStep(afterVerify)
+  const afterTwo = recordBatchResult(afterVerify, allOk(secondStep))
+
+  assert.deepEqual(
+    batchOutcomes(afterVerify, afterTwo).map(o => o.id),
+    stepTasks(secondStep).map(t => t.id),
+    'wave 1 is already history — reporting it again would double-count every tick'
+  )
+})
+
+test('a lane whose tail was never attempted reports it as such, not as failed', () => {
+  // One lane of three: the tasks collide on a path, so they run in order in one
+  // agent. It failed at 1.2 and never reached 1.3, so no result mentions it.
+  const tasks = ['1.1', '1.2', '1.3'].map(id => task({ id, group: 1, paths: ['src/same.ts'] }))
+  const before = createRunState(planOf(tasks))
+  const after = recordBatchResult(before, {
+    tasks: [okTask('1.1'), { id: '1.2', ok: false, error: 'no migration runner' }]
+  })
+
+  const outcomes = batchOutcomes(before, after)
+  assert.deepEqual(
+    outcomes.map(o => [o.id, o.outcome]),
+    [['1.1', OUTCOME_OK], ['1.2', OUTCOME_FAILED], ['1.3', OUTCOME_NOT_ATTEMPTED]],
+    'not-attempted is neither ticked nor counted against the failure budget'
+  )
+  assert.equal(after.failures.length, 1, 'and the state agrees: one failure, not two')
+  assert.match(outcomes[2].reason, /no outcome/)
+})
+
+test('the batch outcomes are derived from two states, never stored on one', () => {
+  // A field on the state would be read as current by a run resumed from it a
+  // day later, so `record-batch` never writes one — and strips one it was
+  // handed, which is what a caller that piped plain-path stdout into its state
+  // file would carry.
+  const before = createRunState(simplePlan([1, 2]))
+  const step = nextStep(before)
+  const after = recordBatchResult(before, allOk(step))
+  assert.equal(after.recorded, undefined, 'the verdict is reported, not persisted')
+
+  const stale = { ...before, recorded: [{ id: 'from-a-previous-batch', outcome: OUTCOME_OK }] }
+  const afterStale = recordBatchResult(stale, allOk(step))
+  assert.equal(afterStale.recorded, undefined, 'a stale batch\'s outcomes do not survive a resume')
+})
+
 test('nextStep hands the next wave the previous wave, and only the previous wave', () => {
   const start = createRunState(simplePlan([1, 2, 3]))
 
@@ -1007,6 +1092,250 @@ test('a state written before handoffs existed still records and reads them', () 
   delete legacy.handoffs
   const after = recordBatchResult(legacy, allOk(nextStep(legacy)))
   assert.equal(after.handoffs['1.1'].taskId, '1.1')
+})
+
+// --- retained paths and evidence audits -----------------------------------
+//
+// `filesChanged` is requested from every implementer and was thrown away, while
+// being the only cross-check available against the packet's own evidence. It is
+// retained here, and each packet gains an audit verdict.
+//
+// Everything in this section is about a RECORDED FACT. The section after it is
+// about the property that matters more: none of it changes what the run does.
+
+/** An ok result that also reports what it touched, and cites what it likes. */
+const okTaskWith = (id, filesChanged, evidence) => ({
+  id,
+  ok: true,
+  filesChanged,
+  handoff: evidence ? handoffFor(id, { evidence }) : handoffFor(id)
+})
+
+/** The state minus the audit bookkeeping — what "the run did the same thing" means. */
+function withoutAudits(state) {
+  const copy = JSON.parse(JSON.stringify(state))
+  delete copy.evidenceAudits
+  return copy
+}
+
+test('reported paths survive the recording', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, {
+    tasks: [okTaskWith('1.1', ['lib/export.mjs', 'test/export.test.mjs']), okTask('1.2')]
+  })
+  assert.deepEqual(after.reportedPaths['1.1'], ['lib/export.mjs', 'test/export.test.mjs'])
+})
+
+test('a task reporting no paths gets an empty set, not its own locators', () => {
+  // Substituting the evidence for the missing report would manufacture the very
+  // cross-check the report exists to provide — the packet would be confirming
+  // itself.
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, { tasks: [okTask('1.1'), okTask('1.2')] })
+  assert.deepEqual(after.reportedPaths['1.1'], [])
+  assert.equal(after.handoffs['1.1'].evidence[0], 'src/1.1.ts:1-10')
+  assert.equal(
+    after.evidenceAudits['1.1'].verdict,
+    AUDIT_NOT_AUDITED,
+    'no observed set and no reported set means the audit could not run'
+  )
+  assert.equal(after.evidenceAudits['1.1'].reportedMatch, null)
+})
+
+test('a task nobody attempted has no reported-path entry, and that is not an error', () => {
+  // A lane that stopped early reports nothing for the tasks behind the failure.
+  // Absence is the honest record; an empty set would be a claim it never made.
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, {
+    tasks: [{ id: '1.1', ok: false, error: 'blocked on a missing migration runner' }]
+  })
+  assert.equal(Object.prototype.hasOwnProperty.call(after.reportedPaths, '1.2'), false)
+  assert.equal(after.halt, null)
+  assert.deepEqual(after.reportedPaths['1.1'], [], 'the task that ran did report — emptily')
+})
+
+test('the observed path set is used when supplied, and the verdict says so', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(
+    start,
+    { tasks: [okTaskWith('1.1', ['src/1.1.ts']), okTask('1.2')] },
+    { changedPaths: ['src/1.1.ts', 'src/1.2.ts'] }
+  )
+  assert.equal(after.evidenceAudits['1.1'].verdict, AUDIT_CONFIRMED)
+  assert.equal(after.evidenceAudits['1.1'].source, 'observed')
+  assert.equal(after.evidenceAudits['1.1'].reportedMatch, true)
+})
+
+test('with no observed set the audit falls back to the report and labels it', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(start, {
+    tasks: [okTaskWith('1.1', ['src/1.1.ts']), okTask('1.2')]
+  })
+  assert.equal(after.evidenceAudits['1.1'].verdict, AUDIT_CONFIRMED)
+  assert.equal(
+    after.evidenceAudits['1.1'].source,
+    'reported',
+    'a self-reported path set must never be presented as an observed one'
+  )
+})
+
+test('nextStep hands the next wave each packet with its verdict attached', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const wave1 = recordBatchResult(
+    start,
+    { tasks: [okTaskWith('1.1', ['src/1.1.ts']), okTaskWith('1.2', ['src/elsewhere.ts'])] },
+    { changedPaths: ['src/1.1.ts', 'src/elsewhere.ts'] }
+  )
+  const step2 = nextStep(recordVerifyResult(wave1, { ok: true }))
+  const byId = new Map(step2.previousHandoffs.map(h => [h.taskId, h]))
+  assert.equal(byId.get('1.1').audit.verdict, AUDIT_CONFIRMED)
+  assert.equal(byId.get('1.2').audit.verdict, AUDIT_UNCONFIRMED)
+  // The packet itself is unchanged — the verdict travels beside it.
+  assert.equal(byId.get('1.2').summary, 'did 1.2')
+  assert.deepEqual(byId.get('1.2').evidence, ['src/1.2.ts:1-10'])
+})
+
+test('a state written before these fields existed records normally', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const legacy = JSON.parse(JSON.stringify(start))
+  delete legacy.reportedPaths
+  delete legacy.evidenceAudits
+  const after = recordBatchResult(
+    legacy,
+    { tasks: [okTaskWith('1.1', ['src/1.1.ts']), okTask('1.2')] },
+    { changedPaths: ['src/1.1.ts'] }
+  )
+  assert.deepEqual(after.reportedPaths['1.1'], ['src/1.1.ts'])
+  assert.equal(after.evidenceAudits['1.1'].verdict, AUDIT_CONFIRMED)
+  assert.equal(after.halt, null)
+})
+
+test('stored verdicts survive the freeze and the JSON round-trip', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(
+    start,
+    { tasks: [okTaskWith('1.1', ['src/1.1.ts']), okTask('1.2')] },
+    { changedPaths: ['src/1.1.ts'] }
+  )
+  assert.ok(Object.isFrozen(after.evidenceAudits['1.1']))
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(after)).evidenceAudits['1.1'],
+    after.evidenceAudits['1.1']
+  )
+})
+
+// --- the audit changes no control flow ------------------------------------
+//
+// The verdict is recorded and never gated on. That is a spec requirement rather
+// than a convention precisely because the first reader of a corpus full of
+// `unconfirmed` verdicts will reasonably reach for a threshold — and membership
+// here is run-scoped, not task-scoped, so a halt built on it would stop good
+// runs. These tests are the lever that stops that from being added quietly.
+
+test('an unconfirmed packet leaves the recorded run byte-identical', () => {
+  const start = createRunState(
+    planOf([
+      task({ id: '1.1', group: 1, paths: ['src/g1-a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/g1-b.ts'] }),
+      task({ id: '1.3', group: 1, paths: ['src/g1-c.ts'] }),
+      task({ id: '2.1', group: 2, paths: ['src/g2-a.ts'] }),
+      task({ id: '2.2', group: 2, paths: ['src/g2-b.ts'] })
+    ])
+  )
+  const result = {
+    tasks: ['1.1', '1.2', '1.3'].map(id => okTaskWith(id, [`src/${id}.ts`]))
+  }
+  const allSeen = ['src/1.1.ts', 'src/1.2.ts', 'src/1.3.ts']
+
+  const confirmed = recordBatchResult(start, result, { changedPaths: allSeen })
+  const oneMissing = recordBatchResult(start, result, { changedPaths: allSeen.slice(0, 2) })
+
+  assert.equal(confirmed.evidenceAudits['1.3'].verdict, AUDIT_CONFIRMED)
+  assert.equal(oneMissing.evidenceAudits['1.3'].verdict, AUDIT_UNCONFIRMED)
+
+  assert.deepEqual(oneMissing.completed, ['1.1', '1.2', '1.3'], 'all three still succeeded')
+  assert.equal(oneMissing.failures.length, 0, 'the failure count is untouched')
+  assert.deepEqual(
+    withoutAudits(oneMissing),
+    withoutAudits(confirmed),
+    'the recorded run must differ in nothing but the verdict'
+  )
+  assert.deepEqual(nextStep(oneMissing), nextStep(confirmed), 'the wave advances identically')
+})
+
+test('a run whose every packet is unconfirmed completes rather than halting', () => {
+  const { actions, state } = drive(createRunState(simplePlan([1, 2], 1)), {
+    onBatch: step => ({
+      tasks: stepTasks(step).map(t => ({
+        id: t.id,
+        ok: true,
+        // Reported one thing, cited another: unconfirmed against the report,
+        // which is the strongest failure this audit can produce.
+        filesChanged: ['src/actually-touched.ts'],
+        handoff: handoffFor(t.id, { evidence: ['lib/nowhere.mjs:1'] })
+      }))
+    })
+  })
+  assert.deepEqual(actions, ['run-batch', 'verify', 'run-batch', 'verify', 'test-wave', 'done'])
+  assert.equal(state.halt, null)
+  assert.equal(state.failures.length, 0)
+  const verdicts = Object.values(state.evidenceAudits).map(a => a.verdict)
+  assert.equal(verdicts.length, 5)
+  assert.ok(
+    verdicts.every(v => v === AUDIT_UNCONFIRMED),
+    `every verdict should be unconfirmed, got ${verdicts.join(', ')}`
+  )
+})
+
+test('a run one failure below the halt does not halt on unconfirmed verdicts', () => {
+  // taskFailureHalt is the number TOLERATED, so the halt fires above it. Two
+  // failures is the last state that must survive, and it is the state a
+  // verdict-derived halt would break first.
+  const start = createRunState(simplePlan([1, 2, 3]))
+  const failedWave1 = recordBatchResult(start, {
+    tasks: [
+      { id: '1.1', ok: false, error: 'gave up' },
+      { id: '1.2', ok: false, error: 'gave up' }
+    ]
+  })
+  assert.equal(failedWave1.failures.length, LIMITS.taskFailureHalt)
+  assert.equal(failedWave1.halt, null)
+
+  const atWave2 = recordVerifyResult(failedWave1, { ok: true })
+  const after = recordBatchResult(
+    atWave2,
+    { tasks: [okTaskWith('2.1', ['src/2.1.ts']), okTaskWith('2.2', ['src/2.2.ts'])] },
+    { changedPaths: ['lib/somewhere-else.mjs'] }
+  )
+  assert.equal(after.evidenceAudits['2.1'].verdict, AUDIT_UNCONFIRMED)
+  assert.equal(after.halt, null, 'an unconfirmed verdict is not a failure')
+  assert.equal(after.failures.length, LIMITS.taskFailureHalt, 'the failure count is unchanged')
+})
+
+test('an over-budget packet still fails closed, with no verdict stored for it', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const after = recordBatchResult(
+    start,
+    {
+      tasks: [
+        {
+          id: '1.1',
+          ok: true,
+          filesChanged: ['src/1.1.ts'],
+          handoff: handoffFor('1.1', { summary: 'x'.repeat(2500) })
+        }
+      ]
+    },
+    { changedPaths: ['src/1.1.ts'] }
+  )
+  assert.equal(after.completed.length, 0)
+  assert.match(after.failures[0].error, /invalid handoff: .*the cap is/)
+  assert.deepEqual(after.handoffs, {}, 'a rejected packet is not stored')
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(after.evidenceAudits, '1.1'),
+    false,
+    'there is no packet to audit, so there is no verdict'
+  )
 })
 
 test('createRunState carries a collision lane through instead of splitting it', () => {
@@ -1342,6 +1671,37 @@ test('a run state holds nothing the caller can reach or mutate through the plan'
   assert.ok(!Object.isFrozen(firstTask(plan)), 'the caller plan must not be frozen')
   firstTask(plan).model = 'opus'
   assert.equal(state.waves[0].batches[0][0][0].model, 'sonnet')
+})
+
+// --- the change name on the state ------------------------------------------
+
+test('createRunState carries the change name onto the frozen state', () => {
+  const state = createRunState(simplePlan([1, 2]), { change: '  add-widget-export  ' })
+  assert.equal(state.change, 'add-widget-export', 'the name is trimmed and kept')
+})
+
+test('the change name survives record-batch, record-verify and replan', () => {
+  // The name is fixed at create and must reach the last event of the run, so
+  // every mutation path is walked rather than only the one the happy path uses.
+  const start = createRunState(simplePlan([1, 2, 3]), { change: 'add-widget-export' })
+
+  const afterBatch = recordBatchResult(start, allOk(nextStep(start)))
+  assert.equal(afterBatch.change, 'add-widget-export', 'recordBatchResult dropped the name')
+
+  const afterVerify = recordVerifyResult(afterBatch, { ok: true })
+  assert.equal(afterVerify.change, 'add-widget-export', 'recordVerifyResult dropped the name')
+
+  const replanned = applyReplan(afterBatch, [{ group: 3, tasks: [task({ id: '3.9', group: 3 })] }])
+  assert.equal(replanned.change, 'add-widget-export', 'applyReplan dropped the name')
+})
+
+test('createRunState without a change name is not an error', () => {
+  const state = createRunState(simplePlan([1, 2]))
+  assert.equal(state.change, undefined)
+  assert.equal(nextStep(state).action, 'run-batch', 'an unnamed run still walks')
+
+  const blank = createRunState(simplePlan([1, 2]), { change: '   ' })
+  assert.equal(blank.change, undefined, 'a blank name is no name, not an empty one')
 })
 
 // --- caps, clamps and guards ---------------------------------------------

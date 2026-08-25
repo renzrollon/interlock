@@ -293,6 +293,7 @@ function laneOutcomes(lane, result) {
         id: result.id || only.id,
         outcome: result.ok ? 'ok' : 'failed',
         error: result.error,
+        filesChanged: result.filesChanged,
         handoff: result.handoff
       }
     ]
@@ -312,7 +313,15 @@ function laneOutcomes(lane, result) {
 
   return lane.map(t => {
     const e = byId.get(t.id)
-    if (e.outcome === 'ok') return { id: t.id, outcome: 'ok', error: e.error, handoff: e.handoff }
+    if (e.outcome === 'ok') {
+      return {
+        id: t.id,
+        outcome: 'ok',
+        error: e.error,
+        filesChanged: e.filesChanged,
+        handoff: e.handoff
+      }
+    }
     if (e.outcome === 'not-attempted') return { id: t.id, outcome: 'not-attempted' }
     // Anything else — including a value the schema let through — is a failure.
     // Guessing which of three named outcomes an unnamed one meant is exactly
@@ -321,11 +330,125 @@ function laneOutcomes(lane, result) {
       id: t.id,
       outcome: 'failed',
       error: e.error || `lane reported outcome ${JSON.stringify(e.outcome)}`,
+      filesChanged: e.filesChanged,
       handoff: e.handoff
     }
   })
 }
 // LANE_DISPATCH_END
+
+// RECORDED_VERDICT_START
+//
+// One authority for "what did this task do": the outcome `wave-state
+// record-batch` recorded, not the outcome the implementing agent reported for
+// itself. The claim is the input the state machine adjudicated — an invalid or
+// over-budget handoff packet fails its task — so where the two differ the
+// recorded outcome is the one a tick and a tally are built from.
+//
+// Both hosts read this block, for the same reason both read LANE_DISPATCH: a
+// second copy of "which of two disagreeing observations is the run's" would
+// drift, and both hosts would still look correct.
+
+/** The three outcomes a batch can record. Anything else is not a verdict. */
+const RECORDED_OUTCOMES = ['ok', 'failed', 'not-attempted']
+
+/**
+ * The recorded verdicts carried on a record-batch step, validated.
+ *
+ * One malformed entry invalidates the whole payload rather than being skipped:
+ * a partial verdict read as a complete one is the defect this exists to close,
+ * one level down. `null` means "no verdict arrived" and puts the caller on the
+ * loud claim-derived fallback.
+ */
+function recordedOutcomes(step) {
+  const raw = step && Array.isArray(step.recorded) ? step.recorded : null
+  if (!raw || !raw.length) return null
+  const out = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') return null
+    if (typeof entry.id !== 'string' || !entry.id.trim()) return null
+    if (!RECORDED_OUTCOMES.includes(entry.outcome)) return null
+    out.push({
+      id: entry.id.trim(),
+      outcome: entry.outcome,
+      reason: typeof entry.reason === 'string' && entry.reason.trim() ? entry.reason.trim() : ''
+    })
+  }
+  return out
+}
+
+/**
+ * What to tick, what to tally, and which claims the run had to override.
+ *
+ * @param {Array<Array<{id: string, ok: boolean, error?: string}>>} batches the
+ *   claims the run sent to `record-batch`, one array per batch, in command order
+ * @param {Array<{id: string, outcome: string, reason: string}>|null} recorded
+ *   the verdicts those commands reported, concatenated in the same order
+ * @returns {{claimDerived: boolean, tickIds: string[],
+ *   waves: Array<{ok: number, failed: number, failedIds: string[], recordedNotAttempted: string[]}>,
+ *   overrides: Array<{id: string, outcome: string, reason: string}>}}
+ */
+function adjudicateBatches(batches, recorded) {
+  const claims = batches.flat()
+  // Every claim must have a verdict, or there is no verdict: a payload covering
+  // three of five tasks would otherwise tally the other two from the claim
+  // while reading as fully recorded.
+  const covered = Boolean(recorded) && claims.every(c => recorded.some(o => o.id === c.id))
+  const verdicts = covered ? recorded : null
+  const rowsOf = batch =>
+    batch.map(claim => {
+      const found = verdicts ? verdicts.find(o => o.id === claim.id) : null
+      return {
+        id: claim.id,
+        outcome: found ? found.outcome : claim.ok ? 'ok' : 'failed',
+        reason: found ? found.reason : typeof claim.error === 'string' ? claim.error : ''
+      }
+    })
+
+  const perBatch = batches.map(rowsOf)
+  const rows = perBatch.flat()
+  return {
+    claimDerived: !verdicts,
+    tickIds: rows.filter(r => r.outcome === 'ok').map(r => r.id),
+    waves: perBatch.map(batchRows => ({
+      ok: batchRows.filter(r => r.outcome === 'ok').length,
+      failed: batchRows.filter(r => r.outcome === 'failed').length,
+      failedIds: batchRows.filter(r => r.outcome === 'failed').map(r => r.id),
+      recordedNotAttempted: batchRows.filter(r => r.outcome === 'not-attempted').map(r => r.id)
+    })),
+    overrides: rows.filter((row, i) => verdicts && (row.outcome === 'ok') !== claims[i].ok)
+  }
+}
+
+/**
+ * An overridden claim is a finding, not a silent correction. A run that quietly
+ * fixed up five bad handoffs is indistinguishable from a clean one; a run that
+ * says it overrode five claims tells its reader the implementer prompt or the
+ * handoff contract needs attention.
+ */
+function overrideBanner(overrides) {
+  const detail = overrides
+    .map(o => `${o.id}: ${o.outcome}${o.reason ? ` — ${o.reason}` : ''}`)
+    .join('; ')
+  return (
+    `CLAIM OVERRIDDEN: ${overrides.map(o => o.id).join(', ')} — the implementing agent reported ` +
+    `otherwise and the run acted on what it recorded (${detail})`
+  )
+}
+
+/**
+ * The fallback said out loud. Silent fallback would reintroduce the defect in
+ * the one case nobody would think to check — an older CLI, or a ping that lost
+ * the field — and a count that was never read must not read as one that came
+ * back clean.
+ */
+function claimDerivedBanner() {
+  return (
+    'CLAIM-DERIVED TALLIES: record-batch reported no usable per-task outcomes, so this wave was ' +
+    'ticked and counted from what the implementing agents claimed rather than from what the run recorded'
+  )
+}
+// RECORDED_VERDICT_END
 
 // A reviewer used to be handed a dimension NAME and nothing else, while 6,833
 // bytes of written criteria sat unread in skills/review-code/dimensions/. Six
@@ -393,7 +516,77 @@ const banners = []
 // `plan` starts null rather than assuming a path: a run that halted before the
 // reuse check reported has to say so, because "we never found out" and "there
 // was no prior plan" are different facts and only one of them is free.
-const summary = { waves: [], halted: null, notes: [], closing: null, plan: null }
+// `spend` is one entry per wave, `outputTokens` the run total, both filled from
+// the runtime's own accounting below. They start empty and unset rather than at
+// zero for the same reason `plan` starts null: a run that never measured must
+// not read as a run that measured nothing.
+const summary = { waves: [], spend: [], outputTokens: undefined, halted: null, notes: [], closing: null, plan: null }
+
+// --- token spend -----------------------------------------------------------
+//
+// `budget` is a workflow-runtime global — `{total, spent(), remaining()}` — and
+// is read through three guards, none of which is paranoia:
+//
+//   1. `typeof budget === 'undefined'`. The ACP host evaluates parts of this
+//      file with no such global, and a bare reference would throw a
+//      ReferenceError rather than degrade.
+//   2. `budget.spent` is a function. A runtime that stops exposing accounting
+//      partway through a run must leave the later waves unmeasured, not fail
+//      them.
+//   3. NOT `budget.total`. It is null whenever no token target was given, while
+//      `spent()` stays perfectly meaningful — guarding on it would blank the
+//      measurement on every ordinary run.
+//
+// Every failure path returns null, never 0 and never a throw: a run must not die
+// over its own bookkeeping, and an unmeasured wave must not read as a free one.
+function spentTokens() {
+  try {
+    if (typeof budget === 'undefined' || !budget || typeof budget.spent !== 'function') return null
+    const n = Number(budget.spent())
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : null
+  } catch {
+    return null
+  }
+}
+
+// The reading the run opened at, and the reading at the last wave boundary.
+const spendOpenedAt = spentTokens()
+let spendMark = spendOpenedAt
+
+/**
+ * Close the current wave span and attribute its measured delta to `wave`.
+ *
+ * Called at the point the script closes a wave — beside the `summary.waves`
+ * push, and after the inter-wave verification ping — and nowhere else, so the
+ * script's notion of a wave boundary and the recorded attribution come from one
+ * place. Two derivations of "where a wave ended" would drift, and spend would
+ * land on the wrong wave with nothing to reveal it.
+ *
+ * Keyed by wave rather than pushed blindly: a wave that closes an
+ * implementation span and then a verification span has two measured deltas and
+ * one wave. Adding two measured figures is not the same as inventing a split of
+ * one, which is why the deltas are summed and never divided.
+ *
+ * A wave whose span could not be measured records null. It is never assumed to
+ * be zero on the grounds that no implementer ran — a verification-only span
+ * still spends the orchestrator's turns.
+ */
+function markWaveSpend(wave) {
+  const now = spentTokens()
+  const delta = now === null || spendMark === null ? null : Math.max(0, now - spendMark)
+  if (now !== null) spendMark = now
+  const key = wave === undefined || wave === null || !String(wave).trim() ? 'unnumbered' : String(wave)
+  const found = summary.spend.find(s => s.wave === key)
+  if (!found) summary.spend.push({ wave: key, outputTokens: delta })
+  else if (delta !== null) found.outputTokens = found.outputTokens === null ? delta : found.outputTokens + delta
+}
+
+// Computed once and used twice: the banner a human reads and the receipt a
+// later process reads are the same list, so they cannot disagree. Two call
+// sites would reintroduce exactly the divergence `degradationLines()` exists to
+// remove, one level up — an accumulator can only report what someone remembered
+// to push, and two derivations can only agree by luck.
+let degradationsOnce = null
 
 const STATE = '.claude/ship/state.json'
 const WORK = '.claude/ship'
@@ -512,6 +705,22 @@ const nextSchema = {
     // silently staying unchecked and reading downstream as a failure.
     tickFailed: { type: 'boolean' },
     tickMissing: { type: 'array', items: { type: 'string' } },
+    // What `record-batch` recorded for each task in the batch it just recorded:
+    // the field the tick list and the per-wave tallies are built from. The ping
+    // accumulates one array per record command, in command order, because a
+    // catch-up loop of three batches would otherwise report the last batch's
+    // outcomes as the whole wave's.
+    recorded: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          outcome: { type: 'string' },
+          reason: { type: 'string' }
+        }
+      }
+    },
     // The plan-reuse probe reports on the same ping that adopts the plan, so
     // its answer travels on this schema rather than on one of its own. `reuse`
     // is the only affirmative: anything else — including a missing field — is a
@@ -615,6 +824,10 @@ function stepFromAgent(result) {
     carried.tickFailed = true
     carried.tickMissing = result.tickMissing
   }
+  // The accumulated verdicts beat the resolved step's own: `cliStdout` is the
+  // LAST record-batch command's output, so on a catch-up loop it holds one
+  // batch's outcomes while the agent's own field holds every batch's.
+  if (Array.isArray(result.recorded)) carried.recorded = result.recorded
   return Object.keys(carried).length ? { ...resolved, ...carried } : resolved
 }
 
@@ -665,10 +878,18 @@ async function readNext(raw) {
 // not initialized yet on the earliest failure path.
 let resolvedChange = changeArg || '(unresolved)'
 
-// One line per run in the learning corpus, for halted and clean runs alike — a
-// corpus of only successes cannot answer the question it exists for. Nothing
-// gates on it yet; it accumulates so that a later decision about continuity can
-// be made against evidence rather than against a feeling.
+// The closing step: it shuts the trajectory and reports the values nothing
+// else in this run has seen.
+//
+// It used to compose the corpus line too, handing this agent the halt state,
+// the remediation rounds and the surviving blocker count under the sentence
+// "Correct any field that does not match what actually happened". Those are
+// values the script observed, and that sentence let the party being assessed
+// rewrite the assessment's inputs — in the one file whose entire purpose is to
+// answer "should we have skipped the human that time?". The corpus line is now
+// written after the receipt, from the receipt (`appendReceipt` below), and this
+// step is asked only for the four values that live in the wave state and the
+// suite result, where nothing else in the run can reach them.
 const recordOutcome = async () => {
   // The trajectory's closing event mirrors what this same ping already knows —
   // whether the run halted — so closing it costs no extra agent turn. A halted
@@ -681,26 +902,22 @@ const recordOutcome = async () => {
 
   const result = await step(
     'record-outcome',
-    `Append one outcome record for this run.\n\n` +
-      `Write this JSON to ${WORK}/outcome.json:\n` +
-      JSON.stringify({
-        change: resolvedChange,
-        mode,
-        ship: {
-          ok: !summary.halted,
-          remediationRounds: summary.remediationRounds || 0,
-          codeBlockersSurviving: (summary.review && summary.review.blockers) || 0
-        }
-      }) +
-      `\n\nCorrect any field that does not match what actually happened, and add ` +
-      `ship.unitGreen — these values are a starting point, not a claim. Leave a field out ` +
-      `entirely rather than guessing it.\n\n` +
-      `Then run: interlock outcomes append --record ${WORK}/outcome.json --root .\n\n` +
-      `This never fails a run: a non-zero exit or a written:false result is reported and ignored. ` +
-      `Losing a corpus line must never fail the run that produced it.\n\n` +
+    `Close this run out: report what only you can see, and shut its trajectory.\n\n` +
+      `First, find out what this run left behind — every task still unchecked, not only the ones ` +
+      `that failed. A halt can leave whole waves that never ran, and those are exactly what a ` +
+      `later reader needs named:\n` +
+      `  interlock validate --change ${resolvedChange} --json\n` +
+      `Report every "id" from its tasks.items whose "done" is false as leftoverTaskIds, copied ` +
+      `exactly and in the order given. Do not derive them from tasks.md yourself, do not include ` +
+      `an item whose id is null, and if the command fails leave the field out entirely — omitted ` +
+      `means unknown, and unknown must never be reported as an empty list.\n\n` +
       `Also close the run trajectory. Read "runId" from ${STATE} and add it as "runId" to this ` +
       `object, then write the result to ${WORK}/run-log-close.json:\n` +
       JSON.stringify(closeEvent) +
+      (summary.halted
+        ? ''
+        : `\nReplace its "leftoverTaskIds" with the same list you just read from validate — the ` +
+          `event and your reported field must not disagree.`) +
       `\nThen run: interlock run-log append --event ${WORK}/run-log-close.json --root .\n` +
       `This also never fails a run: a non-zero exit or written:false is reported and ignored.\n\n` +
       `Finally, check the trajectory is reconstructable:\n` +
@@ -708,13 +925,23 @@ const recordOutcome = async () => {
       `Report its exit as reconstructable:<bool>, and if it was non-zero, copy its "problems" ` +
       `array (joined) into reconstructabilityDetail. This one DOES matter: an incomplete ` +
       `trajectory means the run cannot be reconstructed later, which is itself a reason to halt.\n\n` +
-      `Finally, read ${STATE} and report what the run actually accepted along the way, so the ` +
-      `summary can say it rather than infer it from an empty list:\n` +
+      `Then report the four values nothing else in this run has seen. They go into the corpus as ` +
+      `REPORTED — your reading of the run, labelled as such. The run's own measurements (whether ` +
+      `it halted, rounds consumed, blockers surviving, wave tallies, the commit sha) are recorded ` +
+      `separately from its receipt and are not yours to supply, correct or confirm.\n` +
+      `  - unitGreen: whether the unit suite was green at the end of this run\n` +
+      `Read ${STATE} for the other three, so the summary can say what the run accepted rather ` +
+      `than infer it from an empty list:\n` +
       `  - skippedVerificationReasons: every "reason" in the state's skippedVerifications\n` +
-      `  - capExhaustedVerifications: how many of those have reason "verify-cap-reached"\n` +
+      `  - capExhaustedVerifications: how many of those have reason "${capExhaustedSkipReason()}"\n` +
       `  - unresolvedErrors: the number of entries in the state's "unresolved" array\n` +
-      `Report 0 / [] when the state says so. If you cannot read the state, leave these fields out ` +
-      `entirely — omitted means unknown, and unknown is reported as unknown, never as clean.`,
+      `Report 0 / [] when the state says so. Leave a field out entirely rather than guessing it: ` +
+      `omitted means unknown, and unknown is reported as unknown, never as clean.\n\n` +
+      `Also read ${WORK}/plan-fingerprint.json and report its "hash" string as planFingerprint, ` +
+      `copied exactly. It identifies which plan over which artifacts this run executed, so a reader ` +
+      `holding neither repository can tell two runs of the same plan apart from two different ones. ` +
+      `Report the hash only — never the plan's contents. If the file is missing or unreadable, leave ` +
+      `the field out.`,
     {
       type: 'object',
       required: ['ok'],
@@ -723,9 +950,14 @@ const recordOutcome = async () => {
         detail: { type: 'string' },
         reconstructable: { type: 'boolean' },
         reconstructabilityDetail: { type: 'string' },
+        // The reported group. Every one is optional on purpose: an omitted
+        // field is unknown, and unknown must never arrive as a clean value.
+        unitGreen: { type: 'boolean' },
         skippedVerificationReasons: { type: 'array', items: { type: 'string' } },
         capExhaustedVerifications: { type: 'integer' },
-        unresolvedErrors: { type: 'integer' }
+        unresolvedErrors: { type: 'integer' },
+        planFingerprint: { type: 'string' },
+        leftoverTaskIds: { type: 'array', items: { type: 'string' } }
       }
     },
     { model: 'haiku' }
@@ -746,12 +978,99 @@ const recordOutcome = async () => {
   return result
 }
 
+// Appended after `recordOutcome()`, because its inputs are not complete until
+// the closing step has reported: `summary.closing` carries the skip reasons,
+// the cap exhaustion count and the unresolved-error count the receipt records,
+// and `degradationLines()` reads that same field.
+//
+// A run that dies between the closing step and this append leaves no receipt.
+// That is deliberately not papered over — `run-log list` says "no receipt
+// recorded" for a closed run, because "the run did not reach its own close" is
+// a finding rather than missing data.
+const appendReceipt = async () => {
+  const receipt = buildReceipt({
+    change: resolvedChange,
+    summary,
+    degradations: resolveDegradations(),
+    planFingerprint: summary.closing ? summary.closing.planFingerprint : undefined,
+    leftoverTaskIds: leftoverIds()
+  })
+
+  // The corpus line's reported half, and only that half. The observed half is
+  // not here and is not transportable: `interlock outcomes append` reads it off
+  // the receipt this same step just appended, so the receipt and the corpus
+  // line cannot disagree about one run. A field the closing step could not read
+  // is left out rather than sent as a clean value.
+  const reported = {}
+  const closing = summary.closing || {}
+  if (typeof closing.unitGreen === 'boolean') reported.unitGreen = closing.unitGreen
+  if (Array.isArray(closing.skippedVerificationReasons)) {
+    reported.skippedVerificationReasons = closing.skippedVerificationReasons
+  }
+  if (Number.isFinite(closing.capExhaustedVerifications)) {
+    reported.capExhaustedVerifications = closing.capExhaustedVerifications
+  }
+  if (Number.isFinite(closing.unresolvedErrors)) reported.unresolvedErrors = closing.unresolvedErrors
+  const outcome = { change: resolvedChange, mode, reported }
+
+  await step(
+    'record-receipt',
+    `Append the run's receipt to its trajectory, then record its corpus line.\n\n` +
+      `Write this JSON to ${WORK}/run-receipt.json exactly as given, byte for byte:\n` +
+      JSON.stringify(receipt) +
+      `\n\nThis is the run's own record of what it observed, not yours. Do not adjust, correct, ` +
+      `re-derive, reorder or add to any field, and do not drop one that looks wrong — a value you ` +
+      `changed in transit is worse than the value the run measured, because nothing downstream can ` +
+      `tell the two apart. That includes the measurements: "spend" and "outputTokens" were read from ` +
+      `the runtime's own counter by the script, and a figure you sanity-checked, corrected or ` +
+      `re-derived would stop being a measurement and become a report. The ONE field you add is ` +
+      `"runId", read from ${STATE}.\n\n` +
+      `Then run: interlock run-log append --event ${WORK}/run-receipt.json --root .\n\n` +
+      `This never fails a run: a non-zero exit or a written:false result is reported and ignored, ` +
+      `like every other trajectory append. Losing the receipt must never fail the run that earned it.\n\n` +
+      `Then, and only after that append, record one line in the learning corpus. Write this JSON ` +
+      `to ${WORK}/outcome.json exactly as given, byte for byte, adding nothing:\n` +
+      JSON.stringify(outcome) +
+      `\nThen run: interlock outcomes append --record ${WORK}/outcome.json --state ${STATE} --root .\n\n` +
+      `It carries only what a step could see. What the run measured is read by that command from ` +
+      `the receipt you just appended — which is why the order matters, and why there is nothing ` +
+      `here for you to reconcile against it. Report its "written" value as outcomeWritten.\n\n` +
+      `This never fails a run either: losing a corpus line must never fail the run that produced it.`,
+    {
+      type: 'object',
+      required: ['ok'],
+      properties: {
+        ok: { type: 'boolean' },
+        detail: { type: 'string' },
+        outcomeWritten: { type: 'boolean' }
+      }
+    },
+    { model: 'haiku' }
+  )
+}
+
+// The one close every exit path takes: record the outcome, then the receipt,
+// then print. Written once rather than at each of the five `return finish()`
+// sites, because a path that recorded an outcome and skipped its receipt would
+// leave the least explicable runs the least explained.
+const closeRun = async () => {
+  // The run total, read once on the way out. Not the sum of the per-wave
+  // deltas: everything outside a wave span — validation, planning, review,
+  // remediation, the commit — is in this figure and in none of those, and
+  // adding the parts up would silently under-report the whole.
+  const spentAtClose = spentTokens()
+  summary.outputTokens =
+    spentAtClose === null || spendOpenedAt === null ? null : Math.max(0, spentAtClose - spendOpenedAt)
+  await recordOutcome()
+  await appendReceipt()
+  return finish()
+}
+
 const halt = async reason => {
   summary.halted = reason
   // A halted run is the most informative record in the corpus, so it is written
   // on the way out rather than skipped as a failure.
-  await recordOutcome()
-  return finish()
+  return closeRun()
 }
 
 // --- 1. resolve and validate ----------------------------------------------
@@ -858,7 +1177,7 @@ const reuseProbe = await cheap(
     `classify anything, and leave action out of your result.\n\n` +
     `If reuse is true and noRemainingWork is false, adopt the plan in this same turn using the ` +
     `narrowedPath from that JSON:\n` +
-    `  interlock wave-state create --plan <narrowedPath> --json${maxParallelFlag} > ${STATE}\n\n` +
+    `  interlock wave-state create --plan <narrowedPath> --change ${change} --json${maxParallelFlag} > ${STATE}\n\n` +
     `Log the run start: read "runId" from ${STATE}, write ` +
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
@@ -889,8 +1208,10 @@ if (reused && reuseProbe.noRemainingWork === true) {
   summary.notes.push(
     'NO REMAINING WORK: every task in the stored plan is already complete — nothing was dispatched'
   )
-  await recordOutcome()
-  return finish()
+  // Chose not to commit, rather than never found out: nothing was dispatched,
+  // so there was nothing to commit. See `buildReceipt`'s `committed`.
+  summary.commitSkipped = true
+  return closeRun()
 }
 
 // The adopted step, when the probe both matched AND turned the plan into a run
@@ -950,7 +1271,7 @@ const planned = adopted
     `same unedited change reuses this plan instead of re-reading everything. Report its "written" ` +
     `value as fingerprintWritten. It never fails the run: a non-zero exit or written:false costs the ` +
     `NEXT run a classifier pass, which is what every run used to pay.\n` +
-    `  interlock wave-state create --plan ${WORK}/plan.json --json > ${STATE}\n\n` +
+    `  interlock wave-state create --plan ${WORK}/plan.json --change ${change} --json > ${STATE}\n\n` +
     `Log the run start: read "runId" from ${STATE}, write ` +
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
@@ -1041,6 +1362,15 @@ while (steps++ < MAX_LOOP_STEPS) {
   if (next.action === 'run-batch' || next.action === 'test-wave') {
     const remaining = batchesOf(next)
     const accumulated = []
+    // Per batch, everything a summary line needs that the recorded outcomes do
+    // not carry. Held rather than pushed on the spot: the tallies are built
+    // after the record commands report what they recorded, so a batch that ran
+    // three batches ago still gets its own line — counted from the verdict.
+    const pending = []
+    // Captured before the record ping, which replaces `next` with the step
+    // AFTER this wave.
+    const waveNumber = next.wave
+    const waveKind = next.action
     // The wave's changed-file set, taken from the plan rather than recomputed
     // from raw `task.paths`. `wave-state next` canonicalizes and deduplicates
     // it (lib/waves.mjs `uniquePaths`), so one file spelled two ways is one
@@ -1088,10 +1418,17 @@ while (steps++ < MAX_LOOP_STEPS) {
       // A null result is an agent that was stopped or hit an unrecoverable error.
       // It is a task failure, not an absent task — dropping it would let the run
       // walk past the failure budget without noticing.
-      // Keep this projection to { id, ok, error, handoff }. The fused record
-      // ping writes these objects straight into batch-N.json, so a field
-      // dropped here is a field record-batch never sees — and a missing packet
-      // on a task claiming ok:true fails that task closed.
+      // Keep this projection to { id, ok, error, filesChanged, handoff }. The
+      // fused record ping writes these objects straight into batch-N.json, so a
+      // field dropped here is a field record-batch never sees — and a missing
+      // packet on a task claiming ok:true fails that task closed.
+      //
+      // `filesChanged` is in that list for exactly this reason. It was being
+      // requested from every implementer, returned, and dropped right here,
+      // which is why nothing could cross-check a packet's evidence against the
+      // work it claims to describe. It is a REPORT, not an observation — the
+      // observed set is read from git at record-batch — and the two are kept
+      // apart all the way to the stored verdict.
       //
       // A null result gets no handoff on purpose: an agent that never returned
       // could not have written one, and demanding a packet from it would
@@ -1102,10 +1439,11 @@ while (steps++ < MAX_LOOP_STEPS) {
         const outcomes = laneOutcomes(lane, results[j])
         for (const o of outcomes) {
           if (o.outcome === 'not-attempted') unattempted.push(o.id)
-          else reported.push({ id: o.id, ok: o.outcome === 'ok', error: o.error, handoff: o.handoff })
+          else reported.push({ id: o.id, ok: o.outcome === 'ok', error: o.error, handoff: o.handoff, filesChanged: o.filesChanged })
         }
       })
       accumulated.push(reported)
+      pending.push({ lanes: lanes.length, notAttempted: unattempted })
 
       // A task nobody ran is not a task that failed. It is left unticked and
       // uncounted on purpose — spending the failure budget on the three tasks
@@ -1117,19 +1455,8 @@ while (steps++ < MAX_LOOP_STEPS) {
         )
       }
 
-      summary.waves.push({
-        wave: next.wave,
-        kind: next.action,
-        lanes: lanes.length,
-        ok: reported.filter(r => r.ok).length,
-        failed: reported.filter(r => !r.ok).length,
-        failedIds: reported.filter(r => !r.ok).map(r => r.id),
-        notAttempted: unattempted
-      })
-
       const anyFailed = reported.some(r => !r.ok)
       if (anyFailed || i === remaining.length - 1) {
-        const succeededIds = accumulated.flat().filter(r => r.ok).map(r => r.id)
         const writes = accumulated
           .map(
             (tasksResult, n) =>
@@ -1154,15 +1481,17 @@ while (steps++ < MAX_LOOP_STEPS) {
               COPY_STDOUT +
               ` from the LAST record-batch command.\n` +
               `A non-zero exit means the recorded result halted the run — copy action:halt with the reason.\n\n` +
-              (succeededIds.length
-                ? `Then tick succeeded ids (do not edit tasks.md by hand):\n` +
-                  `  interlock tasks tick --change ${change} --ids ${succeededIds.join(',')} --json\n` +
-                  `Tick stdout is not the next step — keep action from the last record-batch. Do not tick a failed id.\n` +
-                  `That command exits non-zero when an id has no matching checkbox. If it does, report ` +
-                  `tickFailed:true and put the ids from its "missing" array in tickMissing. Do not ` +
-                  `retry it and do not edit tasks.md yourself — a task that finished and stayed ` +
-                  `unchecked reads downstream as a failed task, so it has to be said out loud.\n`
-                : `No succeeded ids — do not tick anything.\n`) +
+              `Each record-batch command prints a "recorded" array: the outcome it recorded for every ` +
+              `task in that batch. Report those arrays as "recorded" — copy each command's array ` +
+              `VERBATIM and concatenate them in command order, so a loop of three commands reports ` +
+              `three batches' outcomes rather than one batch's. Do NOT merge duplicate ids, drop ` +
+              `entries, reorder them, or reconcile an outcome against what you believe happened: a ` +
+              `value adjusted in transit is indistinguishable afterwards from the value the run ` +
+              `recorded. If a command printed no such array, leave the field out rather than ` +
+              `inventing one.\n` +
+              `Do not tick any task in this step. Ticking happens next, from the outcomes you just ` +
+              `copied — a box ticked from what an agent claimed is how unimplemented work ships ` +
+              `behind a "[x]".\n` +
               `\nIf that last stdout has action:"verify", do not return yet and do not spawn another agent. ` +
               `In this same turn, run the structural inter-wave plan:\n` +
               `  interlock verify plan --no-profile --context inter-wave` +
@@ -1191,7 +1520,57 @@ while (steps++ < MAX_LOOP_STEPS) {
         if (next && next.skipped && next.reason) {
           banners.push(`VERIFICATION SKIPPED: reason=${next.reason}`)
         }
-        noteTickFailure(next)
+
+        // One authority, read once, for the tick and for the tallies alike.
+        const verdict = adjudicateBatches(accumulated, recordedOutcomes(next))
+        if (verdict.claimDerived) banners.push(claimDerivedBanner())
+        if (verdict.overrides.length) banners.push(overrideBanner(verdict.overrides))
+        // The wave's span closes here, at the same statement that turns it into
+        // summary rows — one place, so the boundary the script acted on and the
+        // boundary the receipt reports cannot drift apart. The figure is the
+        // wave's aggregate: the rows below are per BATCH, and splitting one
+        // measured span across them would be a number nobody measured.
+        markWaveSpend(waveNumber)
+
+        verdict.waves.forEach((counts, n) => {
+          const batch = pending[n] || { lanes: 0, notAttempted: [] }
+          summary.waves.push({
+            wave: waveNumber,
+            kind: waveKind,
+            lanes: batch.lanes,
+            ok: counts.ok,
+            failed: counts.failed,
+            failedIds: counts.failedIds,
+            // The lane that stopped early, plus anything the recorder found no
+            // result for at all. Neither is ticked and neither is a failure.
+            notAttempted: [
+              ...batch.notAttempted,
+              ...counts.recordedNotAttempted.filter(id => !batch.notAttempted.includes(id))
+            ]
+          })
+        })
+
+        // Its own step, because the ids are not knowable until the step above
+        // reported them: a tick fused into the record ping could only ever tick
+        // what the agents claimed, which is the defect this replaced.
+        if (verdict.tickIds.length) {
+          const ticked = await cheap(
+            `tick-${steps}`,
+            `Mark the tasks this run RECORDED as succeeded complete for change "${change}".\n\n` +
+              pingSpawnLine(`tick-${steps}`) +
+              `Run exactly this, and do not edit tasks.md by hand:\n` +
+              `  interlock tasks tick --change ${change} --ids ${verdict.tickIds.join(',')} --json\n` +
+              `This id list is the run's own record of what succeeded — do not add an id, drop one, ` +
+              `or substitute what an implementer told you.\n` +
+              `That command exits non-zero when an id has no matching checkbox. If it does, report ` +
+              `tickFailed:true and put the ids from its "missing" array in tickMissing. Do not retry ` +
+              `it and do not edit tasks.md yourself — a task that finished and stayed unchecked reads ` +
+              `downstream as a failed task, so it has to be said out loud.\n` +
+              `Report action:"${next && next.action ? next.action : 'done'}" — this step decides nothing ` +
+              `about the run's next move.`
+          )
+          noteTickFailure(ticked)
+        }
         break
       }
     }
@@ -1199,6 +1578,8 @@ while (steps++ < MAX_LOOP_STEPS) {
   }
 
   if (next.action === 'verify') {
+    // Captured before the ping replaces `next` with the step after this span.
+    const verifyWave = next.wave
     const mode = next.mode === 'fix' ? 'fix' : 'check'
     const changedFlag =
       Array.isArray(next.changed) && next.changed.length
@@ -1239,6 +1620,11 @@ while (steps++ < MAX_LOOP_STEPS) {
       )
     )
 
+    // A span whose only work was a verification still spent the orchestrator's
+    // turns, so its measured delta is recorded rather than assumed to be zero
+    // on the grounds that no implementer was spawned.
+    markWaveSpend(verifyWave)
+
     if (next && next.skipped && next.reason) {
       banners.push(`VERIFICATION SKIPPED: reason=${next.reason}`)
     }
@@ -1273,8 +1659,8 @@ if (steps >= MAX_LOOP_STEPS) {
 
 if (applyOnly) {
   summary.notes.push('--apply-only: stopped after the waves')
-  await recordOutcome()
-  return finish()
+  summary.commitSkipped = true
+  return closeRun()
 }
 
 // --- 4. review the diff (opt-in: --review / --strict) ----------------------
@@ -1552,8 +1938,8 @@ if (handoff || conformance) {
 
 if (noCommit) {
   summary.notes.push('--no-commit: everything ran, the commit is yours')
-  await recordOutcome()
-  return finish()
+  summary.commitSkipped = true
+  return closeRun()
 }
 
 // --- 8. commit -------------------------------------------------------------
@@ -1579,13 +1965,29 @@ const committed = await step(
 
 summary.commit = committed
 
-await recordOutcome()
-return finish()
+return closeRun()
 
 // --- the summary -----------------------------------------------------------
 
 function leftoverIds() {
+  // What the checkbox says, when the closing step managed to read it. "Left
+  // behind" is not "failed": a halt at verification leaves whole waves that
+  // never ran, and a receipt built from the failure list reported none of them
+  // — so a halted run, the most informative record in the corpus, listed
+  // nothing. The failure list stays as the fallback for a run that never
+  // reached its close.
+  const reported = summary.closing && summary.closing.leftoverTaskIds
+  if (Array.isArray(reported)) return reported.filter(id => typeof id === 'string')
   return summary.waves.flatMap(w => w.failedIds || [])
+}
+
+// The cache behind `resolveDegradations()`. Declared with the rest of the run
+// state rather than beside its reader: everything below the script's terminal
+// `return` is hoisted declarations only, so a `let` down there would stay in
+// its temporal dead zone forever.
+function resolveDegradations() {
+  if (!degradationsOnce) degradationsOnce = degradationLines()
+  return degradationsOnce
 }
 
 function finish() {
@@ -1599,9 +2001,16 @@ function finish() {
     lines.push(`SHIP HALTED — ${summary.halted}`)
   } else if (leftover.length) {
     lines.push(`SHIP COMPLETE WITH LEFTOVERS — ${resolvedChange}`)
-    lines.push(`  leftover tasks (failed, boxes stay unchecked): ${leftover.join(', ')}`)
   } else {
     lines.push(`SHIP COMPLETE — ${resolvedChange}`)
+  }
+
+  // Printed on a halt too, and it did not used to be: the run that stopped
+  // early is the one whose unfinished work someone has to pick up, and the
+  // receipt carries this list either way. A banner that stayed quiet about it
+  // made the record and the summary disagree on the halt path alone.
+  if (leftover.length) {
+    lines.push(`  leftover tasks (boxes still unchecked): ${leftover.join(', ')}`)
   }
 
   // Which path the plan took, always, in both directions. A run that silently
@@ -1669,7 +2078,7 @@ function finish() {
     )
   }
 
-  const degradations = degradationLines()
+  const degradations = resolveDegradations()
   if (degradations.length) {
     for (const banner of degradations) lines.push(banner)
   } else {
@@ -1732,3 +2141,125 @@ function degradationLines() {
   // skips.
   return [...new Set(out)]
 }
+
+// BUILD_RECEIPT_START
+/**
+ * The wave-state skip reason meaning the per-run verification cap was already
+ * spent.
+ *
+ * A hoisted function rather than a `const` so the closing prompt further up can
+ * name it too: two literals is how the printed banner and the recorded count
+ * would come to disagree about what "cap exhausted" means, and only one of them
+ * would be wrong in a way anyone noticed.
+ */
+function capExhaustedSkipReason() {
+  return 'verify-cap-reached'
+}
+
+/**
+ * The three verification conditions a receipt reports, read out of a wave-state
+ * object in the shape `summary.closing` carries them.
+ *
+ * This host cannot read that file, so it asks its closing agent for the same
+ * three facts. A host that CAN read it uses this instead — one fewer hop, and
+ * one statement of which skip reason means the cap was spent.
+ */
+function closingFromWaveState(state) {
+  if (!state || !Array.isArray(state.skippedVerifications)) return null
+  const reasons = state.skippedVerifications.map(s => (s && s.reason) || '').filter(Boolean)
+  return {
+    skippedVerificationReasons: reasons,
+    capExhaustedVerifications: reasons.filter(r => r === capExhaustedSkipReason()).length,
+    unresolvedErrors: Array.isArray(state.unresolved) ? state.unresolved.length : undefined
+  }
+}
+
+/**
+ * The run's receipt payload: what this run observed about itself, in the field
+ * names `lib/run-log.mjs`'s `run-receipt` whitelist copies by name.
+ *
+ * Pure, and closure-free on purpose — `bin/interlock-ship-acp` evaluates this
+ * block out of this file rather than carrying a second copy, because two
+ * hosts writing "the same" receipt from two implementations is precisely the
+ * drift a reader could never see: both trajectories would look fine.
+ *
+ * Every field is either observed or `undefined`. Nothing here substitutes a
+ * zero for a value the run never found out: the writer turns an absent field
+ * into `null`, and `null` reads as unknown. A receipt that reported an
+ * unobserved review as zero blockers would flatter exactly the halted runs
+ * this record exists to explain.
+ *
+ * @param {{
+ *   change?: string,
+ *   summary?: object,
+ *   degradations?: string[],
+ *   planFingerprint?: string,
+ *   leftoverTaskIds?: string[]
+ * }} input
+ */
+function buildReceipt(input) {
+  const source = input || {}
+  const summary = source.summary || {}
+  const closing = summary.closing || null
+  const plan = summary.plan || null
+  const review = summary.review || null
+  const commit = summary.commit || null
+
+  // surviving counts blockers and warnings together, so the warning count is
+  // the difference — and only when both halves were actually observed. A
+  // negative difference means the two counts disagree, which is reported as
+  // unknown rather than as a number nobody measured.
+  const surviving = review && Number.isFinite(review.surviving) ? review.surviving : undefined
+  const blockers = review && Number.isFinite(review.blockers) ? review.blockers : undefined
+  const warnings =
+    surviving !== undefined && blockers !== undefined && surviving >= blockers
+      ? surviving - blockers
+      : undefined
+
+  return {
+    type: 'run-receipt',
+    change: source.change,
+    waves: (Array.isArray(summary.waves) ? summary.waves : []).map(wave => ({
+      wave: wave.wave,
+      ok: wave.ok,
+      failed: wave.failed,
+      notAttempted: wave.notAttempted
+    })),
+    // Measured by the script from the runtime's own counter and carried, not
+    // computed by anyone downstream. Element by element, because these entries
+    // ride on the same summary the review findings and suite output do.
+    spend: (Array.isArray(summary.spend) ? summary.spend : []).map(entry => ({
+      wave: entry.wave,
+      outputTokens: entry.outputTokens
+    })),
+    outputTokens: summary.outputTokens,
+    planReused: plan ? plan.reused === true : undefined,
+    planStatus: plan ? plan.status : undefined,
+    planReason: plan ? plan.reason : undefined,
+    planFingerprint: source.planFingerprint,
+    reviewRaised: review ? review.raised : undefined,
+    reviewSurviving: surviving,
+    reviewBlockers: blockers,
+    reviewWarnings: warnings,
+    remediationRounds: summary.remediationRounds,
+    // These three are what `degradationLines()` reads, from the same place, so
+    // the receipt's counts and the printed banners cannot come apart.
+    skippedVerifications: closing
+      ? (closing.skippedVerificationReasons || []).length
+      : undefined,
+    capExhaustedVerifications: closing ? closing.capExhaustedVerifications : undefined,
+    unresolvedErrors: closing ? closing.unresolvedErrors : undefined,
+    leftoverTaskIds: source.leftoverTaskIds,
+    halted: Boolean(summary.halted),
+    haltReason: summary.halted || undefined,
+    // Tri-state, and the reason the field is not just the sha: a run told not
+    // to commit reports false, a run that halted before it ever reached a
+    // commit step reports unknown, and those are different facts about the
+    // same absent sha. `commitSkipped` is set only where the run chose to stop
+    // — never inferred from the sha being missing.
+    committed: commit ? commit.ok === true : summary.commitSkipped === true ? false : undefined,
+    commit: commit && commit.ok === true ? commit.sha : undefined,
+    degradations: source.degradations
+  }
+}
+// BUILD_RECEIPT_END

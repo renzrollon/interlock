@@ -878,6 +878,222 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(exits.map(e => e.exitCode), [0, 0, 0])
 })
 
+test('a cli-exit written by a load-bearing command carries its own measured duration', () => {
+  // What this asserts is that the field is FILLED, by a real measurement, in the
+  // one process that can honestly take it. What it deliberately does not assert
+  // is a magnitude: this is the CLI's self-time — parse, act, append — observed
+  // between agent turns, not the wall clock of the turn that ran it.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-dur.json', plan), '--change', 'add-widget', '--root', dir])
+  runJson(['wave-state', 'next', '--state', file('dur-run0.json', state0), '--root', dir])
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`)
+  const exits = readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+    .filter(e => e.type === 'cli-exit')
+
+  assert.ok(exits.length >= 2, 'create and next each log an exit')
+  for (const e of exits) {
+    assert.equal(typeof e.durationMs, 'number', `${e.command} recorded no duration`)
+    assert.ok(Number.isInteger(e.durationMs) && e.durationMs >= 0, `${e.command}: ${e.durationMs}`)
+  }
+})
+
+test('a cli-exit appended from a composed event keeps an unmeasured duration absent', () => {
+  // `run-log append` is the path with nothing to time: whoever composed the
+  // event did not measure the command, and the writer must say so rather than
+  // report an instantaneous one.
+  const event = file('unmeasured-exit.json', {
+    runId: 'run-unmeasured',
+    change: 'add-widget',
+    type: 'cli-exit',
+    command: 'wave-state next',
+    exitCode: 0
+  })
+  runJson(['run-log', 'append', '--event', event, '--root', dir])
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', 'run-unmeasured.jsonl')
+  const record = JSON.parse(readFileSync(logPath, 'utf8').split('\n').filter(Boolean)[0])
+  assert.equal(record.durationMs, null)
+  assert.notEqual(record.durationMs, 0)
+
+  const shown = run(['run-log', 'show', 'run-unmeasured', '--root', dir])
+  assert.equal(shown.code, 0)
+  assert.match(shown.stdout, /durationMs=unknown/)
+})
+
+// --- the change name travels on the state ----------------------------------
+//
+// The name is named ONCE, at create. Every later invocation reads it off the
+// frozen state, because a flag that must be repeated at eleven prompt-embedded
+// call sites is a flag that gets dropped — and it was, in both hosts.
+
+// --- evidence audit at record-batch ---------------------------------------
+//
+// `record-batch` is the only moment the working tree still matches what the
+// implementer just claimed, so it is where the observed changed-path set is
+// read. `--root` here is a temporary directory that is not a repository, which
+// is exactly the case that must degrade rather than fail: git exits non-zero,
+// the audit falls back to the task's own report, and the batch records normally.
+
+test('a git failure falls back to the reported path set and records the batch anyway', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-audit.json', plan), '--root', dir])
+
+  const reported = {
+    tasks: [
+      { ...okTask('1.1'), filesChanged: ['src/1.1.ts'] },
+      { ...okTask('1.2'), filesChanged: ['src/other.ts'] }
+    ]
+  }
+  const r = run([
+    'wave-state', 'record-batch',
+    '--state', file('audit-run0.json', state0),
+    '--result', file('audit-batch.json', reported),
+    '--root', dir,
+    '--json'
+  ])
+  assert.equal(r.code, 0, `the audit must not fail the batch: ${r.stderr}`)
+  const state1 = JSON.parse(r.stdout)
+
+  assert.deepEqual(state1.completed, ['1.1', '1.2'], 'both tasks still succeeded')
+  assert.equal(state1.failures.length, 0)
+  assert.equal(state1.halt, null)
+
+  // okTask cites `src/<id>.ts:1-10`, so 1.1 matches its own report and 1.2 does
+  // not. Both verdicts must say the set was self-reported, never observed.
+  for (const id of ['1.1', '1.2']) {
+    const audit = state1.evidenceAudits[id]
+    assert.ok(audit, `no verdict stored for ${id}`)
+    assert.ok(
+      audit.source === 'reported' || audit.verdict === 'not-audited',
+      `${id} must not claim an observed path set: ${JSON.stringify(audit)}`
+    )
+  }
+  assert.equal(state1.evidenceAudits['1.1'].verdict, 'confirmed')
+  assert.equal(state1.evidenceAudits['1.2'].verdict, 'unconfirmed')
+  assert.deepEqual(state1.reportedPaths['1.2'], ['src/other.ts'])
+})
+
+test('formatRunState shows the verdicts a halt reader would ask about', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-audit-text.json', plan), '--root', dir])
+  const r = run([
+    'wave-state', 'record-batch',
+    '--state', file('audit-text-run0.json', state0),
+    '--result', file('audit-text-batch.json', {
+      tasks: [
+        { ...okTask('1.1'), filesChanged: ['src/1.1.ts'] },
+        { ...okTask('1.2'), filesChanged: ['src/other.ts'] }
+      ]
+    }),
+    '--root', dir
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /evidence audit: 1 confirmed, 1 unconfirmed, 0 not audited/)
+  assert.match(r.stdout, /recorded only — never gates the run/)
+  assert.match(r.stdout, /unconfirmed 1\.2 \[reported\]/)
+})
+
+test('a mutation invoked without --change still names its events from the state', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-carry.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  const runId = state0.runId
+
+  // No --change here, nor below: this is the caller the fix exists for.
+  runJson(['wave-state', 'next', '--state', file('carry-run0.json', state0), '--root', dir])
+  runJson([
+    'wave-state', 'record-batch',
+    '--state', file('carry-run0b.json', state0),
+    '--result', file('carry-batch.json', { tasks: [okTask('1.1'), okTask('1.2')] }),
+    '--root', dir
+  ])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const named = events.filter(e => e.type === 'wave-action' || e.type === 'cli-exit')
+  assert.ok(named.length >= 6, `expected create+next+record events, got ${named.length}`)
+  for (const e of named) {
+    assert.equal(e.change, 'add-widget-export', `${e.type} (${e.source || e.command}) lost the change name`)
+  }
+})
+
+test('agent-spawn events take the change name from the state too', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-carry-spawn.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  runJson(['wave-state', 'next', '--state', file('carry-spawn-run0.json', state0), '--root', dir])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  const spawns = events.filter(e => e.type === 'agent-spawn')
+  assert.equal(spawns.length, 2, 'the run-batch step spawns one agent per lane')
+  for (const e of spawns) assert.equal(e.change, 'add-widget-export')
+})
+
+test('the state wins over a per-invocation --change that disagrees with it', () => {
+  // design.md decision 2: one mislabeled invocation must not relabel part of a
+  // trajectory. A log whose lines disagree about which change they belong to is
+  // worse than a uniformly unnamed one, because it looks correct.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson([
+    'wave-state', 'create', '--plan', file('plan-disagree.json', plan),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+  runJson([
+    'wave-state', 'next', '--state', file('disagree-run0.json', state0),
+    '--change', 'some-other-change', '--root', dir
+  ])
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  for (const e of events) assert.equal(e.change, 'add-widget-export')
+})
+
+test('a state with no name and no flag records the placeholder and the append succeeds', () => {
+  // A state.json written before the name was carried on state. Losing a
+  // trajectory label must never lose the run.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-legacy.json', plan), '--root', dir])
+  const legacy = { ...state0 }
+  delete legacy.change
+
+  const step = runJson(['wave-state', 'next', '--state', file('legacy-run0.json', legacy), '--root', dir])
+  assert.equal(step.action, 'run-batch')
+
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.ok(events.length > 0, 'the append must succeed even with no name available')
+  for (const e of events) assert.equal(e.change, 'unnamed')
+})
+
+test('a legacy state with no name falls back to the per-invocation --change', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-fallback.json', plan), '--root', dir])
+  const legacy = { ...state0 }
+  delete legacy.change
+
+  runJson([
+    'wave-state', 'next', '--state', file('fallback-run0.json', legacy),
+    '--change', 'add-widget-export', '--root', dir
+  ])
+
+  // Only the `next` invocation's events: `create` above ran with no name at all,
+  // so its lines are legitimately the placeholder.
+  const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+    .filter(e => e.source === 'next' || e.command === 'wave-state next' || e.type === 'agent-spawn')
+  assert.ok(events.length >= 2, `expected the next invocation's events, got ${events.length}`)
+  for (const e of events) assert.equal(e.change, 'add-widget-export')
+})
+
 test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
   // Width-deferred at maxParallel 1 rather than path-serialized: same-file tasks
   // are now ONE lane in one batch, so a collision fixture would leave a single
@@ -991,6 +1207,64 @@ test('record-batch --write-state writes the new state and stdout is the next ste
   const written = JSON.parse(readFileSync(outState, 'utf8'))
   assert.deepEqual(written.completed, ['1.1', '1.2'])
   assert.equal(written.cursor.phase, 'verify')
+})
+
+test('record-batch --write-state reports the per-task outcomes it just recorded', () => {
+  // The verdict and the claim can differ — an invalid packet fails a task that
+  // claimed success — and a caller that receives only the next action has no
+  // way to learn which. Without this field a host ticks and tallies from the
+  // claim, which is how a task ships unimplemented behind a `- [x]`.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-ro.json', plan)])
+  const bad = {
+    ...okTask('1.2').handoff,
+    status: 'done' // outside ok|blocked|partial — the live defect's shape
+  }
+  const batch = file('ro-batch.json', {
+    tasks: [okTask('1.1'), { id: '1.2', ok: true, handoff: bad }]
+  })
+
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('ro-run0.json', state0),
+    '--result', batch,
+    '--write-state', join(dir, 'ro-written.json')
+  ])
+
+  assert.deepEqual(
+    step.recorded.map(o => [o.id, o.outcome]),
+    [['1.1', 'ok'], ['1.2', 'failed']],
+    'one entry per task in the batch, carrying what the state machine recorded'
+  )
+  assert.equal(step.recorded[0].reason, undefined, 'a succeeded task owes no reason')
+  assert.match(step.recorded[1].reason, /invalid handoff: .*status/)
+  assert.ok(
+    step.recorded[1].reason.length < 400,
+    'the reason is an adjudication string, not a transcript — it is copied through an agent'
+  )
+
+  // Additive: every field the step already emitted still means what it meant.
+  assert.equal(step.action, 'verify', 'a following wave means an inter-wave check')
+  assert.equal(step.completed, undefined, 'stdout is still the step, not the state')
+  assert.equal(step.wave, 1)
+  assert.equal(step.waveIndex, 0)
+})
+
+test('record-batch reports a task the batch never accounted for as not-attempted', () => {
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-rn.json', plan)])
+  // Wave 1 holds 1.1 and 1.2; the result reports only 1.1.
+  const step = runJson([
+    'wave-state', 'record-batch',
+    '--state', file('rn-run0.json', state0),
+    '--result', file('rn-batch.json', { tasks: [okTask('1.1')] }),
+    '--write-state', join(dir, 'rn-written.json')
+  ])
+  assert.deepEqual(
+    step.recorded.map(o => [o.id, o.outcome]),
+    [['1.1', 'ok'], ['1.2', 'not-attempted']],
+    'not-attempted is distinct from failed: it is ticked nowhere and counted nowhere'
+  )
 })
 
 test('record-verify --write-state stdout is the next step after a green check', () => {
@@ -1318,6 +1592,132 @@ test('outcomes append refuses an unrecognized mode without failing the run', () 
   const r = run(['outcomes', 'append', '--record', record, '--root', dir, '--json'])
   assert.equal(r.code, 0)
   assert.equal(JSON.parse(r.stdout).written, false)
+})
+
+// --- outcomes: the observed half comes from the receipt, never the record ---
+
+/** A root holding one run whose trajectory carries a receipt. */
+function rootWithReceipt(runId, receipt) {
+  const root = mkdtempSync(join(tmpdir(), 'sf-cli-provenance-'))
+  const event = join(root, 'event.json')
+  const write = obj => {
+    writeFileSync(event, JSON.stringify(obj))
+    return event
+  }
+  run(['run-log', 'append', '--event', write({ type: 'run-start', runId, change: 'add-widget', mode: 'continue' }), '--root', root])
+  if (receipt) {
+    run(['run-log', 'append', '--event', write({ type: 'run-receipt', runId, change: 'add-widget', ...receipt }), '--root', root])
+  }
+  const state = join(root, 'state.json')
+  writeFileSync(state, JSON.stringify({ runId, change: 'add-widget' }))
+  return { root, state, record: obj => write(obj) && event }
+}
+
+test('outcomes append derives the observed half from the run receipt', () => {
+  const { root, state, record } = rootWithReceipt('run-observed-1', {
+    halted: true,
+    haltReason: 'unit suite is red',
+    remediationRounds: 2,
+    reviewBlockers: 1,
+    waves: [{ wave: 1, ok: 1, failed: 1, notAttempted: ['2.1'] }],
+    commit: 'deadbee'
+  })
+  try {
+    const appended = runJson([
+      'outcomes', 'append',
+      '--record', record({ change: 'add-widget', mode: 'continue', reported: { unitGreen: false } }),
+      '--state', state,
+      '--root', root
+    ])
+    assert.equal(appended.written, true)
+    assert.equal(appended.receipt, true)
+
+    const listed = runJson(['outcomes', 'list', '--root', root])
+    const line = listed.records[0]
+    assert.equal(line.schema, 'interlock.outcome/2')
+    assert.equal(line.observed.receipt, true)
+    assert.equal(line.observed.ok, false, 'the receipt says the run halted')
+    assert.equal(line.observed.remediationRounds, 2)
+    assert.equal(line.observed.codeBlockersSurviving, 1)
+    assert.equal(line.observed.commit, 'deadbee')
+    assert.equal(line.reported.unitGreen, false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a procedure edit that reinvites correction still cannot reach the corpus', () => {
+  // The regression test for the actual failure mode. The closing prompt used
+  // to say "Correct any field that does not match what actually happened";
+  // this is the record file such an agent composes, and none of it lands.
+  // Enforcement must not depend on the procedure's wording.
+  const { root, state, record } = rootWithReceipt('run-contained-1', {
+    halted: true,
+    haltReason: 'verification halted',
+    remediationRounds: 3,
+    reviewBlockers: 2,
+    commit: 'c0ffee1'
+  })
+  try {
+    const r = run([
+      'outcomes', 'append',
+      '--record', record({
+        change: 'add-widget',
+        mode: 'continue',
+        // Every route an obliging agent might take.
+        observed: { receipt: true, ok: true, remediationRounds: 0, codeBlockersSurviving: 0, commit: 'faked01' },
+        reported: { unitGreen: true, remediationRounds: 0, halted: false },
+        ship: { ok: true, codeBlockersSurviving: 0 }
+      }),
+      '--state', state,
+      '--root', root,
+      '--json'
+    ])
+    assert.equal(r.code, 0, 'a refusal is never fatal')
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.written, true, 'the line is still written, with the run\'s own values')
+    assert.equal(out.observedRefused, true)
+    assert.match(r.stderr, /refused/i, 'the refusal is reported, not silent')
+
+    const line = runJson(['outcomes', 'list', '--root', root]).records[0]
+    assert.equal(line.observed.ok, false, 'the run halted, whatever the agent supplied')
+    assert.equal(line.observed.remediationRounds, 3)
+    assert.equal(line.observed.codeBlockersSurviving, 2)
+    assert.equal(line.observed.commit, 'c0ffee1')
+    assert.equal(line.reported.remediationRounds, undefined)
+    assert.equal(line.reported.halted, undefined)
+    assert.doesNotMatch(JSON.stringify(line), /faked01/)
+    // The one value the agent legitimately owns still lands.
+    assert.equal(line.reported.unitGreen, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a run with no receipt records the absence rather than the record file', () => {
+  const { root, state, record } = rootWithReceipt('run-no-receipt-1', null)
+  try {
+    const appended = runJson([
+      'outcomes', 'append',
+      '--record', record({
+        change: 'add-widget',
+        mode: 'continue',
+        ship: { ok: true, remediationRounds: 0, codeBlockersSurviving: 0 }
+      }),
+      '--state', state,
+      '--root', root
+    ])
+    assert.equal(appended.written, true)
+    assert.equal(appended.receipt, false)
+
+    const line = runJson(['outcomes', 'list', '--root', root]).records[0]
+    assert.equal(line.observed.receipt, false, 'the absence is the record')
+    assert.equal(line.observed.ok, null, 'not "the run was fine"')
+    assert.equal(line.observed.remediationRounds, null, 'not "it used none"')
+    assert.equal(line.observed.codeBlockersSurviving, null, 'not "zero blockers"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('outcomes list is empty and calm before anything is recorded', () => {

@@ -118,3 +118,73 @@ test('every prompt names the change it is about, so none is assembled nameless',
     'a prompt was assembled without the resolved change name interpolated into it'
   )
 })
+
+// --- provenance: what the closing prompts may ask for ----------------------
+//
+// The outcome corpus exists to answer "should we have skipped the human that
+// time?". `recordOutcome` used to hand its haiku agent the values the script
+// had observed — halt state, remediation rounds, surviving blockers — under
+// the sentence "Correct any field that does not match what actually happened",
+// which is the assessed party writing the assessment's inputs. The writer now
+// refuses those fields whatever a prompt says, and this check keeps the prompt
+// from re-issuing an invitation the writer will only have to refuse.
+
+/** Phrasings that invite an agent to overwrite a value the run measured. */
+const INVITATIONS = [
+  /correct any field/i,
+  /a starting point, not a claim/i,
+  /(correct|adjust|re-?derive|overwrite|replace)[^.\n]{0,80}\b(does not match|looks wrong|is wrong|seems wrong)/i
+]
+
+// The receipt prompt says "Do not adjust, correct, re-derive … one that looks
+// wrong", which is the opposite instruction in the same vocabulary. Sentences
+// carrying a negation are the prohibition, not the invitation — checking them
+// would make the rule unstatable in the very prompt that states it hardest.
+const NEGATED = /\b(do not|don't|never|must not|cannot|not yours)\b/i
+
+const invitationsIn = prompt =>
+  INVITATIONS.filter(rx =>
+    prompt
+      .split(/(?<=[.\n])/)
+      .filter(sentence => !NEGATED.test(sentence))
+      .some(sentence => rx.test(sentence))
+  ).map(String)
+
+test('no closing prompt invites an agent to correct an observed value', async () => {
+  const prompts = await allPrompts()
+  const closing = prompts.filter(p => p.label === 'record-outcome' || p.label === 'record-receipt')
+  assert.ok(closing.length, 'the harness assembled no closing prompt at all')
+
+  const offenders = closing
+    .map(p => ({ label: p.label, found: invitationsIn(p.prompt) }))
+    .filter(p => p.found.length)
+
+  assert.deepEqual(
+    offenders.map(o => `${o.label}: ${o.found.join(', ')}`),
+    [],
+    'a closing prompt asks its agent to correct a value the run observed. The halt state, ' +
+      'remediation rounds, surviving blocker count, wave tallies and commit sha are measurements — ' +
+      'the party being assessed does not write the assessment\'s inputs.'
+  )
+})
+
+test('the closing prompt asks only for the values nothing else in the run has seen', async () => {
+  const prompts = await allPrompts()
+  const closing = prompts.find(p => p.label === 'record-outcome')
+  assert.ok(closing, 'no record-outcome prompt was assembled')
+
+  // The four the script genuinely cannot see: they live in the wave state and
+  // in the suite result, and no other reader of this run holds either.
+  for (const asked of [
+    /unitGreen/,
+    /skippedVerificationReasons/,
+    /capExhaustedVerifications/,
+    /unresolvedErrors/
+  ]) {
+    assert.match(closing.prompt, asked)
+  }
+  // And the rule that keeps an unread value from becoming a clean one. It
+  // predates the partition and survives it — it now governs the reported group.
+  assert.match(closing.prompt, /leave a field out entirely rather than guessing it/i)
+  assert.match(closing.prompt, /unknown is reported as unknown, never as clean/i)
+})
