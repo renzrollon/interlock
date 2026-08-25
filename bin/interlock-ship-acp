@@ -369,7 +369,22 @@ async function unticked() {
 async function appendReceipt() {
   const receipt = buildReceipt({
     change: resolvedChange,
-    summary: { ...summary, closing: closingFromWaveState(readJson(STATE)) },
+    summary: {
+      ...summary,
+      closing: closingFromWaveState(readJson(STATE)),
+      // This host has no token accounting. `budget` is a workflow-runtime
+      // global and there is no equivalent here, so every spend figure is
+      // unknown — stated field by field rather than left to an absent key, so a
+      // reader sees a host that could not measure rather than a run that
+      // measured nothing.
+      //
+      // It is NOT estimated. An agent count times a per-agent constant would be
+      // arithmetic, not a measurement — and `workflows/ship.js` already carries
+      // a "roughly 285 tokens per agent" figure for another purpose, so the
+      // temptation is concrete enough to be refused in writing.
+      spend: summary.waves.map(wave => ({ wave: wave.wave, outputTokens: null })),
+      outputTokens: null
+    },
     // The same list `finish()` prints, not a second derivation of it.
     degradations: banners,
     planFingerprint: (readJson(workPath('plan-fingerprint.json')) || {}).hash,
@@ -393,21 +408,6 @@ async function recordOutcome() {
   // checkbox can still be read at this point on every exit path.
   summary.leftoverTaskIds = await unticked()
 
-  // `lib/outcomes.mjs` builds the stored record key by key, so only fields it
-  // names survive. There is no host column in the corpus yet — an ACP run is
-  // filed as an ordinary checkpoint run rather than pretending otherwise.
-  const record = {
-    change: resolvedChange,
-    mode: 'checkpoint',
-    ship: {
-      ok: !summary.halted,
-      remediationRounds: 0,
-      codeBlockersSurviving: 0,
-      unitGreen: summary.unitGreen === true
-    }
-  }
-  await cli(['outcomes', 'append', '--record', write(workPath('outcome.json'), record), '--root', '.', '--json'])
-
   if (runId) {
     const close = summary.halted
       ? { type: 'run-halt', runId, change: resolvedChange, reason: summary.halted }
@@ -424,7 +424,37 @@ async function recordOutcome() {
     // write the file, so nothing transports the payload and nothing can alter a
     // value in transit. The event itself is identical to the workflow host's.
     await appendReceipt()
+  }
 
+  // The corpus line, after the receipt and never before it: `outcomes append`
+  // derives the record's observed half from that receipt, so the two cannot
+  // disagree about this run.
+  //
+  // This host has no agent between the loop and the record, so its observed
+  // values would be trustworthy written flat — and it writes them through the
+  // receipt anyway. One shape, or a reader has to know which host produced a
+  // line before it can interpret one. What is left here is the reported half:
+  // `lib/outcomes.mjs` builds the stored record key by key, so only fields it
+  // names survive. There is no host column in the corpus yet — an ACP run is
+  // filed as an ordinary checkpoint run rather than pretending otherwise.
+  const reported = {}
+  // Absent rather than false: a run that never reached verification did not
+  // observe a red suite, and the corpus must not read the two the same way.
+  if (typeof summary.unitGreen === 'boolean') reported.unitGreen = summary.unitGreen
+  const record = { change: resolvedChange, mode: 'checkpoint', reported }
+  await cli([
+    'outcomes',
+    'append',
+    '--record',
+    write(workPath('outcome.json'), record),
+    '--state',
+    STATE,
+    '--root',
+    '.',
+    '--json'
+  ])
+
+  if (runId) {
     const check = await cli(['run-log', 'check', '--state', STATE, '--json'])
     if (check.code !== 0 && !summary.halted) {
       const problems = (check.json && check.json.problems) || []

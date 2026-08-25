@@ -878,6 +878,52 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(exits.map(e => e.exitCode), [0, 0, 0])
 })
 
+test('a cli-exit written by a load-bearing command carries its own measured duration', () => {
+  // What this asserts is that the field is FILLED, by a real measurement, in the
+  // one process that can honestly take it. What it deliberately does not assert
+  // is a magnitude: this is the CLI's self-time — parse, act, append — observed
+  // between agent turns, not the wall clock of the turn that ran it.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-dur.json', plan), '--change', 'add-widget', '--root', dir])
+  runJson(['wave-state', 'next', '--state', file('dur-run0.json', state0), '--root', dir])
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`)
+  const exits = readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(l => JSON.parse(l))
+    .filter(e => e.type === 'cli-exit')
+
+  assert.ok(exits.length >= 2, 'create and next each log an exit')
+  for (const e of exits) {
+    assert.equal(typeof e.durationMs, 'number', `${e.command} recorded no duration`)
+    assert.ok(Number.isInteger(e.durationMs) && e.durationMs >= 0, `${e.command}: ${e.durationMs}`)
+  }
+})
+
+test('a cli-exit appended from a composed event keeps an unmeasured duration absent', () => {
+  // `run-log append` is the path with nothing to time: whoever composed the
+  // event did not measure the command, and the writer must say so rather than
+  // report an instantaneous one.
+  const event = file('unmeasured-exit.json', {
+    runId: 'run-unmeasured',
+    change: 'add-widget',
+    type: 'cli-exit',
+    command: 'wave-state next',
+    exitCode: 0
+  })
+  runJson(['run-log', 'append', '--event', event, '--root', dir])
+
+  const logPath = join(dir, '.claude', 'ship', 'runs', 'run-unmeasured.jsonl')
+  const record = JSON.parse(readFileSync(logPath, 'utf8').split('\n').filter(Boolean)[0])
+  assert.equal(record.durationMs, null)
+  assert.notEqual(record.durationMs, 0)
+
+  const shown = run(['run-log', 'show', 'run-unmeasured', '--root', dir])
+  assert.equal(shown.code, 0)
+  assert.match(shown.stdout, /durationMs=unknown/)
+})
+
 // --- the change name travels on the state ----------------------------------
 //
 // The name is named ONCE, at create. Every later invocation reads it off the
@@ -1546,6 +1592,132 @@ test('outcomes append refuses an unrecognized mode without failing the run', () 
   const r = run(['outcomes', 'append', '--record', record, '--root', dir, '--json'])
   assert.equal(r.code, 0)
   assert.equal(JSON.parse(r.stdout).written, false)
+})
+
+// --- outcomes: the observed half comes from the receipt, never the record ---
+
+/** A root holding one run whose trajectory carries a receipt. */
+function rootWithReceipt(runId, receipt) {
+  const root = mkdtempSync(join(tmpdir(), 'sf-cli-provenance-'))
+  const event = join(root, 'event.json')
+  const write = obj => {
+    writeFileSync(event, JSON.stringify(obj))
+    return event
+  }
+  run(['run-log', 'append', '--event', write({ type: 'run-start', runId, change: 'add-widget', mode: 'continue' }), '--root', root])
+  if (receipt) {
+    run(['run-log', 'append', '--event', write({ type: 'run-receipt', runId, change: 'add-widget', ...receipt }), '--root', root])
+  }
+  const state = join(root, 'state.json')
+  writeFileSync(state, JSON.stringify({ runId, change: 'add-widget' }))
+  return { root, state, record: obj => write(obj) && event }
+}
+
+test('outcomes append derives the observed half from the run receipt', () => {
+  const { root, state, record } = rootWithReceipt('run-observed-1', {
+    halted: true,
+    haltReason: 'unit suite is red',
+    remediationRounds: 2,
+    reviewBlockers: 1,
+    waves: [{ wave: 1, ok: 1, failed: 1, notAttempted: ['2.1'] }],
+    commit: 'deadbee'
+  })
+  try {
+    const appended = runJson([
+      'outcomes', 'append',
+      '--record', record({ change: 'add-widget', mode: 'continue', reported: { unitGreen: false } }),
+      '--state', state,
+      '--root', root
+    ])
+    assert.equal(appended.written, true)
+    assert.equal(appended.receipt, true)
+
+    const listed = runJson(['outcomes', 'list', '--root', root])
+    const line = listed.records[0]
+    assert.equal(line.schema, 'interlock.outcome/2')
+    assert.equal(line.observed.receipt, true)
+    assert.equal(line.observed.ok, false, 'the receipt says the run halted')
+    assert.equal(line.observed.remediationRounds, 2)
+    assert.equal(line.observed.codeBlockersSurviving, 1)
+    assert.equal(line.observed.commit, 'deadbee')
+    assert.equal(line.reported.unitGreen, false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a procedure edit that reinvites correction still cannot reach the corpus', () => {
+  // The regression test for the actual failure mode. The closing prompt used
+  // to say "Correct any field that does not match what actually happened";
+  // this is the record file such an agent composes, and none of it lands.
+  // Enforcement must not depend on the procedure's wording.
+  const { root, state, record } = rootWithReceipt('run-contained-1', {
+    halted: true,
+    haltReason: 'verification halted',
+    remediationRounds: 3,
+    reviewBlockers: 2,
+    commit: 'c0ffee1'
+  })
+  try {
+    const r = run([
+      'outcomes', 'append',
+      '--record', record({
+        change: 'add-widget',
+        mode: 'continue',
+        // Every route an obliging agent might take.
+        observed: { receipt: true, ok: true, remediationRounds: 0, codeBlockersSurviving: 0, commit: 'faked01' },
+        reported: { unitGreen: true, remediationRounds: 0, halted: false },
+        ship: { ok: true, codeBlockersSurviving: 0 }
+      }),
+      '--state', state,
+      '--root', root,
+      '--json'
+    ])
+    assert.equal(r.code, 0, 'a refusal is never fatal')
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.written, true, 'the line is still written, with the run\'s own values')
+    assert.equal(out.observedRefused, true)
+    assert.match(r.stderr, /refused/i, 'the refusal is reported, not silent')
+
+    const line = runJson(['outcomes', 'list', '--root', root]).records[0]
+    assert.equal(line.observed.ok, false, 'the run halted, whatever the agent supplied')
+    assert.equal(line.observed.remediationRounds, 3)
+    assert.equal(line.observed.codeBlockersSurviving, 2)
+    assert.equal(line.observed.commit, 'c0ffee1')
+    assert.equal(line.reported.remediationRounds, undefined)
+    assert.equal(line.reported.halted, undefined)
+    assert.doesNotMatch(JSON.stringify(line), /faked01/)
+    // The one value the agent legitimately owns still lands.
+    assert.equal(line.reported.unitGreen, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a run with no receipt records the absence rather than the record file', () => {
+  const { root, state, record } = rootWithReceipt('run-no-receipt-1', null)
+  try {
+    const appended = runJson([
+      'outcomes', 'append',
+      '--record', record({
+        change: 'add-widget',
+        mode: 'continue',
+        ship: { ok: true, remediationRounds: 0, codeBlockersSurviving: 0 }
+      }),
+      '--state', state,
+      '--root', root
+    ])
+    assert.equal(appended.written, true)
+    assert.equal(appended.receipt, false)
+
+    const line = runJson(['outcomes', 'list', '--root', root]).records[0]
+    assert.equal(line.observed.receipt, false, 'the absence is the record')
+    assert.equal(line.observed.ok, null, 'not "the run was fine"')
+    assert.equal(line.observed.remediationRounds, null, 'not "it used none"')
+    assert.equal(line.observed.codeBlockersSurviving, null, 'not "zero blockers"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('outcomes list is empty and calm before anything is recorded', () => {

@@ -278,6 +278,49 @@ export function receiptFrom(prompts) {
   return JSON.parse(m[0].trim())
 }
 
+/**
+ * The corpus line a run handed its closing ping, parsed back out of the
+ * assembled prompt.
+ *
+ * Read from the prompt for the same reason `receiptFrom` is: the payload only
+ * matters if it survives assembly. It carries the reported half only — the
+ * observed half is read off the receipt by `interlock outcomes append`, so a
+ * test asserting on an observed value asserts on the receipt instead.
+ */
+export function outcomeFrom(prompts) {
+  const prompt = prompts.find(p => p.label === 'record-receipt')
+  if (!prompt) return null
+  const m = /\{"change":.*?\}\nThen run: interlock outcomes append/s.exec(prompt.prompt)
+  if (!m) return null
+  return JSON.parse(m[0].slice(0, m[0].lastIndexOf('}') + 1))
+}
+
+/**
+ * A stand-in for the workflow runtime's `budget`, whose cumulative counter
+ * advances by `perRead` on every read.
+ *
+ * Monotonic and never repeating, so a per-wave delta that landed on the wrong
+ * boundary produces a different number rather than the same one — a fixture
+ * returning a constant would make every wrong attribution look right.
+ *
+ * `total` is null on purpose: that is what the runtime reports when no token
+ * target was set, and it is the case a guard written against `budget.total`
+ * would blank.
+ */
+export function countingBudget(perRead = 100) {
+  let spent = 0
+  const reads = []
+  return {
+    total: null,
+    spent() {
+      spent += perRead
+      reads.push(spent)
+      return spent
+    },
+    reads
+  }
+}
+
 function lookup(responses, label) {
   if (Object.prototype.hasOwnProperty.call(responses, label)) return responses[label]
   for (const key of Object.keys(responses)) {
@@ -289,10 +332,11 @@ function lookup(responses, label) {
 /**
  * Execute ship.js with stubbed agents.
  *
- * @param {{args?: unknown, responses?: object}} [opts]
+ * @param {{args?: unknown, responses?: object, budget?: {total: number|null, spent: () => number}}} [opts]
  *   `responses` is merged over `defaultResponses()`. A value may be a function
  *   `(label, callIndex) => result` so a label answered twice can answer
- *   differently the second time.
+ *   differently the second time. `budget` stands in for the workflow runtime's
+ *   token accounting; omitted, the script sees no such global at all.
  * @returns {Promise<{prompts: Array<{label: string, prompt: string, model?: string}>,
  *   output: string, calls: string[]}>}
  */
@@ -324,6 +368,12 @@ export async function runShip(opts = {}) {
   const parallel = async thunks => Promise.all((thunks || []).map(t => t()))
   const noop = () => {}
 
+  // `budget` is a workflow-runtime global the script reads for token spend. It
+  // is a parameter here rather than a fixture default so BOTH shapes are
+  // reachable: a runtime that exposes accounting, and one that does not. Left
+  // out, the parameter is `undefined` and `typeof budget === 'undefined'` holds
+  // inside the script — which is the degrade path the ACP host actually takes,
+  // and the one a bare reference would have thrown on.
   const run = new Function(
     'agent',
     'pipeline',
@@ -331,6 +381,7 @@ export async function runShip(opts = {}) {
     'log',
     'phase',
     'args',
+    'budget',
     `return (async () => {\n${shipSource()}\n})()`
   )
 
@@ -340,7 +391,8 @@ export async function runShip(opts = {}) {
     parallel,
     noop,
     noop,
-    opts.args === undefined ? 'demo-change' : opts.args
+    opts.args === undefined ? 'demo-change' : opts.args,
+    opts.budget
   )
   return { prompts, output: String(output ?? ''), calls }
 }

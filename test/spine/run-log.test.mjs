@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   appendRunLogEvent,
   checkRunLog,
+  deriveWaveElapsed,
   formatRunLog,
   formatRunLogList,
   listRunLogs,
@@ -183,6 +184,178 @@ test('every declared field for every type is exercised', () => {
   assert.deepEqual(records[4].spill, ['.claude/ship/spill/x/1-unit.log'])
 })
 
+// --- measurements: duration ---------------------------------------------------
+
+test('a duration the writer never measured is absent, not an instantaneous command', () => {
+  // The `run-log append` path: a caller hands the writer an event it composed,
+  // and nothing in it timed anything. `0` here would assert a command that ran
+  // in no time at all — a claim, where the truth is an absence.
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'cli-exit',
+    command: 'wave-state next',
+    exitCode: 0
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.durationMs, null)
+  assert.notEqual(record.durationMs, 0, 'an unmeasured duration must not read as an instant command')
+
+  // And the same for a value that arrives malformed rather than missing.
+  for (const durationMs of ['fast', -1, NaN, {}]) {
+    const bad = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'x', exitCode: 0, durationMs })
+    assert.equal(JSON.parse(lines(bad.path).pop()).durationMs, null, `durationMs=${String(durationMs)}`)
+  }
+})
+
+test('a measured duration is kept as given, including a genuine zero', () => {
+  // The distinction the field exists for: 0 is a measurement, null is not one.
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'a', exitCode: 0, durationMs: 0 })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'b', exitCode: 0, durationMs: 7 })
+  const [a, b] = lines(runLogPath(tmp, RUN_ID)).map(l => JSON.parse(l))
+  assert.equal(a.durationMs, 0)
+  assert.equal(b.durationMs, 7)
+})
+
+// --- measurements: wave elapsed time comes from the timestamps ----------------
+
+test('wave elapsed time is derived from the timestamps, with no recorded field to contradict it', () => {
+  const at = s => `2026-08-12T10:00:0${s}.000Z`
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', mode: 'checkpoint', now: at(0) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'wave-action', source: 'next', action: 'run-batch', wave: '1', now: at(1) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'wave-state next', exitCode: 0, now: at(2) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: '1.1', kind: 'implementer', now: at(3) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'wave-action', source: 'record-batch', action: 'verify', wave: '1', now: at(4) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'wave-action', source: 'next', action: 'run-batch', wave: '2', now: at(5) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'wave-state next', exitCode: 0, now: at(9) })
+
+  const elapsed = deriveWaveElapsed(readRunLog(tmp, RUN_ID).records)
+  assert.deepEqual(elapsed.map(w => w.wave), ['1', '2'])
+  assert.equal(elapsed[0].elapsedMs, 3000)
+  assert.equal(elapsed[0].events, 4)
+  assert.equal(elapsed[1].elapsedMs, 4000)
+
+  // The point of deriving it: there is no second source. Nothing on the wire
+  // states a wave duration, so nothing can disagree with the two timestamps
+  // these numbers came out of.
+  const raw = readFileSync(runLogPath(tmp, RUN_ID), 'utf8')
+  assert.doesNotMatch(raw, /waveDurationMs|runDurationMs|elapsedMs/)
+
+  assert.match(formatRunLog(readRunLog(tmp, RUN_ID)), /wave 1: 3000ms across 4 event\(s\)/)
+  assert.match(formatRunLog(readRunLog(tmp, RUN_ID)), /derived from event timestamps, not a recorded field/)
+})
+
+test("the run's own close is not padded onto whichever wave happened to be last", () => {
+  const at = s => `2026-08-12T10:00:${String(s).padStart(2, '0')}.000Z`
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'wave-action', source: 'next', action: 'run-batch', wave: '1', now: at(1) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'wave-state next', exitCode: 0, now: at(3) })
+  // A close 40 seconds later: review, remediation, the commit. None of it is
+  // wave 1's, and counting it there would make the last wave of every run look
+  // like the expensive one.
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt', waves: [], now: at(43) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-complete', leftoverTaskIds: [], now: at(44) })
+
+  const elapsed = deriveWaveElapsed(readRunLog(tmp, RUN_ID).records)
+  assert.deepEqual(elapsed.map(w => [w.wave, w.elapsedMs, w.events]), [['1', 2000, 2]])
+})
+
+test('deriving wave elapsed time never throws on a log it cannot read that way', () => {
+  assert.deepEqual(deriveWaveElapsed(undefined), [])
+  assert.deepEqual(deriveWaveElapsed([{ type: 'run-start', ts: 'not-a-date', seq: 1 }]), [])
+  // Events before any wave-action belong to no wave and are attributed to none.
+  assert.deepEqual(deriveWaveElapsed([{ type: 'run-start', ts: '2026-08-12T10:00:00.000Z', seq: 1 }]), [])
+})
+
+// --- measurements: token spend ------------------------------------------------
+
+test('a malformed spend figure reads as unknown, never as a wave that spent nothing', () => {
+  // A wave that ran agents never spends nothing, so a `0` from a coercion would
+  // be wrong in the same direction on every affected run — silent, systematic,
+  // and indistinguishable from a real measurement.
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    spend: [
+      { wave: 1, outputTokens: 'lots' },
+      { wave: 2, outputTokens: -5 },
+      { wave: 3, outputTokens: NaN },
+      { wave: 4 }
+    ],
+    outputTokens: 'plenty'
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.spend.map(s => s.wave), ['1', '2', '3', '4'])
+  assert.deepEqual(record.spend.map(s => s.outputTokens), [null, null, null, null])
+  assert.equal(record.outputTokens, null)
+})
+
+test('a host that cannot measure spend is distinguishable from a run that measured none', () => {
+  const unmeasured = appendRunLogEvent(tmp, {
+    runId: 'run-acp',
+    type: 'run-receipt',
+    spend: [{ wave: 1, outputTokens: null }],
+    outputTokens: null
+  })
+  const measured = appendRunLogEvent(tmp, {
+    runId: 'run-workflow',
+    type: 'run-receipt',
+    spend: [{ wave: 1, outputTokens: 0 }],
+    outputTokens: 0
+  })
+  const a = JSON.parse(lines(unmeasured.path)[0])
+  const b = JSON.parse(lines(measured.path)[0])
+
+  assert.equal(a.spend[0].outputTokens, null, 'a host with no accounting says unknown')
+  assert.equal(b.spend[0].outputTokens, 0, 'a run that measured zero says zero')
+  assert.notEqual(a.spend[0].outputTokens, b.spend[0].outputTokens)
+  assert.notEqual(a.outputTokens, b.outputTokens)
+
+  // And the two are told apart in the rendering as well, not only in the file.
+  assert.match(formatRunLog(readRunLog(tmp, 'run-acp')), /wave 1: unknown/)
+  assert.match(formatRunLog(readRunLog(tmp, 'run-workflow')), /wave 1: 0\n/)
+})
+
+test('a spend entry cannot carry anything but a wave label and a figure', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    spend: [{ wave: 1, outputTokens: 900, lanes: ['SECRET-LANE'], prompt: 'SECRET-PROMPT' }]
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(Object.keys(record.spend[0]).sort(), ['outputTokens', 'wave'])
+  assert.doesNotMatch(readFileSync(r.path, 'utf8'), /SECRET-LANE|SECRET-PROMPT/)
+})
+
+// --- the rendering must not undo the coercion --------------------------------
+
+test('an absent duration and an absent spend both render as unknown, never as zero', () => {
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', mode: 'checkpoint' })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'wave-state next', exitCode: 0 })
+  appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    waves: [{ wave: 1, ok: 1, failed: 0, notAttempted: [] }],
+    spend: [{ wave: 1, outputTokens: null }]
+  })
+  const rendered = formatRunLog(readRunLog(tmp, RUN_ID))
+
+  // Printing null as `0`, `0ms` or an empty column would undo the whole
+  // distinction at the last hop, where nothing downstream could see it.
+  const durationLine = rendered.split('\n').find(l => l.includes('durationMs'))
+  assert.match(durationLine, /durationMs=unknown/)
+  assert.doesNotMatch(durationLine, /durationMs=(0|0ms|null|""|\s|$)/)
+
+  const spendLines = rendered
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => /^wave 1: unknown$|^run total:/.test(l))
+  assert.deepEqual(spendLines, ['wave 1: unknown', 'run total: unknown'])
+  for (const line of spendLines) assert.doesNotMatch(line, /0/, `${line} rendered an unknown as a zero`)
+
+  // The framing rides with the figure, so nobody reads a wave aggregate as
+  // implementer cost or divides it by a lane count.
+  assert.match(rendered, /aggregate over the wave span — orchestrator turns included, not implementer cost/)
+})
+
 // --- outcomes.jsonl is untouched ---------------------------------------------
 
 test('appending to the trajectory never writes or touches the outcomes corpus', () => {
@@ -355,6 +528,11 @@ function fullReceipt(over = {}) {
       { wave: 1, ok: 3, failed: 0, notAttempted: [] },
       { wave: 2, ok: 1, failed: 1, notAttempted: ['2.3'] }
     ],
+    spend: [
+      { wave: 1, outputTokens: 41200 },
+      { wave: 2, outputTokens: 18700 }
+    ],
+    outputTokens: 74300,
     planReused: true,
     planStatus: 'match',
     planReason: 'the stored plan still matches every input it was built from',
@@ -399,6 +577,13 @@ test('a receipt records every field it was handed, per-wave tallies included', (
   assert.equal(record.committed, true)
   assert.equal(record.commit, 'deadbee')
   assert.equal(record.degradations.length, 1)
+  assert.deepEqual(record.spend, [
+    { wave: '1', outputTokens: 41200 },
+    { wave: '2', outputTokens: 18700 }
+  ])
+  // Not the sum of the wave figures, and deliberately so: validation, planning,
+  // review and the commit are in the run total and in none of the wave spans.
+  assert.equal(record.outputTokens, 74300)
 })
 
 test('a fat summary object cannot leak finding bodies or suite output into a receipt', () => {

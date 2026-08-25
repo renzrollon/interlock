@@ -17,6 +17,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import {
   planWaves,
   formatPlan,
@@ -63,7 +64,7 @@ import {
 } from '../lib/plan-fingerprint.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
-import { appendOutcome, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
+import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
 import {
   appendRunLogEvent,
   readRunLog,
@@ -245,6 +246,13 @@ outcomes:
   append --record <f|->  One outcome object; see .claude/learning/README.md.
                          "mode" must be "checkpoint" or "continue" — an
                          unrecognised mode is refused rather than guessed.
+                         The record supplies the "reported" half only. The
+                         "observed" half is derived here from the run's
+                         receipt, found via --state <f> or --run-id <id>; an
+                         "observed" group in the record file is refused, and
+                         so is an observed field smuggled into "reported".
+                         No receipt means the record says so — it never falls
+                         back to the values the record file carried.
   list                   Read .claude/learning/outcomes.jsonl back
   Nothing gates on this corpus yet; it is recorded so that it can, later.
   Always exits 0 — losing a corpus line must never fail the run that made it.
@@ -720,6 +728,26 @@ function runIdFromFlags(flags) {
   return runIdOf(stateFromFlags(flags))
 }
 
+// The mark `durationMs` on a `cli-exit` is measured from. Taken at module scope
+// so it covers everything this process does under its own name — flag parsing
+// and the lib/ call — rather than only the last few statements before the
+// append.
+//
+// It is CLI SELF-TIME and nothing else. This process runs BETWEEN agent turns
+// and never observes one, so the interval here is typically a millisecond or
+// two; `lib/run-log.mjs` states the same limit at the field, and wave elapsed
+// time comes from `deriveWaveElapsed` instead. Filling the field with a number
+// that looked like agent wall clock would be worse than leaving it null.
+const CLI_STARTED_AT = performance.now()
+
+// `undefined` rather than `0` when the clock gives nothing usable: the writer
+// coerces an absent value to `null`, and `null` reads as "not measured" while a
+// `0` would assert an instantaneous command.
+function cliDurationMs() {
+  const ms = performance.now() - CLI_STARTED_AT
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) : undefined
+}
+
 // A `verify-judgement` line never carries the suite transcript: only the
 // verdict's own short reason and status, plus locators for whatever the
 // verify helper already spilled (task 3.3) — never the results' raw text.
@@ -753,7 +781,8 @@ function logVerifyJudgement(root, { runId, change, verdict, results }) {
     change,
     type: 'cli-exit',
     command: 'verify judge',
-    exitCode: verdict.halt ? 1 : 0
+    exitCode: verdict.halt ? 1 : 0,
+    durationMs: cliDurationMs()
   })
   if (!exit.written) {
     process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
@@ -797,7 +826,8 @@ function logWaveMutation(root, { source, change, state }) {
     command: `wave-state ${source}`,
     // `nextStep` returns action:'halt' exactly when state.halt is set, so this
     // mirrors the exit code every call site below actually produces.
-    exitCode: state && state.halt ? 1 : 0
+    exitCode: state && state.halt ? 1 : 0,
+    durationMs: cliDurationMs()
   })
   if (!exit.written) {
     process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
@@ -1124,13 +1154,45 @@ function main() {
       const sub = positional[1]
       if (sub === 'append') {
         const record = readInput(flags.record, '--record <file|->')
-        const written = appendOutcome(root, record)
+        // The record file is composed by an agent on the workflow host, so the
+        // observed half is never taken from it: it is derived here from the
+        // run's own receipt. A record file that carries one is refused by name
+        // rather than passed through — the prompt is documentation and the
+        // writer is the mechanism.
+        const supplied =
+          record && typeof record === 'object' && !Array.isArray(record) ? record : {}
+        const carriedObserved = Object.prototype.hasOwnProperty.call(supplied, 'observed')
+        const { observed: _refused, ...reportedHalf } = supplied
+        const runId = runIdFromFlags(flags)
+        // No run identity, or no receipt on the trajectory, records the
+        // absence. It deliberately does not fall back to the record file:
+        // trusting the untrusted source exactly when the trusted one is
+        // missing would defeat the partition on the runs most likely to need
+        // it.
+        const receipt = runId
+          ? queryRunLog(root, runId, { type: 'run-receipt' }).records.pop() || null
+          : null
+        const written = appendOutcome(root, { ...reportedHalf, observed: observedFromReceipt(receipt) })
+        if (carriedObserved) {
+          warn(
+            'outcome record carried an "observed" group: refused. Observed values are derived ' +
+              'from the run receipt, never supplied by the step that writes the record.'
+          )
+        }
         if (!written.written) {
           // Never fatal: losing a corpus line must not fail the run that
           // produced it. Say so on stderr and exit 0.
           process.stderr.write(`interlock: outcome not recorded: ${written.reason}\n`)
+        } else if (written.reason) {
+          // Written, but partly refused. Reported for the same reason: a
+          // closing step whose payload was refused should be able to say so.
+          warn(`outcome recorded with a refusal: ${written.reason}`)
         }
-        emit(json, written, `${written.written ? `recorded → ${written.path}` : `not recorded: ${written.reason}`}\n`)
+        emit(
+          json,
+          { ...written, observedRefused: carriedObserved, receipt: Boolean(receipt) },
+          `${written.written ? `recorded → ${written.path}` : `not recorded: ${written.reason}`}\n`
+        )
       } else if (sub === 'list' || sub === undefined) {
         const result = readOutcomes(root)
         emit(json, result, formatOutcomes(result))

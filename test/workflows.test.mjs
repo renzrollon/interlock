@@ -631,8 +631,11 @@ const {
   reuseAdopted,
   reuseRebuilt,
   receiptFrom,
+  outcomeFrom,
   coercionArtifacts,
   recordedOutcome,
+  countingBudget,
+  handoffFor,
   RUN_BATCH,
   DONE
 } = await import('./helpers/ship-harness.mjs')
@@ -684,13 +687,22 @@ test('a bound the CLI never stated is not a bound', () => {
   }
 })
 
-/** The remediationRounds figure ship.js hands the outcome corpus. */
+/**
+ * The remediationRounds figure ship.js hands the outcome corpus.
+ *
+ * Read from the receipt, because that is now the only place it is stated: the
+ * corpus line's observed half is derived from the receipt by
+ * `interlock outcomes append`, so a run cannot report one number here and a
+ * different one there.
+ */
 function recordedRounds(prompts) {
-  const outcome = prompts.find(p => p.label === 'record-outcome')
-  assert.ok(outcome, 'the run assembled no record-outcome prompt')
-  const m = /"remediationRounds":(\d+)/.exec(outcome.prompt)
-  assert.ok(m, `record-outcome carries no remediationRounds:\n${outcome.prompt}`)
-  return Number(m[1])
+  const receipt = receiptFrom(prompts)
+  assert.ok(receipt, 'the run assembled no receipt payload')
+  // Absent, not zero: a lean run never reached a remediation step, and
+  // "measured none" is a different fact from "never found out".
+  return Object.prototype.hasOwnProperty.call(receipt, 'remediationRounds')
+    ? receipt.remediationRounds
+    : null
 }
 
 test('recorded round consumption differs between a one-round and a two-round run', async () => {
@@ -717,8 +729,13 @@ test('recorded round consumption differs between a one-round and a two-round run
 })
 
 test('a lean run records no remediation rounds, distinguishably from "ran and used none"', async () => {
+  // A lean run skips review, so no remediation step ever ran and there is no
+  // count to report. The corpus reads that as unobserved rather than as zero:
+  // it holds the checkpoint runs as a control group, and defaulting an absence
+  // to a clean value would bias exactly that group.
   const { prompts } = await runShip({})
-  assert.equal(recordedRounds(prompts), 0)
+  assert.equal(recordedRounds(prompts), null)
+  assert.notEqual(recordedRounds(prompts), 0, 'a run that never remediated did not remediate zero times')
 })
 
 // --- the completion gate ---------------------------------------------------
@@ -1455,6 +1472,57 @@ test('the receipt carries the plan fingerprint hash and never the plan', async (
   assert.match(closing, /Report the hash only — never the plan's contents/)
 })
 
+// --- the corpus line's provenance ------------------------------------------
+//
+// The closing step used to be handed the run's own measurements under "Correct
+// any field that does not match what actually happened". That is the assessed
+// party writing the assessment's inputs, in the file whose whole purpose is to
+// answer "should we have skipped the human that time?".
+
+test('the corpus line carries the reported half only — never a measurement', async () => {
+  const { prompts } = await runShip({
+    responses: {
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        unitGreen: true,
+        skippedVerificationReasons: ['docs-only-wave'],
+        capExhaustedVerifications: 1,
+        unresolvedErrors: 2,
+        planFingerprint: 'a'.repeat(64)
+      }
+    }
+  })
+  const outcome = outcomeFrom(prompts)
+  assert.ok(outcome, 'the run handed its closing ping no corpus line')
+  assert.deepEqual(Object.keys(outcome).sort(), ['change', 'mode', 'reported'])
+  assert.deepEqual(outcome.reported, {
+    unitGreen: true,
+    skippedVerificationReasons: ['docs-only-wave'],
+    capExhaustedVerifications: 1,
+    unresolvedErrors: 2
+  })
+  assert.equal(outcome.ship, undefined, 'the flat group is gone from the transport too')
+  assert.equal(outcome.observed, undefined, 'the observed half is not transportable')
+})
+
+test('a reported value the closing step never read is left out, not sent as clean', async () => {
+  const { prompts } = await runShip({ responses: { 'record-outcome': { ok: true, reconstructable: true } } })
+  const outcome = outcomeFrom(prompts)
+  assert.deepEqual(outcome.reported, {}, 'an omitted field is unknown; [] and false are claims')
+})
+
+test('the corpus line is recorded after the receipt, and reads its measurements from it', async () => {
+  const { prompts } = await runShip({})
+  const closing = prompts.find(p => p.label === 'record-receipt').prompt
+  assert.ok(
+    closing.indexOf('run-log append --event') < closing.indexOf('outcomes append --record'),
+    'the receipt must be on the trajectory before the command that derives from it runs'
+  )
+  assert.match(closing, /outcomes append --record \S+ --state \S+ --root \./)
+  assert.match(closing, /read by that command from the receipt you just appended/)
+})
+
 test('the printed degradation banners and the receipt are the same list', async () => {
   // Computed once and used twice (design.md — Decision 3). Two derivations
   // could only agree by luck, and a banner disagreeing with the record is the
@@ -1544,6 +1612,158 @@ test('a halted run records a receipt naming the halt and every task left behind'
     undefined,
     'and it never found out whether it would have committed — which is not the same as declining to'
   )
+})
+
+// --- token spend, measured on the host that can ------------------------------
+//
+// The figure comes from the workflow runtime's own cumulative counter, read by
+// the SCRIPT at wave boundaries and merely carried by an agent. That is what
+// keeps it a measurement rather than a self-report — and it holds only as long
+// as the transport does not invite the carrier to adjust it, which the last test
+// in this block is about.
+
+/** A `wave-state next` step for a wave holding one lane. */
+function waveStep(wave, lane) {
+  return stepResult({
+    action: 'run-batch',
+    wave,
+    waveIndex: wave - 1,
+    waveKind: 'impl',
+    batchIndex: 0,
+    batchCount: 1,
+    tasks: [lane],
+    remainingBatches: [[lane]],
+    previousHandoffs: [],
+    changed: ['lib/a.mjs'],
+    maxParallel: 8
+  }, {}, lane.map(t => recordedOutcome(t.id, 'ok')))
+}
+
+test('a run of three waves records three wave figures and one run total', async () => {
+  const waveTwo = [laneTask('2.1')]
+  const waveThree = [laneTask('3.1')]
+  let records = 0
+  const { prompts } = await runShip({
+    budget: countingBudget(1000),
+    responses: {
+      'record-batch-': () => {
+        records += 1
+        if (records === 1) return waveStep(2, waveTwo)
+        if (records === 2) return waveStep(3, waveThree)
+        return stepResult({ action: 'done' }, {}, [recordedOutcome('3.1', 'ok')])
+      },
+      [labelFor(waveTwo)]: { id: '2.1', ok: true, handoff: handoffFor('2.1') },
+      [labelFor(waveThree)]: { id: '3.1', ok: true, handoff: handoffFor('3.1') }
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  assert.deepEqual(receipt.spend.map(s => s.wave), ['1', '2', '3'])
+  for (const entry of receipt.spend) {
+    assert.equal(typeof entry.outputTokens, 'number', `wave ${entry.wave} recorded no figure`)
+    assert.ok(entry.outputTokens > 0, `wave ${entry.wave} recorded ${entry.outputTokens}`)
+  }
+  assert.equal(typeof receipt.outputTokens, 'number')
+  assert.ok(receipt.outputTokens > 0)
+
+  // Each wave's figure is its own span, not the cumulative reading: three waves
+  // in a row that all reported the running total would be the boundary-drift
+  // defect, and every number would still look plausible.
+  const cumulative = receipt.spend.reduce((sum, s) => sum + s.outputTokens, 0)
+  assert.ok(cumulative <= receipt.outputTokens, 'the wave spans sum to no more than the run')
+})
+
+test('a verification-only span records its measured delta, not an assumed zero', async () => {
+  // No implementer was spawned, which is exactly the wave a reader would expect
+  // to be free — and it is not: the orchestrator's own turns are in the span.
+  let records = 0
+  const { prompts } = await runShip({
+    budget: countingBudget(500),
+    responses: {
+      'record-batch-': () => {
+        records += 1
+        return records === 1
+          ? stepResult({
+              action: 'verify',
+              wave: 2,
+              waveIndex: 1,
+              waveKind: 'impl',
+              mode: 'initial',
+              fixAttempt: 0,
+              errors: [],
+              changed: ['lib/a.mjs']
+            })
+          : DONE
+      },
+      'inter-wave-verify-': DONE
+    }
+  })
+
+  const receipt = receiptFrom(prompts)
+  const verifyWave = receipt.spend.find(s => s.wave === '2')
+  assert.ok(verifyWave, 'the verification span is recorded as its own wave figure')
+  assert.notEqual(verifyWave.outputTokens, 0, 'a span with no implementer is not a span with no cost')
+  assert.ok(verifyWave.outputTokens > 0)
+})
+
+test('a runtime with no token accounting records unknown rather than throwing', async () => {
+  // The harness passes no `budget` here, so the script sees no such global at
+  // all — the ACP host's case, and the one a bare reference would have died on.
+  const { prompts, output } = await runShip()
+  const receipt = receiptFrom(prompts)
+
+  assert.deepEqual(receipt.spend, [{ wave: '1', outputTokens: null }])
+  assert.equal(receipt.outputTokens, null)
+  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run still finished')
+})
+
+test('a budget with no target set is still measured — the guard is on spent(), not total', async () => {
+  // `budget.total` is null whenever no token target was given, while `spent()`
+  // stays meaningful. A guard written against `total` would blank the
+  // measurement on every ordinary run and nothing would say so.
+  const budget = countingBudget(250)
+  assert.equal(budget.total, null)
+  const { prompts } = await runShip({ budget })
+  const receipt = receiptFrom(prompts)
+  assert.equal(typeof receipt.outputTokens, 'number')
+  assert.ok(receipt.outputTokens > 0)
+})
+
+test('a runtime that stops exposing accounting mid-run degrades rather than failing the run', async () => {
+  let reads = 0
+  let spent = 0
+  const budget = {
+    total: null,
+    spent() {
+      // Exposed for the first few reads, then gone.
+      if (++reads > 2) throw new Error('accounting withdrawn')
+      spent += 400
+      return spent
+    }
+  }
+  const { prompts, output } = await runShip({ budget })
+  const receipt = receiptFrom(prompts)
+
+  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run must not fail over a measurement')
+  assert.ok(Array.isArray(receipt.spend))
+  for (const entry of receipt.spend) {
+    assert.ok(
+      entry.outputTokens === null || entry.outputTokens >= 0,
+      `wave ${entry.wave} recorded ${entry.outputTokens}`
+    )
+  }
+})
+
+test('the receipt prompt forbids the carrier from touching the measurements', async () => {
+  // The whole basis for calling this a measurement rather than a self-report is
+  // that the script computed it and the agent only carried it. One sentence
+  // inviting a sanity-check would undo that, which is how the same defect got
+  // into `recordOutcome`.
+  const { prompts } = await runShip({ budget: countingBudget(100) })
+  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
+  assert.match(prompt, /"spend" and "outputTokens" were read from the runtime's own counter/)
+  assert.match(prompt, /sanity-checked, corrected or\s+re-derived/)
+  assert.doesNotMatch(prompt, /check that the (spend|token)/i)
 })
 
 // --- what a halt left behind ------------------------------------------------
@@ -1813,4 +2033,46 @@ test('the ACP driver receipt builder loads and produces the whitelisted shape', 
   assert.equal(filled.commit, 'cafe123')
   assert.deepEqual(Object.keys(filled.waves[0]).sort(), ['failed', 'notAttempted', 'ok', 'wave'])
   assert.doesNotMatch(JSON.stringify(filled), /SECRET/)
+})
+
+test('an ACP-produced receipt reads as a host that could not measure, not a run that spent nothing', async () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
+  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
+
+  // What the driver hands the shared builder: a spend row per wave, every figure
+  // explicitly absent, and an absent run total.
+  const waves = [
+    { wave: 1, ok: 2, failed: 0, notAttempted: [] },
+    { wave: 2, ok: 1, failed: 0, notAttempted: [] }
+  ]
+  const acp = build({
+    change: 'add-widget',
+    summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: null })), outputTokens: null }
+  })
+  assert.deepEqual(acp.spend, [
+    { wave: 1, outputTokens: null },
+    { wave: 2, outputTokens: null }
+  ])
+  assert.equal(acp.outputTokens, null)
+
+  // The distinction the whole field exists for: unknown is not zero.
+  const measuredNothing = build({
+    change: 'add-widget',
+    summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: 0 })), outputTokens: 0 }
+  })
+  assert.notEqual(acp.spend[0].outputTokens, measuredNothing.spend[0].outputTokens)
+  assert.notEqual(acp.outputTokens, measuredNothing.outputTokens)
+})
+
+test('the ACP driver declares its lack of token accounting rather than estimating it', async () => {
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /spend: summary\.waves\.map\(wave => \(\{ wave: wave\.wave, outputTokens: null \}\)\)/)
+  assert.match(driver, /outputTokens: null/)
+  // The temptation is concrete — ship.js carries a per-agent token constant for
+  // another purpose — so the absence of an estimate here is asserted, not hoped
+  // for. A fabricated figure in this corpus costs it the only thing it has.
+  const figures = [...driver.matchAll(/outputTokens:\s*(\S+)/g)].map(m => m[1].replace(/[^A-Za-z0-9.]/g, ''))
+  assert.deepEqual(figures, ['null', 'null'], 'the ACP host must never compute a spend figure')
+  assert.match(driver, /It is NOT estimated/, 'the refusal is written down, not left to be rediscovered')
 })

@@ -94,3 +94,220 @@ After the trajectory writer exists, the system SHALL treat a missing, unwritable
 
 - **WHEN** the reconstructability gate is enabled and appending to `.claude/learning/outcomes.jsonl` fails
 - **THEN** the ship run still finishes its halt or complete path; only the trajectory gate may stop it for bookkeeping
+
+### Requirement: A run SHALL record one receipt event carrying what it observed
+
+The system SHALL append exactly one `run-receipt` event per ship run, at run close, for halted and clean runs alike. The receipt MUST carry, from what the orchestrator observed rather than from prose: the per-wave tally of succeeded, failed, and not-attempted tasks; whether the plan was reused or rebuilt and under which verdict; the plan fingerprint hash; review blocker and warning counts when a review ran; remediation rounds consumed; the count of skipped verifications and how many were skipped for cap exhaustion; the count of unresolved errors carried past a wave; the leftover task ids; the halt reason or the fact of completion; the commit identifier when a commit was made; and the run's degradation list.
+
+The degradation list MUST be the same list the run reports to its reader, produced once and used for both, so the banner a human reads and the record a later process reads cannot disagree. The leftover task ids MUST likewise be one list, reported to the reader and recorded in the receipt, on a halted run as well as a clean one.
+
+The leftover task ids are every task still unticked at close, which is not the same set as the tasks that failed: a run that halts at a verification checkpoint leaves whole waves that never ran and therefore never failed, and those are precisely the tasks a later reader has to be told about. The tick state MUST be read from the change's own task list at close rather than inferred from the run's failure list. A run that cannot read that list MUST leave the field unobserved rather than empty, because an empty list claims the run finished everything.
+
+The receipt MUST be written with fields copied by name, like every other event type, so handing the writer the run's whole summary object cannot leak prompts, diffs, finding bodies, or suite output into the trajectory.
+
+#### Scenario: Happy path — a clean run records a complete receipt
+
+- **GIVEN** a run that executed three waves, reused its plan, ran no review, consumed no remediation rounds, and committed
+- **WHEN** the run reaches its close
+- **THEN** the trajectory contains exactly one `run-receipt` event carrying the three wave tallies, the plan-reuse verdict, the fingerprint hash, zero remediation rounds, an empty leftover list, the commit identifier, and the run's degradation list
+
+#### Scenario: Failure — a halted run records a receipt naming the halt and what was left
+
+- **GIVEN** a run that halts partway through its second wave with two tasks unticked
+- **WHEN** the run closes on its halt path
+- **THEN** the trajectory contains one `run-receipt` whose halt reason names the halt and whose leftover task ids list both unticked tasks
+- **AND** the receipt is present even though no commit was made
+
+#### Scenario: Edge case — a halt at a checkpoint lists the waves that never ran
+
+- **GIVEN** a run that halts at the verification checkpoint after its first wave, leaving every task of the later waves unticked and unattempted
+- **WHEN** the run closes on its halt path
+- **THEN** the receipt's leftover task ids list those tasks, none of which failed
+- **AND** the run reports the same list to its reader rather than reporting nothing left behind
+
+#### Scenario: Edge case — a fat summary object cannot leak content into the receipt
+
+- **GIVEN** a run whose summary object also holds a review result with finding bodies and a verification result with suite output
+- **WHEN** the receipt is appended from that object
+- **THEN** the written event contains only the named receipt fields
+- **AND** it contains no finding text, no suite transcript, and no diff content
+
+### Requirement: A run SHALL record the commit identifier next to the run
+
+When a ship run creates a commit, the receipt SHALL carry that commit's identifier. A run that made no commit MUST record the absence explicitly rather than omitting the field, so that "did not commit" and "we never found out" remain distinguishable.
+
+This exists so a later process can ask what happened to the changed files afterwards. That question cannot be asked at all from a commit identifier that only ever reached standard output.
+
+#### Scenario: Happy path — a committing run records its commit identifier
+
+- **GIVEN** a run whose commit step reports success with an identifier
+- **WHEN** the receipt is written
+- **THEN** the receipt carries that identifier
+
+#### Scenario: Failure — a run stopped before committing records no-commit explicitly
+
+- **GIVEN** a run invoked so that it stops after its waves without committing
+- **WHEN** the receipt is written
+- **THEN** the receipt records that no commit was made, distinctly from a run whose commit outcome was never observed
+
+#### Scenario: Edge case — a commit step that reported failure does not yield an identifier
+
+- **GIVEN** a run whose commit step reports failure
+- **WHEN** the receipt is written
+- **THEN** the receipt records the absence of a commit identifier and does not carry a fabricated or partial one
+
+### Requirement: A missing receipt SHALL NOT by itself make a run unreconstructable
+
+The reconstructability check SHALL recognize `run-receipt` as a valid event type and SHALL NOT require one for a run to pass. A run that halted before reaching its own close could not have written a receipt, and refusing to reconstruct such a run would withhold exactly the trajectory a reader most needs.
+
+The absence of a receipt on an otherwise-closed run MUST remain observable to a reader, because it means the run did not reach its own close.
+
+#### Scenario: Happy path — a run with a receipt passes reconstructability
+
+- **GIVEN** a closed run whose trajectory has contiguous sequence numbers, a run-start, a receipt, and a closing event
+- **WHEN** the reconstructability check runs
+- **THEN** it reports the run reconstructable
+
+#### Scenario: Failure — a run that died before its close still reconstructs
+
+- **GIVEN** a run whose trajectory has a run-start and a closing event but no receipt
+- **WHEN** the reconstructability check runs
+- **THEN** the check does not report a problem on account of the absent receipt
+- **AND** a reader listing the run can still tell that no receipt was recorded
+
+#### Scenario: Edge case — a second receipt on one run is reported
+
+- **GIVEN** a trajectory that somehow carries two `run-receipt` events for the same run
+- **WHEN** the reconstructability check runs
+- **THEN** it reports the duplicate as a problem, because a run has one close and therefore one receipt
+
+### Requirement: A trajectory file SHALL be scorable without the repository beside it
+
+After this change a trajectory file SHALL carry enough observed facts that a reader on a different machine, with no version-control checkout, no change artifacts, and no test suite available, can determine what the run did and what it degraded on. Facts that cannot travel MUST be represented by an identifier rather than silently omitted: the executed plan is represented by its fingerprint hash, not by its contents.
+
+#### Scenario: Happy path — a copied trajectory answers the run's outcome
+
+- **GIVEN** a trajectory file copied to a machine with no checkout of the repository it came from
+- **WHEN** a reader lists and shows that run
+- **THEN** the reader can state the change name, whether it halted and why, the per-wave tallies, the degradations, and the commit identifier without consulting version control
+
+#### Scenario: Failure — an absent fact reads as unknown, not as clean
+
+- **GIVEN** a run that halted before its review step ran
+- **WHEN** the receipt is read from a copied trajectory
+- **THEN** the review counts read as not observed rather than as zero blockers
+
+#### Scenario: Edge case — two runs of the same plan are identifiable as such
+
+- **GIVEN** two trajectory files from runs that executed identical plans over identical artifacts
+- **WHEN** their receipts are compared on a machine holding neither repository
+- **THEN** their plan fingerprint hashes match
+- **AND** neither receipt carries the plan's full contents
+
+### Requirement: A recorded duration SHALL state what it measured
+
+Where the trajectory records a duration on a CLI exit, that duration SHALL be the measured execution time of the command that wrote the event, and the specification SHALL state that this is what it is. It MUST NOT be presented as, or read as, the wall-clock time an agent spent on the corresponding turn — the command runs between agent turns and cannot observe them.
+
+A duration the writer could not measure MUST be recorded as absent, not as zero.
+
+Wave-level and run-level elapsed time SHALL be derived by a reader from event timestamps rather than recorded as an additional field, because the timestamps already carry it and a second recorded field could disagree with them.
+
+#### Scenario: Happy path — a CLI exit carries its own measured execution time
+
+- **GIVEN** a wave-state mutation that runs to completion
+- **WHEN** its `cli-exit` event is appended
+- **THEN** the event carries a non-negative measured duration for that command's execution
+
+#### Scenario: Failure — an unmeasurable duration is absent rather than zero
+
+- **GIVEN** an append path where the command's execution time was not measured
+- **WHEN** the `cli-exit` event is appended
+- **THEN** the duration field is absent
+- **AND** it is not recorded as zero, which would assert an instantaneous command
+
+#### Scenario: Edge case — wave elapsed time is derivable without a wave duration field
+
+- **GIVEN** a run whose trajectory holds a wave's first and last events
+- **WHEN** a reader is asked how long that wave took
+- **THEN** the answer is derived from the two timestamps
+- **AND** no recorded field claims a wave duration that could contradict them
+
+### Requirement: A run SHALL record output-token spend per wave and per run
+
+The trajectory SHALL record the output-token spend attributable to each wave and to the run as a whole, so that cost per shipped task is answerable from the corpus. The figure SHALL be sourced from the orchestrating runtime's own accounting, not estimated.
+
+The figure is a cumulative process-wide delta over the wave's span. The specification SHALL state that it therefore includes the orchestrator's own turns as well as the implementers', and SHALL NOT claim per-agent or per-lane attribution, which the runtime does not expose.
+
+#### Scenario: Happy path — each wave records a spend figure and the run records a total
+
+- **GIVEN** a run of three waves on a host whose runtime exposes token accounting
+- **WHEN** the run closes
+- **THEN** the trajectory carries a spend figure for each of the three waves and a total for the run
+
+#### Scenario: Failure — a fabricated per-lane attribution is not recorded
+
+- **GIVEN** a wave that ran four lanes concurrently
+- **WHEN** its spend is recorded
+- **THEN** the recorded figure is the wave's aggregate
+- **AND** no per-lane or per-agent figure is recorded or derived by division
+
+#### Scenario: Edge case — a wave that spawned no agents records its spend as measured, not as zero by assumption
+
+- **GIVEN** a wave whose only work was a verification with no implementer spawns
+- **WHEN** its spend is recorded
+- **THEN** the figure recorded is the measured delta across that wave's span, whatever it was
+- **AND** it is not assumed to be zero on the grounds that no implementer ran
+
+### Requirement: A host without token accounting SHALL record unknown, not zero
+
+Where a host's runtime exposes no token accounting, the spend figures SHALL be recorded as absent and the host's inability to supply them SHALL be visible to a reader. A host that cannot measure spend MUST NOT record `0`, and MUST NOT omit the field in a way indistinguishable from a run that genuinely spent nothing.
+
+The specification SHALL name this as a declared difference between hosts rather than leaving readers to infer it from missing data.
+
+#### Scenario: Happy path — a host with accounting records real figures
+
+- **GIVEN** a run on the default host, whose runtime exposes cumulative output-token spend
+- **WHEN** the run closes
+- **THEN** the recorded spend figures are present and non-negative
+
+#### Scenario: Failure — a host without accounting records absence explicitly
+
+- **GIVEN** a run on a host whose runtime exposes no token accounting
+- **WHEN** the run closes
+- **THEN** the spend figures are recorded as absent
+- **AND** a reader can distinguish this from a run that measured and found no spend
+
+#### Scenario: Edge case — a runtime that exposes accounting inconsistently degrades rather than throwing
+
+- **GIVEN** a run whose runtime exposes token accounting at the start and stops exposing it partway through
+- **WHEN** the later waves close
+- **THEN** those waves record their spend as absent
+- **AND** the run continues without failing on account of the missing measurement
+
+### Requirement: A run's reported tallies SHALL be its recorded outcomes
+
+Every per-wave tally a run reports — to the reader of its summary and to the record of its trajectory alike — SHALL count the outcomes the state machine recorded, not the outcomes the implementing agents reported for themselves. A run whose tallies are built from self-reports can produce a record that contradicts itself: all waves clean, beside a halt naming failures none of those waves admit to.
+
+A tally SHALL be internally consistent with the run's own halt: if a run halted because recorded task failures accumulated past their cap, the failures counted in its tallies SHALL account for the failures named in its halt reason.
+
+Where a task's recorded outcome is unavailable to the reporting path, the tally SHALL be reported as unobserved rather than as zero, on the same rule that governs every other receipt field: a count that was never read MUST NOT be presented as a count that came back clean.
+
+#### Scenario: Happy path — a clean run's tallies match what was recorded
+
+- **GIVEN** a run whose two waves recorded two and three succeeded tasks respectively, with no failures
+- **WHEN** the run reports its summary and appends its receipt
+- **THEN** both carry per-wave tallies of two succeeded and three succeeded, with no failures
+- **AND** the two agree, having counted the same recorded outcomes
+
+#### Scenario: Failure — an adjudicated task is counted as the failure it was recorded as
+
+- **GIVEN** a run in which every implementing agent claimed success but the state machine recorded five tasks as failed for invalid handoff packets, halting the run on its failure cap
+- **WHEN** the run reports its summary and appends its receipt
+- **THEN** the per-wave tallies report those five as failures
+- **AND** neither the summary nor the receipt reports a wave as clean while the halt reason names its tasks as failures
+
+#### Scenario: Edge case — an unread outcome is reported as unknown, not as clean
+
+- **GIVEN** a run that ended before the recorded outcomes for a wave could be read back
+- **WHEN** the receipt is appended
+- **THEN** that wave's tally reads as unobserved rather than as zero failures
