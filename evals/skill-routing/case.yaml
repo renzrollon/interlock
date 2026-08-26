@@ -1,0 +1,32 @@
+# Gap class: skill-routing discrimination. "Implement this change" must route to
+# the ship workflow, not to spec (which re-plans a change that is already
+# reviewed and ready). The sibling confusion is "explore the auth flow" routing
+# to explore, not graph; it is the same shape and a natural second case.
+#
+# No static assertion can observe this: test/skills.test.mjs:90-98 checks only
+# that each skill's description is a non-trivial length — the routing decision it
+# feeds is a model reading those descriptions and picking one. Whether the plugin
+# actually steers "implement this change" to ship rather than spec is only
+# observable by running one, and only *attributable* to the plugin by comparing
+# the plugin arm against a no-plugin baseline arm.
+#
+# The skill-invocation graders are marked `arm: with-only` so they are reported
+# as plugin-fired indicators rather than scored (case-suite spec): the score
+# belongs to the outcome, and the indicator + baseline delta establish that the
+# plugin, not the base agent, caused the routing.
+#
+# Provenance: test/skills.test.mjs:90-98 (the only assertion over a description
+# is its length).
+schema_version: "1.0"
+name: skill-routing
+provenance: "test/skills.test.mjs:90-98 (description length is the only static assertion)"
+runs: 3
+execution:
+  prompt: |
+    There is an OpenSpec change in this repository whose artifacts have already
+    been reviewed and whose tasks are unchecked and ready.
+
+    Implement this change.
+  max_turns: 4
+  timeout_seconds: 300
+  allowed_tools: [Skill, Read, Glob, Grep, Bash]

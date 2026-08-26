@@ -33,7 +33,7 @@ import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, formatLimits } from '../lib/limits.mjs'
+import { LIMITS, RUNTIME, EVAL_CAPS, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import { resolveReview, formatReview } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -64,6 +64,8 @@ import {
 } from '../lib/plan-fingerprint.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
+import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
+import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
 import {
   appendRunLogEvent,
@@ -85,10 +87,20 @@ Usage:
   interlock validate [change]               Inspect OpenSpec change artifacts
                                             (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
+  interlock doctor                          Preflight the host before a run:
+                                            Node, plugin install, PATH, the
+                                            openspec CLI, git, the test profile,
+                                            the permission allowlist, and the
+                                            writability of the run-state dirs
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
   interlock limits                          Print every cap the loop obeys
+  interlock evals triage --results <file>   Classify an eval results run:
+                                            regression, variance, or no signal.
+                                            No model, no network. Exit code is
+                                            the verdict (1=regression,
+                                            2=no signal, 3=configuration)
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
                                            Resolve a review against skeptic verdicts
@@ -137,6 +149,7 @@ Exit codes:
   Every gating command exits 1 when it blocks, so the workflow branches on exit
   status rather than on parsed prose:
     gate                     surviving findings block the gate
+    doctor                   a preflight check would stop a zero-touch run
     validate                 the change is not ready
     remediate                blockers survive the verdict round
     verify judge             a halting kind failed in this context, a result
@@ -153,6 +166,10 @@ Exit codes:
     wave-state record-*      the recorded result halted the run, or the
                              trajectory append failed
     run-log check            the run's trajectory is not reconstructable
+    evals triage             at least one case is a regression (exit 1); a run
+                             that yielded no signal (exit 2) or a configuration
+                             problem (exit 3) is non-zero but distinct, so
+                             neither reads as a clean pass
   risk never exits non-zero — branch on "continuityAllowed" instead, so a
   high-risk classification is a checkpoint rather than a failed command.
 
@@ -177,6 +194,28 @@ gate:
 limits:
   Prints the caps the loop obeys and the workflow-runtime ceilings above them.
   Cite these rather than restating a number in prose.
+
+doctor:
+  The preflight. Every condition here would otherwise be discovered mid-run, by
+  which point a zero-touch run has already spent waves of agents to learn it —
+  or worse, has stopped on an approval prompt with nobody watching. Read-only:
+  it names a fix for every failure and applies none of them.
+  Checks: the Node version against the plugin floor and the OpenSpec CLI's
+  higher one; the INSTALLED plugin's workflow, agent types and binaries
+  (resolved from the plugin, never from the checkout you are standing in);
+  interlock / interlock-graph on PATH; the openspec CLI and whether this project
+  is initialised; git and a work tree; ${TEST_PROFILE_PATH};
+  the permission allowlist; and whether the run-state directories can be
+  written.
+  The allowlist check derives the commands it requires — the four the flow
+  always shells out to, plus whatever the test profile says this project runs —
+  and reports an uncovered command as a FAILURE, since an approval prompt in an
+  unattended run is a stopped run. A rule that exists but is narrower than the
+  command it would have to permit (\`Bash(interlock waves:*)\` for a requirement
+  of \`interlock\`) is reported as narrower, never counted as coverage. A "deny"
+  that overlaps a required command fails; an "ask" warns; defaultMode
+  "bypassPermissions" warns and checks nothing, because nothing will prompt.
+  Exits 1 when any check fails. Warnings never gate.
 
 remediate:
   --findings <file>      Review output, in any shape gate accepts. "-" for stdin.
@@ -442,6 +481,8 @@ autonomy record:
   --human-override       Record that a human overrode the result
 
 Examples:
+  interlock doctor || echo "fix these before starting a zero-touch run"
+  interlock doctor --json | jq '.failures'
   interlock surface --changed src/Button.tsx docs/readme.md
   interlock waves --classified plan.json --max-parallel 6 --json
   interlock gate --findings review.json || echo "blocked"
@@ -1035,7 +1076,30 @@ function main() {
     }
 
     case 'limits': {
-      emit(json, { limits: LIMITS, runtime: RUNTIME }, formatLimits())
+      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS }, formatLimits())
+      break
+    }
+
+    case 'doctor': {
+      // Read-only by construction — see the header of lib/doctor.mjs. The exit
+      // code is the whole point: a preflight that only prints is a preflight a
+      // zero-touch run walks straight past.
+      const report = diagnose(root)
+      emit(json, report, formatDoctor(report))
+      if (!report.ok) process.exit(1)
+      break
+    }
+
+    case 'evals': {
+      const sub = positional[1]
+      if (sub === 'triage') {
+        const results = readInput(flags.results, '--results')
+        const verdict = triage(results)
+        emit(json, verdict, formatTriage(verdict))
+        if (verdict.exitCode) process.exit(verdict.exitCode)
+      } else {
+        die(`unknown evals subcommand: ${sub || '(none)'} — expected triage`)
+      }
       break
     }
 

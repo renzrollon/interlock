@@ -49,6 +49,12 @@ OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 1
 
 Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
+```bash
+interlock doctor
+```
+
+That is the preflight: it checks the allowlist against the commands the flow actually shells out to (including the one your own `.claude/testing/profile.json` names), plus the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written at all. It exits 1 when a check would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. Every condition it names is one you would otherwise meet three waves in.
+
 New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have only ever prompted a coding agent — no skills, no specs, no gates — read **[09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md)** first: every term defined once, ending at why `ship` is a script and not a prompt. Then **[10](docs/10-agentic-workflow-ship-and-spec.md)** for this repo's loop reviewed in depth.
 
 | Doc | |
@@ -237,6 +243,19 @@ What it is for: proving the boundary is real. A host contract with one implement
 - **No per-tier model routing.** ACP v1 has no per-prompt model selector, so the planner's tier ladder is not in effect and the run banners `MODEL ROUTING UNAVAILABLE (ACP host)`. The cost story is a Claude Code property.
 - **The zero-touch contract is weaker.** On Claude Code nobody can interrupt a run because the runtime has no channel for it. Here the driver just declines to ask — a policy in a file, not a property of a runtime.
 - **`/interlock:ship` is untouched.** No flag, no auto-detect, no fallback: when the Workflow tool is missing the trampoline still halts. See [when it stops](docs/04-when-it-stops.md).
+
+**Evals over the model-facing surface.** The deterministic spine is densely unit-tested; the prompts, skills and shared contracts that steer a model are not, and the repo's own archived proposals record failures where the prompt bytes were correct and a model did the wrong thing anyway. An `evals/` case suite regression-tests that surface against a real model — tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication — each case citing the reproduced failure it encodes.
+
+```bash
+export CLAUDE_CODE_WALNUT_SPIRE=1          # early-access enablement — env only, never committed
+claude plugin eval . --tag smoke --no-publish --json evals-results.json
+interlock evals triage --results evals-results.json   # regression / variance / no signal — exit code is the verdict
+```
+
+- **Enablement is a local prerequisite.** `claude plugin eval` is early-access and does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set *in the environment*. Do not commit it to `.claude/settings.json` — a committed value produces a suite that looks configured and does not run.
+- **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
+- **Advisory, pending a baseline.** The CI eval job reports and does not block. No baseline scores exist yet, so any blocking threshold would be a guess; promotion needs observed variance across more than one run. The offline structural gate `test/evals.test.mjs` runs in `npm test` and *does* gate every pull request.
+- **CI skips until access is provisioned.** The eval job ([.github/workflows/evals.yml](.github/workflows/evals.yml)) skips fork pull requests and skips cleanly when no model credential is present, so the suite lands and is maintained before paid access exists. Provisioning a credential is a later configuration action, not a prerequisite for the change.
 
 **Code Mode is out of scope.** Running the loop as generated code against a tool API is interesting and it is not this: it would need Interlock to own a runtime to execute that code in, which it does not. Future work, contingent on that, not a supported ship host today.
 

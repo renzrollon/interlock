@@ -10,6 +10,22 @@ There are two categories, and they are not the same thing.
 
 Almost everything is a soft continue. The halts are deliberately few.
 
+## Before it stops: the preflight
+
+A third category is not really a halt at all — it is a condition that was true before the run started and only became visible in the middle of it. An unallowlisted `npm test` that parks the run on an approval prompt with nobody watching. A `.claude/ship/` nothing can write to, which since the reconstructability gate ends the run rather than degrading it. A missing `openspec` CLI. A plugin that installed without its agent definitions, so the first lane cannot spawn.
+
+None of those are judgement calls, and none of them need a run to discover:
+
+```bash
+interlock doctor
+```
+
+It checks the Node version against both floors that apply (Interlock's, and the OpenSpec CLI's higher one), the installed plugin's workflow and agent types, `interlock` / `interlock-graph` / `openspec` / `git` on PATH, whether this project is an OpenSpec project and a git work tree, `.claude/testing/profile.json`, the permission allowlist, and whether every run-state directory can be written.
+
+Two things about the allowlist check are worth knowing, because they are where a preflight normally lies to you. It derives the commands it requires rather than hardcoding them — the four the flow always shells out to, plus whatever your own test profile says this project runs — so a repo whose suite is `pnpm vitest run` is checked for `pnpm vitest run`. And a rule that exists but is *narrower* than the command it would have to permit (`Bash(interlock waves:*)` where the loop calls thirty subcommands) is reported as narrower, never counted as coverage.
+
+It exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself.
+
 ## The loud halts
 
 `/interlock:ship` has two hard halts on the default (lean) path, plus two preconditions that stop it before it starts. `--review` / `--strict` adds a third halt: unresolved review blockers.
@@ -21,7 +37,7 @@ Almost everything is a soft continue. The halts are deliberately few.
 | Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
 | Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
-| Ship-run trajectory is not reconstructable | The `record-outcome` ping ran `interlock run-log check --state` and it exited non-zero — a sequence gap, a missing `run-start`, or a `wave-state`/`verify judge` invocation with no logged `cli-exit`. An otherwise-clean run still halts on this, because an unreconstructable run defeats the reason this file exists. | Read the reported problems with `interlock run-log check --run-id <id>` yourself. Usually a write to `.claude/ship/` failed mid-run (disk full, permissions) — fix that and re-run. This is new: until this halt existed, the writer degraded silently on a failed append. |
+| Ship-run trajectory is not reconstructable | The `record-outcome` ping ran `interlock run-log check --state` and it exited non-zero — a sequence gap, a missing `run-start`, or a `wave-state`/`verify judge` invocation with no logged `cli-exit`. An otherwise-clean run still halts on this, because an unreconstructable run defeats the reason this file exists. | Read the reported problems with `interlock run-log check --run-id <id>` yourself. Usually a write to `.claude/ship/` failed mid-run (disk full, permissions) — fix that and re-run, and run `interlock doctor` first next time, which probes exactly that. This is new: until this halt existed, the writer degraded silently on a failed append. |
 
 On any halt: nothing is committed, and it will not ask you a question. `ship` is a dynamic workflow, and the workflow runtime accepts no mid-run user input at all — there is no one listening, by construction rather than by policy. The report is the whole interface.
 

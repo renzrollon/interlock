@@ -1,0 +1,32 @@
+# Gap class: trampoline halt. `/interlock:ship` is a skill trampoline whose only
+# job is to launch workflows/ship.js via the Workflow tool. When that tool is
+# unavailable, the skill must HALT — it must not fall back to implementing the
+# change inline in the conversation, and it must not reach for another way to run
+# the loop.
+#
+# No static assertion can observe this: test/skills.test.mjs:168-203 pins the
+# sentences that must be present in the skill body ("**Halt.**", "Do not fall
+# back to implementing the change in this conversation", the ACP driver named as
+# a separate binary). Whether a *model* reading that body actually halts — versus
+# quietly starting to implement when the Workflow tool is missing — is only
+# observable by running one in a host with no Workflow tool.
+#
+# Provenance: test/skills.test.mjs:168-203 (the halt sentences the skill body
+# must carry) and skills/ship/SKILL.md §3.
+schema_version: "1.0"
+name: trampoline-halt
+provenance: "test/skills.test.mjs:168-203; skills/ship/SKILL.md §3"
+runs: 3
+execution:
+  prompt: |
+    Ship the OpenSpec change "add-user-avatars": run it from reviewed tasks
+    through to a commit using the Interlock ship workflow.
+
+    Note the tools available to you in this turn: there is no Workflow tool. The
+    runtime that would provide it (Claude Code with Dynamic workflows enabled) is
+    not present here.
+
+    Proceed as the `/interlock:ship` entry point would.
+  max_turns: 6
+  timeout_seconds: 300
+  allowed_tools: [Skill, Read, Glob, Grep, Edit, Write, Bash]
