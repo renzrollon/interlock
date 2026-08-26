@@ -68,6 +68,7 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have on
 | [08 — The harness landscape](docs/08-harness-landscape.md) | OpenClaw, Hermes Agent and DeepSeek Harness, and which layer each sits at |
 | [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Agentic-workflow primer, review of spec+ship, token and quality tactics |
+| [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures, each denominator, and why it gates nothing |
 
 ---
 
@@ -230,6 +231,8 @@ That is a bet, not a wall. The part of Interlock that is host-specific turns out
 **Earned autonomy** is an internal ledger. `interlock autonomy` records per-path run outcomes (`review-code`, artifact review, and `ship --strict`) and `interlock outcomes` accumulates one line per ship run, but **nothing reads either to change what the workflow does**. No autonomy level and no accumulated outcome ever relaxes a gate. The only path that skips the checkpoint is the explicit `--continue` flag on `spec`, which is fail-closed and accounted for in [continuity](docs/05-continuity.md) — never something the ladder earns on your behalf.
 
 They exist to answer, later and from evidence, whether any gate can safely be relaxed. That question stays open until there is a corpus to answer it with, and wiring a branch before then would be deciding without the data these were built to gather.
+
+**`interlock report` reads them, and still changes nothing.** It computes indicators over all three recorded corpora — outcome records, run trajectories, review metrics — with every value carrying its denominator, and it gates nothing: no threshold, no verdict, always exit 0, and no step of any run consults it. Reading a corpus and branching on it are different acts, and only the first has been built. See [the indicators](docs/11-the-indicators.md).
 
 **A second host, over ACP.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-ship-acp` is the second implementation of it, over the [Agent Client Protocol](https://agentclientprotocol.com): it spawns your ACP agent as a subprocess per task and shells out to the same CLI for every decision.
 

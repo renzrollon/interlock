@@ -33,7 +33,7 @@ import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, EVAL_CAPS, formatLimits } from '../lib/limits.mjs'
+import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import { resolveReview, formatReview } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -64,6 +64,7 @@ import {
 } from '../lib/plan-fingerprint.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
+import { buildReport, formatReport } from '../lib/report.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
@@ -95,6 +96,12 @@ Usage:
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
+  interlock report [--since <iso>]          Indicators over the three recorded
+                  [--change <name>]         corpora — outcome records, run
+                                            trajectories, review metrics. Every
+                                            value carries its denominator, and
+                                            an unobserved value stays unobserved.
+                                            Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
@@ -172,6 +179,25 @@ Exit codes:
                              neither reads as a clean pass
   risk never exits non-zero — branch on "continuityAllowed" instead, so a
   high-risk classification is a checkpoint rather than a failed command.
+  drift, conformance and report never exit non-zero either. For report that is
+  a policy, not a convenience: §4.15(a) forbids gating on the recorded corpora,
+  and a non-zero status is exactly the comparison it forbids. Nothing in the
+  loop reads the report.
+
+report:
+  Reads .claude/learning/outcomes.jsonl, .claude/ship/runs/*.jsonl and
+  .claude/metrics/*.json. Coverage first — how many trajectories carry a
+  receipt at all — because every receipt-derived indicator rests on it and a
+  thin corpus must read as thin rather than as clean. Metrics files are
+  classified by their "schema" key, never by filename: a skill also writes
+  review-artifacts-*.json into that directory, and it carries finding bodies
+  rather than counts. One indicator, "does the merged diff match the plan", is
+  reported as not computable with what would close it, rather than approximated
+  from a nearby number.
+  --since <iso>          Keep runs whose earliest record is at or after this
+  --change <name>        Keep one change's runs, outcomes and metrics
+  --max-runs <n>         Lower the scan bound; the published cap is the ceiling
+                         (see interlock limits). Truncation is reported.
 
 waves:
   --classified <file>    JSON: { "tasks": [{id, group, description, tier, model, isTestTask}] }
@@ -1065,6 +1091,20 @@ function main() {
       break
     }
 
+    case 'report': {
+      // No exit(1) here, ever — and unlike `drift`, not because a signal is
+      // inferred but because §4.15(a) forbids the comparison a non-zero status
+      // would encode. Every value here is one `if` away from a threshold; the
+      // absence of that `if` is the feature. See the header of lib/report.mjs.
+      const report = buildReport(root, {
+        since: typeof flags.since === 'string' ? flags.since : undefined,
+        change: typeof flags.change === 'string' ? flags.change : undefined,
+        maxRuns: num(flags, 'max-runs')
+      })
+      emit(json, report, formatReport(report))
+      break
+    }
+
     case 'conformance': {
       // Emits questions, never verdicts, and never exits non-zero — see the
       // header of lib/conformance.mjs.
@@ -1076,7 +1116,7 @@ function main() {
     }
 
     case 'limits': {
-      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS }, formatLimits())
+      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS }, formatLimits())
       break
     }
 
