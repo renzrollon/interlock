@@ -53,7 +53,9 @@ Before a long `ship` run, allowlist the commands its agents use (`interlock`, `i
 interlock doctor
 ```
 
-That is the preflight: it checks the allowlist against the commands the flow actually shells out to (including the one your own `.claude/testing/profile.json` names), plus the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written at all. It exits 1 when a check would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. Every condition it names is one you would otherwise meet three waves in.
+That is the preflight: it checks the allowlist against the commands the flow actually shells out to (including the one your own `.claude/testing/profile.json` names), plus the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written at all. It exits 1 when a check would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. Every condition it names is one you would otherwise meet three waves in. The plugin also runs this preflight automatically at session start (a `SessionStart` hook) so a missing allowlist entry surfaces before a run rather than three waves in.
+
+The plugin ships three `PreToolUse` guards as well — deterministic deny rules that stop an in-run agent from editing a test during remediation, hand-ticking `tasks.md`, or committing outside the commit stage. **They bind only agents running inside an Interlock ship run and are inert outside one:** they fail open whenever no active run marker is present, so installing the plugin does not change how your own editing or committing behaves. See [13 — The guards](docs/13-the-guards.md).
 
 New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have only ever prompted a coding agent — no skills, no specs, no gates — read **[09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md)** first: every term defined once, ending at why `ship` is a script and not a prompt. Then **[10](docs/10-agentic-workflow-ship-and-spec.md)** for this repo's loop reviewed in depth.
 
@@ -70,6 +72,7 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have on
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Agentic-workflow primer, review of spec+ship, token and quality tactics |
 | [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures, each denominator, and why it gates nothing |
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change (scope, advice) and what it cannot (the band, nit cap) |
+| [13 — The guards](docs/13-the-guards.md) | The four hooks, the stage marker's lifecycle, and the fail-open rule. The guards bind only agents inside a ship run and are inert outside one |
 
 ---
 

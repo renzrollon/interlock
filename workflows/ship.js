@@ -643,6 +643,51 @@ const WORKER_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash']
 const workerExtra = { type: WORKER_AGENT, tools: WORKER_TOOLS }
 const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
 
+// STAGE MARKER — the deterministic input the PreToolUse guards (hooks/guard-*)
+// read to tell a remediation test-edit (deny) from an ordinary one (allow). A
+// hook is stateless and shares no memory with this run, so the run must publish
+// its stage to a file the guard can read. The workflow runtime rejects module
+// loading, so the marker's path and JSON SHAPE are duplicated here as literals
+// and kept byte-identical to lib/ship-stage.mjs (stagePath / MARKER_FIELDS /
+// SHIP_DIR / MARKER_FILE). test/spine/ship-stage-drift.test.mjs asserts the two
+// agree — the same discipline the PING_AGENT / WORKER_TOOLS constants follow.
+const STAGE_MARKER_DIR = '.claude/ship' // + /<change>/stage.json
+const STAGE_MARKER_FILE = 'stage.json'
+const STAGE_MARKER_FIELDS = ['stage', 'change', 'index', 'pid']
+const stageMarkerPath = change => `${STAGE_MARKER_DIR}/${change}/${STAGE_MARKER_FILE}`
+
+// A monotonic write counter for this run, so a guard can tell a fresh marker
+// from one an abandoned run left behind (the `index` field lib/ship-stage.mjs
+// reads). Incremented on every publish regardless of loop iteration.
+let stageIndex = 0
+
+// A prompt fragment that tells a step's own agent to publish the stage before it
+// does its work — the workflow has no filesystem of its own. The recorded `pid`
+// is the agent session's process (`$PPID`), alive for the run's duration and
+// gone once it ends, which is how a later session rejects an orphaned marker. A
+// failed write is a non-fatal note, never a halt: the marker is a guard input,
+// not a gate the run depends on.
+const publishStageLine = (stage, change) => {
+  const index = ++stageIndex
+  return (
+    `\nBefore anything else, publish the ship stage so the PreToolUse guards can read it. ` +
+    `Write the file ${stageMarkerPath(change)} (create its parent directory) containing exactly ` +
+    `this one-line JSON, substituting the number \`echo $PPID\` prints for <PID>:\n` +
+    `  {"stage":"${stage}","change":"${change}","index":${index},"pid":<PID>}\n` +
+    `If the write fails, add a note "stage-marker write failed: <reason>" to your result and continue.\n`
+  )
+}
+
+// A marker write that failed is a non-fatal warning on the run's trajectory: the
+// guards for that stage silently fail open (their documented default), so the
+// run continues, but the reader is told the deterministic layer was not in
+// force for that window. Surfaced through the same banner channel every other
+// run warning uses.
+const noteStageMarker = result => {
+  const warning = result && typeof result.stageMarkerWarning === 'string' ? result.stageMarkerWarning.trim() : ''
+  if (warning) banners.push(`STAGE MARKER NOT PUBLISHED: ${warning} — the guards for this stage fail open`)
+}
+
 // The two adversarial steps run at a fixed effort regardless of any lane tier —
 // they are the steps whose job is catching what an implementer missed. Mirror of
 // lib/limits.mjs EFFORT.verify / EFFORT.skeptic; the runtime loads no modules,
@@ -1081,7 +1126,18 @@ const appendReceipt = async () => {
       `It carries only what a step could see. What the run measured is read by that command from ` +
       `the receipt you just appended — which is why the order matters, and why there is nothing ` +
       `here for you to reconcile against it. Report its "written" value as outcomeWritten.\n\n` +
-      `This never fails a run either: losing a corpus line must never fail the run that produced it.`,
+      `This never fails a run either: losing a corpus line must never fail the run that produced it.` +
+      // Clear the stage marker on the way out — this step runs on every terminal
+      // path (commit, halt, apply-only, no-commit), so it is the one place that
+      // guarantees no stage leaks into the next session. rm -f is a no-op when
+      // the marker was never written or already gone. Only the resolved change's
+      // marker is removed; an unresolved run wrote none. See lib/ship-stage.mjs
+      // clearStage — the path is the same literal the guards read.
+      (resolvedChange && resolvedChange !== '(unresolved)'
+        ? `\n\nFinally, clear this run's stage marker so it does not leak into the next session:\n` +
+          `  rm -f ${stageMarkerPath(resolvedChange)}\n` +
+          `This never fails the run: a marker that is absent or cannot be removed is reported and ignored.`
+        : ''),
     {
       type: 'object',
       required: ['ok'],
@@ -1228,8 +1284,10 @@ const reuseProbe = await cheap(
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
     `interlock run-log append --event ${WORK}/run-start.json --root .\n` +
-    `This never fails the run: a non-zero exit or written:false is reported and ignored.\n\n` +
-    `  interlock wave-state next --state ${STATE} --json\n\n` +
+    `This never fails the run: a non-zero exit or written:false is reported and ignored.\n` +
+    `Only if you adopted the plan above, publish the ship stage for the guards — ` +
+    publishStageLine('implement', change).trimStart() +
+    `\n  interlock wave-state next --state ${STATE} --json\n\n` +
     COPY_STDOUT +
     `\nThat last stdout is the first loop step. If any command in the adopt sequence exits ` +
     `non-zero, report reuse:false with the reason — a plan that cannot be turned into a run state ` +
@@ -1264,6 +1322,7 @@ if (reused && reuseProbe.noRemainingWork === true) {
 // state. A probe claiming reuse without producing a step is a rebuild: the plan
 // was never adopted, whatever it said about matching.
 const adopted = reused ? stepFromAgent(reuseProbe) : null
+if (adopted) noteStageMarker(reuseProbe)
 
 summary.plan = adopted
   ? { reused: true, status: reuseStatus, reason: reuseReason }
@@ -1332,7 +1391,9 @@ const planned = adopted
     `{ "type": "run-start", "runId": "<that id>", "change": "${change}", "mode": "${mode}", ` +
     `"strict": ${strict} } to ${WORK}/run-start.json, then run: ` +
     `interlock run-log append --event ${WORK}/run-start.json --root .\n` +
-    `This never fails the run: a non-zero exit or written:false is reported and ignored.\n\n` +
+    `This never fails the run: a non-zero exit or written:false is reported and ignored.\n` +
+    publishStageLine('implement', change) +
+    `Report any stage-marker write failure as stageMarkerWarning.\n\n` +
     `  interlock wave-state next --state ${STATE} --json\n\n` +
     COPY_STDOUT +
     `\nThe last command's stdout is the first loop step (action, tasks, wave, cliStdout). ` +
@@ -1372,6 +1433,7 @@ if (planned) {
   if (!planned.ok) {
     return await halt(`wave planning failed: ${planned.detail || 'no result from the planner step'}`)
   }
+  noteStageMarker(planned)
 
   const coverageOk = Boolean(planned.coverageOk)
   const omitted = Array.isArray(planned.omitted) ? planned.omitted : []
@@ -1727,6 +1789,8 @@ if (review) {
   const reviewResult = await step(
     'review',
     `Adversarially review the diff for change "${change}".\n\n` +
+      publishStageLine('review', change) +
+      `Report any stage-marker write failure as stageMarkerWarning.\n\n` +
       `Fan out one reviewer per dimension: language, architecture, qa and technical-lead always; ` +
       `devops when the diff touches deploy, config or infrastructure; security when it touches auth, ` +
       `input handling or data exposure. Each writes findings as ` +
@@ -1780,6 +1844,7 @@ if (review) {
   if (!reviewResult || !reviewResult.ok) {
     summary.notes.push(`review did not complete: ${(reviewResult && reviewResult.detail) || 'no result'}`)
   }
+  noteStageMarker(reviewResult)
   summary.review = reviewResult || null
 
   // --- 5. remediation, bounded ----------------------------------------------
@@ -1812,7 +1877,9 @@ if (review) {
         (isVerdict
           ? `This is the verdict round. It fixes nothing — it reports whether blockers survived the ` +
             `budget. A non-zero exit means unresolved blockers; report halted:true with the reason.`
-          : `Fan out ONE fixer agent per file from the plan's byFile groups — those groups are ` +
+          : publishStageLine('remediation', change) +
+            `Report any stage-marker write failure as stageMarkerWarning.\n\n` +
+            `Fan out ONE fixer agent per file from the plan's byFile groups — those groups are ` +
             `disjoint, so they are safe in parallel. Apply the unscoped group last, sequentially. ` +
             `Fix blockers and warnings; never fix a suggestion. A finding you do not fix is recorded ` +
             `with its reason, never silently dropped.\n\n` +
@@ -1841,6 +1908,7 @@ if (review) {
     )
 
     if (!remediation) return await halt(`remediation round ${round} returned no result`)
+    noteStageMarker(remediation)
     if (Number.isInteger(remediation.roundCap)) roundCap = remediation.roundCap
     for (const dimension of remediation.missingRubrics || []) {
       banners.push(
@@ -1880,6 +1948,11 @@ if (review) {
 const verified = await step(
   'verify',
   `Final verification for change "${change}".\n\n` +
+    // `fix-tests`, not `verify`: this step repairs a red suite by root cause, and
+    // that repair is exactly when weakening a test is the hazard — so the marker
+    // it publishes puts guard-tests into deny for test files. Report any write
+    // failure as stageMarkerWarning.
+    publishStageLine('fix-tests', change) +
     pingSpawnLine('verify', 'verify') +
     `Read .claude/testing/profile.json. Where the discovery ladder would ask a question, leave the ` +
     `field null and note it — never interview, that is /interlock:fix-tests's job.\n\n` +
@@ -1917,6 +1990,7 @@ const verified = await step(
 )
 
 if (!verified) return await halt('the verify step returned no result')
+noteStageMarker(verified)
 for (const reason of verified.skipReasons || []) {
   banners.push(`VERIFICATION SKIPPED: reason=${reason}`)
 }
@@ -2012,6 +2086,10 @@ if (noCommit) {
 const committed = await step(
   'commit',
   `Commit change "${change}" as ONE feature-level commit.\n\n` +
+    // The commit stage is the ONE stage guard-commit lets `git commit` through.
+    // Publishing it first is what unblocks the commit below; report any write
+    // failure as stageMarkerWarning.
+    publishStageLine('commit', change) +
     `Read the change artifacts and write a verb-phrase conventional-commit message with a short ` +
     `outcome summary. Stage only the files this run touched — never \`git add -A\`, never amend, ` +
     `never push.` +
@@ -2029,6 +2107,7 @@ const committed = await step(
 )
 
 summary.commit = committed
+noteStageMarker(committed)
 
 return closeRun()
 
