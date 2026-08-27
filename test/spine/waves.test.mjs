@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   planWaves,
   formatPlan,
+  laneEffort,
   projectedWaveLoopAgents,
   DEFAULT_MAX_PARALLEL,
   createRunState,
@@ -621,6 +622,57 @@ test('intra-lane order is task-id order even when the tiers disagree', () => {
   )
 })
 
+// --- effort routing (spec: effort-routing) ---------------------------------
+
+test('laneEffort maps a mechanical lane to low effort', () => {
+  assert.equal(laneEffort([task({ tier: 1 }), task({ id: '1.2', tier: 2 })]), 'low')
+})
+
+test('laneEffort takes the hardest task effort, not the first task', () => {
+  // The lane's first task is tier 1; its last is tier 5. Effort follows the
+  // hardest task, so a tier-1-first lane still runs at xhigh — never low.
+  const lane = [task({ id: '1.1', tier: 1 }), task({ id: '1.2', tier: 5 })]
+  assert.equal(laneEffort(lane), 'xhigh')
+  assert.notEqual(laneEffort(lane), 'low')
+})
+
+test('laneEffort inherits (null) for a tier 3–4 lane by policy', () => {
+  assert.equal(laneEffort([task({ tier: 3 })]), null)
+  assert.equal(laneEffort([task({ tier: 4 })]), null)
+})
+
+test('laneEffort inherits (null) for an untiered lane by fallback', () => {
+  assert.equal(laneEffort([task({ tier: undefined }), task({ id: '1.2', tier: null })]), null)
+})
+
+test('the plan reports one effort entry per listed lane, forced vs inherited-by-policy', () => {
+  // A folded tier-5 lane routes xhigh; a folded tier-3 lane inherits the session
+  // default by policy — reported as inherited, never silently upgraded. (The
+  // tier-unreadable fallback branch cannot arise through planWaves: validate()
+  // rejects a non-integer tier before planning, so it is exercised on laneEffort
+  // directly above.)
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', tier: 5, model: 'opus', paths: ['src/a.ts'] }),
+      task({ id: '1.2', tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
+      task({ id: '2.1', group: 2, tier: 3, model: 'sonnet', paths: ['src/b.ts'] }),
+      task({ id: '2.2', group: 2, tier: 3, model: 'sonnet', paths: ['src/b.ts'] })
+    ]
+  })
+  const byIds = Object.fromEntries(plan.effort.map(e => [e.ids.join('+'), e]))
+  assert.deepEqual(byIds['1.1+1.2'], { ids: ['1.1', '1.2'], tier: 5, effort: 'xhigh', inherited: null })
+  assert.deepEqual(byIds['2.1+2.2'], { ids: ['2.1', '2.2'], tier: 3, effort: null, inherited: 'policy' })
+  assert.match(formatPlan(plan), /effort 1\.1 → 1\.2: xhigh \(tier 5\)/)
+  assert.match(formatPlan(plan), /effort 2\.1 → 2\.2: inherited \(by policy\) \(tier 3\)/)
+})
+
+test('a task cannot escalate its own effort — the tier-derived value wins', () => {
+  // A tier-1 task carrying a self-declared effort is still routed low: effort is
+  // assigned from tier after classification, never read off the task.
+  const lane = [task({ tier: 1, effort: 'xhigh' })]
+  assert.equal(laneEffort(lane), 'low')
+})
+
 test('a mixed-tier lane takes the maximum tier and its model', () => {
   const plan = planWaves({
     tasks: [
@@ -629,7 +681,7 @@ test('a mixed-tier lane takes the maximum tier and its model', () => {
     ]
   })
   assert.deepEqual(plan.lanes, [
-    { group: 1, ids: ['1.1', '1.2'], tier: 5, model: 'opus' }
+    { group: 1, ids: ['1.1', '1.2'], tier: 5, model: 'opus', effort: 'xhigh' }
   ])
   assert.match(
     formatPlan(plan),
@@ -2050,5 +2102,315 @@ test('a wave whose only path is unusable is never treated as docs-only', () => {
     isDocsOnlyWave(plan.waves[0]),
     false,
     'a path we cannot place in the repo is unknown, not documentation'
+  )
+})
+
+// --- dependency edges (specs: task-dependencies, waves) --------------------
+//
+// `dependsOn` is the cross-file ordering signal the planner used to lack. The
+// tests below fix three separate things: that a malformed edge set HALTS rather
+// than degrading, that an edge orders exactly the dependent task and nobody
+// else, and that a plan carrying no edges is planned the way it always was.
+
+/** Global execution position: which wave, then which batch inside it. */
+function positionOf(plan, id) {
+  for (let w = 0; w < plan.waves.length; w++) {
+    const wave = plan.waves[w]
+    for (let b = 0; b < wave.batches.length; b++) {
+      if (wave.batches[b].some(lane => lane.some(t => t.id === id))) return { wave: w, batch: b }
+    }
+  }
+  return { wave: -1, batch: -1 }
+}
+
+/** Strictly earlier in the run: an earlier wave, or an earlier batch of one. */
+function assertRunsBefore(plan, a, b, why) {
+  const pa = positionOf(plan, a)
+  const pb = positionOf(plan, b)
+  assert.ok(pa.wave >= 0, `${a} is not in the plan`)
+  assert.ok(pb.wave >= 0, `${b} is not in the plan`)
+  assert.ok(pa.wave < pb.wave || (pa.wave === pb.wave && pa.batch < pb.batch), why)
+}
+
+/** Everything an edge-free plan must reproduce byte for byte. */
+const shapeOf = plan => ({
+  waves: plan.waves.map(w => ({ group: w.group, taskCount: w.taskCount, lanes: laneIds(w) })),
+  testWave: plan.testWave ? laneIds(plan.testWave) : null,
+  waveCount: plan.waveCount,
+  laneCount: plan.laneCount,
+  folded: plan.folded,
+  lanes: plan.lanes,
+  serialized: plan.serialized
+})
+
+const fileTask = (id, group, path, over = {}) =>
+  task({ id, group, paths: [path], ...over })
+
+test('a valid edge is accepted and constrains ordering', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('2.1', 2, 'src/a.ts'),
+      fileTask('2.2', 2, 'src/b.ts', { dependsOn: ['2.1'] })
+    ]
+  })
+  assertRunsBefore(plan, '2.1', '2.2', 'the edge from 2.2 to 2.1 must order them')
+  assert.deepEqual(
+    plan.deferred,
+    [{ id: '2.2', group: 2, after: ['2.1'] }],
+    'and the plan reports the edge that took effect'
+  )
+})
+
+// Each rejection names its cause, because "the plan is malformed" is not
+// something the author of a bad edge can act on.
+const MALFORMED = [
+  ['a non-array dependsOn', { id: '1.2', dependsOn: '1.1' }, /dependsOn must be an array.*1\.2/],
+  ['an array holding a number', { id: '1.2', dependsOn: [7] }, /dependsOn must be an array/],
+  ['an array holding a blank string', { id: '1.2', dependsOn: ['  '] }, /dependsOn must be an array/],
+  ['a dangling reference', { id: '1.2', dependsOn: ['9.9'] }, /1\.2 depends on "9\.9".*not a task/],
+  ['a self-edge', { id: '1.2', dependsOn: ['1.2'] }, /dependency cycle: 1\.2 → 1\.2/]
+]
+
+for (const [name, over, message] of MALFORMED) {
+  test(`${name} is rejected fail-closed, naming the cause`, () => {
+    assert.throws(
+      () => planWaves({ tasks: [task({ id: '1.1' }), task({ ...over, group: 1 })] }),
+      message,
+      `${name} must halt the plan rather than be silently dropped`
+    )
+  })
+}
+
+test('a cycle is rejected naming the ids on it', () => {
+  assert.throws(
+    () =>
+      planWaves({
+        tasks: [
+          task({ id: '1.1', dependsOn: ['1.2'] }),
+          task({ id: '1.2', dependsOn: ['1.1'] })
+        ]
+      }),
+    /dependency cycle: 1\.1 → 1\.2 → 1\.1/,
+    'the planner must not break the cycle to proceed'
+  )
+})
+
+test('an edge pointing at a later section is rejected, not silently ignored', () => {
+  // Sections are a barrier an edge cannot override, so this edge asks for an
+  // order the section model already forbids. Honouring it is impossible and
+  // dropping it is the silent degradation D4 exists to refuse.
+  assert.throws(
+    () =>
+      planWaves({
+        tasks: [
+          task({ id: '1.1', group: 1, dependsOn: ['2.1'] }),
+          task({ id: '2.1', group: 2 })
+        ]
+      }),
+    /1\.1 \(section 1\) depends on 2\.1 \(section 2\).*later section/
+  )
+})
+
+test('an implementation task depending on a test task is rejected', () => {
+  assert.throws(
+    () =>
+      planWaves({
+        tasks: [
+          task({ id: '1.1', dependsOn: ['1.2'] }),
+          task({ id: '1.2', isTestTask: true })
+        ]
+      }),
+    /1\.1 depends on test task 1\.2.*trailing test wave/
+  )
+})
+
+test('a cross-file edge orders without a new section, and a sibling stays parallel', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] }),
+      fileTask('1.3', 1, 'src/c.ts')
+    ]
+  })
+  assertRunsBefore(plan, '1.1', '1.2', '1.2 needs 1.1, so it runs strictly after it')
+  assert.deepEqual(
+    positionOf(plan, '1.3'),
+    positionOf(plan, '1.1'),
+    '1.3 has no edge, so the ordering of 1.2 must not drag it anywhere'
+  )
+})
+
+test('a lone dependent folds back as a later batch rather than buying a verify', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] }),
+      fileTask('1.3', 1, 'src/c.ts')
+    ]
+  })
+  assert.equal(plan.waveCount, 1, 'the singleton dependency layer folds onto the wave before it')
+  assert.deepEqual(batchIds(plan.waves[0]), [['1.1', '1.3'], ['1.2']])
+})
+
+test('an edge cannot pull a task earlier than its section', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts'),
+      fileTask('2.1', 2, 'src/c.ts'),
+      fileTask('2.2', 2, 'src/d.ts')
+    ]
+  })
+  assertRunsBefore(plan, '1.1', '2.1', 'section 1 runs before section 2 with or without edges')
+  assertRunsBefore(plan, '1.2', '2.2', 'and every task in it does')
+})
+
+test('a diamond serializes only along its edges', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] }),
+      fileTask('1.3', 1, 'src/c.ts', { dependsOn: ['1.1'] }),
+      fileTask('1.4', 1, 'src/d.ts', { dependsOn: ['1.2', '1.3'] })
+    ]
+  })
+  assertRunsBefore(plan, '1.1', '1.2', '1.1 runs first')
+  assertRunsBefore(plan, '1.1', '1.3', '1.1 runs first')
+  assertRunsBefore(plan, '1.2', '1.4', '1.4 waits for both of its dependencies')
+  assertRunsBefore(plan, '1.3', '1.4', '1.4 waits for both of its dependencies')
+  assert.deepEqual(
+    positionOf(plan, '1.2'),
+    positionOf(plan, '1.3'),
+    '1.2 and 1.3 have no edge between them, so nothing serializes them'
+  )
+})
+
+test('a dependent pair is never co-scheduled, and is never folded into one lane', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] })
+    ]
+  })
+  const pa = positionOf(plan, '1.1')
+  const pb = positionOf(plan, '1.2')
+  assert.notDeepEqual(pa, pb, 'an edge-connected pair may never share a batch')
+  const laneWith = id =>
+    plan.waves
+      .flatMap(w => w.batches.flat())
+      .find(lane => lane.some(t => t.id === id))
+      .map(t => t.id)
+  assert.deepEqual(laneWith('1.1'), ['1.1'], 'lane membership is a path collision, not an edge')
+  assert.deepEqual(laneWith('1.2'), ['1.2'], 'so two path-disjoint tasks stay two agents')
+})
+
+test('two test tasks joined by an edge are not chunked side by side', () => {
+  const plan = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts'),
+      task({ id: '2.1', group: 2, isTestTask: true, paths: ['test/a.test.mjs'] }),
+      task({
+        id: '2.2',
+        group: 2,
+        isTestTask: true,
+        paths: ['test/b.test.mjs'],
+        dependsOn: ['2.1']
+      })
+    ]
+  })
+  assert.deepEqual(
+    plan.testWave.batches.map(b => b.flat().map(t => t.id)),
+    [['2.1'], ['2.2']],
+    'the trailing test wave honours edges between test tasks as later batches'
+  )
+})
+
+test('an empty dependsOn plans identically to the field being absent', () => {
+  const withField = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts', { dependsOn: [] }),
+      fileTask('1.2', 1, 'src/b.ts', { dependsOn: [] }),
+      fileTask('2.1', 2, 'src/c.ts', { dependsOn: [] }),
+      fileTask('2.2', 2, 'src/d.ts', { dependsOn: [] })
+    ]
+  })
+  const without = planWaves({
+    tasks: [
+      fileTask('1.1', 1, 'src/a.ts'),
+      fileTask('1.2', 1, 'src/b.ts'),
+      fileTask('2.1', 2, 'src/c.ts'),
+      fileTask('2.2', 2, 'src/d.ts')
+    ]
+  })
+  assert.deepEqual(shapeOf(withField), shapeOf(without))
+  assert.deepEqual(withField.deferred, [], 'an empty edge list is not an edge')
+})
+
+test('an edge-free plan is planned exactly as it was before edges existed', () => {
+  // The compatibility guarantee (D10), asserted against a fixture that exercises
+  // every mechanism the depth layering sits in front of: two sections, a path
+  // collision, a wide group and a trailing test wave.
+  const tasks = [
+    fileTask('1.1', 1, 'lib/a.mjs', { tier: 5, model: 'opus' }),
+    fileTask('1.2', 1, './lib/a.mjs'),
+    fileTask('1.3', 1, 'lib/b.mjs'),
+    fileTask('2.1', 2, 'lib/c.mjs'),
+    fileTask('2.2', 2, 'lib/d.mjs'),
+    task({ id: '3.1', group: 3, isTestTask: true })
+  ]
+  const plan = planWaves({ tasks }, { maxParallel: 2 })
+  assert.deepEqual(shapeOf(plan), {
+    waves: [
+      { group: 1, taskCount: 3, lanes: [[['1.1', '1.2'], ['1.3']]] },
+      { group: 2, taskCount: 2, lanes: [[['2.1'], ['2.2']]] }
+    ],
+    testWave: [[['3.1']]],
+    waveCount: 2,
+    laneCount: 4,
+    folded: [],
+    lanes: [{ group: 1, ids: ['1.1', '1.2'], tier: 5, model: 'opus', effort: 'xhigh' }],
+    serialized: [{ id: '1.2', group: 1, path: './lib/a.mjs', conflictsWith: '1.1' }]
+  })
+  assert.deepEqual(plan.deferred, [])
+})
+
+test('planning is reproducible across repeated runs', () => {
+  const tasks = () => [
+    fileTask('1.3', 1, 'src/c.ts', { dependsOn: ['1.1'] }),
+    fileTask('1.1', 1, 'src/a.ts'),
+    fileTask('1.4', 1, 'src/d.ts', { dependsOn: ['1.3', '1.2'] }),
+    fileTask('1.2', 1, 'src/b.ts')
+  ]
+  const first = planWaves({ tasks: tasks() })
+  const second = planWaves({ tasks: tasks() })
+  assert.equal(JSON.stringify(first), JSON.stringify(second))
+})
+
+test('a replanned group keeps the edge order of its revision', () => {
+  const state = createRunState(
+    planWaves({
+      tasks: [
+        fileTask('1.1', 1, 'src/a.ts'),
+        fileTask('1.2', 1, 'src/b.ts'),
+        fileTask('2.1', 2, 'src/c.ts'),
+        fileTask('2.2', 2, 'src/d.ts')
+      ]
+    })
+  )
+  const replanned = applyReplan(state, [
+    {
+      group: 2,
+      tasks: [
+        fileTask('2.1', 2, 'src/c.ts'),
+        fileTask('2.2', 2, 'src/d.ts', { dependsOn: ['2.1'] })
+      ]
+    }
+  ])
+  const wave = replanned.waves.find(w => w.group === 2)
+  assert.deepEqual(
+    wave.batches.map(b => b.flat().map(t => t.id)),
+    [['2.1'], ['2.2']],
+    'the replan path must re-derive the edge order, not drop it'
   )
 })

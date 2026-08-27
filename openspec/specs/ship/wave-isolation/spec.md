@@ -10,7 +10,9 @@ Keeps two tasks that are predicted to edit the same file out of the same concurr
 
 Two predicted paths that denote the same file in the repository SHALL be treated as a collision regardless of their textual spelling. The collision check SHALL canonicalize each predicted path once, at the boundary where it enters the planner, and every consumer of that path SHALL read the canonical form.
 
-Rationale: the check exists to prevent concurrent writes to one file. A check keyed on raw text prevents concurrent writes only to one *string*.
+The collision check operates on a model's *prediction* of the paths a task will touch. It therefore narrows, but does not by itself close, the shared-write race: a task that writes a file it never predicted is invisible to the check. Isolation between lanes in a batch SHALL NOT rest on the prediction alone. Each lane in a batch SHALL run in its own git worktree, so that a mis-predicted write cannot overwrite another lane's write within the batch. A write that two lanes actually make to one file — the prediction miss the check cannot catch — SHALL be surfaced as a named halt at merge time (see `ship/lane-merge`), never as a lost write.
+
+Rationale: the check exists to prevent concurrent writes to one file. A check keyed on raw text prevents concurrent writes only to one *string*; a check keyed on a prediction prevents them only for files the model foresaw. Per-lane worktrees plus a halting merge close the residual gap the prediction leaves open.
 
 #### Scenario: Happy path — two tasks naming one file are serialized
 
@@ -33,6 +35,14 @@ Rationale: the check exists to prevent concurrent writes to one file. A check ke
 - **THEN** every such spelling resolves to one canonical key
 - **AND** all tasks naming that file are serialized against each other
 - **AND** paths that genuinely denote different files are not merged by the canonicalization
+
+#### Scenario: Edge case — a mis-predicted shared write is caught by isolation, not lost
+
+- **GIVEN** two lanes placed in one batch because their predicted paths were disjoint, each running in its own worktree
+- **WHEN** both lanes in fact write `lib/risk.mjs`, a file neither predicted
+- **THEN** neither write overwrites the other during the batch, because the lanes do not share a tree
+- **AND** the contention surfaces as a halt naming `lib/risk.mjs` and the two lanes when the batch is merged
+- **AND** the run SHALL NOT report success over one silently discarded write
 
 ### Requirement: Canonicalization SHALL NOT change which files a task is understood to touch
 

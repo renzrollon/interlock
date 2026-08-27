@@ -407,12 +407,16 @@ Seven, per the README: **local, Docker, SSH, Singularity, Modal, Daytona, and
 Vercel Sandbox**. Daytona and Modal are called out for serverless persistence —
 the environment hibernates when idle and wakes on demand.
 
-This is the layer where Hermes is furthest ahead of Interlock and it is not close.
-Interlock's wave engine runs parallel implementers **in one working tree**, and
-[§5.2](./06-why-it-works.md#52-independence-is-now-checked) is candid that
-predicted-path collision detection narrows the race rather than closing it. A
-per-task container or worktree would close it. Interlock cannot currently do that,
-because the Claude Code workflow runtime owns the spawn.
+This is the layer where Hermes is furthest ahead of Interlock, though the gap
+narrowed. Interlock's wave engine runs parallel implementers **in one working
+tree** by default, and [§5.2](./06-why-it-works.md#52-independence-is-now-checked)
+is candid that predicted-path collision detection alone narrows the race rather
+than closing it. Passing `--isolate-waves` closes it within a batch: each lane
+runs in its own git worktree (the Claude Code workflow runtime's
+`isolation: 'worktree'`), and `interlock merge-lanes` folds the writes back,
+halting on a real collision rather than resolving it. It is opt-in rather than
+default because of the added spawn cost (~200–500 ms and disk per lane) and the
+new implementer-prompt contract it requires.
 
 ### Everything else
 

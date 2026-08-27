@@ -119,10 +119,13 @@ test('ship.js restates the host spawn-prefix literals and uses them on every age
   assert.match(text, /tools:\s*WORKER_TOOLS/)
   assert.match(text, /\.\.\.workerExtra/)
   assert.match(text, /\.\.\.pingExtra|\bpingExtra\b/)
-  assert.match(text, /cheap = \(name, prompt\) => step\(name, prompt, nextSchema, pingExtra\)/)
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/
+    /cheap = \(name, prompt, extra = \{\}\) => step\(name, prompt, nextSchema, \{ \.\.\.pingExtra, \.\.\.extra \}\)/
+  )
+  assert.match(
+    text,
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/
   )
   assert.match(text, /\.\.\.workerExtra/)
 

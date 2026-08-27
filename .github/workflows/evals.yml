@@ -1,0 +1,169 @@
+# Eval gate — runs Interlock's model-facing surface against a real model.
+#
+# Separate from ci.yml on purpose (gate spec): ci.yml fires on a bare
+# `pull_request:` with no path filter, and narrowing THAT to a path would stop
+# the unit, validation and smoke jobs from running on every change. This
+# workflow carries its own trigger surface so the two never entangle.
+#
+# Advisory, not blocking (design D3): the triage step reports its verdict but is
+# marked continue-on-error, so a case below threshold surfaces without failing
+# the build. No baseline scores exist yet, so any blocking threshold would be a
+# guess — promotion to blocking needs observed variance across more than one run.
+#
+# NOTE: .github/workflows/ is gitignored (.gitignore:37), so this file was
+# force-added (`git add -f`). If it ever shows as untracked, `git ls-files
+# .github/workflows/` will not list it and it never runs on the remote.
+name: Evals
+
+on:
+  # Same-repo pull requests that touch a model-facing surface run the fast smoke
+  # subset. The trigger surface is every file that steers a model — skills, the
+  # shared contracts skills load at runtime, agent definitions, the ship
+  # workflow, and the plugin manifest. It excludes vendored host copies under
+  # host-integration/, which are untracked and cannot appear in a diff anyway.
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'shared/**'
+      - 'agents/**'
+      - 'workflows/**'
+      - '.claude-plugin/plugin.json'
+  # The full suite — every case, with the baseline ablation arm and judged
+  # graders — runs on a schedule, off the per-change critical path.
+  schedule:
+    - cron: '17 7 * * 1' # Mondays, 07:17 UTC
+  workflow_dispatch:
+
+# Supersede an in-flight run on the same ref rather than stacking metered runs.
+concurrency:
+  group: evals-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke evals (pull request)
+    # Fork pull requests cannot see repository secrets, so the run would abort on
+    # a rejected credential. Skip them cleanly (gate spec, design D4). The job is
+    # never a required check, so a skipped fork PR stays mergeable.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      # Early-access enablement lives in the CI environment, never in committed
+      # settings (gate spec, design D8). A committed value would produce a suite
+      # that looks configured and does not run.
+      CLAUDE_CODE_WALNUT_SPIRE: '1'
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # Copied from ci.yml validate-plugin: the CLI is the harness.
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      # The job is mergeable before a credential is provisioned (gate spec,
+      # design D12): with no key present it skips the metered steps and reports
+      # why, rather than failing or reporting a score regression.
+      - name: Check for model credential
+        id: cred
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No model credential provisioned — skipping the eval run." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Cost ceiling read from `interlock limits` — nothing restates it here.
+      - name: Resolve cost ceiling
+        if: steps.cred.outputs.present == 'true'
+        id: caps
+        run: |
+          CEIL=$(./bin/interlock limits --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.smokeCostUsd))')
+          echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
+      - name: Run smoke evals
+        if: steps.cred.outputs.present == 'true'
+        run: |
+          # One run, no ablation arm — the fast per-change signal. Report kept
+          # local (--no-publish, design D10); an unattended job has nobody to
+          # consent to publishing to an external account.
+          claude plugin eval . \
+            --tag smoke \
+            --runs 1 \
+            --ablation none \
+            --no-publish \
+            --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \
+            --report evals-report.html \
+            --json evals-results.json
+      - name: Triage the results
+        if: steps.cred.outputs.present == 'true'
+        # Advisory: the verdict is surfaced (and its non-zero exit annotated) but
+        # does not fail the build.
+        continue-on-error: true
+        run: ./bin/interlock evals triage --results evals-results.json
+      - name: Upload report
+        if: steps.cred.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-smoke-report
+          path: |
+            evals-report.html
+            evals-results.json
+          if-no-files-found: ignore
+
+  full:
+    name: Full eval suite (scheduled)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_CODE_WALNUT_SPIRE: '1'
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Check for model credential
+        id: cred
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No model credential provisioned — skipping the eval run." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Resolve cost ceiling
+        if: steps.cred.outputs.present == 'true'
+        id: caps
+        run: |
+          CEIL=$(./bin/interlock limits --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.fullRunCostUsd))')
+          echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
+      - name: Run full eval suite
+        if: steps.cred.outputs.present == 'true'
+        run: |
+          # Every case, with the no-plugin baseline ablation arm and judged
+          # graders. runs defaults to each case's own `runs` value.
+          claude plugin eval . \
+            --ablation with-without \
+            --no-publish \
+            --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \
+            --report evals-report.html \
+            --json evals-results.json
+      - name: Triage the results
+        if: steps.cred.outputs.present == 'true'
+        continue-on-error: true
+        run: ./bin/interlock evals triage --results evals-results.json
+      - name: Upload report
+        if: steps.cred.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-full-report
+          path: |
+            evals-report.html
+            evals-results.json
+          if-no-files-found: ignore

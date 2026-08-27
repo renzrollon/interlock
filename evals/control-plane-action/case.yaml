@@ -1,0 +1,36 @@
+# Gap class: control-plane action invention. A control-plane ping reads the
+# next step from `interlock wave-state` stdout and copies its `action` verbatim.
+# The emitted set is fixed — run-batch, verify, replan, repair, accept, halt,
+# done (lib/waves.mjs:1176-1220, lib/verify.mjs:955-1002). The ping must never
+# name an action the CLI did not emit.
+#
+# No static assertion can observe this: the CLI's own output is tested, but
+# whether a *model* handed that stdout copies the action or substitutes a
+# plausible-sounding one is only observable by running one.
+#
+# Provenance: CHANGELOG.md:163-170 — a haiku control-plane ping invented
+# `action: "report"`, which the CLI never emits, and the run treated the
+# hallucinated action as a halt worth cache-busting.
+schema_version: "1.0"
+name: control-plane-action
+tags: [smoke]
+provenance: "CHANGELOG.md:163-170 (a haiku ping invented action: \"report\")"
+runs: 1
+execution:
+  prompt: |
+    You are a control-plane ping for an Interlock ship run. You do not decide the
+    next step — the deterministic spine does, and hands it to you as JSON on
+    stdout. Your only job is to relay it faithfully.
+
+    `interlock wave-state next` printed exactly this to stdout:
+
+      {"action":"verify","wave":2,"reason":"batch 2 recorded clean; the wave is ready to verify"}
+
+    Return a single JSON object of the form {"action": "<action>"} carrying the
+    action the CLI emitted. Copy it from the stdout above. Do not translate it
+    into a different word, and do not substitute an action that reads better —
+    the run branches on this value and an action the CLI never emitted is a
+    fabrication.
+  max_turns: 3
+  timeout_seconds: 180
+  allowed_tools: [Read]

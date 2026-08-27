@@ -443,3 +443,71 @@ test('resolvePlanReuse narrows nothing when it did not reuse', () => {
   assert.equal(result.noRemainingWork, false, 'no plan is not "no work"')
   clean(root)
 })
+
+// --- the dependency edge set (design D9) -----------------------------------
+//
+// `dependsOn` is an ordering signal the artifact digests cannot see: two
+// classifications of one unedited tasks.md can differ only in their edges and
+// schedule different work in different batches. So the edge set is part of plan
+// identity — and only when there is one, or every fingerprint ever written for
+// an edge-free change would invalidate for a signal it does not use.
+
+const classified = (over = {}) => ({
+  tasks: [
+    { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false },
+    { id: '1.2', group: 1, description: 'b', tier: 2, model: 'sonnet', isTestTask: false, ...over }
+  ]
+})
+
+test('an added dependency edge changes the fingerprint', () => {
+  const { root } = makeRepo()
+  const bare = computeFingerprint(root, CHANGE, { tasks: classified() })
+  const edged = computeFingerprint(root, CHANGE, { tasks: classified({ dependsOn: ['1.1'] }) })
+  assert.notEqual(edged.hash, bare.hash, 'a plan that gained an edge is a different plan')
+  assert.equal(edged.edges, 'depends-on 1.2<-1.1', 'and the fingerprint says which edge')
+  clean(root)
+})
+
+test('a changed dependency edge changes the fingerprint', () => {
+  const { root } = makeRepo()
+  const one = computeFingerprint(root, CHANGE, { tasks: classified({ dependsOn: ['1.1'] }) })
+  const other = computeFingerprint(root, CHANGE, {
+    tasks: {
+      tasks: [
+        ...classified().tasks,
+        { id: '1.3', group: 1, description: 'c', tier: 2, model: 'sonnet', isTestTask: false }
+      ]
+    }
+  })
+  assert.notEqual(one.hash, other.hash)
+  clean(root)
+})
+
+test('an absent or empty edge set leaves the fingerprint exactly as it was', () => {
+  const { root } = makeRepo()
+  const none = computeFingerprint(root, CHANGE).hash
+  assert.equal(
+    computeFingerprint(root, CHANGE, { tasks: classified() }).hash,
+    none,
+    'a task list with no dependsOn anywhere contributes nothing to the hash'
+  )
+  assert.equal(
+    computeFingerprint(root, CHANGE, { tasks: classified({ dependsOn: [] }) }).hash,
+    none,
+    'and an empty edge list is not an edge'
+  )
+  assert.equal(computeFingerprint(root, CHANGE).edges, null)
+  clean(root)
+})
+
+test('the edge set is hashed as a set, not in the order the classifier emitted it', () => {
+  const { root } = makeRepo()
+  const forward = computeFingerprint(root, CHANGE, {
+    tasks: classified({ dependsOn: ['1.1', '1.3'] })
+  })
+  const reversed = computeFingerprint(root, CHANGE, {
+    tasks: classified({ dependsOn: ['1.3', '1.1', '1.1'] })
+  })
+  assert.equal(forward.hash, reversed.hash, 'reordering or repeating an edge is not a new plan')
+  clean(root)
+})

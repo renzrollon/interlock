@@ -130,13 +130,14 @@ Filter each ready artifact independently; do not dump the full instructions resp
 
 ### Task shape for ship
 
-`tasks.md` is the wave plan. A numbered `## N.` section is one wave. Follow these three rules when writing it:
+`tasks.md` is the wave plan. A numbered `## N.` section is one wave. Follow these four rules when writing it:
 
 1. Default grouping is the numbered section (`1.x` share a wave, `2.x` share the next).
 2. Sequential same-file work is one checkbox — not one checkbox per TDD beat, comment move, or trap on the same production path.
-3. Start a new numbered section only when a later set of tasks needs the previous section's output to already exist. Independent files that do not need each other belong in the same section so they can share a batch.
+3. A task that needs another task's output when the two edit **different files** is a `dependsOn` edge, not a new section. The classifier reads the task text and emits that edge; write the dependency into the task so it can. Incrementing the section to order one cross-file dependency serializes every task in the new section that is independent of it — the edge orders only the dependent task, so its independent siblings keep sharing a batch.
+4. Start a new numbered section only when a later set of tasks needs the previous section's output to already exist. Independent files that do not need each other belong in the same section so they can share a batch.
 
-These rules apply even when `openspec instructions tasks` injects no `rules.tasks`. Path collisions inside a section are the planner's problem (`paths`), not a reason to increment the section number.
+These rules apply even when `openspec instructions tasks` injects no `rules.tasks`. Path collisions inside a section are the planner's problem (`paths`), and a cross-file dependency is an edge (`dependsOn`) — neither is a reason to increment the section number.
 
 ### 3a. The decision ledger
 

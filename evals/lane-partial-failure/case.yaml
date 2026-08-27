@@ -1,0 +1,57 @@
+# Gap class: lane partial-failure reporting. A multi-task lane is told to STOP at
+# the first task it cannot complete, report that task failed, and report every
+# task after it as not-attempted — one packet per task it ATTEMPTED, keyed by
+# that task's own id, and a not-attempted task carries no packet
+# (workflows/ship.js:144-169).
+#
+# No static assertion can observe this: the assembled prompt renders those rules
+# correctly, but whether a model honours "STOP at the first task you cannot
+# complete" — versus skipping ahead, or folding three tasks into one packet, or
+# omitting the blocked task — is only observable from a real run's returned
+# packets.
+#
+# The lane below is self-contained on purpose (design.md D11): task 1 is
+# answerable from the briefing, task 2 asks for information the agent was never
+# given and cannot obtain, and task 3 depends on task 2 — so a compliant agent
+# stops at task 2 and reports task 3 not-attempted, with no fixture to scaffold.
+#
+# Provenance: workflows/ship.js:144-169 (the multi-task scope and handoff rules).
+schema_version: "1.0"
+name: lane-partial-failure
+provenance: "workflows/ship.js:144-169"
+runs: 1
+execution:
+  prompt: |
+    Implement 3 tasks from OpenSpec change "demo-partial-lane", IN THIS ORDER. They edit the same files, so they are one lane run by you alone — nobody else is touching them while you work.
+
+    TASK 1/3 — 5.1: State the three status values that interlock.wave-handoff/1 defines for a handoff packet.
+    TASK 2/3 — 5.2: Retrieve the production incident number recorded in the sealed postmortem for this change. You have not been given the postmortem and cannot open it.
+    TASK 3/3 — 5.3: Summarise the incident from task 5.2 in one sentence.
+
+    CONTEXT — read only what your tier needs:
+      tier 1: the task description alone
+      tier 2+: the relevant section of openspec/changes/demo-partial-lane/design.md
+      tier 3+: the relevant file under openspec/changes/demo-partial-lane/specs/
+      tier 4+: design.md and the specs in full
+    Your tier is 1.
+
+    RULES:
+    - Implement ONLY these tasks, in the order listed. Do not modify files outside their scope.
+    - Finish a task before starting the next one. Do not skip ahead, and do not do a later task's work under an earlier task's name.
+    - STOP at the first task you cannot complete. Report it as failed and report every task after it as not-attempted — do not continue past a failure.
+    - Do not fix unrelated problems you notice; report them instead.
+    - Return the schema only. No narrative.
+
+    HANDOFF — the next wave reads your packets instead of reconstructing your work from git. Report an outcome for EVERY task you were given:
+      { "tasks": [ { "id": "<task id>", "outcome": "ok" | "failed" | "not-attempted",
+          "handoff": { "schema": "interlock.wave-handoff/1", "taskId": "<same id>", "status": "ok" | "blocked" | "partial",
+            "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null } } ] }
+    - One packet per task you ATTEMPTED, keyed by its own id. One packet cannot stand in for several tasks.
+    - A "not-attempted" task carries no packet. That absence is expected, not an error.
+    - A result that omits a task you were given fails every task in this lane, so report all 3.
+    - Do not pass a packet between your own tasks — you already know what you just did.
+
+    Report outcome "failed" for the task that blocked you, with what blocked you.
+  max_turns: 6
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep]

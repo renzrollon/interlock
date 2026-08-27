@@ -15,7 +15,7 @@
 // wired to a subcommand here is a policy the model will improvise in prose.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -33,9 +33,14 @@ import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, formatLimits } from '../lib/limits.mjs'
+import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, EFFORT, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
-import { resolveReview, formatReview } from '../lib/review-core.mjs'
+import {
+  resolveReview,
+  formatReview,
+  readReviewPolicy,
+  formatReviewPolicy
+} from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
 import {
   planVerification,
@@ -49,6 +54,7 @@ import {
 } from '../lib/verify.mjs'
 import { spillBytes } from '../lib/spill.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
+import { mergeDecision } from '../lib/merge-lanes.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
@@ -64,6 +70,9 @@ import {
 } from '../lib/plan-fingerprint.mjs'
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
+import { buildReport, formatReport } from '../lib/report.mjs'
+import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
+import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
 import {
   appendRunLogEvent,
@@ -85,13 +94,43 @@ Usage:
   interlock validate [change]               Inspect OpenSpec change artifacts
                                             (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
+  interlock doctor                          Preflight the host before a run:
+                                            Node, plugin install, PATH, the
+                                            openspec CLI, git, the test profile,
+                                            the permission allowlist, and the
+                                            writability of the run-state dirs
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
+  interlock report [--since <iso>]          Indicators over the three recorded
+                  [--change <name>]         corpora — outcome records, run
+                                            trajectories, review metrics. Every
+                                            value carries its denominator, and
+                                            an unobserved value stays unobserved.
+                                            Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock merge-lanes --base <sha> --lanes <file>
+                                           Fold a batch's isolated lane worktrees
+                                           back into the shared tree (--isolate-waves
+                                           runs only). --lanes is a JSON array of
+                                           { label, worktreePath, reportedFiles }.
+                                           Exits 0 on a clean fold, 1 on a halt
+                                           (a real path collision or a lane whose
+                                           worktree could not be located) — never
+                                           auto-resolves, never applies a guess
+  interlock evals triage --results <file>   Classify an eval results run:
+                                            regression, variance, or no signal.
+                                            No model, no network. Exit code is
+                                            the verdict (1=regression,
+                                            2=no signal, 3=configuration)
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
-                                           Resolve a review against skeptic verdicts
+                                           Resolve a review against skeptic verdicts.
+                                           Also reads repo-root REVIEW.md and drops
+                                           findings on its do-not-report paths
+  interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
+                                           owner + prose (advice for the reviewer)
+                                           and any parse problems. Absent → empty
   interlock risk [change]                   Classify blast radius for the continuity gate
   interlock ledger [change]                 Summarize the decision ledger
   interlock ready [change] --findings <f>    Decide whether continuity may skip the human
@@ -137,6 +176,7 @@ Exit codes:
   Every gating command exits 1 when it blocks, so the workflow branches on exit
   status rather than on parsed prose:
     gate                     surviving findings block the gate
+    doctor                   a preflight check would stop a zero-touch run
     validate                 the change is not ready
     remediate                blockers survive the verdict round
     verify judge             a halting kind failed in this context, a result
@@ -148,13 +188,39 @@ Exit codes:
     ledger                   the ledger is missing or unparseable, or
                              needs_human or invalid rows remain
     ready                    the change may not skip the human checkpoint
+    merge-lanes              a lane worktree collided with another on a real
+                             path, or a lane's worktree could not be located —
+                             a clean fold is the only zero exit
     tasks tick               an id could not be marked complete
     wave-state next          the run has halted, or the trajectory append failed
     wave-state record-*      the recorded result halted the run, or the
                              trajectory append failed
     run-log check            the run's trajectory is not reconstructable
+    evals triage             at least one case is a regression (exit 1); a run
+                             that yielded no signal (exit 2) or a configuration
+                             problem (exit 3) is non-zero but distinct, so
+                             neither reads as a clean pass
   risk never exits non-zero — branch on "continuityAllowed" instead, so a
   high-risk classification is a checkpoint rather than a failed command.
+  drift, conformance and report never exit non-zero either. For report that is
+  a policy, not a convenience: §4.15(a) forbids gating on the recorded corpora,
+  and a non-zero status is exactly the comparison it forbids. Nothing in the
+  loop reads the report.
+
+report:
+  Reads .claude/learning/outcomes.jsonl, .claude/ship/runs/*.jsonl and
+  .claude/metrics/*.json. Coverage first — how many trajectories carry a
+  receipt at all — because every receipt-derived indicator rests on it and a
+  thin corpus must read as thin rather than as clean. Metrics files are
+  classified by their "schema" key, never by filename: a skill also writes
+  review-artifacts-*.json into that directory, and it carries finding bodies
+  rather than counts. One indicator, "does the merged diff match the plan", is
+  reported as not computable with what would close it, rather than approximated
+  from a nearby number.
+  --since <iso>          Keep runs whose earliest record is at or after this
+  --change <name>        Keep one change's runs, outcomes and metrics
+  --max-runs <n>         Lower the scan bound; the published cap is the ceiling
+                         (see interlock limits). Truncation is reported.
 
 waves:
   --classified <file>    JSON: { "tasks": [{id, group, description, tier, model, isTestTask}] }
@@ -178,6 +244,28 @@ limits:
   Prints the caps the loop obeys and the workflow-runtime ceilings above them.
   Cite these rather than restating a number in prose.
 
+doctor:
+  The preflight. Every condition here would otherwise be discovered mid-run, by
+  which point a zero-touch run has already spent waves of agents to learn it —
+  or worse, has stopped on an approval prompt with nobody watching. Read-only:
+  it names a fix for every failure and applies none of them.
+  Checks: the Node version against the plugin floor and the OpenSpec CLI's
+  higher one; the INSTALLED plugin's workflow, agent types and binaries
+  (resolved from the plugin, never from the checkout you are standing in);
+  interlock / interlock-graph on PATH; the openspec CLI and whether this project
+  is initialised; git and a work tree; ${TEST_PROFILE_PATH};
+  the permission allowlist; and whether the run-state directories can be
+  written.
+  The allowlist check derives the commands it requires — the four the flow
+  always shells out to, plus whatever the test profile says this project runs —
+  and reports an uncovered command as a FAILURE, since an approval prompt in an
+  unattended run is a stopped run. A rule that exists but is narrower than the
+  command it would have to permit (\`Bash(interlock waves:*)\` for a requirement
+  of \`interlock\`) is reported as narrower, never counted as coverage. A "deny"
+  that overlaps a required command fails; an "ask" warns; defaultMode
+  "bypassPermissions" warns and checks nothing, because nothing will prompt.
+  Exits 1 when any check fails. Warnings never gate.
+
 remediate:
   --findings <file>      Review output, in any shape gate accepts. "-" for stdin.
   --round <n>            1-based (default 1). Rounds 1-${LIMITS.remediationRounds} are fix passes;
@@ -200,9 +288,20 @@ review:
                          A verdict that a finding IS real needs no citation.
   --min-quality <n>      Quality-band floor, as for gate
   --no-tolerance         Disable the quality band
+  --changed also drives nothing else; REVIEW.md is located from --root (default
+  cwd). Findings on its do-not-report paths are dropped BEFORE the band, counted
+  as "droppedByPolicy" with the excluding path, and "policyProblems" reports a
+  malformed policy file rather than swallowing it.
   Always exits 0; feed "surviving" to gate to decide whether it blocks.
   "dismissalsRejected" counts refutations refused for want of a citation — a
   high number means the skeptics are asserting rather than reading.
+
+review-policy:
+  --root <dir>           Repository root to read REVIEW.md from (default cwd).
+  --json                 Emit { prose, excludePaths, owner, problems }.
+  The prose is advice a reviewer reads; it can never lower survival. The band and
+  nit cap are NOT policy fields — a threshold-shaped key is reported, not adopted.
+  Always exits 0; an absent REVIEW.md is the empty policy, not an error.
 
 risk:
   [change]               OpenSpec change name (resolved like validate when omitted)
@@ -442,6 +541,8 @@ autonomy record:
   --human-override       Record that a human overrode the result
 
 Examples:
+  interlock doctor || echo "fix these before starting a zero-touch run"
+  interlock doctor --json | jq '.failures'
   interlock surface --changed src/Button.tsx docs/readme.md
   interlock waves --classified plan.json --max-parallel 6 --json
   interlock gate --findings review.json || echo "blocked"
@@ -887,6 +988,197 @@ function observedChangedPaths(root) {
   return paths
 }
 
+/**
+ * A lane worktree's actual writes relative to the shared base commit, as git
+ * sees them — never a prediction. `null` means git could not answer (bad
+ * path, not a worktree, git failure of any kind), which the caller treats as
+ * "this lane's worktree could not be located" rather than "wrote nothing".
+ *
+ * `-z` for the same reason `observedChangedPaths` uses it: a path with a
+ * space, quote or tab is a path, not a field separator.
+ *
+ * @param {string} worktreePath
+ * @param {string} base
+ * @returns {Array<{status: 'A'|'M'|'D'|'R', path: string, oldPath?: string}>|null}
+ */
+function laneDiff(worktreePath, base) {
+  let raw
+  try {
+    raw = execFileSync('git', ['-C', worktreePath, 'diff', '--name-status', '-z', base], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+  } catch {
+    return null
+  }
+  const fields = raw.split('\0').filter(f => f.length)
+  const out = []
+  for (let i = 0; i < fields.length; i++) {
+    const status = fields[i]
+    if (/^[AMD]/.test(status)) {
+      const path = fields[++i]
+      if (path) out.push({ status: status[0], path })
+    } else if (/^[RC]/.test(status)) {
+      // "R100\told\tnew": a rename/copy carries its source in the following
+      // field, the same shape `observedChangedPaths` already accounts for.
+      const oldPath = fields[++i]
+      const newPath = fields[++i]
+      if (newPath) out.push({ status: status[0], path: newPath, oldPath: oldPath || undefined })
+    }
+  }
+
+  // `git diff <base>` never reports an untracked file — a lane's new file is
+  // invisible to it exactly the way `observedChangedPaths` below has to work
+  // around with `--untracked-files=all`. Add them as new writes explicitly,
+  // rather than silently reporting a lane's new file as "no change".
+  let untracked
+  try {
+    untracked = execFileSync(
+      'git',
+      ['-C', worktreePath, 'ls-files', '--others', '--exclude-standard', '-z'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+  } catch {
+    return null
+  }
+  for (const path of untracked.split('\0').filter(p => p.length)) {
+    out.push({ status: 'A', path })
+  }
+  return out
+}
+
+/**
+ * Apply one lane's already-decided-clean writes into the shared tree. Called
+ * only after `mergeDecision` returned `status: 'clean'` — a collision or an
+ * unresolved lane never reaches here, by construction of the caller.
+ */
+function applyLaneDiff(root, worktreePath, diffEntries) {
+  for (const entry of diffEntries) {
+    const destAbs = join(root, entry.path)
+    if (entry.status === 'D') {
+      if (existsSync(destAbs)) rmSync(destAbs)
+      continue
+    }
+    const srcAbs = join(worktreePath, entry.path)
+    if (!existsSync(srcAbs)) continue
+    mkdirSync(dirname(destAbs), { recursive: true })
+    copyFileSync(srcAbs, destAbs)
+    if (entry.status === 'R' && entry.oldPath && entry.oldPath !== entry.path) {
+      const oldAbs = join(root, entry.oldPath)
+      if (existsSync(oldAbs)) rmSync(oldAbs)
+    }
+  }
+}
+
+/**
+ * The git plumbing half of `merge-lanes`: turns each lane's self-reported
+ * `worktreePath` into an observed changed-file set, hands the decision to the
+ * pure `mergeDecision`, and — on a clean fold only — applies the writes and
+ * removes the lane worktrees uniformly. A collision or an unresolved lane
+ * touches nothing and leaves every surviving worktree named on disk.
+ *
+ * @param {string} root
+ * @param {Array<{label: string, worktreePath?: string, reportedFiles?: string[]}>} laneEntries
+ * @param {string} base the shared-tree commit every lane's diff is taken against
+ */
+function runMergeLanes(root, laneEntries, base) {
+  const entries = Array.isArray(laneEntries) ? laneEntries : []
+  const diffsByLabel = new Map()
+  const changedByLane = {}
+  const survivingInfo = []
+
+  const lanesForDecision = entries.map(l => ({
+    label: l && typeof l.label === 'string' ? l.label.trim() : ''
+  }))
+
+  for (const l of entries) {
+    const label = l && typeof l.label === 'string' ? l.label.trim() : ''
+    if (!label) continue
+    const path = l && typeof l.worktreePath === 'string' ? l.worktreePath.trim() : ''
+    survivingInfo.push({ label, worktreePath: path || null })
+    if (!path) continue // no worktreePath reported at all — unresolved, named by mergeDecision
+
+    if (!existsSync(path)) {
+      // The runtime auto-removes an unchanged worktree. A lane that reported
+      // no changed files itself is a legitimate empty-write lane, not a lane
+      // whose worktree "could not be located" — anything else missing this
+      // path is unresolved.
+      const reported = Array.isArray(l.reportedFiles) ? l.reportedFiles : null
+      if (reported && reported.length === 0) {
+        changedByLane[label] = []
+        diffsByLabel.set(label, [])
+      }
+      continue
+    }
+
+    const diff = laneDiff(path, base)
+    if (diff === null) continue // git could not diff this worktree — unresolved
+    diffsByLabel.set(label, diff)
+    changedByLane[label] = diff.map(d => d.path)
+  }
+
+  const decision = mergeDecision({ lanes: lanesForDecision, changedByLane, base })
+
+  if (decision.status !== 'clean') {
+    const survivingWorktrees = survivingInfo.filter(s => s.worktreePath && existsSync(s.worktreePath))
+    return { ...decision, survivingWorktrees }
+  }
+
+  for (const fold of decision.folds) {
+    const info = survivingInfo.find(s => s.label === fold.lane)
+    if (!info || !info.worktreePath || !existsSync(info.worktreePath)) continue
+    applyLaneDiff(root, info.worktreePath, diffsByLabel.get(fold.lane) || [])
+  }
+
+  // Uniform cleanup: an unchanged lane worktree the runtime would have
+  // auto-removed anyway is removed here too, so post-fold state never depends
+  // on which lanes happened to write something.
+  const cleanupWarnings = []
+  for (const info of survivingInfo) {
+    if (!info.worktreePath || !existsSync(info.worktreePath)) continue
+    try {
+      execFileSync('git', ['worktree', 'remove', info.worktreePath, '--force'], {
+        cwd: root,
+        stdio: 'ignore'
+      })
+    } catch (err) {
+      cleanupWarnings.push({ label: info.label, worktreePath: info.worktreePath, reason: err.message })
+    }
+  }
+
+  return {
+    ...decision,
+    survivingWorktrees: [],
+    ...(cleanupWarnings.length ? { cleanupWarnings } : {})
+  }
+}
+
+function formatMergeLanes(result) {
+  if (result.status === 'clean') {
+    const rows = result.folds
+      .map(f => `  ${f.lane}: ${f.files.length ? f.files.join(', ') : '(no changes)'}`)
+      .join('\n')
+    const warn = result.cleanupWarnings && result.cleanupWarnings.length
+      ? `\ncleanup warnings:\n${result.cleanupWarnings.map(w => `  ${w.label} (${w.worktreePath}): ${w.reason}`).join('\n')}\n`
+      : ''
+    return `CLEAN FOLD\n${rows}\n${warn}`
+  }
+  if (result.status === 'collision') {
+    const rows = result.collisions
+      .map(c => `  ${c.canonicalPath}: ${c.lanes.join(', ')}`)
+      .join('\n')
+    const survivors = result.survivingWorktrees
+      .map(s => `  ${s.label}: ${s.worktreePath}`)
+      .join('\n')
+    return `HALT — path collision\n${rows}\nsurviving worktrees:\n${survivors}\n`
+  }
+  const rows = result.unresolved.map(u => `  ${u.label || '(no label)'}: ${u.reason}`).join('\n')
+  const survivors = result.survivingWorktrees
+    .map(s => `  ${s.label}: ${s.worktreePath}`)
+    .join('\n')
+  return `HALT — unresolved lane(s)\n${rows}\nsurviving worktrees:\n${survivors}\n`
+}
+
 // --min-quality / --no-tolerance mean the same thing everywhere the tolerance
 // band applies, so the three call sites share one reading of them.
 function parseBand(flags) {
@@ -1024,6 +1316,20 @@ function main() {
       break
     }
 
+    case 'report': {
+      // No exit(1) here, ever — and unlike `drift`, not because a signal is
+      // inferred but because §4.15(a) forbids the comparison a non-zero status
+      // would encode. Every value here is one `if` away from a threshold; the
+      // absence of that `if` is the feature. See the header of lib/report.mjs.
+      const report = buildReport(root, {
+        since: typeof flags.since === 'string' ? flags.since : undefined,
+        change: typeof flags.change === 'string' ? flags.change : undefined,
+        maxRuns: num(flags, 'max-runs')
+      })
+      emit(json, report, formatReport(report))
+      break
+    }
+
     case 'conformance': {
       // Emits questions, never verdicts, and never exits non-zero — see the
       // header of lib/conformance.mjs.
@@ -1035,7 +1341,45 @@ function main() {
     }
 
     case 'limits': {
-      emit(json, { limits: LIMITS, runtime: RUNTIME }, formatLimits())
+      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS, effort: EFFORT }, formatLimits())
+      break
+    }
+
+    case 'merge-lanes': {
+      const base = typeof flags.base === 'string' ? flags.base.trim() : ''
+      if (!base) die('--base <commit> is required')
+      const input = readInput(flags.lanes, '--lanes <file|->')
+      const laneEntries = Array.isArray(input) ? input : Array.isArray(input && input.lanes) ? input.lanes : null
+      if (!laneEntries) die('--lanes must be a JSON array of { label, worktreePath, reportedFiles }')
+      const result = runMergeLanes(root, laneEntries, base)
+      emit(json, result, formatMergeLanes(result))
+      // Exit code is the whole contract here: 0 is a clean fold, non-zero is a
+      // halt (collision or an unresolved lane) — distinct so the workflow can
+      // branch on exit status the same way every other gating command does.
+      if (result.status !== 'clean') process.exit(1)
+      break
+    }
+
+    case 'doctor': {
+      // Read-only by construction — see the header of lib/doctor.mjs. The exit
+      // code is the whole point: a preflight that only prints is a preflight a
+      // zero-touch run walks straight past.
+      const report = diagnose(root)
+      emit(json, report, formatDoctor(report))
+      if (!report.ok) process.exit(1)
+      break
+    }
+
+    case 'evals': {
+      const sub = positional[1]
+      if (sub === 'triage') {
+        const results = readInput(flags.results, '--results')
+        const verdict = triage(results)
+        emit(json, verdict, formatTriage(verdict))
+        if (verdict.exitCode) process.exit(verdict.exitCode)
+      } else {
+        die(`unknown evals subcommand: ${sub || '(none)'} — expected triage`)
+      }
       break
     }
 
@@ -1056,9 +1400,17 @@ function main() {
       // because a caller that cannot name the changed files must still get the
       // shape half rather than no gate at all.
       const changedPaths = splitPaths(flags.changed)
+
+      // The repo-root REVIEW.md, if any. Its do-not-report paths are enforced
+      // here as a survival filter — never handed to a model as a request. Its
+      // problems (a malformed file, a band-like key) are reported alongside the
+      // review, so a broken policy is diagnosable rather than silent.
+      const policy = readReviewPolicy(root)
+
       const result = resolveReview(findings, verdicts, {
         band: parseBand(flags),
-        changedPaths
+        changedPaths,
+        excludePaths: policy.excludePaths
       })
 
       // Metrics are bookkeeping: they report their own failure and never touch
@@ -1070,10 +1422,25 @@ function main() {
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
+      const policyProblems = policy.problems.length
+        ? `  policy: ${policy.problems.length} problem(s) in REVIEW.md\n` +
+          policy.problems.map(p => `    - ${p}`).join('\n') + '\n'
+        : ''
       const text =
         formatReview(result) +
+        policyProblems +
         (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
-      emit(json, metrics ? { ...result, metrics } : result, text)
+      emit(json, { ...result, policyProblems: policy.problems, ...(metrics ? { metrics } : {}) }, text)
+      break
+    }
+
+    case 'review-policy': {
+      // Read-only view of the parsed REVIEW.md, so the workflow can inject the
+      // prose + owner into the reviewer instructions without re-parsing the file
+      // (the runtime cannot import lib modules). Always exits 0: a missing or
+      // malformed policy is reported, never fatal.
+      const policy = readReviewPolicy(root)
+      emit(json, policy, formatReviewPolicy(policy))
       break
     }
 

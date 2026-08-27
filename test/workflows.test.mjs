@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { laneEffort as laneEffortSource } from '../lib/waves.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -219,7 +220,13 @@ test('ship.js dual-writes type and tools on every agent() spawn', () => {
   assert.match(text, /tools: PING_TOOLS/)
   assert.match(text, /tools: WORKER_TOOLS/)
   assert.match(text, /\.\.\.workerExtra, \.\.\.extra/)
-  assert.match(text, /cheap = \(name, prompt\) => step\(name, prompt, nextSchema, pingExtra\)/)
+  // cheap gained an optional third `extra` so a mechanical step (the inter-wave
+  // verify) can pin its effort. The extra is spread after pingExtra, so a caller
+  // passing nothing is byte-identical to the old two-arg form.
+  assert.match(
+    text,
+    /cheap = \(name, prompt, extra = \{\}\) => step\(name, prompt, nextSchema, \{ \.\.\.pingExtra, \.\.\.extra \}\)/
+  )
   assert.doesNotMatch(text, /tools:\s*\[[^\]]*(Skill|Agent)/)
 })
 
@@ -240,7 +247,7 @@ test('ship.js implementers go through assembleImplementerPrompt, never an inline
   assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/)
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/,
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/,
     'the implementer agent() must be handed the assembled prompt, not a literal'
   )
   const calls = [...text.matchAll(/assembleImplementerPrompt\(/g)]
@@ -457,6 +464,51 @@ test('ship.js uses haiku for mechanical control-plane steps', () => {
   assert.match(text, /cheap\(\s*`record-batch-/, 'record-batch must go through the cheap wrapper')
   assert.match(text, /cheap\(\s*`inter-wave-verify-/, 'inter-wave verify must go through the cheap wrapper')
   assert.match(text, /cheap\(\s*`replan-/, 'replan must go through the cheap wrapper')
+})
+
+// --- effort routing parity + dispatch (spec: effort-routing) ---------------
+//
+// laneEffort exists twice — the source in lib/waves.mjs and the mirror in
+// ship.js — because the runtime rejects import(). A drift silently re-routes a
+// cached lane on replay, so the two are pinned equal here, the same guard shape
+// the mirrored laneModel relies on.
+
+/** The mirrored laneEffort, evaluated out of its marked region in ship.js. */
+const laneEffortMirror = (() => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ LANE_EFFORT_START\n([\s\S]*?)\n\/\/ LANE_EFFORT_END/.exec(text)
+  assert.ok(m, 'ship.js must define laneEffort between LANE_EFFORT markers')
+  return new Function(`${m[1]}; return laneEffort`)()
+})()
+
+test('the ship.js laneEffort mirror derives identical effort for every representative lane', () => {
+  const lanes = [
+    [{ id: '1', tier: 1 }],
+    [{ id: '2', tier: 2 }],
+    [{ id: '3', tier: 3 }],
+    [{ id: '4', tier: 4 }],
+    [{ id: '5', tier: 5 }],
+    [{ id: '6a', tier: 1 }, { id: '6b', tier: 5 }],
+    [{ id: '7', tier: undefined }]
+  ]
+  for (const lane of lanes) {
+    assert.equal(
+      laneEffortMirror(lane),
+      laneEffortSource(lane),
+      `laneEffort mirror disagrees with the source for lane ${lane.map(t => t.id).join('+')}`
+    )
+  }
+})
+
+test('ship.js applies the lane effort at dispatch and pins the verify/skeptic steps at xhigh', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  // The implementer spawn carries its lane's derived effort, beside the model.
+  assert.match(text, /effort: laneEffort\(lane\)/, 'the implementer spawn must carry laneEffort(lane)')
+  // The two adversarial steps are fixed at xhigh, not left at the session default.
+  assert.match(text, /const VERIFY_EFFORT = 'xhigh'/)
+  assert.match(text, /const SKEPTIC_EFFORT = 'xhigh'/)
+  assert.match(text, /\{ effort: VERIFY_EFFORT \}/, 'inter-wave verify must pin VERIFY_EFFORT')
+  assert.match(text, /\{ effort: SKEPTIC_EFFORT \}/, 'the review skeptic step must pin SKEPTIC_EFFORT')
 })
 
 test('ship.js review and remediate return counts only', () => {
@@ -1009,6 +1061,136 @@ test('a one-task lane keeps the pre-lane label, schema and result shape', async 
     /Implement exactly one task/,
     'and the prompt is the pre-lane prompt'
   )
+})
+
+// --- isolated-lane merge, opt-in via --isolate-waves (spec: ship/wave-isolation, ship/lane-merge) --
+//
+// Unset, a batch runs exactly as it always has: no worktree isolation opt on
+// the lane spawn, and no merge-base/merge-lanes step at all. Set, each lane's
+// spawn is asked to run in its own worktree and a merge-lanes step folds the
+// batch's worktrees back before the next batch's base is read.
+
+const twoLaneBatch = stepResult({
+  action: 'run-batch',
+  wave: 1,
+  waveIndex: 0,
+  waveKind: 'impl',
+  batchIndex: 0,
+  batchCount: 1,
+  tasks: [[laneTask('1.1')], [laneTask('2.1', { paths: ['lib/b.mjs'] })]],
+  remainingBatches: [[[laneTask('1.1')], [laneTask('2.1', { paths: ['lib/b.mjs'] })]]],
+  previousHandoffs: [],
+  changed: ['lib/a.mjs', 'lib/b.mjs'],
+  maxParallel: 8
+})
+
+test('without --isolate-waves, no lane spawn asks for a worktree and no merge-lanes step runs', async () => {
+  const { calls, prompts } = await runShip({})
+  assert.ok(!calls.some(c => c.startsWith('merge-base-') || c.startsWith('merge-lanes-')))
+  const lanePrompt = prompts.find(p => p.label === '1.1')
+  assert.ok(lanePrompt, 'the default single-lane run must still spawn the lane')
+  assert.equal(lanePrompt.isolation, undefined, 'unset, the spawn opts must be byte-identical to today')
+  assert.doesNotMatch(lanePrompt.prompt, /ISOLATION/, 'the prompt must not mention worktree isolation')
+})
+
+test('--isolate-waves asks each lane to run in its own worktree and folds a clean batch', async () => {
+  const { calls, output, prompts } = await runShip({
+    args: 'demo-change --isolate-waves',
+    responses: {
+      '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' }
+    }
+  })
+  assert.ok(calls.includes('merge-base-1-0'), `expected a merge-base ping, got: ${calls.join(', ')}`)
+  assert.ok(calls.includes('merge-lanes-1-0'), `expected a merge-lanes ping, got: ${calls.join(', ')}`)
+  const lanePrompt = prompts.find(p => p.label === '1.1')
+  assert.equal(lanePrompt.isolation, 'worktree', 'the lane spawn must request its own worktree')
+  assert.match(lanePrompt.prompt, /ISOLATION — you are running in your own git worktree/)
+  const mergePrompt = prompts.find(p => p.label === 'merge-lanes-1-0').prompt
+  assert.match(mergePrompt, /"label":"1\.1","worktreePath":"\/tmp\/wt-1\.1"/)
+  assert.match(output, /SHIP COMPLETE/, 'a clean fold must let the run reach completion')
+})
+
+test('a merge-lanes collision halts the run, names the contended path and lanes, and reports the survivors', async () => {
+  const { output, calls } = await runShip({
+    args: 'demo-change --isolate-waves',
+    responses: {
+      'plan-waves': { ok: true, waveCount: 1, taskCount: 2, coverageOk: true, fingerprintWritten: true, ...twoLaneBatch },
+      '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' },
+      '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' },
+      'merge-lanes-': {
+        status: 'collision',
+        folds: [],
+        collisions: [{ canonicalPath: 'lib/risk.mjs', lanes: ['1.1', '2.1'] }],
+        unresolved: [],
+        survivingWorktrees: [
+          { label: '1.1', worktreePath: '/tmp/wt-1.1' },
+          { label: '2.1', worktreePath: '/tmp/wt-2.1' }
+        ]
+      }
+    }
+  })
+  assert.ok(!calls.includes('commit'), 'a merge collision must never reach the commit step')
+  assert.match(output, /SHIP HALTED/)
+  assert.match(output, /merge-lanes halted/)
+  assert.match(output, /lib\/risk\.mjs/, 'the halt must name the contended canonical path')
+  assert.match(output, /"1\.1"|1\.1/)
+  assert.match(output, /wt-1\.1/, "the halt must name the surviving lane worktrees' locations")
+  assert.match(output, /wt-2\.1/)
+})
+
+test('a failed lane never folds — its worktree is preserved and named, not passed to merge-lanes', async () => {
+  const { output, prompts } = await runShip({
+    args: 'demo-change --isolate-waves',
+    responses: {
+      'plan-waves': { ok: true, waveCount: 1, taskCount: 2, coverageOk: true, fingerprintWritten: true, ...twoLaneBatch },
+      '1.1': { id: '1.1', ok: false, error: 'blocked', handoff: null, worktreePath: '/tmp/wt-1.1' },
+      '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' },
+      'record-batch-': stepResult({ action: 'done' }, {}, [
+        recordedOutcome('1.1', 'failed', 'blocked'),
+        recordedOutcome('2.1', 'ok')
+      ])
+    }
+  })
+  const mergePrompt = prompts.find(p => p.label.startsWith('merge-lanes-'))
+  assert.ok(mergePrompt, 'the surviving lane must still be offered to merge-lanes')
+  assert.doesNotMatch(
+    mergePrompt.prompt,
+    /"label":"1\.1"/,
+    "the failed lane's worktree must not be handed to merge-lanes at all"
+  )
+  assert.match(mergePrompt.prompt, /"label":"2\.1"/)
+  assert.match(output, /LANE WORKTREE PRESERVED: 1\.1 at \/tmp\/wt-1\.1/)
+})
+
+test('a resumed pass assembles the identical merge-lanes prompt, so it cache-hits without touching the worktree', async () => {
+  // The workflow runtime caches an agent() call by (prompt, opts) equality: a
+  // resumed run that assembles the SAME prompt for the SAME label never re-runs
+  // the CLI, so `bin/interlock merge-lanes` — the one place that stats the
+  // worktree on disk — is never invoked on the cached pass at all. That is what
+  // makes a cached-clean batch a no-op even after its worktrees were removed:
+  // the merge decision the resumed pass "reaches" is the one already cached, not
+  // a fresh filesystem read. This is asserted here as determinism of the
+  // ASSEMBLED prompt across two independent runs of the same batch, since the
+  // harness stubs agent() and cannot exercise the runtime's own cache.
+  const run = () =>
+    runShip({
+      args: 'demo-change --isolate-waves',
+      responses: {
+        '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' }
+      }
+    })
+  const first = await run()
+  const second = await run()
+  const mergePromptOf = ({ prompts }) => prompts.find(p => p.label.startsWith('merge-lanes-')).prompt
+  assert.equal(
+    mergePromptOf(first),
+    mergePromptOf(second),
+    'two independent passes over the same batch must assemble byte-identical merge-lanes prompts'
+  )
+  // Nothing in the assembled prompt reads the worktree path off disk — it is
+  // the lane's OWN self-report, carried through from the (possibly cached)
+  // implementer result, never a fresh `pwd` the script takes itself.
+  assert.doesNotMatch(mergePromptOf(first), /\bstat\b|\bexistsSync\b|\breaddir/i)
 })
 
 test('the lane cap is stated once, read by the planner, and never restated in the script', () => {

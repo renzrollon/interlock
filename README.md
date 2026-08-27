@@ -49,6 +49,14 @@ OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 1
 
 Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
+```bash
+interlock doctor
+```
+
+That is the preflight: it checks the allowlist against the commands the flow actually shells out to (including the one your own `.claude/testing/profile.json` names), plus the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written at all. It exits 1 when a check would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. Every condition it names is one you would otherwise meet three waves in. The plugin also runs this preflight automatically at session start (a `SessionStart` hook) so a missing allowlist entry surfaces before a run rather than three waves in.
+
+The plugin ships three `PreToolUse` guards as well — deterministic deny rules that stop an in-run agent from editing a test during remediation, hand-ticking `tasks.md`, or committing outside the commit stage. **They bind only agents running inside an Interlock ship run and are inert outside one:** they fail open whenever no active run marker is present, so installing the plugin does not change how your own editing or committing behaves. See [13 — The guards](docs/13-the-guards.md).
+
 New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have only ever prompted a coding agent — no skills, no specs, no gates — read **[09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md)** first: every term defined once, ending at why `ship` is a script and not a prompt. Then **[10](docs/10-agentic-workflow-ship-and-spec.md)** for this repo's loop reviewed in depth.
 
 | Doc | |
@@ -62,6 +70,9 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have on
 | [08 — The harness landscape](docs/08-harness-landscape.md) | OpenClaw, Hermes Agent and DeepSeek Harness, and which layer each sits at |
 | [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Agentic-workflow primer, review of spec+ship, token and quality tactics |
+| [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures, each denominator, and why it gates nothing |
+| [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change (scope, advice) and what it cannot (the band, nit cap) |
+| [13 — The guards](docs/13-the-guards.md) | The four hooks, the stage marker's lifecycle, and the fail-open rule. The guards bind only agents inside a ship run and are inert outside one |
 
 ---
 
@@ -120,7 +131,7 @@ Everything genuinely requiring judgement — classification, implementation, rev
 
 The wave loop, the halt conditions and the verification order are `workflows/ship.js` — a script, not numbered headings a model is asked to follow. Control flow written as prose is control flow the model can talk itself out of. Default `ship` is that loop through to a green unit suite and a commit. Adversarial review and handoff artifacts are `--strict` (or `--review` / `--handoff` on their own), not the execute loop itself.
 
-That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave — ordering inside a wave is free, while a new wave is a checkpoint. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file rather than two keys; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. The prediction is still a model's, so this narrows the race rather than closing it — but the assumption is now stated and checked instead of merely assumed.
+That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave — ordering inside a wave is free, while a new wave is a checkpoint. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file rather than two keys; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. The prediction is still a model's — but with `--isolate-waves`, each lane in a batch runs in its own git worktree, so the race is **closed within a batch** rather than merely narrowed: a mis-predicted shared write can no longer overwrite a sibling lane. Their worktrees fold back into the shared tree afterward (`interlock merge-lanes`); a prediction miss — two lanes that actually wrote the same file — surfaces as a named halt at merge time, never as a silently discarded write. Without the flag, the race is narrowed exactly as before.
 
 ---
 
@@ -133,6 +144,8 @@ An unverified review reports everything it notices, so you learn to skim it. A r
 **A skeptic must cite what it read to dismiss a finding.** A verdict of "not real" has to carry a `file:line` (or `file:start-end`) span naming a path that is actually in the reviewed diff — a shape a machine can check, not a judgement call handed to another model. A dismissal that fails either half does not dismiss anything: it is recorded, its quality score still counts, and the finding survives to you. The report says how many refutations were refused, so you can see the rule fire. Voting a finding *real* needs no citation, because that direction already ends with a human reading it — the cheap error. Only the dismissing direction is gated, because a wrongly dismissed finding is *invisible*, and nobody can catch a mistake they never see. [Research on adversarial review](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL vulnerability that did not exist. Confident prose is the one thing an LLM produces reliably, so it is the one thing a dismissal must not rest on.
 
 Surviving is not sufficient. `interlock gate` also applies a quality band: a finding the skeptics scored too low for how well-grounded and actionable it is gets dropped before the gate counts blockers, so a vague blocker cannot hold up a change. That threshold lives in the CLI rather than in the review prose, which is what stops it from being quietly re-argued on each run.
+
+A repo can own its review policy in an optional root **`REVIEW.md`**, read on every review. It can change **scope and advice**: declare `## Do Not Report` paths the CLI drops findings on, and prose — the local definition of "Important", who owns the bar — injected into the reviewer as clearly-delimited advice. It **cannot** change the band or the nit cap: those stay in the CLI, and a threshold-shaped key in the file is reported and ignored, never adopted — a path exclusion a model could talk past is not an exclusion, and a band a file could edit is not a gate. No `REVIEW.md` changes nothing; a malformed one is reported and the run proceeds under default policy. See [repository review policy](docs/12-repository-review-policy.md).
 
 ---
 
@@ -225,6 +238,8 @@ That is a bet, not a wall. The part of Interlock that is host-specific turns out
 
 They exist to answer, later and from evidence, whether any gate can safely be relaxed. That question stays open until there is a corpus to answer it with, and wiring a branch before then would be deciding without the data these were built to gather.
 
+**`interlock report` reads them, and still changes nothing.** It computes indicators over all three recorded corpora — outcome records, run trajectories, review metrics — with every value carrying its denominator, and it gates nothing: no threshold, no verdict, always exit 0, and no step of any run consults it. Reading a corpus and branching on it are different acts, and only the first has been built. See [the indicators](docs/11-the-indicators.md).
+
 **A second host, over ACP.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-ship-acp` is the second implementation of it, over the [Agent Client Protocol](https://agentclientprotocol.com): it spawns your ACP agent as a subprocess per task and shells out to the same CLI for every decision.
 
 ```bash
@@ -237,6 +252,19 @@ What it is for: proving the boundary is real. A host contract with one implement
 - **No per-tier model routing.** ACP v1 has no per-prompt model selector, so the planner's tier ladder is not in effect and the run banners `MODEL ROUTING UNAVAILABLE (ACP host)`. The cost story is a Claude Code property.
 - **The zero-touch contract is weaker.** On Claude Code nobody can interrupt a run because the runtime has no channel for it. Here the driver just declines to ask — a policy in a file, not a property of a runtime.
 - **`/interlock:ship` is untouched.** No flag, no auto-detect, no fallback: when the Workflow tool is missing the trampoline still halts. See [when it stops](docs/04-when-it-stops.md).
+
+**Evals over the model-facing surface.** The deterministic spine is densely unit-tested; the prompts, skills and shared contracts that steer a model are not, and the repo's own archived proposals record failures where the prompt bytes were correct and a model did the wrong thing anyway. An `evals/` case suite regression-tests that surface against a real model — tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication — each case citing the reproduced failure it encodes.
+
+```bash
+export CLAUDE_CODE_WALNUT_SPIRE=1          # early-access enablement — env only, never committed
+claude plugin eval . --tag smoke --no-publish --json evals-results.json
+interlock evals triage --results evals-results.json   # regression / variance / no signal — exit code is the verdict
+```
+
+- **Enablement is a local prerequisite.** `claude plugin eval` is early-access and does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set *in the environment*. Do not commit it to `.claude/settings.json` — a committed value produces a suite that looks configured and does not run.
+- **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
+- **Advisory, pending a baseline.** The CI eval job reports and does not block. No baseline scores exist yet, so any blocking threshold would be a guess; promotion needs observed variance across more than one run. The offline structural gate `test/evals.test.mjs` runs in `npm test` and *does* gate every pull request.
+- **CI skips until access is provisioned.** The eval job ([.github/workflows/evals.yml](.github/workflows/evals.yml)) skips fork pull requests and skips cleanly when no model credential is present, so the suite lands and is maintained before paid access exists. Provisioning a credential is a later configuration action, not a prerequisite for the change.
 
 **Code Mode is out of scope.** Running the loop as generated code against a tool API is interesting and it is not this: it would need Interlock to own a runtime to execute that code in, which it does not. Future work, contingent on that, not a supported ship host today.
 

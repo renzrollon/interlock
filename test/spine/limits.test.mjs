@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS, RUNTIME, clampParallel, formatLimits } from '../../lib/limits.mjs'
+import { LIMITS, RUNTIME, EFFORT, clampParallel, formatLimits } from '../../lib/limits.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -125,6 +125,32 @@ test('every cap the limits surface prints is read by the code path it governs', 
       `Wire each to the path it governs, or remove it from LIMITS and from the printed ` +
       `surface together — a cap with no reader is a cap written in prose.`
   )
+})
+
+// --- effort routing defaults (spec: effort-routing/published-not-restated) --
+//
+// The effort table lives beside the caps for the same reason they do: a mapping
+// written twice drifts. It is a separate export from LIMITS because LIMITS holds
+// positive-integer iteration counts (the invariant above), and effort is a
+// tier→string table — so `interlock limits` is where an operator reads it.
+
+test('the effort defaults are the ones the design pinned', () => {
+  // D2 of add-lane-effort-routing. Changing one of these re-routes reasoning
+  // effort across the fleet — a product decision, updated here deliberately.
+  assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: null, 4: null, 5: 'xhigh' })
+  assert.equal(EFFORT.verify, 'xhigh')
+  assert.equal(EFFORT.skeptic, 'xhigh')
+})
+
+test('interlock limits surfaces the tier→effort mapping and the fixed step effort', () => {
+  const text = formatLimits()
+  assert.match(text, /effort: tier 1 lane\s+low/)
+  assert.match(text, /effort: tier 5 lane\s+xhigh/)
+  // Tiers 3 and 4 emit no override; the surface says "inherit", never a number
+  // that would read as a forced effort.
+  assert.match(text, /effort: tier 3 lane\s+inherit/)
+  assert.match(text, /effort: inter-wave verify step\s+xhigh/)
+  assert.match(text, /effort: review skeptic step\s+xhigh/)
 })
 
 test('a removed cap is gone from the object and from the printed surface together', () => {

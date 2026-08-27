@@ -1,0 +1,616 @@
+// The preflight's own preflight.
+//
+// Two things are being held here, and they are different. The permission
+// matcher is a pure function over strings, and every one of its interesting
+// cases is a *near miss* — a rule that exists but is too narrow, a deny that
+// covers less than the requirement but still fires, an `ask` that is not an
+// allow. Those are asserted exhaustively, because the failure mode of getting
+// one wrong is a green preflight followed by the halt it promised to prevent.
+//
+// The checks themselves are asserted through `diagnose`, against fabricated
+// roots, with PATH, home, the settings list and the version probe all injected.
+// A doctor whose test depended on the developer's own machine would report on
+// that machine rather than on the code.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  diagnose,
+  formatDoctor,
+  parseRule,
+  profileCommands,
+  ruleCovers,
+  ruleOverlaps,
+  whichSync,
+  REQUIRED_COMMANDS,
+  STATE_DIRS
+} from '../../lib/doctor.mjs'
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const BIN = join(REPO, 'bin', 'interlock')
+
+function tmp() {
+  return mkdtempSync(join(tmpdir(), 'interlock-doctor-'))
+}
+
+function file(dir, rel, contents) {
+  const p = join(dir, rel)
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, typeof contents === 'string' ? contents : JSON.stringify(contents, null, 2))
+  return p
+}
+
+/** An executable stub — `whichSync` checks the mode bit, never runs it. */
+function stubBin(dir, name) {
+  const p = file(dir, name, '#!/bin/sh\nexit 0\n')
+  chmodSync(p, 0o755)
+  return p
+}
+
+const req = (command, open = true) => ({ tokens: command.split(' '), open, why: 'test' })
+
+// ---------------------------------------------------------------------------
+// Rule parsing
+// ---------------------------------------------------------------------------
+
+test('parseRule reads both the colon form and the older glob form', () => {
+  assert.deepEqual(parseRule('Bash(npm test:*)'), {
+    tool: 'Bash',
+    tokens: ['npm', 'test'],
+    open: true,
+    rule: 'Bash(npm test:*)'
+  })
+  assert.deepEqual(parseRule('Bash(git *)'), {
+    tool: 'Bash',
+    tokens: ['git'],
+    open: true,
+    rule: 'Bash(git *)'
+  })
+  // Exact: permits that command and nothing after it.
+  assert.deepEqual(parseRule('Bash(git status)'), {
+    tool: 'Bash',
+    tokens: ['git', 'status'],
+    open: false,
+    rule: 'Bash(git status)'
+  })
+})
+
+test('parseRule treats a bare tool and Bash(*) as unrestricted, and rejects noise', () => {
+  assert.deepEqual(parseRule('Bash').tokens, [])
+  assert.equal(parseRule('Bash').open, true)
+  assert.equal(parseRule('Bash(*)').open, true)
+  assert.equal(parseRule(''), null)
+  assert.equal(parseRule(42), null)
+  assert.equal(parseRule('not a rule'), null)
+})
+
+test('parseRule keeps non-Bash rules distinguishable rather than dropping them', () => {
+  const rule = parseRule('WebFetch(domain:github.com)')
+  assert.equal(rule.tool, 'WebFetch')
+  // Only the tool matters: ruleCovers refuses anything that is not Bash.
+  assert.equal(ruleCovers(rule, req('git')), false)
+})
+
+// ---------------------------------------------------------------------------
+// Coverage — the near misses
+// ---------------------------------------------------------------------------
+
+test('an open rule covers the command and everything after it', () => {
+  assert.equal(ruleCovers(parseRule('Bash(interlock:*)'), req('interlock')), true)
+  assert.equal(ruleCovers(parseRule('Bash(interlock *)'), req('interlock')), true)
+  assert.equal(ruleCovers(parseRule('Bash(*)'), req('interlock')), true)
+  assert.equal(ruleCovers(parseRule('Bash'), req('npm test')), true)
+})
+
+test('a rule NARROWER than the requirement does not cover it', () => {
+  // The whole point: the loop calls ~30 interlock subcommands, so permission
+  // for one of them is not permission for the command.
+  assert.equal(ruleCovers(parseRule('Bash(interlock waves:*)'), req('interlock')), false)
+  assert.equal(ruleCovers(parseRule('Bash(npm run test:*)'), req('npm test')), false)
+})
+
+test('an exact rule does not satisfy a requirement that needs arguments', () => {
+  assert.equal(ruleCovers(parseRule('Bash(interlock)'), req('interlock', true)), false)
+  // …but it does satisfy a requirement for exactly that invocation.
+  assert.equal(ruleCovers(parseRule('Bash(interlock)'), req('interlock', false)), true)
+})
+
+test('a broader prefix covers a longer requirement', () => {
+  assert.equal(ruleCovers(parseRule('Bash(npm:*)'), req('npm test')), true)
+  assert.equal(ruleCovers(parseRule('Bash(node:*)'), req('node --test')), true)
+})
+
+test('ruleOverlaps fires in both directions, which is what deny and ask need', () => {
+  // Denies less than the requirement covers — still a mid-run stop.
+  assert.equal(ruleOverlaps(parseRule('Bash(git push:*)'), req('git')), true)
+  // Denies more than the requirement covers.
+  assert.equal(ruleOverlaps(parseRule('Bash(git:*)'), req('git push')), true)
+  assert.equal(ruleOverlaps(parseRule('Bash(npm:*)'), req('git')), false)
+  // A narrower rule cannot overlap a requirement that permits no arguments.
+  assert.equal(ruleOverlaps(parseRule('Bash(git push:*)'), req('git', false)), false)
+})
+
+// ---------------------------------------------------------------------------
+// Required commands derived from the project
+// ---------------------------------------------------------------------------
+
+test('profileCommands truncates at the first placeholder and dedupes', () => {
+  const commands = profileCommands({
+    unit: { command: 'npm test', single_file: 'node --test <path>' },
+    e2e: { command: 'npm test' }
+  })
+  assert.deepEqual(commands.map(c => c.tokens.join(' ')), ['npm test', 'node --test'])
+  assert.ok(commands.every(c => c.open))
+})
+
+test('profileCommands survives a profile that is missing, empty or the wrong shape', () => {
+  assert.deepEqual(profileCommands(undefined), [])
+  assert.deepEqual(profileCommands({}), [])
+  assert.deepEqual(profileCommands({ unit: null, e2e: 'nope' }), [])
+  assert.deepEqual(profileCommands({ unit: { command: '   ' } }), [])
+})
+
+test('whichSync finds an executable on the injected PATH and nothing else', () => {
+  const dir = tmp()
+  try {
+    stubBin(dir, 'openspec')
+    file(dir, 'not-executable', 'x')
+    const env = { PATH: dir }
+    assert.equal(whichSync('openspec', env), join(dir, 'openspec'))
+    assert.equal(whichSync('not-executable', env), null)
+    assert.equal(whichSync('definitely-not-installed', env), null)
+    assert.equal(whichSync('', env), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// diagnose
+// ---------------------------------------------------------------------------
+
+/** A plugin root complete enough to pass the install check. */
+function fakePlugin(dir, { version = '9.9.9', omit = [], engines = '>=18', name = 'plugin' } = {}) {
+  const root = join(dir, name)
+  file(root, 'package.json', { name: 'interlock', engines: { node: engines } })
+  file(root, '.claude-plugin/plugin.json', { name: 'interlock', version, workflows: './workflows' })
+  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'bin/interlock', 'bin/interlock-graph']) {
+    if (omit.includes(rel)) continue
+    file(root, rel, '// stub\n')
+  }
+  return root
+}
+
+function byId(report, id) {
+  const found = report.checks.find(c => c.id === id)
+  assert.ok(found, `no check "${id}" in the report`)
+  return found
+}
+
+/** Everything green needs a real git work tree; git is the one probe not stubbed. */
+function gitInit(dir) {
+  const r = spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8' })
+  return r.status === 0
+}
+
+function baseOpts(dir, extra = {}) {
+  const binDir = join(dir, 'stub-bin')
+  mkdirSync(binDir, { recursive: true })
+  for (const name of ['interlock', 'interlock-graph', 'openspec']) stubBin(binDir, name)
+  return {
+    // Only fabricate the default plugin when the caller did not bring its own;
+    // building it unconditionally would overwrite a deliberately broken one.
+    ...('pluginRoot' in extra ? {} : { pluginRoot: fakePlugin(dir) }),
+    // The real PATH stays on the end so `git` still resolves; every other
+    // binary is answered by the stub directory in front of it.
+    env: { PATH: `${binDir}:${process.env.PATH || ''}` },
+    nodeVersion: 'v22.11.0',
+    probeVersion: () => 'stub 1.0.0',
+    settingsSources: [{ scope: 'project', path: join(dir, '.claude', 'settings.json') }],
+    ...extra
+  }
+}
+
+const ALL_ALLOWED = {
+  permissions: {
+    allow: [
+      'Bash(interlock:*)',
+      'Bash(interlock-graph:*)',
+      'Bash(openspec:*)',
+      'Bash(git:*)',
+      'Bash(npm test:*)'
+    ]
+  }
+}
+
+const PROFILE = { version: 1, unit: { command: 'npm test' }, e2e: null }
+
+test('a fully wired project passes every check', () => {
+  const dir = tmp()
+  try {
+    if (!gitInit(dir)) return // no git on this machine; the green path is unassertable
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const report = diagnose(dir, baseOpts(dir))
+    assert.equal(report.ok, true, formatDoctor(report))
+    assert.deepEqual(report.failures, [])
+    assert.equal(byId(report, 'permissions').status, 'ok')
+    assert.equal(byId(report, 'state-dirs').status, 'ok')
+    // The derived set is the static four plus the profile's own command.
+    assert.deepEqual(
+      report.requiredCommands.map(c => c.command),
+      [...REQUIRED_COMMANDS.map(r => r.tokens.join(' ')), 'npm test']
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an uncovered required command fails, and the fix names the rule to add', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', { permissions: { allow: ['Bash(git:*)'] } })
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'fail')
+    assert.equal(report.ok, false)
+    assert.deepEqual(
+      permissions.uncovered.map(u => u.command),
+      ['interlock', 'interlock-graph', 'openspec', 'npm test']
+    )
+    assert.match(permissions.fix, /"Bash\(npm test:\*\)"/)
+    // git was allowed, so it is not in the fix.
+    assert.doesNotMatch(permissions.fix, /"Bash\(git:\*\)"/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a rule that is only narrower than the requirement fails, and says so', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', {
+      permissions: {
+        allow: ['Bash(interlock waves:*)', 'Bash(interlock-graph:*)', 'Bash(openspec:*)', 'Bash(git:*)', 'Bash(npm test:*)']
+      }
+    })
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'fail')
+    const interlock = permissions.uncovered.find(u => u.command === 'interlock')
+    assert.ok(interlock, 'interlock should be uncovered')
+    assert.deepEqual(interlock.narrower, ['Bash(interlock waves:*) (project)'])
+    assert.match(permissions.evidence.join('\n'), /found only narrower: Bash\(interlock waves:\*\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a deny that overlaps a required command fails ahead of the uncovered report', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', {
+      permissions: { allow: ['Bash(git:*)'], deny: ['Bash(git push:*)'] }
+    })
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'fail')
+    assert.match(permissions.evidence.join('\n'), /git: denied by Bash\(git push:\*\) \(project\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an ask rule warns rather than failing — it prompts, it does not block', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', {
+      permissions: { ...ALL_ALLOWED.permissions, ask: ['Bash(git push:*)'] }
+    })
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'warn')
+    assert.match(permissions.evidence.join('\n'), /prompts/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('bypassPermissions warns and checks nothing, because nothing will prompt', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', { permissions: { defaultMode: 'bypassPermissions', allow: [] } })
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'warn')
+    assert.match(permissions.detail, /bypassPermissions/)
+    // Reported, not silently dropped: the reader still learns what is missing.
+    assert.match(permissions.evidence.join('\n'), /would otherwise be uncovered: interlock/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unparseable settings file is never read as an empty allowlist', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', '{ not json')
+    const report = diagnose(dir, baseOpts(dir))
+    const permissions = byId(report, 'permissions')
+    // It fails on the uncovered commands, and the unreadable file is evidence.
+    assert.equal(permissions.status, 'fail')
+    assert.match(permissions.evidence.join('\n'), /not valid JSON/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a settings file that parses but allows everything relevant, with a broken sibling, warns', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    file(dir, '.claude/settings.local.json', '}{')
+    const report = diagnose(
+      dir,
+      baseOpts(dir, {
+        settingsSources: [
+          { scope: 'project', path: join(dir, '.claude', 'settings.json') },
+          { scope: 'local', path: join(dir, '.claude', 'settings.local.json') }
+        ]
+      })
+    )
+    const permissions = byId(report, 'permissions')
+    assert.equal(permissions.status, 'warn')
+    assert.match(permissions.detail, /could not be read/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a missing test profile fails, and its command is then absent from the required set', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const report = diagnose(dir, baseOpts(dir))
+    assert.equal(byId(report, 'test-profile').status, 'fail')
+    assert.equal(report.ok, false)
+    assert.deepEqual(
+      report.requiredCommands.map(c => c.command),
+      REQUIRED_COMMANDS.map(r => r.tokens.join(' '))
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a test profile with no unit command fails: verification would have nothing to run', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', { version: 1, unit: {} })
+    const report = diagnose(dir, baseOpts(dir))
+    assert.equal(byId(report, 'test-profile').status, 'fail')
+    assert.match(byId(report, 'test-profile').detail, /no unit\.command/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an incomplete plugin install fails and names the missing files', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot: fakePlugin(dir, { omit: ['agents/worker.md'] }) }))
+    const plugin = byId(report, 'plugin')
+    assert.equal(plugin.status, 'fail')
+    assert.match(plugin.evidence.join('\n'), /missing: agents\/worker\.md/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a plugin manifest with no workflows key fails: /interlock:ship would have nothing to launch', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = fakePlugin(dir)
+    file(pluginRoot, '.claude-plugin/plugin.json', { name: 'interlock', version: '1.0.0' })
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot }))
+    assert.equal(byId(report, 'plugin').status, 'fail')
+    assert.match(byId(report, 'plugin').detail, /no "workflows" directory/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the node check reads the plugin floor, and reports OpenSpec\'s higher one separately', () => {
+  const dir = tmp()
+  try {
+    const opts = baseOpts(dir)
+    assert.equal(diagnose(dir, { ...opts, nodeVersion: 'v16.20.0' }).checks[0].status, 'fail')
+    // Above Interlock's floor, below OpenSpec's — a warning, not a failure.
+    const mid = diagnose(dir, { ...opts, nodeVersion: 'v18.20.8' }).checks[0]
+    assert.equal(mid.status, 'warn')
+    assert.match(mid.detail, /20\.19\.0/)
+    assert.equal(diagnose(dir, { ...opts, nodeVersion: 'v20.19.0' }).checks[0].status, 'ok')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('binaries absent from PATH but present in the plugin warn rather than fail', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { env: { PATH: '' } }))
+    const binaries = byId(report, 'binaries')
+    assert.equal(binaries.status, 'warn')
+    assert.match(binaries.fix, /Nothing to do for a run inside Claude Code/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('openspec absent with no project at all fails; absent with a project only warns', () => {
+  const dir = tmp()
+  try {
+    const noOpenSpec = { PATH: '' }
+    assert.equal(byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec').status, 'fail')
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const withProject = byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec')
+    assert.equal(withProject.status, 'warn')
+    assert.match(withProject.detail, /ship reads artifacts from disk/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the openspec CLI without an initialised project warns', () => {
+  const dir = tmp()
+  try {
+    const openspec = byId(diagnose(dir, baseOpts(dir)), 'openspec')
+    assert.equal(openspec.status, 'warn')
+    assert.match(openspec.fix, /openspec init/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a directory outside a git work tree fails', () => {
+  const dir = tmp()
+  try {
+    const git = byId(diagnose(dir, baseOpts(dir)), 'git')
+    // A machine with no git at all fails for the other reason; both are failures.
+    assert.equal(git.status, 'fail')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unwritable run-state directory fails BEFORE the run, not on the wave that appends', {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root ignores mode bits' : false
+}, () => {
+  const dir = tmp()
+  const runs = join(dir, STATE_DIRS[0].path)
+  try {
+    mkdirSync(runs, { recursive: true })
+    chmodSync(runs, 0o555)
+    const state = byId(diagnose(dir, baseOpts(dir)), 'state-dirs')
+    assert.equal(state.status, 'fail')
+    assert.match(state.evidence.join('\n'), /\.claude\/ship\/runs/)
+    assert.match(state.fix, /exits 1 mid-run/)
+  } finally {
+    try {
+      chmodSync(runs, 0o755)
+    } catch {
+      // best effort; the rm below is what matters
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unwritable bookkeeping directory warns — the runtime does not fail the run over it', {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root ignores mode bits' : false
+}, () => {
+  const dir = tmp()
+  const bookkeeping = STATE_DIRS.filter(d => !d.fatal)
+  assert.ok(bookkeeping.length, 'the fixture assumes at least one never-fatal directory')
+  try {
+    for (const d of bookkeeping) {
+      mkdirSync(join(dir, d.path), { recursive: true })
+      chmodSync(join(dir, d.path), 0o555)
+    }
+    const state = byId(diagnose(dir, baseOpts(dir)), 'state-dirs')
+    assert.equal(state.status, 'warn')
+    assert.match(state.detail, /the run continues without them|the run continues without/)
+  } finally {
+    for (const d of bookkeeping) {
+      try {
+        chmodSync(join(dir, d.path), 0o755)
+      } catch {
+        // best effort
+      }
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the writability probe leaves nothing behind', () => {
+  const dir = tmp()
+  try {
+    for (const d of STATE_DIRS) mkdirSync(join(dir, d.path), { recursive: true })
+    diagnose(dir, baseOpts(dir))
+    const stray = spawnSync('find', [join(dir, '.claude'), '-name', '.interlock-doctor-*'], {
+      encoding: 'utf8'
+    })
+    assert.equal(stray.stdout.trim(), '')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a check that throws becomes a failure, never a pass', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot: null, env: null }))
+    // Whatever broke, nothing silently reported ok — and a report still came out.
+    assert.ok(Array.isArray(report.checks) && report.checks.length >= 8)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('formatDoctor prints evidence and fixes only for the checks that need them', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', { permissions: { allow: [] } })
+    const text = formatDoctor(diagnose(dir, baseOpts(dir)))
+    assert.match(text, /^PREFLIGHT BLOCKED/)
+    assert.match(text, /\[FAIL\] permissions:/)
+    assert.match(text, /fix: Add to/)
+    // An ok check contributes exactly one line.
+    const okLine = text.split('\n').filter(l => l.includes('[ok  ] node:'))
+    assert.equal(okLine.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// CLI wiring — the exit code is the whole point
+// ---------------------------------------------------------------------------
+
+test('interlock doctor exits 1 when a check fails and emits parseable JSON either way', () => {
+  const dir = tmp()
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'doctor', '--root', dir, '--json'], { encoding: 'utf8' })
+    assert.equal(r.error, undefined)
+    let report
+    assert.doesNotThrow(() => {
+      report = JSON.parse(r.stdout)
+    }, `doctor --json did not emit parseable JSON:\n${r.stdout}`)
+    assert.equal(report.ok, false, 'an empty temp dir cannot pass the preflight')
+    assert.equal(r.status, 1, 'a failing preflight must exit non-zero')
+    assert.ok(report.failures.includes('test-profile'))
+    assert.equal(report.root, resolve(dir))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('interlock doctor is listed in the usage text, with its exit code', () => {
+  const r = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8' })
+  assert.equal(r.status, 0)
+  assert.match(r.stdout, /interlock doctor\s+Preflight the host/)
+  assert.match(r.stdout, /doctor\s+a preflight check would stop a zero-touch run/)
+})

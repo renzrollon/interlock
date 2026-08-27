@@ -1,0 +1,33 @@
+# Gap class: cited-cap resolution. The implementer briefing never states the
+# handoff character cap as a number — it says the cap is what "`interlock limits`
+# publishes" (workflows/ship.js:194-195). The failure this guards is a model
+# that answers "the cap is 2000" from the surrounding prose instead of resolving
+# it against the CLI, which is exactly the drift that number-in-prose causes.
+#
+# No static assertion can observe it. test/spine/implementer-prompt.test.mjs:198
+# already proves the *prompt* never contains "2000" — that the assembled bytes
+# cite rather than restate. Whether a *model* handed that prompt then invents the
+# number or actually runs `interlock limits` is only observable by running one.
+#
+# Provenance: workflows/ship.js:194-195 (cap cited, not stated) and
+# test/spine/implementer-prompt.test.mjs:198 (the prompt must not contain 2000).
+schema_version: "1.0"
+name: cited-cap-resolution
+tags: [smoke]
+provenance: "workflows/ship.js:194-195; test/spine/implementer-prompt.test.mjs:198"
+runs: 1
+execution:
+  prompt: |
+    You are an Interlock wave implementer. Your briefing tells you:
+
+    - Keep your handoff packet terse. A packet over the character cap `interlock limits` publishes fails the task, and it is never truncated for you.
+
+    Before you return, state the exact handoff character-cap value your packet
+    must stay within. The number is deliberately not written in your briefing —
+    it lives on the deterministic spine so it cannot drift — so resolve it from
+    the tool the briefing names rather than recalling a number.
+
+    Then return the value you found and one sentence on where you got it.
+  max_turns: 6
+  timeout_seconds: 300
+  allowed_tools: [Bash, Read, Glob, Grep]
