@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { laneEffort as laneEffortSource } from '../lib/waves.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -219,7 +220,13 @@ test('ship.js dual-writes type and tools on every agent() spawn', () => {
   assert.match(text, /tools: PING_TOOLS/)
   assert.match(text, /tools: WORKER_TOOLS/)
   assert.match(text, /\.\.\.workerExtra, \.\.\.extra/)
-  assert.match(text, /cheap = \(name, prompt\) => step\(name, prompt, nextSchema, pingExtra\)/)
+  // cheap gained an optional third `extra` so a mechanical step (the inter-wave
+  // verify) can pin its effort. The extra is spread after pingExtra, so a caller
+  // passing nothing is byte-identical to the old two-arg form.
+  assert.match(
+    text,
+    /cheap = \(name, prompt, extra = \{\}\) => step\(name, prompt, nextSchema, \{ \.\.\.pingExtra, \.\.\.extra \}\)/
+  )
   assert.doesNotMatch(text, /tools:\s*\[[^\]]*(Skill|Agent)/)
 })
 
@@ -457,6 +464,51 @@ test('ship.js uses haiku for mechanical control-plane steps', () => {
   assert.match(text, /cheap\(\s*`record-batch-/, 'record-batch must go through the cheap wrapper')
   assert.match(text, /cheap\(\s*`inter-wave-verify-/, 'inter-wave verify must go through the cheap wrapper')
   assert.match(text, /cheap\(\s*`replan-/, 'replan must go through the cheap wrapper')
+})
+
+// --- effort routing parity + dispatch (spec: effort-routing) ---------------
+//
+// laneEffort exists twice — the source in lib/waves.mjs and the mirror in
+// ship.js — because the runtime rejects import(). A drift silently re-routes a
+// cached lane on replay, so the two are pinned equal here, the same guard shape
+// the mirrored laneModel relies on.
+
+/** The mirrored laneEffort, evaluated out of its marked region in ship.js. */
+const laneEffortMirror = (() => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ LANE_EFFORT_START\n([\s\S]*?)\n\/\/ LANE_EFFORT_END/.exec(text)
+  assert.ok(m, 'ship.js must define laneEffort between LANE_EFFORT markers')
+  return new Function(`${m[1]}; return laneEffort`)()
+})()
+
+test('the ship.js laneEffort mirror derives identical effort for every representative lane', () => {
+  const lanes = [
+    [{ id: '1', tier: 1 }],
+    [{ id: '2', tier: 2 }],
+    [{ id: '3', tier: 3 }],
+    [{ id: '4', tier: 4 }],
+    [{ id: '5', tier: 5 }],
+    [{ id: '6a', tier: 1 }, { id: '6b', tier: 5 }],
+    [{ id: '7', tier: undefined }]
+  ]
+  for (const lane of lanes) {
+    assert.equal(
+      laneEffortMirror(lane),
+      laneEffortSource(lane),
+      `laneEffort mirror disagrees with the source for lane ${lane.map(t => t.id).join('+')}`
+    )
+  }
+})
+
+test('ship.js applies the lane effort at dispatch and pins the verify/skeptic steps at xhigh', () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  // The implementer spawn carries its lane's derived effort, beside the model.
+  assert.match(text, /effort: laneEffort\(lane\)/, 'the implementer spawn must carry laneEffort(lane)')
+  // The two adversarial steps are fixed at xhigh, not left at the session default.
+  assert.match(text, /const VERIFY_EFFORT = 'xhigh'/)
+  assert.match(text, /const SKEPTIC_EFFORT = 'xhigh'/)
+  assert.match(text, /\{ effort: VERIFY_EFFORT \}/, 'inter-wave verify must pin VERIFY_EFFORT')
+  assert.match(text, /\{ effort: SKEPTIC_EFFORT \}/, 'the review skeptic step must pin SKEPTIC_EFFORT')
 })
 
 test('ship.js review and remediate return counts only', () => {

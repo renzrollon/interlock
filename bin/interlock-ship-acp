@@ -525,12 +525,23 @@ const planned = await spawn(
   `For OpenSpec change "${change}": read proposal.md, design.md, tasks.md and specs/**/*.md in full — ` +
     `this is the artifact leash and is not subject to bounded retrieval.\n\n` +
     `Classify every UNCHECKED task with: id, group (wave number), description, tier 1-5, model, ` +
-    `isTestTask, and paths.\n\n` +
-    `GROUPING — three rules, in order:\n` +
+    `isTestTask, paths, and dependsOn.\n\n` +
+    `GROUPING — four rules, in order:\n` +
     `  1. Default group to the numbered tasks.md section (1.x → group 1, 2.x → group 2).\n` +
     `  2. A shared file is NOT a reason for a new group. Put the predicted edit paths in \`paths\` ` +
     `and let the planner fold colliding tasks into one LANE of the SAME wave.\n` +
-    `  3. Only add a group when a later task needs an earlier task's output to already exist.\n\n` +
+    `  3. A dependency on a task editing a DIFFERENT file is a reason for a \`dependsOn\` EDGE, ` +
+    `not a reason to increment \`group\` — an edge orders only the dependent task, while a new ` +
+    `group serializes every independent task that lands in it. Prefer the edge.\n` +
+    `  4. Only add a group when a later task needs an earlier task's output to already exist.\n\n` +
+    // Same contract the workflow driver states: `lib/host.mjs` forbids a host
+    // from carrying its own classifier policy, and the planner rejects a
+    // malformed edge set rather than dropping it, so both drivers have to tell
+    // the model what a well-formed edge is.
+    `\`dependsOn\` is the array of ids of EARLIER tasks whose output this task needs. Every id must ` +
+    `name a task in this same classification, must not point at a later numbered section, and must ` +
+    `not point at a test task; the edges must not form a cycle. A dangling id, a backward edge or ` +
+    `a cycle FAILS the plan rather than being dropped.\n\n` +
     // The same tier policy the workflow driver states, in the same words.
     // `lib/host.mjs` forbids a host from carrying its own policy, and this is
     // the one place that drifted: the two drivers described tier 4 differently,

@@ -33,7 +33,7 @@ import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, formatLimits } from '../lib/limits.mjs'
+import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, EFFORT, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import { resolveReview, formatReview } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -1116,7 +1116,7 @@ function main() {
     }
 
     case 'limits': {
-      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS }, formatLimits())
+      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS, effort: EFFORT }, formatLimits())
       break
     }
 

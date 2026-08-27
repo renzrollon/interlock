@@ -215,6 +215,20 @@ function laneModel(lane) {
   return hardest && hardest.model
 }
 
+// LANE_EFFORT_START
+// The reasoning effort a lane runs at — mirror of lib/waves.mjs `laneEffort`.
+// The runtime loads no modules, so the tier→effort table (lib/limits.mjs EFFORT)
+// is inlined here and a parity test guards the two copies against drift. Effort
+// is the hardest task's tier, never the first task's. null = inherit the session
+// default (do not force): tiers 3–4 by policy, an untiered lane (tier 0) by
+// fallback.
+function laneEffort(lane) {
+  const tier = lane.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0)
+  const byTier = { 1: 'low', 2: 'low', 3: null, 4: null, 5: 'xhigh' }
+  return byTier[tier] ?? null
+}
+// LANE_EFFORT_END
+
 /** Stable across replays, so a resumed run cache-hits the lane it already ran. */
 function laneLabel(lane) {
   return lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`
@@ -604,6 +618,13 @@ const WORKER_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash']
 const workerExtra = { type: WORKER_AGENT, tools: WORKER_TOOLS }
 const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
 
+// The two adversarial steps run at a fixed effort regardless of any lane tier —
+// they are the steps whose job is catching what an implementer missed. Mirror of
+// lib/limits.mjs EFFORT.verify / EFFORT.skeptic; the runtime loads no modules,
+// so the value is inlined here the same way the lane tier→effort table is.
+const VERIFY_EFFORT = 'xhigh'
+const SKEPTIC_EFFORT = 'xhigh'
+
 // Agents report structured results so the script can branch on a value rather
 // than on a sentence. Every schema below is deliberately small: anything the
 // script does not branch on stays in the agent's own context.
@@ -739,7 +760,7 @@ const nextSchema = {
 // when haiku is available, pingExtra.model is set so these pings do not inherit
 // a sonnet session. Mutate pingExtra rather than rebinding it — cheap closes
 // over the object. type and tools were set above; do not replace the object.
-const cheap = (name, prompt) => step(name, prompt, nextSchema, pingExtra)
+const cheap = (name, prompt, extra = {}) => step(name, prompt, nextSchema, { ...pingExtra, ...extra })
 
 // `wave-state next` only logs the *implementer* spawns it names in its own
 // tasks[] (design.md "Agent spawns") — it has no way to know about the
@@ -1236,20 +1257,30 @@ const planned = adopted
   `For OpenSpec change "${change}": read proposal.md, design.md, tasks.md and specs/**/*.md in full — ` +
     `this is the artifact leash and is not subject to bounded retrieval.\n\n` +
     `Classify every UNCHECKED task with: id, group (wave number), description, tier 1-5, model, ` +
-    `isTestTask, and paths.\n\n` +
-    `GROUPING — three rules, in order:\n` +
+    `isTestTask, paths, and dependsOn.\n\n` +
+    `GROUPING — four rules, in order:\n` +
     `  1. Default group to the numbered tasks.md section (1.x → group 1, 2.x → group 2).\n` +
     `  2. A shared file is NOT a reason for a new group. Put the predicted edit paths in \`paths\` ` +
     `and let the planner fold colliding tasks into one LANE of the SAME wave — an ordered task ` +
     `list run by a single agent. Inventing a new group to avoid a file clash costs a verification ` +
     `cycle; naming the path costs nothing and saves a spawn.\n` +
-    `  3. Only add a group for a LATER NUMBERED SECTION that needs an earlier section's output ` +
+    `  3. A dependency on a task editing a DIFFERENT file is a reason for a \`dependsOn\` EDGE, ` +
+    `not a reason to increment \`group\`. Incrementing \`group\` to order one cross-file dependency ` +
+    `serializes every task in the new group that is independent of it; an edge orders only the ` +
+    `dependent task, so its independent siblings keep sharing a batch. Prefer the edge.\n` +
+    `  4. Only add a group for a LATER NUMBERED SECTION that needs an earlier section's output ` +
     `to already exist. The next sequential slice of the same file is NOT a new group — it stays ` +
     `in that file's section group and becomes a later batch. Groups run sequentially; tasks in a ` +
     `group are otherwise independent.\n\n` +
     `\`paths\` is your best prediction of the repo-relative files the task will edit. Predict what you ` +
     `can and OMIT the field when you genuinely cannot — an invented path serializes a batch for ` +
     `nothing, while an omitted one only leaves things as they were.\n\n` +
+    `\`dependsOn\` is the array of ids of EARLIER tasks whose output this task needs — the file it ` +
+    `imports, the type it consumes, the helper it calls. Populate it whenever that is true, and ` +
+    `omit it otherwise. Every id must name a task in this same classification, must not point at ` +
+    `a later numbered section, and must not point at a test task; the edges must not form a cycle. ` +
+    `A dangling id, a backward edge or a cycle FAILS the plan rather than being dropped, so declare ` +
+    `only dependencies you can point at.\n\n` +
     // The unary `+` that used to sit here coerced the next operand to NaN, so
     // tiers 1-3 and the haiku routing rule never reached the classifier — and
     // the sentence stayed intact in these bytes, which is why every
@@ -1406,6 +1437,7 @@ while (steps++ < MAX_LOOP_STEPS) {
           {
             label: laneLabel(lane),
             model: laneModel(lane),
+            effort: laneEffort(lane),
             ...workerExtra,
             // A one-task lane keeps the pre-lane result shape, because its
             // prompt is the pre-lane prompt byte for byte and a schema asking
@@ -1616,7 +1648,8 @@ while (steps++ < MAX_LOOP_STEPS) {
           COPY_STDOUT +
           `\nA non-zero exit means action:halt.\n` +
           `If you skipped, also set skipped:true and reason — that reason is printed to the user.\n\n` +
-          `Set blocksNextWave true only when the next wave genuinely cannot build on this state.`
+          `Set blocksNextWave true only when the next wave genuinely cannot build on this state.`,
+        { effort: VERIFY_EFFORT }
       )
     )
 
@@ -1704,7 +1737,12 @@ if (review) {
         missingRubrics: { type: 'array', items: { type: 'string' } },
         detail: { type: 'string' }
       }
-    }
+    },
+    // The skeptics reason inside this one worker agent (it fans out dimensions
+    // and two skeptics per finding in its own context, then calls the CLI), so
+    // pinning this spawn's effort is what pins the skeptics — fixed at xhigh
+    // regardless of any lane tier.
+    { effort: SKEPTIC_EFFORT }
   )
 
   for (const dimension of (reviewResult && reviewResult.missingRubrics) || []) {

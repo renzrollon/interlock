@@ -183,3 +183,70 @@ test('the extracted policy is what changed, so a rewording alone does not fail',
     'casing, spacing and punctuation must not be what the cross-host comparison sees'
   )
 })
+
+// --- the dependency edge guidance (spec: waves MODIFIED) -------------------
+//
+// The `waves` spec anchors the edge guidance to the PROMPT TEXT, so this is the
+// surface that has to carry it — and it is asserted against the assembled
+// string for the reason the top of this file gives: the sentence can sit intact
+// in ship.js while never reaching the classifier.
+
+test('the assembled classifier prompt tells the model to emit dependsOn', async () => {
+  const prompt = await plannerPrompt()
+  assert.match(prompt, /isTestTask, paths, and dependsOn/, 'dependsOn is in the field list')
+  assert.match(
+    prompt,
+    /`dependsOn` is the array of ids of EARLIER tasks whose output this task needs/,
+    'and the prompt says what an edge means'
+  )
+})
+
+test('the assembled classifier prompt prefers an edge over a new group', async () => {
+  const prompt = await plannerPrompt()
+  assert.match(
+    prompt,
+    /dependency on a task editing a DIFFERENT file is a reason for a `dependsOn` EDGE, not a reason to increment `group`/,
+    'a cross-file dependency must be described as an edge, not as a new section'
+  )
+  assert.match(
+    prompt,
+    /independent siblings keep sharing a batch|independent of it/,
+    'and the prompt must say why: a new group serializes the tasks independent of the dependency'
+  )
+})
+
+test('the assembled classifier prompt states that a malformed edge fails the plan', async () => {
+  // The planner rejects a dangling id, a backward edge and a cycle fail-closed.
+  // A classifier told to emit edges but not told what makes one well-formed
+  // produces plans that halt, which costs a whole classifier pass.
+  const prompt = await plannerPrompt()
+  assert.match(prompt, /must name a task in this same classification/)
+  assert.match(prompt, /must not point at a later numbered section/)
+  assert.match(prompt, /FAILS the plan rather than being dropped/)
+})
+
+// --- the prose mirror (spec: waves MODIFIED, task 1.4) ---------------------
+//
+// `skills/spec/SKILL.md` tells the AUTHOR how to shape tasks.md; the prompt
+// tells the CLASSIFIER how to read it. If the two disagree, the author writes a
+// section boundary the classifier was told to express as an edge. Asserted
+// together, in one test, so neither can be changed without the other.
+
+test('the spec skill mirrors the prompt: a cross-file dependency is an edge', () => {
+  const skill = readFileSync(join(ROOT, 'skills', 'spec', 'SKILL.md'), 'utf8')
+  assert.match(
+    skill,
+    /`dependsOn` edge, not a new section/,
+    'the task-shape rules must name the edge as the alternative to a new section'
+  )
+  assert.match(
+    skill,
+    /Incrementing the section to order one cross-file dependency serializes every task in the new section that is independent of it/,
+    'and must give the same reason the classifier prompt gives'
+  )
+  assert.match(
+    skill,
+    /a cross-file dependency is an edge \(`dependsOn`\) — neither is a reason to increment the section number/,
+    'the closing rule must cover edges beside path collisions, not just paths'
+  )
+})
