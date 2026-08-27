@@ -125,7 +125,7 @@ test('ship.js restates the host spawn-prefix literals and uses them on every age
   )
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/
+    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/
   )
   assert.match(text, /\.\.\.workerExtra/)
 

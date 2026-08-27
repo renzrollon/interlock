@@ -78,6 +78,10 @@ function parseInvocation(args) {
     handoff: strict || has('handoff'),
     conformance: strict || has('conformance'),
     strict,
+    // Opt-in, default off — unset, a run is byte-for-byte today's behavior: no
+    // worktree, no merge-lanes step. See design.md Decision 1 for why this is
+    // gated rather than always-on.
+    isolateWaves: has('isolate-waves'),
     maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
     mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
   }
@@ -95,7 +99,7 @@ function parseInvocation(args) {
 // loads modules at all, so a shared module would have to be duplicated here —
 // and a duplicated string is the drift this exists to catch.
 // ASSEMBLE_IMPLEMENTER_PROMPT_START
-function assembleImplementerPrompt({ change, lane, task, previousHandoffs }) {
+function assembleImplementerPrompt({ change, lane, task, previousHandoffs, isolateWaves }) {
   // A lane is the unit now; a bare `task` is still accepted and means a lane of
   // one. That is not politeness to old callers — a one-task lane MUST assemble
   // byte-identically to the pre-lane prompt, and sharing one code path is the
@@ -168,6 +172,16 @@ function assembleImplementerPrompt({ change, lane, task, previousHandoffs }) {
       `${tasks.length}.\n` +
       `- Do not pass a packet between your own tasks — you already know what you just did.\n`
 
+  // Rendered only under --isolate-waves. Absent, this function must produce
+  // the exact prompt it produced before worktree isolation existed — that
+  // byte-identity is what the implementer-prompt fixtures pin.
+  const isolation = isolateWaves
+    ? `\nISOLATION — you are running in your own git worktree, not the shared tree. Before you ` +
+      `report your result, run \`pwd\` and report its output as "worktreePath" in your result, ` +
+      `exactly as printed. The orchestrator has no other way to find your worktree, and folds your ` +
+      `writes back into the shared tree using that path, so it must be the real one, not a guess.\n`
+    : ''
+
   return (
     heading +
     `CONTEXT — read only what your tier needs:\n` +
@@ -188,6 +202,7 @@ function assembleImplementerPrompt({ change, lane, task, previousHandoffs }) {
       ? `- If your tier is 1 or 2: after typecheck/lint pass, stop. Do not refactor or polish.\n`
       : '') +
     previous +
+    isolation +
     handoff +
     `- status "ok" means blocker is null; "blocked" and "partial" need a non-empty blocker.\n` +
     `- evidence is at most 8 locators (path, path:line, path:start-end) — never file bodies.\n` +
@@ -259,7 +274,11 @@ const SINGLE_TASK_SCHEMA = {
     filesChanged: { type: 'array', items: { type: 'string' } },
     error: { type: 'string' },
     note: { type: 'string' },
-    handoff: HANDOFF_SCHEMA_SHAPE
+    handoff: HANDOFF_SCHEMA_SHAPE,
+    // Only meaningful under --isolate-waves: the lane's own worktree, self-
+    // reported (`pwd`), never predicted by the orchestrator. Declared here
+    // unconditionally so the schema does not have to fork on the flag.
+    worktreePath: { type: 'string' }
   }
 }
 
@@ -270,6 +289,9 @@ const LANE_SCHEMA = {
   type: 'object',
   required: ['tasks'],
   properties: {
+    // Only meaningful under --isolate-waves: one worktree per lane (one agent,
+    // one `pwd`), so it lives at the lane level, not per task.
+    worktreePath: { type: 'string' },
     tasks: {
       type: 'array',
       items: {
@@ -542,6 +564,7 @@ const {
   handoff,
   conformance,
   strict,
+  isolateWaves,
   maxParallel,
   mode
 } = parseInvocation(typeof args === 'undefined' ? undefined : args)
@@ -844,6 +867,71 @@ const pingSpawnLine = (label, kind = 'ping') =>
   `"kind": "${kind}" } to ${WORK}/spawn-${label}.json, then run: ` +
   `interlock run-log append --event ${WORK}/spawn-${label}.json --root .\n` +
   `This never fails the run: a non-zero exit or written:false is reported and ignored.\n\n`
+
+// --- isolated-lane merge (opt-in: --isolate-waves) --------------------------
+//
+// Only called when `isolateWaves` is set. Captures the shared tree's base
+// commit once per batch dispatch (mirroring `previousHandoffs`, a single
+// value shared by the batch it precedes) and folds that batch's lane
+// worktrees back afterward. Both are mechanical CLI pings, like every other
+// `interlock` subcommand in this file — the decision lives in
+// `lib/merge-lanes.mjs`, read through `bin/interlock merge-lanes`.
+
+/** The shared tree's HEAD, read before a batch's lanes fork off into worktrees. */
+async function captureMergeBase(label) {
+  const probe = await step(
+    label,
+    `Report the shared tree's current commit before this batch's lanes run in isolated worktrees.\n\n` +
+      pingSpawnLine(label) +
+      `Run: git rev-parse HEAD\n` +
+      `Report its trimmed stdout as mergeBase. If the command fails for any reason, leave the field ` +
+      `out entirely — an unreadable base must never be guessed or defaulted to a prior batch's.`,
+    { type: 'object', properties: { mergeBase: { type: 'string' } } },
+    pingExtra
+  )
+  return probe && typeof probe.mergeBase === 'string' && probe.mergeBase.trim() ? probe.mergeBase.trim() : null
+}
+
+/**
+ * Fold a batch's lane worktrees back into the shared tree via
+ * `interlock merge-lanes`. `lanesForMerge` holds only the lanes worth
+ * attempting a fold for (a failed lane's worktree is never passed in — see
+ * the call site — so it is left untouched by construction, never merged and
+ * never removed).
+ */
+async function runMergeLanesStep(label, lanesForMerge, base) {
+  const result = await step(
+    label,
+    `Fold this batch's isolated lane worktrees back into the shared tree.\n\n` +
+      pingSpawnLine(label) +
+      `Write this JSON to ${WORK}/${label}.json exactly as given:\n` +
+      JSON.stringify(lanesForMerge) +
+      `\n\nThen run:\n` +
+      `  interlock merge-lanes --base ${base} --lanes ${WORK}/${label}.json --root . --json\n\n` +
+      `Copy its JSON stdout into this result verbatim — status, folds, collisions, unresolved, ` +
+      `survivingWorktrees, and cleanupWarnings if present. Do not summarize, filter, or re-derive ` +
+      `any of it: a collision this step lost is a lost write.`,
+    {
+      type: 'object',
+      properties: {
+        status: { type: 'string' },
+        folds: { type: 'array' },
+        collisions: { type: 'array' },
+        unresolved: { type: 'array' },
+        survivingWorktrees: { type: 'array' },
+        cleanupWarnings: { type: 'array' }
+      }
+    },
+    pingExtra
+  )
+  if (result && Array.isArray(result.cleanupWarnings) && result.cleanupWarnings.length) {
+    banners.push(
+      `LANE WORKTREE CLEANUP WARNING: ${JSON.stringify(result.cleanupWarnings)} — the fold applied, ` +
+        `removal of the worktree itself did not`
+    )
+  }
+  return result
+}
 
 // STEP_SHAPE_START
 /**
@@ -1518,14 +1606,27 @@ while (steps++ < MAX_LOOP_STEPS) {
       // none, and the assembler renders nothing for an empty list.
       const previousHandoffs = Array.isArray(next.previousHandoffs) ? next.previousHandoffs : []
 
+      // The shared tree's HEAD before this batch's lanes fork off — captured
+      // now, not after, so nothing else lands on the shared tree between the
+      // reading and the fold. Only when isolateWaves is set; unset, this
+      // batch runs byte-for-byte as it did before isolation existed.
+      const mergeBase = isolateWaves ? await captureMergeBase(`merge-base-${steps}-${i}`) : null
+      if (isolateWaves && !mergeBase) {
+        return await halt(
+          'could not capture the shared-tree base commit before an isolated batch — merge-lanes ' +
+            'cannot fold lane worktrees back without one'
+        )
+      }
+
       const results = await pipeline(lanes, lane =>
         agent(
-          assembleImplementerPrompt({ change, lane, previousHandoffs }),
+          assembleImplementerPrompt({ change, lane, previousHandoffs, isolateWaves }),
           {
             label: laneLabel(lane),
             model: laneModel(lane),
             effort: laneEffort(lane),
             ...workerExtra,
+            ...(isolateWaves ? { isolation: 'worktree' } : {}),
             // A one-task lane keeps the pre-lane result shape, because its
             // prompt is the pre-lane prompt byte for byte and a schema asking
             // for something else would contradict it.
@@ -1554,12 +1655,34 @@ while (steps++ < MAX_LOOP_STEPS) {
       // replace "agent returned no result" with a complaint about the report.
       const reported = []
       const unattempted = []
+      // Per lane, alongside the flattened per-task rows above: whether THIS
+      // lane folds. A lane with any failed task contributes nothing to the
+      // shared tree — folding a partial write from a lane that stopped mid-way
+      // is exactly the silent-overwrite defect the merge policy refuses (see
+      // design.md Decision 3) — so its worktree is left alone, never merged
+      // and never removed, and named in a banner instead.
+      const laneFoldCandidates = []
+      const laneWorktreesPreserved = []
       lanes.forEach((lane, j) => {
         const outcomes = laneOutcomes(lane, results[j])
         for (const o of outcomes) {
           if (o.outcome === 'not-attempted') unattempted.push(o.id)
           else reported.push({ id: o.id, ok: o.outcome === 'ok', error: o.error, handoff: o.handoff, filesChanged: o.filesChanged })
         }
+        if (!isolateWaves) return
+        const label = laneLabel(lane)
+        const worktreePath =
+          results[j] && typeof results[j].worktreePath === 'string' ? results[j].worktreePath.trim() : ''
+        const laneFailed = outcomes.some(o => o.outcome === 'failed')
+        if (laneFailed) {
+          if (worktreePath) laneWorktreesPreserved.push({ label, worktreePath })
+          return
+        }
+        laneFoldCandidates.push({
+          label,
+          worktreePath: worktreePath || undefined,
+          reportedFiles: outcomes.flatMap(o => (Array.isArray(o.filesChanged) ? o.filesChanged : []))
+        })
       })
       accumulated.push(reported)
       pending.push({ lanes: lanes.length, notAttempted: unattempted })
@@ -1572,6 +1695,39 @@ while (steps++ < MAX_LOOP_STEPS) {
           `LANE STOPPED EARLY: ${unattempted.join(', ')} not attempted after an earlier task in ` +
             `the same lane failed — not counted as failures, and still unchecked in tasks.md`
         )
+      }
+
+      // Fold this batch's successful lanes back into the shared tree before
+      // moving on — the NEXT batch's `mergeBase` is read off this tree, so the
+      // fold (or the halt below) has to happen now, not deferred to
+      // record-batch time the way tick/tally bookkeeping is.
+      if (isolateWaves) {
+        if (laneFoldCandidates.length) {
+          const merged = await runMergeLanesStep(`merge-lanes-${steps}-${i}`, laneFoldCandidates, mergeBase)
+          if (!merged || merged.status !== 'clean') {
+            const survivors = [
+              ...(merged && Array.isArray(merged.survivingWorktrees) ? merged.survivingWorktrees : []),
+              ...laneWorktreesPreserved
+            ]
+              .map(w => `${w.label}: ${w.worktreePath}`)
+              .join('; ')
+            return await halt(
+              `merge-lanes halted on batch ${i} of wave ${waveNumber}: ` +
+                (merged
+                  ? merged.status === 'collision'
+                    ? `real collision on ${JSON.stringify(merged.collisions)}`
+                    : `unresolved lane(s) ${JSON.stringify(merged.unresolved)}`
+                  : 'the merge-lanes step returned no result') +
+                ` — surviving worktrees: ${survivors || '(none)'}`
+            )
+          }
+        }
+        if (laneWorktreesPreserved.length) {
+          banners.push(
+            `LANE WORKTREE PRESERVED: ${laneWorktreesPreserved.map(w => `${w.label} at ${w.worktreePath}`).join('; ')} ` +
+              `— the lane failed and its writes were not folded into the shared tree`
+          )
+        }
       }
 
       const anyFailed = reported.some(r => !r.ok)

@@ -82,6 +82,8 @@ export const EXPECTED_PROMPT_LABELS = Object.freeze([
   'next-retry-',
   'inter-wave-verify-',
   'replan-',
+  'merge-base-',
+  'merge-lanes-',
   'review',
   'remediate-',
   'verify',
@@ -238,6 +240,10 @@ export function defaultResponses() {
       ...RUN_BATCH
     },
     '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1') },
+    // Only consulted under --isolate-waves; harmless everywhere else since the
+    // script never assembles these labels unless the flag is set.
+    'merge-base-': { mergeBase: 'deadbeef' },
+    'merge-lanes-': { status: 'clean', folds: [{ lane: '1.1', files: ['lib/a.mjs'] }], collisions: [], unresolved: [] },
     'record-batch-': RECORD_DONE,
     // The tick runs on its own ping, after the record ping has reported what
     // the CLI recorded — the loop cannot know which ids to tick until then.
@@ -350,7 +356,12 @@ export async function runShip(opts = {}) {
     const label = options.label || '(unlabeled)'
     const n = (seen.get(label) || 0) + 1
     seen.set(label, n)
-    prompts.push({ label, prompt: String(prompt), model: options.model })
+    prompts.push({
+      label,
+      prompt: String(prompt),
+      model: options.model,
+      isolation: options.isolation
+    })
     calls.push(label)
     const canned = lookup(responses, label)
     return typeof canned === 'function' ? canned(label, n) : canned
@@ -444,6 +455,9 @@ export function coverageRuns() {
     // The reuse path: the probe matched and adopted the plan, so the classifier
     // never runs. Enumerated here so the cheaper path is covered rather than
     // only the one every other run happens to take.
-    { responses: { 'plan-reuse': reuseAdopted() } }
+    { responses: { 'plan-reuse': reuseAdopted() } },
+    // --isolate-waves: the merge-base and merge-lanes pings only ever get
+    // assembled behind this flag.
+    { args: 'demo-change --isolate-waves' }
   ]
 }

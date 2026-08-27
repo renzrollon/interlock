@@ -15,7 +15,7 @@
 // wired to a subcommand here is a policy the model will improvise in prose.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -54,6 +54,7 @@ import {
 } from '../lib/verify.mjs'
 import { spillBytes } from '../lib/spill.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
+import { mergeDecision } from '../lib/merge-lanes.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
@@ -108,6 +109,15 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock merge-lanes --base <sha> --lanes <file>
+                                           Fold a batch's isolated lane worktrees
+                                           back into the shared tree (--isolate-waves
+                                           runs only). --lanes is a JSON array of
+                                           { label, worktreePath, reportedFiles }.
+                                           Exits 0 on a clean fold, 1 on a halt
+                                           (a real path collision or a lane whose
+                                           worktree could not be located) — never
+                                           auto-resolves, never applies a guess
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
                                             No model, no network. Exit code is
@@ -178,6 +188,9 @@ Exit codes:
     ledger                   the ledger is missing or unparseable, or
                              needs_human or invalid rows remain
     ready                    the change may not skip the human checkpoint
+    merge-lanes              a lane worktree collided with another on a real
+                             path, or a lane's worktree could not be located —
+                             a clean fold is the only zero exit
     tasks tick               an id could not be marked complete
     wave-state next          the run has halted, or the trajectory append failed
     wave-state record-*      the recorded result halted the run, or the
@@ -975,6 +988,197 @@ function observedChangedPaths(root) {
   return paths
 }
 
+/**
+ * A lane worktree's actual writes relative to the shared base commit, as git
+ * sees them — never a prediction. `null` means git could not answer (bad
+ * path, not a worktree, git failure of any kind), which the caller treats as
+ * "this lane's worktree could not be located" rather than "wrote nothing".
+ *
+ * `-z` for the same reason `observedChangedPaths` uses it: a path with a
+ * space, quote or tab is a path, not a field separator.
+ *
+ * @param {string} worktreePath
+ * @param {string} base
+ * @returns {Array<{status: 'A'|'M'|'D'|'R', path: string, oldPath?: string}>|null}
+ */
+function laneDiff(worktreePath, base) {
+  let raw
+  try {
+    raw = execFileSync('git', ['-C', worktreePath, 'diff', '--name-status', '-z', base], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+  } catch {
+    return null
+  }
+  const fields = raw.split('\0').filter(f => f.length)
+  const out = []
+  for (let i = 0; i < fields.length; i++) {
+    const status = fields[i]
+    if (/^[AMD]/.test(status)) {
+      const path = fields[++i]
+      if (path) out.push({ status: status[0], path })
+    } else if (/^[RC]/.test(status)) {
+      // "R100\told\tnew": a rename/copy carries its source in the following
+      // field, the same shape `observedChangedPaths` already accounts for.
+      const oldPath = fields[++i]
+      const newPath = fields[++i]
+      if (newPath) out.push({ status: status[0], path: newPath, oldPath: oldPath || undefined })
+    }
+  }
+
+  // `git diff <base>` never reports an untracked file — a lane's new file is
+  // invisible to it exactly the way `observedChangedPaths` below has to work
+  // around with `--untracked-files=all`. Add them as new writes explicitly,
+  // rather than silently reporting a lane's new file as "no change".
+  let untracked
+  try {
+    untracked = execFileSync(
+      'git',
+      ['-C', worktreePath, 'ls-files', '--others', '--exclude-standard', '-z'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+  } catch {
+    return null
+  }
+  for (const path of untracked.split('\0').filter(p => p.length)) {
+    out.push({ status: 'A', path })
+  }
+  return out
+}
+
+/**
+ * Apply one lane's already-decided-clean writes into the shared tree. Called
+ * only after `mergeDecision` returned `status: 'clean'` — a collision or an
+ * unresolved lane never reaches here, by construction of the caller.
+ */
+function applyLaneDiff(root, worktreePath, diffEntries) {
+  for (const entry of diffEntries) {
+    const destAbs = join(root, entry.path)
+    if (entry.status === 'D') {
+      if (existsSync(destAbs)) rmSync(destAbs)
+      continue
+    }
+    const srcAbs = join(worktreePath, entry.path)
+    if (!existsSync(srcAbs)) continue
+    mkdirSync(dirname(destAbs), { recursive: true })
+    copyFileSync(srcAbs, destAbs)
+    if (entry.status === 'R' && entry.oldPath && entry.oldPath !== entry.path) {
+      const oldAbs = join(root, entry.oldPath)
+      if (existsSync(oldAbs)) rmSync(oldAbs)
+    }
+  }
+}
+
+/**
+ * The git plumbing half of `merge-lanes`: turns each lane's self-reported
+ * `worktreePath` into an observed changed-file set, hands the decision to the
+ * pure `mergeDecision`, and — on a clean fold only — applies the writes and
+ * removes the lane worktrees uniformly. A collision or an unresolved lane
+ * touches nothing and leaves every surviving worktree named on disk.
+ *
+ * @param {string} root
+ * @param {Array<{label: string, worktreePath?: string, reportedFiles?: string[]}>} laneEntries
+ * @param {string} base the shared-tree commit every lane's diff is taken against
+ */
+function runMergeLanes(root, laneEntries, base) {
+  const entries = Array.isArray(laneEntries) ? laneEntries : []
+  const diffsByLabel = new Map()
+  const changedByLane = {}
+  const survivingInfo = []
+
+  const lanesForDecision = entries.map(l => ({
+    label: l && typeof l.label === 'string' ? l.label.trim() : ''
+  }))
+
+  for (const l of entries) {
+    const label = l && typeof l.label === 'string' ? l.label.trim() : ''
+    if (!label) continue
+    const path = l && typeof l.worktreePath === 'string' ? l.worktreePath.trim() : ''
+    survivingInfo.push({ label, worktreePath: path || null })
+    if (!path) continue // no worktreePath reported at all — unresolved, named by mergeDecision
+
+    if (!existsSync(path)) {
+      // The runtime auto-removes an unchanged worktree. A lane that reported
+      // no changed files itself is a legitimate empty-write lane, not a lane
+      // whose worktree "could not be located" — anything else missing this
+      // path is unresolved.
+      const reported = Array.isArray(l.reportedFiles) ? l.reportedFiles : null
+      if (reported && reported.length === 0) {
+        changedByLane[label] = []
+        diffsByLabel.set(label, [])
+      }
+      continue
+    }
+
+    const diff = laneDiff(path, base)
+    if (diff === null) continue // git could not diff this worktree — unresolved
+    diffsByLabel.set(label, diff)
+    changedByLane[label] = diff.map(d => d.path)
+  }
+
+  const decision = mergeDecision({ lanes: lanesForDecision, changedByLane, base })
+
+  if (decision.status !== 'clean') {
+    const survivingWorktrees = survivingInfo.filter(s => s.worktreePath && existsSync(s.worktreePath))
+    return { ...decision, survivingWorktrees }
+  }
+
+  for (const fold of decision.folds) {
+    const info = survivingInfo.find(s => s.label === fold.lane)
+    if (!info || !info.worktreePath || !existsSync(info.worktreePath)) continue
+    applyLaneDiff(root, info.worktreePath, diffsByLabel.get(fold.lane) || [])
+  }
+
+  // Uniform cleanup: an unchanged lane worktree the runtime would have
+  // auto-removed anyway is removed here too, so post-fold state never depends
+  // on which lanes happened to write something.
+  const cleanupWarnings = []
+  for (const info of survivingInfo) {
+    if (!info.worktreePath || !existsSync(info.worktreePath)) continue
+    try {
+      execFileSync('git', ['worktree', 'remove', info.worktreePath, '--force'], {
+        cwd: root,
+        stdio: 'ignore'
+      })
+    } catch (err) {
+      cleanupWarnings.push({ label: info.label, worktreePath: info.worktreePath, reason: err.message })
+    }
+  }
+
+  return {
+    ...decision,
+    survivingWorktrees: [],
+    ...(cleanupWarnings.length ? { cleanupWarnings } : {})
+  }
+}
+
+function formatMergeLanes(result) {
+  if (result.status === 'clean') {
+    const rows = result.folds
+      .map(f => `  ${f.lane}: ${f.files.length ? f.files.join(', ') : '(no changes)'}`)
+      .join('\n')
+    const warn = result.cleanupWarnings && result.cleanupWarnings.length
+      ? `\ncleanup warnings:\n${result.cleanupWarnings.map(w => `  ${w.label} (${w.worktreePath}): ${w.reason}`).join('\n')}\n`
+      : ''
+    return `CLEAN FOLD\n${rows}\n${warn}`
+  }
+  if (result.status === 'collision') {
+    const rows = result.collisions
+      .map(c => `  ${c.canonicalPath}: ${c.lanes.join(', ')}`)
+      .join('\n')
+    const survivors = result.survivingWorktrees
+      .map(s => `  ${s.label}: ${s.worktreePath}`)
+      .join('\n')
+    return `HALT — path collision\n${rows}\nsurviving worktrees:\n${survivors}\n`
+  }
+  const rows = result.unresolved.map(u => `  ${u.label || '(no label)'}: ${u.reason}`).join('\n')
+  const survivors = result.survivingWorktrees
+    .map(s => `  ${s.label}: ${s.worktreePath}`)
+    .join('\n')
+  return `HALT — unresolved lane(s)\n${rows}\nsurviving worktrees:\n${survivors}\n`
+}
+
 // --min-quality / --no-tolerance mean the same thing everywhere the tolerance
 // band applies, so the three call sites share one reading of them.
 function parseBand(flags) {
@@ -1138,6 +1342,21 @@ function main() {
 
     case 'limits': {
       emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS, effort: EFFORT }, formatLimits())
+      break
+    }
+
+    case 'merge-lanes': {
+      const base = typeof flags.base === 'string' ? flags.base.trim() : ''
+      if (!base) die('--base <commit> is required')
+      const input = readInput(flags.lanes, '--lanes <file|->')
+      const laneEntries = Array.isArray(input) ? input : Array.isArray(input && input.lanes) ? input.lanes : null
+      if (!laneEntries) die('--lanes must be a JSON array of { label, worktreePath, reportedFiles }')
+      const result = runMergeLanes(root, laneEntries, base)
+      emit(json, result, formatMergeLanes(result))
+      // Exit code is the whole contract here: 0 is a clean fold, non-zero is a
+      // halt (collision or an unresolved lane) — distinct so the workflow can
+      // branch on exit status the same way every other gating command does.
+      if (result.status !== 'clean') process.exit(1)
       break
     }
 

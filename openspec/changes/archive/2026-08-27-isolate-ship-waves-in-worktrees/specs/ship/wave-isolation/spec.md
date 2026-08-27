@@ -1,10 +1,4 @@
-# wave-isolation Specification
-
-## Purpose
-
-Keeps two tasks that are predicted to edit the same file out of the same concurrent batch, so that parallel implementers sharing one working tree cannot produce a lost write. This is the guarantee the repository advertises most prominently, and it must hold against how a path is spelled rather than only against how it is typed.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Path collision detection SHALL compare canonical paths
 
