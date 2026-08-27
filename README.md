@@ -69,6 +69,7 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have on
 | [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Agentic-workflow primer, review of spec+ship, token and quality tactics |
 | [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures, each denominator, and why it gates nothing |
+| [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change (scope, advice) and what it cannot (the band, nit cap) |
 
 ---
 
@@ -140,6 +141,8 @@ An unverified review reports everything it notices, so you learn to skim it. A r
 **A skeptic must cite what it read to dismiss a finding.** A verdict of "not real" has to carry a `file:line` (or `file:start-end`) span naming a path that is actually in the reviewed diff — a shape a machine can check, not a judgement call handed to another model. A dismissal that fails either half does not dismiss anything: it is recorded, its quality score still counts, and the finding survives to you. The report says how many refutations were refused, so you can see the rule fire. Voting a finding *real* needs no citation, because that direction already ends with a human reading it — the cheap error. Only the dismissing direction is gated, because a wrongly dismissed finding is *invisible*, and nobody can catch a mistake they never see. [Research on adversarial review](https://arxiv.org/pdf/2604.19049) documents where uncited refutation ends: eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL vulnerability that did not exist. Confident prose is the one thing an LLM produces reliably, so it is the one thing a dismissal must not rest on.
 
 Surviving is not sufficient. `interlock gate` also applies a quality band: a finding the skeptics scored too low for how well-grounded and actionable it is gets dropped before the gate counts blockers, so a vague blocker cannot hold up a change. That threshold lives in the CLI rather than in the review prose, which is what stops it from being quietly re-argued on each run.
+
+A repo can own its review policy in an optional root **`REVIEW.md`**, read on every review. It can change **scope and advice**: declare `## Do Not Report` paths the CLI drops findings on, and prose — the local definition of "Important", who owns the bar — injected into the reviewer as clearly-delimited advice. It **cannot** change the band or the nit cap: those stay in the CLI, and a threshold-shaped key in the file is reported and ignored, never adopted — a path exclusion a model could talk past is not an exclusion, and a band a file could edit is not a gate. No `REVIEW.md` changes nothing; a malformed one is reported and the run proceeds under default policy. See [repository review policy](docs/12-repository-review-policy.md).
 
 ---
 

@@ -216,6 +216,7 @@ test('quality drops and skeptic dismissals are counted separately', () => {
   )
   assert.deepEqual(r.counts, {
     raised: 3,
+    droppedByPolicy: 0,
     dismissed: 1,
     droppedByQuality: 1,
     surviving: 1,
@@ -269,6 +270,7 @@ test('degenerate input yields an empty, non-throwing result', () => {
     const r = resolveReview(input, null)
     assert.deepEqual(r.counts, {
       raised: 0,
+      droppedByPolicy: 0,
       dismissed: 0,
       droppedByQuality: 0,
       surviving: 0,
@@ -338,7 +340,7 @@ test('formatReview reports the four counts and the per-dimension split', () => {
   )
   const out = formatReview(r)
   assert.match(out, /1 of 2 finding\(s\) survived/)
-  assert.match(out, /raised=2 dismissed=1 droppedByQuality=0 surviving=1/)
+  assert.match(out, /raised=2 droppedByPolicy=0 dismissed=1 droppedByQuality=0 surviving=1/)
   assert.match(out, /qa: 1\/2 surviving/)
 })
 

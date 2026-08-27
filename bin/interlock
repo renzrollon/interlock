@@ -35,7 +35,12 @@ import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks,
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
 import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, EFFORT, formatLimits } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
-import { resolveReview, formatReview } from '../lib/review-core.mjs'
+import {
+  resolveReview,
+  formatReview,
+  readReviewPolicy,
+  formatReviewPolicy
+} from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
 import {
   planVerification,
@@ -110,7 +115,12 @@ Usage:
                                             2=no signal, 3=configuration)
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
-                                           Resolve a review against skeptic verdicts
+                                           Resolve a review against skeptic verdicts.
+                                           Also reads repo-root REVIEW.md and drops
+                                           findings on its do-not-report paths
+  interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
+                                           owner + prose (advice for the reviewer)
+                                           and any parse problems. Absent → empty
   interlock risk [change]                   Classify blast radius for the continuity gate
   interlock ledger [change]                 Summarize the decision ledger
   interlock ready [change] --findings <f>    Decide whether continuity may skip the human
@@ -265,9 +275,20 @@ review:
                          A verdict that a finding IS real needs no citation.
   --min-quality <n>      Quality-band floor, as for gate
   --no-tolerance         Disable the quality band
+  --changed also drives nothing else; REVIEW.md is located from --root (default
+  cwd). Findings on its do-not-report paths are dropped BEFORE the band, counted
+  as "droppedByPolicy" with the excluding path, and "policyProblems" reports a
+  malformed policy file rather than swallowing it.
   Always exits 0; feed "surviving" to gate to decide whether it blocks.
   "dismissalsRejected" counts refutations refused for want of a citation — a
   high number means the skeptics are asserting rather than reading.
+
+review-policy:
+  --root <dir>           Repository root to read REVIEW.md from (default cwd).
+  --json                 Emit { prose, excludePaths, owner, problems }.
+  The prose is advice a reviewer reads; it can never lower survival. The band and
+  nit cap are NOT policy fields — a threshold-shaped key is reported, not adopted.
+  Always exits 0; an absent REVIEW.md is the empty policy, not an error.
 
 risk:
   [change]               OpenSpec change name (resolved like validate when omitted)
@@ -1160,9 +1181,17 @@ function main() {
       // because a caller that cannot name the changed files must still get the
       // shape half rather than no gate at all.
       const changedPaths = splitPaths(flags.changed)
+
+      // The repo-root REVIEW.md, if any. Its do-not-report paths are enforced
+      // here as a survival filter — never handed to a model as a request. Its
+      // problems (a malformed file, a band-like key) are reported alongside the
+      // review, so a broken policy is diagnosable rather than silent.
+      const policy = readReviewPolicy(root)
+
       const result = resolveReview(findings, verdicts, {
         band: parseBand(flags),
-        changedPaths
+        changedPaths,
+        excludePaths: policy.excludePaths
       })
 
       // Metrics are bookkeeping: they report their own failure and never touch
@@ -1174,10 +1203,25 @@ function main() {
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
+      const policyProblems = policy.problems.length
+        ? `  policy: ${policy.problems.length} problem(s) in REVIEW.md\n` +
+          policy.problems.map(p => `    - ${p}`).join('\n') + '\n'
+        : ''
       const text =
         formatReview(result) +
+        policyProblems +
         (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
-      emit(json, metrics ? { ...result, metrics } : result, text)
+      emit(json, { ...result, policyProblems: policy.problems, ...(metrics ? { metrics } : {}) }, text)
+      break
+    }
+
+    case 'review-policy': {
+      // Read-only view of the parsed REVIEW.md, so the workflow can inject the
+      // prose + owner into the reviewer instructions without re-parsing the file
+      // (the runtime cannot import lib modules). Always exits 0: a missing or
+      // malformed policy is reported, never fatal.
+      const policy = readReviewPolicy(root)
+      emit(json, policy, formatReviewPolicy(policy))
       break
     }
 

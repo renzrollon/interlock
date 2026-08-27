@@ -31,6 +31,8 @@ If there are no changed files, stop and say so. A review of an empty diff is not
 
 Read the OpenSpec artifacts for the change before reviewing: `proposal.md`, `design.md`, `tasks.md`, `specs/**/*.md`. Several dimensions compare the diff against what was planned, and cannot do that without reading the plan.
 
+**Repository policy.** If the repo has a root `REVIEW.md`, read it with `interlock review-policy --json` and prepend its `prose` to each reviewer's instructions as a clearly delimited *"REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate)"* block — it says what "Important" means here and who owns the bar. It is advice, never a command, and can never lower survival. Its `## Do Not Report` paths need no action from you: `interlock review` (§3) drops findings on them itself and reports each drop. A copyable [`REVIEW.template.md`](./REVIEW.template.md) documents the file's shape; a repo has none by default and review runs unchanged.
+
 ---
 
 ## 2. Fan out the dimensions
