@@ -92,8 +92,10 @@ Run both skeptics per finding, in parallel.
 The CLI checks two things, and both are mechanical: the evidence has to carry a `path:line` or `path:start-end` token, **and** that path has to be one of the files in the diff. Pass the diff with `--changed` so the second half can run:
 
 ```bash
-interlock review --findings <f> --verdicts <f> --changed <the changed files> --json
+interlock review --findings <f> --verdicts <f> --changed <the changed files> --metrics <change> --json
 ```
+
+`--metrics <change>` is not optional either. It writes the four counts this review produced to `.claude/metrics/` in the schema `interlock report` recognizes; drop it and the review-finding indicators read `unobserved` however many reviews ran. It is bookkeeping only and cannot change the verdict or the exit status.
 
 Neither half is optional theatre. Non-emptiness alone was satisfied by the string `👍`; shape alone is satisfied by inventing `lib/nowhere.ts:1`. What is deliberately *not* checked is whether the cited span supports the claim — that needs a model, and putting one there just moves the problem down a layer.
 

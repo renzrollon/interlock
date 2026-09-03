@@ -240,6 +240,12 @@ They exist to answer, later and from evidence, whether any gate can safely be re
 
 **`interlock report` reads them, and still changes nothing.** It computes indicators over all three recorded corpora — outcome records, run trajectories, review metrics — with every value carrying its denominator, and it gates nothing: no threshold, no verdict, always exit 0, and no step of any run consults it. Reading a corpus and branching on it are different acts, and only the first has been built. See [the indicators](docs/11-the-indicators.md).
 
+```bash
+interlock report --html > report.html
+```
+
+`--html` renders the same report object as one self-contained document — no stylesheet, script or font is fetched, so it opens offline and can be attached to an issue or handed to someone without the repo. It is a generated file, not a service: no server, no port, no watch mode. It issues no verdict either, and gains none by being visual — no threshold, target or trend arrow is drawn, no colour encodes health, and an indicator nobody measured renders as `UNOBSERVED` with its reason at the same weight as a number, never as a zero.
+
 **A second host, over ACP.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-ship-acp` is the second implementation of it, over the [Agent Client Protocol](https://agentclientprotocol.com): it spawns your ACP agent as a subprocess per task and shells out to the same CLI for every decision.
 
 ```bash

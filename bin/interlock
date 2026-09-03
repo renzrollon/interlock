@@ -15,7 +15,7 @@
 // wired to a subcommand here is a policy the model will improvise in prose.
 
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -71,6 +71,7 @@ import {
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { buildReport, formatReport } from '../lib/report.mjs'
+import { renderReportHtml } from '../lib/report-html.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
@@ -221,6 +222,14 @@ report:
   --change <name>        Keep one change's runs, outcomes and metrics
   --max-runs <n>         Lower the scan bound; the published cap is the ceiling
                          (see interlock limits). Truncation is reported.
+  --html [path]          Render the same report object as one self-contained
+                         HTML document — no stylesheet, script or font is
+                         fetched, so it opens offline. Bare, it writes to
+                         stdout; given a path, it writes only there. Mutually
+                         exclusive with --json. It is a generated file, not a
+                         service, and like every other surface here it issues
+                         no verdict: an unobserved indicator renders as
+                         UNOBSERVED with its reason, never as a zero.
 
 waves:
   --classified <file>    JSON: { "tasks": [{id, group, description, tier, model, isTestTask}] }
@@ -233,6 +242,10 @@ surface:
 gate:
   --findings <file>      JSON from the review dimensions. Use "-" for stdin.
   --dismissed <t1,t2>    Finding titles the skeptics verified away
+  --metrics <change>     Also append the counts to .claude/metrics/ under this
+                         change name, as "review" does. A metrics failure prints
+                         its reason and is never fatal — the verdict and the exit
+                         code are unaffected.
   --min-quality <n>      Quality-band floor (default ${TOLERANCE_BAND.minQualityToReport})
   --no-tolerance         Report every surviving finding, however weak
   Findings the skeptics scored below the quality band are dropped before
@@ -1284,7 +1297,39 @@ function main() {
       // only tune or disable it.
       const band = parseBand(flags)
       const result = evaluateGate(input, { dismissed, band })
-      emit(json, result, formatGate(result))
+
+      // Metrics are bookkeeping, exactly as in `review`: they report their own
+      // failure and never touch the verdict or the exit code, so a read-only
+      // checkout cannot fail a gate.
+      //
+      // `evaluateGate().counts` is a severity histogram (blocker/warning/
+      // suggestion), NOT the four-way partition `writeReviewMetrics` records,
+      // so it cannot be handed over the way `resolveReview().counts` can. The
+      // four figures are derived here from the ones that produced the verdict —
+      // arithmetic over the returned counts, never a second reading of the
+      // input, which is what `review/metrics-emission` requires. A finding the
+      // gate refused to interpret still reached the verdict (it blocks), so
+      // `malformed` counts as surviving rather than vanishing from both sides.
+      let metrics = null
+      if (flags.metrics !== undefined) {
+        if (flags.metrics === true) die('--metrics requires a change name')
+        const surviving = result.total + result.malformed.length
+        metrics = writeReviewMetrics(root, {
+          change: String(flags.metrics),
+          counts: {
+            raised: result.dismissedCount + result.droppedByQuality + surviving,
+            dismissed: result.dismissedCount,
+            droppedByQuality: result.droppedByQuality,
+            surviving
+          }
+        })
+        if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
+      }
+
+      const text =
+        formatGate(result) +
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
+      emit(json, { ...result, ...(metrics ? { metrics } : {}) }, text)
       if (!result.passed) process.exit(1)
       break
     }
@@ -1326,6 +1371,46 @@ function main() {
         change: typeof flags.change === 'string' ? flags.change : undefined,
         maxRuns: num(flags, 'max-runs')
       })
+
+      if (flags.html !== undefined) {
+        // Refused rather than resolved by precedence. `emit` threads a single
+        // `json` flag, so a rule about which surface wins would be invisible at
+        // the call site and unlike every other subcommand here.
+        if (json) die('--html and --json are mutually exclusive: choose one surface')
+
+        const document = renderReportHtml(report)
+
+        // Bare --html goes to stdout, so the document composes with a shell
+        // redirect and no invocation writes to disk unasked. A named path is
+        // the only thing that makes this command a writer.
+        if (flags.html === true) {
+          process.stdout.write(document)
+          break
+        }
+
+        const dest = String(flags.html)
+        if (!dest.trim()) die('--html <path> requires a file path')
+        // Written beside the destination and renamed into place, so a failure
+        // partway through leaves nothing at the path the caller named — an
+        // aborted render must not look like a report that says less than it
+        // should. `rename` within a directory is atomic.
+        const staging = `${dest}.interlock-partial`
+        try {
+          writeFileSync(staging, document)
+          renameSync(staging, dest)
+        } catch (err) {
+          try {
+            rmSync(staging, { force: true })
+          } catch {
+            // The cleanup of a file that may never have existed cannot itself
+            // be the reported failure.
+          }
+          die(`could not write ${dest}: ${err && err.message}`)
+        }
+        process.stdout.write(`report written to ${dest}\n`)
+        break
+      }
+
       emit(json, report, formatReport(report))
       break
     }

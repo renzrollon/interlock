@@ -21,7 +21,7 @@ Interlock writes three corpora and, until this command, read none of them.
 |---|---|---|
 | `.claude/learning/outcomes.jsonl` | `interlock outcomes append` | one line per planning→ship attempt, partitioned into what the run **observed** and what an agent **reported** |
 | `.claude/ship/runs/*.jsonl` | `interlock wave-state`, `verify`, `run-log append` | one trajectory per run: wave actions, command exits, agent spawns, and a closing receipt |
-| `.claude/metrics/review-*.json` | `interlock review --metrics` | one review's four counts — raised, dismissed, dropped by quality, surviving |
+| `.claude/metrics/review-*.json` | `interlock review --metrics` and `interlock gate --metrics` | one review's four counts — raised, dismissed, dropped by quality, surviving |
 
 The first run of this command against its own repository found three things
 nobody knew: the receipt path had never once fired, 727 of 729 trajectories were
@@ -29,6 +29,25 @@ attributed to no change at all, and every file in `.claude/metrics/` had been
 written by a skill in a different shape than the counts reader expected. None of
 that was discoverable while the corpora were write-only. **A corpus nobody can
 read is a corpus nobody notices is empty.**
+
+The metrics row above understates how that third finding happened. `--metrics`
+existed on `interlock review` for a year and no skill ever passed it, so the
+review-finding indicators read `unobserved` the entire time — not because
+nothing was reviewed, but because nothing recorded that it had been. `gate` had
+no equivalent flag at all, which left `review-artifacts` — the path that reaches
+its verdict through `gate` rather than `review` — permanently unobservable.
+
+Both are closed now: `gate` accepts `--metrics <change>` with the same
+semantics, and both review skills pass it on their documented command lines.
+That last part is asserted by a test, because nothing else notices when a skill
+stops asking: the corpus simply stays empty, and an empty corpus reads exactly
+like a loop that never ran.
+
+Emission is bookkeeping in both commands. It cannot alter the verdict, the exit
+status or the existing machine-readable output; a failed write reports its
+reason and never raises. A record is attributed to the change the caller named
+and to no other — a missing name writes nothing rather than guessing one from
+the findings file's path.
 
 ## The indicators
 
@@ -144,6 +163,41 @@ Three habits, in order of how often they are needed:
 3. **Answer a missing measurement with the measurement, not a proxy.** When an
    indicator is unobserved, the useful output is which recording would fix it.
    That sentence is usually worth more than every figure above it.
+
+## Three surfaces, one object
+
+`buildReport()` computes the report once. The text output, `--json` and
+`--html` are three renderings of that one object — none of them recomputes,
+re-derives or rounds an indicator differently, so no two of them can disagree
+about a value or a denominator. A test renders one object to all three and
+compares them figure by figure.
+
+```bash
+interlock report --html > report.html
+interlock report --html docs/report.html
+```
+
+`--html` writes one self-contained document: no stylesheet, script, font or
+image is fetched, so it opens with no network and can be attached to an issue or
+handed to someone without the repo. Bare, it writes to stdout; given a path, it
+writes only there, and an unwritable destination is reported without leaving a
+partial file behind. It is mutually exclusive with `--json` — passing both is
+refused rather than one silently winning.
+
+**It is a generated file, not a service, and it issues no verdict.** There is no
+server, port, daemon or watch mode, because the value here is reading
+accumulated history rather than watching live state — and because nothing in the
+loop may read the report, which a file a human opens honours structurally while
+a service invites a fetch. The document draws no threshold, target, goal line,
+trend arrow or pass/fail label, and no colour on it encodes health; colour and
+weight carry structure and reading order only.
+
+The constraint that took the most care is the one a dashboard gets wrong by
+default: an unobserved indicator renders at the same visual weight as one
+carrying a number, with the report's reason as the cell's content. Never a zero,
+never a dash, never a greyed row, never collapsed behind an interaction. Every
+one of those idioms translates *"we never measured this"* into *"this measured
+zero"*, and on these corpora that mistranslation would be near-total.
 
 ## Operational notes
 

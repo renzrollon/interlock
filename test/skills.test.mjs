@@ -202,6 +202,41 @@ test('ship trampoline halts without the Workflow tool and never auto-starts the 
   }
 })
 
+test('both review skills request review-metrics emission on their gated command line', () => {
+  // This is the assertion the defect it guards did not have. `--metrics` existed
+  // on `interlock review` for a year and no skill ever passed it, so the
+  // report's review-finding indicators read "unobserved" the entire time — not
+  // because nothing was reviewed, but because nothing recorded that it had
+  // been. Nothing fails when a skill drops the flag; the corpus just quietly
+  // stays empty, and an empty corpus reads exactly like a loop that never ran.
+  //
+  // So the pin is here rather than in prose. Both gated review paths are
+  // covered: `review-code` reaches a verdict through `interlock review`,
+  // `review-artifacts` through `interlock gate`.
+  const paths = {
+    'review-code': /interlock review [^\n]*--metrics/,
+    'review-artifacts': /interlock gate [^\n]*--metrics/
+  }
+
+  for (const [skill, pattern] of Object.entries(paths)) {
+    const file = join(SKILLS_DIR, skill, 'SKILL.md')
+    assert.ok(existsSync(file), `${skill}/SKILL.md must exist for this pin to mean anything`)
+    const text = readFileSync(file, 'utf8')
+    assert.match(
+      text,
+      pattern,
+      `${skill} must pass --metrics on its gated command line, or its review path becomes ` +
+        'permanently invisible to `interlock report`'
+    )
+    assert.match(
+      text,
+      /--metrics <change>/,
+      `${skill} must pass a change name to --metrics — the flag refuses a missing value, and ` +
+        'no name is ever inferred from the findings file'
+    )
+  }
+})
+
 test('shared contracts referenced by skills all exist', () => {
   const shared = readdirSync(join(ROOT, 'shared')).filter(f => f.endsWith('.md'))
   assert.ok(shared.length >= 5, `expected the shared contracts, found ${shared.length}`)

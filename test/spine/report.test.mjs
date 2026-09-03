@@ -17,7 +17,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -551,6 +551,176 @@ test('coverage precedes the indicators in the human-readable output', () => {
   try {
     const text = formatReport(buildReport(dir))
     assert.ok(text.indexOf('COVERAGE') < text.indexOf('INDICATORS'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- the HTML surface ------------------------------------------------------
+//
+// `--html` is a third rendering of the same object, so the property that
+// matters is not what the document looks like but that it cannot say anything
+// the other two surfaces do not. That is asserted directly below, indicator by
+// indicator, rather than trusted to a shared code path.
+
+/** Every reading in the document, as [headline, basis] pairs, in order. */
+function readings(doc) {
+  return [...doc.matchAll(
+    /<div class="ind-headline">([\s\S]*?)<\/div><div class="ind-basis">([\s\S]*?)<\/div>/g
+  )].map(m => [m[1], m[2]])
+}
+
+/** The (headline, basis) an indicator carries, formatted as every surface formats it. */
+function readingOf(ind, kind) {
+  if (!ind || ind.value === null) return ['UNOBSERVED', ind ? ind.reason : 'no indicator']
+  const headline = kind === 'pct' ? `${(ind.value * 100).toFixed(1)}%` : String(ind.value)
+  const basis = `of ${ind.observedOf} observed` + (ind.notObserved ? `, ${ind.notObserved} not observed` : '')
+  return [headline, basis]
+}
+
+test('the three surfaces cannot disagree about a value or a denominator', () => {
+  const dir = root()
+  try {
+    // A corpus with something in every indicator that can carry something, so
+    // the comparison is over real values rather than over nine absences.
+    trajectory(dir, 'run-a', [
+      { type: 'run-start' },
+      { type: 'cli-exit', command: 'gate', exitCode: 1 },
+      { type: 'cli-exit', command: 'gate', exitCode: 0 },
+      { type: 'wave', action: 'replan' },
+      RECEIPT,
+      { type: 'run-complete', leftoverTaskIds: [] }
+    ])
+    trajectory(dir, 'run-b', [
+      { type: 'run-start' },
+      { type: 'cli-exit', command: 'verify judge', exitCode: 0 },
+      { ...RECEIPT, remediationRounds: 2 },
+      { type: 'run-complete', leftoverTaskIds: [] }
+    ], { change: 'add-other' })
+    metricsFile(dir, 'review-add-widget-20260821-000000-000Z.json', {
+      schema: REVIEW_METRICS_SCHEMA,
+      timestamp: '2026-08-21T00:00:00.000Z',
+      change: 'add-widget',
+      counts: { raised: 8, dismissed: 5, droppedByQuality: 1, surviving: 2 }
+    })
+
+    const cli = args => {
+      const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, ...args], { encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      return r.stdout
+    }
+
+    const object = JSON.parse(cli(['--json']))
+    const text = cli([])
+    const doc = cli(['--html'])
+    const i = object.indicators
+
+    const expected = [
+      readingOf(i.firstPassShip.rate, 'pct'),
+      readingOf(i.rework.remediationRounds, 'plain'),
+      readingOf(i.rework.attemptsPerChange, 'plain'),
+      null, // plan-reuse status is a distribution, compared separately below
+      readingOf(i.planFidelity.midRunRevision, 'pct'),
+      null, // diff-matches-plan is not computable on any surface
+      readingOf(i.reviewFindings.fromMetrics.dismissalShare, 'pct'),
+      readingOf(i.reviewFindings.fromReceipts.survivalShare, 'pct'),
+      readingOf(i.gateExitHealth.nonZeroShare, 'pct')
+    ]
+
+    const actual = readings(doc)
+    assert.equal(actual.length, expected.length, 'one reading per indicator the object carries')
+
+    for (let n = 0; n < expected.length; n += 1) {
+      if (!expected[n]) continue
+      const [headline, basis] = expected[n]
+      assert.deepEqual(actual[n], [headline, basis], `indicator ${n + 1} disagrees with the object`)
+      // And the same two figures reach the text surface. It words absence in
+      // lower case and parentheses rather than as a headline, which is the only
+      // difference between the surfaces that is permitted to exist: the reason
+      // itself must be identical, because both read it off the same object.
+      if (headline === 'UNOBSERVED') {
+        assert.ok(text.includes(`unobserved (${basis})`), `the text surface must carry "${basis}"`)
+      } else {
+        assert.ok(text.includes(headline), `the text surface must carry ${headline}`)
+        assert.ok(text.includes(basis), `the text surface must carry "${basis}"`)
+      }
+    }
+
+    // The two figures the readings above skip, checked in their own shape.
+    for (const status of Object.keys(i.planFidelity.planStatus.counts)) {
+      assert.ok(doc.includes(status), `plan status ${status} must appear`)
+      assert.ok(text.includes(status))
+    }
+    assert.ok(doc.includes('NOT COMPUTABLE'))
+    assert.ok(text.includes('NOT COMPUTABLE'))
+
+    // Coverage denominators, which every figure above rests on.
+    const c = object.coverage
+    assert.ok(doc.includes(`>${c.trajectories.scanned}</span> scanned of <span class="num">${c.trajectories.total}<`))
+    assert.ok(doc.includes(`>${c.metrics.recognized}</span> recognized of <span class="num">${c.metrics.total}<`))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an empty corpus still produces a document and exits 0', () => {
+  const dir = root()
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html'], { encoding: 'utf8' })
+    assert.equal(r.status, 0, 'a corpus with nothing in it is a report, not a failure')
+    assert.match(r.stdout, /^<!doctype html>/)
+    assert.match(r.stdout, /UNOBSERVED/)
+    assert.doesNotMatch(r.stdout, /<div class="ind-headline">0<\/div>/, 'absence is never a zero')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--html writes only where told, and producing it leaves the corpora untouched', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [{ type: 'run-start' }, RECEIPT, { type: 'run-complete', leftoverTaskIds: [] }])
+    const before = walk(dir).sort()
+
+    // Bare --html writes to stdout and touches no file at all.
+    const piped = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html'], { encoding: 'utf8' })
+    assert.equal(piped.status, 0)
+    assert.deepEqual(walk(dir).sort(), before, 'a report to stdout must create nothing')
+
+    // A named path is written, and it is the only thing written.
+    const out = join(dir, 'report.html')
+    const named = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', out], { encoding: 'utf8' })
+    assert.equal(named.status, 0, named.stderr)
+    assert.match(named.stdout, /report written to/)
+    assert.deepEqual(walk(dir).sort(), [...before, out].sort(), 'only the named destination is written')
+    assert.equal(readFileSync(out, 'utf8'), piped.stdout, 'the file and the stream are the same document')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unwritable destination is reported and leaves no partial document', () => {
+  const dir = root()
+  try {
+    const out = join(dir, 'no-such-dir', 'report.html')
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', out], { encoding: 'utf8' })
+    assert.notEqual(r.status, 0, 'a write that did not happen must not report success')
+    assert.match(r.stderr, /could not write/)
+    assert.equal(existsSync(out), false, 'nothing may be left at the named path')
+    assert.equal(existsSync(`${out}.interlock-partial`), false, 'nor beside it')
+    assert.doesNotMatch(r.stdout, /doctype/, 'a failed write must not also spill the document')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--html and --json are refused together rather than one silently winning', () => {
+  const dir = root()
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', '--json'], { encoding: 'utf8' })
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /--html and --json are mutually exclusive/)
+    assert.equal(r.stdout, '', 'neither surface may be produced')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

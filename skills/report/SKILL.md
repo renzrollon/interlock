@@ -28,6 +28,24 @@ designing a gate — that is decision §4.16 / slice F6.6 and it has not been ma
 Never recompute a figure by hand. If a number you need is absent, the corpus did
 not record it; say that instead of deriving a substitute from something nearby.
 
+When someone wants to *look* at the corpora rather than have them read to them:
+
+```
+interlock report --html > report.html
+```
+
+This renders the same report object as one self-contained HTML document — no
+stylesheet, script or font is fetched, so it opens offline and can be attached
+to an issue. It is **a generated file, not a service**: there is no server, no
+port and no watch mode to start, and nothing in the loop reads it. It is also
+**not a verdict**, and gains none by being visual: it draws no threshold, target
+or trend, no colour on it encodes health, and an unobserved indicator renders as
+`UNOBSERVED` with its reason at the same weight as a figure. Bare it writes to
+stdout; given a path it writes only there. It cannot be combined with `--json`.
+
+Handing someone the document does not discharge your job. The reading below is
+still yours to write — the page reports, and reporting is not interpretation.
+
 ## 2. Read coverage first, and let it govern everything after it
 
 The `coverage` group is not preamble. It decides whether any indicator below it

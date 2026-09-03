@@ -119,7 +119,9 @@ Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` in this
 Then let the deterministic gate decide, rather than deciding in prose:
 
 ```bash
-interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json
+interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json --metrics <change>
 ```
 
 The gate blocks if and only if at least one finding is a `blocker`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose.
+
+`--metrics <change>` is not optional decoration. It writes the four counts this gate produced — raised, dismissed, dropped by the quality band, surviving — to `.claude/metrics/` in the schema `interlock report` recognizes. Drop it and this review path becomes invisible to the report forever: the review-finding indicators read `unobserved` no matter how many gates ran. It is bookkeeping only and cannot change the verdict or the exit status.

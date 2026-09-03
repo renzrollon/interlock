@@ -21,9 +21,21 @@ const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'in
 
 let dir
 
-/** Run the real binary. Never throws on a non-zero exit — that is the assertion. */
+/**
+ * Run the real binary. Never throws on a non-zero exit — that is the assertion.
+ *
+ * `cwd` is pinned to the per-test temp dir on purpose. The CLI's `--root`
+ * defaults to `.`, so a subcommand invoked without an explicit `--root` — and
+ * plenty here are, because the flag is not what they are testing — resolves its
+ * root from the child's cwd. Left unpinned that is the repository itself, and
+ * every `wave-state create` in this file appends to the developer's live
+ * `.claude/ship/runs/`. The suite would then be writing into the corpus that
+ * `interlock report` reads, which is both a measurement defect and a way for a
+ * test to pass on accumulated state it never wrote.
+ */
 function run(args, opts = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
+    cwd: opts.cwd === undefined ? dir : opts.cwd,
     encoding: 'utf8',
     input: opts.input === undefined ? '' : opts.input
   })
@@ -347,6 +359,100 @@ test('review --metrics without a change name is an actionable error', () => {
   const r = run(['review', '--findings', paths.findings, '--verdicts', paths.verdicts, '--metrics'])
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /--metrics requires a change name/)
+})
+
+// --- gate --metrics -------------------------------------------------------
+//
+// `review-artifacts` reaches a verdict through `gate`, never through `review`,
+// so without this flag that whole path is permanently unobservable: the report's
+// review-finding indicators read "unobserved" no matter how many gates ran.
+
+test('gate --metrics writes the counts that produced the verdict, and the report recognizes them', () => {
+  const root = join(dir, 'gate-metrics-root')
+  mkdirSync(root, { recursive: true })
+
+  // The blocker is dismissed, so this gate passes — and a passing gate must
+  // record as readily as a blocking one.
+  const out = runJson([
+    'gate', '--findings', paths.findings,
+    '--dismissed', 'unchecked null deref',
+    '--metrics', 'add-auth', '--root', root
+  ])
+  assert.equal(out.passed, true)
+  assert.equal(out.metrics.written, true)
+  assert.match(out.metrics.path, /\.claude\/metrics\/review-add-auth-.*\.json$/)
+
+  // The four counts are the ones the verdict rests on, not a re-reading of the
+  // findings file: one dismissal removed, nothing scored away by the band.
+  const record = JSON.parse(readFileSync(out.metrics.path, 'utf8'))
+  assert.equal(record.change, 'add-auth')
+  assert.deepEqual(record.counts, {
+    raised: 3,
+    dismissed: 1,
+    droppedByQuality: 0,
+    surviving: 2
+  })
+
+  // The whole point of emitting: the report's classifier must count it.
+  const report = runJson(['report', '--root', root])
+  assert.equal(report.coverage.metrics.recognized, 1, JSON.stringify(report.coverage.metrics))
+  assert.deepEqual(report.coverage.metrics.unrecognized, [])
+})
+
+test('a passing gate with nothing raised still records zero as an observed count', () => {
+  const root = join(dir, 'gate-metrics-zero')
+  mkdirSync(root, { recursive: true })
+  const out = runJson([
+    'gate', '--findings', file('no-findings.json', []), '--metrics', 'add-auth', '--root', root
+  ])
+  assert.equal(out.passed, true)
+  assert.equal(out.metrics.written, true)
+  const record = JSON.parse(readFileSync(out.metrics.path, 'utf8'))
+  assert.deepEqual(record.counts, { raised: 0, dismissed: 0, droppedByQuality: 0, surviving: 0 })
+})
+
+test('gate --metrics leaves a blocking verdict and its exit 1 untouched when the write fails', { skip: isRoot() }, () => {
+  const root = join(dir, 'gate-metrics-readonly')
+  mkdirSync(root, { recursive: true })
+  chmodSync(root, 0o500)
+  try {
+    const r = run(['gate', '--findings', paths.findings, '--metrics', 'add-auth', '--root', root])
+    assert.equal(r.code, 1, 'bookkeeping must not rescue a blocked gate')
+    assert.match(r.stdout, /GATE BLOCKED/)
+    assert.match(r.stderr, /metrics not written:/)
+
+    const out = run([
+      'gate', '--findings', paths.findings, '--metrics', 'add-auth', '--root', root, '--json'
+    ])
+    assert.equal(out.code, 1)
+    const parsed = JSON.parse(out.stdout)
+    assert.equal(parsed.passed, false, 'the verdict must survive a failed write')
+    assert.equal(parsed.blockers.length, 1)
+    assert.equal(parsed.metrics.written, false)
+    assert.ok(parsed.metrics.reason, 'a failed metrics write must carry a reason')
+  } finally {
+    chmodSync(root, 0o700)
+  }
+})
+
+test('gate --metrics without a change name is an actionable error', () => {
+  const r = run(['gate', '--findings', paths.findings, '--metrics'])
+  assert.notEqual(r.code, 0)
+  assert.match(r.stderr, /--metrics requires a change name/)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+})
+
+test('gate without --metrics writes nothing and never infers a change name', () => {
+  const root = join(dir, 'gate-metrics-absent')
+  mkdirSync(root, { recursive: true })
+  const out = runJson(['gate', '--findings', paths.findings, '--root', root], 1)
+  assert.equal(out.passed, false)
+  assert.ok(!('metrics' in out), 'an unasked-for write must not even report itself')
+  assert.equal(
+    existsSync(join(root, '.claude', 'metrics')),
+    false,
+    'no change name means no record, never a record under a guessed name'
+  )
 })
 
 // --- verify ---------------------------------------------------------------
