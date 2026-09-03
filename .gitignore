@@ -23,6 +23,7 @@ __pycache__/
 .claude/handoff/
 .claude/pending-approval/
 .claude/.cc-writes/
+.claude/learning/
 .claude/plans/
 .claude/commands/
 .claude/memory/

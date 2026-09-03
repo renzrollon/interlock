@@ -237,6 +237,86 @@ test('both review skills request review-metrics emission on their gated command 
   }
 })
 
+test('bootstrap instructs a per-path corpus-persistence report via git check-ignore', () => {
+  // Same hazard as the --metrics pin above: this step is prose, nothing consumes
+  // its output, and a reword that drops a corpus path or swaps the matcher for a
+  // hand-rolled .gitignore read fails nothing. It just quietly stops asking the
+  // question it exists to ask.
+  //
+  // Tokens, not sentences. A pin that matched a phrase would be deleted by the
+  // first edit that improved the wording, which removes the only mitigation the
+  // step has.
+  const text = readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8')
+
+  for (const corpus of ['.claude/ship/', '.claude/learning/', '.claude/metrics/']) {
+    assert.ok(
+      text.includes(corpus),
+      `bootstrap must report the persistence posture of ${corpus} — a corpus it stops naming is ` +
+        'one nobody is asked about'
+    )
+  }
+
+  assert.match(
+    text,
+    /git check-ignore/,
+    'bootstrap must observe exclusion with git check-ignore, not by reading .gitignore — git ' +
+      'own matcher handles negation, nested files, info/exclude and the global excludes file'
+  )
+})
+
+test('bootstrap declares the permission its corpus-persistence step needs, narrowly', () => {
+  // The step instructs `git check-ignore`, and bootstrap's grant had no git verb
+  // at all. Shipping the instruction without the permission is worse than
+  // shipping neither: the denial lands at runtime on a consumer's repo, and
+  // because a failed check is routed to the "undetermined" branch, it is
+  // indistinguishable from a repo with no .gitignore — so the step reports
+  // "undetermined" on every repo forever and looks like it is working.
+  const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8'))
+  const allowed = fm.values['allowed-tools'] || ''
+
+  assert.match(
+    allowed,
+    /Bash\(git check-ignore \*\)/,
+    'bootstrap instructs `git check-ignore` but its allowed-tools does not admit it; the ' +
+      'instructed command would be denied at runtime'
+  )
+  assert.doesNotMatch(
+    allowed,
+    /Bash\(git \*\)/,
+    'the grant must stay narrowed to the check-ignore verb — the step uses no other git command'
+  )
+})
+
+test('bootstrap carries an explicit no-write instruction for .gitignore', () => {
+  // The boundary this change was scoped around: bootstrap is invoked to produce
+  // specs, and editing an unrelated file it was not asked to touch is a surprise
+  // in someone's diff, not a service.
+  //
+  // Asserted POSITIVELY, and the first draft of this test is why. It tried to
+  // assert the absence of write-like phrasing near `.gitignore` and failed on
+  // the skill's own prohibition — "Never write to `.gitignore`" contains
+  // "write to .gitignore". Prose cannot be checked for the absence of a phrase
+  // whose negation contains it. So: require the prohibition to be present, and
+  // separately forbid the one form that is unambiguous in any context, a shell
+  // redirect into the file.
+  const text = readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8')
+
+  assert.match(
+    text,
+    /never write to\s+`?\.gitignore/i,
+    'bootstrap must state the prohibition outright — a step that merely omits a write ' +
+      'instruction invites one back at the next edit'
+  )
+
+  for (const redirect of [/>>?\s*`?\.gitignore/, /tee\s+(?:-a\s+)?`?\.gitignore/]) {
+    assert.doesNotMatch(
+      text,
+      redirect,
+      `bootstrap must name the recommended entries, never apply them: ${redirect}`
+    )
+  }
+})
+
 test('shared contracts referenced by skills all exist', () => {
   const shared = readdirSync(join(ROOT, 'shared')).filter(f => f.endsWith('.md'))
   assert.ok(shared.length >= 5, `expected the shared contracts, found ${shared.length}`)

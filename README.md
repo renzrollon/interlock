@@ -49,6 +49,8 @@ OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 1
 
 Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
+Also decide once whether this repository keeps its run corpora. If you will run `/interlock:ship` against your own product, the trajectory, outcome record and review metrics are your audit trail and belong in git; if you are developing a harness, they are exhaust and belong in `.gitignore`. Both `.gitignore` blocks and the two caveats that bite when committing are in [11 — whether to keep them](docs/11-the-indicators.md#whether-to-keep-them).
+
 ```bash
 interlock doctor
 ```

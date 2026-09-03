@@ -4,9 +4,10 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   readReviewPolicy,
   parseReviewPolicy,
@@ -206,5 +207,54 @@ test('exclusions shrink the input but leave the band unchanged for what remains'
   assert.deepEqual(
     withPolicy.surviving.map(x => x.title).sort(),
     baseline.surviving.map(x => x.title).sort()
+  )
+})
+
+// --- this repository's own root policy files -------------------------------
+//
+// Every test above writes a fixture into a temp dir and reads it back, which
+// exercises the parser and says nothing about whether this repository has a
+// REVIEW.md at all. It did not, for the life of the repo: `interlock review`
+// parsed an absent file into the empty policy, fail-open by design, and every
+// review here ran against no policy while looking exactly like a review that
+// had one. `CLAUDE.md` was absent the same way.
+//
+// Absence is the off switch, so nothing errored and nothing could. These
+// assertions are the countermeasure: they fail loudly if either file is deleted
+// or emptied, which is the only way that state becomes visible again.
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+for (const file of ['CLAUDE.md', 'REVIEW.md']) {
+  test(`this repository has a non-empty ${file} at its root`, () => {
+    const path = join(REPO_ROOT, file)
+    assert.ok(existsSync(path), `${file} is missing from the repo root`)
+    assert.ok(
+      readFileSync(path, 'utf8').trim().length > 0,
+      `${file} exists but is empty, which is indistinguishable from absent to every reader`
+    )
+  })
+}
+
+test("this repository's REVIEW.md parses into a real policy, not the empty one", () => {
+  const policy = readReviewPolicy(REPO_ROOT)
+
+  assert.deepEqual(
+    policy.problems,
+    [],
+    `REVIEW.md must parse cleanly; problems were: ${policy.problems.join('; ')}`
+  )
+  assert.ok(policy.owner, 'REVIEW.md must declare an owner — an unowned bar is nobody\'s to defend')
+  assert.ok(
+    policy.excludePaths.length > 0,
+    'REVIEW.md must declare at least one exclusion, or the enforced half of the policy is inert'
+  )
+  // A heading the parser does not recognize is dropped in silence, so assert the
+  // prose survived rather than trusting that it was written.
+  assert.match(
+    policy.prose,
+    /## What "Important" means/,
+    'the advice half of REVIEW.md did not survive parsing — check the heading against ' +
+      'PROSE_HEADINGS in lib/review-core.mjs; `## What "Important" means here` does not match'
   )
 })

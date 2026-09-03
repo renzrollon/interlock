@@ -49,6 +49,57 @@ reason and never raises. A record is attributed to the change the caller named
 and to no other — a missing name writes nothing rather than guessing one from
 the findings file's path.
 
+## Whether to keep them
+
+The three corpora above are runtime state, and whether they belong in git depends
+on what the repository *is*. There is one rule and it has two sides.
+
+**A repository that runs `/interlock:ship` against its own product should commit
+them.** There, the trajectory, the outcome record and the review metrics are the
+audit trail of how the code got written — what was planned, what each wave did,
+which findings survived, what the gate decided. Gitignoring them means that
+record exists on one developer's laptop and dies with it, and that `interlock
+report` can never answer a question about the team, only about the last person
+to run something.
+
+**A repository that develops the harness itself should exclude them.** There, a
+ship run is development exhaust rather than a record of shipping a product, and
+committing it commits noise. This repository takes that side, and the evidence
+for why is on disk: `.claude/ship/runs.polluted-2026-08-29/` holds roughly a
+thousand trajectory files that the `add-report-dashboard` diagnosis attributed
+5690 of 5704 events to `change: "unnamed"` — test exhaust, written because the
+CLI test suite spawned the real binary against the real root. Committing that
+would have been committing pollution and calling it an audit trail.
+
+```gitignore
+# Repo that develops the harness: runtime state, never committed
+.claude/ship/
+.claude/learning/
+.claude/metrics/
+```
+
+```gitignore
+# Repo that ships its own product with Interlock: keep the audit trail.
+# Ignore only the volume, not the record.
+.claude/ship/spill/
+```
+
+Two caveats worth knowing before choosing the commit side.
+
+**`outcomes.jsonl` is a single append-only file, and therefore a merge-conflict
+site.** Two branches that each ship a change both append to the same file at the
+same end, and git will ask a human to resolve it. The other two corpora are
+conflict-free by construction — a trajectory is one file per run and a metrics
+record is one file per review, so parallel work writes to different paths and
+never collides. If the conflicts become tiresome, the honest fix is a merge
+driver or a union merge attribute on that one path, not gitignoring the corpus
+and losing the record.
+
+**Spill is volume, not record.** `.claude/ship/spill/` holds full suite output
+for runs that overflowed the context budget — hundreds of KB per run, referenced
+from the trajectory by locator. Exclude it even when committing everything else;
+the trajectory line that points at it is the part worth keeping.
+
 ## The indicators
 
 Every indicator carries `source`, `value`, `observedOf` (the denominator) and

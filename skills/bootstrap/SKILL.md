@@ -4,7 +4,7 @@ description: Onboard a brownfield project into OpenSpec — analyze the existing
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock-graph CLI.
 argument-hint: "[--quick] [--scope <path>]"
-allowed-tools: Bash(openspec *) Bash(interlock-graph *) Agent Read Write Glob Grep
+allowed-tools: Bash(openspec *) Bash(interlock-graph *) Bash(git check-ignore *) Agent Read Write Glob Grep
 metadata:
   type: discovery
   outputs:
@@ -164,7 +164,53 @@ Fill in the project context in `openspec/config.yaml` with what was discovered �
 - Specs created, and specs skipped because they already existed
 - Features deliberately not specced, with the reason
 - `openspec validate` result
+- Corpus-persistence posture (below)
 - Suggested next step: `/interlock:docs-digest` to build the agent prose primer
+
+### Corpus-persistence posture
+
+This is the one moment the repository is looked at before any run has written to
+it, so raise the question now: will its run corpora be kept?
+
+Observe the current state with git's own matcher — do **not** read or parse
+`.gitignore`. Its semantics include negation, directory-only trailing slashes,
+nested files, `.git/info/exclude` and the user's global excludes file, and a
+hand-rolled match gets some of those wrong:
+
+```bash
+git check-ignore -q .claude/ship/ ; echo "ship=$?"
+git check-ignore -q .claude/learning/ ; echo "learning=$?"
+git check-ignore -q .claude/metrics/ ; echo "metrics=$?"
+```
+
+Exit 0 means the path is excluded, 1 means it is tracked territory.
+
+Report **each of the three separately** — never collapse them into one verdict.
+A split state, where one is excluded and the others are not, is the case most
+likely to be unintentional, and collapsing hides exactly that.
+
+State the recommendation as **conditional**, never as a verdict about this
+repository. Nothing you can observe tells you whether the repo will run
+`/interlock:ship` against its own product, so say which posture fits which
+intent and let the reader choose:
+
+> `.claude/ship/` and `.claude/metrics/` are excluded, `.claude/learning/` is
+> not. If this repository will run `/interlock:ship` on its own product, those
+> exclusions drop the audit trail — remove them from `.gitignore`. If it is a
+> harness whose ship runs are development exhaust, add `.claude/learning/` so
+> all three match. Rationale and both `.gitignore` blocks: docs/11, "Whether to
+> keep them".
+
+**Never write to `.gitignore`.** Not to create it, not to append, not to "fix"
+a split state. Name the entries a person could add and let them add them — this
+skill was invoked to produce specs, and an edit to an unrelated file is a
+surprise in someone's diff, not a service.
+
+If any `git check-ignore` exits non-zero for a reason other than "not ignored"
+— an unreadable `.gitignore`, or a directory that is not a git repository at all
+— report the posture as **undetermined and say why**, then carry on. Bootstrap
+completes and writes every artifact it would otherwise have written; a failed
+check never fails the onboarding.
 
 ---
 

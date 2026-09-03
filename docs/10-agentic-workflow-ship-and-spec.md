@@ -245,7 +245,7 @@ Inference, not a measurement from this session:
 
 Kill switches that silently inflate cost: `CLAUDE_CODE_SUBAGENT_MODEL` (every agent on that model — banner `MODEL ROUTING OVERRIDDEN`); permission prompts mid-run (allowlist `interlock`, `interlock-graph`, `openspec`, `git`, your test runner *before* a long ship); missing graph (grep fallback).
 
-`.gitignore` ignores graph/handoff/metrics/testing but **not** `.claude/ship/` or `.claude/memory/`. This checkout currently carries a large untracked ship-run corpus. That is runtime state, not source.
+`.gitignore` now covers every `.claude/` runtime path this page names, `.claude/ship/` and `.claude/memory/` included. That is the right posture *for this repository*, whose ship runs are development exhaust rather than a record of shipping a product — a repository that runs `/interlock:ship` against its own product wants the opposite. The rule, both `.gitignore` blocks, and the two caveats that matter when committing are in [11 — the indicators](./11-the-indicators.md#whether-to-keep-them).
 
 ---
 
@@ -405,7 +405,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 1. **Archive the four completed changes** (`openspec archive <name>`, with spec sync). Until that happens, `interlock drift` will keep reporting the failure mode the tool was written to catch, and the next `/interlock:spec` on this repo plans against unmerged deltas plus empty living specs.
 2. **Point the README at this page** (and restore [05](./05-continuity.md) in the doc table — it is missing today). New engineers currently get "first hour" or a 15-section mechanism essay with nothing in between.
 3. **Fill `openspec/config.yaml`** with stack, test command, and artifact rules (proposal non-goals; tasks must name paths). Empty config wastes spec tokens rediscovering what `package.json` already says.
-4. **Gitignore `.claude/ship/`** (and decide whether `.claude/memory/` is source). Runtime JSONL does not belong in `git status`. Memory files are currently useful and untracked — either commit the index or ignore the directory.
+4. ~~**Gitignore `.claude/ship/`** (and decide whether `.claude/memory/` is source).~~ **Done.** Both are ignored, and the reasoning generalized into a policy — see [11 — whether to keep them](./11-the-indicators.md#whether-to-keep-them). Note the policy is repository-dependent: exclusion is right here and wrong for a repository that ships its own product through `/interlock:ship`.
 5. **Update [08](./08-harness-landscape.md) "Worth taking" items 1–2** to "shipped" (`lib/spill.mjs`, `lib/run-log.mjs`) so the landscape page stops assigning work that is done.
 6. **Mark `CONTEXT-HYGIENE.md` as aspirational or implement it.** A protocol that claims ship wraps `[[CHANGE_NAME]]` while `assembleImplementerPrompt` interpolates raw strings is the silent-degradation pattern the rest of the codebase refuses.
 
