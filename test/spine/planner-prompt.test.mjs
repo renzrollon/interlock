@@ -250,3 +250,44 @@ test('the spec skill mirrors the prompt: a cross-file dependency is an edge', ()
     'the closing rule must cover edges beside path collisions, not just paths'
   )
 })
+
+// --- the mode recommendation (spec: waves MODIFIED, solo-mode ADDED) --------
+//
+// The classifier is asked for a SHAPE judgement and nothing else. The envelope
+// that bounds it is a published cap read by the planner (lib/limits.mjs SOLO),
+// and a prompt restating its number would be the same cap written twice — the
+// drift the caps module exists to end.
+
+test('the assembled classifier prompt asks for recommendedMode and modeReason', async () => {
+  const prompt = await plannerPrompt()
+  assert.match(prompt, /"recommendedMode" of "solo" or "waves"/, 'the field and its two values')
+  assert.match(prompt, /"modeReason"/, 'and the one-line reason beside it')
+  assert.match(prompt, /top-level/, 'both sit beside the task array, not inside a task')
+})
+
+test('the assembled classifier prompt describes solo as one agent in order', async () => {
+  const prompt = await plannerPrompt()
+  assert.match(
+    prompt,
+    /one agent implements this whole change by itself, task by task in the planned order/,
+    'solo has to be described, or the recommendation is a guess about a word'
+  )
+  assert.match(prompt, /no parallel waves and no isolation between tasks/)
+})
+
+test('the assembled classifier prompt names the envelope without stating its number', async () => {
+  const prompt = await plannerPrompt()
+  const { SOLO } = await import('../../lib/limits.mjs')
+  assert.match(
+    prompt,
+    /the planner enforces the published envelope/,
+    'the classifier must be told the bound exists and is enforced elsewhere'
+  )
+  assert.doesNotMatch(
+    prompt,
+    new RegExp(`\\b${SOLO.maxTasks}\\b[^.]*task`, 'i'),
+    `the prompt states ${SOLO.maxTasks} as a task bound — the envelope lives in lib/limits.mjs ` +
+      `and is published by \`interlock limits\`; a number copied into prompt text is a number ` +
+      `that drifts`
+  )
+})

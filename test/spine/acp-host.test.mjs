@@ -16,7 +16,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -177,6 +177,39 @@ test('formatSpawnPrompt adds a result contract only when there is a schema', () 
   assert.match(withSchema, /^do it/, 'the caller owns the prompt; the host only appends')
   assert.match(withSchema, /reply with a single JSON object/)
   assert.match(withSchema, /"type":"object"/)
+})
+
+// --- the driver's solo briefing (spec: solo-mode, implementer-prompts) ------
+//
+// Both hosts share ONE assembler, loaded out of ship.js source between markers,
+// so a solo lane is briefed identically wherever it runs. What each host owns is
+// telling the assembler which mode its own loop is running under — and the ACP
+// driver forgetting that field would brief a solo agent as an ordinary lane,
+// silently, with every fixture still green.
+
+test('the ACP driver passes solo from the step it was handed, not from a flag', () => {
+  const driver = readFileSync(join(ROOT, 'bin', 'interlock-ship-acp'), 'utf8')
+  assert.match(
+    driver,
+    /const solo = next\.mode === 'solo'/,
+    'the mode is read off the state machine step, the way ship.js reads it'
+  )
+  assert.match(
+    driver,
+    /assembleImplementerPrompt\(\{ change, lane, previousHandoffs, solo \}\)/,
+    'and reaches the shared assembler at the implementer spawn'
+  )
+  // Captured before the batch loop, which reassigns `next` on every record
+  // command: read inside the loop, batch 2 would be briefed off batch 1's
+  // record step rather than off the wave it belongs to.
+  const spawn = driver.indexOf('assembleImplementerPrompt({ change, lane')
+  const capture = driver.indexOf("const solo = next.mode === 'solo'")
+  assert.ok(capture > -1 && capture < spawn, 'the capture must precede the spawn')
+  assert.doesNotMatch(
+    driver,
+    /--solo\b|\blaneMode\b/,
+    'the driver takes no shape flag of its own: the planner decided the mode'
+  )
 })
 
 // --- opt-in: a live agent ---------------------------------------------------

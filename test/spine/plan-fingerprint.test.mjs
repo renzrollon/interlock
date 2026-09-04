@@ -37,8 +37,10 @@ import {
   checkPlanReuse,
   narrowPlan,
   resolvePlanReuse,
-  formatPlanReuse
+  formatPlanReuse,
+  formatFingerprint
 } from '../../lib/plan-fingerprint.mjs'
+import { SOLO, LANE_CAPS } from '../../lib/limits.mjs'
 import { planWaves } from '../../lib/waves.mjs'
 
 const CHANGE = 'add-widget'
@@ -70,9 +72,11 @@ const artifact = (dir, name, text) => writeFileSync(join(dir, name), text)
 
 /**
  * A lane-shaped plan covering the four tasks in TASKS: group 1 is a two-task
- * lane (they claim one file), group 2 is two disjoint lanes in one batch. Two
- * tasks per group on purpose — a 1-task group folds onto the previous wave, and
- * a fixture that collapsed to one wave could not show a wave being dropped.
+ * lane (they claim one file, joined by collision), group 2 is a two-task
+ * cohesion lane (its tier-1 tasks are path-disjoint but pack together under the
+ * cohesion ceiling). Two tasks per group on purpose — a 1-task group folds onto
+ * the previous wave, and a fixture that collapsed to one wave could not show a
+ * wave being dropped.
  */
 function storedPlan() {
   const t = (id, group, tier, model, path) => ({
@@ -360,7 +364,7 @@ test('narrowing drops completed tasks and preserves the order of the rest', () =
   const narrowed = narrowPlan(plan, id => id === '1.1')
   assert.deepEqual(
     shapeOf(narrowed.plan),
-    [[[['1.2']]], [[['2.1'], ['2.2']]]],
+    [[[['1.2']]], [[['2.1', '2.2']]]],
     '1.2 keeps its position in the lane 1.1 was removed from'
   )
   assert.deepEqual(narrowed.dropped, ['1.1'])
@@ -372,7 +376,7 @@ test('a lane emptied by narrowing is dropped, not dispatched', () => {
   const plan = storedPlan()
   const narrowed = narrowPlan(plan, id => id.startsWith('1.'))
   assert.equal(narrowed.waveCount, 1, 'wave 1 held only completed tasks and is gone')
-  assert.deepEqual(shapeOf(narrowed.plan), [[[['2.1'], ['2.2']]]])
+  assert.deepEqual(shapeOf(narrowed.plan), [[[['2.1', '2.2']]]])
   for (const wave of narrowed.plan.waves) {
     for (const batch of wave.batches) {
       assert.ok(batch.length, 'no empty batch survives')
@@ -510,4 +514,96 @@ test('the edge set is hashed as a set, not in the order the classifier emitted i
   })
   assert.equal(forward.hash, reversed.hash, 'reordering or repeating an edge is not a new plan')
   clean(root)
+})
+
+// --- mode, the cap table and the envelope (format /3, design D11) -----------
+
+test('the fingerprint carries the mode, the lane-cap table and the envelope', () => {
+  const { root } = makeRepo()
+  const fp = computeFingerprint(root, CHANGE)
+  assert.equal(fp.mode, 'auto', 'no override is recorded as auto, not as waves')
+  assert.deepEqual(fp.laneCaps, LANE_CAPS.byTier)
+  assert.equal(fp.cohesionMaxTier, LANE_CAPS.cohesionMaxTier)
+  assert.equal(fp.soloMaxTasks, SOLO.maxTasks)
+  // The four canonical lines the hash is taken over are the four
+  // formatFingerprint prints — the only surface an operator sees them on.
+  const text = formatFingerprint(fp)
+  assert.match(text, /mode auto/)
+  assert.match(text, /lane-caps 1:8 2:8 3:6 4:4 5:8/)
+  assert.match(text, /cohesion-max-tier 3/)
+  assert.match(text, /solo-max-tasks 20/)
+  clean(root)
+})
+
+test('the format version rejects a stored /2 plan even when its content matches', () => {
+  const { root } = shipped()
+  const fpPath = join(root, ...FINGERPRINT_PATH.split('/'))
+  const stored = JSON.parse(readFileSync(fpPath, 'utf8'))
+  writeFileSync(fpPath, JSON.stringify({ ...stored, planFormat: 'interlock.ship-plan/2' }))
+  const result = checkPlanReuse(root, CHANGE)
+  assert.equal(result.status, REUSE_FORMAT_VERSION)
+  assert.match(result.reason, /interlock\.ship-plan\/2/)
+  assert.match(result.reason, new RegExp(PLAN_FORMAT.replace('/', '\\/')))
+  clean(root)
+})
+
+test('a mode override changes the hash, and an identical override matches', () => {
+  const { root } = makeRepo()
+  const auto = computeFingerprint(root, CHANGE)
+  const waves = computeFingerprint(root, CHANGE, { mode: 'waves' })
+  const solo = computeFingerprint(root, CHANGE, { mode: 'solo' })
+  assert.notEqual(solo.hash, waves.hash, 'solo and waves are different plan shapes')
+  assert.notEqual(auto.hash, waves.hash, 'auto is distinct from an explicit waves override')
+  assert.notEqual(auto.hash, solo.hash)
+  assert.equal(
+    solo.hash,
+    computeFingerprint(root, CHANGE, { mode: 'solo' }).hash,
+    'the same override recomputes to the same hash'
+  )
+  clean(root)
+})
+
+test('the classifier recommendation is an output, not an input to the hash', () => {
+  // recommendedMode is what the classifier suggested; whether a reuse check would
+  // honour it cannot be recomputed without re-running the classifier, which is the
+  // cost reuse exists to avoid. So it must not enter the fingerprint.
+  const { root } = makeRepo()
+  const without = computeFingerprint(root, CHANGE, { tasks: classified() })
+  const withRec = computeFingerprint(root, CHANGE, {
+    tasks: { tasks: classified().tasks, recommendedMode: 'solo', modeReason: 'feels small' }
+  })
+  assert.equal(withRec.hash, without.hash, 'a recommendation does not change plan identity')
+  clean(root)
+})
+
+// A solo plan straight from the planner: one lane, tasks promoted to opus.
+function soloPlan() {
+  const t = (id, group, tier, model) => ({
+    id,
+    group,
+    description: `task ${id}`,
+    tier,
+    model,
+    isTestTask: false
+  })
+  return planWaves(
+    { tasks: [t('1.1', 1, 1, 'haiku'), t('1.2', 1, 2, 'sonnet'), t('2.1', 2, 3, 'sonnet')] },
+    { mode: 'solo' }
+  )
+}
+
+test('a narrowed solo plan keeps one lane, its mode and its promotion report', () => {
+  const plan = soloPlan()
+  assert.equal(plan.mode, 'solo')
+  assert.equal(plan.laneCount, 1)
+  assert.ok(plan.promoted.length, 'the planner promoted the sub-opus tasks')
+  const narrowed = narrowPlan(plan, id => id === '1.1')
+  assert.equal(narrowed.plan.mode, 'solo', 'a narrowed solo plan is still solo')
+  assert.equal(narrowed.laneCount, 1, 'the one lane, minus the dropped task, is still one lane')
+  assert.deepEqual(
+    narrowed.plan.promoted,
+    plan.promoted,
+    'narrowing drops tasks, not the promotion report'
+  )
+  assert.deepEqual(shapeOf(narrowed.plan), [[[['1.2', '2.1']]]])
 })

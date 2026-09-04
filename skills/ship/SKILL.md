@@ -3,7 +3,7 @@ name: ship
 description: Launch the Interlock ship workflow — take a reviewed OpenSpec change from tasks to commit in one uninterrupted run (waves, verify, commit). Default is lean; pass --strict for review, handoff and conformance. Use when the user ran /interlock:ship, asked to ship a reviewed change, or spec --continue passed the readiness gate. Never invoke after spec unless they asked.
 license: MIT
 compatibility: Requires Claude Code v2.1.154+ with dynamic workflows enabled. Node.js >= 18 for the bundled interlock CLI.
-argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage] [--review] [--handoff] [--conformance] [--strict]"
+argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage] [--solo] [--waves] [--review] [--handoff] [--conformance] [--strict]"
 disallowed-tools: AskUserQuestion
 allowed-tools: Read
 metadata:
@@ -27,7 +27,11 @@ From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ c
 | `--apply-only` `--no-commit` `--skip-e2e` `--skip-coverage` | `flags: ["apply-only", ...]` |
 | `--review` `--handoff` `--conformance` | `flags: ["review", ...]` — enable that tail piece |
 | `--strict` | `flags: ["strict"]` — review + handoff + conformance + autonomy record (previous default) |
+| `--solo` | `flags: ["solo"]` — force one agent to implement the whole change in order |
+| `--waves` | `flags: ["waves"]` — force the parallel plan, refusing a solo recommendation |
 | `--max-parallel N` | `maxParallel: N` |
+
+Pass a shape flag only when the user asked for one. Absent both, the classifier recommends a shape and the planner honours it inside a published envelope; the plan preview names the mode and why before a single implementer is spawned, so there is nothing to decide here. `--solo` and `--waves` together is a halt, not a preference to resolve.
 
 Do not invent `--strict` because the change looks large. Continuity (`spec --continue`) also launches default lean unless the user passed a tail flag.
 

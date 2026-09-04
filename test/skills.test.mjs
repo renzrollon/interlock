@@ -202,6 +202,40 @@ test('ship trampoline halts without the Workflow tool and never auto-starts the 
   }
 })
 
+test('the ship trampoline carries the plan-shape flags and forwards them verbatim', () => {
+  // A flag the trampoline does not know about is a flag the user cannot pass:
+  // the skill builds the `args` payload the script parses, so an unmapped
+  // `--solo` reaches ship.js as nothing at all and the run silently plans waves.
+  // Tokens, not sentences — the first reword must not delete the pin.
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  const hint = /^argument-hint:.*$/m.exec(text)
+  assert.ok(hint, 'the ship skill must publish an argument-hint')
+  for (const flag of ['--solo', '--waves']) {
+    assert.ok(hint[0].includes(flag), `the argument-hint must offer ${flag}`)
+  }
+  assert.match(text, /flags: \["solo"\]/, 'the flag table must map --solo onto the args payload')
+  assert.match(text, /flags: \["waves"\]/, 'and --waves')
+  // The preview names the mode before anything is spawned, which is why the
+  // trampoline has no shape judgement of its own to make.
+  assert.match(text, /plan preview names the mode/i)
+  assert.doesNotMatch(
+    text,
+    /interlock limits|envelope of \d+|\bat most \d+ tasks\b/i,
+    'the trampoline must cite no threshold: the envelope is the planner\'s to enforce'
+  )
+})
+
+test('the spec skill tells authors not to split a section to buy parallelism', () => {
+  // The mirror of the packing rule. An author who splits a section into
+  // one-checkbox sections to "get more agents" serializes the change instead:
+  // sections run in sequence, and the planner would have packed the siblings
+  // into one lane anyway.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.match(text, /Never split a section to buy parallelism/i)
+  assert.match(text, /packs low-tier siblings in one section into a single lane/i)
+  assert.match(text, /may ship solo/i, 'and must name solo as the small-change shape')
+})
+
 test('both review skills request review-metrics emission on their gated command line', () => {
   // This is the assertion the defect it guards did not have. `--metrics` existed
   // on `interlock review` for a year and no skill ever passed it, so the
@@ -414,4 +448,68 @@ test('shared contracts and lib carry no predecessor skill names', () => {
     }
   }
   assert.deepEqual(offenders, [], `predecessor residue: ${offenders.join(', ')}`)
+})
+
+test('the evals skill admits a captured skeleton as evidence, and refuses an unresolved one', () => {
+  // The pin the `--metrics` defect argues for: an instruction nobody asserts
+  // silently stops running. `interlock evals capture` exists to make a failed
+  // run citable, and a skill that never names it leaves the command unreachable
+  // in exactly the way `interlock review --metrics` was for a year.
+  //
+  // Distinguishing tokens, never whole sentences: a reword must not delete the
+  // pin, but a reversal of meaning must not survive it.
+  const text = readFileSync(join(SKILLS_DIR, 'evals', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /interlock evals capture/, 'the command a consumer files a failure with')
+  assert.match(text, /captured skeleton/i, 'a skeleton is named among the admissible evidence')
+  assert.match(text, /draft, not a finished case/i, 'and it is a draft rather than a case')
+  assert.match(text, /CONFIRM/, 'the marker capture leaves on every derived value')
+  assert.match(
+    text,
+    /Never\s+author a case that still carries one/i,
+    'the rule that keeps an unconfirmed pattern out of the suite'
+  )
+
+  // The reversal: nothing may describe a skeleton as ready to run or to file
+  // unchanged. Capture refuses to write into evals/ precisely so that a human
+  // decides, and prose telling them not to bother would undo the refusal.
+  assert.doesNotMatch(text, /skeleton[^.]*(?:ready to (?:run|file)|as[- ]is|without review)/i)
+})
+
+test('the evals skill requires a transcript to be read before a judged case is explained', () => {
+  // The same pin, for the same reason, against the same precedent:
+  // `interlock review --metrics` was an instruction in a skill that nobody
+  // asserted, so it silently stopped running and the corpus it fed stayed empty
+  // for a year while reading exactly like a loop that never fired. This
+  // instruction — read a trace before you explain a judged score — has the same
+  // shape and would fail the same way. It is pinned here on the day it lands.
+  //
+  // Tokens, never sentences: a reword must not delete the pin, and pinning a
+  // sentence would guarantee the first edit does exactly that.
+  const text = readFileSync(join(SKILLS_DIR, 'evals', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /transcripts read:/, 'the report line that names what was read')
+  assert.match(
+    text,
+    /transcripts read:\s*none/,
+    'the explicit none-form — an omitted line cannot be told from an unexamined result'
+  )
+  assert.match(
+    text,
+    /transcripts read:\s*unavailable, because/,
+    'the unavailable-form, so a run with no readable trace is spoken rather than silent'
+  )
+  assert.match(text, /judged grader/i, 'the condition the step applies to')
+  assert.match(
+    text,
+    // Whitespace-tolerant on purpose: the skill body is hard-wrapped, so a
+    // literal space between the tokens would break the pin on a rewrap.
+    /read\s+at\s+least\s+one\s+transcript[\s\S]{0,120}before\s+you\s+write\s+your\s+explanation/i,
+    'the ordering the requirement is about: transcript first, explanation second'
+  )
+
+  // The reversal: reading is for explanation and never for reclassification.
+  // A skill that let a transcript overturn triage would reintroduce exactly the
+  // re-argued verdict the exit-code contract exists to prevent.
+  assert.match(text, /never for reclassification/i, 'reading does not overturn the verdict')
 })

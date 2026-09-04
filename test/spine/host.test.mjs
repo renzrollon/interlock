@@ -57,23 +57,29 @@ const okTask = id => ({
   }
 })
 
-const classified = tasks => ({
+// Tier 4 by default, and deliberately: these tests are about the PORT — one
+// spawn per lane, and the CLI deciding what happens next — so they want a plan
+// whose lanes are one task each, and cohesion packs disjoint siblings at tier 3
+// and below into one lane (LANE_CAPS.cohesionMaxTier). Tier is the shortest way
+// to say "keep these separate" without inventing colliding paths, which would
+// make them one lane for the opposite reason.
+const classified = (tasks, tier = 4) => ({
   tasks: tasks.map(id => ({
     id,
     group: 1,
     description: `task ${id}`,
-    tier: 2,
+    tier,
     model: 'sonnet',
     isTestTask: false
   }))
 })
 
 /** Plan → run state, through the host's own CLI port. */
-async function createState(host, ids, tag) {
+async function createState(host, ids, tag, tier) {
   const planned = await host.runCli([
     'waves',
     '--classified',
-    file(`classified-${tag}.json`, classified(ids)),
+    file(`classified-${tag}.json`, classified(ids, tier)),
     '--json'
   ])
   assert.equal(planned.code, 0, planned.stderr)
@@ -110,7 +116,8 @@ test('a fake host drives a batch through the CLI and the next step comes from st
   )
   assert.equal(step.action, 'run-batch')
   // `tasks` is the batch, and a batch holds LANES. These two tasks predict no
-  // paths, so they cannot be shown to collide and each is its own lane.
+  // paths, so they cannot be shown to collide, and at tier 4 they are above the
+  // cohesion ceiling — so each is its own lane.
   assert.deepEqual(step.tasks.map(lane => lane.map(t => t.id)), [['1.1'], ['1.2']])
 
   // The stub stands in for the model. It reports task results; it does not get

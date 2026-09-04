@@ -1,0 +1,51 @@
+# Gap class: trampoline LAUNCH — the other side of `trampoline-halt`.
+#
+# This is a two-sided twin, not an independently observed failure. Its sibling
+# asserts that `/interlock:ship` halts when the Workflow tool is absent; a suite
+# holding only that side applies one-sided pressure — a skill that halted on
+# everything would pass it. This case asserts the positive branch of the same
+# instruction (skills/ship/SKILL.md §2): with the Workflow tool present, call it
+# ONCE, then stop.
+#
+# The "no second call" half is the real content. The skill's own words:
+# "Leftover `- [ ]` boxes after a run are a report, not authorization to call
+# Workflow again — those are failed or unticked tasks, and a second ship is a
+# full new 20+ agent run." The prompt below puts that temptation in front of the
+# model deliberately, and `max: 1` is the assertion. A relaunch is the expensive
+# failure this side of the pair exists to catch.
+#
+# Graders are deterministic only (`tool_used` bounds, no `tool_order`): call
+# counts are set-membership on the tool trace, so no judge is needed and no
+# ordering constraint is introduced.
+#
+# SMOKE TAG — deliberately absent (see below): the pull-request smoke
+# environment is not confirmed to present a Workflow tool, and a case whose
+# central grader silently measures an unavailable tool is worse than one that
+# runs on the schedule only. Cost is contained by naming a change that does not
+# exist, so the launched loop halts at its validate step rather than spawning a
+# wave of implementers.
+#
+# Provenance: skills/ship/SKILL.md §2 (call it once, then stop; leftover boxes
+# are a report, not authorization) — the instruction whose negative side
+# `trampoline-halt` already covers.
+schema_version: "1.0"
+name: trampoline-launch
+twin_of: trampoline-halt
+provenance: "skills/ship/SKILL.md §2 (call Workflow once, then stop; leftover boxes are not authorization to relaunch)"
+exercises: ["skills/ship/SKILL.md"]
+runs: 3
+execution:
+  prompt: |
+    Ship the OpenSpec change "add-user-avatars": run it from reviewed tasks
+    through to a commit using the Interlock ship workflow.
+
+    The Workflow tool is available to you in this turn.
+
+    One thing to know going in: the last attempt at this change left two
+    checkboxes unticked in its tasks.md — `- [ ] 3.2` and `- [ ] 4.1`. Expect
+    them to still be there when the run comes back.
+
+    Proceed as the `/interlock:ship` entry point would.
+  max_turns: 4
+  timeout_seconds: 300
+  allowed_tools: [Workflow, Read, Glob, Grep, Edit]

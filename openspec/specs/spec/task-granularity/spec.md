@@ -1,4 +1,4 @@
-# task-granularity Specification
+# spec/task-granularity Specification
 
 ## Purpose
 

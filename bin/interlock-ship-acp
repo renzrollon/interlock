@@ -366,12 +366,54 @@ async function unticked() {
  * rather than zero: `null` reads as unknown, and a receipt that reported an
  * unread state as a clean one would flatter the runs least deserving of it.
  */
+/**
+ * The two path sets, read through the same CLI the workflow host reads them
+ * through — this driver can run a command, so it runs it itself rather than
+ * recording the host's inability. That keeps the difference between the hosts
+ * where it belongs (transport) and out of the record.
+ *
+ * Neither read can fail this close. Both commands always exit 0, and a set that
+ * could not be read comes back unobserved with its reason, which is what the
+ * receipt records — never `[]`.
+ */
+async function readPathSets() {
+  const out = {}
+  const sha = summary.commit && summary.commit.ok ? summary.commit.sha : null
+  if (sha) {
+    const touched = (await cli(['paths', 'touched', '--commit', String(sha), '--root', '.', '--json'])).json
+    if (touched && touched.observed && Array.isArray(touched.paths)) out.touchedPaths = touched.paths
+    else out.touchedPathsReason = (touched && touched.reason) || 'the touched-path read returned nothing readable'
+  } else {
+    out.touchedPathsReason =
+      summary.commitSkipped === true
+        ? 'the run was invoked so that it does not commit'
+        : 'the run recorded no commit identifier'
+  }
+
+  const predicted = (await cli(['paths', 'predicted', '--root', '.', '--json'])).json
+  if (predicted && predicted.observed && Array.isArray(predicted.paths)) {
+    out.predictedPaths = predicted.paths
+    out.predictedPathsComplete = predicted.complete === true
+    if (predicted.complete !== true && predicted.reason) out.predictedPathsReason = predicted.reason
+  } else {
+    out.predictedPathsReason =
+      (predicted && predicted.reason) || 'the predicted-path read returned nothing readable'
+  }
+  return out
+}
+
 async function appendReceipt() {
+  const paths = await readPathSets()
   const receipt = buildReceipt({
     change: resolvedChange,
     summary: {
       ...summary,
       closing: closingFromWaveState(readJson(STATE)),
+      // Kept apart from `closing` on purpose: an unreadable wave state must
+      // leave the three verification conditions unobserved, and folding these
+      // into that object would make `closing` truthy and turn "unread" into a
+      // measured zero.
+      paths,
       // This host has no token accounting. `budget` is a workflow-runtime
       // global and there is no equivalent here, so every spend figure is
       // unknown — stated field by field rather than left to an absent key, so a
@@ -741,6 +783,10 @@ while (steps++ < MAX_LOOP_STEPS) {
     // wave.
     const waveNumber = next.wave
     const waveKind = next.action
+    // Captured here for the same reason those two are: the record command
+    // inside the batch loop replaces `next`, and every batch of this wave was
+    // dispatched under the mode the wave opened with.
+    const solo = next.mode === 'solo'
 
     for (let i = 0; i < remaining.length; i++) {
       const lanes = remaining[i]
@@ -758,7 +804,11 @@ while (steps++ < MAX_LOOP_STEPS) {
           label: laneLabel(lane),
           model: laneModel(lane),
           schema: lane.length === 1 ? SINGLE_TASK_SCHEMA : LANE_SCHEMA,
-          prompt: assembleImplementerPrompt({ change, lane, previousHandoffs }),
+          // One field, from the step the state machine just handed us — the
+          // same source ship.js reads it from. The assembler is loaded out of
+          // ship.js source, so the briefing itself is shared; what each host
+          // owns is passing the mode its own loop is running under.
+          prompt: assembleImplementerPrompt({ change, lane, previousHandoffs, solo }),
           ...spawnPrefix('implementer')
         })
       )

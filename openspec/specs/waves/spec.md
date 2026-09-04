@@ -12,6 +12,8 @@ The ship classifier prompt MUST tell the model to default `group` to the numbere
 
 The prompt MUST additionally tell the model to populate `dependsOn` on a task with the ids of the earlier tasks whose output that task needs, and MUST tell it to prefer a precise `dependsOn` edge over incrementing `group` when a task depends on another task that edits a *different* file. Incrementing `group` to order one cross-file dependency serializes every task independent of it that shares the new group; a `dependsOn` edge orders only the dependent task, so its independent siblings stay parallel. Expressing a cross-file dependency MUST therefore be described as a reason to add an edge, not a reason to increment `group`.
 
+The prompt MUST additionally tell the model to emit a top-level `recommendedMode` of `solo` or `waves` with a one-line `modeReason`, describing solo as one agent implementing the whole change in order, and MUST tell it that the planner enforces a published envelope on that recommendation rather than stating the envelope's value.
+
 #### Scenario: Classifier prompt forbids collision-as-group
 
 - **GIVEN** an operator inspects the `plan-waves` prompt
@@ -39,6 +41,13 @@ The prompt MUST additionally tell the model to populate `dependsOn` on a task wi
 - **THEN** the prompt tells the model to add a `dependsOn` edge naming that earlier task
 - **AND** it tells the model to prefer that edge over incrementing `group` so independent siblings are not serialized
 
+#### Scenario: Mode recommendation is requested without its bound
+
+- **GIVEN** an operator inspects the assembled `plan-waves` prompt
+- **WHEN** they read how the classifier is told to recommend a mode
+- **THEN** the prompt asks for `recommendedMode` and `modeReason` at the top level
+- **AND** it names the published envelope as the planner's to enforce and does not state its numeric value
+
 ### Requirement: A task's implementation wave SHALL be its topological depth over section groups and dependency edges
 
 The planner MUST assign each task an implementation wave equal to its topological depth in the combined partial order formed by the union of (a) the numbered section groups, which remain a barrier, and (b) the explicit `dependsOn` edges. A task's depth MUST be strictly greater than the depth of every task it depends on and every task in an earlier section group. Ordering derived from edges MUST be additive: it can only place a task in a later wave than the section model alone would, never an earlier one. Depth ties MUST be broken by ascending task id so the assignment is a pure, reproducible function of the input. The existing wave→batch→lane pipeline, including the fold of a singleton implementation wave onto the previous wave, then runs unchanged over these depths, so a lone dependent task does not buy an extra inter-wave verification.
@@ -65,12 +74,12 @@ The planner MUST assign each task an implementation wave equal to its topologica
 
 ### Requirement: Tasks connected by a dependency edge SHALL NOT be co-scheduled
 
-The planner MUST NOT place a task and any task it depends on — directly or transitively — in the same batch. A dependent task MUST appear only in a batch that runs after its dependency's batch has completed. This guarantee MUST hold whether the two tasks are path-disjoint or share a path: a shared path already forces them into one sequential lane, and a dependency edge forces the same relative order across separate lanes when they are path-disjoint. A dependency edge MUST NOT fold two path-disjoint tasks into one lane; lane membership remains a canonical-path collision component.
+The planner MUST NOT place a task and any task it depends on — directly or transitively — in the same batch. A dependent task MUST appear only in a batch that runs after its dependency's batch has completed. This guarantee MUST hold whether the two tasks are path-disjoint or share a path: a shared path already forces them into one sequential lane, and a dependency edge forces the same relative order across separate lanes when they are path-disjoint. In waves mode a dependency edge MUST NOT fold two path-disjoint tasks into one lane; lane membership remains a canonical-path collision component or a cohesion lane within one dependency layer. In solo mode the whole change is one ordered lane, and every edge MUST be honoured by the dependent task's position after its dependency in that lane.
 
 #### Scenario: Happy path — dependent path-disjoint tasks run in different batches
 
 - **GIVEN** path-disjoint tasks `1.1` and `1.2` in one section with `1.2` depending on `1.1`
-- **WHEN** the wave runs
+- **WHEN** the wave runs in waves mode
 - **THEN** `1.1` and `1.2` are in different batches, `1.2`'s batch running after `1.1`'s
 - **AND** they remain two separate lanes rather than being folded into one agent
 
@@ -83,9 +92,15 @@ The planner MUST NOT place a task and any task it depends on — directly or tra
 #### Scenario: Edge case — a diamond dependency serializes only along its edges
 
 - **GIVEN** `1.2` and `1.3` each depend on `1.1`, `1.4` depends on both `1.2` and `1.3`, and all four edit different files
-- **WHEN** the plan is built
+- **WHEN** the plan is built in waves mode
 - **THEN** `1.1` runs first, `1.2` and `1.3` may share a batch after it, and `1.4` runs after both
 - **AND** `1.2` and `1.3`, having no edge between them, are not serialized relative to each other
+
+#### Scenario: Edge case — a solo lane honours the same diamond by order
+
+- **GIVEN** the same diamond
+- **WHEN** the plan is built in solo mode
+- **THEN** the single lane orders `1.1` before `1.2` and `1.3`, and both before `1.4`
 
 ### Requirement: Singleton implementation waves fold onto the previous wave
 
@@ -159,7 +174,7 @@ Finishing a wave MUST NOT unconditionally enter the verify phase. The run MUST s
 
 ### Requirement: Plan preview names the agent bill
 
-`formatPlan` MUST print a projected agent count for the wave loop (implementers + record pings + inter-wave verifies) and MUST warn when `waveCount > implCount * 0.5` for a plan with at least two implementation tasks — that shape is effectively serial. The implementer count MUST be the number of lanes the plan dispatches, not the number of tasks it contains, because one lane is one agent regardless of how many tasks it carries. Every lane holding more than one task MUST be reported in the plan preview, alongside the existing collision reporting, so that a fold is visible rather than inferred from a smaller agent count.
+`formatPlan` MUST print a projected agent count for the wave loop (implementers + record pings + inter-wave verifies) and MUST warn when `waveCount > implCount * 0.5` for a plan with at least two implementation tasks — that shape is effectively serial. The implementer count MUST be the number of lanes the plan dispatches, not the number of tasks it contains, because one lane is one agent regardless of how many tasks it carries. Every lane holding more than one task MUST be reported in the plan preview with its kind — collision, cohesion or solo — alongside the existing collision reporting, so that a fold is visible rather than inferred from a smaller agent count. The preview MUST open by naming the plan's mode and the source of that decision, and MUST print every model promotion a solo plan made beside the existing clamp report.
 
 #### Scenario: Serial plan warns
 
@@ -171,14 +186,22 @@ Finishing a wave MUST NOT unconditionally enter the verify phase. The run MUST s
 - **GIVEN** a plan whose single wave holds one lane of 4 tasks and two lanes of 1 task
 - **WHEN** `formatPlan` renders the plan
 - **THEN** the projected implementer count is 3
-- **AND** the preview names the 4-task lane as a fold
+- **AND** the preview names the 4-task lane as a fold with its kind
 
 #### Scenario: Edge case — a plan in which every lane holds one task
 
-- **GIVEN** a plan with no path collisions at all, so every lane holds exactly one task
+- **GIVEN** a plan with no path collisions and no cohesion-eligible siblings, so every lane holds exactly one task
 - **WHEN** `formatPlan` renders the plan
 - **THEN** the projected implementer count equals the task count
 - **AND** no fold is reported, rather than a fold of size one being listed
+
+#### Scenario: Solo preview names the mode and the bill
+
+- **GIVEN** a solo plan of twelve tasks decided by the classifier
+- **WHEN** `formatPlan` renders it
+- **THEN** its first line names the mode as solo with source `classifier` and the reason
+- **AND** the projected agent count is one implementer plus one record ping and no verify pings
+- **AND** every promoted task is listed beside the clamp report
 
 ### Requirement: Next step includes remaining batches of the current wave
 

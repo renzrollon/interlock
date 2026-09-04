@@ -1,4 +1,4 @@
-# decision-ledger Specification
+# spec/decision-ledger Specification
 
 ## Purpose
 

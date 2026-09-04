@@ -55,7 +55,7 @@ interlock CLI       what the loop is allowed to do next
 agents              read files, write code, run commands, form opinions
 ```
 
-Two properties fall out. The policy is testable without a model — 760 tests, no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
+Two properties fall out. The policy is testable without a model — no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
 
 `lib/limits.mjs` is the clearest instance:
 
@@ -139,7 +139,9 @@ Retrieval is explicitly budgeted, in tokens estimated as `ceil(chars / 4)`:
 
 One agent per **lane**, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its lane, its tier's slice of the artifacts, and nothing about the other eleven tasks.
 
-A lane is an ordered task list one agent runs start to finish, and most lanes hold exactly one task — that case is the old "one agent per task" rule, unchanged. A lane holds more than one only when a path collision had *already* forced those tasks to run one after another. Isolating a task from the other edits to the file it is about to edit is not isolation; it is one spawn prefix and one re-read of that file per task, bought for nothing. So the planner folds that chain into one lane, and `LIMITS.maxTasksPerAgent` bounds how long a lane may get. **That cap is the rollback lever: set it to 1 and the run is one agent per task again, exactly as before** — which is why a one-task lane's prompt is byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`.
+A lane is an ordered task list one agent runs start to finish, and it forms one of three ways. A **collision** lane is the original case: a path collision had *already* forced those tasks to run one after another, and isolating a task from the other edits to the file it is about to edit is not isolation — it is one spawn prefix and one re-read of that file per task, bought for nothing. A **cohesion** lane packs path-*disjoint* siblings inside one dependency layer whose hardest tier is at or below `LANE_CAPS.cohesionMaxTier`: sixteen tier-2 test tasks were sixteen spawns each re-reading the same design, and one agent doing them in order is cheaper in tokens than it is expensive in wall-clock. Tier 4 and 5 work is excluded on purpose — cross-file and novel work is where a fresh context per task still pays. A **solo** lane is the whole change in one agent, for a small change where holding all of it beats slicing it.
+
+How long a lane may get is `LANE_CAPS.byTier`, a per-tier table rather than one number, because a cap that is right for eight trivial edits is wrong for four cross-file refactors. **The rollback lever is unchanged: a `maxTasksPerAgent` override of 1 is a uniform ceiling and reproduces one agent per task exactly**, which is why a one-task lane's prompt stays byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`. `--waves` refuses solo for a run; `--solo` forces it. Every fold and every mode decision is named in the plan preview before an agent is spawned — the preview opens with the mode and its source, and prints one line per folded lane.
 
 That window is also supposed to be clean of the *host catalog*. Claude Code's workflow `agent()` starts a fresh conversation, but the tools-and-system-prompt prefix still inherits the parent tool list and the Skill listing — on a loaded operator machine, ~30k tokens of system/MCP schemas plus ~10k of skill descriptions, **per spawn**. A 24-task lean run pays that floor ~30 times before any task prompt. Isolation of tasks is not isolation of prefix.
 
@@ -393,7 +395,7 @@ The same instinct, repeated across the codebase:
 
 **Prediction-shaped inputs.** Wave path collision detection, tier classification, and spec conformance all depend on a model predicting something. The *checks* on those predictions are deterministic; the predictions are not.
 
-**No published benchmark.** 760 tests prove the policy engine behaves as specified. They do not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
+**No published benchmark.** The unit suite proves the policy engine behaves as specified. It does not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
 
 **Review theater on the default path.** Until this release, every `ship` paid for adversarial review, handoff artifacts, and conformance whether the diff earned them or not. Default is now waves → verify → commit; `--strict` is the previous bill. A lean run prints `LEAN SHIP` so it cannot look like a strict one.
 

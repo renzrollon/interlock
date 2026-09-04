@@ -5,14 +5,24 @@
 # the unit, validation and smoke jobs from running on every change. This
 # workflow carries its own trigger surface so the two never entangle.
 #
-# Advisory, not blocking (design D3): the triage step reports its verdict but is
-# marked continue-on-error, so a case below threshold surfaces without failing
-# the build. No baseline scores exist yet, so any blocking threshold would be a
-# guess — promotion to blocking needs observed variance across more than one run.
+# Advisory or blocking is a DECISION, not an edit in this file (gate spec,
+# "Posture is derived, not hand-edited"). Each job runs `interlock evals promote
+# --history evals/history` and the triage step's continue-on-error is an
+# expression over its result. Promotion therefore happens by the history changing,
+# not by a reviewer arguing for it in a pull request, and no threshold or blocking
+# flag is written here.
 #
-# NOTE: .github/workflows/ is gitignored (.gitignore:37), so this file was
+# VERIFIED by reading the two steps below, with evals/history/ holding no records:
+# `promote` reports insufficient history and exits 2, the resolve step sets
+# blocking=false, and `continue-on-error` evaluates to true — the advisory
+# posture. That is today's behaviour reached by decision rather than by default,
+# which is what the gate spec's "No history yields the advisory posture" scenario
+# asks for. Nothing here special-cases the empty directory.
+#
+# NOTE: .github/workflows/ is gitignored (.gitignore:38), so this file was
 # force-added (`git add -f`). If it ever shows as untracked, `git ls-files
 # .github/workflows/` will not list it and it never runs on the remote.
+# test/evals.test.mjs asserts that tracking, so losing this file fails npm test.
 name: Evals
 
 on:
@@ -97,11 +107,29 @@ jobs:
             --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \
             --report evals-report.html \
             --json evals-results.json
+      # Whether a failing verdict may fail this job. Read from the promotion
+      # decision, never set by hand — `promote` exits 0 only when every case in
+      # the recorded history has earned blocking status. Its own non-zero exit is
+      # the answer, not a failure, which is why it is consumed by `if` rather
+      # than allowed to fail the step.
+      - name: Resolve promotion posture
+        if: steps.cred.outputs.present == 'true'
+        id: promotion
+        run: |
+          if ./bin/interlock evals promote --history evals/history --json > promotion.json; then
+            echo "blocking=true" >> "$GITHUB_OUTPUT"
+            echo "Eval promotion: every case is promoted — a failing verdict fails this job." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "blocking=false" >> "$GITHUB_OUTPUT"
+            echo "Eval promotion: advisory. \`interlock evals promote\` did not report every case promotable:" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          ./bin/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
       - name: Triage the results
         if: steps.cred.outputs.present == 'true'
-        # Advisory: the verdict is surfaced (and its non-zero exit annotated) but
-        # does not fail the build.
-        continue-on-error: true
+        # Derived, not fixed: advisory unless the promotion decision says every
+        # case has earned blocking status. With no history committed this
+        # resolves to true, which is the advisory posture by decision.
+        continue-on-error: ${{ steps.promotion.outputs.blocking != 'true' }}
         run: ./bin/interlock evals triage --results evals-results.json
       - name: Upload report
         if: steps.cred.outputs.present == 'true'
@@ -136,6 +164,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
+      # Both caps read from `interlock limits` — nothing restates them here.
       - name: Resolve cost ceiling
         if: steps.cred.outputs.present == 'true'
         id: caps
@@ -143,20 +172,41 @@ jobs:
           CEIL=$(./bin/interlock limits --json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.fullRunCostUsd))')
           echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
+          RUNS=$(./bin/interlock limits --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.runsPerCase))')
+          echo "runs=$RUNS" >> "$GITHUB_OUTPUT"
       - name: Run full eval suite
         if: steps.cred.outputs.present == 'true'
         run: |
           # Every case, with the no-plugin baseline ablation arm and judged
-          # graders. runs defaults to each case's own `runs` value.
+          # graders. runs-per-case comes from the published limits rather than
+          # each case's own `runs` value: the per-case values were chosen for
+          # the fast per-change subset, and the scheduled arm is the one off the
+          # critical path that can afford repetition (design D3).
           claude plugin eval . \
             --ablation with-without \
+            --runs "${{ steps.caps.outputs.runs }}" \
             --no-publish \
             --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \
             --report evals-report.html \
             --json evals-results.json
+      # Same derivation as the smoke job — the posture is one decision, read in
+      # both places rather than restated differently in each.
+      - name: Resolve promotion posture
+        if: steps.cred.outputs.present == 'true'
+        id: promotion
+        run: |
+          if ./bin/interlock evals promote --history evals/history --json > promotion.json; then
+            echo "blocking=true" >> "$GITHUB_OUTPUT"
+            echo "Eval promotion: every case is promoted — a failing verdict fails this job." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "blocking=false" >> "$GITHUB_OUTPUT"
+            echo "Eval promotion: advisory. \`interlock evals promote\` did not report every case promotable:" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          ./bin/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
       - name: Triage the results
         if: steps.cred.outputs.present == 'true'
-        continue-on-error: true
+        continue-on-error: ${{ steps.promotion.outputs.blocking != 'true' }}
         run: ./bin/interlock evals triage --results evals-results.json
       - name: Upload report
         if: steps.cred.outputs.present == 'true'

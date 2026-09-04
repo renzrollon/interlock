@@ -140,20 +140,42 @@ They are not summed. One counts repair inside a run; the other counts runs
 against one change. Runs attributed to `unnamed` are excluded from the per-change
 tally and their share is stated.
 
-### plan fidelity — two recorded figures and one declared gap
+### plan fidelity — three figures, and none may be read as another
 
 - **plan-reuse status** (receipt) — the distribution over the `REUSE_*`
   vocabulary in `lib/plan-fingerprint.mjs`. A distribution, not a rate: the
   statuses are unordered, so there is no numerator.
 - **plan revised mid-run** (trajectory) — the share of runs recording at least
   one wave action whose source is a replan. Counted per run, not per event.
-- **does the merged diff match the plan** — **`computable: false`.**
+- **does the merged diff match the plan** (receipt) — the share of paths a run
+  **touched** that its executed plan **predicted**, pooled over paths across
+  qualifying runs.
 
-That last one is the playbook's sharpest indicator and nothing records the
-comparison. The two figures above are both about the *plan*; neither observes the
-*diff*. Publishing either under that name would be a restatement defect, so the
-report states the gap and what would close it: a receipt field pairing the plan
-fingerprint with the paths the commit actually touched.
+The third was published as a declared gap for as long as nothing recorded the
+comparison. The receipt now records both halves: the paths the commit touched,
+read from version control by `interlock paths touched` rather than reported by
+the commit agent, and the paths the executed plan predicted, from
+`interlock paths predicted`. The first two figures are still about the *plan*
+and neither observes the *diff*, so neither is ever published under the third's
+name — that restatement is what the old gap text existed to prevent.
+
+The direction is fixed and stated on the figure: **touched paths are the
+denominator.** The converse — predicted paths that were touched — answers a
+different question (a plan that predicted work the run never did) and is not
+published here.
+
+A run contributes only when both sets were observed, the prediction was complete
+and neither set was truncated. Every other run is **excluded and counted under
+the reason it was excluded**: no commit was made, a set could not be read, the
+plan did not predict for every task, or a set exceeded its bound. Path
+prediction is optional per task by design, so a plan that declined to predict is
+excluded rather than imputed as predicting nothing — imputing would depress the
+share for a planner's silence and read as an implementer going off-plan. When
+nothing qualifies, the share is unobserved with its reason, never zero.
+
+If you run Interlock against your own product rather than developing it, the
+consumer-facing version of all of this — what is checked, what is recorded, and
+how to file a failure — is [14 — Evals and the consumer posture](14-evals.md).
 
 ### review findings — two series, kept apart
 

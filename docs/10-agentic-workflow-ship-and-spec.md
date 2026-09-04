@@ -87,7 +87,7 @@ Anthropic's name for the shift is **context engineering**: curating the token se
 - **Subagents** — one task, one clean context. Ship never implements inline.
 - **Gates** — fail-closed checks. Artifact review before code; `interlock validate` before ship; unit suite before commit; `interlock ready` before skipping the human.
 - **Memory** — `.claude/memory/` (recurring failure modes, coupling). Written on `--handoff` / `--strict`, and the prompt asks for at most three entries. That bound is prose in the prompt, not an enforced cap: `LIMITS.memoryEntriesPerRun` used to be printed by `interlock limits` with nothing reading it, and was removed rather than backed by an enforcement point invented to justify it. Not Hermes-style self-improving skills; a human still owns the skill files.
-- **Evals** — 590+ unit tests of the *policy engine*, not of whether ship produces better product than a simpler loop. Do not confuse those.
+- **Evals** — `evals/`, the model-in-the-loop suite: cases that run Interlock's model-facing surface against a real model. Different thing from the unit suite, which tests the *policy engine* and not whether ship produces better product than a simpler loop. Do not confuse those two (§8).
 
 OpenAI's Codex loop is the same stack with different nouns: harness + `AGENTS.md` + skills + compaction ([Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/)). Cursor's is rules / `AGENTS.md` plus an agent that stays in your chat. Interlock's distinguishing bet: **decisions with a correct answer leave the model**.
 
@@ -149,6 +149,8 @@ End-to-end, default (lean): **validate → classify/plan waves → implement in 
 
 `--strict` (or `--review` / `--handoff` / `--conformance` individually) adds the tail: adversarial diff review, bounded remediation, manual test plan / teach-in / memory, spec-conformance questions.
 
+`--solo` / `--waves` choose the plan's *shape* instead of its tail. Absent both, the classifier emits a `recommendedMode` beside its per-task classification and the planner honours a solo recommendation only inside the envelope `interlock limits` publishes, refusing it with a named warning above that; `--solo` forces solo even above the envelope, `--waves` refuses it outright, and passing both halts at parse rather than picking one. The mode reaches `interlock waves`, `plan fingerprint` and `plan reuse` as `--mode`, so a stored plan built under a different override is re-planned rather than adopted.
+
 Source of truth: `workflows/ship.js`. The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental ACP driver (`bin/interlock-ship-acp`).
 
 ### Step by step (lean)
@@ -156,7 +158,7 @@ Source of truth: `workflows/ship.js`. The skill `skills/ship/SKILL.md` only pars
 1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. Also probes `CLAUDE_CODE_SUBAGENT_MODEL` and Bedrock/haiku reachability (banners, not quality gates).
 2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. Coverage check: `interlock tasks coverage` — omitted checkboxes halt. Then `interlock waves` → `.claude/ship/plan.json`, `interlock wave-state create` → `.claude/ship/state.json`, first `wave-state next`.
 3. **Wave loop** until action is `done` or `halt`. The script does not decide next; it copies `interlock wave-state next` stdout. Known actions: `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt`. An invented `action` is retried once (`next-retry-*`), then halt.
-4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per task, in **one working tree**. Each agent gets `assembleImplementerPrompt`: tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets (schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000). Invalid/missing packet on a returned result fails the task closed.
+4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), or — in solo mode — the whole change. Lane length is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. Each agent gets `assembleImplementerPrompt`: tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets (schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000). Invalid/missing packet on a returned result fails the task closed.
 5. **Record.** Haiku ping writes `.claude/ship/batch-N.json`, `wave-state record-batch --write-state`, `interlock tasks tick` for succeeded ids. If the next action is `verify`, the same ping fuses inter-wave verify (saves a turn).
 6. **Inter-wave verify.** Typecheck + unit can halt the *next* wave. Docs-only waves skip. Cap: `interWaveVerifications` (3). Output over 8 KB is spilled (`interlock verify spill`); judge rejects oversized result fields.
 7. **`--apply-only` exits here.** Otherwise **final verify**: unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
@@ -237,7 +239,8 @@ Inference, not a measurement from this session:
 | Step | Typical spend | Notes |
 |---|---|---|
 | `plan-waves` | One frontier-ish call + full artifact read | Most expensive *single* context; leash is deliberate |
-| Each implementer | Task + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps |
+| Each implementer | Lane + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps, and a lane of N is one spawn prefix rather than N |
+| A solo run | One opus agent, full artifacts, whole change | Fewest spawns and no re-reads; the cost is serial wall-clock |
 | Record/next pings | Haiku, structured JSON | Cheap if `CLAUDE_CODE_SUBAGENT_MODEL` is unset |
 | Inter-wave verify | Capped; spill above 8 KB | Fused into record-batch when possible |
 | `--strict` review | 4–6 dimensions + 2 skeptics per finding + fixers | Easy to trip Claude Code's "Large workflow" warning (>25 agents / 1.5M tokens). Advisory, does not halt |
@@ -303,6 +306,8 @@ Context rot is the reason. Cost is the side effect.
 ### Already in the harness — use them
 
 - **Classification batches** (`.claude/ship/classified.json` → `interlock waves`): predicted `paths` serialize collisions into later batches of the *same* wave instead of extra waves (extra waves cost verify cycles). Omit `paths` when you cannot predict; invented paths serialize for nothing.
+- **Cohesion lanes**: disjoint tier ≤ 3 siblings inside one dependency layer are packed into one lane, so sixteen tier-2 test tasks are one agent reading the design once rather than sixteen paying the spawn prefix and the same read each. Nothing to pass — it is how `interlock waves` plans. Write the sections the work has; splitting one to buy parallelism only serializes it.
+- **Solo mode** for a small change: `--solo`, or the classifier's own recommendation inside the envelope `interlock limits` publishes. One opus agent implements the whole change in order, briefed on design and specs in full, inside the same verify-and-commit loop. It trades wall-clock for spawns and re-reads; `--waves` refuses it.
 - **Fused record-batch + verify** so a wave boundary is not automatically two agent turns.
 - **Haiku pings** when Bedrock/haiku is reachable and `CLAUDE_CODE_SUBAGENT_MODEL` is unset.
 - **`session-retro`** (from [shippable-skills](https://github.com/renzrollon/shippable-skills)) while the transcript is still in context: flags waste in relative magnitude, writes wire-ins. Target `workflows/ship.js` for ship, not the trampoline skill.
@@ -343,7 +348,13 @@ Lean ship trusts the unit suite. No `.claude/testing/profile.json` means inferre
 
 ### Evals
 
-There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a large, dependency-free test suite of the CLI. Use it as a regression net for policy, not as proof that a change was the right product. `interlock outcomes` is the intended corpus; it does not yet change gates. Until it does, **your read at the checkpoint is the eval that matters.**
+There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite on a schedule.
+
+What its cases exercise is the surface `ship` drives through a model: the assembled **implementer briefing** (its handoff status enum, and lane partial-failure reporting), **control-plane action** selection, the **trampoline halt**, **skill routing**, **evidence locators**, **tier read scope**, and **cited cap resolution**.
+
+What it does not exercise is the spec path. No case touches `skills/spec`, `review-artifacts`, `review-code`, `explore`, or `bootstrap` — that half of the product has no model-in-the-loop coverage at all. The job is advisory: it reports a verdict and gates nothing, so a case below threshold surfaces without failing a build. A metered run is bounded by a cost ceiling, but the value lives in the CLI — read it with `interlock limits`, which is also where CI reads it. As of 2026-09-03 the suite has not yet been run against a model, so there are no scores and no baseline to compare against.
+
+The unit suite stays the regression net for policy — use it as that, not as proof that a change was the right product. `interlock outcomes` is the intended corpus for outcomes; it does not yet change gates. Until it does, **your read at the checkpoint is the eval that matters.**
 
 ### Human gates that still pay
 

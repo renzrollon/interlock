@@ -1,4 +1,4 @@
-# policy-file Specification
+# review/policy-file Specification
 
 ## Purpose
 

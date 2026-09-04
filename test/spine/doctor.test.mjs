@@ -27,6 +27,7 @@ import {
   ruleCovers,
   ruleOverlaps,
   whichSync,
+  evalPrerequisiteChecks,
   REQUIRED_COMMANDS,
   STATE_DIRS
 } from '../../lib/doctor.mjs'
@@ -581,6 +582,138 @@ test('formatDoctor prints evidence and fixes only for the checks that need them'
     // An ok check contributes exactly one line.
     const okLine = text.split('\n').filter(l => l.includes('[ok  ] node:'))
     assert.equal(okLine.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Eval prerequisites — reported, never gating
+// ---------------------------------------------------------------------------
+//
+// The rule these hold is one-directional: these two rows may report `ok` or
+// `skip` and nothing else, ever, including when the check itself breaks.
+// Neither prerequisite stops a ship run, so a preflight that failed on them
+// would block unattended work over a capability the run never touches.
+
+/** A plugin root whose evals/ holds one case, which is what makes the rows appear. */
+function pluginWithSuite(dir) {
+  const root = fakePlugin(dir)
+  file(root, 'evals/some-case/case.yaml', 'schema_version: "1.0"\nname: some-case\n')
+  file(root, 'evals/some-case/graders/x.md', '---\ntype: regex\npattern: x\n---\n')
+  return root
+}
+
+test('a plugin root with an eval suite reports both prerequisite rows', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot: pluginWithSuite(dir) }))
+    assert.ok(byId(report, 'evals-harness'))
+    assert.ok(byId(report, 'evals-credential'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a plugin root with no eval suite reports neither row', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir))
+    const ids = report.checks.map(c => c.id)
+    assert.ok(!ids.includes('evals-harness'), 'no suite, no prerequisite to report')
+    assert.ok(!ids.includes('evals-credential'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an absent prerequisite is skipped with a reason, never failed and never warned', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot: pluginWithSuite(dir) }))
+    for (const id of ['evals-harness', 'evals-credential']) {
+      const row = byId(report, id)
+      assert.equal(row.status, 'skip', `${id} must skip, not fail`)
+      assert.ok(row.detail.length > 0, `${id} states what is missing`)
+      assert.match(row.fix, /export|Set one of/, `${id} states how to supply it`)
+      assert.ok(!report.failures.includes(id))
+      assert.ok(!report.warnings.includes(id))
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a present prerequisite reports satisfied, and never the credential value', () => {
+  const dir = tmp()
+  try {
+    const secret = 'sk-ant-SUPERSECRETVALUE'
+    const report = diagnose(
+      dir,
+      baseOpts(dir, {
+        pluginRoot: pluginWithSuite(dir),
+        env: { PATH: join(dir, 'stub-bin'), CLAUDE_CODE_WALNUT_SPIRE: '1', ANTHROPIC_API_KEY: secret }
+      })
+    )
+    assert.equal(byId(report, 'evals-harness').status, 'ok')
+    assert.equal(byId(report, 'evals-credential').status, 'ok')
+    assert.match(byId(report, 'evals-credential').detail, /ANTHROPIC_API_KEY is set/, 'the name, not the value')
+
+    // Neither surface: the human rendering, nor the structured payload that gets
+    // written to disk and pasted into issues.
+    assert.doesNotMatch(formatDoctor(report), new RegExp(secret))
+    assert.doesNotMatch(JSON.stringify(report), new RegExp(secret))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a prerequisite check that cannot run degrades to skipped, not to a failure', () => {
+  const dir = tmp()
+  try {
+    const root = pluginWithSuite(dir)
+    // A probe that throws where the shared `run()` wrapper would have produced
+    // `fail`. Passing a hostile env is the cheapest way to make presence-reading
+    // throw without reaching into the module.
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const rows = evalPrerequisiteChecks(root, hostile)
+    assert.equal(rows.length, 2)
+    for (const row of rows) {
+      assert.equal(row.status, 'skip')
+      assert.match(row.detail, /could not run: environment unreadable/)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the eval rows change no exit status: clean stays clean, broken breaks for its own reason', () => {
+  const dir = tmp()
+  try {
+    assert.ok(gitInit(dir), 'this assertion needs a real work tree')
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', {
+      permissions: { allow: ['Bash(interlock:*)', 'Bash(interlock-graph:*)', 'Bash(openspec:*)', 'Bash(git:*)', 'Bash(npm test:*)', 'Bash(npm run test:unit:*)'] }
+    })
+    const opts = baseOpts(dir, { pluginRoot: pluginWithSuite(dir) })
+
+    const clean = diagnose(dir, opts)
+    assert.equal(clean.ok, true, `both prerequisites absent must still pass: ${clean.failures.join(', ')}`)
+    assert.equal(byId(clean, 'evals-harness').status, 'skip')
+
+    // Now break something unrelated and confirm the failure is that, alone.
+    rmSync(join(dir, '.claude/testing/profile.json'))
+    const broken = diagnose(dir, opts)
+    assert.equal(broken.ok, false)
+    assert.deepEqual(broken.failures, ['test-profile'], 'the eval rows are not among the failures')
+    assert.ok(broken.checks.some(c => c.id === 'evals-harness'), 'and they are still reported')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

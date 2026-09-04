@@ -21,7 +21,11 @@ Every change after that:
 /interlock:spec "<idea>"      # explore → artifacts → review, then stops
 /interlock:ship               # waves → verify → commit
 /interlock:ship --strict      # previous default: + review, handoff, conformance
+/interlock:ship --solo        # one agent implements the whole change in order
+/interlock:ship --waves       # force the parallel plan
 ```
+
+Without a shape flag the classifier recommends solo or waves and the planner honours it inside a published envelope (`interlock limits`); the plan preview names the mode before anything is spawned.
 
 | Requirement | Why |
 |---|---|
@@ -75,6 +79,7 @@ New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have on
 | [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures, each denominator, and why it gates nothing |
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change (scope, advice) and what it cannot (the band, nit cap) |
 | [13 — The guards](docs/13-the-guards.md) | The four hooks, the stage marker's lifecycle, and the fail-open rule. The guards bind only agents inside a ship run and are inert outside one |
+| [14 — Evals and the consumer posture](docs/14-evals.md) | What your run is checked by, what it records, why no model evals run in your CI, and how to file a failure |
 
 ---
 
@@ -242,6 +247,8 @@ They exist to answer, later and from evidence, whether any gate can safely be re
 
 **`interlock report` reads them, and still changes nothing.** It computes indicators over all three recorded corpora — outcome records, run trajectories, review metrics — with every value carrying its denominator, and it gates nothing: no threshold, no verdict, always exit 0, and no step of any run consults it. Reading a corpus and branching on it are different acts, and only the first has been built. See [the indicators](docs/11-the-indicators.md).
 
+**Running Interlock against your own product?** [14 — Evals and the consumer posture](docs/14-evals.md) states which properties of your run are checked and by which command's exit code, what is recorded and where, that none of it moves a gate, why Interlock runs **no model evals in your CI** — the model-facing surface is identical in every consumer, your own suite and your read at the checkpoint answer what you actually want to know, and the eval harness is early-access and metered on terms you do not control — and how to turn a misbehaving run into a citable report with `interlock evals capture`.
+
 ```bash
 interlock report --html > report.html
 ```
@@ -282,7 +289,7 @@ interlock evals triage --results evals-results.json   # regression / variance / 
 
 ```bash
 git clone https://github.com/renzrollon/interlock && cd interlock
-npm test                      # 760 tests, no dependencies
+npm test                      # no dependencies to install first
 claude plugin validate . --strict
 claude --plugin-dir .         # load it without installing
 ```

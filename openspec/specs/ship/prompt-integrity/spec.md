@@ -1,4 +1,4 @@
-# prompt-integrity Specification
+# ship/prompt-integrity Specification
 
 ## Purpose
 

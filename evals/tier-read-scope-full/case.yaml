@@ -1,0 +1,70 @@
+# Gap class: tier read-scope compliance, UPPER RUNG — the other side of
+# `tier-read-scope`.
+#
+# This is a two-sided twin, not an independently observed failure. Its sibling
+# asserts that a tier-1 lane stays off the higher rungs of the CONTEXT ladder
+# (workflows/ship.js:173-178). A suite holding only that side rewards an agent
+# that reads nothing: every `max: 0` grader in the sibling passes for an
+# implementer that opened no file at all. This case asserts the positive branch —
+# a tier-4 lane reads design.md and the delta specs IN FULL, which is what the
+# ladder's top rung entitles it to and what the tier exists to buy.
+#
+# Deterministic graders only, mirroring the sibling's construction: which files
+# were opened is set-membership on the tool trace, decidable without a judge and
+# without an ordering constraint.
+#
+# One difference from the sibling, deliberate. `tier-read-scope` names the change
+# `add-interlock-evals` at its live path, which no longer exists — harmless
+# there, because every grader bounds a read to zero and an unopenable file cannot
+# be read. Here the graders require a read to SUCCEED, so the briefing below
+# names that change at its real, archived, now-stable path. A twin that pointed
+# at a path the harness cannot open would measure the absence of a file rather
+# than the compliance of a model.
+#
+# SMOKE TAG — present. Both graders are deterministic, so a failure is
+# trustworthy on the single run the per-pull-request subset affords; that is the
+# same basis on which its sibling is tagged, and the pair should run together or
+# the two-sidedness stops applying per change.
+#
+# Provenance: workflows/ship.js:173-178 (the CONTEXT tier ladder, whose tier-4
+# rung is "design.md and the specs in full") and :109 (the lane runs on its
+# hardest task's tier — a floor, not an average).
+schema_version: "1.0"
+name: tier-read-scope-full
+twin_of: tier-read-scope
+tags: [smoke]
+provenance: "workflows/ship.js:173-178 (tier ladder); :109 (tier is a floor)"
+runs: 1
+execution:
+  prompt: |
+    Implement exactly one task from OpenSpec change "add-interlock-evals".
+
+    TASK 4.1: Redesign how the eval suite decides that a case has regressed, so the rule lives on the deterministic spine rather than in skill prose. Reconcile it with the gate's advisory posture and with the grader-choice contract the specs set out.
+
+    CONTEXT — read only what your tier needs:
+      tier 1: the task description alone
+      tier 2+: the relevant section of openspec/changes/archive/2026-08-26-add-interlock-evals/design.md
+      tier 3+: the relevant file under openspec/changes/archive/2026-08-26-add-interlock-evals/specs/
+      tier 4+: design.md and the specs in full
+    Your tier is 4.
+
+    RULES:
+    - Implement ONLY this task. Do not modify files outside its scope.
+    - Do not fix unrelated problems you notice; report them instead.
+    - Run typecheck and lint on what you changed.
+    - Do not commit, and do not edit tasks.md — the orchestrator owns both.
+    - If .claude/graph/graph.json exists, interlock-graph query / consumers before grep.
+    - Locate (graph or grep) then Read spans. Do not re-read a file unless it changed.
+    - Return the schema only. No narrative.
+
+    HANDOFF — the next wave reads your packet instead of reconstructing your work from git, so every result MUST carry one:
+      { "schema": "interlock.wave-handoff/1", "taskId": "4.1", "status": "ok" | "blocked" | "partial",
+        "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null }
+    - status "ok" means blocker is null; "blocked" and "partial" need a non-empty blocker.
+    - evidence is at most 8 locators (path, path:line, path:start-end) — never file bodies.
+    - Keep it terse. A packet over the character cap `interlock limits` publishes fails the task, and it is never truncated for you.
+
+    Report ok:false if you could not complete the task, with what blocked you.
+  max_turns: 8
+  timeout_seconds: 600
+  allowed_tools: [Read, Glob, Grep]

@@ -247,9 +247,27 @@ test('ship.js implementers go through assembleImplementerPrompt, never an inline
   assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/)
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/,
+    /agent\(\s*(?:\/\/[^\n]*\n\s*)*assembleImplementerPrompt\(\{/,
     'the implementer agent() must be handed the assembled prompt, not a literal'
   )
+  // The inputs the call site must still thread through. `solo` is read off the
+  // STEP, never off the invocation flag: the planner decides the mode and the
+  // run state carries it, so a flag read here would brief the agent for a shape
+  // the planner may not have built.
+  // Read from BELOW the definition's end marker, so the definition's own
+  // parameter list cannot stand in for the call site's arguments.
+  const callSite = text.slice(text.indexOf('// ASSEMBLE_IMPLEMENTER_PROMPT_END'))
+  const args = /assembleImplementerPrompt\(\{([\s\S]*?)\}\)/.exec(callSite)
+  assert.ok(args, 'the implementer call site must pass an object literal')
+  for (const input of [
+    /\bchange,/,
+    /\blane,/,
+    /\bpreviousHandoffs,/,
+    /\bisolateWaves,/,
+    /solo: next\.mode === 'solo'/
+  ]) {
+    assert.match(args[1], input, `the implementer call site must still pass ${input}`)
+  }
   const calls = [...text.matchAll(/assembleImplementerPrompt\(/g)]
   assert.equal(calls.length, 2, 'exactly one definition and one call site')
 
@@ -409,6 +427,95 @@ test('the docs frame ACP as an opt-in second host and Code Mode as out of scope'
   const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
   assert.match(docs, /not a fallback/)
   assert.match(docs, /MODEL ROUTING UNAVAILABLE \(ACP host\)/)
+})
+
+// The shape the suite-count drift actually takes in this repo, observed twice:
+// a number, an optional `+`, then a suite noun a word or two later. Matched as a
+// shape rather than as the stale values (760, 590+), because a pin on the values
+// would pass the first time someone writes a *new* wrong number.
+const SUITE_COUNT = /\b\d[\d,]*\+?\s+(?:[A-Za-z-]+\s+){0,2}(?:unit tests|tests|test suite|test cases|cases)\b/i
+
+// The three published files that stated a count of the unit suite. Every one of
+// them was wrong — the documented 760 / 590+ against 1330 actually collected —
+// because nothing asserted them. Kept in one list so a fourth site added later
+// is one entry, not a fourth test.
+const COUNT_FREE_DOCS = ['README.md', join('docs', '06-why-it-works.md'), join('docs', '10-agentic-workflow-ship-and-spec.md')]
+
+test('package.json declares no runtime dependencies', () => {
+  // Backs the documented `no dependencies to install first` claim in README.md's
+  // Development block. That claim replaced a hand-written test count, and it is
+  // the half of the old sentence a reader acts on: it is what tells them
+  // `npm test` works on a fresh clone. Exactly derivable, so it is derived.
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  assert.ok(
+    !manifest.dependencies || Object.keys(manifest.dependencies).length === 0,
+    'package.json declares runtime dependencies, contradicting the documented ' +
+      '"no dependencies to install first" claim in README.md. Adding one is a design ' +
+      'decision (CLAUDE.md) — update the documented claim in the same commit.'
+  )
+
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /no dependencies to install first/)
+})
+
+test('the docs state no hand-written count of the test suite', () => {
+  // Fixing the four sentences was a one-time edit the next docs pass could undo.
+  // This pins the absence instead: a prose claim nobody asserts silently stops
+  // being true, and a suite count is the purest instance — it is wrong the
+  // moment a test is added, and nothing goes red. A count may return only if it
+  // is derived from the suite at test time; a literal one may not.
+  for (const rel of COUNT_FREE_DOCS) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const hit = text.match(SUITE_COUNT)
+    assert.ok(
+      !hit,
+      `${rel} states a hand-written count of the test suite: "${hit?.[0]}". ` +
+        'Remove the number, or derive it from the suite at test time.'
+    )
+  }
+})
+
+test('docs/10 names the evals suite in §2 and §8 and states its coverage gap', () => {
+  // §2's bullet called the unit suite "Evals" and §8 never mentioned that a
+  // model-in-the-loop suite exists, so a reader learned neither that `evals/`
+  // is there nor where it stops. Both are pinned because a coverage claim with
+  // no stated boundary reads as full coverage.
+  //
+  // Deliberately NOT pinned: the run status ("has not yet been run against a
+  // model"). That sentence is expected to change the first time the suite runs,
+  // and hooks/guard-tests.mjs denies test edits during remediation / fix-tests —
+  // so a pin on it would turn a correct docs update into a blocked test edit
+  // (design.md D3). Scope is durable; status is not.
+  const docs = readFileSync(join(ROOT, 'docs', '10-agentic-workflow-ship-and-spec.md'), 'utf8')
+  const section = (from, to) => docs.slice(docs.indexOf(from), docs.indexOf(to))
+
+  const s2 = section('## 2. Mental model', '## 3. How spec works')
+  assert.ok(s2.length > 0, '§2 heading moved — the slice is empty')
+  assert.match(s2, /`evals\/`/)
+  assert.match(s2, /model-in-the-loop/)
+
+  const s8evals = section('### Evals', '### Human gates')
+  assert.ok(s8evals.length > 0, '§8 Evals subsection moved — the slice is empty')
+  assert.match(s8evals, /`evals\/`/)
+  // The surfaces its cases exercise, one token per eval case directory.
+  for (const surface of [/implementer briefing/i, /control-plane action/i, /trampoline halt/i, /skill routing/i, /evidence locator/i, /tier read scope/i, /cited cap resolution/i]) {
+    assert.match(s8evals, surface)
+  }
+  // The boundary: the spec path has no model-in-the-loop coverage at all.
+  for (const uncovered of [/`skills\/spec`/, /`review-artifacts`/, /`review-code`/, /`explore`/, /`bootstrap`/]) {
+    assert.match(s8evals, uncovered)
+  }
+  assert.match(s8evals, /advisory/i)
+  assert.match(s8evals, /gates nothing/i)
+
+  // Thresholds live in the CLI, not in prose (CLAUDE.md). The subsection may say
+  // a cost ceiling exists; it must name the command that prints it instead of
+  // printing one, and it must not state a case count either.
+  assert.match(s8evals, /interlock limits/)
+  assert.doesNotMatch(s8evals, /\$\s*\d/)
+  assert.doesNotMatch(s8evals, /\b\d+(?:\.\d+)?\s*(?:usd|dollars?)\b/i)
+  assert.doesNotMatch(s8evals, /\b\d+\s+(?:[A-Za-z-]+\s+){0,2}(?:runs?|cases?|graders?)\b/i)
+  assert.doesNotMatch(s8evals, SUITE_COUNT)
 })
 
 test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
@@ -644,7 +751,11 @@ test('the ACP driver briefs implementers with ship.js own prompt', () => {
   // hosts would still look correct.
   const driver = readFileSync(ACP_DRIVER, 'utf8')
   assert.match(driver, /ASSEMBLE_IMPLEMENTER_PROMPT_START/)
-  assert.match(driver, /assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/)
+  assert.match(driver, /assembleImplementerPrompt\(\{ change, lane, previousHandoffs, solo \}\)/)
+  // `solo` is the one input the driver has to supply itself, because it is the
+  // mode ITS loop is running under. It comes off the step, like ship.js reads
+  // it — not from a flag, and not from a rule the driver decided.
+  assert.match(driver, /const solo = next\.mode === 'solo'/)
   for (const copied of [/Your tier is/, /tier 1: the task description alone/, /interlock\.wave-handoff\/1/]) {
     assert.doesNotMatch(driver, copied, `the ACP driver copies implementer prompt text: ${copied}`)
   }
@@ -1200,19 +1311,136 @@ test('the lane cap is stated once, read by the planner, and never restated in th
   const waves = readFileSync(join(ROOT, 'lib', 'waves.mjs'), 'utf8')
   assert.match(
     waves,
-    /LIMITS\.maxTasksPerAgent/,
-    'lib/waves.mjs must read the lane cap — a cap only a test reads is a cap in prose'
+    /LANE_CAPS\.byTier/,
+    'lib/waves.mjs must read the per-tier lane cap — a cap only a test reads is a cap in prose'
   )
   const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
-  assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /maxTasksPerAgent:/)
+  assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /export const LANE_CAPS = \{/)
   assert.match(cli, /interlock limits/, 'the CLI publishes the caps it reads')
 
   const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  // Neither the old scalar nor the table that replaced it. The script dispatches
+  // the lanes the planner built; the moment it carries a lane cap of its own,
+  // there are two answers to how long a lane may get.
   assert.doesNotMatch(
     ship,
-    /maxTasksPerAgent/,
+    /maxTasksPerAgent|LANE_CAPS/,
     'the script must not carry the lane cap: it dispatches the lanes the planner built'
   )
+})
+
+// --- the plan-shape flags (spec: solo-mode) --------------------------------
+//
+// `--solo` / `--waves` name the SHAPE of the plan, which is a different decision
+// from `mode: continue|checkpoint` — hence `laneMode`. The override reaches the
+// three commands that build or match a plan; `wave-state create` is not one of
+// them, because it reads the mode off the plan file it is handed.
+
+test('ship.js parseInvocation reads --solo and --waves into laneMode', () => {
+  assert.equal(parseInvocationFromSource('my-change --solo').laneMode, 'solo')
+  assert.equal(parseInvocationFromSource('my-change --waves').laneMode, 'waves')
+  assert.equal(parseInvocationFromSource({ change: 'add-auth', flags: ['solo'] }).laneMode, 'solo')
+})
+
+test('ship.js parseInvocation leaves laneMode unset when neither flag is passed', () => {
+  const parsed = parseInvocationFromSource('my-change')
+  assert.equal(parsed.laneMode, null, 'absent, the classifier recommends inside the envelope')
+  assert.equal(parsed.laneModeConflict, false)
+})
+
+test('ship.js parseInvocation reports --solo and --waves together as a conflict', () => {
+  // Not last-wins: the two shapes produce different agent counts and different
+  // bills, and this run has nobody to ask which was meant.
+  const parsed = parseInvocationFromSource('my-change --solo --waves')
+  assert.equal(parsed.laneModeConflict, true)
+  assert.equal(parsed.laneMode, null, 'a contradiction resolves to no mode, never to one of them')
+})
+
+test('--solo and --waves together halt the run before anything is spawned', async () => {
+  const { output, calls } = await runShip({ args: 'demo-change --solo --waves' })
+  assert.match(output, /--solo and --waves were both passed/)
+  assert.ok(
+    !calls.includes('plan-waves') && !calls.includes('plan-reuse'),
+    `nothing may be planned on a contradictory invocation, got: ${calls.join(', ')}`
+  )
+})
+
+test('--solo threads --mode to the reuse probe, the planner and the fingerprint', async () => {
+  const { prompts } = await runShip({ args: 'demo-change --solo' })
+  const promptFor = label => prompts.find(p => p.label === label).prompt
+  assert.match(promptFor('plan-reuse'), /interlock plan reuse --change demo-change --mode solo/)
+  const planner = promptFor('plan-waves')
+  assert.match(planner, /interlock waves --classified [^\n]*--mode solo/)
+  assert.match(planner, /interlock plan fingerprint --change demo-change --write --mode solo/)
+  // `wave-state create` is deliberately absent from that list: it reads the mode
+  // off the plan it is handed (lib/waves.mjs createRunState), and a flag here
+  // would be a second authority for a value the plan already carries.
+  assert.doesNotMatch(planner, /wave-state create[^\n]*--mode/)
+})
+
+test('no shape flag means no --mode anywhere: the plan is byte-identical to today', async () => {
+  const { prompts } = await runShip({})
+  for (const label of ['plan-reuse', 'plan-waves']) {
+    assert.doesNotMatch(
+      prompts.find(p => p.label === label).prompt,
+      /--mode/,
+      `${label} must not carry a shape override that was never asked for`
+    )
+  }
+})
+
+// The implementer briefing follows the STEP, not the flag: a classifier
+// recommendation inside the envelope reaches solo with no flag at all.
+
+const soloLane = [laneTask('1.1'), laneTask('1.2')]
+
+function runSoloWave(stepExtra = {}) {
+  const step = stepResult({
+    action: 'run-batch',
+    mode: 'solo',
+    wave: 1,
+    waveIndex: 0,
+    waveKind: 'impl',
+    batchIndex: 0,
+    batchCount: 1,
+    tasks: [soloLane],
+    remainingBatches: [[soloLane]],
+    previousHandoffs: [],
+    changed: ['lib/a.mjs'],
+    maxParallel: 8,
+    ...stepExtra
+  })
+  return runShip({
+    responses: {
+      'plan-waves': {
+        ok: true,
+        waveCount: 1,
+        taskCount: soloLane.length,
+        coverageOk: true,
+        fingerprintWritten: true,
+        ...step
+      },
+      [labelFor(soloLane)]: {
+        tasks: soloLane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) }))
+      },
+      'record-batch-': recordedOk(['1.1', '1.2'])
+    }
+  })
+}
+
+test('a step reporting mode solo briefs the implementer as the whole change', async () => {
+  const { prompts } = await runSoloWave()
+  const prompt = prompts.find(p => p.label === labelFor(soloLane)).prompt
+  assert.match(prompt, /Implement OpenSpec change "demo-change" end to end — all 2 of its tasks/)
+  assert.match(prompt, /Your tier is 4\./, 'a solo agent is briefed at the full-read ladder')
+})
+
+test('a step reporting no mode briefs the same lane as an ordinary lane', async () => {
+  const { prompts } = await runSoloWave({ mode: 'waves' })
+  const prompt = prompts.find(p => p.label === labelFor(soloLane)).prompt
+  assert.doesNotMatch(prompt, /end to end/)
+  assert.match(prompt, /Implement 2 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
+  assert.match(prompt, /Your tier is 2\./)
 })
 
 // --- the step transport ----------------------------------------------------
@@ -2078,6 +2306,94 @@ test('a run that never reviewed reports no review counts rather than zero blocke
   assert.equal(strict.reviewWarnings, 1, 'surviving minus blockers, from two counts that were observed')
 })
 
+test('a committing run records both path sets, read by the CLI and not by the agent', async () => {
+  const { prompts } = await runShip({})
+  const receipt = receiptFrom(prompts)
+
+  assert.deepEqual(receipt.touchedPaths, ['lib/a.mjs'])
+  assert.deepEqual(receipt.predictedPaths, ['lib/a.mjs'])
+  assert.equal(receipt.predictedPathsComplete, true)
+  assert.equal(receipt.touchedPathsReason, undefined, 'an observed set carries no reason')
+
+  // And the sets came from the deterministic readers against the recorded sha,
+  // never from the commit step's own account of what it committed.
+  const closing = prompts.find(p => p.label === 'record-outcome').prompt
+  assert.match(closing, /interlock paths touched --commit deadbee --json/)
+  assert.match(closing, /interlock paths predicted --json/)
+  assert.match(closing, /Do not list files yourself/)
+  assert.match(closing, /never send \[\] for a set you could not read/)
+})
+
+test('a run with no commit records the touched set unobserved, never as empty', async () => {
+  for (const args of ['demo-change --no-commit', 'demo-change --apply-only']) {
+    const { prompts } = await runShip({
+      args,
+      responses: {
+        // The closing ping of a run with no sha: nothing to read, so nothing
+        // reported, and the reason stated.
+        'record-outcome': {
+          ok: true,
+          reconstructable: true,
+          touchedPathsReason: 'the run was invoked so that it does not commit',
+          predictedPaths: ['lib/a.mjs'],
+          predictedPathsComplete: true
+        }
+      }
+    })
+    const receipt = receiptFrom(prompts)
+    assert.equal(receipt.touchedPaths, undefined, `${args}: unobserved, so the field is absent`)
+    assert.notDeepEqual(receipt.touchedPaths, [], `${args}: [] would assert a commit that touched nothing`)
+    assert.match(receipt.touchedPathsReason, /does not commit/)
+
+    const closing = prompts.find(p => p.label === 'record-outcome').prompt
+    assert.match(closing, /This run has no commit identifier/)
+    assert.doesNotMatch(closing, /interlock paths touched --commit/)
+  }
+})
+
+test('a halted run records both sets unobserved with a stated reason', async () => {
+  const { prompts } = await runShip({
+    responses: {
+      verify: { ok: false, unitGreen: false, detail: 'suite is red' },
+      // A closing step that could read neither: no commit was made and the
+      // executed plan could not be read back.
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        touchedPathsReason: 'the run recorded no commit identifier',
+        predictedPathsReason: 'the executed plan could not be read: ENOENT'
+      }
+    }
+  })
+  const receipt = receiptFrom(prompts)
+
+  assert.equal(receipt.halted, true)
+  assert.equal(receipt.touchedPaths, undefined)
+  assert.equal(receipt.predictedPaths, undefined)
+  assert.equal(receipt.predictedPathsComplete, undefined, 'an unread plan is not an incomplete one')
+  assert.match(receipt.touchedPathsReason, /no commit identifier/)
+  assert.match(receipt.predictedPathsReason, /could not be read/)
+})
+
+test('a plan that predicted for only some tasks is carried as incomplete, not as short', async () => {
+  const { prompts } = await runShip({
+    responses: {
+      'record-outcome': {
+        ok: true,
+        reconstructable: true,
+        touchedPaths: ['lib/a.mjs', 'lib/b.mjs'],
+        predictedPaths: ['lib/a.mjs'],
+        predictedPathsComplete: false,
+        predictedPathsReason: '1 of 2 executed task(s) declared no paths'
+      }
+    }
+  })
+  const receipt = receiptFrom(prompts)
+  assert.deepEqual(receipt.predictedPaths, ['lib/a.mjs'])
+  assert.equal(receipt.predictedPathsComplete, false)
+  assert.match(receipt.predictedPathsReason, /declared no paths/)
+})
+
 test('the receipt prompt asks for verbatim transport and invites no correction', async () => {
   const { prompts } = await runShip({})
   const prompt = prompts.find(p => p.label === 'record-receipt').prompt
@@ -2257,4 +2573,169 @@ test('the ACP driver declares its lack of token accounting rather than estimatin
   const figures = [...driver.matchAll(/outputTokens:\s*(\S+)/g)].map(m => m[1].replace(/[^A-Za-z0-9.]/g, ''))
   assert.deepEqual(figures, ['null', 'null'], 'the ACP host must never compute a spend figure')
   assert.match(driver, /It is NOT estimated/, 'the refusal is written down, not left to be rediscovered')
+})
+
+test('the ACP host reads both path sets from the CLI rather than declaring itself unable', async () => {
+  // The one host difference that does NOT need declaring: this driver can run a
+  // command, so it runs the same two readers the workflow host asks an agent to
+  // run. Nothing about the record differs; only the transport does.
+  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  assert.match(driver, /'paths',\s*'touched',\s*'--commit'/)
+  assert.match(driver, /'paths',\s*'predicted'/)
+  assert.match(
+    driver,
+    /paths,/,
+    'the sets are handed to the shared builder in their own group, not folded into closing'
+  )
+  // Folding them into `closing` would make an unreadable wave state look read,
+  // turning three unobserved verification conditions into measured zeros.
+  assert.doesNotMatch(driver, /closing: \{[^}]*closingFromWaveState/)
+})
+
+test('the shared builder records an ACP close that could read neither set as unobserved', async () => {
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
+  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
+
+  const unread = build({
+    change: 'add-widget',
+    summary: {
+      waves: [],
+      // The shape `readPathSets` returns when there is no commit and the plan
+      // could not be read: reasons, and no sets.
+      paths: {
+        touchedPathsReason: 'the run recorded no commit identifier',
+        predictedPathsReason: 'no executed plan was found at .claude/ship/plan.json'
+      }
+    }
+  })
+  assert.equal(unread.touchedPaths, undefined)
+  assert.equal(unread.predictedPaths, undefined)
+  assert.equal(unread.predictedPathsComplete, undefined)
+  assert.match(unread.touchedPathsReason, /no commit identifier/)
+  assert.match(unread.predictedPathsReason, /no executed plan/)
+
+  const read = build({
+    change: 'add-widget',
+    summary: {
+      waves: [],
+      commit: { ok: true, sha: 'cafe123' },
+      paths: {
+        touchedPaths: ['lib/a.mjs'],
+        predictedPaths: ['lib/a.mjs', 'lib/b.mjs'],
+        predictedPathsComplete: true
+      }
+    }
+  })
+  assert.deepEqual(read.touchedPaths, ['lib/a.mjs'])
+  assert.equal(read.predictedPathsComplete, true)
+  assert.equal(read.touchedPathsReason, undefined)
+
+  // An unreadable wave state still leaves the verification conditions unknown,
+  // whichever way the path sets went.
+  assert.equal(read.skippedVerifications, undefined)
+  assert.equal(unread.unresolvedErrors, undefined)
+})
+
+// --- docs/14: the consumer posture, pinned -----------------------------------
+//
+// Following the precedent above ('the docs frame ACP as an opt-in second host'):
+// distinguishing tokens rather than whole sentences, so an ordinary rewording
+// keeps the pin and a reversal of meaning does not survive it. This page is the
+// one place a consuming team is told what is checked, what is recorded and that
+// none of it gates — claims that are load-bearing precisely because nobody in
+// that team will read the harness to check them.
+
+const EVALS_DOC = join(ROOT, 'docs', '14-evals.md')
+
+/** Prose with line breaks and markdown emphasis flattened, so a pin matches the claim. */
+const flatten = text => text.replace(/\*\*/g, '').replace(/\s+/g, ' ')
+
+test('docs/14 exists and is reachable from the entry document', () => {
+  // A failure, never a skip: an absent page states nothing to anyone, and a
+  // skipping test would report the same green as a page that says everything.
+  assert.ok(existsSync(EVALS_DOC), 'docs/14-evals.md must exist — the consumer posture lives nowhere else')
+
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /docs\/14-evals\.md/, 'the entry document must link the page')
+})
+
+test('docs/14 states what is checked, by which command, and separates the preflight', () => {
+  // Read with whitespace and emphasis flattened: the pin is on the claim, and a
+  // line break or a pair of asterisks moving is exactly the reword it must survive.
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /exit code is the decision/i)
+  assert.match(doc, /interlock doctor/)
+  assert.match(doc, /grades the machine before the run/i)
+  assert.match(doc, /grade the run as it proceeds|grades the run as it proceeds/i)
+  // A sample of the in-run deciders, each named with its command rather than
+  // described in prose.
+  for (const command of [
+    'interlock validate',
+    'interlock gate',
+    'interlock verify unit',
+    'interlock run-log check'
+  ]) {
+    assert.ok(doc.includes(command), `docs/14 must name ${command} as the command that decides`)
+  }
+})
+
+test('docs/14 states what is recorded, where, that it gates nothing, and links the keep guidance', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /\.claude\/ship\/runs/)
+  assert.match(doc, /\.claude\/learning\/outcomes\.jsonl/)
+  assert.match(doc, /\.claude\/metrics/)
+  assert.match(doc, /nothing Interlock records about your run changes what your run does/i)
+  assert.match(doc, /gates nothing/i)
+  // Referenced, not restated: there must be exactly one place that answers
+  // whether the corpora belong in git.
+  assert.match(doc, /11-the-indicators\.md#whether-to-keep-them/)
+  assert.doesNotMatch(doc, /```gitignore/, 'the .gitignore blocks live in docs/11, not here')
+})
+
+test('docs/14 states the no-consumer-CI-evals posture with its three reasons', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /does not run those evals in a consuming repository's CI|no model evals run in your CI/i)
+  assert.match(doc, /model-facing surface is identical in every consumer/i)
+  assert.match(doc, /your own test suite/i)
+  assert.match(doc, /checkpoint/i)
+  assert.match(doc, /early-access and metered/i)
+
+  // The reversal. A single sentence saying consumers should run the suite in
+  // their pipeline would invert the page while leaving every pin above intact.
+  assert.doesNotMatch(
+    doc,
+    /(?:you |consumers? )(?:should|can|may) run (?:Interlock'?s? |the )?(?:model )?evals?(?: suite)? in (?:your|their|a consumer's) (?:CI|pipeline)/i,
+    'the page must never state that Interlock runs, or that you should run, model evals in a consumer CI'
+  )
+})
+
+test('docs/14 states how to file a failure, and that capture writes only where told', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /interlock evals capture --run/)
+  assert.match(doc, /provenance/i)
+  assert.match(doc, /writes only into the directory you named/i)
+  assert.match(doc, /refuses a run that cannot be reconstructed/i)
+})
+
+test('docs/14 names the command that publishes a cap and states no threshold as policy', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+  assert.match(doc, /interlock limits/, 'a cap is named by where to read it')
+
+  // No bare numeric threshold presented as policy. The page is allowed to carry
+  // exit codes and document numbers — those are identifiers, not thresholds —
+  // so the pattern targets the shapes a restated cap actually takes.
+  const policyNumbers = [
+    /\b(?:at most|no more than|up to|maximum of|max of|cap(?:ped)? (?:at|of)|limit of|ceiling of|threshold of)\s+\$?\d/i,
+    /\b\d+\s*(?:%|percent\b)/i,
+    /\$\s?\d/
+  ]
+  for (const pattern of policyNumbers) {
+    const hit = pattern.exec(doc)
+    assert.equal(hit, null, `docs/14 restates a threshold: "${hit && hit[0]}" — name interlock limits instead`)
+  }
 })

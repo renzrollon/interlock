@@ -24,9 +24,22 @@ the evidence:
 
 - an archived proposal (`openspec/changes/archive/*/proposal.md` `## Why`),
 - a `CHANGELOG.md` entry,
-- a run artifact or a transcript, or
+- a run artifact or a transcript,
+- a **captured skeleton** — `interlock evals capture --run <runId> [--task <id>]
+  --out <dir>` turns a recorded ship-run trajectory into a case draft whose
+  provenance names the trajectory and the events it was derived from, or
 - a `file:line` span in the prompt or skill under test that shows the surface
   the model talked past.
+
+**A captured skeleton is a draft, not a finished case.** It is admissible
+evidence because it is a run artifact and a reader can follow its citation back
+to the trajectory. But every value capture derived rather than read carries a
+`CONFIRM` marker — the grader pattern when no value could be quoted, and the
+prompt when the trajectory recorded none. **Resolve every `CONFIRM` marker
+against the cited trajectory, or ask the user, before authoring the case. Never
+author a case that still carries one**, and never move a skeleton into `evals/`
+unresolved: an unconfirmed pattern is a regression test for a failure nobody has
+shown happened.
 
 **If no observed failure is offered, say so and stop.** Do not author a
 speculative case. A suite of hypotheticals teaches the team to ignore it, which
@@ -92,6 +105,37 @@ Your contribution is **explanation, not classification**:
   as passing or failing.
 
 Never restate, override, or soften a verdict triage gave you.
+
+### Read a transcript before you explain a judged case
+
+**For every case whose score depends on a judged grader, read at least one
+transcript for that case before you write your explanation of it.** A score is
+the outcome; the trace is the only place the cause is visible. The failure this
+closes is a model that satisfied a judge by narrowing the task rather than by
+doing it — the score moves, every other step in the loop sees a number, and
+nobody sees why.
+
+Reading is for explanation and **never for reclassification**. If the transcript
+suggests a different classification than triage produced, report what you saw in
+the trace and leave the verdict alone — the rule above still holds without
+exception.
+
+A run whose graders are all deterministic needs no transcript: the tool trace the
+grader already read is the evidence.
+
+Your report carries a `transcripts read:` line, always present:
+
+```
+transcripts read: <case>/<id>, <case>/<id>
+transcripts read: none
+transcripts read: unavailable, because <what stopped you reading one>
+```
+
+Use the **none** form when you read no transcript — never omit the line, because
+a reader cannot otherwise tell an unexamined result from an examined one. Use the
+**unavailable, because …** form when the run produced no readable transcript, and
+in that case do not present your explanation as transcript-grounded. Degradation
+is spoken.
 
 ## 4. A failing case is a report, never a prompt edit
 

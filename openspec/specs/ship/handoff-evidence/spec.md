@@ -1,4 +1,4 @@
-# handoff-evidence Specification
+# ship/handoff-evidence Specification
 
 ## Purpose
 

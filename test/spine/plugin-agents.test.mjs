@@ -125,7 +125,9 @@ test('ship.js restates the host spawn-prefix literals and uses them on every age
   )
   assert.match(
     text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/
+    // The call may be commented and wrapped across lines; what this pin owns is
+    // that the implementer spawn is an `agent()` handed the shared assembler.
+    /agent\(\s*(?:\/\/[^\n]*\n\s*)*assembleImplementerPrompt\(\{/
   )
   assert.match(text, /\.\.\.workerExtra/)
 

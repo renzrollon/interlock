@@ -68,6 +68,14 @@ function parseInvocation(args) {
     (typeof opts.name === 'string' && opts.name.trim()) ||
     ''
   const strict = has('strict')
+  // The PLAN shape, which is a different decision from `mode` below (that one is
+  // checkpoint/continue). Both flags at once is a contradiction the run reports
+  // and stops on, never a last-wins guess: the two produce different bills and
+  // different agent counts, and picking one silently would ship the shape the
+  // operator did not ask for. The conflict is reported rather than thrown so the
+  // parse stays pure and the halt happens where every other halt does.
+  const soloFlag = has('solo')
+  const wavesFlag = has('waves')
   return {
     changeArg: named || tokens.find(t => !t.startsWith('-')) || '',
     applyOnly: has('apply-only'),
@@ -82,6 +90,8 @@ function parseInvocation(args) {
     // worktree, no merge-lanes step. See design.md Decision 1 for why this is
     // gated rather than always-on.
     isolateWaves: has('isolate-waves'),
+    laneMode: soloFlag && wavesFlag ? null : soloFlag ? 'solo' : wavesFlag ? 'waves' : null,
+    laneModeConflict: soloFlag && wavesFlag,
     maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
     mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
   }
@@ -99,7 +109,7 @@ function parseInvocation(args) {
 // loads modules at all, so a shared module would have to be duplicated here —
 // and a duplicated string is the drift this exists to catch.
 // ASSEMBLE_IMPLEMENTER_PROMPT_START
-function assembleImplementerPrompt({ change, lane, task, previousHandoffs, isolateWaves }) {
+function assembleImplementerPrompt({ change, lane, task, previousHandoffs, isolateWaves, solo }) {
   // A lane is the unit now; a bare `task` is still accepted and means a lane of
   // one. That is not politeness to old callers — a one-task lane MUST assemble
   // byte-identically to the pre-lane prompt, and sharing one code path is the
@@ -110,7 +120,17 @@ function assembleImplementerPrompt({ change, lane, task, previousHandoffs, isola
   const first = tasks[0] || { id: '(unknown)', description: '', tier: 1 }
   // The lane runs on its hardest task's ladder: one agent must be briefed for
   // everything it is about to do, and a tier is a floor, not an average.
-  const tier = tasks.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0) || 1
+  //
+  // A solo lane is the whole change, so it is briefed at the full-read ladder
+  // however cheap its hardest task looks: the agent has no other wave to inherit
+  // context from and no sibling to compare notes with. This raises the BRIEFING
+  // only — the tasks keep the tiers the classifier gave them, because tier is
+  // what effort and the promotion report are read from and rewriting it here
+  // would misreport both (design D7).
+  const soloLane = solo === true
+  const laneTier =
+    tasks.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0) || 1
+  const tier = soloLane ? Math.max(laneTier, 4) : laneTier
 
   const packets = (Array.isArray(previousHandoffs) ? previousHandoffs : []).filter(
     h => h && typeof h === 'object'
@@ -136,14 +156,27 @@ function assembleImplementerPrompt({ change, lane, task, previousHandoffs, isola
   // the single-task fixtures are the pin that keeps that honest.
   const single = tasks.length === 1
 
+  const list =
+    tasks.map((t, i) => `TASK ${i + 1}/${tasks.length} — ${t.id}: ${t.description}`).join('\n') +
+    `\n\n`
+
+  // The multi-task heading used to say the tasks "edit the same files". That was
+  // true when a lane could only be a path-collision component; a cohesion lane
+  // packs path-DISJOINT tasks, so the sentence became a false statement handed
+  // to every implementer. What replaced it is true of every lane there is: one
+  // agent owns it, and nothing else is writing what it claims.
   const heading = single
     ? `Implement exactly one task from OpenSpec change "${change}".\n\n` +
       `TASK ${first.id}: ${first.description}\n\n`
-    : `Implement ${tasks.length} tasks from OpenSpec change "${change}", IN THIS ORDER. They edit ` +
-      `the same files, so they are one lane run by you alone — nobody else is touching them ` +
-      `while you work.\n\n` +
-      tasks.map((t, i) => `TASK ${i + 1}/${tasks.length} — ${t.id}: ${t.description}`).join('\n') +
-      `\n\n`
+    : soloLane
+      ? `Implement OpenSpec change "${change}" end to end — all ${tasks.length} of its tasks, IN ` +
+        `THIS ORDER. You are the only implementer on this change: you own every task listed below, ` +
+        `including its test tasks, and no other agent is touching this repository while you work.\n\n` +
+        list
+      : `Implement ${tasks.length} tasks from OpenSpec change "${change}", IN THIS ORDER. They are ` +
+        `one lane run by you alone — no other agent touches the files they claim while you ` +
+        `work.\n\n` +
+        list
 
   const scope = single
     ? `- Implement ONLY this task. Do not modify files outside its scope.\n`
@@ -565,6 +598,8 @@ const {
   conformance,
   strict,
   isolateWaves,
+  laneMode,
+  laneModeConflict,
   maxParallel,
   mode
 } = parseInvocation(typeof args === 'undefined' ? undefined : args)
@@ -1116,6 +1151,27 @@ const recordOutcome = async () => {
       `  - unresolvedErrors: the number of entries in the state's "unresolved" array\n` +
       `Report 0 / [] when the state says so. Leave a field out entirely rather than guessing it: ` +
       `omitted means unknown, and unknown is reported as unknown, never as clean.\n\n` +
+      // The two path sets the receipt records. Read by a CLI from git and from
+      // the executed plan — never listed from memory, and never taken from the
+      // commit step's own account of what it committed. This set is the
+      // denominator of the report's sharpest indicator, and an agent that
+      // mis-listed its own commit would move that number invisibly.
+      `Also record the two path sets, by running the commands below and copying what they print. ` +
+      `Do not list files yourself, do not derive either set from what you remember of this run, ` +
+      `and do not correct either list:\n` +
+      (summary.commit && summary.commit.ok && summary.commit.sha
+        ? `  interlock paths touched --commit ${summary.commit.sha} --json\n` +
+          `Copy its "paths" array verbatim as touchedPaths. If its "observed" is false, leave ` +
+          `touchedPaths out entirely and copy its "reason" as touchedPathsReason.\n`
+        : `  This run has no commit identifier, so there is nothing to read: leave touchedPaths out ` +
+          `and report touchedPathsReason "${summary.commitSkipped === true ? 'the run was invoked so that it does not commit' : 'the run recorded no commit identifier'}".\n`) +
+      `  interlock paths predicted --json\n` +
+      `Copy its "paths" verbatim as predictedPaths and its "complete" as predictedPathsComplete. ` +
+      `If its "observed" is false, leave both out and copy its "reason" as predictedPathsReason; ` +
+      `if it is observed but "complete" is false, report predictedPathsComplete false and copy the ` +
+      `reason too.\n` +
+      `Both commands always exit 0. An omitted set is UNOBSERVED, which is a different fact from ` +
+      `an empty one — never send [] for a set you could not read.\n\n` +
       `Also read ${WORK}/plan-fingerprint.json and report its "hash" string as planFingerprint, ` +
       `copied exactly. It identifies which plan over which artifacts this run executed, so a reader ` +
       `holding neither repository can tell two runs of the same plan apart from two different ones. ` +
@@ -1136,7 +1192,15 @@ const recordOutcome = async () => {
         capExhaustedVerifications: { type: 'integer' },
         unresolvedErrors: { type: 'integer' },
         planFingerprint: { type: 'string' },
-        leftoverTaskIds: { type: 'array', items: { type: 'string' } }
+        leftoverTaskIds: { type: 'array', items: { type: 'string' } },
+        // Optional for the same reason as the group above: an omitted set is
+        // unobserved, and the receipt records it as such. A `[]` here would
+        // assert that a commit touched nothing.
+        touchedPaths: { type: 'array', items: { type: 'string' } },
+        touchedPathsReason: { type: 'string' },
+        predictedPaths: { type: 'array', items: { type: 'string' } },
+        predictedPathsComplete: { type: 'boolean' },
+        predictedPathsReason: { type: 'string' }
       }
     },
     { model: 'haiku' }
@@ -1146,6 +1210,20 @@ const recordOutcome = async () => {
   // stored rather than only returned. A run that never reached here leaves this
   // null, which prints as "unknown".
   summary.closing = result || null
+
+  // The two path sets, copied out by name into their own group. Kept apart from
+  // `summary.closing` because the receipt reads that object to decide whether
+  // the three verification conditions were observed at all, and a run that read
+  // its paths but not its wave state must not make that look answered.
+  summary.paths = result
+    ? {
+        touchedPaths: result.touchedPaths,
+        touchedPathsReason: result.touchedPathsReason,
+        predictedPaths: result.predictedPaths,
+        predictedPathsComplete: result.predictedPathsComplete,
+        predictedPathsReason: result.predictedPathsReason
+      }
+    : null
 
   // A run that was otherwise clean but left an incomplete trajectory is still
   // a halt — reconstructability is the gate this whole change exists for, not
@@ -1265,6 +1343,16 @@ const halt = async reason => {
 
 // --- 1. resolve and validate ----------------------------------------------
 
+// Before anything is spawned: two contradictory shape flags is a question only
+// the operator can answer, and this run has nobody to ask. Halting here costs
+// one invocation; guessing costs a whole run of the wrong shape.
+if (laneModeConflict) {
+  return await halt(
+    'contradictory plan-shape flags: --solo and --waves were both passed — pass exactly one, or ' +
+      'neither to let the classifier recommend inside the published envelope'
+  )
+}
+
 const validateCmd = changeArg
   ? `interlock validate --change ${changeArg} --json`
   : 'interlock validate --json'
@@ -1354,11 +1442,20 @@ if (subagentModel) {
 // today, while wrongly reusing would run the wrong plan.
 
 const maxParallelFlag = maxParallel ? ` --max-parallel ${maxParallel}` : ''
+// The shape override, threaded to every command that builds or matches a plan:
+// the planner (`waves`), the hash the reuse check compares (`plan fingerprint`)
+// and the check itself (`plan reuse`). A stored plan built under a different
+// override — or under none — must be re-planned rather than adopted, which is
+// why the flag reaches the fingerprint and not only the planner. `wave-state
+// create` is deliberately NOT in that list: it reads the mode off the plan file
+// it is handed, so passing the flag there would be a second authority for a
+// value the plan already carries (design D6, D10).
+const laneModeFlag = laneMode ? ` --mode ${laneMode}` : ''
 
 const reuseProbe = await cheap(
   'plan-reuse',
   `Decide whether the stored execution plan for change "${change}" can be reused.\n\n` +
-    `Run: interlock plan reuse --change ${change}${maxParallelFlag} --json\n\n` +
+    `Run: interlock plan reuse --change ${change}${maxParallelFlag}${laneModeFlag} --json\n\n` +
     `That command never fails: it prints { reuse, status, reason, noRemainingWork, narrowedPath }. ` +
     `Copy reuse into this result as reuse, status as reuseStatus, reason as reason, and ` +
     `noRemainingWork as noRemainingWork. Copy them as printed — never infer reuse:true from a ` +
@@ -1453,6 +1550,14 @@ const planned = adopted
     `a later numbered section, and must not point at a test task; the edges must not form a cycle. ` +
     `A dangling id, a backward edge or a cycle FAILS the plan rather than being dropped, so declare ` +
     `only dependencies you can point at.\n\n` +
+    `MODE — beside the task array, emit a top-level "recommendedMode" of "solo" or "waves" and a ` +
+    `one-line "modeReason" saying why. Solo means one agent implements this whole change by ` +
+    `itself, task by task in the planned order, with no parallel waves and no isolation between ` +
+    `tasks; waves means the ordinary parallel plan. Recommend solo when the change is small and ` +
+    `tightly coupled enough that one agent holding all of it beats several agents each holding a ` +
+    `slice, and waves otherwise. Judge the shape only: the planner enforces the published envelope ` +
+    `on how large a change may ship solo and will refuse a recommendation above it, so do not ` +
+    `reason about the size bound and do not state one.\n\n` +
     // The unary `+` that used to sit here coerced the next operand to NaN, so
     // tiers 1-3 and the haiku routing rule never reached the classifier — and
     // the sentence stayed intact in these bytes, which is why every
@@ -1468,8 +1573,8 @@ const planned = adopted
     `coverageOk:true if that CLI exited non-zero. A coverage gap means you omitted a checkbox — ` +
     `add it and rewrite classified.json before calling waves.\n\n` +
     `Then:\n` +
-    `  interlock waves --classified ${WORK}/classified.json --json${maxParallelFlag} > ${WORK}/plan.json\n` +
-    `  interlock plan fingerprint --change ${change} --write${maxParallelFlag} --json\n` +
+    `  interlock waves --classified ${WORK}/classified.json --json${maxParallelFlag}${laneModeFlag} > ${WORK}/plan.json\n` +
+    `  interlock plan fingerprint --change ${change} --write${maxParallelFlag}${laneModeFlag} --json\n` +
     `That stores the fingerprint of the artifacts this plan was derived from, so a later run of the ` +
     `same unedited change reuses this plan instead of re-reading everything. Report its "written" ` +
     `value as fingerprintWritten. It never fails the run: a non-zero exit or written:false costs the ` +
@@ -1620,7 +1725,18 @@ while (steps++ < MAX_LOOP_STEPS) {
 
       const results = await pipeline(lanes, lane =>
         agent(
-          assembleImplementerPrompt({ change, lane, previousHandoffs, isolateWaves }),
+          // `solo` comes off the step, not off the invocation flag: the planner
+          // decides the mode (a classifier recommendation inside the envelope
+          // reaches solo with no flag at all), the run state carries it, and
+          // `wave-state next` echoes it. Reading the flag here would brief the
+          // agent for a shape the planner may not have built.
+          assembleImplementerPrompt({
+            change,
+            lane,
+            previousHandoffs,
+            isolateWaves,
+            solo: next.mode === 'solo'
+          }),
           {
             label: laneLabel(lane),
             model: laneModel(lane),
@@ -2509,6 +2625,17 @@ function buildReceipt(input) {
   // the difference — and only when both halves were actually observed. A
   // negative difference means the two counts disagree, which is reported as
   // unknown rather than as a number nobody measured.
+  // The two path sets, in their own group rather than on `closing`: a host that
+  // could not read the wave state must still be able to report these, and a
+  // host that could not read these must not make `closing` look present.
+  //
+  // A set is carried only when the close actually read one. Anything else — no
+  // close at all, a read that failed, a host that could not run the readers —
+  // is `undefined`, which the writer records as unobserved.
+  const paths = summary.paths || null
+  const touched = paths && Array.isArray(paths.touchedPaths) ? paths.touchedPaths : undefined
+  const predicted = paths && Array.isArray(paths.predictedPaths) ? paths.predictedPaths : undefined
+
   const surviving = review && Number.isFinite(review.surviving) ? review.surviving : undefined
   const blockers = review && Number.isFinite(review.blockers) ? review.blockers : undefined
   const warnings =
@@ -2559,6 +2686,32 @@ function buildReceipt(input) {
     // — never inferred from the sha being missing.
     committed: commit ? commit.ok === true : summary.commitSkipped === true ? false : undefined,
     commit: commit && commit.ok === true ? commit.sha : undefined,
+    // The two path sets, read at close by `interlock paths touched|predicted`
+    // and carried here — never the commit step's own account of what it
+    // committed. An absent set stays absent (the writer turns it into `null`)
+    // and takes a stated reason with it: `[]` would assert that a commit
+    // touched nothing, and this set is the denominator of an indicator, so that
+    // error would be silent and systematic.
+    touchedPaths: touched,
+    touchedPathsReason: touched
+      ? undefined
+      : (paths && paths.touchedPathsReason) ||
+        (commit && commit.ok !== true
+          ? 'the commit step reported failure, so no commit identifier was recorded'
+          : summary.commitSkipped === true
+            ? 'the run was invoked so that it does not commit'
+            : paths
+              ? 'the run recorded no commit identifier'
+              : 'the run did not reach its close, so no path set was read'),
+    predictedPaths: predicted,
+    predictedPathsComplete: predicted ? (paths.predictedPathsComplete === true) : undefined,
+    predictedPathsReason:
+      predicted && paths.predictedPathsComplete === true
+        ? undefined
+        : (paths && paths.predictedPathsReason) ||
+          (paths
+            ? 'the executed plan could not be read back at close'
+            : 'the run did not reach its close, so the executed plan was never read'),
     degradations: source.degradations
   }
 }

@@ -26,7 +26,7 @@ import {
   OUTCOME_FAILED,
   OUTCOME_NOT_ATTEMPTED
 } from '../../lib/waves.mjs'
-import { LIMITS, RUNTIME } from '../../lib/limits.mjs'
+import { LIMITS, RUNTIME, LANE_CAPS, SOLO } from '../../lib/limits.mjs'
 
 const task = (over = {}) => ({
   id: '1.1',
@@ -132,8 +132,12 @@ test('the clamp does not mutate the caller input', () => {
 // --- the fan-out cap ------------------------------------------------------
 
 test('a wide wave is split into batches of at most maxParallel', () => {
+  // Tier 4, so cohesion leaves them alone and the wave is genuinely 30 lanes
+  // wide. At tier 2 they would pack into four lanes and there would be no width
+  // left for the batch splitter to act on — the test would still pass and would
+  // no longer be testing the splitter.
   const tasks = Array.from({ length: 30 }, (_, i) =>
-    task({ id: `1.${i + 1}`, group: 1 })
+    task({ id: `1.${i + 1}`, group: 1, tier: 4 })
   )
   const plan = planWaves({ tasks }, { maxParallel: 8 })
   const wave = plan.waves[0]
@@ -478,12 +482,16 @@ test('a width-deferred disjoint task stays its own lane and is not folded', () =
   // The scenario from lanes/spec.md: three disjoint tasks at maxParallel 2. The
   // third waits for a later batch; appending it to another task's lane would
   // serialize work the planner deliberately parallelized.
+  //
+  // Tier 4 so the three are cohesion-ineligible. Width deferral and cohesion are
+  // different mechanisms with opposite answers, and this asserts the first: a
+  // lane pushed out of a full batch is never merged into a lane inside it.
   const plan = planWaves(
     {
       tasks: [
-        task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
-        task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
-        task({ id: '1.3', group: 1, paths: ['src/c.ts'] })
+        task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] }),
+        task({ id: '1.2', group: 1, tier: 4, paths: ['src/b.ts'] }),
+        task({ id: '1.3', group: 1, tier: 4, paths: ['src/c.ts'] })
       ]
     },
     { maxParallel: 2 }
@@ -595,16 +603,66 @@ test('a cap of 1 reproduces the pre-lane agent count', () => {
   assert.deepEqual(plan.lanes, [], 'a lane of one is not a fold and is not reported as one')
 })
 
-test('the lane cap defaults to LIMITS.maxTasksPerAgent, and the plan says which it used', () => {
-  const tasks = Array.from({ length: LIMITS.maxTasksPerAgent + 1 }, (_, i) =>
-    task({ id: `1.${i + 1}`, group: 1, paths: ['src/auth.ts'] })
+test('the lane cap defaults to the published tier table, and the plan says which it used', () => {
+  // Tier 4 — the tier whose cap is smallest, so a component one longer than it
+  // splits. The point is not the number 4: it is that lane construction obeys
+  // the entry for the LANE'S tier rather than one scalar for every lane.
+  const cap = LANE_CAPS.byTier[4]
+  const tasks = Array.from({ length: cap + 1 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 4, paths: ['src/auth.ts'] })
   )
   const plan = planWaves({ tasks })
-  assert.equal(plan.maxTasksPerAgent, LIMITS.maxTasksPerAgent)
+  assert.deepEqual(plan.laneCaps, LANE_CAPS.byTier, 'no override, so the published table stands')
   assert.deepEqual(
     plan.waves[0].batches.map(b => b[0].length),
-    [LIMITS.maxTasksPerAgent, 1],
-    'the published cap is the one lane construction actually obeys'
+    [cap, 1],
+    'the published cap for the lane tier is the one lane construction actually obeys'
+  )
+})
+
+test('each tier is capped by its own entry, not by one scalar', () => {
+  // The same component length at two tiers, split differently, is the whole
+  // reason the scalar became a table.
+  for (const tier of [1, 2, 3, 4, 5]) {
+    const cap = LANE_CAPS.byTier[tier]
+    const tasks = Array.from({ length: cap + 1 }, (_, i) =>
+      task({ id: `1.${i + 1}`, group: 1, tier, model: tier === 5 ? 'opus' : 'sonnet', paths: ['src/auth.ts'] })
+    )
+    const plan = planWaves({ tasks })
+    assert.deepEqual(
+      plan.waves[0].batches.map(b => b[0].length),
+      [cap, 1],
+      `a tier-${tier} component of ${cap + 1} must split at ${cap}`
+    )
+  }
+})
+
+test('a mixed-tier component is capped by its hardest task, not its first', () => {
+  // A lane is dispatched at its hardest tier, so it must be bounded at that
+  // tier too: bounding a lane holding a tier-4 task by the tier-1 cap of 8 would
+  // hand eight judgement-heavy tasks to one agent.
+  const tasks = [
+    task({ id: '1.1', group: 1, tier: 1, model: 'haiku', paths: ['src/auth.ts'] }),
+    ...Array.from({ length: LANE_CAPS.byTier[4] }, (_, i) =>
+      task({ id: `1.${i + 2}`, group: 1, tier: 4, paths: ['src/auth.ts'] })
+    )
+  ]
+  const plan = planWaves({ tasks })
+  assert.deepEqual(
+    plan.waves[0].batches.map(b => b[0].length),
+    [LANE_CAPS.byTier[4], 1],
+    'the tier-4 cap bounds the lane even though its first task is tier 1'
+  )
+})
+
+test('a uniform override is a ceiling over every tier, never a raise', () => {
+  const plan = planWaves({ tasks: [task({ tier: 1 })] }, { maxTasksPerAgent: 2 })
+  assert.deepEqual(plan.laneCaps, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2 })
+  const raised = planWaves({ tasks: [task({ tier: 1 })] }, { maxTasksPerAgent: 99 })
+  assert.deepEqual(
+    raised.laneCaps,
+    LANE_CAPS.byTier,
+    'an override above the published table does not raise a single tier'
   )
 })
 
@@ -620,6 +678,408 @@ test('intra-lane order is task-id order even when the tiers disagree', () => {
     [[['1.1', '1.2']]],
     'hardest-first places lanes; it must never reorder inside one'
   )
+})
+
+// --- cohesion lanes (spec: lanes) ------------------------------------------
+//
+// The requirement this replaces made every path-disjoint task its own agent
+// however small it was. These assert the replacement's boundaries: what packs,
+// what does not, and what the plan says about it either way.
+
+test('seven small disjoint tasks become one cohesion lane', () => {
+  // lanes/spec.md, the happy path: seven tier-2/3 tasks each claiming a
+  // different evals/*/case.yaml. This is the plan shape that motivated the
+  // change — seven spawns, plus a hand-written eighth task whose only job was to
+  // tell the seven what convention to agree on.
+  // All tier 2, because the scenario's precondition is that the lane's cap is at
+  // least seven: a tier-3 task in the set would open the lane at the tier-3 cap
+  // of 6 and split the seventh off, which is the cap doing its job, not a
+  // failure of cohesion.
+  const tasks = Array.from({ length: 7 }, (_, i) =>
+    task({ id: `2.${i + 1}`, group: 2, tier: 2, paths: [`evals/c${i}/case.yaml`] })
+  )
+  const plan = planWaves({ tasks })
+  assert.deepEqual(laneIds(plan.waves[0]), [
+    [['2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7']]
+  ])
+  assert.equal(projectedWaveLoopAgents(plan).implementers, 1, 'seven tasks, one spawn')
+  assert.equal(plan.lanes.length, 1)
+  assert.equal(plan.lanes[0].kind, 'cohesion')
+  assert.deepEqual(plan.lanes[0].ids, ['2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7'])
+  assert.deepEqual(plan.serialized, [], 'nothing collided — they were packed by tier')
+  assert.match(
+    plan.warnings.join('\n'),
+    /path-disjoint tier-2 work in wave 2; packed into one cohesion lane/,
+    'the fold names its ids, its tier and the cap that bounded it'
+  )
+  assert.match(formatPlan(plan), /cohesion 2\.1 → 2\.2 → .*: 7 path-disjoint tasks in wave 2/)
+})
+
+test('judgement-heavy tasks are not packed', () => {
+  // lanes/spec.md, the failure case. Tier 4 is excluded on purpose: cross-file
+  // pattern-following is where a fresh context per task still pays.
+  const tasks = Array.from({ length: 3 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 4, paths: [`src/${i}.ts`] })
+  )
+  const plan = planWaves({ tasks })
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1'], ['1.2'], ['1.3']]])
+  assert.deepEqual(plan.lanes, [], 'no fold to report')
+  assert.equal(projectedWaveLoopAgents(plan).implementers, 3, 'exactly as before cohesion existed')
+})
+
+test('a tier-5 component is never packed with anything, however small', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 5, model: 'opus', paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 1, model: 'haiku', paths: ['src/b.ts'] }),
+      task({ id: '1.3', group: 1, tier: 1, model: 'haiku', paths: ['src/c.ts'] })
+    ]
+  })
+  const lanes = plan.waves[0].batches.flat(1).map(l => l.map(t => t.id))
+  assert.deepEqual(lanes, [['1.1'], ['1.2', '1.3']], 'the tier-5 task keeps its own agent')
+})
+
+test('the cap closes a cohesion lane and the remainder opens another', () => {
+  // lanes/spec.md, the edge case: ten path-disjoint tier-1 tasks at a tier-1 cap
+  // of eight become 8 + 2, both in one batch because they are path-disjoint.
+  const cap = LANE_CAPS.byTier[1]
+  const tasks = Array.from({ length: cap + 2 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 1, model: 'haiku', paths: [`src/${i}.ts`] })
+  )
+  const plan = planWaves({ tasks }, { maxParallel: 8 })
+  assert.equal(plan.waves[0].batches.length, 1, 'path-disjoint lanes share one batch')
+  assert.deepEqual(plan.waves[0].batches[0].map(l => l.length), [cap, 2])
+  const ids = plan.waves[0].batches.flat(2).map(t => t.id)
+  assert.equal(new Set(ids).size, cap + 2, 'every task appears exactly once')
+  assert.deepEqual(
+    plan.waves[0].batches[0][0].map(t => t.id),
+    ids.slice(0, cap),
+    'the first lane holds the first tasks in id order'
+  )
+})
+
+test('a cohesion lane is capped by its hardest component, fixed when it opened', () => {
+  // Hardest-first packing means the first component fixes the lane's tier and
+  // therefore its cap, so a cap can never shrink under a lane that already
+  // filled it. Tier 3 opens the lane at cap 6; the tier-2 tasks join under 6,
+  // not under their own 8.
+  const cap = LANE_CAPS.byTier[3]
+  const tasks = [
+    task({ id: '1.1', group: 1, tier: 3, paths: ['src/hard.ts'] }),
+    ...Array.from({ length: cap + 1 }, (_, i) =>
+      task({ id: `1.${i + 2}`, group: 1, tier: 2, paths: [`src/${i}.ts`] })
+    )
+  ]
+  const plan = planWaves({ tasks }, { maxParallel: 8 })
+  const lanes = plan.waves[0].batches.flat(1)
+  assert.deepEqual(lanes.map(l => l.length), [cap, 2], `the tier-3 cap of ${cap} bounds the lane`)
+  assert.equal(plan.lanes[0].tier, 3)
+  assert.equal(plan.lanes[0].cap, cap)
+})
+
+test('two sections never share a cohesion lane', () => {
+  // lanes/spec.md, the edge case: a section is a barrier, and cohesion is packed
+  // inside one layer of one section — never across.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
+      task({ id: '2.1', group: 2, tier: 1, model: 'haiku', paths: ['src/b.ts'] })
+    ]
+  })
+  assert.deepEqual(plan.lanes, [], 'no fold — the two are in different waves')
+  const laneOf = id => plan.waves.flatMap(w => w.batches.flat(1)).find(l => l.some(t => t.id === id))
+  assert.notEqual(laneOf('1.1'), laneOf('2.1'))
+})
+
+test('a dependent task never shares a lane or a batch with its dependency', () => {
+  // lanes/spec.md: 1.1 and 1.2 may pack; 1.3 depends on 1.1 and stays out of
+  // both its lane and its batch. Cohesion is per LAYER, so an edge still orders.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'] }),
+      task({ id: '1.3', group: 1, tier: 2, paths: ['src/c.ts'], dependsOn: ['1.1'] })
+    ]
+  })
+  const placements = plan.waves.flatMap((w, wi) =>
+    w.batches.flatMap((b, bi) => b.flatMap((lane, li) => lane.map(t => [t.id, `${wi}/${bi}/${li}`])))
+  )
+  const at = id => placements.find(p => p[0] === id)[1]
+  assert.equal(at('1.1'), at('1.2'), '1.1 and 1.2 may share a cohesion lane')
+  assert.notEqual(at('1.3'), at('1.1'), '1.3 is never in its dependency’s lane')
+  assert.notEqual(
+    at('1.3').split('/').slice(0, 2).join('/'),
+    at('1.1').split('/').slice(0, 2).join('/'),
+    'nor in its batch'
+  )
+})
+
+test('a uniform override of 1 reproduces one agent per task, cohesion included', () => {
+  // lanes/spec.md, the rollback lever: three cohesion-eligible disjoint tasks
+  // and one 3-task collision component, all at a uniform cap of 1.
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
+        task({ id: '1.2', group: 1, tier: 1, model: 'haiku', paths: ['src/b.ts'] }),
+        task({ id: '1.3', group: 1, tier: 1, model: 'haiku', paths: ['src/c.ts'] }),
+        task({ id: '1.4', group: 1, tier: 2, paths: ['src/one.ts'] }),
+        task({ id: '1.5', group: 1, tier: 2, paths: ['src/one.ts'] }),
+        task({ id: '1.6', group: 1, tier: 2, paths: ['src/one.ts'] })
+      ]
+    },
+    { maxTasksPerAgent: 1 }
+  )
+  const lanes = plan.waves.flatMap(w => w.batches.flat(1))
+  assert.ok(lanes.every(l => l.length === 1), 'every lane holds exactly one task')
+  assert.equal(plan.laneCount, 6)
+  assert.equal(projectedWaveLoopAgents(plan).implementers, 6)
+  assert.deepEqual(plan.lanes, [], 'a lane of one is not a fold and is not reported as one')
+})
+
+test('a collision lane packed with a disjoint sibling is reported as cohesion', () => {
+  // lanes/spec.md, the failure case: the lane's kind is cohesion, and the
+  // collision inside it is still reported in the serialized-path report.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.3', group: 1, tier: 2, paths: ['src/b.ts'] })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2', '1.3']]])
+  assert.equal(plan.lanes[0].kind, 'cohesion')
+  assert.deepEqual(plan.serialized, [
+    { id: '1.2', group: 1, path: 'src/a.ts', conflictsWith: '1.1' }
+  ])
+})
+
+test('a split collision component is never relabelled as cohesion', () => {
+  // The two halves of a split star component are path-disjoint from each other,
+  // so a lane that re-derived its kind from its own connectivity would call this
+  // split a cohesion fold. It is a collision split, and it says so.
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, tier: 2, paths: ['x.ts', 'y.ts', 'z.ts'] }),
+        task({ id: '1.2', group: 1, tier: 2, paths: ['x.ts'] }),
+        task({ id: '1.3', group: 1, tier: 2, paths: ['y.ts'] }),
+        task({ id: '1.4', group: 1, tier: 2, paths: ['z.ts'] })
+      ]
+    },
+    { maxTasksPerAgent: 2 }
+  )
+  assert.deepEqual(plan.lanes.map(l => l.kind), ['collision', 'collision'])
+})
+
+test('a lane of one is never reported as a fold of size one', () => {
+  const plan = planWaves({
+    tasks: [task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] })]
+  })
+  assert.deepEqual(plan.lanes, [])
+  assert.doesNotMatch(formatPlan(plan), /cohesion |^ {2}lane /m)
+})
+
+// --- solo mode (spec: solo-mode) -------------------------------------------
+
+const soloTasks = () => [
+  task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+  task({ id: '1.2', group: 1, tier: 3, paths: ['src/b.ts'] }),
+  task({ id: '2.1', group: 2, tier: 1, model: 'haiku', paths: ['src/c.ts'] }),
+  task({ id: 't.1', group: 2, tier: 2, isTestTask: true, paths: ['test/a.test.mjs'] })
+]
+
+test('a solo plan is one wave, one batch, one lane, tests last', () => {
+  const plan = planWaves({ tasks: soloTasks() }, { mode: 'solo' })
+  assert.equal(plan.waveCount, 1)
+  assert.equal(plan.waves[0].batches.length, 1)
+  assert.equal(plan.waves[0].batches[0].length, 1)
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2', '2.1', 't.1']]])
+  assert.equal(plan.testWave, null, 'a solo plan has no trailing test wave')
+  assert.equal(plan.laneCount, 1)
+  assert.equal(plan.lanes[0].kind, 'solo')
+  assert.equal(projectedWaveLoopAgents(plan).verifyPings, 0, 'no wave boundary, no verify')
+})
+
+test('a solo lane orders by section, then layer, then id', () => {
+  // solo-mode/spec.md: layer order beats id order, so an edge from 1.2 to 1.5
+  // puts 1.5 first even though its id sorts later.
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.2', group: 1, tier: 2, dependsOn: ['1.5'] }),
+        task({ id: '1.5', group: 1, tier: 2 }),
+        task({ id: '2.1', group: 2, tier: 2 })
+      ]
+    },
+    { mode: 'solo' }
+  )
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.5', '1.2', '2.1']]])
+  assert.deepEqual(
+    plan.deferred,
+    [{ id: '1.2', group: 1, after: ['1.5'] }],
+    'and the edge is reported exactly as it would be in waves mode'
+  )
+  assert.match(plan.warnings.join('\n'), /runs after them inside the solo lane/)
+})
+
+test('a solo diamond is honoured by position in the lane', () => {
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, tier: 2 }),
+        task({ id: '1.2', group: 1, tier: 2, dependsOn: ['1.1'] }),
+        task({ id: '1.3', group: 1, tier: 2, dependsOn: ['1.1'] }),
+        task({ id: '1.4', group: 1, tier: 2, dependsOn: ['1.2', '1.3'] })
+      ]
+    },
+    { mode: 'solo' }
+  )
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2', '1.3', '1.4']]])
+})
+
+test('a solo change holding only test tasks still becomes one lane', () => {
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: 't.2', group: 1, tier: 2, isTestTask: true }),
+        task({ id: 't.1', group: 1, tier: 2, isTestTask: true })
+      ]
+    },
+    { mode: 'solo' }
+  )
+  assert.deepEqual(laneIds(plan.waves[0]), [[['t.1', 't.2']]])
+  assert.match(plan.warnings.join('\n'), /no implementation tasks/)
+})
+
+test('solo promotes every task to opus after the clamp and reports each promotion', () => {
+  const plan = planWaves({ tasks: soloTasks() }, { mode: 'solo' })
+  assert.ok(
+    plan.waves[0].batches[0][0].every(t => t.model === 'opus'),
+    'every task in the lane carries opus'
+  )
+  assert.deepEqual(plan.promoted, [
+    { id: '1.1', from: 'sonnet', to: 'opus', tier: 2 },
+    { id: '1.2', from: 'sonnet', to: 'opus', tier: 3 },
+    { id: '2.1', from: 'haiku', to: 'opus', tier: 1 },
+    { id: 't.1', from: 'sonnet', to: 'opus', tier: 2 }
+  ])
+  assert.equal(plan.lanes[0].model, 'opus')
+  assert.equal(plan.lanes[0].tier, 3, 'the recorded tier is still the hardest task’s')
+  assert.equal(plan.lanes[0].effort, null, 'so its effort is the published tier-3 effort')
+  assert.match(formatPlan(plan), /promoted 2\.1: haiku → opus \(tier 1, solo lane\)/)
+})
+
+test('a task already on opus is not double-reported as promoted', () => {
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, tier: 5, model: 'opus' }),
+        task({ id: '1.2', group: 1, tier: 2 })
+      ]
+    },
+    { mode: 'solo' }
+  )
+  assert.deepEqual(plan.promoted, [{ id: '1.2', from: 'sonnet', to: 'opus', tier: 2 }])
+  assert.equal(plan.lanes[0].effort, 'xhigh', 'the lane runs at the published tier-5 effort')
+})
+
+test('the clamp is not bypassed in waves mode and emits no promotion report', () => {
+  const plan = planWaves({
+    tasks: [task({ id: '1.1', group: 1, tier: 3, model: 'opus' })]
+  })
+  assert.deepEqual(plan.clamped, [{ id: '1.1', from: 'opus', to: 'sonnet', tier: 3 }])
+  assert.deepEqual(plan.promoted, [])
+})
+
+test('mode precedence: a flag wins over the classifier', () => {
+  const input = { tasks: soloTasks(), recommendedMode: 'solo', modeReason: 'one coherent edit' }
+  const forced = planWaves(input, { mode: 'waves' })
+  assert.equal(forced.mode, 'waves')
+  assert.equal(forced.modeSource, 'flag')
+  const solo = planWaves({ tasks: soloTasks() }, { mode: 'solo' })
+  assert.equal(solo.modeSource, 'flag')
+  assert.equal(solo.modeReason, null, 'a flag carries no reason — it is the reason')
+})
+
+test('a classifier recommendation inside the envelope is honoured and carried verbatim', () => {
+  const plan = planWaves({
+    tasks: soloTasks(),
+    recommendedMode: 'solo',
+    modeReason: 'four small edits to one subsystem'
+  })
+  assert.equal(plan.mode, 'solo')
+  assert.equal(plan.modeSource, 'classifier')
+  assert.equal(plan.modeReason, 'four small edits to one subsystem')
+  assert.match(formatPlan(plan), /^mode: solo \(classifier: four small edits to one subsystem\)/)
+})
+
+test('a recommendation above the envelope is refused and named', () => {
+  const tasks = Array.from({ length: SOLO.maxTasks + 1 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 2 })
+  )
+  const plan = planWaves({ tasks, recommendedMode: 'solo', modeReason: 'feels small' })
+  assert.equal(plan.mode, 'waves')
+  assert.equal(plan.modeSource, 'default')
+  assert.match(
+    plan.warnings.join('\n'),
+    new RegExp(
+      `classifier recommended solo for ${SOLO.maxTasks + 1} tasks; the envelope is ` +
+        `${SOLO.maxTasks}, planned as waves`
+    )
+  )
+})
+
+test('a flag may force solo above the envelope, and says that it did', () => {
+  const tasks = Array.from({ length: SOLO.maxTasks + 1 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 2 })
+  )
+  const plan = planWaves({ tasks }, { mode: 'solo' })
+  assert.equal(plan.mode, 'solo')
+  assert.equal(plan.modeSource, 'flag')
+  assert.equal(plan.laneCount, 1)
+  assert.match(
+    plan.warnings.join('\n'),
+    new RegExp(`solo forced by flag: ${SOLO.maxTasks + 1} tasks exceeds the published envelope`)
+  )
+})
+
+test('a classification with no recommendation plans as waves with no mode warning', () => {
+  // A classified.json written before the field existed must plan exactly as it
+  // did before, and say nothing about a decision nobody made.
+  const plan = planWaves({ tasks: soloTasks() })
+  assert.equal(plan.mode, 'waves')
+  assert.equal(plan.modeSource, 'default')
+  assert.equal(plan.modeReason, null)
+  assert.doesNotMatch(plan.warnings.join('\n'), /solo|envelope/)
+  assert.match(formatPlan(plan), /^mode: waves \(default\)/)
+})
+
+test('an unrecognized recommendation is waves, not an error', () => {
+  const plan = planWaves({ tasks: soloTasks(), recommendedMode: 'turbo' })
+  assert.equal(plan.mode, 'waves')
+  assert.equal(plan.modeSource, 'default')
+  assert.doesNotMatch(plan.warnings.join('\n'), /turbo/)
+})
+
+test('contradictory or unknown mode overrides are rejected before planning', () => {
+  assert.throws(
+    () => planWaves({ tasks: soloTasks() }, { mode: ['solo', 'waves'] }),
+    /contradictory mode overrides \(solo and waves\)/
+  )
+  assert.throws(
+    () => planWaves({ tasks: soloTasks() }, { mode: 'turbo' }),
+    /unknown mode override "turbo"/
+  )
+})
+
+test('a solo modeReason is bounded by the handoff budget', () => {
+  const plan = planWaves({
+    tasks: soloTasks(),
+    recommendedMode: 'solo',
+    modeReason: 'x'.repeat(LIMITS.maxHandoffChars * 2)
+  })
+  assert.equal(plan.modeReason.length, LIMITS.maxHandoffChars)
 })
 
 // --- effort routing (spec: effort-routing) ---------------------------------
@@ -681,7 +1141,15 @@ test('a mixed-tier lane takes the maximum tier and its model', () => {
     ]
   })
   assert.deepEqual(plan.lanes, [
-    { group: 1, ids: ['1.1', '1.2'], tier: 5, model: 'opus', effort: 'xhigh' }
+    {
+      group: 1,
+      kind: 'collision',
+      ids: ['1.1', '1.2'],
+      tier: 5,
+      cap: LANE_CAPS.byTier[5],
+      model: 'opus',
+      effort: 'xhigh'
+    }
   ])
   assert.match(
     formatPlan(plan),
@@ -702,18 +1170,54 @@ test('a mixed-tier lane is not split to keep the trivial task cheap', () => {
   assert.equal(projectedWaveLoopAgents(plan).implementers, 1)
 })
 
-test('the test wave stays one lane per task', () => {
-  // Test tasks are deferred to a trailing wave precisely because they are not
-  // the sequential same-file work lanes exist to fold; laning them there would
-  // only spend the parallelism the deferral bought.
+test('the test wave lanes colliding test tasks rather than co-scheduling them', () => {
+  // It used to hold one lane per task on the reasoning that deferral had already
+  // bought the parallelism a lane would spend. That also meant two test tasks
+  // writing one file ran side by side — the collision the packer exists to
+  // prevent. The deferral is about WHEN tests run, not how many agents run them.
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1 }),
-      task({ id: 't.1', group: 9, isTestTask: true, paths: ['test/a.test.mjs'] }),
-      task({ id: 't.2', group: 9, isTestTask: true, paths: ['test/a.test.mjs'] })
+      task({ id: 't.1', group: 9, tier: 4, isTestTask: true, paths: ['test/a.test.mjs'] }),
+      task({ id: 't.2', group: 9, tier: 4, isTestTask: true, paths: ['test/a.test.mjs'] })
     ]
   })
-  assert.deepEqual(laneIds(plan.testWave), [[['t.1'], ['t.2']]])
+  assert.deepEqual(laneIds(plan.testWave), [[['t.1', 't.2']]])
+  assert.equal(plan.serialized.length, 1, 'and the collision is reported')
+  assert.equal(plan.serialized[0].group, null, 'with no group number — it is the test wave')
+  assert.match(plan.warnings.join('\n'), /serialized in the test wave/)
+})
+
+test('the test wave packs low-tier test tasks by cohesion', () => {
+  // lanes/spec.md: sixteen tier-2 test tasks with no edges and a tier-2 cap of
+  // eight become two lanes of eight, not sixteen spawns.
+  const cap = LANE_CAPS.byTier[2]
+  const tests = Array.from({ length: cap * 2 }, (_, i) =>
+    task({ id: `t.${i + 1}`, group: 9, tier: 2, isTestTask: true, paths: [`test/${i}.test.mjs`] })
+  )
+  const plan = planWaves({ tasks: [task({ id: '1.1', group: 1 }), ...tests] }, { maxParallel: 8 })
+  const lanes = plan.testWave.batches.flat(1)
+  assert.equal(lanes.length, 2, `${cap * 2} test tasks become two lanes of ${cap}`)
+  assert.deepEqual(lanes.map(l => l.length), [cap, cap])
+  assert.deepEqual(
+    plan.lanes.filter(l => l.group === null).map(l => l.kind),
+    ['cohesion', 'cohesion'],
+    'and both are reported as cohesion folds of the test wave'
+  )
+})
+
+test('cohesion does not pack test tasks with implementation tasks', () => {
+  // The implementation/test boundary is the whole reason the test wave exists.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'] }),
+      task({ id: 't.1', group: 1, tier: 2, isTestTask: true, paths: ['test/a.test.mjs'] })
+    ]
+  })
+  const implIds = plan.waves.flatMap(w => laneIds(w).flat(2))
+  assert.deepEqual(implIds, ['1.1', '1.2'], 'no test task joined an implementation lane')
+  assert.deepEqual(laneIds(plan.testWave), [[['t.1']]])
 })
 
 // ===========================================================================
@@ -732,7 +1236,7 @@ const planOf = (tasks, opts) => planWaves({ tasks }, opts)
  * state-machine test that needs N checkpoints would stop testing what it says
  * it tests. Disjoint paths keep the pair in one batch.
  */
-function simplePlan(groups = [1, 2], testTasks = 0, opts) {
+function simpleTasks(groups = [1, 2], testTasks = 0) {
   const tasks = groups.flatMap(g => [
     task({ id: `${g}.1`, group: g, paths: [`src/g${g}-a.ts`] }),
     task({ id: `${g}.2`, group: g, paths: [`src/g${g}-b.ts`] })
@@ -740,7 +1244,11 @@ function simplePlan(groups = [1, 2], testTasks = 0, opts) {
   for (let i = 0; i < testTasks; i++) {
     tasks.push(task({ id: `t.${i + 1}`, group: 99, isTestTask: true }))
   }
-  return planOf(tasks, opts)
+  return tasks
+}
+
+function simplePlan(groups = [1, 2], testTasks = 0, opts) {
+  return planOf(simpleTasks(groups, testTasks), opts)
 }
 
 /**
@@ -803,7 +1311,9 @@ test('verification runs between waves only — never after the final one', () =>
 })
 
 test('a wide wave is walked one batch at a time, in order', () => {
-  const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
+  // Tier 4 keeps the five tasks in five lanes; at a cohesion-eligible tier they
+  // would pack into one lane in one batch and there would be no walk left.
+  const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `1.${i + 1}`, group: 1, tier: 4 }))
   const seen = []
   drive(createRunState(planOf(tasks, { maxParallel: 2 })), {
     onBatch: step => {
@@ -893,7 +1403,8 @@ test('a skipped check must state its reason, and surfaces as a banner', () => {
 })
 
 test('nextStep includes remainingBatches from the current index', () => {
-  const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
+  // Tier 4, so the five tasks stay five lanes and there are batches to remain.
+  const tasks = Array.from({ length: 5 }, (_, i) => task({ id: `1.${i + 1}`, group: 1, tier: 4 }))
   const start = createRunState(planOf(tasks, { maxParallel: 2 }))
   const first = nextStep(start)
   assert.equal(first.remainingBatches.length, 3)
@@ -1093,12 +1604,14 @@ test('every remaining batch of a wave shares the previous wave, not each other',
   //
   // Width-deferred rather than same-file on purpose: same-file tasks are now ONE
   // lane in one batch, so a collision fixture would leave nothing to compare.
+  // Tier 4 for the same reason in the other direction — cohesion would pack the
+  // three disjoint tasks into one lane and collapse the three batches to one.
   const plan = planOf(
     [
       task({ id: '1.1', group: 1 }),
-      task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
-      task({ id: '2.2', group: 2, paths: ['src/b.ts'] }),
-      task({ id: '2.3', group: 2, paths: ['src/c.ts'] })
+      task({ id: '2.1', group: 2, tier: 4, paths: ['src/a.ts'] }),
+      task({ id: '2.2', group: 2, tier: 4, paths: ['src/b.ts'] }),
+      task({ id: '2.3', group: 2, tier: 4, paths: ['src/c.ts'] })
     ],
     { maxParallel: 1 }
   )
@@ -1454,7 +1967,9 @@ test('createRunState does not pull a folded disjoint-path batch into batch 0', (
 })
 
 test('a planned batch wider than the runtime cap is split, not merged with its neighbour', () => {
-  const wide = Array.from({ length: 10 }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
+  // Tier 4: cohesion-ineligible, so the planned batch really is ten lanes wide
+  // and the runtime cap has something to split.
+  const wide = Array.from({ length: 10 }, (_, i) => task({ id: `1.${i + 1}`, group: 1, tier: 4 }))
   const plan = planWaves({ tasks: [...wide, task({ id: '2.1', group: 2 })] }, { maxParallel: 10 })
   assert.deepEqual(plan.waves[0].batches.map(b => b.length), [10, 1])
 
@@ -1759,14 +2274,108 @@ test('createRunState without a change name is not an error', () => {
 // --- caps, clamps and guards ---------------------------------------------
 
 test('parallelism is clamped to the runtime ceiling, and wide batches re-split', () => {
+  // Tier 4 so every task is its own lane and the planned batch is genuinely
+  // wider than the runtime ceiling.
   const tasks = Array.from({ length: RUNTIME.maxConcurrentAgents + 4 }, (_, i) =>
-    task({ id: `1.${i + 1}`, group: 1 })
+    task({ id: `1.${i + 1}`, group: 1, tier: 4 })
   )
   const plan = planOf(tasks, { maxParallel: RUNTIME.maxConcurrentAgents + 10 })
   const state = createRunState(plan)
   assert.equal(state.maxParallel, RUNTIME.maxConcurrentAgents)
   assert.ok(state.waves[0].batches.every(b => b.length <= RUNTIME.maxConcurrentAgents))
   assert.ok(state.warnings.some(w => w.includes('re-split')))
+})
+
+// --- mode and lane caps on the run state (design D10) ----------------------
+
+test('the run state carries the plan mode, and every step echoes it', () => {
+  const solo = createRunState(planWaves({ tasks: soloTasks() }, { mode: 'solo' }))
+  assert.equal(solo.mode, 'solo')
+  assert.equal(nextStep(solo).mode, 'solo')
+
+  const waves = createRunState(planWaves({ tasks: soloTasks() }))
+  assert.equal(waves.mode, 'waves')
+  assert.equal(nextStep(waves).mode, 'waves')
+})
+
+test('a state written before modes existed reads as waves', () => {
+  // The host reads `step.mode` and brings nothing of its own, so the fallback
+  // has to be the shape every pre-mode run actually was.
+  const state = createRunState(simplePlan([1, 2]))
+  const legacy = { ...state }
+  delete legacy.mode
+  assert.equal(nextStep(legacy).mode, 'waves')
+})
+
+test('every kind of step carries the mode, not only the dispatching one', () => {
+  const state = createRunState(planWaves({ tasks: soloTasks() }, { mode: 'solo' }))
+  const seen = new Set()
+  let at = state
+  for (let i = 0; i < 6; i++) {
+    const step = nextStep(at)
+    seen.add(step.mode)
+    if (step.action === 'done' || step.action === 'halt') break
+    at = step.action === 'verify' ? recordVerifyResult(at, { ok: true }) : recordBatchResult(at, allOk(step))
+  }
+  assert.deepEqual([...seen], ['solo'], 'no step along the walk dropped the mode')
+})
+
+test('the run state carries the effective lane caps, and a replan lanes under them', () => {
+  const plan = planWaves({ tasks: simpleTasks([1, 2]) }, { maxTasksPerAgent: 2 })
+  const state = createRunState(plan)
+  assert.deepEqual(state.laneCaps, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2 })
+
+  const revised = applyReplan(state, [
+    {
+      group: 2,
+      tasks: Array.from({ length: 3 }, (_, i) =>
+        task({ id: `2.${i + 1}`, group: 2, tier: 1, model: 'haiku', paths: [`src/r${i}.ts`] })
+      )
+    }
+  ])
+  const wave2 = revised.waves.find(w => w.group === 2)
+  assert.deepEqual(
+    wave2.batches.flat(1).map(l => l.length),
+    [2, 1],
+    'the revision is laned under the caps the run started with, override included'
+  )
+})
+
+test('a state written before laneCaps existed replans under the published table', () => {
+  const state = createRunState(planWaves({ tasks: simpleTasks([1, 2]) }))
+  const legacy = { ...state }
+  delete legacy.laneCaps
+  const revised = applyReplan(legacy, [
+    {
+      group: 2,
+      tasks: Array.from({ length: LANE_CAPS.byTier[1] + 1 }, (_, i) =>
+        task({ id: `2.${i + 1}`, group: 2, tier: 1, model: 'haiku', paths: [`src/r${i}.ts`] })
+      )
+    }
+  ])
+  const wave2 = revised.waves.find(w => w.group === 2)
+  assert.deepEqual(
+    wave2.batches.flat(1).map(l => l.length),
+    [LANE_CAPS.byTier[1], 1],
+    'absence falls back to the published table rather than failing the replan'
+  )
+})
+
+test('planning the same classified input twice is byte-identical, cohesion and solo alike', () => {
+  // Replay: a resumed run is replanned from the same cached input and must reach
+  // the same plan, or nothing downstream of it is reproducible.
+  const tasks = () => [
+    ...Array.from({ length: 5 }, (_, i) =>
+      task({ id: `1.${i + 1}`, group: 1, tier: 2, paths: [`src/${i}.ts`] })
+    ),
+    task({ id: '1.6', group: 1, tier: 5, model: 'opus', paths: ['src/hard.ts'] }),
+    task({ id: 't.1', group: 2, tier: 2, isTestTask: true, paths: ['test/a.test.mjs'] })
+  ]
+  for (const opts of [{}, { mode: 'solo' }, { maxTasksPerAgent: 2 }]) {
+    const a = JSON.stringify(planWaves({ tasks: tasks() }, opts))
+    const b = JSON.stringify(planWaves({ tasks: tasks() }, opts))
+    assert.equal(a, b, `planning is not deterministic under ${JSON.stringify(opts)}`)
+  }
 })
 
 test('opts.maxParallel overrides the plan cap', () => {
@@ -1830,7 +2439,14 @@ test('formatRunState reports position, failures and the next step', () => {
 // writes only to one *spelling*: `src/a.ts` and `./src/a.ts` are different keys
 // for the same file, so the two tasks land in the same batch and race.
 
-/** Two tasks in one group, each predicting the file under a different spelling. */
+/**
+ * Two tasks in one group, each predicting the file under a different spelling.
+ *
+ * Tier 4 so that cohesion never packs them: these fixtures answer "did the
+ * planner see a collision", and a pair packed by tier would land in one lane
+ * whether the paths collided or not, which would make every negative case here
+ * pass for the wrong reason.
+ */
 function collidingPlan(pathA, pathB) {
   return planWaves({
     tasks: [
@@ -1838,7 +2454,7 @@ function collidingPlan(pathA, pathB) {
         id: '1.1',
         group: 1,
         description: 'first',
-        tier: 2,
+        tier: 4,
         model: 'sonnet',
         isTestTask: false,
         paths: [pathA]
@@ -1847,7 +2463,7 @@ function collidingPlan(pathA, pathB) {
         id: '1.2',
         group: 1,
         description: 'second',
-        tier: 2,
+        tier: 4,
         model: 'sonnet',
         isTestTask: false,
         paths: [pathB]
@@ -1918,7 +2534,7 @@ test('paths that genuinely denote different files are not merged', () => {
     assert.notEqual(
       placementOf(plan, '1.1').lane,
       placementOf(plan, '1.2').lane,
-      'and separate lanes: folding disjoint work into one agent would serialize it for nothing'
+      'and separate lanes: at tier 4 nothing may fold disjoint work into one agent'
     )
   }
 })
@@ -1956,6 +2572,34 @@ test('an absolute or root-escaping predicted path is rejected, never rewritten i
 test('a task that predicts no paths contends with nothing', () => {
   const plan = planWaves({
     tasks: [
+      { id: '1.1', group: 1, description: 'a', tier: 4, model: 'sonnet', isTestTask: false },
+      {
+        id: '1.2',
+        group: 1,
+        description: 'b',
+        tier: 4,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/a.mjs']
+      }
+    ]
+  })
+  assert.equal(plan.serialized.length, 0)
+  assert.equal(batchOf(plan, '1.1'), batchOf(plan, '1.2'))
+  assert.notEqual(
+    placementOf(plan, '1.1').lane,
+    placementOf(plan, '1.2').lane,
+    'a task claiming no paths joins no COLLISION lane — it cannot be shown to collide'
+  )
+})
+
+test('a pathless task may still join a cohesion lane by tier', () => {
+  // lanes/spec.md: "Tasks that omit `paths` MUST NOT be treated as colliding,
+  // but MAY join a cohesion lane by tier." The same pair at a cohesion-eligible
+  // tier packs — by tier, and the plan says so rather than reporting a collision
+  // it did not find.
+  const plan = planWaves({
+    tasks: [
       { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false },
       {
         id: '1.2',
@@ -1968,13 +2612,9 @@ test('a task that predicts no paths contends with nothing', () => {
       }
     ]
   })
-  assert.equal(plan.serialized.length, 0)
-  assert.equal(batchOf(plan, '1.1'), batchOf(plan, '1.2'))
-  assert.notEqual(
-    placementOf(plan, '1.1').lane,
-    placementOf(plan, '1.2').lane,
-    'a task claiming no paths joins no lane — it cannot be shown to collide with anything'
-  )
+  assert.deepEqual(plan.serialized, [], 'still no collision — nothing was shown to share a path')
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2']]])
+  assert.equal(plan.lanes[0].kind, 'cohesion')
 })
 
 test('the changed-file list a verification receives deduplicates by canonical path', () => {
@@ -2351,13 +2991,17 @@ test('an edge-free plan is planned exactly as it was before edges existed', () =
   // The compatibility guarantee (D10), asserted against a fixture that exercises
   // every mechanism the depth layering sits in front of: two sections, a path
   // collision, a wide group and a trailing test wave.
+  // Every task is tier 4 or 5, so cohesion is off and the shape below is the one
+  // the pre-cohesion planner produced byte for byte. Making the fixture
+  // cohesion-eligible would test cohesion here instead of edge compatibility,
+  // which is what the tests above and below this one are for.
   const tasks = [
     fileTask('1.1', 1, 'lib/a.mjs', { tier: 5, model: 'opus' }),
-    fileTask('1.2', 1, './lib/a.mjs'),
-    fileTask('1.3', 1, 'lib/b.mjs'),
-    fileTask('2.1', 2, 'lib/c.mjs'),
-    fileTask('2.2', 2, 'lib/d.mjs'),
-    task({ id: '3.1', group: 3, isTestTask: true })
+    fileTask('1.2', 1, './lib/a.mjs', { tier: 4 }),
+    fileTask('1.3', 1, 'lib/b.mjs', { tier: 4 }),
+    fileTask('2.1', 2, 'lib/c.mjs', { tier: 4 }),
+    fileTask('2.2', 2, 'lib/d.mjs', { tier: 4 }),
+    task({ id: '3.1', group: 3, tier: 4, isTestTask: true })
   ]
   const plan = planWaves({ tasks }, { maxParallel: 2 })
   assert.deepEqual(shapeOf(plan), {
@@ -2369,7 +3013,17 @@ test('an edge-free plan is planned exactly as it was before edges existed', () =
     waveCount: 2,
     laneCount: 4,
     folded: [],
-    lanes: [{ group: 1, ids: ['1.1', '1.2'], tier: 5, model: 'opus', effort: 'xhigh' }],
+    lanes: [
+      {
+        group: 1,
+        kind: 'collision',
+        ids: ['1.1', '1.2'],
+        tier: 5,
+        cap: LANE_CAPS.byTier[5],
+        model: 'opus',
+        effort: 'xhigh'
+      }
+    ],
     serialized: [{ id: '1.2', group: 1, path: './lib/a.mjs', conflictsWith: '1.1' }]
   })
   assert.deepEqual(plan.deferred, [])

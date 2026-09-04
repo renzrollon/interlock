@@ -89,10 +89,13 @@ Three rules hold without exception:
    different writers over different runs; the report keeps them apart and so do
    you. The same rule separates a value a run *observed* from one an agent
    *reported* — check each indicator's `source`.
-3. **`diffMatchesPlan` is `computable: false` and stays that way.** Do not
-   answer "does the merged diff match the plan" with `planStatus` or with the
-   mid-run revision rate. Both are about the plan; neither observes the diff.
-   Quote the report's `wouldRequire` instead.
+3. **`diffMatchesPlan` is computed one way only, and the other two plan figures
+   are not it.** It is the share of paths a run TOUCHED that its plan predicted
+   — read `direction` and quote it. Do not answer "does the merged diff match
+   the plan" with `planStatus` or with the mid-run revision rate: both are about
+   the plan, neither observes the diff. Read `excluded` before reading the
+   figure: a share over three qualifying runs while forty were excluded for a
+   recording gap is a fact about the recording, and saying so is the reading.
 
 ## 4. Do not recommend a gate
 

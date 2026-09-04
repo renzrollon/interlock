@@ -262,7 +262,13 @@ export function defaultResponses() {
       skippedVerificationReasons: [],
       capExhaustedVerifications: 0,
       unresolvedErrors: 0,
-      planFingerprint: 'a'.repeat(64)
+      planFingerprint: 'a'.repeat(64),
+      // What `interlock paths touched|predicted` printed at close, copied by
+      // the closing ping. A test that wants the unobserved path answers this
+      // label without them and supplies the reasons instead.
+      touchedPaths: ['lib/a.mjs'],
+      predictedPaths: ['lib/a.mjs'],
+      predictedPathsComplete: true
     },
     'record-receipt': { ok: true }
   }
@@ -458,6 +464,10 @@ export function coverageRuns() {
     { responses: { 'plan-reuse': reuseAdopted() } },
     // --isolate-waves: the merge-base and merge-lanes pings only ever get
     // assembled behind this flag.
-    { args: 'demo-change --isolate-waves' }
+    { args: 'demo-change --isolate-waves' },
+    // --solo: the only run that threads `--mode` into the reuse probe, the
+    // planner and the fingerprint. Enumerated so a flagged prompt cannot escape
+    // the coercion sweep by living behind an opt-in.
+    { args: 'demo-change --solo' }
   ]
 }
