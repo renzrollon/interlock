@@ -1,0 +1,12 @@
+{
+  "name": "fixture-red-until-task",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test $(find test -name '*.test.mjs' | sort)"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

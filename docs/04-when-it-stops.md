@@ -80,13 +80,22 @@ Two failure shapes that are about your environment rather than your change, and 
 
 **`/interlock:ship` is unknown, or the trampoline halts.** `/interlock:ship` is a skill that launches `workflows/ship.js` on the Workflow runtime. The Skill tool will find the command in any repo where the plugin is installed. What still has to be true for the *run* to start: Claude Code **v2.1.154+** with dynamic workflows enabled. Where they are off — `disableWorkflows`, an org policy, `CLAUDE_CODE_DISABLE_WORKFLOWS`, a Pro plan that has not turned them on in `/config`, or an IDE that never exposes the Workflow tool — the trampoline **halts rather than implementing the loop in conversation.** Everything else in Interlock still works, including `spec`, the reviews and `commit`, so you can implement the change another way, but the loop this tool is built around needs the workflow runtime.
 
-That halt is unchanged by the existence of a second host. There is now an experimental ACP driver that runs the same lean loop off the workflow runtime — but it is **a separate path you invoke yourself, not a fallback.** The trampoline will never reach for it: an automatic downgrade from "the runtime guarantees nobody can interrupt this" to "some other agent is driving it" is exactly the quiet degradation this file exists to make impossible. If you want it, run it deliberately:
+That halt is unchanged by the existence of a second host. There is an experimental **runner** that runs the same loop off the workflow runtime, over the vendor coding CLI you name — but it is **a separate path you invoke yourself, not a fallback.** The trampoline will never reach for it, and the runner refuses `--host workflow` from the other side: an automatic downgrade from "the runtime guarantees nobody can interrupt this" to "some other agent is driving it" is exactly the quiet degradation this file exists to make impossible. If you want it, run it deliberately:
 
 ```bash
-INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-ship-acp <change-name>
+interlock-run <change-name> --host claude          # the installed Claude Code CLI, headless
+interlock-run <change-name> --host codex           # OpenAI Codex
+interlock-run <change-name> --host qwen            # Qwen Code
+INTERLOCK_ACP_COMMAND="<agent>" interlock-run <change-name> --host acp
 ```
 
-It ships lean only, and it **refuses** `--strict`, `--review`, `--handoff` and `--conformance` with exit code `2` rather than running something smaller than what you asked for. Exit `0` is a terminal summary, `1` is a halt, `2` is "not supported on this host". Its two banners are in [the soft continues](#acp-host-experimental--model-routing-unavailable-acp-host) below, and the README's Experimental section says what it is for.
+**There is a reason the default did not move.** Inside an interactive session, the Workflow runtime is the path Anthropic exempted from its paused programmatic-use billing change. `claude -p`, the Agent SDK and ACP are the usage that change flagged for a separate metered pool. So `/interlock:ship` stays the supported path, no skill ever starts the runner, and the runner says out loud which billing path it is on — see `SUBSCRIPTION PATH` below. If that policy settles differently, this paragraph is the one place to update.
+
+It runs the whole loop, `--strict` and its pieces included: adversarial review, bounded remediation, the verdict and the handoff artifacts are steps `interlock run` emits, and this driver interprets them the way it interprets a wave. Every judgement with a correct answer — what a finding survives to, how many rounds the budget allows, which dimensions run — stays in the CLI, so a strict run here halts on the same terms as one on Claude Code. Under `--isolate-waves` the runner also creates one git worktree per lane from the batch's merge base and folds them back through the same `record-batch` that halts on a real collision, so lane isolation is not a Claude-Code-only guarantee any more.
+
+Exit `0` is a terminal summary and `1` is a halt. Exit `2` means the invocation could not be started at all — an unknown `--host`, the Workflow host id, or a host command that is missing or unusable — and nothing is written for a run that never happened: no manifest, no briefing, no trajectory event. Its banners are in [the soft continues](#runner-host-experimental-and-the-rest-of-the-runners-banners) below, and the README's Experimental section says what it is for.
+
+`interlock-ship-acp <change>` still works: it prints a deprecation line on stderr and runs `interlock-run --host acp` with your arguments. It is removed in the next minor version.
 
 **The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner before a long run. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
 
@@ -201,13 +210,49 @@ interlock limits
 
 If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
 
-### `ACP HOST (experimental)` / `MODEL ROUTING UNAVAILABLE (ACP host)`
+### `RUNNER HOST: <id> (experimental)` and the rest of the runner's banners
 
-Only from `interlock-ship-acp`, never from `/interlock:ship`. The first banner prints on every run of that driver: it is saying that you are on the second host, and that the supported path has more around it.
+Only from `interlock-run` (or the `interlock-ship-acp` shim), never from `/interlock:ship`. `RUNNER HOST` prints on every run of that driver: it is saying that you are on the second host, and that the supported path has more around it.
 
-The second is the one worth reading, and it is a different failure from `MODEL ROUTING OVERRIDDEN` above — nothing in your environment caused it. ACP v1 has no per-prompt model selector, so the planner's tier ladder — the thing most of the cost story rests on — **is not in effect on this host**. The plan still assigns a tier per task, and the slug still travels to the agent as a hint it is free to ignore, but whatever model your ACP agent is configured with is the model every task gets. `interlock limits` still prints what the planner decided; on this host, read it as intent rather than as what ran.
+The rest are conditional, and each names one way this run is weaker than a run on the default host. They are printed rather than left to be inferred, because every one of them is invisible in a green summary.
 
-There is nothing to fix, and no flag that restores it. If per-tier routing matters for the run — a long change with forty tier-1 tasks — run it on Claude Code.
+| Banner | When | What it means |
+|---|---|---|
+| `SUBSCRIPTION PATH: programmatic (<host>)` | `--host claude`, or `--host acp` over the `claude` binary | This run spends through `claude -p` / ACP, which is the usage Anthropic flagged for separate metered credit. The exempted path is the interactive Workflow runtime — `/interlock:ship`. See the paragraph above. |
+| `CHATGPT PLAN PATH (codex)` | `--host codex` with neither `CODEX_API_KEY` nor `OPENAI_API_KEY` set | Codex is running on your ChatGPT plan's device-auth session. It goes stale in about a week, and OpenAI directs unattended volume to an API key. Set one to silence it. |
+| `HOOKS NOT IN FORCE (<host>)` | any host that declares `hooks: false` — `codex`, `qwen`, and `acp` over a non-Claude agent | This repository's `PreToolUse` guards are Claude Code's. Nothing stops a repair step from weakening a test on this host except the CLI's own unit-suite shrink check. |
+| `TOKEN USAGE NOT REPORTED` | a host whose CLI returns no token accounting — `qwen`, `acp` | Every wave and the run total are recorded as `unknown`. Never as zero: a wave that ran agents did not spend nothing, so a zero there would be a silent, systematic error. |
+
+The receipt records the host id, its billing path and its hook availability, so a run's terms can be read back later rather than reconstructed from which banners someone remembered to look at.
+
+### `MODEL ROUTING UNAVAILABLE (<host>)`
+
+Also runner-only, and a different failure from `MODEL ROUTING OVERRIDDEN` above — nothing in your environment caused it. The runner applies the model the planner assigned to each spawn, and when every one landed the summary says so instead:
+
+```
+model routing: applied on 7/7 spawns
+```
+
+When at least one did not, the banner prints, followed by one line per spawn naming the task and the reason:
+
+| Reason | Hosts | What it means |
+|---|---|---|
+| `no mapping for <slug>` | `codex`, `qwen` | These CLIs have no idea what `haiku`, `sonnet` or `opus` mean, so with no map entry the adapter passes **no model flag at all** and the spawn runs on whatever you configured. Fix it with the map below. |
+| `no model option advertised` | `acp` | Your agent's `session/new` advertises no model selector and it rejected the legacy `session/set_model`. |
+| `slug not among advertised values` | `acp` | It advertises models, but none of their values or display names contains the slug — an agent fronting a non-Claude model, typically. |
+| `mapped value not advertised` | `acp` | Your map names a value this agent does not offer. Check the spelling against the agent's own model list. |
+
+A model is never guessed. Nothing is applied by nearest match or by default, because a wrong model that ran is invisible in a summary and a banner is not.
+
+Name the values yourself, per host:
+
+```bash
+export INTERLOCK_MODEL_MAP='{"codex":{"haiku":"gpt-5-mini","sonnet":"gpt-5","opus":"gpt-5-pro"}}'
+```
+
+It is a JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. A malformed one fails the invocation at startup rather than three waves in. `INTERLOCK_ACP_MODEL_MAP` is still read, as an alias of the `acp` entry. On `acp` a mapped slug is still checked against what the agent advertises — a value it does not offer is refused, not sent. `--host claude` needs no map: the CLI accepts the slugs.
+
+The tier ladder is most of the cost story, so the banner is worth acting on: on a long change with forty tier-1 tasks, an unrouted run costs whatever your agent's single configured model costs, forty times. `interlock limits` prints what the planner decided; unrouted, read it as intent rather than as what ran.
 
 ### `VERIFICATION SKIPPED`
 

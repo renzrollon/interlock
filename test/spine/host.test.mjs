@@ -14,7 +14,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   INTERLOCK_BIN,
   HOST_PORTS,
@@ -24,6 +24,7 @@ import {
   parseAgentJson,
   runCli
 } from '../../lib/host.mjs'
+import { makeRepo, DEMO_CHANGE } from '../helpers/ship-harness.mjs'
 
 let dir
 
@@ -239,6 +240,128 @@ test('runCli refuses an empty argv and resolves a non-zero exit instead of throw
   assert.equal(bad.code, 1)
   assert.match(bad.stderr, /unknown wave-state subcommand: wat/)
 })
+
+// --- the interpreter loop over the port (emit-wave-steps-from-cli) ---------
+//
+// Every earlier test in this file drives one CLI call at a time. This one
+// walks the whole `interlock run` program — `run start` through `run
+// close` — the way a real driver's loop does: spawn everything a step names
+// through the port, hand the results back to `then.argv`, repeat until
+// `then` is null. No model, no network — the port's `spawn` stub answers
+// with canned results, and the CLI is the only thing deciding what happens
+// next.
+
+test('an interpreter over the fake host walks a lean run from start to close', async () => {
+  const { root, change } = makeRepo()
+  try {
+    await interpretLeanRun(root, change)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+async function interpretLeanRun(root, change) {
+  const put = (path, body) => {
+    const dest = join(root, path)
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, typeof body === 'string' ? body : JSON.stringify(body, null, 2) + '\n')
+  }
+
+  const CLASSIFIED = {
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'task 1.1',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['lib/a.mjs']
+      }
+    ]
+  }
+
+  // The batch's lanes, captured once the run-batch step names them, so the
+  // spawn stub can answer each lane by its own task ids rather than guessing.
+  let lanes = null
+
+  const host = createFakeHost({
+    cwd: root,
+    spawn: (req, index) => {
+      if (req.label === 'plan-waves') {
+        // Standing in for the classifier: it writes the classification file
+        // itself and is never asked to run the CLI (design D7).
+        put('.claude/ship/classified.json', CLASSIFIED)
+        return { ok: true }
+      }
+      if (req.label === 'commit') {
+        return { ok: true, sha: 'deadbee' }
+      }
+      const lane = lanes ? lanes[index] : null
+      const ids = lane ? lane.map(t => t.id) : []
+      return {
+        tasks: ids.map(id => ({
+          id,
+          outcome: 'ok',
+          filesChanged: ['lib/a.mjs'],
+          handoff: {
+            schema: 'interlock.wave-handoff/1',
+            taskId: id,
+            status: 'ok',
+            summary: 'done',
+            evidence: ['lib/a.mjs:1'],
+            next: 'nothing',
+            blocker: null
+          }
+        }))
+      }
+    }
+  })
+
+  /** One `interlock run …` call through the port, mirroring a driver's `cli()`. */
+  async function call(argv, results) {
+    const full = [...argv]
+    if (results !== undefined) {
+      put('.claude/ship/host-results.json', results)
+      full.push('--results', '.claude/ship/host-results.json')
+    }
+    full.push('--json')
+    const res = await host.runCli(full)
+    assert.equal(res.code, 0, `interlock ${full.join(' ')} exited ${res.code}: ${res.stderr}`)
+    return JSON.parse(res.stdout)
+  }
+
+  let step = await call(['run', 'start', '--change', change])
+  assert.equal(step.action, 'classify')
+
+  await host.mapPipeline(step.spawns, s => host.spawn(s))
+  step = await call(step.then.argv)
+  assert.equal(step.action, 'run-batch')
+
+  lanes = step.lanes
+  let results = await host.mapPipeline(step.spawns, s => host.spawn(s))
+  step = await call(step.then.argv, results)
+  assert.equal(step.action, 'verify-final', 'no test profile in this repo, so verification is skipped')
+
+  step = await call(step.then.argv)
+  assert.equal(step.action, 'commit')
+
+  results = await host.mapPipeline(step.spawns, s => host.spawn(s))
+  step = await call(step.then.argv, results)
+
+  assert.equal(step.action, 'complete')
+  assert.equal(step.exitCode, 0)
+  assert.equal(step.then, null, 'a terminal step names no continuation')
+  assert.match(step.summary, /SHIP COMPLETE/)
+
+  // The port carried every spawn a driver would have made, and nothing else
+  // decided what came next: only host.runCli's return value did.
+  assert.deepEqual(host.spawns.map(s => s.label), ['plan-waves', '1.1', 'commit'])
+  assert.ok(
+    host.cliCalls.some(argv => argv[0] === 'run' && argv[1] === 'close'),
+    'the interpreter must reach run close through the same port, not a shortcut'
+  )
+}
 
 test('parseAgentJson recovers a result from prose, a fence, or neither', () => {
   assert.deepEqual(parseAgentJson('{"ok":true}'), { ok: true })

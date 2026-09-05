@@ -1,16 +1,32 @@
 {
-  "name": "interlock",
+  "name": "@renzrollon/interlock",
   "version": "0.2.0",
   "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
   "type": "module",
-  "private": true,
   "engines": {
     "node": ">=18"
   },
   "bin": {
     "interlock": "./bin/interlock",
     "interlock-graph": "./bin/interlock-graph",
+    "interlock-run": "./bin/interlock-run",
     "interlock-ship-acp": "./bin/interlock-ship-acp"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "workflows",
+    "skills",
+    "hooks",
+    "agents",
+    "shared",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node --test $(find test -name '*.test.mjs' | sort)",

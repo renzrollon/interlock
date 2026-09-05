@@ -1,0 +1,16 @@
+{
+  "schema": "interlock.ship-eval-fixture/1",
+  "id": "docs-and-code",
+  "change": "add-format-summary",
+  "shape": "documentation work mixed with code work, over a two-level dependency chain",
+  "taskArtifacts": {
+    "1.1": ["src/format.mjs"],
+    "1.2": ["src/format.mjs"],
+    "2.1": ["src/summary.mjs"],
+    "3.1": ["README.md"]
+  },
+  "taskDependencies": [
+    { "task": "2.1", "dependsOn": ["1.1", "1.2"] },
+    { "task": "3.1", "dependsOn": ["1.1", "1.2", "2.1"] }
+  ]
+}

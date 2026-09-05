@@ -49,7 +49,7 @@ cd your-project && openspec init
 
 OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them.
 
-**Interlock is a Claude Code plugin.** It relies on Claude Code's skill frontmatter, plugin `bin/` PATH injection, subagent fan-out, and the workflow runtime — Cursor and Copilot are not supported in 0.x. Claude Code is the **default and supported host**, and `/interlock:ship` launches the workflow there or halts; it never falls back to anything else. There is one experimental second host — an [ACP](https://agentclientprotocol.com) driver you invoke yourself, described under [Experimental](#experimental) — and no slash command starts it for you.
+**Interlock is a Claude Code plugin.** It relies on Claude Code's skill frontmatter, plugin `bin/` PATH injection, subagent fan-out, and the workflow runtime — Cursor and Copilot are not supported in 0.x. Claude Code is the **default and supported host**, and `/interlock:ship` launches the workflow there or halts; it never falls back to anything else. There is an experimental **runner** you invoke yourself — `interlock-run`, which drives the same loop over the Claude Code CLI, an [ACP](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code, described under [Experimental](#experimental) — and no slash command starts it for you.
 
 Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
@@ -62,6 +62,27 @@ interlock doctor
 That is the preflight: it checks the allowlist against the commands the flow actually shells out to (including the one your own `.claude/testing/profile.json` names), plus the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written at all. It exits 1 when a check would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. Every condition it names is one you would otherwise meet three waves in. The plugin also runs this preflight automatically at session start (a `SessionStart` hook) so a missing allowlist entry surfaces before a run rather than three waves in.
 
 The plugin ships three `PreToolUse` guards as well — deterministic deny rules that stop an in-run agent from editing a test during remediation, hand-ticking `tasks.md`, or committing outside the commit stage. **They bind only agents running inside an Interlock ship run and are inert outside one:** they fail open whenever no active run marker is present, so installing the plugin does not change how your own editing or committing behaves. See [13 — The guards](docs/13-the-guards.md).
+
+### Install the CLIs without the plugin
+
+The bundled CLIs are ordinary Node with zero dependencies, and each is useful on its own — `interlock` gates a CI job, `interlock-graph` indexes a repo for any agent, `interlock-run` drives the same ship loop over a non-Claude host. They ship as an npm package as well as a plugin:
+
+```bash
+npm install -g @renzrollon/interlock
+```
+
+Or without installing anything, using the scope on the `-p` flag and the bare binary name after it:
+
+```bash
+npx -p @renzrollon/interlock interlock limits
+```
+
+| | |
+|---|---|
+| **Works from the package alone** | `interlock` (the policy engine: `limits`, `gate`, `surface`, `waves`, `report`, `ledger`, `doctor`), `interlock-graph` (build and query the codebase graph), `interlock-run` (drive the loop over the Claude Code CLI, an ACP agent, Codex or Qwen) |
+| **Needs the Claude Code plugin** | `/interlock:spec`, `/interlock:ship`, `/interlock:bootstrap` and every other slash command; the `SessionStart` preflight and the `PreToolUse` guards. The package ships the skill and hook files so a package checkout is still a complete plugin, but nothing runs them without the plugin host |
+
+**Releasing:** push a `v<MAJOR.MINOR.PATCH>` tag (the version `package.json` carries) and `.github/workflows/release.yml` runs the suite and publishes with npm provenance. It uses trusted publishing, which has to be configured once on the registry for this repository and that workflow file name — until it is, the publish step fails with the registry's authentication error rather than skipping.
 
 New here? Start with **[the first hour](docs/01-first-hour.md)**. If you have only ever prompted a coding agent — no skills, no specs, no gates — read **[09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md)** first: every term defined once, ending at why `ship` is a script and not a prompt. Then **[10](docs/10-agentic-workflow-ship-and-spec.md)** for this repo's loop reviewed in depth.
 
@@ -101,7 +122,7 @@ The steps before it are conversational where they have to be: `spec` asks about 
 
 ## Why this and not a folder of prompts
 
-Decisions that have a correct answer are moved out of prose and into code, one at a time. The plugin ships two CLIs on your `PATH`:
+Decisions that have a correct answer are moved out of prose and into code, one at a time. The plugin ships three CLIs on your `PATH` — the deterministic spine, the knowledge graph, and the experimental [runner](#experimental):
 
 **`interlock`** — the deterministic spine. Each subcommand replaces a judgement the model used to re-derive in prose on every run, usually inconsistently:
 
@@ -122,6 +143,7 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 | `interlock validate` | Whether a change is actually implementable |
 | `interlock tasks` | Whether the wave plan covers every unchecked box, and which ids may be ticked |
 | `interlock run-log` | Whether a finished run's trajectory can actually be replayed |
+| `interlock run` | The whole ship loop, as steps: every briefing and every branch a driver obeys next |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one |
 
 Every one of them runs without a model and without the network, so you can check any decision the loop made yourself.
@@ -136,7 +158,7 @@ interlock-graph path lib/auth app/api
 
 Everything genuinely requiring judgement — classification, implementation, review, synthesis — stays with the model. The split is the point: **the script holds the loop, the CLI holds the rules, the agents do the work.**
 
-The wave loop, the halt conditions and the verification order are `workflows/ship.js` — a script, not numbered headings a model is asked to follow. Control flow written as prose is control flow the model can talk itself out of. Default `ship` is that loop through to a green unit suite and a commit. Adversarial review and handoff artifacts are `--strict` (or `--review` / `--handoff` on their own), not the execute loop itself.
+The wave loop, the halt conditions and the verification order live in `lib/run.mjs`, which emits the whole program as steps — the agents to spawn, with their briefings, and the exact `interlock` argv to call once they return. `workflows/ship.js` and the experimental `bin/interlock-run` are interpreters of that program, not two copies of it: each spawns what a step names and calls what it names next, and branches on nothing — not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of; control flow written twice in two drivers is control flow that drifts, which is what moving it into one CLI removes. Default `ship` is that loop through to a green unit suite and a commit. Adversarial review and handoff artifacts are `--strict` (or `--review` / `--handoff` on their own), not the execute loop itself.
 
 That leaves one thing worth calling out because it took the longest to close: tasks in a wave run in parallel **in one working tree**, and their independence used to be asserted by the classifier and checked by nothing. The planner now takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave — ordering inside a wave is free, while a new wave is a checkpoint. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file rather than two keys; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. The prediction is still a model's — but with `--isolate-waves`, each lane in a batch runs in its own git worktree, so the race is **closed within a batch** rather than merely narrowed: a mis-predicted shared write can no longer overwrite a sibling lane. Their worktrees fold back into the shared tree afterward (`interlock merge-lanes`); a prediction miss — two lanes that actually wrote the same file — surfaces as a named halt at merge time, never as a silently discarded write. Without the flag, the race is narrowed exactly as before.
 
@@ -255,18 +277,34 @@ interlock report --html > report.html
 
 `--html` renders the same report object as one self-contained document — no stylesheet, script or font is fetched, so it opens offline and can be attached to an issue or handed to someone without the repo. It is a generated file, not a service: no server, no port, no watch mode. It issues no verdict either, and gains none by being visual — no threshold, target or trend arrow is drawn, no colour encodes health, and an indicator nobody measured renders as `UNOBSERVED` with its reason at the same weight as a number, never as a zero.
 
-**A second host, over ACP.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-ship-acp` is the second implementation of it, over the [Agent Client Protocol](https://agentclientprotocol.com): it spawns your ACP agent as a subprocess per task and shells out to the same CLI for every decision.
+**The runner: the same loop over a vendor coding CLI.** `lib/host.mjs` states the whole host contract — spawn one labeled agent, spawn a batch, run `interlock` and branch on its exit code — and forbids a host from reimplementing wave ordering, verify judgement, limits or the gate. `bin/interlock-run` is the second implementation of it, and it is not welded to one vendor: an adapter under `lib/host/` is a transport plus a declaration of what that host cannot do, and the run program reads the declaration rather than branching on a name. It lands on your `PATH` with the other two CLIs.
 
 ```bash
-INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-ship-acp <change-name>
+interlock-run <change-name> --host claude
+INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-run <change-name> --host acp
 ```
 
-What it is for: proving the boundary is real. A host contract with one implementation is a comment. What it is honestly not: the supported path.
+| `--host` | Drives | Result schema | Model selection | Plugin hooks | Token usage | Billing path |
+|---|---|---|---|---|---|---|
+| `claude` | `claude -p` | enforced by the CLI | the planner's slugs, passed through | yes (`--plugin-dir`) | yes | Anthropic, programmatic |
+| `acp` | your `INTERLOCK_ACP_COMMAND` | recovered from text | negotiated on `session/new` | only over the Claude binary | no | whatever the agent is |
+| `codex` | `codex exec` | enforced by the CLI | mapped, or unrouted | **no** | yes | ChatGPT plan or API key |
+| `qwen` | `qwen -p` | enforced by the CLI | mapped, or unrouted | **no** | no | whatever you configured |
 
-- **Lean only.** waves → verify → commit. `--strict`, `--review`, `--handoff` and `--conformance` **exit `2`** rather than quietly shipping something smaller than you asked for.
-- **No per-tier model routing.** ACP v1 has no per-prompt model selector, so the planner's tier ladder is not in effect and the run banners `MODEL ROUTING UNAVAILABLE (ACP host)`. The cost story is a Claude Code property.
+`interlock-ship-acp` still works and prints a deprecation line; it is removed in the next minor version.
+
+- **The whole loop, including `--strict`.** Adversarial review, bounded remediation, the verdict and the handoff artifacts are steps `interlock run` emits, exactly as the waves are, so every host interprets them the way it interprets a batch. Adjudication, the round budget and the dimension selection never leave the CLI, so a strict run here halts on the same terms as one on Claude Code.
+- **Isolation is the runner's, on every host.** Under `--isolate-waves` the step names one worktree path per lane, the runner creates it from the batch's merge base, and `interlock run record-batch` folds the clean lanes, removes their worktrees, and **halts naming the path and both lanes** when two of them wrote the same file despite a disjoint prediction. That is the same guarantee the Workflow host has, and it was the gap that was blocked on the host.
+- **Model routing comes from one published map.** `INTERLOCK_MODEL_MAP` maps the planner's tier slugs to each host's model ids. Claude accepts `haiku`/`sonnet`/`opus` unmapped; Codex and Qwen do not, and an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default and reported as the tier the planner asked for. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry.
+
+  ```bash
+  export INTERLOCK_MODEL_MAP='{"codex":{"haiku":"gpt-5-mini","sonnet":"gpt-5","opus":"gpt-5-pro"}}'
+  ```
+
+- **The runner names the billing path it is on.** Every summary prints `RUNNER HOST: <id> (experimental)`. A run over the Claude binary — directly, or through ACP — prints `SUBSCRIPTION PATH: programmatic`, because `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit; the interactive Workflow runtime is the path that change exempted, which is why **`/interlock:ship` stays the default and this runner is not started for you.** A Codex run with neither `CODEX_API_KEY` nor `OPENAI_API_KEY` prints `CHATGPT PLAN PATH`. A host with no hooks prints `HOOKS NOT IN FORCE (<host>)`. The receipt records the host, its billing path and its hook availability.
+- **What a host cannot do is declared, not discovered.** Codex and Qwen have no equivalent of this repository's `PreToolUse` guards, so nothing stops a repair step from weakening a test there except the CLI's own unit-suite shrink check. Qwen reports no token accounting, so every wave and the run total are recorded as `unknown` — never as zero.
 - **The zero-touch contract is weaker.** On Claude Code nobody can interrupt a run because the runtime has no channel for it. Here the driver just declines to ask — a policy in a file, not a property of a runtime.
-- **`/interlock:ship` is untouched.** No flag, no auto-detect, no fallback: when the Workflow tool is missing the trampoline still halts. See [when it stops](docs/04-when-it-stops.md).
+- **`/interlock:ship` is untouched.** No flag, no auto-detect, no fallback: when the Workflow tool is missing the trampoline still halts, and the runner refuses `--host workflow` from the other side. See [when it stops](docs/04-when-it-stops.md).
 
 **Evals over the model-facing surface.** The deterministic spine is densely unit-tested; the prompts, skills and shared contracts that steer a model are not, and the repo's own archived proposals record failures where the prompt bytes were correct and a model did the wrong thing anyway. An `evals/` case suite regression-tests that surface against a real model — tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication — each case citing the reproduced failure it encodes.
 

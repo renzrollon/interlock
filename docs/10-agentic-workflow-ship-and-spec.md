@@ -151,21 +151,30 @@ End-to-end, default (lean): **validate → classify/plan waves → implement in 
 
 `--solo` / `--waves` choose the plan's *shape* instead of its tail. Absent both, the classifier emits a `recommendedMode` beside its per-task classification and the planner honours a solo recommendation only inside the envelope `interlock limits` publishes, refusing it with a named warning above that; `--solo` forces solo even above the envelope, `--waves` refuses it outright, and passing both halts at parse rather than picking one. The mode reaches `interlock waves`, `plan fingerprint` and `plan reuse` as `--mode`, so a stored plan built under a different override is re-planned rather than adopted.
 
-Source of truth: `workflows/ship.js`. The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental ACP driver (`bin/interlock-ship-acp`).
+Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli` the loop itself lives in `lib/run.mjs`, and the script is an interpreter of the steps `interlock run` emits — see §5 and [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine). The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental runner (`bin/interlock-run`), which interprets the same steps over a vendor coding CLI — `--host claude | acp | codex | qwen` — instead.
 
 ### Step by step (lean)
 
 1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. Also probes `CLAUDE_CODE_SUBAGENT_MODEL` and Bedrock/haiku reachability (banners, not quality gates).
-2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. Coverage check: `interlock tasks coverage` — omitted checkboxes halt. Then `interlock waves` → `.claude/ship/plan.json`, `interlock wave-state create` → `.claude/ship/state.json`, first `wave-state next`.
-3. **Wave loop** until action is `done` or `halt`. The script does not decide next; it copies `interlock wave-state next` stdout. Known actions: `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt`. An invented `action` is retried once (`next-retry-*`), then halt.
-4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), or — in solo mode — the whole change. Lane length is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. Each agent gets `assembleImplementerPrompt`: tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets (schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000). Invalid/missing packet on a returned result fails the task closed.
-5. **Record.** Haiku ping writes `.claude/ship/batch-N.json`, `wave-state record-batch --write-state`, `interlock tasks tick` for succeeded ids. If the next action is `verify`, the same ping fuses inter-wave verify (saves a turn).
+2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. The classifying agent never runs the CLI itself: `interlock run classified --classified <file>` does coverage (`interlock tasks coverage` — omitted checkboxes halt) → `interlock waves` → `.claude/ship/plan.json` → `interlock wave-state create` → `.claude/ship/state.json` → the first step, as one call (design D7).
+3. **Wave loop** until the action is `done` or `halt`. Neither the script nor the CLI's caller decides next; the driver spawns what a step's `spawns` name and calls the exact `interlock` argv its `then.argv` names, repeating until `then` is `null`. Underneath, `run` obeys one of six wave-level actions from the pure `wave-state next` — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step. An invented `action` is retried once (`next-retry-*`), then halt.
+4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), or — in solo mode — the whole change. Lane length is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. Each agent's briefing (`assembleImplementerPrompt`, tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets — schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000) is written to `.claude/ship/briefings/<label>.md` with its own sha256 on line one; the ACP driver reads it straight off the step, the Workflow script hands the worker the path and requires the hash back rather than pasting the text through a ping. Invalid/missing handoff packet, or an unacknowledged/wrong briefing hash, fails the task closed.
+5. **Record.** `interlock run record-batch` folds three things into one call: the lane merge under `--isolate-waves` (`lib/merge-lanes.mjs`), `wave-state record-batch --write-state`, and `interlock tasks tick` for succeeded ids. Its stdout *is* the next step — one ping either way, whether or not that step is `verify`.
 6. **Inter-wave verify.** Typecheck + unit can halt the *next* wave. Docs-only waves skip. Cap: `interWaveVerifications` (3). Output over 8 KB is spilled (`interlock verify spill`); judge rejects oversized result fields.
-7. **`--apply-only` exits here.** Otherwise **final verify**: unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
-8. **Commit** one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
-9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`). Unreconstructable trajectory → halt even on an otherwise clean run.
+7. **`--apply-only` exits here.** Otherwise **final verify** (`run verify-final`): unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
+8. **Commit** (`run` emits a `commit` step) — one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
+9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`) — both via `run close`, which also builds the receipt and the summary text every driver prints verbatim. Unreconstructable trajectory → halt even on an otherwise clean run.
 
-`--strict` inserts after waves, before final verify: dimension reviewers → two skeptics → `interlock review` → `interlock remediate` rounds 1–2, round 3 verdict-only.
+### The `--strict` sequence
+
+Since `emit-strict-tail-from-cli` the tail is part of the same program: `interlock run` emits each of these steps and names the argv that continues it, so both drivers interpret them the way they interpret a batch, and no driver holds review text or a round budget.
+
+1. **`review`**, emitted where the waves' `done` would otherwise go to final verification. One worker fans out the selected dimensions and two skeptics per finding in its own context. The CLI chose the dimensions from the run's observed changed paths — `language`, `architecture`, `qa`, `technical-lead` always, `devops` when the diff touches deploy/CI/config/infrastructure, `security` when it touches auth, input handling or data exposure — and inlined each one's written criteria plus the repo's `REVIEW.md` prose into the briefing. A dimension whose criteria could not be read is named in the briefing and bannered `REVIEW RUBRIC UNAVAILABLE: <dimension>`. The agent may add a dimension with a one-line reason, and the addition is recorded. It writes `.claude/ship/findings.json` and `.claude/ship/verdicts.json` and reports counts nothing reads. Continues to `run reviewed`.
+2. **`run reviewed`** adjudicates those two files with `lib/review-core.mjs` — the same survival, evidence and band rules `interlock review` applies — using the run's *observed* changed paths, writes `review.json` and the review metrics, and asks `lib/remediate.mjs` for round one. Nothing survived to fix → straight to final verification, no round spent.
+3. **`remediate` rounds 1..`remediationRounds`**, each inlining its own plan (one fixer per `byFile` group, the unscoped group last) and the criteria for every dimension to be re-reviewed. Each continues to `run remediated --round <n>`, which re-adjudicates the rewritten files, records fixed/deferred, and asks for the next round. Every blocker cleared → jump to the verdict rather than spend the rest of the budget.
+4. **The verdict round** (`remediationRounds + 1`) fixes nothing and re-reviews nothing. Blockers still standing → a `halt` step naming the surviving count, and no commit step is ever emitted. Otherwise final verification.
+5. **`handoff`**, after final verification passes, when `--handoff` or `--conformance` is set. The CLI ran `surface` and `conformance` itself and inlined the answers: whether a manual test plan is needed (with the reason when it is not) and the scenario checklist to answer. Continues to `run commit`.
+6. **`run close`** writes the autonomy-ladder record for a strict run, from the CLI's own last adjudication. No agent is asked for that count.
 
 ### Stock apply is not ship
 
@@ -196,14 +205,23 @@ A change proposed by `/opsx:propose` can still be shipped by `/interlock:ship` i
 Claude Code session (your chat)
   └─ /interlock:spec          skill in *this* conversation — explore, write files, review
   └─ /interlock:ship          trampoline → Workflow runtime
-        workflows/ship.js     no model; holds loop + summary + banners
+        workflows/ship.js     no model; interprets the steps `interlock run` emits
           ├─ validate / plan-waves / record-* / verify pings   usually haiku
           ├─ implementer agents                                 haiku|sonnet|opus by tier
-          └─ review/remediate agents                            --strict only
-  interlock CLI               policy, no tokens
+          └─ review/remediate agents                            --strict only (host-tail seam)
+  interlock CLI
+    └─ lib/run.mjs            the loop itself: every briefing, every branch, no tokens
   interlock-graph             retrieval budgets, no model
   openspec CLI                templates and schema, no model
 ```
+
+The host-specific part shrank to two things: an interpreter (spawn what a step names, call what it names next) and a transport (the Workflow `agent()`/`pipeline()` globals here, a vendor CLI subprocess for `bin/interlock-run`). No driver holds the loop, the branching or a prompt's text — `lib/run.mjs` does, so they cannot drift the way two full copies of the loop used to.
+
+| Layer | Where it lives | What it decides |
+|---|---|---|
+| Policy | `bin/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path and merge base |
+| Interpreter | `workflows/ship.js`, `bin/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
+| Transport | the Workflow runtime; `lib/host/{claude-cli,acp,codex,qwen}.mjs` | How a prompt reaches a model, and what that host cannot do — declared, and bannered by the runner |
 
 Claude Code is the harness: tools, permissions, compaction, subagent spawn, workflow runtime ([How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)). Interlock is process on top of that harness ([08](./08-harness-landscape.md)).
 

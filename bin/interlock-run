@@ -1,0 +1,445 @@
+#!/usr/bin/env node
+// interlock-run — the ship loop, hosted over a vendor coding CLI.
+//
+// This is the second driver of the same loop, and it is allowed to exist
+// because it duplicates NOTHING. The loop is a program the CLI emits
+// (`lib/run.mjs`): a step names the agents to spawn — with their briefings,
+// models, tools, result schemas and lane worktrees — and the exact argv to call
+// once they return. This file creates what a step names and calls the argv it
+// names.
+//
+// It was `interlock-ship-acp` and spoke exactly one protocol to exactly one kind
+// of agent. What is left after the loop moved into the CLI is a transport, and a
+// transport has no business being welded to one vendor: the same program now
+// runs over `claude -p`, over an ACP agent, over `codex exec` and over `qwen -p`.
+// Which one is `--host <id>`, the adapter is one file under `lib/host/`, and the
+// registry hands this file a host plus a declaration of what that host CANNOT
+// do (design D1).
+//
+// This driver owns exactly three things the Workflow runtime owns on its side:
+//
+//   the worktree   under --isolate-waves the step names a directory per lane and
+//                  this file runs `git worktree add`; `run record-batch` folds
+//                  and removes them, and halts on a real collision (design D7).
+//   the transport  one agent process per lane, prompt inline on stdin.
+//   the banners    which host, which billing path, which guards are absent, and
+//                  which spawns could not have their model applied (design D8).
+//
+// Everything else — wave order, caps, verdicts, the review, the receipt — is
+// behind `runCli` on purpose, so a second host cannot quietly grow a second copy
+// of the rules.
+//
+// Usage:
+//   interlock-run <change> --host claude
+//   INTERLOCK_ACP_COMMAND="my-acp-agent" interlock-run <change> --host acp
+
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.mjs'
+import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
+import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
+
+const WORK = '.claude/ship'
+
+/** Where the host id comes from when `--host` is absent. */
+const HOST_ENV = 'INTERLOCK_RUN_HOST'
+
+// The same kind of backstop the workflow script keeps, and for the same reason:
+// a loop whose exit condition depends on a relay needs one that does not. It is
+// NOT a policy cap — the bound on how many steps a run may take is published by
+// `interlock limits` as `maxRunSteps` and enforced by the CLI, which returns a
+// halt step naming it. This number is deliberately not derived from that one.
+const RUNAWAY_BACKSTOP = 1000
+
+const USAGE = `interlock-run — ship over a vendor coding CLI (experimental second host)
+
+Usage:
+  interlock-run [<change>] --host <id> [flags]
+
+Hosts:
+  claude                 the installed Claude Code CLI, headless (\`claude -p\`)
+  acp                    any Agent Client Protocol agent ($INTERLOCK_ACP_COMMAND)
+  codex                  the OpenAI Codex CLI (\`codex exec\`)
+  qwen                   the Qwen Code CLI (\`qwen -p\`)
+
+  /interlock:ship on Claude Code stays the supported path and is not this
+  binary: the Workflow runtime inside an interactive session is the one
+  Anthropic exempted from its paused programmatic-use billing change. This
+  runner is the multi-vendor path, and it says which billing path it is on.
+
+Flags:
+  --host <id>            which adapter to run on; defaults to $${HOST_ENV}
+  --change <name>        change to ship (same as the positional)
+  --acp-command <cmd>    ACP agent command; defaults to $INTERLOCK_ACP_COMMAND
+  --root <dir>           repo root (default: cwd)
+  --max-parallel <n>     cap the planner's batch width
+  --isolate-waves        run each lane in its own git worktree, folded per batch
+  --apply-only           stop after the waves
+  --no-commit            run everything, leave the commit
+  --skip-e2e             final verification skips e2e
+  --skip-coverage        final verification skips coverage
+  --review               adversarial review, then bounded remediation
+  --handoff              manual test plan, code explanation, learnings
+  --conformance          answer each delta spec's scenarios against the code
+  --strict               all three of the above
+  --verbose              print host events as they happen
+
+Environment:
+  ${MODEL_MAP_ENV}    {"<host>":{"haiku":"...","sonnet":"...","opus":"..."}}
+                         Claude accepts the slugs unmapped; Codex and Qwen do
+                         not, and an unmapped spawn there is bannered, not
+                         silently run on the operator's default.
+
+The tail runs on this host:
+  The review, remediation and handoff steps are emitted by \`interlock run\`,
+  exactly as the waves are, and this driver interprets them the same way. The
+  adjudication, the round budget and the dimension selection stay in the CLI,
+  so a strict run here halts and reports on the same terms as one on Claude
+  Code.
+
+Exit codes:
+  0  ran to a terminal summary
+  1  the run halted
+  2  the invocation could not be started (an unknown or unusable host)
+`
+
+// --- invocation -------------------------------------------------------------
+
+const VALUE_FLAGS = new Set(['change', 'host', 'acp-command', 'root', 'max-parallel', 'timeout-ms'])
+
+function parseArgv(argv) {
+  const flags = {}
+  const positional = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (!arg.startsWith('--')) {
+      positional.push(arg)
+      continue
+    }
+    const body = arg.slice(2)
+    const eq = body.indexOf('=')
+    if (eq !== -1) {
+      flags[body.slice(0, eq)] = body.slice(eq + 1)
+      continue
+    }
+    if (VALUE_FLAGS.has(body) && i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+      flags[body] = argv[++i]
+      continue
+    }
+    flags[body] = true
+  }
+  return { flags, positional }
+}
+
+const { flags, positional } = parseArgv(process.argv.slice(2))
+
+if (flags.help || flags.h) {
+  process.stdout.write(USAGE)
+  process.exit(0)
+}
+
+const root = typeof flags.root === 'string' ? flags.root : process.cwd()
+const changeArg = typeof flags.change === 'string' ? flags.change : positional[0] || ''
+const maxParallel = Number.parseInt(String(flags['max-parallel'] ?? ''), 10)
+const applyOnly = flags['apply-only'] === true
+const noCommit = flags['no-commit'] === true
+const skipE2e = flags['skip-e2e'] === true
+const skipCoverage = flags['skip-coverage'] === true
+const isolateWaves = flags['isolate-waves'] === true
+// Passed straight through to `run start`, which records them on the manifest.
+// This driver never reads them again: which steps a tail flag buys is the run
+// program's decision, taken once, in the CLI.
+const review = flags.review === true
+const handoff = flags.handoff === true
+const conformance = flags.conformance === true
+const strict = flags.strict === true
+const verbose = flags.verbose === true
+
+const hostId =
+  (typeof flags.host === 'string' && flags.host.trim()) ||
+  (typeof process.env[HOST_ENV] === 'string' && process.env[HOST_ENV].trim()) ||
+  ''
+
+// Every spawn that carried a model, and what the adapter managed to do with it.
+// The driver computes NOTHING about routing: `applied` is the adapter's field,
+// because the adapter is the only party that saw the wire.
+const routing = []
+
+// Refusal comes BEFORE anything is created or written. A run that started and
+// then discovered it had no host would already have a manifest, a briefing and a
+// trajectory describing a run that never happened.
+let host
+try {
+  if (!hostId) {
+    throw new Error(`--host is required (or set $${HOST_ENV}) — known hosts: ${HOST_IDS.join(', ')}`)
+  }
+  host = createHost(hostId, {
+    ...(hostId === 'acp' && typeof flags['acp-command'] === 'string'
+      ? { command: flags['acp-command'] }
+      : {}),
+    cwd: root,
+    timeoutMs: Number.isInteger(Number.parseInt(String(flags['timeout-ms'] ?? ''), 10))
+      ? Number.parseInt(String(flags['timeout-ms']), 10)
+      : undefined,
+    onEvent: event => {
+      if (event && event.type === 'model-routing') {
+        routing.push(event)
+        if (verbose) {
+          process.stderr.write(
+            `${hostId}: model routing ${event.label}: ${event.requested} → ` +
+              (event.applied ? `${event.value} via ${event.via}` : `not applied (${event.reason})`) +
+              '\n'
+          )
+        }
+        return
+      }
+      if (verbose) process.stderr.write(`${hostId}: ${JSON.stringify(event)}\n`)
+    }
+  })
+} catch (err) {
+  process.stderr.write(`interlock-run: ${err.message}\n\n${USAGE}`)
+  process.exit(2)
+}
+
+const capabilities = host.capabilities || {}
+
+// --- plumbing ---------------------------------------------------------------
+
+// Which host, which billing path, and which guards are not in force. Raised
+// before the first step so they appear even on a run that halts immediately, and
+// folded into the CLI's summary through --host-banners so that a reader sees
+// them in one block with everything else the run degraded on (design D8).
+const banners = [`RUNNER HOST: ${hostId} (experimental)`]
+
+if (drivesClaudeBinary(hostId, process.env, typeof flags['acp-command'] === 'string' ? flags['acp-command'] : undefined)) {
+  banners.push(
+    `SUBSCRIPTION PATH: programmatic (${hostId}) — claude -p, the Agent SDK and ACP are the usage ` +
+      `Anthropic has flagged for separate billing; /interlock:ship on the Workflow runtime is the ` +
+      `exempted path, see docs/04-when-it-stops.md`
+  )
+}
+if (hostId === 'codex' && onChatGptPlan(process.env)) {
+  banners.push(
+    `CHATGPT PLAN PATH (codex): neither ${CODEX_KEY_ENVS.join(' nor ')} is set, so this run spends ` +
+      `the ChatGPT plan's device-auth session — it goes stale in about a week, and OpenAI directs ` +
+      `unattended volume to an API key`
+  )
+}
+if (capabilities.hooks === false) {
+  banners.push(
+    `HOOKS NOT IN FORCE (${hostId}): this repository's PreToolUse guards are Claude Code's, so ` +
+      `nothing stops a repair step from weakening a test here except the CLI's own unit-suite ` +
+      `shrink check`
+  )
+}
+
+/**
+ * What the run has to say about model routing, read off the adapter's events.
+ *
+ * Conditional on purpose: it prints when at least one spawn that asked for a
+ * model could not have it applied, and names each one with the adapter's reason.
+ * A run on which every model landed says so instead — silence would read the
+ * same as a run that degraded and hid it.
+ */
+function routingBanners() {
+  if (!routing.length) return []
+  const unapplied = routing.filter(event => event.applied === false)
+  if (!unapplied.length) {
+    return [`model routing: applied on ${routing.length}/${routing.length} spawns`]
+  }
+  return [
+    `MODEL ROUTING UNAVAILABLE (${hostId}): the plan's per-tier model assignment is not in effect`,
+    ...unapplied.map(event => `  — ${event.label}: ${event.reason}`)
+  ]
+}
+
+let resolvedChange = changeArg || '(unresolved)'
+let steps = 0
+
+/** Write a work file and return the repo-relative path the CLI is given. */
+function write(rel, data) {
+  const abs = join(root, rel)
+  mkdirSync(dirname(abs), { recursive: true })
+  writeFileSync(abs, typeof data === 'string' ? data : JSON.stringify(data, null, 2) + '\n')
+  return rel
+}
+
+/** Run the CLI through the host port and parse `--json` stdout when present. */
+async function cli(argv) {
+  const result = await host.runCli([...argv, '--json'])
+  if (!result.stdout.trim()) return null
+  try {
+    return JSON.parse(result.stdout)
+  } catch {
+    // Unparseable stdout is not a step. Nothing is inferred from it.
+    return null
+  }
+}
+
+function log(line) {
+  process.stdout.write(`${line}\n`)
+}
+
+/**
+ * Create the worktrees a step named, one per lane, from the batch's merge base.
+ *
+ * The step derives the path and this file creates the directory, so the fold and
+ * the checkout cannot disagree about where a lane ran. A creation that fails is
+ * NOT swallowed: the lane would silently run in the shared tree beside its
+ * siblings, which is the exact defect isolation exists to prevent, so the run
+ * halts naming the lane.
+ *
+ * @param {object} step
+ * @returns {string|null} a halt reason, or null when every lane has its worktree
+ */
+function createWorktrees(step) {
+  const base = typeof step.mergeBase === 'string' ? step.mergeBase : ''
+  const lanes = (step.spawns || []).filter(s => s && s.worktree && s.worktree.path)
+  if (!lanes.length) return null
+  if (!base) {
+    return `the step named lane worktrees but no merge base, so no lane could be forked from the shared tree`
+  }
+  for (const spawn of lanes) {
+    const path = spawn.worktree.path
+    try {
+      // --detach: a lane is a checkout of one commit, not a branch anyone will
+      // push. --force lets a re-run reuse a directory a previous halt left named.
+      execFileSync('git', ['worktree', 'add', '--detach', '--force', path, base], {
+        cwd: root,
+        stdio: ['ignore', 'ignore', 'pipe']
+      })
+    } catch (err) {
+      return (
+        `could not create the lane worktree for ${spawn.label} at ${path}: ` +
+        `${(err && err.stderr ? String(err.stderr).trim() : err && err.message) || 'git failed'}`
+      )
+    }
+  }
+  return null
+}
+
+/**
+ * Spawn one agent a step named.
+ *
+ * The briefing goes INLINE — this host can hold a multi-kilobyte string, so
+ * there is nothing to relay and nothing to acknowledge (design D2). `cwd` is the
+ * lane's worktree when the step named one, so the agent's writes land where the
+ * fold will look for them.
+ */
+function spawnOne(s) {
+  return host.spawn({
+    label: s.label,
+    prompt: s.prompt,
+    schema: s.schema,
+    ...(s.model ? { model: s.model } : {}),
+    ...(s.worktree && s.worktree.path ? { cwd: join(root, s.worktree.path) } : {}),
+    type: s.type,
+    tools: s.tools
+  })
+}
+
+/** Spawn everything a step names, in parallel. */
+function spawnAll(step) {
+  const spawns = Array.isArray(step.spawns) ? step.spawns : []
+  if (!spawns.length) return Promise.resolve([])
+  return host.mapPipeline(spawns, s => spawnOne(s))
+}
+
+// --- the loop ---------------------------------------------------------------
+//
+// Identical in shape to the workflow host's. The two drivers differ in how a
+// prompt reaches an agent, in who creates a lane's worktree, and in nothing else.
+
+let step = await cli([
+  'run',
+  'start',
+  ...(changeArg ? ['--change', changeArg] : []),
+  ...(applyOnly ? ['--apply-only'] : []),
+  ...(noCommit ? ['--no-commit'] : []),
+  ...(skipE2e ? ['--skip-e2e'] : []),
+  ...(skipCoverage ? ['--skip-coverage'] : []),
+  ...(isolateWaves ? ['--isolate-waves'] : []),
+  ...(Number.isInteger(maxParallel) ? ['--max-parallel', String(maxParallel)] : []),
+  ...(review ? ['--review'] : []),
+  ...(handoff ? ['--handoff'] : []),
+  ...(conformance ? ['--conformance'] : []),
+  ...(strict ? ['--strict'] : []),
+  '--root',
+  '.',
+  '--host',
+  hostId,
+  '--host-capabilities',
+  JSON.stringify(capabilities)
+])
+
+while (step && step.then) {
+  if (++steps > RUNAWAY_BACKSTOP) {
+    await stop(`the interpreter exceeded its runaway backstop (${RUNAWAY_BACKSTOP})`)
+  }
+  for (const banner of step.banners || []) banners.push(banner)
+  if (typeof step.change === 'string' && step.change) resolvedChange = step.change
+
+  const worktreeProblem = createWorktrees(step)
+  if (worktreeProblem) await stop(worktreeProblem)
+
+  for (const s of step.spawns || []) log(`  ${step.action}: ${s.label}`)
+  const results = await spawnAll(step)
+  write(`${WORK}/results.json`, results)
+  // The close is the one continuation that needs more than the spawn results:
+  // it reads the banners only this host could raise. Appended here as well as
+  // at `stop()`, so a CLEAN run reports them too — the path least likely to
+  // have any is also the path where a missing one is least visible.
+  const isClose = step.then.argv[0] === 'run' && step.then.argv[1] === 'close'
+  step = await cli([
+    ...step.then.argv,
+    ...(isClose ? closeArgs() : []),
+    '--results',
+    `${WORK}/results.json`,
+    '--root',
+    '.'
+  ])
+}
+
+if (!step) {
+  await stop('the run program returned no step — the CLI produced no readable output')
+}
+
+finish(step)
+
+// --- closing ----------------------------------------------------------------
+
+/**
+ * Stop the run through the CLI's own close, so a halt records a receipt, an
+ * outcome and a terminal trajectory event exactly as a completion does.
+ */
+async function stop(reason) {
+  const closed = await cli(['run', 'close', '--halt', reason, ...closeArgs(), '--root', '.'])
+  finish(
+    closed || {
+      action: 'halt',
+      exitCode: 1,
+      summary:
+        `SHIP HALTED — ${reason}\n\n` +
+        `The close itself could not be reached, so no receipt was written for this run.`
+    }
+  )
+}
+
+/** The flags the close reads for what only this host observed. */
+function closeArgs() {
+  // Routing is resolved here rather than pushed as it happened, because the
+  // question it answers — did EVERY spawn get its model — is only answerable
+  // once the last spawn has returned.
+  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners()])]
+}
+
+/** Print the close's summary and exit on its status. */
+function finish(closed) {
+  log(
+    typeof closed.summary === 'string' && closed.summary.trim()
+      ? closed.summary
+      : `SHIP ${closed.action === 'halt' ? 'HALTED' : 'ENDED'} — ${resolvedChange}`
+  )
+  process.exit(Number.isInteger(closed.exitCode) ? closed.exitCode : closed.action === 'halt' ? 1 : 0)
+}

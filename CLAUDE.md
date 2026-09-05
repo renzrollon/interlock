@@ -18,11 +18,12 @@ This file is the canonical root instruction file. `AGENTS.md`, if present, is a 
 
 ## Architecture
 
-- `bin/` — the three executables that land on a user's PATH (`interlock`, `interlock-graph`, `interlock-ship-acp`). Exit codes are the contract; a gate blocks by exiting non-zero.
-- `lib/` — pure decision modules, one concern each. No I/O beyond what a module's name implies.
+- `bin/` — the executables that land on a user's PATH (`interlock`, `interlock-graph`, `interlock-run`, plus the `interlock-ship-acp` deprecation shim). Exit codes are the contract; a gate blocks by exiting non-zero.
+- `lib/` — pure decision modules, one concern each. No I/O beyond what a module's name implies. `lib/run.mjs` is the ship loop itself: it emits the whole program as versioned steps (agents to spawn, briefings, the exact CLI argv to call next); `lib/prompts/` assembles every briefing those steps carry.
 - `skills/` — model-facing prose. This is a shipped surface: a reworded instruction is a behaviour change.
 - `hooks/` — `PreToolUse` and `SessionStart` guards, registered in `.claude-plugin/plugin.json`.
-- `workflows/ship.js` — the ship orchestrator.
+- `workflows/ship.js` — the drivers are interpreters, not orchestrators: this script (and `bin/interlock-run`) spawn what a step from `interlock run` names, create the lane worktree it names, and call what it names next. Neither holds loop logic; `lib/run.mjs` does.
+- `lib/host/` — one adapter per vendor coding CLI (`claude-cli`, `acp`, `codex`, `qwen`), plus the registry that declares what each host cannot do and the one model map they all read. A capability is declared so the run program can branch on it and the runner can banner it; a host that could not be bannered is a run that degraded silently.
 - `docs/` — numbered, human-facing. `.claude/graph/` holds the agent-facing digests instead.
 
 ## Things to get right

@@ -8,10 +8,11 @@
 // contract: changing the assembled text has to be a deliberate act that updates
 // a file, not a side effect of editing nearby control flow.
 //
-// The function is read out of workflows/ship.js and eval'd, the same trick
-// test/workflows.test.mjs already uses for parseInvocation. It cannot be
-// imported: the workflow runtime rejects a script containing import(), so
-// prompt assembly has to live in the script, and the markers are the seam.
+// The function is imported from lib/prompts/implementer.mjs. It used to be read
+// out of workflows/ship.js and eval'd, because the workflow runtime rejects a
+// script containing import() and prompt assembly had to live in the script. The
+// CLI assembles every briefing now, so the text lives in lib/ and this test can
+// import it like any other module.
 //
 // Deliberately Node-only. No network, no API key, no ACP or headless host —
 // snapshotting what a model would have seen does not require running one.
@@ -21,22 +22,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const SHIP = join(ROOT, 'workflows', 'ship.js')
 const FIXTURES = join(ROOT, 'test', 'fixtures', 'prompts')
 
 function assembleFromSource(input) {
-  const text = readFileSync(SHIP, 'utf8')
-  const m =
-    /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_START\n([\s\S]*?)\n\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/.exec(
-      text
-    )
-  assert.ok(
-    m,
-    'ship.js must define assembleImplementerPrompt between ASSEMBLE_IMPLEMENTER_PROMPT markers'
-  )
-  return new Function('input', `${m[1]}; return assembleImplementerPrompt(input)`)(input)
+  return assembleImplementerPrompt(input)
 }
 
 /** The fixed inputs the fixtures were generated from. */

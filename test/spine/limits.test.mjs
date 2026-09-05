@@ -9,9 +9,11 @@ import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import {
   LIMITS,
   EVAL_CAPS,
+  MODEL_PRICES,
   RUNTIME,
   EFFORT,
   LANE_CAPS,
@@ -40,6 +42,31 @@ test('the documented ship caps are the ones the prose promised', () => {
   assert.equal(LIMITS.rootCauseIterations, 5)
   assert.equal(LIMITS.taskFailureHalt, 2)
   assert.equal(LIMITS.interWaveVerifications, 3)
+})
+
+test('the run-step cap is published here rather than restated in a driver', () => {
+  // This was `MAX_LOOP_STEPS = 200`, a literal in `workflows/ship.js` and again
+  // in `bin/interlock-ship-acp` — a loop bound stated in two places that the
+  // cap-authority spec forbids stating anywhere but here. Its reader is
+  // `lib/run.mjs`, which counts steps on the run manifest and halts.
+  assert.equal(LIMITS.maxRunSteps, 200)
+  assert.match(formatLimits(), /run steps \(per run\)/)
+  const runProgram = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(
+    runProgram,
+    /LIMITS\.maxRunSteps/,
+    'lib/run.mjs must read the published cap rather than carry a literal of its own'
+  )
+  // And neither driver may restate it. A driver's RUNAWAY_BACKSTOP is a
+  // different thing — the host runtime's agent ceiling, not a policy cap — and
+  // is asserted distinct in test/workflows.test.mjs.
+  for (const driver of [join(ROOT, 'workflows', 'ship.js'), join(ROOT, 'bin', 'interlock-ship-acp')]) {
+    assert.doesNotMatch(
+      readFileSync(driver, 'utf8'),
+      /MAX_LOOP_STEPS/,
+      `${driver} restates the run-step bound — it is published by interlock limits`
+    )
+  }
 })
 
 test('the spill caps match design.md — 8192 byte threshold, 4096 char preview', () => {
@@ -180,6 +207,72 @@ test('every cap the limits surface prints is read by the code path it governs', 
     `these caps are printed but nothing reads them: ${unread.join(', ')}. ` +
       `Wire each to the path it governs, or remove it from its cap group and from the ` +
       `printed surface together — a cap with no reader is a cap written in prose.`
+  )
+})
+
+// --- the outcome eval's ceiling and its price table (spec: evals/outcome-run) --
+//
+// The cap lands WITH both of its readers, which is the condition on publishing
+// one at all: `runsPerCase` sat here printed and unread for a release, and
+// `reportingThreshold` was removed rather than left in that state. The
+// cap-authority sweep above already refuses an unread cap, but it walks only
+// lib/, bin/, workflows/ and .github/workflows/ — the eval runner lives under
+// evals/, which that sweep cannot see. So the runner's readership is asserted
+// here, by name, or a cap could pass the sweep on its CI reader alone while the
+// thing that actually enforces it had drifted to a literal.
+
+test('the outcome-eval ceiling and price table are published, and the price table is identified', () => {
+  assert.equal(typeof EVAL_CAPS.shipEvalCostUsd, 'number')
+  assert.ok(EVAL_CAPS.shipEvalCostUsd > 0)
+  assert.match(formatLimits(), /eval outcome-run cost ceiling/)
+  assert.match(formatLimits(), new RegExp(`\\$${EVAL_CAPS.shipEvalCostUsd}`))
+
+  // The identifier is the load-bearing field: it travels on every recorded row,
+  // so a later price revision cannot silently reinterpret rows written under the
+  // old one. A table with no id could not do that.
+  assert.ok(MODEL_PRICES.id, 'the price table carries no identifier')
+  assert.match(formatLimits(), new RegExp(MODEL_PRICES.id))
+  for (const [model, price] of Object.entries(MODEL_PRICES.perMillionTokens)) {
+    assert.equal(typeof price.input, 'number', `${model} has no input price`)
+    assert.equal(typeof price.output, 'number', `${model} has no output price`)
+    assert.match(formatLimits(), new RegExp(`price: ${model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  }
+})
+
+test('interlock limits --json emits the ceiling and the price table', () => {
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, `interlock limits --json exited ${run.status}: ${run.stderr}`)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.evals.shipEvalCostUsd, EVAL_CAPS.shipEvalCostUsd)
+  assert.equal(payload.prices.id, MODEL_PRICES.id)
+  assert.deepEqual(payload.prices.perMillionTokens, MODEL_PRICES.perMillionTokens)
+})
+
+test('the outcome eval and its scheduled job are the ceiling’s readers', () => {
+  // Both read the published field through `interlock limits --json` rather than
+  // importing the module or restating the number — one number, two readers, and
+  // neither able to drift from the other.
+  const runner = readFileSync(join(ROOT, 'evals', 'ship', 'run.mjs'), 'utf8')
+  assert.match(
+    runner,
+    /evals\.shipEvalCostUsd/,
+    'the outcome-eval runner must read the published ceiling rather than carry a literal'
+  )
+  assert.match(runner, /limits', '--json'|limits --json/, 'the runner must read it from the CLI')
+
+  const workflow = join(ROOT, '.github', 'workflows', 'ship-outcome-eval.yml')
+  assert.ok(existsSync(workflow), 'the scheduled outcome-eval workflow is missing')
+  const job = readFileSync(workflow, 'utf8')
+  assert.match(job, /evals\.shipEvalCostUsd/, 'the scheduled job must read the published ceiling')
+  // And it restates no ceiling of its own. A dollar figure written in workflow
+  // YAML is the prose cap this module exists to end, one file further out.
+  assert.doesNotMatch(
+    job.replace(/shipEvalCostUsd/g, ''),
+    /\$\s?\d+(\.\d+)?\b/,
+    'the scheduled job restates a dollar figure; the ceiling is published by interlock limits'
   )
 })
 

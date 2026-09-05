@@ -90,7 +90,12 @@ test('spawnPrefix maps ping vs everything else', () => {
   assert.equal(WORKER_AGENT, 'interlock:worker')
 })
 
-test('ship.js restates the host spawn-prefix literals and uses them on every agent()', () => {
+test('ship.js restates only the ping literals, and passes a step\'s through untouched', () => {
+  // The script used to restate all four host constants, because the workflow
+  // runtime rejects module loading and every spawn it made was its own. A step
+  // names the type and tools of every agent it asks for now, so what is left
+  // here is the PING's — the one agent this host spawns on its own account, to
+  // run a CLI command.
   const text = readFileSync(SHIP, 'utf8')
 
   const str = name => {
@@ -105,32 +110,25 @@ test('ship.js restates the host spawn-prefix literals and uses them on every age
   }
 
   assert.equal(str('PING_AGENT'), PING_AGENT)
-  assert.equal(str('WORKER_AGENT'), WORKER_AGENT)
   assert.deepEqual(list('PING_TOOLS'), [...PING_TOOLS])
-  assert.deepEqual(list('WORKER_TOOLS'), [...WORKER_TOOLS])
   assertSlim(list('PING_TOOLS'), 'ship.js PING_TOOLS')
-  assertSlim(list('WORKER_TOOLS'), 'ship.js WORKER_TOOLS')
   assert.ok(!list('PING_TOOLS').includes('Edit'), 'a ping must not receive Edit')
   assert.ok(!list('PING_TOOLS').includes('Grep'), 'a ping must not receive Grep')
-
   assert.match(text, /type:\s*PING_AGENT/)
-  assert.match(text, /type:\s*WORKER_AGENT/)
   assert.match(text, /tools:\s*PING_TOOLS/)
-  assert.match(text, /tools:\s*WORKER_TOOLS/)
-  assert.match(text, /\.\.\.workerExtra/)
-  assert.match(text, /\.\.\.pingExtra|\bpingExtra\b/)
-  assert.match(
-    text,
-    /cheap = \(name, prompt, extra = \{\}\) => step\(name, prompt, nextSchema, \{ \.\.\.pingExtra, \.\.\.extra \}\)/
-  )
-  assert.match(
-    text,
-    // The call may be commented and wrapped across lines; what this pin owns is
-    // that the implementer spawn is an `agent()` handed the shared assembler.
-    /agent\(\s*(?:\/\/[^\n]*\n\s*)*assembleImplementerPrompt\(\{/
-  )
-  assert.match(text, /\.\.\.workerExtra/)
 
-  const agentCalls = [...text.matchAll(/^\s*agent\s*\(/gm)]
-  assert.equal(agentCalls.length, 2, 'ship.js should have exactly two agent() calls (step + implementer)')
+  // The worker's are the STEP's, dual-written by the CLI from lib/host.mjs and
+  // passed through here rather than restated.
+  assert.doesNotMatch(
+    text,
+    /const WORKER_AGENT|const WORKER_TOOLS/,
+    'ship.js must not carry the worker constants: a step names them'
+  )
+  assert.match(text, /type: s\.type,\n\s*tools: s\.tools,/)
+
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /spawnPrefix\(kind === 'ping' \? 'ping' : 'worker'\)/)
+  const host = readFileSync(join(ROOT, 'lib', 'host.mjs'), 'utf8')
+  assert.match(host, new RegExp(`WORKER_AGENT = '${WORKER_AGENT}'`))
+  assertSlim([...WORKER_TOOLS], 'lib/host.mjs WORKER_TOOLS')
 })

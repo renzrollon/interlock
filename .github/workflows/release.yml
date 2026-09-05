@@ -1,0 +1,39 @@
+# Publish to npm on a version tag, with provenance and no stored token.
+#
+# TRUSTED PUBLISHING MUST BE CONFIGURED ONCE ON THE REGISTRY — for this
+# repository AND for this workflow file name (`release.yml`). Nothing here can
+# do that; it is a console action on the package's settings page. Until it
+# exists, the publish step fails with the registry's own authentication error
+# and this job is reported FAILED, never skipped and never silently green.
+#
+# Deliberately no `NODE_AUTH_TOKEN` and no registry secret: the OIDC identity
+# granted by `id-token: write` is the whole credential, so there is no
+# long-lived token in this repository to leak or to rotate.
+#
+# The version published is whatever `package.json` carries; the tag is only the
+# trigger. `test/spine/package.test.mjs` is what keeps the three version-bearing
+# manifests in lockstep, and `npm test` below runs it before anything is pushed.
+
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+      # No dependencies to install — the whole toolchain is stdlib Node.
+      - name: Test
+        run: npm test
+      - name: Publish
+        run: npm publish --provenance --access public

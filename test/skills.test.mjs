@@ -165,7 +165,7 @@ test('ship skill is a workflow trampoline, not the loop', () => {
   assert.doesNotMatch(text, /cap two remediation/i, 'trampoline must not restate loop caps')
 })
 
-test('ship trampoline halts without the Workflow tool and never auto-starts the ACP host', () => {
+test('ship trampoline halts without the Workflow tool and never auto-starts the runner', () => {
   // add-interlock-acp-host §2: a second host must not weaken the default one.
   // The failure mode this guards is not "ACP is broken" — it is a trampoline
   // that quietly reaches for *any* other way to run the loop when the Workflow
@@ -180,15 +180,27 @@ test('ship trampoline halts without the Workflow tool and never auto-starts the 
   )
   assert.match(
     text,
-    /interlock-ship-acp/,
-    'the trampoline must name the ACP driver as a separate binary'
+    /interlock-run/,
+    'the trampoline must name the runner as a separate binary'
   )
   assert.match(
     text,
     /separate binary this skill never invokes/i,
-    'the ACP pointer must say the skill does not launch it'
+    'the runner pointer must say the skill does not launch it'
   )
   assert.match(text, /not a fallback for a missing Workflow tool/i)
+  // What the second host runs. It used to be "the lean loop", and `--strict`
+  // "stays Claude Code only" — both false since `emit-strict-tail-from-cli`
+  // made the tail a program the CLI emits. Tokens, not sentences, so the first
+  // reword does not delete the pin.
+  assert.match(text, /same loop/i, 'the runner pointer must say it runs the same loop')
+  assert.match(text, /--host/, 'and that the runner takes a host')
+  assert.match(text, /--strict/, 'and that --strict is part of it')
+  assert.doesNotMatch(
+    text,
+    /(strict|tail)[^.]{0,60}Claude Code only/i,
+    'the skill must not claim the strict tail is Claude Code only'
+  )
 
   // The loop itself, in any host's vocabulary, stays out of the trampoline.
   for (const forbidden of [

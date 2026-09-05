@@ -1,0 +1,43 @@
+{
+  "schema": "interlock.ship-eval-sample/1",
+  "fixture": "docs-and-code",
+  "runId": "sample-clean-run",
+  "note": "The trajectory a clean loop-arm run over the docs-and-code fixture leaves behind. Laid down through lib/run-log.mjs's own writer, so it cannot drift from the shape the loop writes. `<HEAD>` is replaced with the scratch repository's head commit by whoever lays it down.",
+  "completed": ["1.1", "1.2", "2.1", "3.1"],
+  "events": [
+    { "type": "run-start", "mode": "continue", "strict": false },
+    { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+    { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+    { "type": "agent-spawn", "label": "impl 1.1", "kind": "implementer", "taskId": "1.1" },
+    { "type": "agent-spawn", "label": "impl 1.2", "kind": "implementer", "taskId": "1.2" },
+    { "type": "cli-exit", "command": "wave-state next", "exitCode": 0 },
+    { "type": "wave-action", "action": "run-batch", "wave": "2", "waveIndex": 1, "batchIndex": 0, "phase": "code", "source": "record-batch" },
+    { "type": "agent-spawn", "label": "impl 2.1", "kind": "implementer", "taskId": "2.1" },
+    { "type": "agent-spawn", "label": "impl 3.1", "kind": "implementer", "taskId": "3.1" },
+    { "type": "cli-exit", "command": "wave-state record-batch", "exitCode": 0 },
+    { "type": "verify-judgement", "context": "final", "halt": false, "reason": "unit suite green", "unitStatus": "green" },
+    { "type": "cli-exit", "command": "verify judge", "exitCode": 0 },
+    { "type": "run-complete", "leftoverTaskIds": [] },
+    {
+      "type": "run-receipt",
+      "waves": [
+        { "wave": "1", "ok": 2, "failed": 0, "notAttempted": 0 },
+        { "wave": "2", "ok": 2, "failed": 0, "notAttempted": 0 }
+      ],
+      "spend": [
+        { "wave": "1", "outputTokens": 4210 },
+        { "wave": "2", "outputTokens": 3980 }
+      ],
+      "outputTokens": 8190,
+      "remediationRounds": 0,
+      "leftoverTaskIds": [],
+      "halted": false,
+      "committed": true,
+      "commit": "<HEAD>",
+      "touchedPaths": ["README.md", "src/format.mjs", "src/summary.mjs"],
+      "predictedPaths": ["README.md", "src/format.mjs", "src/summary.mjs"],
+      "predictedPathsComplete": true,
+      "degradations": []
+    }
+  ]
+}

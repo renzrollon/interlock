@@ -29,11 +29,38 @@ import {
   formatRunState,
   batchOutcomes
 } from '../lib/waves.mjs'
+import {
+  CLASSIFIED_PATH,
+  checkSequence,
+  readManifest,
+  runClassified,
+  runClose,
+  runCommit,
+  runJudge,
+  runNext,
+  runRecordBatch,
+  runRemediated,
+  runReplan,
+  runReviewed,
+  runStart,
+  runVerifyFinal
+} from '../lib/run.mjs'
+import { haltStep } from '../lib/run.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, EFFORT, LANE_CAPS, SOLO, formatLimits } from '../lib/limits.mjs'
+import {
+  LIMITS,
+  RUNTIME,
+  EVAL_CAPS,
+  MODEL_PRICES,
+  REPORT_CAPS,
+  EFFORT,
+  LANE_CAPS,
+  SOLO,
+  formatLimits
+} from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import {
   resolveReview,
@@ -115,6 +142,40 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock run start --change <name>        The ship loop, as a program. Each
+  interlock run classified --classified <f>  subcommand returns one step record
+  interlock run record-batch --results <f>   (interlock.run-step/1): the agents
+  interlock run judge --context <ctx> --results <f>
+  interlock run verify-final                 to spawn — label, model, effort,
+  interlock run reviewed --results <f>       agent type, tools, result schema and
+  interlock run remediated --round <n> --results <f>
+  interlock run commit --results <f>         a briefing file with its sha256 —
+  interlock run replan --results <f>         and the exact argv to call once they
+  interlock run next                         return. A host spawns what a step
+  interlock run close [--halt <reason>]      names, writes the results, calls
+                      [--host-banners <f>]
+                      [--host-observed <f>]
+                                            \`then.argv\`, and repeats until
+                                            \`then\` is null. It decides nothing:
+                                            every branch the loop has (apply-only,
+                                            no-commit, skip-e2e, isolate-waves,
+                                            replan allowed, verify skipped, done)
+                                            is taken here from the run manifest
+                                            (.claude/ship/run.json) and the wave
+                                            state. The strict tail is part of
+                                            the program too: \`reviewed\`
+                                            adjudicates the findings and verdicts
+                                            the review step wrote and plans round
+                                            one, \`remediated --round <n>\`
+                                            re-adjudicates and asks for the next
+                                            round, the verdict or the halt, and
+                                            \`commit\` records what the handoff
+                                            wrote. No host carries the round
+                                            budget, and none may refuse a tail
+                                            flag. \`run close\` is the only one
+                                            that exits non-zero — on a halt, or
+                                            on a run whose trajectory cannot be
+                                            reconstructed
   interlock merge-lanes --base <sha> --lanes <file>
                                            Fold a batch's isolated lane worktrees
                                            back into the shared tree (--isolate-waves
@@ -656,7 +717,21 @@ const BOOLEAN_FLAGS = new Set([
   'no-profile',
   'pre-existing',
   'halted',
-  'write'
+  'write',
+  // `run start`'s invocation flags. Each is a shape decision the driver already
+  // parsed; the run manifest is where they stop being host-specific.
+  'apply-only',
+  'no-commit',
+  'skip-e2e',
+  'skip-coverage',
+  'isolate-waves',
+  'continue'
+  // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
+  // NOT here. `interlock ready --review <findings.json>` takes a value under
+  // the same spelling, and making the name boolean everywhere would silently
+  // turn that file path into a positional. On `run start` they take no value,
+  // and the parser already yields `true` for a flag followed by another flag or
+  // by nothing — which is the only way `run start` is ever invoked.
 ])
 
 function parseArgs(argv) {
@@ -740,6 +815,24 @@ function die(message) {
 
 function warn(message) {
   process.stderr.write(`interlock: ${message}\n`)
+}
+
+/**
+ * A run step in human form. The JSON is what a driver obeys; this is for the
+ * person running `interlock run` by hand to see what the program decided.
+ */
+function formatRunStep(step) {
+  const lines = [`${step.action}${step.wave === undefined ? '' : ` — wave ${step.wave}`}`]
+  if (step.reason) lines.push(`  reason: ${step.reason}`)
+  for (const s of step.spawns || []) {
+    lines.push(
+      `  spawn ${s.label} (${s.kind}${s.model ? `, ${s.model}` : ''}${s.effort ? `, ${s.effort}` : ''})` +
+        ` → ${s.promptPath}`
+    )
+  }
+  for (const banner of step.banners || []) lines.push(`  ${banner}`)
+  lines.push(step.then ? `  then: interlock ${step.then.argv.join(' ')}` : '  then: (terminal)')
+  return lines.join('\n') + '\n'
 }
 
 function emit(json, obj, text) {
@@ -1527,6 +1620,11 @@ function main() {
           limits: LIMITS,
           runtime: RUNTIME,
           evals: EVAL_CAPS,
+          // Its own group, beside `evals` rather than inside it: the eval caps
+          // are scalars a reader compares a running total against, and this is
+          // the table that produced the total. Its `id` is what a recorded
+          // result row is keyed against.
+          prices: MODEL_PRICES,
           report: REPORT_CAPS,
           effort: EFFORT,
           laneCaps: LANE_CAPS,
@@ -2127,6 +2225,174 @@ function main() {
       } else {
         die(`unknown plan subcommand: ${sub || '(none)'} — expected fingerprint|reuse`)
       }
+      break
+    }
+
+    // The run program (`lib/run.mjs`). Every step of the lean ship loop is
+    // emitted here: what to spawn, with which briefing, and which argv to call
+    // next. A host obeys the record and decides nothing (design D3).
+    //
+    // `wave-state` below is untouched by this and stays the pure thing `run`
+    // obeys. The three helpers `lib/run.mjs` cannot import — the git readers and
+    // the trajectory loggers that live in this file — are handed in as `deps`
+    // rather than written a second time there.
+    case 'run': {
+      const sub = positional[1]
+      const ctx = {
+        root,
+        warn,
+        deps: {
+          headCommit: repoRoot => {
+            try {
+              return execFileSync('git', ['rev-parse', 'HEAD'], {
+                cwd: repoRoot,
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore']
+              }).trim() || null
+            } catch {
+              // An unreadable base is null, never a guess: `decorate` halts on
+              // it rather than folding a batch against a commit nobody read.
+              return null
+            }
+          },
+          logWaveMutation,
+          logAgentSpawns,
+          observedChangedPaths,
+          runMergeLanes
+        }
+      }
+
+      // The sequence guard. The manifest records the argv the last step named as
+      // its continuation; a driver that skipped a step, repeated one, or invented
+      // a subcommand would otherwise advance the state machine twice or record a
+      // batch against the wrong wave — both silent.
+      //
+      // `close` is exempt, in both directions. A driver that hit an error of its
+      // own — a spawn that never returned, a transport that dropped — closes
+      // from wherever it is, and refusing that would leave the run with no
+      // receipt, no outcome record and no terminal event. A run nobody can
+      // reconstruct is the failure this trajectory exists to prevent; a
+      // mis-sequenced close is not.
+      if (sub !== 'start' && sub !== 'close') {
+        const manifest = readManifest(root)
+        if (manifest) {
+          // The RAW argv, not the parsed positionals: a step's continuation
+          // names its flags (`--classified <path>`, `--context inter-wave`) and
+          // those are part of what the program asked for.
+          const problem = checkSequence(manifest, argv)
+          if (problem) die(problem)
+        }
+      }
+
+      const results = flags.results ? readInput(flags.results, '--results <file|->') : []
+      const resultList = Array.isArray(results) ? results : [results]
+
+      let step
+      if (sub === 'start') {
+        // A name that resolves to nothing is a HALT STEP, not a `die`. Every
+        // other `run` subcommand answers with a step, and a host that got an
+        // error object where it expected one would report "the relay could not
+        // be read" — which is true of the transport and false of the run.
+        const requested = requestedName(positional.slice(1), flags)
+        const resolved = resolveChange(root, requested)
+        if (resolved.error) {
+          const step = haltStep(
+            `validate failed: ${resolved.error}${
+              Array.isArray(resolved.candidates) && resolved.candidates.length
+                ? ` (candidates: ${resolved.candidates.join(', ')})`
+                : ''
+            }`
+          )
+          emit(json, step, formatRunStep(step))
+          break
+        }
+        const name = resolved.name
+        const laneMode = modeFlag(flags)
+        // What the host declared it cannot do (design D1). A driver that passed
+        // only an id — `workflows/ship.js` does — is the Workflow host, and
+        // `newManifest` assumes exactly that shape for it.
+        let hostCapabilities
+        if (typeof flags['host-capabilities'] === 'string') {
+          try {
+            hostCapabilities = JSON.parse(flags['host-capabilities'])
+          } catch (err) {
+            die(`--host-capabilities must be a JSON object of the host's declared capabilities: ${err.message}`)
+          }
+        }
+        step = runStart(ctx, {
+          change: name,
+          host: typeof flags.host === 'string' ? flags.host : undefined,
+          hostCapabilities,
+          flags: {
+            applyOnly: flags['apply-only'] === true,
+            noCommit: flags['no-commit'] === true,
+            skipE2e: flags['skip-e2e'] === true,
+            skipCoverage: flags['skip-coverage'] === true,
+            isolateWaves: flags['isolate-waves'] === true,
+            laneMode: laneMode || null,
+            maxParallel: num(flags, 'max-parallel') ?? null,
+            mode: flags.continue === true ? 'continue' : 'checkpoint',
+            review: flags.review !== undefined || flags.strict !== undefined,
+            handoff: flags.handoff !== undefined || flags.strict !== undefined,
+            conformance: flags.conformance !== undefined || flags.strict !== undefined,
+            strict: flags.strict !== undefined
+          }
+        })
+      } else if (sub === 'classified') {
+        const classified =
+          typeof flags.classified === 'string' && flags.classified.trim()
+            ? flags.classified.trim()
+            : CLASSIFIED_PATH
+        step = runClassified(ctx, { classifiedPath: classified })
+      } else if (sub === 'record-batch') {
+        step = runRecordBatch(ctx, { results: resultList })
+      } else if (sub === 'judge') {
+        const context = flags.context === undefined ? 'final' : String(flags.context)
+        if (context !== 'inter-wave' && context !== 'final') {
+          die(`--context must be inter-wave|final (got "${context}")`)
+        }
+        step = runJudge(ctx, { context, results: resultList })
+      } else if (sub === 'verify-final') {
+        step = runVerifyFinal(ctx)
+      } else if (sub === 'reviewed') {
+        step = runReviewed(ctx, { results: resultList })
+      } else if (sub === 'remediated') {
+        const roundNum = num(flags, 'round')
+        if (!Number.isInteger(roundNum)) die('run remediated requires --round <n>')
+        step = runRemediated(ctx, { round: roundNum, results: resultList })
+      } else if (sub === 'commit') {
+        step = runCommit(ctx, { results: resultList })
+      } else if (sub === 'replan') {
+        step = runReplan(ctx, { results: resultList })
+      } else if (sub === 'next') {
+        step = runNext(ctx)
+      } else if (sub === 'close') {
+        const hostBanners = flags['host-banners']
+          ? readInput(flags['host-banners'], '--host-banners <file|->')
+          : []
+        const hostObserved = flags['host-observed']
+          ? readInput(flags['host-observed'], '--host-observed <file|->')
+          : null
+        step = runClose(ctx, {
+          results: resultList,
+          halt: typeof flags.halt === 'string' ? flags.halt : null,
+          hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
+          hostObserved
+        })
+        emit(json, step, step.summary + '\n')
+        if (step.exitCode !== 0) process.exit(step.exitCode)
+        break
+      } else {
+        die(
+          `unknown run subcommand: ${sub || '(none)'} — expected ` +
+            'start|classified|record-batch|judge|verify-final|reviewed|remediated|commit|replan|next|close'
+        )
+      }
+
+      emit(json, step, formatRunStep(step))
+      // A halt step still exits 0: its `then` is the close, and a driver that
+      // stopped here would leave the run with no receipt and no terminal event.
+      // `run close` is the call that carries the non-zero exit.
       break
     }
 

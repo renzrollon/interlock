@@ -53,7 +53,32 @@ const JUDGED_GRADER_TYPES = new Set(['llm', 'baseline'])
 const COMPONENT_DIRS = ['skills', 'agents', 'commands', 'workflows']
 
 // Non-case entries that legitimately appear under evals/.
-const NON_CASE_ENTRIES = new Set(['results', 'mocks'])
+//
+// `ship` and `history` hold the outcome eval — fixture repositories, its runner
+// and its committed results record. None of them carries a case.yaml or a
+// prompt.md, so `discoverCases` already ignores them; they are named here
+// anyway, and the discovered set is pinned below, because a fixture that
+// silently joined the metered case suite would spend a credential on a
+// repository nobody wrote a case for.
+const NON_CASE_ENTRIES = new Set(['results', 'mocks', 'ship', 'history'])
+
+// The model-facing cases, by name. Pinned rather than counted: a count still
+// passes when one case is deleted and a fixture directory is discovered in its
+// place, which is the exact substitution this pin exists to catch. Adding a
+// case is a deliberate edit here.
+const EXPECTED_CASES = [
+  'cited-cap-resolution',
+  'control-plane-action',
+  'evidence-locator',
+  'handoff-status-enum',
+  'lane-partial-failure',
+  'skill-routing',
+  'skill-routing-explore',
+  'tier-read-scope',
+  'tier-read-scope-full',
+  'trampoline-halt',
+  'trampoline-launch'
+]
 
 // Minimal top-level scalar reader for a case.yaml. We only need `schema_version`,
 // `provenance`, and `tags` — all top-level — so a full YAML parser is overkill.
@@ -158,6 +183,21 @@ const caseNames = new Set(cases.map(c => c.name))
 test('the eval suite lives at evals/ and holds cases', () => {
   assert.ok(existsSync(EVALS_DIR), 'evals/ directory is missing')
   assert.ok(cases.length >= 8, `expected at least the 8 seeded cases, found ${cases.length}`)
+})
+
+test('case discovery finds exactly the model-facing cases and no fixture', () => {
+  // The outcome eval's fixtures are repositories, not cases: they carry no
+  // case.yaml and no prompt.md, are graded on disk state rather than on a
+  // transcript, and cost a metered run each. A fixture appearing here means one
+  // acquired a case marker file, which is a defect in the fixture set — report
+  // it, do not let the metered suite quietly grow by one.
+  assert.deepEqual(
+    cases.map(c => c.name),
+    EXPECTED_CASES,
+    'the discovered case set changed. If a case was added or removed on purpose, update ' +
+      'EXPECTED_CASES. If a name here is an outcome-eval fixture, that fixture has acquired a ' +
+      'case.yaml or prompt.md and must not be discovered as a case.'
+  )
 })
 
 test('no case directory sits under a declared plugin component', () => {

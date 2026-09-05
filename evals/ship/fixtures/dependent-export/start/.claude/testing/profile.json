@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated": "2026-09-05",
+  "runner": "node:test",
+  "packageManager": "npm",
+  "unit": {
+    "command": "npm test",
+    "cwd": ".",
+    "single_file": "node --test <path>",
+    "filter_syntax": "node --test --test-name-pattern '<regex>' <path>"
+  },
+  "e2e": null,
+  "known_flaky": [],
+  "notes": [
+    "Stdlib-only fixture: no dependencies, no install step, `npm test` runs on a bare checkout.",
+    "The test script expands the file list with `find` rather than passing a glob to `node --test`, because the runner only expands globs on Node >= 22."
+  ]
+}

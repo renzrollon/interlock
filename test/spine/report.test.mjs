@@ -22,7 +22,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildReport, formatReport, REPORT_SCHEMA, SOURCES, UNATTRIBUTED } from '../../lib/report.mjs'
+import {
+  buildReport,
+  formatReport,
+  NO_EVAL_RESULT,
+  REPORT_SCHEMA,
+  SOURCES,
+  UNATTRIBUTED
+} from '../../lib/report.mjs'
 import { REPORT_CAPS } from '../../lib/limits.mjs'
 import { REVIEW_METRICS_SCHEMA } from '../../lib/metrics.mjs'
 import { appendRunLogEvent, listRunLogs, readRunLog, formatRunLog } from '../../lib/run-log.mjs'
@@ -763,7 +770,11 @@ test('the three surfaces cannot disagree about a value or a denominator', () => 
       readingOf(i.planFidelity.diffMatchesPlan, 'pct'),
       readingOf(i.reviewFindings.fromMetrics.dismissalShare, 'pct'),
       readingOf(i.reviewFindings.fromReceipts.survivalShare, 'pct'),
-      readingOf(i.gateExitHealth.nonZeroShare, 'pct')
+      readingOf(i.gateExitHealth.nonZeroShare, 'pct'),
+      // The fourth corpus. This fixture writes no outcome-eval history, so the
+      // reading is the absence — and the two surfaces must word it identically,
+      // which is exactly the property being defended here.
+      ['UNOBSERVED', NO_EVAL_RESULT]
     ]
 
     const actual = readings(doc)

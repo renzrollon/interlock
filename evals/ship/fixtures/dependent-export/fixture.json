@@ -1,0 +1,11 @@
+{
+  "schema": "interlock.ship-eval-fixture/1",
+  "id": "dependent-export",
+  "change": "add-theme-resolver",
+  "shape": "a second task consuming an export the first task creates",
+  "taskArtifacts": {
+    "1.1": ["src/tokens.mjs"],
+    "1.2": ["src/theme.mjs"]
+  },
+  "taskDependencies": [{ "task": "1.2", "dependsOn": ["1.1"] }]
+}
