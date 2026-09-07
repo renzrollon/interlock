@@ -291,6 +291,39 @@ test('guard-commit: allows a non-commit git command during a non-commit stage', 
   }
 })
 
+test('guard-commit: denies a newline-chained commit — a multi-line script is the ordinary tool call', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const r = runGuard('guard-commit.mjs', bash('git add -A\ngit commit -m x'), root)
+    assert.ok(isDeny(r), `expected deny, got ${JSON.stringify(r)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-commit: denies a commit behind a `then` keyword', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const r = runGuard('guard-commit.mjs', bash('if true; then git commit -m x; fi'), root)
+    assert.ok(isDeny(r), `expected deny, got ${JSON.stringify(r)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-commit: a newline-chained script with no commit still allows', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const r = runGuard('guard-commit.mjs', bash('git add -A\ngit status'), root)
+    assert.ok(isAllow(r), `expected allow, got ${JSON.stringify(r)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('guard-commit: ignores a non-Bash tool', () => {
   const root = tmpRoot()
   try {

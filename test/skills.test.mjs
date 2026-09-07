@@ -248,6 +248,23 @@ test('the spec skill tells authors not to split a section to buy parallelism', (
   assert.match(text, /may ship solo/i, 'and must name solo as the small-change shape')
 })
 
+test('fix-tests resolves the typecheck and lint commands, the only supplier a ship run has', () => {
+  // The same class as the `--metrics` defect below. `planVerification` reads
+  // `profile.typecheck.command` and `profile.lint.command`; nothing else in the
+  // loop supplies either. If this skill stops filling them, both kinds are
+  // skipped with `no-detectable-command` on every run forever, `typecheck` — a
+  // HALTING kind at the inter-wave checkpoint — never runs, and nothing fails.
+  // Tokens, not sentences, so the first reword does not delete the pin.
+  const text = readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8')
+  for (const token of ['typecheck.command', 'lint.command', 'scripts.typecheck', 'scripts.lint']) {
+    assert.ok(text.includes(token), `fix-tests/SKILL.md no longer names ${token}`)
+  }
+  const contract = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
+  for (const token of ['"typecheck"', '"lint"', 'typecheck.command', 'lint.command']) {
+    assert.ok(contract.includes(token), `shared/TEST-PROFILE.md no longer defines ${token}`)
+  }
+})
+
 test('both review skills request review-metrics emission on their gated command line', () => {
   // This is the assertion the defect it guards did not have. `--metrics` existed
   // on `interlock review` for a year and no skill ever passed it, so the

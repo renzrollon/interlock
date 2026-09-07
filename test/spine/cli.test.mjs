@@ -2406,9 +2406,24 @@ async function relay(status = 200) {
     server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
   `
   const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  // Three ways this can end, and only one of them used to settle the promise: a
+  // spawn error, a child that exits before printing a port (a sandbox that
+  // cannot bind loopback), and a child that neither prints nor exits. Without
+  // the latter two the whole suite wedges instead of failing.
   const port = await new Promise((resolve, reject) => {
-    child.stdout.once('data', d => resolve(Number(String(d).trim())))
-    child.once('error', reject)
+    let timer = null
+    const settle = (fn, value) => {
+      clearTimeout(timer)
+      fn(value)
+    }
+    timer = setTimeout(() => settle(reject, new Error('relay did not report a port within 5s')), 5000)
+    child.stdout.once('data', d => settle(resolve, Number(String(d).trim())))
+    child.once('error', err => settle(reject, err))
+    child.once('exit', code => settle(reject, new Error(`relay exited (${code}) before reporting a port`)))
+  }).catch(err => {
+    child.kill()
+    rmSync(relayDir, { recursive: true, force: true })
+    throw err
   })
   return {
     url: `http://127.0.0.1:${port}`,

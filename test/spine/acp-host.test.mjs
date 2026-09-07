@@ -381,7 +381,7 @@ test('pickModelValue matches by map, then value, then name — and otherwise not
 // driver forgetting that field would brief a solo agent as an ordinary lane,
 // silently, with every fixture still green.
 
-test('the ACP driver takes no shape flag and briefs no lane of its own', () => {
+test('the ACP driver forwards the shape flag and briefs no lane of its own', () => {
   // Both hosts used to share ONE assembler, loaded out of ship.js source
   // between markers, and each owned telling it which mode its own loop was
   // running under — a driver that forgot the field would brief a solo agent as
@@ -396,10 +396,19 @@ test('the ACP driver takes no shape flag and briefs no lane of its own', () => {
     /assembleImplementerPrompt|next\.mode|const solo\b/,
     'the driver does not assemble a briefing, so it has no mode to supply'
   )
-  assert.doesNotMatch(
-    driver,
-    /--solo\b|\blaneMode\b/,
-    'and it takes no shape flag of its own: the planner decides the mode'
+  // `--solo` / `--waves` ARE this driver's flags, exactly as they are
+  // `workflows/ship.js`'s: an operator names the shape, `run start` records it
+  // and the planner decides everything downstream of it. Refusing to carry them
+  // did not keep the decision in the planner — it made solo planning
+  // unreachable on every vendor host while the invocation looked accepted.
+  // What the driver must not do is INTERPRET the mode, so that is what is
+  // asserted: it forwards the string and reads it back nowhere.
+  assert.match(driver, /'--mode', laneMode/, 'the shape reaches `run start` or it reaches nothing')
+  const uses = driver.split('\n').filter(l => l.includes('laneMode') && !l.trim().startsWith('//'))
+  assert.deepEqual(
+    uses.filter(l => !/^const laneMode =/.test(l.trim()) && !l.includes("'--mode', laneMode")),
+    [],
+    'and the driver never reads the mode it forwarded — the planner decides everything downstream'
   )
   assert.match(driver, /prompt: s\.prompt,/, 'it sends the briefing the step handed it')
 })

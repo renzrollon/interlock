@@ -30,6 +30,8 @@ The failure mode this skill exists to prevent is the one where a suite goes gree
 
 Read `.claude/testing/profile.json`. If it is missing or `--reconfigure` was passed, run the discovery ladder in `${CLAUDE_PLUGIN_ROOT}/shared/TEST-PROFILE.md`: manifests, then runner configs, then CI workflows, then **at most four questions** for gaps that genuinely block a correct run.
 
+Resolve `typecheck.command` and `lint.command` on the same pass, the way `coverage.command` is resolved: the profile's own value first, then `package.json` `scripts.typecheck` / `scripts["type-check"]` and `scripts.lint`, then the step in the CI job that runs it. Never ask for either and never invent one — nothing found is `command: null`, which a ship run skips with a stated reason. A ship run's inter-wave checkpoint has no typecheck to run unless this field is filled, and a typecheck failure is a halting kind there.
+
 This is the only skill permitted to interview the user about tests. Every later run is zero-question.
 
 Persist the profile and mirror it into the `## Testing` block in `CLAUDE.md` (or `AGENTS.md`), between the managed markers, idempotently.

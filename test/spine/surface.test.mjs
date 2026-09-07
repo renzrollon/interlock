@@ -223,6 +223,23 @@ test('needsDevopsReview is true when any file suggests infra impact', () => {
   }
 })
 
+test('each file carries its own infra verdict, and the rollup is exactly their disjunction', () => {
+  const result = classifySurface([
+    '.github/workflows/ci.yml',
+    'package.json',
+    'src/lib/format.ts',
+    'src/components/Button.tsx'
+  ])
+  const infra = Object.fromEntries(result.files.map(f => [f.path, f.infra]))
+  assert.equal(infra['.github/workflows/ci.yml'], true)
+  assert.equal(infra['package.json'], true)
+  assert.equal(infra['src/lib/format.ts'], false)
+  assert.equal(infra['src/components/Button.tsx'], false)
+  // The rollup must never be a second, independently-derived answer: it is the
+  // disjunction of the per-file flags a caller reads to name the triggers.
+  assert.equal(result.needsDevopsReview, result.files.some(f => f.infra))
+})
+
 test('needsDevopsReview is false for a purely UI/frontend change', () => {
   const result = classifySurface([
     'src/components/Button.tsx',

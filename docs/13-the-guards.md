@@ -36,9 +36,11 @@ So the run *publishes* its stage, and the guard *reads* it. `lib/ship-stage.mjs`
 
 ### Lifecycle
 
-`workflows/ship.js` writes the marker as it enters each stage — `implement` when the wave loop begins, `review` before the review fan-out, `remediation` before each fix round, `fix-tests` before the final verify (which repairs a red suite by root cause, exactly when weakening a test is the hazard), and `commit` before the commit step, which is the one stage `guard-commit` lets a commit through. It **clears** the marker on every terminal path — commit, halt, apply-only, no-commit — so no stage leaks into the next session.
+The **agent performing each step** writes the marker as it enters that stage — `implement` on the wave loop's lane briefings, `review` before the review fan-out, `remediation` before each fix round, `fix-tests` before the final verify (which repairs a red suite by root cause, exactly when weakening a test is the hazard), and `commit` before the commit step, which is the one stage `guard-commit` lets a commit through. The writer is the agent rather than a driver because the marker's `pid` has to belong to a process that is alive for the run.
 
-The workflow runtime rejects module loading, so it cannot import `lib/ship-stage.mjs`. The marker's path and JSON shape are therefore **duplicated as literals** in `workflows/ship.js` and kept byte-identical to the module — the same discipline the `PING_AGENT` / `WORKER_TOOLS` constants already follow. A drift test (`test/spine/ship-stage-drift.test.mjs`) fails if the two ever disagree.
+`run close` in `lib/run.mjs` **clears** it, on every terminal path — commit, halt, apply-only, no-commit. The program routes a halt through `run close --halt` and both drivers' `stop()` call it, so a completion and a halt clear the same way. Without that clear, a completed run leaves `stage: "commit"` behind and `guard-tasks` denies every `tasks.md` checkbox edit for the rest of the session; a halt leaves `remediation` or `fix-tests` and `guard-tests` denies every test-file edit. A clear that fails is spoken as a degradation banner, never as an exit code.
+
+No driver carries the marker's path or JSON shape. `lib/prompts/stage.mjs` renders the publish fragment from `lib/ship-stage.mjs`'s own `stagePath`, `MARKER_FIELDS` and `STAGES`, so there is exactly one definition; `test/spine/ship-stage-drift.test.mjs` fails if any driver declares a marker literal at all.
 
 A marker write that fails is a **non-fatal warning** on the run's trajectory, surfaced through the same banner channel every other run warning uses. The run continues: the marker is a guard input, not a gate the run itself depends on.
 

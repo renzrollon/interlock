@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { laneEffort as laneEffortSource } from '../lib/waves.mjs'
@@ -1377,6 +1377,16 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
 
 const RUNNER_DRIVER = join(ROOT, 'bin', 'interlock-run')
 
+/** Run the runner binary and read back its exit code and stderr. */
+function spawnRunner(args) {
+  const r = spawnSync(process.execPath, [RUNNER_DRIVER, ...args], {
+    cwd: tmpdir(),
+    encoding: 'utf8',
+    timeout: 30000
+  })
+  return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
 /** Subcommands a driver invokes, however it spells the invocation. */
 function invokedSubcommands(text) {
   // Comment lines are excluded: a driver that CITES `interlock limits` in a
@@ -1406,6 +1416,71 @@ test('both drivers request the close push, and neither decides anything about it
     assert.ok(start !== -1, `${rel} no longer assembles its close arguments in closeArgs()`)
     const body = text.slice(start, text.indexOf('\n}', start))
     assert.ok(body.includes("'--notify'"), `${rel}'s closeArgs() no longer requests the push`)
+  }
+})
+
+// --- the runner's plan-shape and resume flags (finding #10) -----------------
+//
+// `--solo`, `--waves` and `--continue` reached `parseArgv` as bare booleans and
+// were then dropped: solo planning and continue mode were unreachable on every
+// vendor host while the invocation looked accepted. The three assertions below
+// pin the forward, the refusal of the contradiction, and the refusal of a flag
+// nobody handles — a swallowed flag is the silent degradation, not the loud one.
+
+test("the runner forwards the plan shape and continue mode to `run start`", () => {
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  const start = driver.indexOf("'run',\n  'start',")
+  assert.ok(start !== -1, 'bin/interlock-run no longer assembles a `run start` argv')
+  // The argv ends at the capabilities it always closes with; `indexOf('])')`
+  // would stop at the first `: [])` ternary, one line in.
+  const end = driver.indexOf('--host-capabilities', start)
+  assert.ok(end !== -1, 'the `run start` argv no longer declares host capabilities')
+  const argv = driver.slice(start, end)
+  assert.match(argv, /'--mode', laneMode/, 'the plan shape is not forwarded')
+  assert.match(argv, /'--continue'/, 'continue mode is not forwarded')
+})
+
+test('the runner refuses --solo and --waves together, before anything is created', () => {
+  const r = spawnRunner(['--solo', '--waves', '--host', 'acp'])
+  assert.equal(r.status, 2, `expected exit 2, got ${r.status}: ${r.stderr}`)
+  assert.match(r.stderr, /--solo and --waves/)
+})
+
+test('the runner refuses a flag it does not handle, by name', () => {
+  const r = spawnRunner(['--bogus', '--host', 'acp'])
+  assert.equal(r.status, 2, `expected exit 2, got ${r.status}: ${r.stderr}`)
+  assert.match(r.stderr, /--bogus/)
+})
+
+test('every flag the runner tests pass is one its USAGE documents', () => {
+  // The refusal above is only safe if USAGE is complete. A flag exercised
+  // elsewhere in this suite but missing from USAGE would now exit 2 on a real
+  // invocation, which is the opposite failure from the one being fixed.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  const usage = /const USAGE = `([\s\S]*?)\n`/.exec(driver)[1]
+  const documented = new Set([...usage.matchAll(/^ {2}--([a-z][a-z0-9-]*)/gm)].map(m => m[1]))
+  for (const flag of [
+    'host',
+    'change',
+    'acp-command',
+    'root',
+    'timeout-ms',
+    'max-parallel',
+    'isolate-waves',
+    'apply-only',
+    'no-commit',
+    'skip-e2e',
+    'skip-coverage',
+    'review',
+    'handoff',
+    'conformance',
+    'strict',
+    'verbose',
+    'solo',
+    'waves',
+    'continue'
+  ]) {
+    assert.ok(documented.has(flag), `--${flag} is used but USAGE no longer documents it`)
   }
 })
 

@@ -29,7 +29,15 @@ import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS } from '../../lib/limits.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
-import { BRIEFING_HEADER, briefingHash, runRemediated, runReviewed } from '../../lib/run.mjs'
+import {
+  BRIEFING_HEADER,
+  briefingHash,
+  runRecordBatch,
+  runRemediated,
+  runReviewed
+} from '../../lib/run.mjs'
+import { stagePath, writeStage } from '../../lib/ship-stage.mjs'
+import { nextStep } from '../../lib/waves.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'bin', 'interlock')
@@ -1234,9 +1242,24 @@ async function relay(status = 200) {
     server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
   `
   const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  // Three ways this can end, and only one of them used to settle the promise: a
+  // spawn error, a child that exits before printing a port (a sandbox that
+  // cannot bind loopback), and a child that neither prints nor exits. Without
+  // the latter two the whole suite wedges instead of failing.
   const port = await new Promise((resolve, reject) => {
-    child.stdout.once('data', d => resolve(Number(String(d).trim())))
-    child.once('error', reject)
+    let timer = null
+    const settle = (fn, value) => {
+      clearTimeout(timer)
+      fn(value)
+    }
+    timer = setTimeout(() => settle(reject, new Error('relay did not report a port within 5s')), 5000)
+    child.stdout.once('data', d => settle(resolve, Number(String(d).trim())))
+    child.once('error', err => settle(reject, err))
+    child.once('exit', code => settle(reject, new Error(`relay exited (${code}) before reporting a port`)))
+  }).catch(err => {
+    child.kill()
+    rmSync(dir, { recursive: true, force: true })
+    throw err
   })
   return {
     url: `http://127.0.0.1:${port}`,
@@ -1404,5 +1427,298 @@ test('the topic reaches the relay and nothing else — not the summary, not the 
   } finally {
     cleanup(root)
     await forbidden.close()
+  }
+})
+
+// --- the close's terminal housekeeping --------------------------------------
+//
+// Three fields that existed at one end and dangled at the other: the stage
+// marker had `clearStage` and no caller, the receipt had a `planFingerprint`
+// field and no producer, and both read exactly like a mechanism that ran and
+// found nothing.
+
+test('a clean close clears the stage marker it left on disk', () => {
+  const { root, change } = repo()
+  try {
+    // The marker a run's own commit step publishes, with a pid that is alive —
+    // so `readStage` would keep returning it as current for the rest of the
+    // session, and the edit guards would keep denying on it.
+    writeStage(change, 'commit', { root, pid: process.pid })
+    assert.ok(existsSync(stagePath(change, root)), 'the marker must exist for the clear to mean anything')
+    toCleanClose(root, change)
+    assert.equal(
+      existsSync(stagePath(change, root)),
+      false,
+      'a marker nobody clears keeps the PreToolUse guards armed after the run is over'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a halted close clears the marker too — a halt is a terminal path like any other', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    writeStage(change, 'remediation', { root, pid: process.pid })
+    const closed = run(root, ['run', 'close', '--halt', 'stopped on purpose'], { expectExit: 1 }).step
+    assert.equal(closed.action, 'halt')
+    assert.ok(batch.spawns.length, 'the run got as far as dispatching work')
+    assert.equal(
+      existsSync(stagePath(change, root)),
+      false,
+      'a `remediation` marker left behind denies every test-file edit for the rest of the session'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the receipt carries the plan fingerprint the run actually adopted', () => {
+  const { root, change } = repo()
+  try {
+    const closed = toCleanClose(root, change)
+    const stored = JSON.parse(readFileSync(join(root, '.claude/ship/plan-fingerprint.json'), 'utf8'))
+    assert.equal(typeof stored.hash, 'string')
+
+    const manifest = manifestOf(root)
+    const events = readFileSync(join(root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+    const receipt = events.find(e => e.type === 'run-receipt')
+    assert.equal(receipt.planFingerprint, stored.hash)
+    assert.ok(closed.exitCode === 0)
+
+    // And it reaches the reader: `fingerprint —` on every real run was the whole
+    // symptom, because the plan-reuse story cannot be checked from a trajectory
+    // that never recorded which plan ran.
+    const shown = execFileSync(process.execPath, [BIN, 'run-log', 'show', manifest.runId], {
+      cwd: root,
+      encoding: 'utf8'
+    })
+    assert.ok(shown.includes(`fingerprint ${stored.hash}`), shown)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a fingerprint left by a different change is not attributed to this run', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    // A stale file from another change's run, planted after this run wrote its
+    // own. A wrong hash is worse than an absent one: the field exists so a
+    // reader can CHECK the plan-reuse story.
+    file(root, '.claude/ship/plan-fingerprint.json', { change: 'some-other-change', hash: 'deadbeef' })
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const verified = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const commit = run(root, [...verified.then.argv]).step
+    const manifest = manifestOf(root)
+    run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] })
+    const events = readFileSync(join(root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(l => JSON.parse(l))
+    const receipt = events.filter(e => e.type === 'run-receipt').pop()
+    assert.equal(receipt.planFingerprint, null, 'an unattributable hash is unobserved, never borrowed')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the merge base survives the driver round trip (finding #5) -------------
+
+test('an isolated batch persists its merge base on the manifest, not only on the step', () => {
+  const { root, change } = repo()
+  try {
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'])
+    assert.match(batch.mergeBase, /^[0-9a-f]{7,40}$/)
+    assert.equal(
+      manifestOf(root).mergeBase,
+      batch.mergeBase,
+      'the step goes to the driver and the driver returns only results — without this the fold ' +
+        'has nowhere to read the base back from'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the fold uses the base captured at dispatch, never the post-batch HEAD', () => {
+  const { root, change } = repo()
+  try {
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'])
+    const captured = batch.mergeBase
+    assert.match(captured, /^[0-9a-f]{7,40}$/)
+    file(root, '.claude/ship/results.json', batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))))
+
+    // In-process, so the fold's own input can be observed. `headCommit` returns
+    // a sentinel: under isolation, anything that landed on the shared tree while
+    // the batch ran makes the post-batch HEAD a DIFFERENT commit, and taking
+    // every lane's diff against it reports the wrong write set.
+    let foldedAgainst = null
+    const results = JSON.parse(readFileSync(join(root, '.claude/ship/results.json'), 'utf8'))
+    const ctx = {
+      root,
+      warn: () => {},
+      deps: {
+        headCommit: () => 'ffffffffffffffffffffffffffffffffffffffff',
+        observedChangedPaths: () => ['README.md'],
+        runMergeLanes: (_root, _candidates, base) => {
+          foldedAgainst = base
+          return { status: 'clean', cleanupWarnings: [] }
+        },
+        logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: true }),
+        logAgentSpawns: () => {}
+      }
+    }
+    runRecordBatch(ctx, { results })
+    assert.equal(foldedAgainst, captured, 'the fold read the post-batch HEAD instead of the captured base')
+    assert.equal(manifestOf(root).mergeBase, null, 'a spent base must not carry into the next batch')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the inter-wave checkpoint's two inert halves (findings #6, #9) ---------
+//
+// A retry was briefed byte-identically to the first attempt, and the published
+// inter-wave verify budget compared `0 >= budget` on every run. Both are driven
+// here through a real multi-group repo, because both live in the round trip
+// between `run record-batch`, the step, and `run judge`.
+
+// Two tasks per group, because `foldSingletonWaves` folds a one-task wave into
+// the previous one — three singleton groups would plan as a single wave with no
+// inter-wave boundary at all. Source paths, so nothing is docs-skipped.
+const THREE_GROUPS = {
+  tasks: [1, 2, 3].flatMap(g =>
+    [1, 2].map(n => ({
+      id: `${g}.${n}`,
+      group: g,
+      description: `Edit src/mod${g}${n}.ts`,
+      tier: 2,
+      model: 'sonnet',
+      isTestTask: false,
+      paths: [`src/mod${g}${n}.ts`]
+    }))
+  )
+}
+
+const srcOf = id => `src/mod${id.replace('.', '')}.ts`
+
+/** A repo whose profile names a unit command, so verification actually plans. */
+function verifiableRepo(classified = THREE_GROUPS) {
+  const ids = classified.tasks.map(t => t.id)
+  const { root, change } = repo('add-thing', {
+    tasks: `# Tasks\n\n${ids.map(id => `- [ ] ${id} Edit ${srcOf(id)}`).join('\n')}\n`
+  })
+  file(root, '.claude/testing/profile.json', {
+    version: 1,
+    unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+  })
+  const started = run(root, ['run', 'start', '--change', change, '--mode', 'waves']).step
+  file(root, '.claude/ship/classified.json', classified)
+  return { root, change, batch: run(root, [...started.then.argv]).step }
+}
+
+/** Report every lane in `batch` as ok, having really touched a source file. */
+function completeBatch(root, batch) {
+  assert.equal(batch.action, 'run-batch', 'completeBatch was handed something that dispatches no lanes')
+  for (const task of batch.lanes.flat()) {
+    file(root, srcOf(task.id), `export const v = '${task.id}'\n`)
+  }
+  return run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => ({
+      tasks: batch.lanes[i].map(t => ({
+        id: t.id,
+        outcome: 'ok',
+        filesChanged: [srcOf(t.id)],
+        handoff: {
+          schema: 'interlock.wave-handoff/1',
+          taskId: t.id,
+          status: 'ok',
+          summary: 'done',
+          evidence: [`${srcOf(t.id)}:1`],
+          next: 'nothing',
+          blocker: null
+        }
+      }))
+    }))
+  }).step
+}
+
+test('a red inter-wave check briefs its retry with the attempt number and what failed', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(verify.context, 'inter-wave')
+    assert.equal(verify.skipped, false, 'the profile names a unit command, so there is something to run')
+    assert.ok(!/fix attempt/.test(verify.spawns[0].prompt), 'the first attempt is not a retry')
+
+    const retry = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['boom'] }] }]
+    }).step
+
+    assert.equal(retry.action, 'verify')
+    assert.equal(retry.fixAttempt, 1, 'a red check buys a targeted fix attempt')
+    const prompt = retry.spawns[0].prompt
+    assert.match(prompt, /fix attempt 1 of/, 'the retry must know it is one')
+    // The halt message the judge produced, quoted back — without it the second
+    // agent re-runs the same commands with no statement of what was red.
+    assert.match(prompt, /unit suite is red/)
+    assert.doesNotMatch(prompt, /first failure/, 'the do-not-repair clause is exactly wrong on a retry')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the inter-wave verify budget is measured across the round trip and then bounds the next check', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    const dispatched = manifestOf(root)
+    assert.ok(dispatched.verifyStartedAt, 'the step must mark when it dispatched, or nothing can time it')
+
+    // Backdate the mark: this process runs BETWEEN agent turns and never sees
+    // the interval itself, which is the whole reason the clock lives on the
+    // manifest rather than in one invocation.
+    const manifest = { ...dispatched, verifyStartedAt: new Date(Date.now() - LIMITS.interWaveVerifyBudgetMs * 2).toISOString() }
+    file(root, '.claude/ship/run.json', manifest)
+
+    const next = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+
+    const folded = manifestOf(root)
+    assert.ok(
+      folded.verifyElapsedMs >= LIMITS.interWaveVerifyBudgetMs,
+      `the elapsed interval was not folded in (${folded.verifyElapsedMs}ms)`
+    )
+    assert.equal(folded.verifyStartedAt, null, 'a mark left set would be counted twice')
+
+    // Group 2 runs, and its checkpoint now sees a spent budget.
+    const second = completeBatch(root, next)
+    assert.equal(second.action, 'verify')
+    const plan = JSON.parse(readFileSync(join(root, '.claude/ship/vplan-inter-wave.json'), 'utf8'))
+    assert.equal(plan.budgetExceeded, true, 'the published cap must actually bound something')
+    assert.deepEqual(
+      plan.steps.map(s => s.kind).filter(k => k !== 'typecheck'),
+      [],
+      'past the budget, drop to typecheck only rather than letting the checks outweigh the work'
+    )
+    if (second.skipped) {
+      assert.equal(second.reason, 'verify-budget-exceeded', 'the reason is the budget, not typecheck’s missing command')
+      assert.ok(
+        (second.banners || []).some(b => b.includes('verify-budget-exceeded')),
+        'a degraded path is spoken, never silent'
+      )
+    }
+  } finally {
+    cleanup(root)
   }
 })

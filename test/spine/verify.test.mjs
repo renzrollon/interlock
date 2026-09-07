@@ -127,6 +127,31 @@ test('typecheck and lint are caller-supplied, never fabricated', () => {
   assert.equal(stepFor(given, 'lint').command, 'eslint .')
 })
 
+test('a profile carrying typecheck and lint plans them with no caller override', () => {
+  // The half that was missing. `verifyStep` supplies neither command, so a
+  // profile section is the ONLY way either kind reaches a ship run — without it
+  // both are permanently skipped with `no-detectable-command` and `typecheck`,
+  // a halting kind at the inter-wave checkpoint, can never fire.
+  const plan = planVerification(
+    profile({
+      typecheck: { command: 'npm run typecheck', cwd: 'packages/app' },
+      lint: { command: 'npm run lint', cwd: '.' }
+    }),
+    { context: 'inter-wave', changed: ['src/app.ts'] }
+  )
+  assert.equal(stepFor(plan, 'typecheck').command, 'npm run typecheck')
+  assert.equal(stepFor(plan, 'typecheck').cwd, 'packages/app')
+  assert.equal(stepFor(plan, 'lint').command, 'npm run lint')
+})
+
+test('a non-string typecheck command in the profile is refused, not coerced', () => {
+  assert.throws(
+    () => planVerification(profile({ typecheck: { command: 42 } })),
+    /typecheck\.command/
+  )
+  assert.throws(() => planVerification(profile({ lint: { command: 42 } })), /lint\.command/)
+})
+
 test('typecheck blocks, lint does not', () => {
   const plan = planVerification(profile(), { typecheckCommand: 'tsc --noEmit', lintCommand: 'eslint .' })
   assert.equal(stepFor(plan, 'typecheck').blocking, true)

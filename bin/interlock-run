@@ -73,7 +73,12 @@ Flags:
   --change <name>        change to ship (same as the positional)
   --acp-command <cmd>    ACP agent command; defaults to $INTERLOCK_ACP_COMMAND
   --root <dir>           repo root (default: cwd)
+  --timeout-ms <ms>      per-spawn timeout handed to the adapter
   --max-parallel <n>     cap the planner's batch width
+  --solo                 plan the whole change as one lane (mutually exclusive
+                         with --waves; neither lets the classifier recommend)
+  --waves                force the waves shape even for a small change
+  --continue             resume rather than start a fresh checkpoint
   --isolate-waves        run each lane in its own git worktree, folded per batch
   --apply-only           stop after the waves
   --no-commit            run everything, leave the commit
@@ -132,12 +137,49 @@ function parseArgv(argv) {
   return { flags, positional }
 }
 
+// Every flag USAGE documents, read out of USAGE itself so the two cannot come
+// apart: a flag added to one and not the other is either undocumented or
+// unusable, and both failures are silent. A `--flag` outside this set is
+// REFUSED by name rather than swallowed by `parseArgv` as a bare boolean —
+// `--solo` accepted and dropped is the degraded path this repository does not
+// take quietly.
+const KNOWN_FLAGS = new Set([
+  ...[...USAGE.matchAll(/^\s{2}--([a-z][a-z0-9-]*)/gm)].map(m => m[1]),
+  'help',
+  'h'
+])
+
 const { flags, positional } = parseArgv(process.argv.slice(2))
 
 if (flags.help || flags.h) {
   process.stdout.write(USAGE)
   process.exit(0)
 }
+
+function refuse(message) {
+  process.stderr.write(`interlock-run: ${message}\n\n${USAGE}`)
+  process.exit(2)
+}
+
+for (const name of Object.keys(flags)) {
+  if (!KNOWN_FLAGS.has(name)) refuse(`unknown flag --${name}`)
+}
+
+// Two contradictory shape flags is a question only the operator can answer, and
+// this run has nobody to ask. Refused HERE, before the host is created and
+// before anything is written — the same order `workflows/ship.js` refuses it in.
+if (flags.solo === true && flags.waves === true) {
+  refuse(
+    'contradictory plan-shape flags: --solo and --waves were both passed — pass exactly one, or ' +
+      'neither to let the classifier recommend inside the published envelope'
+  )
+}
+
+// The plan shape and the resume mode, forwarded to `run start` exactly as
+// `workflows/ship.js` forwards them. This driver never reads either again:
+// which plan a mode buys is the run program's decision, taken once, in the CLI.
+const laneMode = flags.solo === true ? 'solo' : flags.waves === true ? 'waves' : null
+const continueRun = flags.continue === true
 
 const root = typeof flags.root === 'string' ? flags.root : process.cwd()
 const changeArg = typeof flags.change === 'string' ? flags.change : positional[0] || ''
@@ -360,7 +402,9 @@ let step = await cli([
   ...(skipE2e ? ['--skip-e2e'] : []),
   ...(skipCoverage ? ['--skip-coverage'] : []),
   ...(isolateWaves ? ['--isolate-waves'] : []),
+  ...(laneMode ? ['--mode', laneMode] : []),
   ...(Number.isInteger(maxParallel) ? ['--max-parallel', String(maxParallel)] : []),
+  ...(continueRun ? ['--continue'] : []),
   ...(review ? ['--review'] : []),
   ...(handoff ? ['--handoff'] : []),
   ...(conformance ? ['--conformance'] : []),

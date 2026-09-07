@@ -11,8 +11,12 @@
 //
 // The match canonicalises enough to catch `git commit`, `git -C <path> commit`,
 // `git -c key=val commit`, and a leading-env invocation (`FOO=bar git commit`),
-// across `&&`/`;`/`|` chains. It is a guardrail against the wrong-stage mistake,
-// not a sandbox against a determined adversary.
+// across `&&`/`;`/`|` chains AND newlines — a multi-line script is the ordinary
+// shape of a Bash tool call, not an evasion, so a chain split by a line break
+// must segment the same way one split by `&&` does. A segment led by a shell
+// keyword (`then`, `do`, `else`) is scanned past it, so `if …; then git commit;
+// fi` is seen. It is a guardrail against the wrong-stage mistake, not a sandbox
+// against a determined adversary.
 
 import { readStage } from '../lib/ship-stage.mjs'
 import { readEvent, allow, deny, toolName, toolInput, projectRoot } from './_shared.mjs'
@@ -23,14 +27,21 @@ const GUARD = 'guard-commit'
 // and still find the `commit` subcommand after them.
 const OPTS_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'])
 
+// Shell keywords that can lead a segment and are followed by the command
+// itself: `if true; then git commit`, `for f in *; do git commit`.
+const LEADING_KEYWORDS = new Set(['then', 'do', 'else'])
+
 /** Does `command` perform a git commit in any of its chained segments? */
 export function isGitCommit(command) {
   if (typeof command !== 'string') return false
-  for (const segment of command.split(/&&|\|\||;|\|/)) {
+  for (const segment of command.split(/&&|\|\||;|\||\r?\n|\r/)) {
     const tokens = segment.trim().split(/\s+/).filter(Boolean)
     let i = 0
     // Leading environment assignments: FOO=bar git commit.
     while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++
+    // …then a leading shell keyword, so `then git commit` is scanned like
+    // `git commit`.
+    while (i < tokens.length && LEADING_KEYWORDS.has(tokens[i])) i++
     if (tokens[i] !== 'git') continue
     i++
     // git's own global options, some of which consume the next token.

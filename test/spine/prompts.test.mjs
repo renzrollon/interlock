@@ -144,6 +144,44 @@ test('the verify briefing never weakens a test as a way to go green', () => {
   assert.match(prompt, /Never weaken a test, loosen an assertion or narrow the suite/)
 })
 
+test('a retry briefing states which attempt it is and what was red last time', () => {
+  const prompt = assembleVerifyPrompt({
+    change: 'add-widget',
+    context: 'inter-wave',
+    steps: STEPS,
+    runId: 'run-7',
+    statePath: '.claude/ship/state.json',
+    fixAttempt: 1,
+    fixAttemptsRemaining: 1,
+    errors: ['unit suite is red (1 failing, 1 root-cause cluster(s))']
+  })
+  assert.match(prompt, /fix attempt 1 of 2/)
+  assert.match(prompt, /unit suite is red \(1 failing, 1 root-cause cluster\(s\)\)/)
+  // The one sentence a retry must not inherit: the second attempt exists to
+  // repair, so briefing it not to repair on a first failure is exactly wrong.
+  assert.doesNotMatch(prompt, /first failure/)
+  assert.match(prompt, /Repair the root cause/)
+  // Everything the initial briefing promises still holds on a retry.
+  assert.match(prompt, /Run ONLY these steps/)
+  assert.match(prompt, /Never weaken a test, loosen an assertion or narrow the suite/)
+  assert.match(prompt, /that verdict is not yours to render/)
+  assert.match(prompt, /interlock verify spill --run-id run-7/)
+})
+
+test('the initial briefing carries no retry language and never prints an absent attempt', () => {
+  const prompt = assembleVerifyPrompt({
+    change: 'add-widget',
+    context: 'inter-wave',
+    steps: STEPS,
+    runId: 'run-7',
+    statePath: '.claude/ship/state.json'
+  })
+  assert.doesNotMatch(prompt, /previous attempt/)
+  assert.doesNotMatch(prompt, /fix attempt/)
+  assert.match(prompt, /do not repair anything on a first failure/)
+  assert.doesNotMatch(prompt, /undefined|null/)
+})
+
 // --- the stage line (design D8) ---------------------------------------------
 
 test('the stage line renders the marker path from lib/ship-stage.mjs', () => {
@@ -325,6 +363,17 @@ test('a CI workflow path adds devops, with a reason recorded', () => {
   assert.ok(dimensions.includes('devops'))
   assert.ok(reasons.devops, 'an added dimension must carry a reason')
   assert.ok(!dimensions.includes('security'))
+})
+
+test("the devops reason names only the paths that actually triggered it", () => {
+  const { reasons } = selectDimensions([
+    'src/components/Button.tsx',
+    './.github/workflows/ci.yml',
+    'src/lib/format.ts'
+  ])
+  assert.match(reasons.devops, /\.github\/workflows\/ci\.yml/)
+  assert.ok(!reasons.devops.includes('Button.tsx'), `a non-trigger was named: ${reasons.devops}`)
+  assert.ok(!reasons.devops.includes('format.ts'), `a non-trigger was named: ${reasons.devops}`)
 })
 
 test('an auth path adds security, with a reason recorded', () => {

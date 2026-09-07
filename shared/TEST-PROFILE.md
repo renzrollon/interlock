@@ -46,6 +46,14 @@ the profile.
     "report_path": "coverage/lcov.info",
     "format": "lcov"
   },
+  "typecheck": {
+    "command": null,
+    "cwd": "."
+  },
+  "lint": {
+    "command": null,
+    "cwd": "."
+  },
   "known_flaky": [],
   "notes": []
 }
@@ -63,6 +71,8 @@ the profile.
 | `coverage.command` | Full shell command that produces a coverage report (e.g. `npm run coverage`) |
 | `coverage.report_path` | Where the report lands, relative to `unit.cwd` (`coverage/lcov.info`, `coverage/coverage-summary.json`, …) |
 | `coverage.format` | Report format the path holds: `lcov`, `json-summary`, `cobertura`, … |
+| `typecheck.command` | Full shell command that type-checks the project (e.g. `npm run typecheck`). `null` = none found; the step is skipped with a reason, never guessed |
+| `lint.command` | Full shell command that lints the project (e.g. `npm run lint`). `null` = none found; the step is skipped with a reason, never guessed |
 | `known_flaky` | Paths or test-name patterns that flip on re-run (recorded, not "fixed") |
 | `notes` | Short freeform caveats (≤5 lines total) |
 
@@ -114,6 +124,26 @@ in this order, stop at the first hit, and persist what you find:
 
 Never ask for a coverage command and never install tooling to obtain one —
 nothing found → `enabled:false`, report and continue; never block.
+
+### Typecheck and lint discovery
+
+`typecheck` and `lint` are resolved the same way `coverage` is — independently,
+never by asking, never by inventing a command. Without them a ship run's
+inter-wave checkpoint has no typecheck to run, and `typecheck` is a **halting**
+kind there: a type error must stop the next wave from building on top of it.
+
+Derive in this order, stop at the first hit, and persist what you find:
+
+1. the command already in the profile → use it as-is
+2. `package.json` `scripts.typecheck`, then `scripts["type-check"]`; for lint,
+   `scripts.lint`
+3. the step in the CI job that runs it (`.github/workflows/*`, `.gitlab-ci.yml`)
+
+Nothing found → `command: null`. **Never ask, and never invent one** — a guessed
+`tsc --noEmit` against a project that does not typecheck that way is a red step
+nobody asked for. A `null` command is skipped with
+`reason=no-detectable-command`, which is a stated absence rather than a silent
+one.
 
 **Stale profile:** rewrite when `unit.command` no longer exists in
 `package.json` / manifests, or the command exits 127 / "not found". Otherwise

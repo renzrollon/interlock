@@ -13,6 +13,7 @@ import {
   readRunLog,
   runLogPath,
   runLogDir,
+  AGENT_KINDS,
   RUN_LOG_SCHEMA,
   RUN_LOG_TYPES,
   RUN_LOG_DIR,
@@ -182,6 +183,20 @@ test('every declared field for every type is exercised', () => {
   assert.deepEqual(records.map(r => r.type), cases.map(c => c.type))
   assert.equal(records[3].kind, 'implementer')
   assert.deepEqual(records[4].spill, ['.claude/ship/spill/x/1-unit.log'])
+})
+
+test('every agent kind the run program spawns is one AGENT_KINDS declares', () => {
+  // The field mapper coerces an unlisted kind to `other` with no warning, so a
+  // kind the program spawns but this enum omits is recorded as an
+  // indistinguishable agent — the silent degradation this repository refuses.
+  // Walked out of the source the same way the cap-authority check walks
+  // `lib/limits.mjs`'s readers.
+  const source = readFileSync(new URL('../../lib/run.mjs', import.meta.url), 'utf8')
+  const spawned = new Set([...source.matchAll(/\bkind:\s*'([a-z-]+)'/g)].map(m => m[1]))
+  assert.ok(spawned.size >= 5, `expected the spawn kinds to be found, got ${[...spawned].join(', ')}`)
+  for (const kind of spawned) {
+    assert.ok(AGENT_KINDS.includes(kind), `lib/run.mjs spawns kind "${kind}", which AGENT_KINDS omits`)
+  }
 })
 
 // --- measurements: duration ---------------------------------------------------
