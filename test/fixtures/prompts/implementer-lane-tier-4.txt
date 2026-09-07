@@ -1,4 +1,4 @@
-Implement 3 tasks from OpenSpec change "add-widget", IN THIS ORDER. They edit the same files, so they are one lane run by you alone — nobody else is touching them while you work.
+Implement 3 tasks from OpenSpec change "add-widget", IN THIS ORDER. They are one lane run by you alone — no other agent touches the files they claim while you work.
 
 TASK 1/3 — 1.1: sessions table
 TASK 2/3 — 1.3: step 2

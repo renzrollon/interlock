@@ -1,0 +1,108 @@
+# Outcome eval — ships a committed fixture through the real loop and grades the
+# result on disk.
+#
+# SEPARATE FROM evals.yml ON PURPOSE. That workflow grades transcripts and fires
+# on pull requests that touch a model-facing surface. This one grades an outcome
+# and must never fire on a pull request at all. Sharing a file would entangle the
+# two trigger surfaces, and the first person to widen one would widen both.
+#
+# `schedule` and `workflow_dispatch` ONLY. No `pull_request`, no `push`, and not
+# a path filter that happens to match nothing — the absence is the requirement.
+# The run consumes metered model calls and its result may not influence whether a
+# change merges, so there is nothing a pull request could correctly do with it.
+#
+# NOT A REQUIRED CHECK, and nothing here makes it one. No gate, readiness check,
+# risk classification, promotion decision or workflow step consumes an
+# outcome-eval result. A fixture graded as a failure blocks nothing.
+#
+# THE CEILING IS READ, NEVER WRITTEN HERE. `interlock limits --json` publishes it
+# as `evals.shipEvalCostUsd`; the runner reads the same field the same way. A
+# dollar figure written in this file would be the prose cap `lib/limits.mjs`
+# exists to end.
+#
+# THE RESULT IS AN ARTIFACT, NOT A COMMIT. Appending to
+# `evals/history/ship-outcomes.jsonl` from CI would need `contents: write` and
+# would produce a bot commit on the default branch every run — a permissions and
+# provenance decision larger than this eval needs, and the same one
+# `evals/history/README.md` already made for the promotion history. The runner
+# writes the row into the checkout, this job uploads it, and a maintainer commits
+# what they choose to keep.
+#
+# NOTE: .github/workflows/ is gitignored (.gitignore), so this file was
+# force-added (`git add -f`). If it ever shows as untracked, `git ls-files
+# .github/workflows/` will not list it and it never runs on the remote.
+# test/spine/ship-outcome-workflow.test.mjs asserts that tracking, so losing this
+# file fails npm test.
+name: Ship outcome eval
+
+on:
+  schedule:
+    - cron: '43 5 * * 3' # Wednesdays, 05:43 UTC — off every critical path
+  workflow_dispatch:
+
+# Supersede an in-flight run rather than stacking metered ones.
+concurrency:
+  group: ship-outcome-eval-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  outcome:
+    name: Outcome eval (scheduled)
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # No install step: the repository has no dependencies and the eval's own
+      # ACP agent is stdlib-only.
+      - name: Check for model credential
+        id: cred
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No model credential provisioned — the eval produces no signal, which is not a regression." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Read from the published limits. The number appears nowhere in this file.
+      - name: Resolve cost ceiling
+        if: steps.cred.outputs.present == 'true'
+        id: caps
+        run: |
+          CEIL=$(./bin/interlock limits --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.shipEvalCostUsd))')
+          echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
+          echo "Outcome eval ceiling: \$$CEIL (evals.shipEvalCostUsd, read from interlock limits)" >> "$GITHUB_STEP_SUMMARY"
+      # The runner enforces the same ceiling it reports here, at fixture and arm
+      # boundaries. A sweep that reaches it reports itself partial and is not a
+      # failing run.
+      #
+      # Run once. The prose form goes to the log and to the step summary; the
+      # rows it appended are the durable result and are uploaded below. Running
+      # it a second time to render a different surface would double the bill.
+      - name: Run the outcome eval
+        id: run
+        if: steps.cred.outputs.present == 'true'
+        run: |
+          set -o pipefail
+          {
+            echo '### Outcome eval'
+            echo ''
+            echo 'Values and denominators only. No figure here is a verdict, and nothing in the loop reads one.'
+            echo ''
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          node evals/ship/run.mjs 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      # The record is appended in the checkout and uploaded. A maintainer commits
+      # what they keep — see the header.
+      - name: Upload the appended rows
+        if: always() && steps.cred.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ship-outcome-eval
+          path: evals/history/ship-outcomes.jsonl
+          if-no-files-found: warn

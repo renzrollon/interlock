@@ -550,6 +550,11 @@ function fullReceipt(over = {}) {
     haltReason: null,
     committed: true,
     commit: 'deadbee',
+    touchedPaths: ['lib/run-log.mjs', 'test/spine/run-log.test.mjs'],
+    touchedPathsReason: null,
+    predictedPaths: ['lib/run-log.mjs'],
+    predictedPathsComplete: true,
+    predictedPathsReason: null,
     degradations: ['VERIFY CAP EXHAUSTED: 1 inter-wave checkpoint(s) were skipped'],
     ...over
   }
@@ -667,6 +672,130 @@ test('"did not commit" and "never found out" are different receipts', () => {
   assert.equal(b.commit, null)
   assert.notEqual(a.committed, b.committed)
   assert.equal(unobserved.written, true)
+})
+
+// --- the two path sets -------------------------------------------------------
+//
+// These are the receipt's contribution to "did the merged diff match the plan",
+// and the whole indicator rests on one distinction surviving into the corpus: a
+// run that made no commit recorded NO touched set, which is not the same fact as
+// a commit that touched nothing. A single `[]` in the wrong place turns "we did
+// not measure" into "we measured zero" for every reader downstream.
+
+test('an observed path set round-trips, both directions', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt())
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.touchedPaths, ['lib/run-log.mjs', 'test/spine/run-log.test.mjs'])
+  assert.deepEqual(record.predictedPaths, ['lib/run-log.mjs'])
+  assert.equal(record.predictedPathsComplete, true)
+  assert.equal(record.touchedPathsTruncated, false)
+  assert.equal(record.predictedPathsTruncated, false)
+})
+
+test('an absent path set reads as unobserved, never as an empty set', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      committed: false,
+      commit: null,
+      touchedPaths: undefined,
+      touchedPathsReason: 'the run made no commit',
+      predictedPaths: undefined,
+      predictedPathsComplete: undefined,
+      predictedPathsReason: 'the executed plan could not be read back at close'
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+
+  assert.equal(record.touchedPaths, null, 'no commit means no touched set was observed')
+  assert.notDeepEqual(record.touchedPaths, [], 'an empty set would assert a commit that touched nothing')
+  assert.equal(record.touchedPathsReason, 'the run made no commit')
+  assert.equal(record.touchedPathsTruncated, null, 'an unread set was never truncated, it was never read')
+  assert.equal(record.predictedPaths, null)
+  assert.equal(record.predictedPathsComplete, null, 'an unread plan is not a complete prediction')
+  assert.equal(record.predictedPathsReason, 'the executed plan could not be read back at close')
+})
+
+test('an observed empty set stays an empty set, distinct from an absent one', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt({ touchedPaths: [], touchedPathsReason: null }))
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.touchedPaths, [], 'an empty commit genuinely touched nothing')
+  assert.notEqual(record.touchedPaths, null)
+})
+
+test('a path set past its bound is marked truncated and the append still succeeds', () => {
+  const many = Array.from({ length: 500 }, (_, i) => `src/file-${i}.ts`)
+  const r = appendRunLogEvent(tmp, fullReceipt({ touchedPaths: many, predictedPaths: many }))
+  assert.equal(r.written, true, 'truncation bounds the payload; it never fails the close')
+
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.touchedPathsTruncated, true)
+  assert.equal(record.predictedPathsTruncated, true)
+  assert.ok(record.touchedPaths.length < many.length, 'the recorded set is a prefix')
+  assert.ok(record.touchedPaths.length > 0)
+  assert.equal(record.touchedPaths[0], 'src/file-0.ts', 'a prefix, in order')
+})
+
+test('a fat commit result cannot leak diff hunks or file contents through the path set', () => {
+  // The realistic shape: a commit step that returned its own diff alongside the
+  // paths. Only the named path strings are copied — the surrounding object is
+  // never spread, and neither is any element of it.
+  const r = appendRunLogEvent(tmp, {
+    ...fullReceipt(),
+    touchedPaths: ['lib/run-log.mjs', { path: 'lib/leak.mjs', hunk: 'SECRET-HUNK' }, 'lib/report.mjs'],
+    commitResult: {
+      sha: 'deadbee',
+      diff: 'SECRET-DIFF-BODY',
+      files: [{ path: 'lib/run-log.mjs', contents: 'SECRET-FILE-CONTENTS' }]
+    }
+  })
+  const raw = readFileSync(r.path, 'utf8')
+  const record = JSON.parse(lines(r.path)[0])
+
+  assert.deepEqual(record.touchedPaths, ['lib/run-log.mjs', 'lib/report.mjs'], 'non-strings are dropped, not stringified')
+  for (const secret of ['SECRET-HUNK', 'SECRET-DIFF-BODY', 'SECRET-FILE-CONTENTS']) {
+    assert.doesNotMatch(raw, new RegExp(secret), `${secret} reached the trajectory`)
+  }
+})
+
+test('an incomplete prediction is recorded as incomplete, not as a short set', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      predictedPaths: ['lib/run-log.mjs'],
+      predictedPathsComplete: false,
+      predictedPathsReason: 'not every executed task declared its paths'
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.predictedPaths, ['lib/run-log.mjs'])
+  assert.equal(record.predictedPathsComplete, false)
+  assert.match(record.predictedPathsReason, /not every executed task/)
+})
+
+test('the run summary carries the path sets tri-state, and renders neither as an empty list', () => {
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', mode: 'checkpoint', change: 'add-widget' })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-complete', change: 'add-widget' })
+  appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      committed: false,
+      commit: null,
+      touchedPaths: undefined,
+      touchedPathsReason: 'the run made no commit'
+    })
+  )
+
+  const [summary] = listRunLogs(tmp)
+  assert.equal(summary.touchedPathCount, null, 'unobserved is null, not 0')
+  assert.equal(summary.touchedPathsReason, 'the run made no commit')
+  assert.equal(summary.predictedPathCount, 1)
+  assert.equal(summary.predictedPathsComplete, true)
+  assert.equal(summary.pathsTruncated, false)
+
+  const rendered = formatRunLog(readRunLog(tmp, RUN_ID))
+  assert.match(rendered, /paths touched \(read from version control\): unknown \(the run made no commit\)/)
+  assert.doesNotMatch(rendered, /paths touched[^\n]*\[\]/, 'an unobserved set must never render as an empty list')
 })
 
 test('a commit step that reported failure yields no fabricated identifier', () => {

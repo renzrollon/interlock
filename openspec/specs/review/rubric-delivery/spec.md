@@ -1,4 +1,4 @@
-# rubric-delivery Specification
+# review/rubric-delivery Specification
 
 ## Purpose
 

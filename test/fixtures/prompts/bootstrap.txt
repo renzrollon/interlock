@@ -1,0 +1,5 @@
+Your briefing for this step is the file .claude/ship/briefings/1.1.md.
+
+Read it in full before doing anything else and follow it as the whole of your instructions. Its first line is an HTML comment carrying a sha256; report that hex string as "briefing" in your result. A result without it is discarded and this step is recorded as failed, so read the file rather than guessing at what "1.1" means.
+
+Expected sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

@@ -1,4 +1,4 @@
-# outcome-provenance Specification
+# ship/outcome-provenance Specification
 
 ## Purpose
 

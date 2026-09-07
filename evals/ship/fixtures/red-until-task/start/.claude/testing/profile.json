@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated": "2026-09-05",
+  "runner": "node:test",
+  "packageManager": "npm",
+  "unit": {
+    "command": "npm test",
+    "cwd": ".",
+    "single_file": "node --test <path>",
+    "filter_syntax": "node --test --test-name-pattern '<regex>' <path>"
+  },
+  "e2e": null,
+  "known_flaky": [],
+  "notes": [
+    "Stdlib-only fixture: no dependencies, no install step, `npm test` runs on a bare checkout.",
+    "The starting suite is red on a committed test that the starting source fails — that is the fixture's shape, not a broken checkout."
+  ]
+}

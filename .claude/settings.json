@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(interlock:*)",
+      "Bash(interlock-graph:*)",
+      "Bash(openspec:*)",
+      "Bash(git:*)",
+      "Bash(npm test:*)",
+      "Bash(node --test:*)",
+      "Bash(test:*)",
+      "Bash(printenv:*)",
+      "Bash(mkdir:*)"
+    ]
+  }
+}

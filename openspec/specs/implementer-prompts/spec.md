@@ -8,7 +8,7 @@ Treats the assembled implementer prompt as a frozen contract so silent tier-ladd
 
 ### Requirement: Assembled implementer prompt is deterministic
 
-Given a change name and a lane — an ordered, non-empty list of tasks each carrying `id`, `description` and `tier` — the system MUST assemble a single implementer prompt that includes every task's identity in execution order, the documented context ladder for the lane's tier, the implement-only / no-commit / schema-only rules, graph-then-grep locate rules, and the tier 1–2 stop-on-green instruction when the lane's tier is 1 or 2. The lane's tier MUST be the highest tier among its tasks. A multi-task lane MUST instruct the agent to complete its tasks in the given order, to report an outcome for every task, and to stop at the first task it cannot complete rather than skipping ahead. A lane of exactly one task MUST assemble to the same text the single-task form produced before lanes existed, so that existing snapshots do not change. The same inputs MUST produce the same prompt text.
+Given a change name and a lane — an ordered, non-empty list of tasks each carrying `id`, `description` and `tier` — the system MUST assemble a single implementer prompt that includes every task's identity in execution order, the documented context ladder for the lane's tier, the implement-only / no-commit / schema-only rules, graph-then-grep locate rules, and the tier 1–2 stop-on-green instruction when the lane's tier is 1 or 2. The lane's tier MUST be the highest tier among its tasks. A multi-task lane MUST instruct the agent to complete its tasks in the given order, to report an outcome for every task, and to stop at the first task it cannot complete rather than skipping ahead. The multi-task heading MUST state only what is true of every multi-task lane — that the tasks are one lane run by this agent alone and that no other agent touches the files they claim while it works — and MUST NOT claim the tasks share files. A lane assembled with the solo flag MUST be briefed as the whole change: the heading names the change and the task count, states that this agent owns every listed task including the test tasks, and the context ladder stated is the full-read ladder regardless of the hardest task's tier. A lane of exactly one task MUST assemble to the same text the single-task form produced before lanes existed, so that existing snapshots do not change. The same inputs MUST produce the same prompt text.
 
 #### Scenario: Tier 1 omits artifact reads and stops on green
 
@@ -31,6 +31,7 @@ Given a change name and a lane — an ordered, non-empty list of tasks each carr
 - **WHEN** the assembler is asked for a lane holding tier 4 tasks `2.1`, `2.2` and `2.3` on change `add-widget`
 - **THEN** the prompt names all three tasks in that order
 - **AND** it instructs the agent to stop at the first task it cannot complete and to report the remaining tasks as not attempted
+- **AND** its heading does not claim the three tasks edit the same files
 
 #### Scenario: Edge case — a mixed-tier lane assembles at its highest tier
 
@@ -38,6 +39,14 @@ Given a change name and a lane — an ordered, non-empty list of tasks each carr
 - **WHEN** the assembler renders it
 - **THEN** the prompt states the tier 4 context ladder for the whole lane
 - **AND** it does not include the tier 1–2 stop-on-green instruction, because the lane's tier is 4
+
+#### Scenario: Edge case — a solo lane of low-tier tasks is briefed at the full-read ladder
+
+- **GIVEN** a lane of tier-2 tasks assembled with the solo flag on change `add-widget`
+- **WHEN** the assembler renders it
+- **THEN** the heading names `add-widget` and the task count and states that this agent owns the whole change including its test tasks
+- **AND** the prompt states the full-read context ladder and omits the tier 1–2 stop-on-green instruction
+- **AND** the same lane assembled without the solo flag renders the ordinary multi-task prompt at tier 2
 
 ### Requirement: Prompt snapshots fail on silent drift
 

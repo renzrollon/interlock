@@ -29,6 +29,8 @@ The single largest architectural choice: `ship` is a [dynamic workflow](https://
 | Where intermediate results live | Claude's context window | Script variables |
 | Orchestrator token cost | Every result re-enters context | Zero — the script is not a model |
 
+In `ship`, "the script" is thinner than the table implies: `workflows/ship.js` does not itself decide what runs next, either. `interlock run` (`lib/run.mjs`) emits one step at a time — the agents to spawn and the exact argv to call once they return — and the script's whole loop is *spawn what the step names, call what it names next, repeat until it names nothing*. The decision still never touches a model; it has simply moved one layer down, from script variables into a CLI a test can call with no runtime at all. See §5.4.
+
 Three consequences follow, and none of them are available to a folder of prompts.
 
 **The orchestrator stops accumulating context.** In a skill-driven fan-out, every subagent result lands back in the orchestrating model's window. Thirty tasks means thirty results plus thirty prompts plus the plan, and by task twenty the orchestrator is reasoning at the degraded end of its own context curve — about scheduling decisions that determine what the remaining ten agents do. In a workflow, results land in `const` bindings. `workflows/ship.js` holds a `summary` object and a `banners` array; the model that wrote the script is not in the loop while it runs.
@@ -55,7 +57,7 @@ interlock CLI       what the loop is allowed to do next
 agents              read files, write code, run commands, form opinions
 ```
 
-Two properties fall out. The policy is testable without a model — 760 tests, no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
+Two properties fall out. The policy is testable without a model — no network, no API key, most running in under a millisecond. And a skill can no longer restate a threshold, because the threshold is not written down anywhere a skill can read it except by shelling out.
 
 `lib/limits.mjs` is the clearest instance:
 
@@ -139,7 +141,9 @@ Retrieval is explicitly budgeted, in tokens estimated as `ceil(chars / 4)`:
 
 One agent per **lane**, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its lane, its tier's slice of the artifacts, and nothing about the other eleven tasks.
 
-A lane is an ordered task list one agent runs start to finish, and most lanes hold exactly one task — that case is the old "one agent per task" rule, unchanged. A lane holds more than one only when a path collision had *already* forced those tasks to run one after another. Isolating a task from the other edits to the file it is about to edit is not isolation; it is one spawn prefix and one re-read of that file per task, bought for nothing. So the planner folds that chain into one lane, and `LIMITS.maxTasksPerAgent` bounds how long a lane may get. **That cap is the rollback lever: set it to 1 and the run is one agent per task again, exactly as before** — which is why a one-task lane's prompt is byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`.
+A lane is an ordered task list one agent runs start to finish, and it forms one of three ways. A **collision** lane is the original case: a path collision had *already* forced those tasks to run one after another, and isolating a task from the other edits to the file it is about to edit is not isolation — it is one spawn prefix and one re-read of that file per task, bought for nothing. A **cohesion** lane packs path-*disjoint* siblings inside one dependency layer whose hardest tier is at or below `LANE_CAPS.cohesionMaxTier`: sixteen tier-2 test tasks were sixteen spawns each re-reading the same design, and one agent doing them in order is cheaper in tokens than it is expensive in wall-clock. Tier 4 and 5 work is excluded on purpose — cross-file and novel work is where a fresh context per task still pays. A **solo** lane is the whole change in one agent, for a small change where holding all of it beats slicing it.
+
+How long a lane may get is `LANE_CAPS.byTier`, a per-tier table rather than one number, because a cap that is right for eight trivial edits is wrong for four cross-file refactors. **The rollback lever is unchanged: a `maxTasksPerAgent` override of 1 is a uniform ceiling and reproduces one agent per task exactly**, which is why a one-task lane's prompt stays byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`. `--waves` refuses solo for a run; `--solo` forces it. Every fold and every mode decision is named in the plan preview before an agent is spawned — the preview opens with the mode and its source, and prints one line per folded lane.
 
 That window is also supposed to be clean of the *host catalog*. Claude Code's workflow `agent()` starts a fresh conversation, but the tools-and-system-prompt prefix still inherits the parent tool list and the Skill listing — on a loaded operator machine, ~30k tokens of system/MCP schemas plus ~10k of skill descriptions, **per spawn**. A 24-task lean run pays that floor ~30 times before any task prompt. Isolation of tasks is not isolation of prefix.
 
@@ -184,11 +188,11 @@ Within a group, lanes sort by tier descending — a lane's tier is the highest a
 
 ### 5.4 The loop is a state machine
 
-`ship` does not decide what happens next. It asks `interlock wave-state next` and obeys one of six actions: `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt`.
+`ship` does not decide what happens next, and — since `emit-wave-steps-from-cli` — neither does the script that used to hold the loop. Both drivers (`workflows/ship.js` and `bin/interlock-run`) are now interpreters of a `run` family (`interlock run start` / `classified` / `record-batch` / `verify-final` / `replan` / `close`, `lib/run.mjs`) that emits a versioned step: the agents to spawn — label, model, tools, result schema, briefing — and the exact `then.argv` to call once they return. A driver's whole loop is *spawn everything in `spawns`, write the results, call `then.argv`, repeat until `then` is null*; it branches on nothing, not a flag, a mode, a count, or a verdict. Underneath, `run` still calls the pure `wave-state next` and obeys one of six wave-level actions — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step alongside `classify`, `verify-final`, `commit`, `host-tail`, `close` and `complete`.
 
-The ping is a copy, not an interpretation. A haiku agent that invents `action: "report"` (or any other value the state machine does not emit) is a relay miss: the script retries once with `wave-state next` under a new `next-retry-*` label, then halts if the retry is also unknown. It does not obey the invented value, and it does not require a human to edit the prompt — that would cache-miss every later implementer.
+The ping is a copy, not an interpretation. A haiku agent that invents `action: "report"` (or any other value the program does not emit) is a relay miss: the script retries once with `interlock run next` under a new `next-retry-*` label, then halts if the retry is also unknown. It does not obey the invented value, and it does not require a human to edit the prompt — that would cache-miss every later implementer.
 
-Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `record-batch` and `replan` pass `--write-state`, so their stdout *is* the next step — saving one agent turn per batch. The planner already ran the first `next`, so the loop starts from that result.
+Test tasks defer to a single trailing wave, so a cross-cutting test failure is diagnosed once against the finished implementation rather than repeatedly against half-built state. `run record-batch` folds the lane merge (under `--isolate-waves`), the `wave-state record-batch --write-state` call, and `tasks tick` for the recorded-ok ids into one call, so its stdout *is* the next step — saving one agent turn per batch. `run classified` runs coverage → waves → `wave-state create` and returns the first step, so the planner never has to run those commands itself (design D7). A briefing is never pasted through a ping: `run` writes it to `.claude/ship/briefings/<label>.md` with its own sha256 on line one, and the step carries the path, the hash, and the text. The ACP driver is ordinary Node and reads the text straight off the step; the Workflow script cannot hold several kilobytes of prompt without a ping copying it, so it hands the worker the path instead and requires the hash back — an unacknowledged or wrong hash fails the task closed rather than risking a silently under-instructed agent.
 
 ### 5.5 Inspectability: a run leaves a transcript
 
@@ -222,6 +226,8 @@ Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `
 ## 7. Review: making dismissal expensive
 
 This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — four to six dimensions, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
+
+The tail is **emitted by the CLI**, like every other step. `interlock run` decides which dimensions run, reads each one's written criteria and the repository's review policy off disk and inlines them into the briefing, then adjudicates the findings and verdicts the review agent wrote — against the run's own observed changed paths, never a list the agent reported about the diff it was reviewing. Survival, the tolerance band, the round budget and the halt are computed there and handed to a host as steps. So neither driver holds review text or review policy, and a strict run is identical on both hosts because there is only one program: the review agent is asked for findings and counts, and for nothing that has a correct answer.
 
 ### 7.1 Why adversarial review at all
 
@@ -385,7 +391,7 @@ The same instinct, repeated across the codebase:
 
 ## 14. What this costs, honestly
 
-**Portability.** Interlock runs on Claude Code and nothing else. The guarantees above come from the workflow runtime and the plugin surface. A portable version would be a folder of prompts, which is the thing it exists not to be. Spec Kit runs on thirty agents; that is a real advantage it has and this does not.
+**Portability.** Interlock runs on Claude Code and nothing else. The guarantees above come from the workflow runtime and the plugin surface. A portable version would be a folder of prompts, which is the thing it exists not to be. What is host-specific is now small and named: **it is an adapter.** `lib/run.mjs` emits the whole program — every briefing, every branch, and under isolation the worktree path each lane runs in — as steps, and what a driver holds is an interpreter plus a transport (`workflows/ship.js` on the Workflow runtime, `bin/interlock-run` over a vendor coding CLI). Adding a host is one file under `lib/host/` — a transport, plus a declaration of what that host cannot do (schema enforcement, model selection, worktree ownership, hooks, usage accounting, billing path) that the run program reads and the runner banners. Four exist: `claude`, `acp`, `codex`, `qwen`. A fifth is another adapter, not a second copy of the loop. Spec Kit runs on thirty agents; that is a real advantage it has and this does not.
 
 **A moving substrate.** Dynamic workflows require v2.1.154+. The plugin contract has been stable, but observable behaviour above it — agent caps, size guidelines, warning thresholds, resume semantics — has moved across patch versions, and none of it can be pinned.
 
@@ -393,7 +399,7 @@ The same instinct, repeated across the codebase:
 
 **Prediction-shaped inputs.** Wave path collision detection, tier classification, and spec conformance all depend on a model predicting something. The *checks* on those predictions are deterministic; the predictions are not.
 
-**No published benchmark.** 760 tests prove the policy engine behaves as specified. They do not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
+**No published benchmark.** The unit suite proves the policy engine behaves as specified. It does not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus (`interlock outcomes`) exists to close that gap and currently has no control group.
 
 **Review theater on the default path.** Until this release, every `ship` paid for adversarial review, handoff artifacts, and conformance whether the diff earned them or not. Default is now waves → verify → commit; `--strict` is the previous bill. A lean run prints `LEAN SHIP` so it cannot look like a strict one.
 

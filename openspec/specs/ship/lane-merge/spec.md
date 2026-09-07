@@ -1,4 +1,4 @@
-# lane-merge Specification
+# ship/lane-merge Specification
 
 ## Purpose
 

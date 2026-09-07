@@ -74,3 +74,22 @@ jobs:
           ./bin/interlock-graph build . >/dev/null
           test -f .claude/graph/graph.json
           test -f .claude/graph/GRAPH_REPORT.md
+
+      # The tarball is what a user who never installs the plugin gets. `npm pack`
+      # succeeding proves only that a whitelist exists — a `files` list missing a
+      # reachable lib/ file packs and installs cleanly and dies at first use. So
+      # install the tarball into a throwaway prefix and run the real binaries
+      # from it. The bin map is read from package.json so a renamed binary
+      # cannot fall out of this smoke silently.
+      - name: pack the tarball and run every installed binary
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination "$RUNNER_TEMP"
+          tgz=$(ls "$RUNNER_TEMP"/*.tgz)
+          npm install -g "$tgz" --prefix "$RUNNER_TEMP/prefix"
+          for name in $(node -e 'process.stdout.write(Object.keys(require("./package.json").bin).join("\n"))'); do
+            echo "--- $name --help"
+            "$RUNNER_TEMP/prefix/bin/$name" --help >/dev/null
+          done
+          echo "--- interlock limits"
+          "$RUNNER_TEMP/prefix/bin/interlock" limits >/dev/null

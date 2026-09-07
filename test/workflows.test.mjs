@@ -13,7 +13,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { laneEffort as laneEffortSource } from '../lib/waves.mjs'
@@ -106,26 +108,48 @@ test('ship.js invokes only interlock subcommands that exist', () => {
   )
 })
 
-test('ship.js keeps the degradation banner strings verbatim', () => {
+test('the degradation banner strings are kept verbatim, at whichever party raises them', () => {
   // Users are told to look for these in docs/04-when-it-stops.md. They are a
   // contract, and a reworded banner is a banner nobody greps for.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  //
+  // Which party raises which is now the interesting half. A banner about the
+  // HOST's environment can only be raised by the host; a banner about the run's
+  // own decisions is the CLI's, and a host restating one would be two sources
+  // for one string. So each is pinned where it is raised, and nowhere else.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+
   for (const banner of [
     'GRAPH UNAVAILABLE:',
     'NO TEST PROFILE:',
-    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
-    'VERIFICATION SKIPPED: reason=',
-    'E2E FAILED (non-blocking by policy):'
+    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL='
   ]) {
-    assert.ok(text.includes(banner), `ship.js no longer emits the "${banner}" banner`)
+    assert.ok(ship.includes(banner), `the host no longer emits the "${banner}" banner`)
+    assert.ok(!run.includes(banner), `lib/run.mjs restates the host's "${banner}" banner`)
+  }
+  for (const banner of [
+    'VERIFICATION SKIPPED: reason=',
+    'E2E FAILED (non-blocking by policy):',
+    // The push is the CLI's alone: the drivers pass `--notify` and know nothing
+    // about topics, servers or what a failed push is called.
+    'PUSH FAILED: '
+  ]) {
+    assert.ok(run.includes(banner), `the run program no longer emits the "${banner}" banner`)
+    assert.ok(!ship.includes(banner), `ship.js restates the CLI's "${banner}" banner`)
   }
 })
 
-test('ship.js prints a banner block even when nothing degraded', () => {
+test('the summary prints a banner block even when nothing degraded', () => {
   // Silence is the failure mode the block exists to remove: a summary with no
   // banner section is indistinguishable from a run that degraded and hid it.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /No degradation banners/)
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /No degradation banners/)
+  // And the host prints what the close returned rather than composing a second
+  // summary of its own — two formatters of one set of facts is how a run comes
+  // to be described two ways.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(ship, /No degradation banners/)
+  assert.match(ship, /closed\.summary/, 'the host prints the summary the close built')
 })
 
 test('ship.js never prints an autonomy level', () => {
@@ -149,21 +173,29 @@ test('no workflow carries a reference to the private predecessor repo', () => {
   }
 })
 
-test('ship.js records an outcome on the way out of a halt', () => {
+test('a halt records an outcome and a receipt, on both drivers', () => {
   // A corpus of only successful runs cannot answer the question it exists for,
-  // and a halted run is its most informative record.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const haltBody = /const halt = async[\s\S]*?\n}/.exec(text)
-  assert.ok(haltBody, 'ship.js no longer has a recognizable halt()')
-  // The close is one sequence — outcome, then receipt, then the summary — so
-  // halt() goes through it rather than recording on its own. A halted run that
-  // took a shortcut past the close would be the least explicable run in the
-  // corpus and the least explained.
-  assert.match(haltBody[0], /return closeRun\(\)/, 'halt() must close the run before returning')
-  const closeBody = /const closeRun = async[\s\S]*?\n}/.exec(text)
-  assert.ok(closeBody, 'ship.js no longer has a recognizable closeRun()')
-  assert.match(closeBody[0], /await recordOutcome\(\)/, 'the close must record the outcome')
-  assert.match(closeBody[0], /await appendReceipt\(\)/, 'and then the receipt')
+  // and a halted run is its most informative record. The close is one sequence —
+  // receipt, terminal event, outcome — and a halt goes through it rather than
+  // recording on its own.
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    const stopBody = /async function stop\(reason\)[\s\S]*?\n}/.exec(text)
+    assert.ok(stopBody, `${driver} no longer has a recognizable stop()`)
+    assert.match(
+      stopBody[0],
+      /'run', 'close', '--halt', reason/,
+      'a halt must close through the CLI, not by printing and exiting'
+    )
+  }
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /appendOutcome\(root, \{/, 'the close records the outcome')
+  assert.match(run, /\.\.\.receipt,\n\s*runId: manifest\.runId/, 'and the receipt')
+  assert.match(
+    run,
+    /type: haltReason \? 'run-halt' : 'run-complete'/,
+    'and a terminal event on both paths, not only the clean one'
+  )
 })
 
 test('ship.js does not file a continuity run as a checkpoint', () => {
@@ -178,103 +210,161 @@ test('ship.js does not file a continuity run as a checkpoint', () => {
   )
 })
 
-test('ship.js never assumes an outcome field it did not observe', () => {
-  // Guessing unitGreen is how a corpus becomes confidently wrong.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /Leave a field out\s+entirely rather than guessing it|not a claim/)
+test('the receipt never assumes a field it did not observe', () => {
+  // Guessing is how a corpus becomes confidently wrong. Nothing is asked of an
+  // agent any more — the receipt is built from what the run recorded — so the
+  // rule is asserted at the builder, where an absent field becomes `null` and
+  // `null` reads as unknown.
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /Every field is either observed or `undefined`/)
+  assert.match(receipt, /substitutes[\s\S]{0,60}zero for a value the run never found out/)
+  // The tri-state that makes the rule load-bearing: told-not-to-commit is false,
+  // halted-before-commit is unknown, and those are different facts.
+  assert.match(
+    receipt,
+    /committed: commit \? commit\.ok === true : summary\.commitSkipped === true \? false : undefined/
+  )
 })
 
-test('ship.js folds record/replan into the next step via --write-state', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  for (const cmd of ['record-batch', 'record-verify', 'replan']) {
-    assert.match(
-      text,
-      new RegExp(`wave-state ${cmd}[^\\n]*--write-state`),
-      `ship.js ${cmd} must pass --write-state so stdout is the next step`
+test('recording a batch, a verification or a replan yields the next step in one call', () => {
+  // This used to be `--write-state` on three `wave-state` commands, so a ping
+  // could record and learn the next action in one agent turn. The run program
+  // does it in-process: it records, writes the state, and returns the decorated
+  // next step — one CLI call, no agent turn at all.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  for (const [recorder, fn] of [
+    ['record-batch', 'recordBatchResult'],
+    ['record-verify', 'recordVerifyResult'],
+    ['replan', 'applyReplan']
+  ]) {
+    assert.match(run, new RegExp(`\\b${fn}\\(`), `lib/run.mjs no longer calls ${fn} for ${recorder}`)
+  }
+  // Every one of the three ends the same way: write the state, then decorate.
+  assert.equal(
+    (run.match(/writeState\(root, after\)/g) || []).length,
+    3,
+    'each recorder must persist the state it produced'
+  )
+  assert.match(run, /decorate\(ctx, nextRaw, manifest/, 'and return the next step from it')
+})
+
+test('the classifier briefing forbids collision-as-group, and no driver restates it', () => {
+  const planner = readFileSync(join(ROOT, 'lib', 'prompts', 'planner.mjs'), 'utf8')
+  assert.match(planner, /Default group to the numbered tasks\.md section/)
+  assert.match(planner, /shared file is NOT a reason for a new group/)
+  assert.match(planner, /LATER NUMBERED SECTION/)
+  // The whole point of moving it: there is one statement of the rule, and the
+  // cross-driver parity test that used to compare two is gone because there is
+  // nothing left to compare.
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    assert.doesNotMatch(
+      readFileSync(driver, 'utf8'),
+      /shared file is NOT a reason for a new group/,
+      `${driver} carries a second copy of the grouping rules`
     )
   }
 })
 
-test('ship.js classifier prompt forbids collision-as-group', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /Default group to the numbered tasks\.md section/)
-  assert.match(text, /shared file is NOT a reason for a new group/)
-  // Rule 3 spans two concatenated literals, so its full sentence only exists in
-  // the assembled prompt — asserted there, in "the assembled plan-waves prompt
-  // does not increment group for a later same-file slice".
-  assert.match(text, /LATER NUMBERED SECTION/)
+test('the CLI plans the verification itself, so no ping has to fuse it in', () => {
+  // The fusion existed because a verification cost an extra agent turn: the
+  // record-batch ping was asked to run `verify plan` in the same turn. The CLI
+  // plans it in-process now, and the agent is handed the planned steps — so the
+  // saving is structural and the instruction that arranged it is gone.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /planVerification\(profile, opts\)/, 'the CLI builds the plan')
+  assert.match(run, /judgeVerification\(plan, reportedSteps, \{ context \}\)/, 'and renders the verdict')
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(ship, /verify plan --no-profile/, 'no host asks an agent to plan a verification')
+  assert.doesNotMatch(ship, /If that last stdout has action:"verify"/)
 })
 
-test('ship.js fuses verify plan into the record-batch ping', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /remainingBatches/)
-  assert.match(text, /verify plan --no-profile --context inter-wave/)
-  assert.match(text, /If that last stdout has action:"verify"/)
-  assert.match(text, /pingExtra\.model = 'haiku'/)
+test('every spawn carries both a type and a tools allowlist', () => {
+  // Dual-write `type` (plugin agent) and `tools` (allowlist) so a runtime that
+  // ignores one key still shrinks the inherited catalog. The step names both
+  // now, from `lib/host.mjs`'s own constants — the four literals the script used
+  // to restate are down to the ping's, which is the only agent it spawns on its
+  // own account.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /\.\.\.spawnPrefix\(kind === 'ping' \? 'ping' : 'worker'\)/)
+  assert.doesNotMatch(run, /tools:\s*\[[^\]]*(Skill|Agent)/)
+
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /type: PING_AGENT/)
+  assert.match(ship, /tools: PING_TOOLS/)
+  // And the worker spawn passes through what the step named rather than
+  // substituting a catalog of its own.
+  assert.match(ship, /type: s\.type,\n\s*tools: s\.tools,/)
+  assert.doesNotMatch(ship, /tools:\s*\[[^\]]*(Skill|Agent)/)
 })
 
-test('ship.js dual-writes type and tools on every agent() spawn', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /type: PING_AGENT/)
-  assert.match(text, /type: WORKER_AGENT/)
-  assert.match(text, /tools: PING_TOOLS/)
-  assert.match(text, /tools: WORKER_TOOLS/)
-  assert.match(text, /\.\.\.workerExtra, \.\.\.extra/)
-  // cheap gained an optional third `extra` so a mechanical step (the inter-wave
-  // verify) can pin its effort. The extra is spread after pingExtra, so a caller
-  // passing nothing is byte-identical to the old two-arg form.
-  assert.match(
-    text,
-    /cheap = \(name, prompt, extra = \{\}\) => step\(name, prompt, nextSchema, \{ \.\.\.pingExtra, \.\.\.extra \}\)/
-  )
-  assert.doesNotMatch(text, /tools:\s*\[[^\]]*(Skill|Agent)/)
-})
-
-test('ship.js implementers follow tool economy and stop on green for tier 1-2', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+test('implementers follow tool economy and stop on green for tier 1-2', () => {
+  const text = readFileSync(join(ROOT, 'lib', 'prompts', 'implementer.mjs'), 'utf8')
   assert.match(text, /interlock-graph query/, 'implementers must locate via the graph before grep')
   assert.match(text, /Do not re-read/, 'implementers must not re-read a file unless it changed')
   assert.match(text, /schema only/, 'implementers must return the schema only')
   assert.match(text, /tier is 1 or 2/, 'tier 1-2 must stop after checks pass')
 })
 
-test('ship.js implementers go through assembleImplementerPrompt, never an inline template', () => {
+test('lane briefings go through assembleImplementerPrompt, never an inline template', () => {
   // The extracted function is the only reason the snapshots in
-  // test/spine/implementer-prompt.test.mjs mean anything. An agent() call that
-  // rebuilt the prompt inline would drift past every one of them.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_START/)
-  assert.match(text, /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/)
-  assert.match(
-    text,
-    /agent\(\s*\n?\s*assembleImplementerPrompt\(\{ change, lane, previousHandoffs, isolateWaves \}\)/,
-    'the implementer agent() must be handed the assembled prompt, not a literal'
-  )
-  const calls = [...text.matchAll(/assembleImplementerPrompt\(/g)]
-  assert.equal(calls.length, 2, 'exactly one definition and one call site')
+  // test/spine/implementer-prompt.test.mjs mean anything. A call site that
+  // rebuilt the prompt inline would drift past every one of them — and there is
+  // exactly one call site now, in the CLI, rather than one per host.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  const args = /assembleImplementerPrompt\(\{([\s\S]*?)\}\)/.exec(run)
+  assert.ok(args, 'lib/run.mjs must assemble the lane briefing through the shared function')
+  // The inputs the call site must still thread through. `solo` is read off the
+  // STEP, never off the invocation flag: the planner decides the mode and the
+  // run state carries it, so a flag read here would brief the agent for a shape
+  // the planner may not have built.
+  for (const input of [
+    /\bchange,/,
+    /\blane,/,
+    /\bpreviousHandoffs,/,
+    /isolateWaves: isolate,/,
+    /solo: step\.mode === 'solo'/
+  ]) {
+    assert.match(args[1], input, `the lane call site must still pass ${input}`)
+  }
 
-  // Assembly has to stay in the script: the runtime rejects import(), so a
-  // shared lib/ module would have to be copied back in here — the drift this
-  // whole extraction exists to catch.
-  assert.doesNotMatch(text, /\bimport\s*\(/, 'ship.js must not import()')
-  assert.doesNotMatch(text, /node:fs/, 'ship.js must not touch the filesystem itself')
+  // No driver assembles one. The Workflow script cannot even hold the text: it
+  // is handed a path and a hash (design D2), and the ACP driver is handed the
+  // assembled string on the step.
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(
+      text,
+      /assembleImplementerPrompt/,
+      `${driver} still assembles an implementer prompt`
+    )
+    assert.doesNotMatch(
+      text,
+      /ASSEMBLE_IMPLEMENTER_PROMPT/,
+      `${driver} still carries or reads the marked block — the smuggling is over`
+    )
+  }
+
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.doesNotMatch(ship, /\bimport\s*\(/, 'ship.js must not import()')
+  assert.doesNotMatch(ship, /node:fs/, 'ship.js must not touch the filesystem itself')
 })
 
-test('ship.js requires a handoff from implementers and threads the previous wave in', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+test('implementers must return a handoff, and the previous wave is threaded in', () => {
+  const schemas = readFileSync(join(ROOT, 'lib', 'prompts', 'schemas.mjs'), 'utf8')
   assert.match(
-    text,
-    /required:\s*\['id',\s*'ok',\s*'handoff'\]/,
+    schemas,
+    /required: \['id', 'ok', 'handoff'\]/,
     'the implementer schema must require a handoff packet'
   )
+  const text = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   // The projection into batch-N.json is what record-batch actually reads. A
   // handoff dropped there is a handoff the CLI never sees. It is keyed off the
   // per-task OUTCOME now, because a lane reports one of three values per task
   // and only `ok` may be recorded as success.
   assert.match(
     text,
-    /ok: o\.outcome === 'ok', error: o\.error, handoff: o\.handoff/,
-    'the batch-N.json projection must derive ok from the per-task outcome'
+    /ok: o\.outcome === 'ok',\n\s*error: o\.error,\n\s*handoff: o\.handoff/,
+    'the recorded projection must derive ok from the per-task outcome'
   )
   // Same rule, second field: `filesChanged` was requested from every
   // implementer, returned, and dropped in this projection, which left the
@@ -283,30 +373,46 @@ test('ship.js requires a handoff from implementers and threads the previous wave
   assert.match(
     text,
     /filesChanged: o\.filesChanged/,
-    'the batch-N.json projection must carry the reported changed paths'
+    'the recorded projection must carry the reported changed paths'
   )
-  // previousHandoffs rides beside remainingBatches on the same step.
-  assert.match(text, /previousHandoffs:\s*\{[\s\S]{0,80}type: 'array'/)
-  assert.match(text, /Array\.isArray\(next\.previousHandoffs\)/)
-  assert.match(text, /PREVIOUS WAVE \(schema-validated; do not re-derive from git\)/)
+  // previousHandoffs rides on the step the state machine emitted and reaches
+  // the lane through its briefing.
+  assert.match(text, /Array\.isArray\(step\.previousHandoffs\) \? step\.previousHandoffs : \[\]/)
+  assert.match(
+    readFileSync(join(ROOT, 'lib', 'prompts', 'implementer.mjs'), 'utf8'),
+    /PREVIOUS WAVE \(schema-validated; do not re-derive from git\)/
+  )
 })
 
-test('ship.js does not restate the handoff cap that lives in the CLI', () => {
+test('no briefing restates the handoff cap that lives in the CLI', () => {
   // Same rule as every other cap: the number lives in lib/limits.mjs and the
-  // prompt cites `interlock limits`. A copy here is a copy that drifts.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  // prompt cites `interlock limits`. A copy is a copy that drifts.
+  const text = readFileSync(join(ROOT, 'lib', 'prompts', 'implementer.mjs'), 'utf8')
   assert.match(text, /character cap \\?`interlock limits\\?` publishes/)
   assert.doesNotMatch(text, /maxHandoffChars|2000 characters/)
 })
 
-test('ship.js does not use --handoff to mean the wave packet', () => {
+test('--handoff is not used to mean the wave packet', () => {
   // `--handoff` is the opt-in strict tail (manual-test-plan.md,
   // code-explanation.md, memory). Overloading it would make one flag mean two
   // unrelated things.
+  //
+  // The driver parses the flag, because argument delivery is host-specific;
+  // what the flag BUYS is decided once, in the run program. So the two halves
+  // are asserted where they each live.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(text, /handoff: strict \|\| has\('handoff'\)/)
-  assert.match(text, /manual-test-plan\.md/)
-  assert.match(text, /if \(handoff \|\| conformance\)/)
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(
+    run,
+    /manifest\.flags\.handoff === true \|\| manifest\.flags\.conformance === true/,
+    'the run program decides when the handoff step is emitted'
+  )
+  assert.match(
+    readFileSync(join(ROOT, 'lib', 'prompts', 'handoff.mjs'), 'utf8'),
+    /manual-test-plan\.md/,
+    'and the artifact it names lives in the briefing assembler'
+  )
 })
 
 function parseInvocationFromSource(args) {
@@ -372,31 +478,60 @@ test('ship.js parseInvocation reads --strict from a flags array', () => {
   assert.equal(parsed.review, true)
 })
 
-test('ship.js default is lean: tail gated, LEAN SHIP banner, first next folded into plan', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /if \(review\)/)
-  assert.match(text, /if \(handoff \|\| conformance\)/)
-  assert.match(text, /LEAN SHIP:/)
-  assert.match(text, /pass --review \/ --handoff \/ --strict to enable/)
-  assert.match(text, /readNext\(planned\)/)
-  assert.doesNotMatch(text, /next-1/)
+test('the default is lean: the tail is gated, and the summary says what it skipped', () => {
+  // The gate is the manifest's flags, read in the run program. Neither driver
+  // consults them: `emit-strict-tail-from-cli` moved the last of that decision
+  // out of the Workflow script, so a host that branched on a tail flag would be
+  // a host deciding something the program decides.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /if \(manifest\.flags\.review === true\) \{/)
+  assert.match(run, /manifest\.flags\.handoff === true \|\| manifest\.flags\.conformance === true/)
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    assert.doesNotMatch(
+      readFileSync(driver, 'utf8'),
+      /if \(flags\.(review|handoff|conformance|strict)\b/,
+      `${driver} branches on a tail flag — which steps a flag buys is the run program's`
+    )
+  }
+  // And the banner that keeps a lean run from reading like a strict one.
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /LEAN SHIP:/)
+  assert.match(receipt, /pass --review \/ --handoff \/ --strict to enable/)
 })
 
-test('ship.js records autonomy only under --strict', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const autonomyAt = text.indexOf('interlock autonomy record')
-  const strictAt = text.lastIndexOf('(strict', autonomyAt)
-  assert.ok(autonomyAt !== -1, 'autonomy record must still exist for --strict')
-  assert.ok(strictAt !== -1 && strictAt < autonomyAt, 'autonomy record must sit behind the strict flag')
+test('the autonomy record is written by the close, so no agent supplies its count', async () => {
+  // It used to ride on the commit prompt under `--strict`, then on a spawn of
+  // the host tail — both of which handed an OBSERVED count to a party the
+  // record assesses. `run close` writes it from the CLI's own last
+  // adjudication (design D6), and no prompt asks for it at all.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /recordAutonomy\('review-code', \{ blockers \}, \{ root \}\)/)
+  assert.match(run, /manifest\.flags\.strict === true && manifest\.review/, 'strict runs only')
+  assert.match(run, /function survivingBlockers\(manifest\)/, 'and the count is the CLI\'s')
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    assert.doesNotMatch(
+      readFileSync(driver, 'utf8'),
+      /autonomy/,
+      `${driver} still mentions the ladder — the close writes it, no host does`
+    )
+  }
+  // The lean commit briefing must not carry it either: a lean run reviews
+  // nothing, so a ladder entry from one would describe a review that never
+  // happened. Asserted on the ASSEMBLED text, not the source: the module's own
+  // comment explains where the line went, and a source grep would flag the
+  // explanation.
+  const { assembleCommitPrompt } = await import('../lib/prompts/commit.mjs')
+  assert.doesNotMatch(assembleCommitPrompt({ change: 'demo', stageIndex: 1 }), /autonomy|ladder/i)
 })
 
-test('the docs frame ACP as an opt-in second host and Code Mode as out of scope', () => {
+test('the docs frame the runner as an opt-in second host and Code Mode as out of scope', () => {
   // The change's own scenario: a reader must not come away thinking Code Mode
-  // is a ship host, or that the ACP driver is what happens when the Workflow
-  // tool is missing. Both are one sentence away from being read that way, so
-  // both are asserted rather than trusted to survive the next docs edit.
+  // is a ship host, or that the runner is what happens when the Workflow tool
+  // is missing. Both are one sentence away from being read that way, so both
+  // are asserted rather than trusted to survive the next docs edit.
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
-  assert.match(readme, /interlock-ship-acp/)
+  assert.match(readme, /interlock-run/)
+  assert.match(readme, /interlock-ship-acp/, 'and the shim is still named while it exists')
   assert.match(readme, /Code Mode is out of scope/)
   assert.match(readme, /default and supported host/)
 
@@ -408,7 +543,558 @@ test('the docs frame ACP as an opt-in second host and Code Mode as out of scope'
 
   const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
   assert.match(docs, /not a fallback/)
-  assert.match(docs, /MODEL ROUTING UNAVAILABLE \(ACP host\)/)
+  assert.match(docs, /MODEL ROUTING UNAVAILABLE \(<host>\)/)
+})
+
+test('the docs carry every banner the runner prints, verbatim', () => {
+  // A banner nobody documented is a banner a reader meets for the first time on
+  // a failing run. Each of these names a way the run was weaker than the default
+  // host, so the page that explains halts is where they belong. Pinned against
+  // the DRIVER's own strings rather than restated, so a reworded banner and a
+  // stale page cannot pass together.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  for (const banner of [
+    'RUNNER HOST',
+    'SUBSCRIPTION PATH: programmatic',
+    'CHATGPT PLAN PATH',
+    'HOOKS NOT IN FORCE',
+    'MODEL ROUTING UNAVAILABLE'
+  ]) {
+    assert.ok(driver.includes(banner), `the runner no longer prints ${banner}`)
+    assert.ok(docs.includes(banner), `docs/04 does not explain ${banner}`)
+  }
+  // The one host-only banner the CLI raises rather than the driver.
+  assert.ok(readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8').includes('TOKEN USAGE NOT REPORTED'))
+  assert.ok(docs.includes('TOKEN USAGE NOT REPORTED'))
+})
+
+test('the docs state why the Workflow runtime stays the default, in one place', () => {
+  // The billing rationale is the reason `/interlock:ship` did not move to the
+  // runner, and it is exactly the kind of claim that rots into folklore if it
+  // lives only in a commit message. The banner points at this paragraph, so
+  // this is the one place to update if the policy settles.
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.match(docs, /exempted/, 'docs/04 must say which path was exempted')
+  assert.match(docs, /claude -p`?, the Agent SDK and ACP/, 'and which usage was flagged')
+  assert.match(
+    readFileSync(RUNNER_DRIVER, 'utf8'),
+    /docs\/04-when-it-stops\.md/,
+    'and the banner must point at it'
+  )
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /separate metered credit/, 'the README must carry the same reason')
+  assert.match(readme, /INTERLOCK_MODEL_MAP/, 'and the published model map')
+})
+
+// --- the ACP driver's routing banner, end to end (spec: workflow-host) ------
+//
+// The banner used to be a constant in the driver's `banners` array, printed on
+// every run whatever happened. It is now derived from the adapter's per-spawn
+// events, which means the property worth asserting is no longer "the string
+// exists" — it is that a run which routed every model does NOT print it, and a
+// run that could not print it WITH a reason. Both are driven through the real
+// binary, because the seam being tested is the driver's, not the adapter's.
+
+const RUNNER_BIN = join(ROOT, 'bin', 'interlock-run')
+const ACP_FIXTURE = join(ROOT, 'test', 'fixtures', 'acp', 'agent.mjs')
+
+/** A temp repo with one classified task, ready for a lean ship run. */
+function acpShipRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-acp-routing-'))
+  const change = 'add-thing'
+  const base = `openspec/changes/${change}`
+  const put = (rel, body) => {
+    const dest = join(root, rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, typeof body === 'string' ? body : JSON.stringify(body, null, 2) + '\n')
+  }
+  put(`${base}/proposal.md`, '# Add thing\n\nWhy: because.\n')
+  put(`${base}/design.md`, '# Design\n\nD1: keep it small.\n')
+  put(`${base}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Note it in README.md\n')
+  put('README.md', 'hello\n')
+  put('.claude/ship/classified.json', {
+    tasks: [
+      {
+        id: '1.1',
+        group: 1,
+        description: 'Note it in README.md',
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: ['README.md']
+      }
+    ]
+  })
+  execFileSync('git', ['init', '-q', '.'], { cwd: root })
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root })
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: root })
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: root })
+  return { root, change }
+}
+
+/** Run the runner on its ACP host against the fixture agent; return its stdout. */
+function runAcpShip(fixtureFlags) {
+  const { root, change } = acpShipRepo()
+  try {
+    try {
+      return execFileSync(
+        process.execPath,
+        [RUNNER_BIN, change, '--host', 'acp', '--no-commit', '--root', '.'],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 120000,
+          env: {
+            ...process.env,
+            INTERLOCK_ACP_COMMAND: `${process.execPath} ${ACP_FIXTURE} --ship ${fixtureFlags}`.trim()
+          }
+        }
+      )
+    } catch (err) {
+      // A halt is a verdict, not a test failure: the summary is on stdout either way.
+      return err.stdout || ''
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test('the runner stays silent about routing failure when every model was applied', () => {
+  const stdout = runAcpShip('--config-options')
+  assert.match(
+    stdout,
+    /model routing: applied on (\d+)\/\1 spawns/,
+    `the summary must say routing happened:\n${stdout}`
+  )
+  assert.doesNotMatch(
+    stdout,
+    /MODEL ROUTING UNAVAILABLE \(acp\)/,
+    `a run that routed every model must not banner that it could not:\n${stdout}`
+  )
+})
+
+test('the runner banners routing failure with a reason per unrouted spawn', () => {
+  // The default fixture advertises no config options and answers set_model
+  // -32601 — the pre-config-options agent, and today's behaviour exactly.
+  const stdout = runAcpShip('')
+  assert.match(
+    stdout,
+    /MODEL ROUTING UNAVAILABLE \(acp\)/,
+    `an unroutable agent must still raise the banner:\n${stdout}`
+  )
+  assert.match(
+    stdout,
+    /— .+: no model option advertised/,
+    `the banner must name the spawn and the reason, not just fire:\n${stdout}`
+  )
+  assert.doesNotMatch(
+    stdout,
+    /model routing: applied on/,
+    `a run that routed nothing must not also claim it did:\n${stdout}`
+  )
+})
+
+test('the runner reads `applied` off the event and computes nothing itself', () => {
+  // The whole point of the event: only the adapter saw the wire, so only the
+  // adapter may decide whether a model landed. A driver that re-derived it from
+  // the configured command, the slug, or the agent's reply would be guessing.
+  const driver = readFileSync(RUNNER_BIN, 'utf8')
+  const reads = (driver.match(/\.applied\b/g) || []).length
+  assert.ok(reads > 0, 'the driver never reads the event field it banners from')
+  assert.equal(
+    reads,
+    (driver.match(/\bevent\.applied\b/g) || []).length,
+    'every `.applied` the driver reads must be the adapter event field, not a verdict of its own'
+  )
+  assert.match(
+    driver,
+    /routing\.filter\(event => event\.applied === false\)/,
+    'the unrouted set must be the events the adapter marked unapplied'
+  )
+  assert.doesNotMatch(
+    driver,
+    /\bapplied\s*:/,
+    'the driver must not construct a routing verdict of its own'
+  )
+  assert.doesNotMatch(
+    driver,
+    /modelRoutingSupported/,
+    'the removed boolean must not come back as a second source of truth'
+  )
+})
+
+// --- the runner, end to end on a vendor CLI (spec: run-host-adapters) -------
+//
+// Everything above drives the runner's ACP host. These drive it on `claude`,
+// against a fixture binary that refuses a wrong invocation, because the three
+// properties this change is actually for — a worktree per lane, a fold that
+// halts on a real collision, and a banner naming the billing path — are
+// properties of the DRIVER and not of any adapter.
+
+const HOST_FIXTURES = join(ROOT, 'test', 'fixtures', 'hosts')
+
+/**
+ * A temp repo with two classified tasks whose predicted paths are disjoint, so
+ * the planner puts them in one batch of two lanes.
+ */
+function runnerRepo({ paths = [['docs/a.md'], ['docs/b.md']] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-runner-'))
+  const change = 'add-thing'
+  const base = `openspec/changes/${change}`
+  const put = (rel, body) => {
+    const dest = join(root, rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, typeof body === 'string' ? body : JSON.stringify(body, null, 2) + '\n')
+  }
+  put(`${base}/proposal.md`, '# Add thing\n\nWhy: because.\n')
+  put(`${base}/design.md`, '# Design\n\nD1: keep it small.\n')
+  put(`${base}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Write docs/a.md\n- [ ] 1.2 Write docs/b.md\n')
+  put('README.md', 'hello\n')
+  // Tier 4 on purpose: cohesion packs path-disjoint components at or below
+  // `LANE_CAPS.cohesionMaxTier` into ONE lane, and a batch of one lane proves
+  // nothing about isolation between lanes.
+  put('.claude/ship/classified.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'Write docs/a.md', tier: 4, model: 'sonnet', isTestTask: false, paths: paths[0] },
+      { id: '1.2', group: 1, description: 'Write docs/b.md', tier: 4, model: 'sonnet', isTestTask: false, paths: paths[1] }
+    ]
+  })
+  execFileSync('git', ['init', '-q', '.'], { cwd: root })
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root })
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: root })
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: root })
+  return { root, change }
+}
+
+/** Run the runner on one host against its fixture CLI; return stdout and the repo. */
+function runRunner(host, { fixture, fixtureFlags = [], flags = [], env = {}, root, change }) {
+  const commandEnv = {
+    claude: 'INTERLOCK_CLAUDE_COMMAND',
+    codex: 'INTERLOCK_CODEX_COMMAND',
+    qwen: 'INTERLOCK_QWEN_COMMAND'
+  }[host]
+  try {
+    return execFileSync(
+      process.execPath,
+      [RUNNER_BIN, change, '--host', host, '--no-commit', '--root', '.', ...flags],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 180000,
+        env: {
+          ...process.env,
+          CODEX_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          ...(commandEnv && fixture
+            ? { [commandEnv]: [process.execPath, fixture, ...fixtureFlags].join(' ') }
+            : {}),
+          ...env
+        }
+      }
+    )
+  } catch (err) {
+    // A halt is a verdict, not a test failure: the summary is on stdout either way.
+    return err.stdout || ''
+  }
+}
+
+test('the runner forks a worktree per lane, folds both, and removes them', () => {
+  const { root, change } = runnerRepo()
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship', '--fixture-per-lane'],
+      flags: ['--isolate-waves'],
+      root,
+      change
+    })
+    assert.match(stdout, /SHIP COMPLETE|SHIP COMPLETE WITH LEFTOVERS/, `the run must reach a summary:\n${stdout}`)
+    // The lanes' writes reached the SHARED tree — that is what the fold is for.
+    // Each lane wrote its own copy in its own worktree; both folded cleanly
+    // because the fixture stamps the lane's task ids into the file it writes.
+    assert.ok(existsSync(join(root, 'docs', 'lane-1.1.md')), `lane 1.1's write was not folded back:\n${stdout}`)
+    assert.ok(existsSync(join(root, 'docs', 'lane-1.2.md')), `lane 1.2's write was not folded back:\n${stdout}`)
+    assert.match(stdout, /wave 1 \(run-batch\): 2 ok, 0 failed/, `both lanes must have run:\n${stdout}`)
+    // And nothing was left behind: a folded worktree is removed uniformly.
+    for (const lane of ['1.1', '1.2']) {
+      assert.ok(
+        !existsSync(join(root, '.claude', 'ship', 'worktrees', 'wave-1', lane)),
+        `lane ${lane}'s worktree survived a clean fold`
+      )
+    }
+    const registered = execFileSync('git', ['worktree', 'list'], { cwd: root, encoding: 'utf8' })
+    assert.equal(registered.trim().split('\n').length, 1, `a worktree stayed registered:\n${registered}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('two lanes that write the same file halt the run and leave both worktrees named', () => {
+  // The prediction said disjoint; the lanes both wrote README.md anyway. That is
+  // exactly the case worktree isolation exists to catch, and the only honest
+  // outcome is a halt naming the path — a fold would silently drop one lane's work.
+  const { root, change } = runnerRepo()
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship', '--fixture-write=collide.md'],
+      flags: ['--isolate-waves'],
+      root,
+      change
+    })
+    assert.match(stdout, /SHIP HALTED/, `a real collision must halt:\n${stdout}`)
+    assert.match(stdout, /collide\.md/, `the halt must name the path:\n${stdout}`)
+    assert.match(stdout, /1\.1/, `and both lanes:\n${stdout}`)
+    assert.match(stdout, /1\.2/, `and both lanes:\n${stdout}`)
+    assert.match(stdout, /surviving worktrees/, `and say the worktrees are still there:\n${stdout}`)
+    assert.ok(
+      existsSync(join(root, '.claude', 'ship', 'worktrees', 'wave-1')),
+      'the surviving worktrees must be left on disk for the operator'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the runner names its host, and the billing banner is per host', () => {
+  const claudeRun = runnerRepo()
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      root: claudeRun.root,
+      change: claudeRun.change
+    })
+    assert.match(stdout, /RUNNER HOST: claude \(experimental\)/, stdout)
+    assert.match(stdout, /SUBSCRIPTION PATH: programmatic \(claude\)/, stdout)
+    assert.match(stdout, /docs\/04-when-it-stops\.md/, 'the banner points at the one paragraph to update')
+    assert.doesNotMatch(stdout, /HOOKS NOT IN FORCE/, 'the plugin\'s hooks do fire on the claude host')
+  } finally {
+    rmSync(claudeRun.root, { recursive: true, force: true })
+  }
+
+  const qwenRun = runnerRepo()
+  try {
+    const stdout = runRunner('qwen', {
+      fixture: join(HOST_FIXTURES, 'fake-qwen.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      root: qwenRun.root,
+      change: qwenRun.change
+    })
+    assert.match(stdout, /RUNNER HOST: qwen \(experimental\)/, stdout)
+    assert.doesNotMatch(stdout, /SUBSCRIPTION PATH/, `qwen spends no Anthropic credit:\n${stdout}`)
+    assert.match(stdout, /HOOKS NOT IN FORCE \(qwen\)/, stdout)
+    assert.match(stdout, /TOKEN USAGE NOT REPORTED/, 'and a host with no accounting says so')
+  } finally {
+    rmSync(qwenRun.root, { recursive: true, force: true })
+  }
+})
+
+test('a Codex run with no API key names the ChatGPT plan path and the absent guards', () => {
+  const { root, change } = runnerRepo()
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      root,
+      change
+    })
+    assert.match(stdout, /RUNNER HOST: codex \(experimental\)/, stdout)
+    assert.match(stdout, /CHATGPT PLAN PATH \(codex\)/, stdout)
+    assert.match(stdout, /HOOKS NOT IN FORCE \(codex\)/, stdout)
+    // Unmapped slugs on a map-only host are bannered, never passed off as routed.
+    assert.match(stdout, /MODEL ROUTING UNAVAILABLE \(codex\)/, stdout)
+    assert.match(stdout, /no mapping for sonnet/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a Codex run WITH an API key does not claim the ChatGPT plan path', () => {
+  const { root, change } = runnerRepo()
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { CODEX_API_KEY: 'sk-test', INTERLOCK_MODEL_MAP: '{"codex":{"sonnet":"gpt-5-codex"}}' },
+      root,
+      change
+    })
+    assert.doesNotMatch(stdout, /CHATGPT PLAN PATH/, stdout)
+    assert.doesNotMatch(stdout, /MODEL ROUTING UNAVAILABLE/, `a mapped slug is routed:\n${stdout}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an unknown host and the Workflow host are refused before anything is written', () => {
+  for (const [host, pattern] of [['gemini', /unknown host "gemini"/], ['workflow', /\/interlock:ship/]]) {
+    const { root, change } = runnerRepo()
+    try {
+      let stderr = ''
+      let code = 0
+      try {
+        execFileSync(process.execPath, [RUNNER_BIN, change, '--host', host, '--root', '.'], {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 60000
+        })
+      } catch (err) {
+        stderr = err.stderr || ''
+        code = err.status
+      }
+      assert.equal(code, 2, `--host ${host} must exit 2`)
+      assert.match(stderr, pattern)
+      assert.ok(
+        !existsSync(join(root, '.claude', 'ship', 'run.json')),
+        `--host ${host} wrote a manifest for a run that never happened`
+      )
+      assert.ok(!existsSync(join(root, '.claude', 'ship', 'runs')), 'and a trajectory')
+      assert.ok(!existsSync(join(root, '.claude', 'ship', 'briefings')), 'and briefings')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('the shim prints its deprecation line on stderr and forwards every argument', () => {
+  // stderr, never stdout: stdout carries the run summary a caller may be parsing.
+  const { root, change } = runnerRepo()
+  try {
+    let stdout = ''
+    let stderr = ''
+    try {
+      const out = execFileSync(
+        process.execPath,
+        [join(ROOT, 'bin', 'interlock-ship-acp'), change, '--no-commit', '--root', '.'],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 120000,
+          env: {
+            ...process.env,
+            INTERLOCK_ACP_COMMAND: `${process.execPath} ${ACP_FIXTURE} --ship`
+          }
+        }
+      )
+      stdout = out
+    } catch (err) {
+      stdout = err.stdout || ''
+      stderr = err.stderr || ''
+    }
+    // The forwarded arguments got a real run: the summary names the change.
+    assert.match(stdout, /RUNNER HOST: acp \(experimental\)/, `the shim must run the acp host:\n${stdout}`)
+    assert.match(stdout, new RegExp(change), stdout)
+    assert.doesNotMatch(stdout, /is now interlock-run/, 'the deprecation line must not pollute stdout')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the shim says the new name and the removal schedule', () => {
+  const shim = readFileSync(join(ROOT, 'bin', 'interlock-ship-acp'), 'utf8')
+  assert.match(shim, /interlock-ship-acp is now interlock-run --host acp/)
+  assert.match(shim, /process\.stderr\.write/, 'on stderr')
+  assert.match(shim, /removed in the next minor version/)
+  assert.match(shim, /'--host',\s*'acp'/, 'and it runs the acp host')
+  // A shim that flattened the exit status would turn a halt into a clean run.
+  assert.match(shim, /process\.exit\(signal \? 1 : typeof code === 'number' \? code : 1\)/)
+})
+
+// The shape the suite-count drift actually takes in this repo, observed twice:
+// a number, an optional `+`, then a suite noun a word or two later. Matched as a
+// shape rather than as the stale values (760, 590+), because a pin on the values
+// would pass the first time someone writes a *new* wrong number.
+const SUITE_COUNT = /\b\d[\d,]*\+?\s+(?:[A-Za-z-]+\s+){0,2}(?:unit tests|tests|test suite|test cases|cases)\b/i
+
+// The three published files that stated a count of the unit suite. Every one of
+// them was wrong — the documented 760 / 590+ against 1330 actually collected —
+// because nothing asserted them. Kept in one list so a fourth site added later
+// is one entry, not a fourth test.
+const COUNT_FREE_DOCS = ['README.md', join('docs', '06-why-it-works.md'), join('docs', '10-agentic-workflow-ship-and-spec.md')]
+
+test('package.json declares no runtime dependencies', () => {
+  // Backs the documented `no dependencies to install first` claim in README.md's
+  // Development block. That claim replaced a hand-written test count, and it is
+  // the half of the old sentence a reader acts on: it is what tells them
+  // `npm test` works on a fresh clone. Exactly derivable, so it is derived.
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  assert.ok(
+    !manifest.dependencies || Object.keys(manifest.dependencies).length === 0,
+    'package.json declares runtime dependencies, contradicting the documented ' +
+      '"no dependencies to install first" claim in README.md. Adding one is a design ' +
+      'decision (CLAUDE.md) — update the documented claim in the same commit.'
+  )
+
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /no dependencies to install first/)
+})
+
+test('the docs state no hand-written count of the test suite', () => {
+  // Fixing the four sentences was a one-time edit the next docs pass could undo.
+  // This pins the absence instead: a prose claim nobody asserts silently stops
+  // being true, and a suite count is the purest instance — it is wrong the
+  // moment a test is added, and nothing goes red. A count may return only if it
+  // is derived from the suite at test time; a literal one may not.
+  for (const rel of COUNT_FREE_DOCS) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const hit = text.match(SUITE_COUNT)
+    assert.ok(
+      !hit,
+      `${rel} states a hand-written count of the test suite: "${hit?.[0]}". ` +
+        'Remove the number, or derive it from the suite at test time.'
+    )
+  }
+})
+
+test('docs/10 names the evals suite in §2 and §8 and states its coverage gap', () => {
+  // §2's bullet called the unit suite "Evals" and §8 never mentioned that a
+  // model-in-the-loop suite exists, so a reader learned neither that `evals/`
+  // is there nor where it stops. Both are pinned because a coverage claim with
+  // no stated boundary reads as full coverage.
+  //
+  // Deliberately NOT pinned: the run status ("has not yet been run against a
+  // model"). That sentence is expected to change the first time the suite runs,
+  // and hooks/guard-tests.mjs denies test edits during remediation / fix-tests —
+  // so a pin on it would turn a correct docs update into a blocked test edit
+  // (design.md D3). Scope is durable; status is not.
+  const docs = readFileSync(join(ROOT, 'docs', '10-agentic-workflow-ship-and-spec.md'), 'utf8')
+  const section = (from, to) => docs.slice(docs.indexOf(from), docs.indexOf(to))
+
+  const s2 = section('## 2. Mental model', '## 3. How spec works')
+  assert.ok(s2.length > 0, '§2 heading moved — the slice is empty')
+  assert.match(s2, /`evals\/`/)
+  assert.match(s2, /model-in-the-loop/)
+
+  const s8evals = section('### Evals', '### Human gates')
+  assert.ok(s8evals.length > 0, '§8 Evals subsection moved — the slice is empty')
+  assert.match(s8evals, /`evals\/`/)
+  // The surfaces its cases exercise, one token per eval case directory.
+  for (const surface of [/implementer briefing/i, /control-plane action/i, /trampoline halt/i, /skill routing/i, /evidence locator/i, /tier read scope/i, /cited cap resolution/i]) {
+    assert.match(s8evals, surface)
+  }
+  // The boundary: the spec path has no model-in-the-loop coverage at all.
+  for (const uncovered of [/`skills\/spec`/, /`review-artifacts`/, /`review-code`/, /`explore`/, /`bootstrap`/]) {
+    assert.match(s8evals, uncovered)
+  }
+  assert.match(s8evals, /advisory/i)
+  assert.match(s8evals, /gates nothing/i)
+
+  // Thresholds live in the CLI, not in prose (CLAUDE.md). The subsection may say
+  // a cost ceiling exists; it must name the command that prints it instead of
+  // printing one, and it must not state a case count either.
+  assert.match(s8evals, /interlock limits/)
+  assert.doesNotMatch(s8evals, /\$\s*\d/)
+  assert.doesNotMatch(s8evals, /\b\d+(?:\.\d+)?\s*(?:usd|dollars?)\b/i)
+  assert.doesNotMatch(s8evals, /\b\d+\s+(?:[A-Za-z-]+\s+){0,2}(?:runs?|cases?|graders?)\b/i)
+  assert.doesNotMatch(s8evals, SUITE_COUNT)
 })
 
 test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
@@ -421,131 +1107,238 @@ test('docs/04 publishes the retrigger table and safe /goal recipe', () => {
   assert.match(docs, /LEAN SHIP/)
 })
 
-test('ship.js does not claim a clean complete when a wave had failures', () => {
+test('a run with leftovers does not print a clean complete', () => {
   // One or two ok:false tasks stay under the halt cap and the run continues to
   // commit. Printing SHIP COMPLETE with silent leftovers is what taught the
   // parent to launch a second 20-agent workflow.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /failedIds/)
-  assert.match(text, /SHIP COMPLETE WITH LEFTOVERS/)
-  assert.match(text, /Do not start another ship run unless the user asks/)
-  assert.match(text, /GOAL MET: interlock ship returned a terminal summary/)
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /SHIP COMPLETE WITH LEFTOVERS/)
+  assert.match(receipt, /leftover tasks \(boxes still unchecked\)/)
+  assert.match(receipt, /Do not start another ship run unless the user asks/)
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /failedIds/, 'and the recorded failures are carried to the receipt')
+  // The one line that stays with the host: `/goal` is a Claude Code convention.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /GOAL MET: interlock ship returned a terminal summary/)
+  assert.doesNotMatch(receipt, /GOAL MET/, 'and means nothing on another host')
+
+  // The close's newer verbatim lines, pinned the same way and at the same
+  // single party. `ARCHIVE PENDING` is what a reader greps for after a merge;
+  // the other three are what a reader who was not watching reads first.
+  for (const line of [
+    'ARCHIVE PENDING — ',
+    'also unarchived: ',
+    'run: none — the run halted before a plan was adopted',
+    'push: sent (ntfy)'
+  ]) {
+    assert.ok(receipt.includes(line), `the receipt no longer prints "${line}"`)
+    assert.ok(!ship.includes(line), `ship.js restates the receipt's "${line}"`)
+  }
 })
 
-test('ship.js ticks succeeded tasks through the CLI, not by editing tasks.md', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /interlock tasks tick/)
-  assert.doesNotMatch(text, /Then tick the checkbox in openspec/)
+test('the archive fix command is one string, on every surface that prints it', () => {
+  // Three surfaces tell someone to archive: the drift report, the ship close,
+  // and the mr skill. A reader who greps one and finds the others worded
+  // differently learns that one of them is stale — so they are the same token.
+  for (const rel of ['lib/drift.mjs', 'lib/receipt.mjs', 'skills/mr/SKILL.md']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(text.includes('openspec archive '), `${rel} no longer names "openspec archive "`)
+  }
 })
 
-test('ship.js halts when classified tasks omit an unchecked checkbox', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /interlock tasks coverage/)
-  assert.match(text, /coverageOk/)
-  assert.doesNotMatch(text, /plan-coverage/, 'coverage is folded into plan-waves, not a second agent')
+test('the network lives in exactly one module, and in neither driver', () => {
+  // The CLI makes ONE outbound request and README says so. The way that claim
+  // stops being true is a second `fetch` somewhere nobody looked, so this is a
+  // sweep rather than a pin on the module that has it.
+  const sources = []
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.name.endsWith('.mjs')) sources.push(full)
+    }
+  }
+  walk(join(ROOT, 'lib'))
+  for (const rel of ['bin/interlock', 'bin/interlock-graph', 'bin/interlock-run', 'workflows/ship.js']) {
+    sources.push(join(ROOT, rel))
+  }
+
+  const withFetch = sources
+    .filter(path => {
+      const text = readFileSync(path, 'utf8')
+      return /\bfetch\(/.test(text) || text.includes('globalThis.fetch')
+    })
+    .map(path => path.slice(ROOT.length + 1))
+  assert.deepEqual(
+    withFetch,
+    ['lib/notify.mjs'],
+    `the CLI's one network call moved or multiplied: ${withFetch.join(', ')}`
+  )
+
+  // And neither driver knows what a relay is. They request the push; the CLI
+  // decides whether one is configured and what it says.
+  for (const rel of ['bin/interlock-run', 'workflows/ship.js']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(!text.includes('ntfy'), `${rel} names the relay`)
+    assert.ok(!text.includes('INTERLOCK_NTFY'), `${rel} reads the push configuration itself`)
+  }
 })
 
-test('ship.js validate threads a known change as --change, not a bare positional', () => {
-  // A positional after --json is easy for the validate agent to drop, and
-  // `interlock validate --change <name>` was documented but ignored by the CLI.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /interlock validate --change/)
-  assert.doesNotMatch(text, /interlock validate \$\{changeArg \|\| ''\} --json/)
+test('README names the one command that reaches the network, beside the claim that none does', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.ok(readme.includes('interlock notify'), 'README no longer names the one exception')
+  assert.ok(readme.includes('INTERLOCK_NTFY_TOPIC'), 'README no longer documents where the topic comes from')
+  assert.ok(readme.includes('INTERLOCK_NTFY_URL'), 'README no longer documents the self-hosted server')
+})
+
+test('docs/04 has a section for each new banner a reader will grep for', () => {
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.match(docs, /^#+ .*`?ARCHIVE PENDING`?/m, 'a reader who greps ARCHIVE PENDING must land on a section')
+  assert.match(docs, /^#+ .*`?PUSH FAILED`?/m, 'a reader who greps PUSH FAILED must land on a section')
+})
+
+test('succeeded tasks are ticked by the CLI, from what it recorded', () => {
+  // No agent ticks a box, and none is asked to: the run ticks the ids its own
+  // record-batch adjudicated as ok. A box ticked from a claim is how
+  // unimplemented work ships behind a "[x]".
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /tickTasks\(root, manifest\.change, verdict\.tickIds\)/)
+  assert.match(run, /TASK TICK FAILED:/, 'and a tick that could not be written is said out loud')
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    assert.doesNotMatch(readFileSync(driver, 'utf8'), /tasks tick|tick the checkbox/)
+  }
+})
+
+test('a classification that omits an unchecked checkbox halts the run', () => {
+  // Coverage is checked by the CLI, right after the classifier writes its file
+  // — not by the classifying agent, which is the party the check exists to
+  // catch out.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /planCoverage\(inspection\.tasks\.items, listed\)/)
+  assert.match(run, /plan omitted unchecked tasks:/)
+  const planner = readFileSync(join(ROOT, 'lib', 'prompts', 'planner.mjs'), 'utf8')
+  assert.doesNotMatch(
+    planner,
+    /interlock tasks coverage/,
+    'the classifier is not asked to check its own coverage'
+  )
   assert.match(
-    text,
-    /Unchecked tasks are the work this run implements|0 checked|normal starting state/i
+    planner,
+    /the orchestrator runs the planner, the coverage check/,
+    'it is told who does, so it does not do it anyway'
   )
 })
 
-test('ship.js uses haiku for mechanical control-plane steps', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /model:\s*'haiku'/, 'control-plane steps must pin haiku')
-  assert.match(text, /cheap\(\s*`next-/, 'next must go through the cheap wrapper')
-  assert.match(text, /cheap\(\s*`record-batch-/, 'record-batch must go through the cheap wrapper')
-  assert.match(text, /cheap\(\s*`inter-wave-verify-/, 'inter-wave verify must go through the cheap wrapper')
-  assert.match(text, /cheap\(\s*`replan-/, 'replan must go through the cheap wrapper')
+test('the change name is threaded as --change, never as a bare positional', () => {
+  // A positional is easy for a relay to drop. It is a named flag on the one
+  // call that takes it, and validation happens inside that call rather than in
+  // an agent that could report ok on a change it never resolved.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /\.\.\.\(changeArg \? \['--change', changeArg\] : \[\]\)/)
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /inspectChange\(root, change\)/, 'run start validates the change itself')
+  assert.match(run, /validate failed:/)
 })
 
-// --- effort routing parity + dispatch (spec: effort-routing) ---------------
+test('ship.js uses haiku for its mechanical control-plane relays', () => {
+  // Every CLI call the script makes is a relay: it writes a file, runs a
+  // command and copies stdout. There is exactly one such wrapper now instead of
+  // four call sites, so the model pin is one statement rather than four.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(text, /pingExtra\.model = 'haiku'/, 'control-plane relays must pin haiku')
+  assert.match(text, /async function cli\(argv, results, extraWrites = \[\]\)/)
+  assert.match(text, /const relayed = await ping\(/, 'and every one goes through the ping wrapper')
+  // The relay is mechanical by contract, not by convention.
+  assert.match(text, /You are a mechanical relay for one command/)
+  assert.match(text, /never adjust a value/)
+})
+
+// --- effort routing dispatch (spec: effort-routing) ------------------------
 //
-// laneEffort exists twice — the source in lib/waves.mjs and the mirror in
-// ship.js — because the runtime rejects import(). A drift silently re-routes a
-// cached lane on replay, so the two are pinned equal here, the same guard shape
-// the mirrored laneModel relies on.
+// `laneEffort` used to exist twice — the source in lib/waves.mjs and a mirror in
+// ship.js — because the workflow runtime rejects import(), and the two were
+// pinned equal here so a drift could not silently re-route a cached lane on
+// replay. There is one now: the CLI derives the effort and puts it on the
+// spawn. So what is pinned is the absence of the mirror, and that the one
+// derivation reaches the spawn.
 
-/** The mirrored laneEffort, evaluated out of its marked region in ship.js. */
-const laneEffortMirror = (() => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const m = /\/\/ LANE_EFFORT_START\n([\s\S]*?)\n\/\/ LANE_EFFORT_END/.exec(text)
-  assert.ok(m, 'ship.js must define laneEffort between LANE_EFFORT markers')
-  return new Function(`${m[1]}; return laneEffort`)()
-})()
-
-test('the ship.js laneEffort mirror derives identical effort for every representative lane', () => {
-  const lanes = [
-    [{ id: '1', tier: 1 }],
-    [{ id: '2', tier: 2 }],
-    [{ id: '3', tier: 3 }],
-    [{ id: '4', tier: 4 }],
-    [{ id: '5', tier: 5 }],
-    [{ id: '6a', tier: 1 }, { id: '6b', tier: 5 }],
-    [{ id: '7', tier: undefined }]
-  ]
-  for (const lane of lanes) {
-    assert.equal(
-      laneEffortMirror(lane),
-      laneEffortSource(lane),
-      `laneEffort mirror disagrees with the source for lane ${lane.map(t => t.id).join('+')}`
-    )
+test('no driver mirrors laneEffort or laneModel any more', () => {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    for (const name of ['laneEffort', 'laneModel', 'laneLabel', 'LANE_EFFORT', 'LANE_DISPATCH']) {
+      assert.doesNotMatch(
+        text,
+        new RegExp(`\\b${name}\\b`),
+        `${driver} still carries ${name} — the derivation lives in lib/waves.mjs and reaches a ` +
+          `host on the spawn, so a second copy is the drift the mirror test used to guard`
+      )
+    }
   }
 })
 
-test('ship.js applies the lane effort at dispatch and pins the verify/skeptic steps at xhigh', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  // The implementer spawn carries its lane's derived effort, beside the model.
-  assert.match(text, /effort: laneEffort\(lane\)/, 'the implementer spawn must carry laneEffort(lane)')
-  // The two adversarial steps are fixed at xhigh, not left at the session default.
-  assert.match(text, /const VERIFY_EFFORT = 'xhigh'/)
-  assert.match(text, /const SKEPTIC_EFFORT = 'xhigh'/)
-  assert.match(text, /\{ effort: VERIFY_EFFORT \}/, 'inter-wave verify must pin VERIFY_EFFORT')
-  assert.match(text, /\{ effort: SKEPTIC_EFFORT \}/, 'the review skeptic step must pin SKEPTIC_EFFORT')
+test('the CLI applies the lane effort at dispatch and pins the review skeptics at xhigh', () => {
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  // The lane spawn carries its lane's derived effort, beside the model.
+  assert.match(run, /model: laneModel\(lane\),\n\s*effort: laneEffort\(lane\)/)
+  // And a host passes it through rather than choosing one.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /\.\.\.\(s\.effort \? \{ effort: s\.effort \} : \{\}\)/)
+  // The adversarial steps are pinned at the published skeptic effort rather
+  // than left at the session default, and the pin is the CLI's — the literal
+  // left the script with the tail (design D8).
+  assert.match(run, /effort: EFFORT\.skeptic/)
+  assert.doesNotMatch(ship, /xhigh/, 'no host declares an effort level of its own')
+  assert.doesNotMatch(readFileSync(RUNNER_DRIVER, 'utf8'), /xhigh/)
 })
 
-test('ship.js review and remediate return counts only', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /do not paste dimension reports/i)
-  assert.match(text, /do not paste fixer or skeptic/i)
+test('the review and remediation briefings ask for counts only', () => {
+  // The reasoning, the findings and the fix diffs live in the work files and in
+  // the diff. A result field carrying a dimension report would put kilobytes of
+  // model prose on the wire where the CLI wants a number it did not have to
+  // trust anyway.
+  const review = readFileSync(join(ROOT, 'lib', 'prompts', 'review.mjs'), 'utf8')
+  const remediate = readFileSync(join(ROOT, 'lib', 'prompts', 'remediate.mjs'), 'utf8')
+  assert.match(review, /do not paste dimension reports/i)
+  assert.match(remediate, /do not paste fixer or skeptic/i)
 })
 
-test('ship.js control-plane pings copy stdout and do not say Report the step', () => {
-  // "Report the step verbatim" taught haiku to set action:"report". The ping
-  // must copy stdout, and the six real actions have to be named so it cannot
-  // treat an English verb as one of them.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.doesNotMatch(text, /Report the step/)
-  assert.match(text, /Copy stdout JSON into the result/)
-  assert.match(text, /Never invent action/)
-  for (const action of ['run-batch', 'test-wave', 'verify', 'replan', 'done', 'halt']) {
-    assert.match(
-      text,
-      new RegExp(`Allowed values:[^\\n]*${action}`),
-      `control-plane copy instructions must name ${action}`
-    )
+test('a control-plane relay copies stdout and is told to interpret nothing', () => {
+  // "Report the step verbatim" once taught haiku to set action:"report", so the
+  // relay is told to copy rather than report — and, now that a step is a whole
+  // program rather than one of six actions, that it is a relay and not a worker.
+  // Listing allowed actions would be loop knowledge in a driver; refusing to
+  // interpret is not.
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(text, /Report the step/)
   }
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /You are a mechanical relay for one command/)
+  assert.match(ship, /Do not interpret it, and do not do the work it/)
+  assert.match(ship, /Copy that command's stdout into this result verbatim as cliStdout/)
+  assert.match(ship, /Never invent either, never summarize, and never adjust a value/)
+  // And the parse prefers the CLI's own bytes over anything the model retyped.
+  assert.match(ship, /JSON\.parse\(relayed\.cliStdout\)/)
 })
 
-test('ship.js retries an unknown wave-state action via next-retry- before halt', () => {
-  // An invented action is a relay miss. Re-reading state is pure; a new label
-  // cache-misses only the ping. Editing the prompt to resume would replay
-  // every later implementer.
+test('a relay that produced no readable step stops the run rather than guessing', () => {
+  // An invented action used to be a relay miss the script recovered from by
+  // re-reading the state under a new label. There is nothing to invent now: a
+  // step is the CLI's own JSON, and either it parsed or it did not. What
+  // matters is that neither outcome is a guess — an unreadable relay is a halt
+  // that closes, with the reason named.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /next-retry-/)
-  assert.match(text, /cheap\(\s*`next-retry-/)
-  const retryAt = text.indexOf('next-retry-')
-  const haltAt = text.indexOf('unrecognized step from the state machine')
-  assert.ok(retryAt !== -1 && haltAt !== -1, 'retry and halt must both exist')
-  assert.ok(retryAt < haltAt, 'retry must happen before the unrecognized-action halt')
-  assert.match(text, /wave-state next --state \$\{STATE\} --json/)
+  assert.match(text, /stdout was not JSON\. Nothing is inferred from that: the caller stops/)
+  assert.match(text, /the run program returned no step — the CLI relay could not be read/)
+  // And a run that can no longer read its program still records a receipt.
+  const stopAt = text.indexOf('async function stop(reason)')
+  const noStepAt = text.indexOf('the run program returned no step')
+  assert.ok(stopAt !== -1 && noStepAt !== -1)
+  assert.match(text, /return await stop\('the run program returned no step/)
+  // `run next` is what a caller uses to re-read the state deliberately, and it
+  // is a CLI subcommand rather than a prompt telling a model to run one.
+  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.match(cli, /sub === 'next'/)
 })
 
 test('ship.js logs the ship-run trajectory through run-log, never by touching fs itself', () => {
@@ -559,9 +1352,16 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   const usage = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
 
-  assert.match(text, /interlock run-log append --event/, 'ship.js must log trajectory events via the CLI')
+  // The script no longer logs anything itself — the CLI records every event
+  // from the step it emitted, which is strictly better: an instruction a model
+  // could skip became a side effect of the call it was going to make anyway.
+  assert.doesNotMatch(text, /interlock run-log/, 'no host composes a trajectory event')
   assert.doesNotMatch(text, /\bimport\s*\(/, 'ship.js must not import()')
   assert.doesNotMatch(text, /node:fs/, 'ship.js must not touch the filesystem itself')
+
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /appendRunLogEvent\(ctx\.root, \{/, 'the CLI appends the events instead')
+  assert.match(run, /type: 'agent-spawn'/, 'including the spawns it asked for')
 
   const dispatched = new Set([...usage.matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1]))
   assert.ok(dispatched.has('run-log'), 'the CLI must dispatch a "run-log" subcommand')
@@ -575,24 +1375,43 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
 // and no second copy of the rules or of the implementer briefing on the ACP
 // side. Without them, "the shared source of truth is the CLI" is a comment.
 
-const ACP_DRIVER = join(ROOT, 'bin', 'interlock-ship-acp')
+const RUNNER_DRIVER = join(ROOT, 'bin', 'interlock-run')
 
 /** Subcommands a driver invokes, however it spells the invocation. */
 function invokedSubcommands(text) {
-  const withoutGoalMet = text.replace(/GOAL MET:.*$/gm, '')
+  // Comment lines are excluded: a driver that CITES `interlock limits` in a
+  // comment explaining where a cap lives is not invoking it, and counting the
+  // citation would make the "one family" check unpassable for any file that
+  // explains itself.
+  const withoutGoalMet = text
+    .replace(/GOAL MET:.*$/gm, '')
+    .replace(/^\s*\/\/.*$/gm, '')
   const names = new Set()
   // Prose form, as an agent is told to run it: `interlock wave-state next`.
   for (const m of withoutGoalMet.matchAll(/\binterlock ([a-z-]+)/g)) names.add(m[1])
   // Node form, as the driver runs it itself: `cli(['wave-state', ...])`.
   for (const m of withoutGoalMet.matchAll(/(?:host\.runCli|\bcli)\(\[\s*'([a-z-]+)'/g)) names.add(m[1])
   names.delete('graph') // interlock-graph is a different binary
-  names.delete('ship') // interlock-ship-acp is this one
+  names.delete('ship') // the shim `interlock-ship-acp` names this binary
   return names
 }
 
-test('the ACP driver and ship.js drive the same interlock subcommands', () => {
+test('both drivers request the close push, and neither decides anything about it', () => {
+  // `--notify` is unconditional on both drivers by design (D1): the CLI owns
+  // whether a topic is configured. A driver that grew a condition here would
+  // be a driver deciding policy, and the two would drift apart silently.
+  for (const rel of ['workflows/ship.js', 'bin/interlock-run']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const start = text.indexOf('function closeArgs()')
+    assert.ok(start !== -1, `${rel} no longer assembles its close arguments in closeArgs()`)
+    const body = text.slice(start, text.indexOf('\n}', start))
+    assert.ok(body.includes("'--notify'"), `${rel}'s closeArgs() no longer requests the push`)
+  }
+})
+
+test('the runner and ship.js drive the same interlock subcommands', () => {
   const script = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
   const dispatched = new Set(
     [...readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8').matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1])
   )
@@ -600,19 +1419,31 @@ test('the ACP driver and ship.js drive the same interlock subcommands', () => {
   const fromScript = invokedSubcommands(script)
   const fromDriver = invokedSubcommands(driver)
 
-  // The lean path, named explicitly. A host that stopped calling one of these
-  // is a host that started deciding it for itself.
-  for (const required of ['validate', 'wave-state', 'verify', 'outcomes']) {
-    assert.ok(fromScript.has(required), `ship.js no longer invokes interlock ${required}`)
-    assert.ok(fromDriver.has(required), `the ACP driver does not invoke interlock ${required}`)
+  // The lean path, named explicitly. Both hosts drive it through ONE family
+  // now: a host that reached for anything else on the lean path would be a host
+  // deciding something the program decides.
+  for (const host of [fromScript, fromDriver]) {
+    assert.ok(host.has('run'), 'both hosts must drive the run program')
+  }
+  // Neither host invokes anything but the run family. The Workflow script used
+  // to reach for `review`, `review-policy`, `remediate`, `autonomy`, `surface`
+  // and `conformance` from inside its inline tail; `emit-strict-tail-from-cli`
+  // made every one of those a decision the run program takes in-process, so
+  // this list is empty on BOTH drivers and there is no allowance left.
+  for (const [name, invoked] of [['ship.js', fromScript], ['the runner', fromDriver]]) {
+    assert.deepEqual(
+      [...invoked].filter(sub => sub !== 'run'),
+      [],
+      `${name} invokes a subcommand outside the run family: ${[...invoked].join(', ')}`
+    )
   }
 
   const missing = [...fromDriver].filter(name => !dispatched.has(name))
-  assert.deepEqual(missing, [], `the ACP driver invokes subcommand(s) the CLI does not implement: ${missing}`)
+  assert.deepEqual(missing, [], `the runner invokes subcommand(s) the CLI does not implement: ${missing}`)
 })
 
-test('the ACP driver holds no second copy of the halt rules', () => {
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
+test('the runner holds no second copy of the halt rules', () => {
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
 
   // It may import the host port. It may not import the policy — a driver that
   // loaded lib/waves.mjs or lib/limits.mjs could answer "may I continue"
@@ -622,7 +1453,7 @@ test('the ACP driver holds no second copy of the halt rules', () => {
   for (const specifier of imports) {
     assert.ok(
       specifier.startsWith('node:') || /^\.\.\/lib\/host(\/|\.)/.test(specifier),
-      `the ACP driver may only import node builtins and the host port, not ${specifier}`
+      `the runner may only import node builtins and the host port, not ${specifier}`
     )
   }
 
@@ -634,32 +1465,55 @@ test('the ACP driver holds no second copy of the halt rules', () => {
     /rootCauseIterations/,
     /more than two/i
   ]) {
-    assert.doesNotMatch(driver, forbidden, `the ACP driver restates a CLI rule: ${forbidden}`)
+    assert.doesNotMatch(driver, forbidden, `the runner restates a CLI rule: ${forbidden}`)
   }
 })
 
-test('the ACP driver briefs implementers with ship.js own prompt', () => {
+test('the runner carries no briefing text at all, and sends what the step handed it', () => {
   // The tier ladder is snapshotted against test/fixtures/prompts/ for exactly
-  // one assembler. A second copy in the driver would drift silently and both
-  // hosts would still look correct.
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  assert.match(driver, /ASSEMBLE_IMPLEMENTER_PROMPT_START/)
-  assert.match(driver, /assembleImplementerPrompt\(\{ change, lane, previousHandoffs \}\)/)
-  for (const copied of [/Your tier is/, /tier 1: the task description alone/, /interlock\.wave-handoff\/1/]) {
-    assert.doesNotMatch(driver, copied, `the ACP driver copies implementer prompt text: ${copied}`)
+  // one assembler. A second copy in a driver would drift silently and both
+  // hosts would still look correct. The driver used to avoid that by reading
+  // the workflow script's source through `new Function`; it now receives the
+  // assembled string on the step and sends it inline.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  assert.match(driver, /prompt: s\.prompt,/, 'the briefing is the step\'s, sent verbatim')
+  assert.doesNotMatch(driver, /new Function\(/, 'no host evaluates another host\'s source')
+  assert.doesNotMatch(driver, /SHIP_SCRIPT/, 'and none reads it off disk')
+  for (const copied of [
+    /Your tier is/,
+    /tier 1: the task description alone/,
+    /interlock\.wave-handoff\/1/,
+    /Tier 1 trivial/,
+    /recommendedMode/
+  ]) {
+    assert.doesNotMatch(driver, copied, `the runner copies briefing text: ${copied}`)
   }
 })
 
-test('the ACP driver refuses --strict instead of quietly shipping lean', () => {
-  // The MVP is lean ship. Running lean under a strict invocation would be the
-  // silent degradation every banner in this repo exists to prevent.
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  assert.match(driver, /REFUSED_FLAGS = \['strict', 'review', 'handoff', 'conformance'\]/)
-  assert.match(driver, /is not implemented on the ACP host/)
-  assert.match(driver, /process\.exit\(2\)/)
-  assert.match(driver, /LEAN SHIP:/, 'the summary must still say what was skipped')
-  assert.doesNotMatch(driver, /interlock review /, 'the review tail is Claude Code-only for now')
-  assert.doesNotMatch(driver, /interlock remediate/, 'remediation is Claude Code-only for now')
+test('the runner refuses no tail flag and carries no tail text', () => {
+  // It used to exit 2 on --strict, --review, --handoff and --conformance,
+  // because the tail ran inline inside the Workflow script and this host had no
+  // copy of it. The tail is a CLI-emitted program now, so there is nothing left
+  // to refuse — and a refusal branch that survived would make one host's strict
+  // run silently different from the other's.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  assert.doesNotMatch(driver, /REFUSED_FLAGS/)
+  assert.doesNotMatch(driver, /is not implemented on the ACP host/)
+  assert.doesNotMatch(driver, /step\.action === 'host-tail'/)
+  // Every tail flag reaches `run start`, which is the only place they are read.
+  for (const flag of ['review', 'handoff', 'conformance', 'strict']) {
+    assert.match(
+      driver,
+      new RegExp(`\\.\\.\\.\\(${flag} \\? \\['--${flag}'\\] : \\[\\]\\)`),
+      `the runner must pass --${flag} through to run start`
+    )
+  }
+  // And it holds none of the text those flags buy.
+  for (const copied of [/adversarially review/i, /two skeptics/i, /manual-test-plan/, /reReviewDimensions/]) {
+    assert.doesNotMatch(driver, copied, `the runner copies tail text: ${copied}`)
+  }
+  // The summary is still the CLI's, and it still says what a lean run skipped.
+  assert.match(readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8'), /LEAN SHIP:/)
 })
 
 test('ship.js prefers parsed cliStdout over a mapped action', () => {
@@ -678,65 +1532,32 @@ const LIMITS_MODULE = await import('../lib/limits.mjs')
 const { LIMITS } = LIMITS_MODULE
 const {
   runShip,
-  stepResult,
-  stepResultNoStdout,
-  reuseAdopted,
-  reuseRebuilt,
   receiptFrom,
   outcomeFrom,
-  coercionArtifacts,
-  recordedOutcome,
+  trajectory,
   countingBudget,
   handoffFor,
-  RUN_BATCH,
-  DONE
+  makeRepo,
+  reviewFiles
 } = await import('./helpers/ship-harness.mjs')
 
-function remediationBudgetFromSource(input) {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const m = /\/\/ REMEDIATION_BUDGET_START\n([\s\S]*?)\n\/\/ REMEDIATION_BUDGET_END/.exec(text)
-  assert.ok(m, 'ship.js must define remediationBudget between REMEDIATION_BUDGET markers')
-  return new Function('input', `${m[1]}; return remediationBudget(input)`)(input)
-}
+// The remediation bound used to be a `remediationBudget` helper extracted from
+// ship.js's source between markers. It left with the tail: rounds are arranged
+// by `lib/remediate.mjs` from `LIMITS.remediationRounds`, and the run program
+// walks them (test/spine/remediate.test.mjs owns the arithmetic;
+// test/spine/run.test.mjs owns what a raised cap does to a driven run). What is
+// asserted here is only that no driver grew a copy.
 
-test('the remediation bound is derived from the cap, never written as a literal', () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.doesNotMatch(
-    text,
-    /round\s*<=\s*\d/,
-    'the remediation loop must not restate the cap as a literal — that is what lib/limits.mjs exists to prevent'
-  )
-  assert.doesNotMatch(text, /round === 3/)
-
-  const cap = LIMITS.remediationRounds
-  // Rounds 1..cap fix; the round after the cap is the verdict.
-  for (let round = 1; round <= cap; round++) {
-    assert.equal(
-      remediationBudgetFromSource({ round, roundCap: cap, blockersRemaining: 1 }).phase,
-      'fix',
-      `round ${round} of ${cap} must still be a fixing round`
-    )
+test('the remediation bound is stated by the CLI and by neither driver', () => {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(text, /roundCap/, `${driver} carries the round budget`)
+    assert.doesNotMatch(text, /round\s*<=\s*\d/, `${driver} restates the cap as a literal`)
+    assert.doesNotMatch(text, /verdict round/i, `${driver} knows what a verdict round is`)
   }
-  assert.equal(remediationBudgetFromSource({ round: cap + 1, roundCap: cap }).phase, 'verdict')
-
-  // Raising the cap by one buys exactly one more fixing round, and the verdict
-  // round moves with it. This is the property a literal silently breaks.
-  assert.equal(
-    remediationBudgetFromSource({ round: cap + 1, roundCap: cap + 1, blockersRemaining: 1 }).phase,
-    'fix'
-  )
-  assert.equal(remediationBudgetFromSource({ round: cap + 2, roundCap: cap + 1 }).phase, 'verdict')
-})
-
-test('a cap lowered to its minimum leaves exactly one verdict round', () => {
-  assert.equal(remediationBudgetFromSource({ round: 1, roundCap: 1, blockersRemaining: 1 }).phase, 'fix')
-  assert.equal(remediationBudgetFromSource({ round: 2, roundCap: 1 }).phase, 'verdict')
-})
-
-test('a bound the CLI never stated is not a bound', () => {
-  for (const roundCap of [undefined, null, 0, -1, 'two']) {
-    assert.equal(remediationBudgetFromSource({ round: 1, roundCap }).phase, 'unknown')
-  }
+  // And the cap has exactly one reader, which is where raising it takes effect.
+  const remediate = readFileSync(join(ROOT, 'lib', 'remediate.mjs'), 'utf8')
+  assert.match(remediate, /LIMITS\.remediationRounds/)
 })
 
 /**
@@ -747,9 +1568,9 @@ test('a bound the CLI never stated is not a bound', () => {
  * `interlock outcomes append`, so a run cannot report one number here and a
  * different one there.
  */
-function recordedRounds(prompts) {
-  const receipt = receiptFrom(prompts)
-  assert.ok(receipt, 'the run assembled no receipt payload')
+function recordedRounds(root) {
+  const receipt = receiptFrom(root)
+  assert.ok(receipt, 'the run wrote no receipt to its trajectory')
   // Absent, not zero: a lean run never reached a remediation step, and
   // "measured none" is a different fact from "never found out".
   return Object.prototype.hasOwnProperty.call(receipt, 'remediationRounds')
@@ -758,26 +1579,44 @@ function recordedRounds(prompts) {
 }
 
 test('recorded round consumption differs between a one-round and a two-round run', async () => {
-  // `Math.min(round, 2)` where round is always one past the bound at loop exit
-  // is a constant, and a fictional field in the outcomes corpus makes the one
-  // question that corpus exists to answer unanswerable.
-  const cap = LIMITS.remediationRounds
+  // The figure has to come from what the run CONSUMED. `Math.min(round, 2)`
+  // where round is always one past the bound at loop exit is a constant, and a
+  // fictional field in the outcomes corpus makes the one question that corpus
+  // exists to answer unanswerable.
+  //
+  // Rounds are driven by the FILES a fixer leaves behind, not by a count it
+  // reports: `run remediated` re-adjudicates them. So a fixer that clears the
+  // blocker on its first pass buys one round, and one that clears it on its
+  // second buys two.
+  const clearing = clearsOn => (label, n, ctx) => {
+    const { findings, verdicts } = reviewFiles({ blockers: n >= clearsOn ? 0 : 1, warnings: 0, dismissed: 0 })
+    ctx.write('.claude/ship/findings.json', findings)
+    ctx.write('.claude/ship/verdicts.json', verdicts)
+    return { ok: true }
+  }
+  const withBlocker = (label, n, ctx) => {
+    const { findings, verdicts } = reviewFiles({ blockers: 1, warnings: 0, dismissed: 0 })
+    ctx.write('.claude/ship/findings.json', findings)
+    ctx.write('.claude/ship/verdicts.json', verdicts)
+    return { ok: true }
+  }
   const cleared = await runShip({
+    keepRepo: true,
     args: 'demo-change --strict',
-    responses: { 'remediate-': { ok: true, blockersRemaining: 0, roundCap: cap } }
+    responses: { review: withBlocker, 'remediate-': clearing(1) }
   })
   const persisted = await runShip({
+    keepRepo: true,
     args: 'demo-change --strict',
-    responses: {
-      'remediate-': (label, n) => ({
-        ok: true,
-        blockersRemaining: n === 1 ? 2 : 0,
-        roundCap: cap
-      })
-    }
+    responses: { review: withBlocker, 'remediate-': clearing(2) }
   })
-  assert.equal(recordedRounds(cleared.prompts), 1)
-  assert.equal(recordedRounds(persisted.prompts), 2)
+  try {
+    assert.equal(recordedRounds(cleared.root), 1)
+    assert.equal(recordedRounds(persisted.root), 2)
+  } finally {
+    rmSync(cleared.root, { recursive: true, force: true })
+    rmSync(persisted.root, { recursive: true, force: true })
+  }
 })
 
 test('a lean run records no remediation rounds, distinguishably from "ran and used none"', async () => {
@@ -785,43 +1624,80 @@ test('a lean run records no remediation rounds, distinguishably from "ran and us
   // count to report. The corpus reads that as unobserved rather than as zero:
   // it holds the checkpoint runs as a control group, and defaulting an absence
   // to a clean value would bias exactly that group.
-  const { prompts } = await runShip({})
-  assert.equal(recordedRounds(prompts), null)
-  assert.notEqual(recordedRounds(prompts), 0, 'a run that never remediated did not remediate zero times')
+  const { root } = await runShip({ keepRepo: true })
+  try {
+    assert.equal(recordedRounds(root), null)
+    assert.notEqual(recordedRounds(root), 0, 'a run that never remediated did not remediate zero times')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- the completion gate ---------------------------------------------------
 
-const verifyRun = (verify) => runShip({ responses: { verify } })
+/**
+ * A run whose final verification actually plans a step, answered by what the
+ * verifying agent REPORTS — exit codes and counts, never a verdict.
+ *
+ * That distinction is the point. The agent used to return `{ok, unitGreen}` and
+ * the run branched on it, which made the party being verified the party
+ * deciding whether verification passed. It reports what the suites did; the CLI
+ * judges.
+ */
+const verifyRun = results =>
+  runShip({
+    repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+    responses: { verify: { results } }
+  })
 
 test('a green verification proceeds to the commit', async () => {
-  const { output, calls } = await verifyRun({ ok: true, unitGreen: true, skipReasons: [] })
+  const { output, calls } = await verifyRun([
+    { kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }
+  ])
   assert.ok(calls.includes('commit'), 'a green verification must reach the commit step')
   assert.match(output, /SHIP COMPLETE/)
 })
 
-test('a red verification halts even without a self-reported halt flag', async () => {
-  const { output, calls } = await verifyRun({ ok: false, unitGreen: false })
+test('a red verification halts, whatever the agent says about it', async () => {
+  const { output, calls } = await verifyRun([
+    { kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['a test failed'] }
+  ])
   assert.ok(!calls.includes('commit'), 'no commit may be created on a red verification')
   assert.match(output, /SHIP HALTED/)
-  assert.match(output, /verif/i, 'the halt must name the verification verdict as the reason')
+  assert.match(output, /unit|verif/i, 'the halt must name the verification verdict as the reason')
 })
 
-test('an absent verdict field is treated as not-verified, never as a pass', async () => {
-  for (const verify of [
-    { ok: true },
-    { ok: true, unitGreen: undefined },
-    { unitGreen: true },
-    { ok: true, unitGreen: false },
-    { ok: false, unitGreen: true }
+test('an agent cannot vote its own verification through', async () => {
+  // Every shape of self-declared pass, over a red suite. None of them may reach
+  // the commit: the verdict is the CLI's, rendered from the exit codes, and a
+  // field the agent volunteered is not an input to it.
+  const red = { kind: 'unit', exitCode: 1, total: 1, passed: 0, failed: 1 }
+  for (const claim of [
+    { ok: true, results: [red] },
+    { ok: true, unitGreen: true, results: [red] },
+    { halted: false, unitGreen: true, results: [red] }
   ]) {
-    const { output, calls } = await verifyRun(verify)
+    const { output, calls } = await runShip({
+      repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+      responses: { verify: claim }
+    })
     assert.ok(
       !calls.includes('commit'),
-      `${JSON.stringify(verify)} reached the commit — an absent or false verdict is not a passing verdict`
+      `${JSON.stringify(claim)} reached the commit — a self-declared pass is not a verdict`
     )
     assert.match(output, /SHIP HALTED/)
   }
+})
+
+test('a verification with no reported results at all does not pass', async () => {
+  // An absent report is "not verified", never a passing verdict — the same
+  // direction the completion gate has always failed in.
+  const { output, calls } = await runShip({
+    repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+    responses: { verify: {} }
+  })
+  assert.ok(!calls.includes('commit'))
+  assert.match(output, /SHIP HALTED/)
 })
 
 // --- lanes: one agent per lane, not per task (spec: lanes) -----------------
@@ -833,46 +1709,17 @@ test('an absent verdict field is treated as not-verified, never as a pass', asyn
 
 const laneTask = (id, over = {}) => ({
   id,
+  group: 1,
   description: `task ${id}`,
   tier: 2,
   model: 'sonnet',
+  isTestTask: false,
   paths: ['lib/a.mjs'],
   ...over
 })
 
-/** The label ship.js gives a lane: its first task id, plus how many follow. */
+/** The label a lane runs under: its first task id, plus how many follow. */
 const labelFor = lane => (lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`)
-
-/** Run one wave holding exactly one lane, answered by `laneResult`. */
-function runLane(lane, laneResult, extra = {}) {
-  const step = stepResult({
-    action: 'run-batch',
-    wave: 1,
-    waveIndex: 0,
-    waveKind: 'impl',
-    batchIndex: 0,
-    batchCount: 1,
-    tasks: [lane],
-    remainingBatches: [[lane]],
-    previousHandoffs: [],
-    changed: ['lib/a.mjs'],
-    maxParallel: 8
-  })
-  return runShip({
-    responses: {
-      'plan-waves': {
-        ok: true,
-        waveCount: 1,
-        taskCount: lane.length,
-        coverageOk: true,
-        fingerprintWritten: true,
-        ...step
-      },
-      [labelFor(lane)]: laneResult,
-      ...extra
-    }
-  })
-}
 
 const laneHandoff = id => ({
   schema: 'interlock.wave-handoff/1',
@@ -884,183 +1731,193 @@ const laneHandoff = id => ({
   blocker: null
 })
 
-/** The record-batch ping's prompt, which carries the batch JSON and the tick. */
-function recordPrompt(prompts) {
-  const found = prompts.find(p => p.label.startsWith('record-batch-'))
-  assert.ok(found, 'the run assembled no record-batch prompt')
-  return found.prompt
-}
-
 /**
- * The tick ping's prompt. The tick is its own step: the loop cannot know which
- * ids to mark until the record ping has reported what the CLI recorded, so a
- * tick fused into the record ping could only ever tick what the agent claimed.
+ * Run one wave holding exactly one lane, answered by `laneResult`.
+ *
+ * The classification is real and so is the CLI: the tasks below are what the
+ * classifier would have written, and what the run records, ticks and tallies is
+ * the run program's own doing. Only the lane agent is canned — which is the one
+ * party a test cannot supply, and the one whose claims these tests exist to
+ * contradict.
  */
-function tickPrompt(prompts) {
-  const found = prompts.find(p => p.label.startsWith('tick-'))
-  return found ? found.prompt : null
+function runLane(lane, laneResult, opts = {}) {
+  return runShip({
+    keepRepo: true,
+    classified: { tasks: lane },
+    repo: {
+      tasks: '# Tasks\n\n' + lane.map(t => `- [ ] ${t.id} ${t.description}`).join('\n') + '\n'
+    },
+    responses: { [labelFor(lane)]: laneResult, ...(opts.responses || {}) }
+  })
 }
 
-/** What the record ping reports when the CLI recorded these ids as succeeded. */
-const recordedOk = ids =>
-  stepResult({ action: 'done' }, {}, ids.map(id => recordedOutcome(id, 'ok')))
+/** The tasks.md the run left behind, so a tick can be read rather than inferred. */
+function tasksMd(root, change = 'demo-change') {
+  return readFileSync(join(root, 'openspec', 'changes', change, 'tasks.md'), 'utf8')
+}
+
+/** Which ids the run ticked. */
+function ticked(root, change) {
+  return [...tasksMd(root, change).matchAll(/- \[x\] (\S+)/g)].map(m => m[1])
+}
 
 test('a three-task lane spawns one implementer, not three', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
-  const { calls, prompts } = await runLane(
-    lane,
-    { tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) },
-    { 'record-batch-': recordedOk(['1.1', '1.2', '1.3']) }
-  )
-  const implementers = calls.filter(c => c === labelFor(lane))
-  assert.equal(implementers.length, 1, `expected one lane agent, got calls: ${calls.join(', ')}`)
-  for (const id of ['1.2', '1.3']) {
-    assert.ok(!calls.includes(id), `${id} must not get its own agent — it is inside the lane`)
+  const { calls, prompts, root } = await runLane(lane, {
+    tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) }))
+  })
+  try {
+    const implementers = calls.filter(c => c === labelFor(lane))
+    assert.equal(implementers.length, 1, `expected one lane agent, got calls: ${calls.join(', ')}`)
+    for (const id of ['1.2', '1.3']) {
+      assert.ok(!calls.includes(id), `${id} must not get its own agent — it is inside the lane`)
+    }
+    const prompt = prompts.find(p => p.label === labelFor(lane)).prompt
+    assert.match(prompt, /Implement 3 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
+    assert.deepEqual(ticked(root), ['1.1', '1.2', '1.3'], 'all three succeeded, so all three tick')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
-  const prompt = prompts.find(p => p.label === labelFor(lane)).prompt
-  assert.match(prompt, /Implement 3 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
-  assert.match(tickPrompt(prompts), /--ids 1\.1,1\.2,1\.3/, 'all three succeeded, so all three tick')
 })
 
 test('a mid-lane failure ticks the earlier task and counts one failure', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2'), laneTask('1.3')]
-  const { output, prompts } = await runLane(
-    lane,
-    {
-      tasks: [
-        { id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') },
-        { id: '1.2', outcome: 'failed', error: 'no migration runner' },
-        { id: '1.3', outcome: 'not-attempted' }
-      ]
-    },
-    {
-      'record-batch-': stepResult({ action: 'done' }, {}, [
-        recordedOutcome('1.1', 'ok'),
-        recordedOutcome('1.2', 'failed', 'no migration runner')
-      ])
-    }
-  )
-  const prompt = recordPrompt(prompts)
-  const tick = tickPrompt(prompts)
-  assert.match(tick, /--ids 1\.1\b/, 'the task that succeeded is ticked')
-  assert.doesNotMatch(tick, /--ids [^\n]*1\.2/, 'a failed task is never ticked')
-  assert.doesNotMatch(tick, /--ids [^\n]*1\.3/, 'and neither is one nobody ran')
-
-  const batch = /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(prompt)
-  assert.ok(batch, `the record ping carries no batch JSON:\n${prompt}`)
-  const recorded = JSON.parse(batch[1])
-  assert.deepEqual(
-    recorded.tasks.map(t => [t.id, t.ok]),
-    [['1.1', true], ['1.2', false]],
-    'a not-attempted task is neither ticked nor recorded as a failure — spending the failure ' +
-      'budget on the tasks sitting behind one blocker would halt a run that has one problem'
-  )
-
-  assert.match(output, /wave 1 \(run-batch\): 1 ok, 1 failed/)
-  assert.match(output, /LANE STOPPED EARLY: 1\.3 not attempted/)
-  assert.match(output, /SHIP HALTED|SHIP COMPLETE WITH LEFTOVERS/, 'the failure is still visible')
+  const { output, root } = await runLane(lane, {
+    tasks: [
+      { id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') },
+      { id: '1.2', outcome: 'failed', error: 'no migration runner' },
+      { id: '1.3', outcome: 'not-attempted' }
+    ]
+  })
+  try {
+    assert.deepEqual(
+      ticked(root),
+      ['1.1'],
+      'the task that succeeded is ticked; a failed task and one nobody ran are not'
+    )
+    assert.match(output, /wave 1 \(run-batch\): 1 ok, 1 failed/)
+    assert.match(
+      output,
+      /LANE STOPPED EARLY: 1\.3 not attempted/,
+      'a not-attempted task is neither ticked nor charged to the failure budget — spending it ' +
+        'on the tasks sitting behind one blocker would halt a run that has one problem'
+    )
+    assert.match(output, /SHIP HALTED|SHIP COMPLETE WITH LEFTOVERS/, 'the failure is still visible')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- claim versus recorded verdict ----------------------------------------
 //
-// The defect these three tests exist for: a run ticked and tallied from what
-// the implementing agent CLAIMED, so five tasks the state machine failed for
+// The defect these tests exist for: a run ticked and tallied from what the
+// implementing agent CLAIMED, so five tasks the state machine failed for
 // invalid handoff packets got their boxes ticked beside a halt naming them as
 // failures. The claim is the input that was adjudicated, not a second opinion.
+//
+// The disagreement is produced rather than stubbed now. The agent claims
+// success with a packet the state machine rejects, and the CLI records what it
+// records — so the two observations differ for the reason they differ in
+// production, instead of because a fixture said so.
 
 test('a claim the CLI recorded as failed is neither ticked nor counted as ok', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2')]
-  const { output, prompts } = await runLane(
-    lane,
-    // The agent claims both succeeded, with packets it believes are valid.
-    { tasks: lane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) },
-    {
-      // The CLI disagrees: both packets carried a status outside the accepted
-      // set, so `record-batch` failed both tasks.
-      'record-batch-': stepResult({ action: 'done' }, {}, [
-        recordedOutcome('1.1', 'failed', 'invalid handoff: status must be one of ok|blocked|partial'),
-        recordedOutcome('1.2', 'failed', 'invalid handoff: status must be one of ok|blocked|partial')
-      ])
-    }
-  )
-
-  for (const p of prompts) {
-    assert.doesNotMatch(
-      p.prompt,
-      /--ids [^\n]*1\.[12]/,
-      `a task the run recorded as failed must never reach a tick:\n${p.label}`
+  const { output, root } = await runLane(lane, {
+    // Both claimed ok, both carrying a packet whose status is outside the
+    // accepted set — which `record-batch` fails the task for.
+    tasks: lane.map(t => ({
+      id: t.id,
+      outcome: 'ok',
+      handoff: { ...laneHandoff(t.id), status: 'finished' }
+    }))
+  })
+  try {
+    assert.deepEqual(ticked(root), [], 'a task the run recorded as failed must never be ticked')
+    assert.match(
+      output,
+      /wave 1 \(run-batch\): 0 ok, 2 failed/,
+      'the tally counts the recorded outcomes, not the claims'
     )
+    assert.match(
+      output,
+      /CLAIM OVERRIDDEN: 1\.1, 1\.2/,
+      'overriding a claim is a finding, not a silent fix'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
-  assert.equal(tickPrompt(prompts), null, 'nothing was recorded as succeeded, so nothing ticks')
-  assert.match(
-    output,
-    /wave 1 \(run-batch\): 0 ok, 2 failed/,
-    'the tally counts the recorded outcomes, not the claims'
-  )
-  assert.match(output, /CLAIM OVERRIDDEN: 1\.1, 1\.2/, 'overriding a claim is a finding, not a silent fix')
-  const receipt = receiptFrom(prompts)
-  assert.deepEqual(receipt.waves, [{ wave: 1, ok: 0, failed: 2, notAttempted: [] }])
-  assert.ok(
-    receipt.degradations.some(d => /CLAIM OVERRIDDEN/.test(d)),
-    `the override never reached the receipt: ${JSON.stringify(receipt.degradations)}`
-  )
-})
-
-test('recorded outcomes that never arrived fall back to the claim, loudly', async () => {
-  const lane = [laneTask('1.1')]
-  // An older CLI, or a ping that dropped the field: the run tallies from the
-  // claim as it always did, and says that is what it did.
-  const { output, prompts } = await runLane(
-    lane,
-    { id: '1.1', ok: true, handoff: laneHandoff('1.1') },
-    { 'record-batch-': DONE }
-  )
-  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
-  assert.match(tickPrompt(prompts), /--ids 1\.1\b/)
-  assert.match(output, /CLAIM-DERIVED TALLIES/, 'a silent fallback would reintroduce the defect')
 })
 
 test('a lane result with no per-task outcomes fails every task in the lane', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2')]
-  const { output, prompts } = await runLane(lane, { note: 'I did some things' })
-  const batch = /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(
-    recordPrompt(prompts)
-  )
-  const recorded = JSON.parse(batch[1])
-  assert.deepEqual(recorded.tasks.map(t => t.ok), [false, false])
-  for (const t of recorded.tasks) {
-    assert.match(t.error, /carried no per-task outcomes/)
+  const { output, root } = await runLane(lane, { note: 'I did some things' })
+  try {
+    assert.deepEqual(ticked(root), [])
+    assert.match(output, /wave 1 \(run-batch\): 0 ok, 2 failed/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
-  assert.match(output, /wave 1 \(run-batch\): 0 ok, 2 failed/)
 })
 
 test('a lane result that omits one task fails all of them, closed', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2')]
-  const { prompts } = await runLane(lane, {
+  const { output, root } = await runLane(lane, {
     tasks: [{ id: '1.1', outcome: 'ok', handoff: laneHandoff('1.1') }]
   })
-  const prompt = recordPrompt(prompts)
-  const recorded = JSON.parse(
-    /Write this JSON to \.claude\/ship\/batch-0\.json:\n(\{.*\})/.exec(prompt)[1]
-  )
-  assert.deepEqual(recorded.tasks.map(t => t.ok), [false, false])
-  assert.match(recorded.tasks[0].error, /omitted an outcome for 1\.2/)
-  assert.equal(
-    tickPrompt(prompts),
-    null,
-    'nothing may be ticked from a result nobody can trust — so there is no tick step at all'
-  )
+  try {
+    assert.deepEqual(
+      ticked(root),
+      [],
+      'nothing may be ticked from a result nobody can trust — including the task it did report'
+    )
+    assert.match(output, /wave 1 \(run-batch\): 0 ok, 2 failed/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a worker that does not acknowledge its briefing fails the task, closed', async () => {
+  // The by-reference contract (design D2). A worker that did not read its
+  // instructions did not do this task, whatever it reports about it — so a
+  // missing or wrong hash is a null result with a named reason, which the
+  // recorder already treats as a failed task.
+  const lane = [laneTask('1.1')]
+  const { output, root } = await runShip({
+    keepRepo: true,
+    classified: { tasks: lane },
+    responses: {
+      // The harness normally answers with the sha the bootstrap asked for. This
+      // one answers without it.
+      '1.1': () => ({ id: '1.1', ok: true, handoff: laneHandoff('1.1'), briefing: 'nope' })
+    }
+  })
+  try {
+    assert.deepEqual(ticked(root), [], 'an unacknowledged briefing may not tick a box')
+    assert.match(output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/)
+    assert.match(output, /wave 1 \(run-batch\): 0 ok, 1 failed/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('a one-task lane keeps the pre-lane label, schema and result shape', async () => {
   const lane = [laneTask('1.1')]
-  const { calls, prompts } = await runLane(lane, { id: '1.1', ok: true, handoff: laneHandoff('1.1') })
-  assert.ok(calls.includes('1.1'), 'the label is the bare task id, so a replay still cache-hits')
-  assert.match(
-    prompts.find(p => p.label === '1.1').prompt,
-    /Implement exactly one task/,
-    'and the prompt is the pre-lane prompt'
-  )
+  const { calls, prompts, root } = await runLane(lane, {
+    id: '1.1',
+    ok: true,
+    handoff: laneHandoff('1.1')
+  })
+  try {
+    assert.ok(calls.includes('1.1'), 'the label is the bare task id, so a replay still cache-hits')
+    assert.match(
+      prompts.find(p => p.label === '1.1').prompt,
+      /Implement exactly one task/,
+      'and the prompt is the pre-lane prompt'
+    )
+    assert.deepEqual(ticked(root), ['1.1'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- isolated-lane merge, opt-in via --isolate-waves (spec: ship/wave-isolation, ship/lane-merge) --
@@ -1070,127 +1927,118 @@ test('a one-task lane keeps the pre-lane label, schema and result shape', async 
 // spawn is asked to run in its own worktree and a merge-lanes step folds the
 // batch's worktrees back before the next batch's base is read.
 
-const twoLaneBatch = stepResult({
-  action: 'run-batch',
-  wave: 1,
-  waveIndex: 0,
-  waveKind: 'impl',
-  batchIndex: 0,
-  batchCount: 1,
-  tasks: [[laneTask('1.1')], [laneTask('2.1', { paths: ['lib/b.mjs'] })]],
-  remainingBatches: [[[laneTask('1.1')], [laneTask('2.1', { paths: ['lib/b.mjs'] })]]],
-  previousHandoffs: [],
-  changed: ['lib/a.mjs', 'lib/b.mjs'],
-  maxParallel: 8
-})
+// A two-lane batch: two tasks with disjoint paths, so the planner builds one
+// batch holding two lanes and each lane gets its own agent — and, under
+// isolation, its own worktree.
+// Tier 4, so the planner does not fold them into one cohesion lane:
+// `LANE_CAPS.cohesionMaxTier` stops cohesion packing above tier 3, and two
+// lanes is the whole point of an isolation fixture.
+const TWO_LANES = [
+  laneTask('1.1', { tier: 4 }),
+  laneTask('2.1', { group: 1, tier: 4, paths: ['lib/b.mjs'] })
+]
 
-test('without --isolate-waves, no lane spawn asks for a worktree and no merge-lanes step runs', async () => {
-  const { calls, prompts } = await runShip({})
-  assert.ok(!calls.some(c => c.startsWith('merge-base-') || c.startsWith('merge-lanes-')))
+/** Drive an isolated run over `lane`, with the fold's own result canned. */
+function runIsolated(tasks, responses = {}) {
+  return runShip({
+    keepRepo: true,
+    args: 'demo-change --isolate-waves',
+    classified: { tasks },
+    repo: {
+      tasks: '# Tasks\n\n' + tasks.map(t => `- [ ] ${t.id} ${t.description}`).join('\n') + '\n'
+    },
+    responses
+  })
+}
+
+test('without --isolate-waves, no lane spawn asks for a worktree and nothing is folded', async () => {
+  const { prompts, commands } = await runShip({})
+  assert.ok(
+    !commands.some(c => c.includes('merge-lanes')),
+    'an unisolated run must fold nothing'
+  )
   const lanePrompt = prompts.find(p => p.label === '1.1')
   assert.ok(lanePrompt, 'the default single-lane run must still spawn the lane')
   assert.equal(lanePrompt.isolation, undefined, 'unset, the spawn opts must be byte-identical to today')
   assert.doesNotMatch(lanePrompt.prompt, /ISOLATION/, 'the prompt must not mention worktree isolation')
 })
 
-test('--isolate-waves asks each lane to run in its own worktree and folds a clean batch', async () => {
-  const { calls, output, prompts } = await runShip({
-    args: 'demo-change --isolate-waves',
-    responses: {
-      '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' }
-    }
+test('--isolate-waves asks each lane to run in its own worktree', async () => {
+  const { prompts, root } = await runIsolated(TWO_LANES, {
+    '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' },
+    '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' }
   })
-  assert.ok(calls.includes('merge-base-1-0'), `expected a merge-base ping, got: ${calls.join(', ')}`)
-  assert.ok(calls.includes('merge-lanes-1-0'), `expected a merge-lanes ping, got: ${calls.join(', ')}`)
-  const lanePrompt = prompts.find(p => p.label === '1.1')
-  assert.equal(lanePrompt.isolation, 'worktree', 'the lane spawn must request its own worktree')
-  assert.match(lanePrompt.prompt, /ISOLATION — you are running in your own git worktree/)
-  const mergePrompt = prompts.find(p => p.label === 'merge-lanes-1-0').prompt
-  assert.match(mergePrompt, /"label":"1\.1","worktreePath":"\/tmp\/wt-1\.1"/)
-  assert.match(output, /SHIP COMPLETE/, 'a clean fold must let the run reach completion')
+  try {
+    for (const label of ['1.1', '2.1']) {
+      const lane = prompts.find(p => p.label === label)
+      assert.ok(lane, `the isolated run must spawn lane ${label}`)
+      assert.equal(lane.isolation, 'worktree', 'the lane spawn must request its own worktree')
+      assert.match(lane.prompt, /ISOLATION — you are running in your own git worktree/)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('a merge-lanes collision halts the run, names the contended path and lanes, and reports the survivors', async () => {
-  const { output, calls } = await runShip({
-    args: 'demo-change --isolate-waves',
-    responses: {
-      'plan-waves': { ok: true, waveCount: 1, taskCount: 2, coverageOk: true, fingerprintWritten: true, ...twoLaneBatch },
-      '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' },
-      '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' },
-      'merge-lanes-': {
-        status: 'collision',
-        folds: [],
-        collisions: [{ canonicalPath: 'lib/risk.mjs', lanes: ['1.1', '2.1'] }],
-        unresolved: [],
-        survivingWorktrees: [
-          { label: '1.1', worktreePath: '/tmp/wt-1.1' },
-          { label: '2.1', worktreePath: '/tmp/wt-2.1' }
-        ]
-      }
-    }
-  })
-  assert.ok(!calls.includes('commit'), 'a merge collision must never reach the commit step')
-  assert.match(output, /SHIP HALTED/)
-  assert.match(output, /merge-lanes halted/)
-  assert.match(output, /lib\/risk\.mjs/, 'the halt must name the contended canonical path')
-  assert.match(output, /"1\.1"|1\.1/)
-  assert.match(output, /wt-1\.1/, "the halt must name the surviving lane worktrees' locations")
-  assert.match(output, /wt-2\.1/)
-})
-
-test('a failed lane never folds — its worktree is preserved and named, not passed to merge-lanes', async () => {
-  const { output, prompts } = await runShip({
-    args: 'demo-change --isolate-waves',
-    responses: {
-      'plan-waves': { ok: true, waveCount: 1, taskCount: 2, coverageOk: true, fingerprintWritten: true, ...twoLaneBatch },
-      '1.1': { id: '1.1', ok: false, error: 'blocked', handoff: null, worktreePath: '/tmp/wt-1.1' },
-      '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' },
-      'record-batch-': stepResult({ action: 'done' }, {}, [
-        recordedOutcome('1.1', 'failed', 'blocked'),
-        recordedOutcome('2.1', 'ok')
-      ])
-    }
-  })
-  const mergePrompt = prompts.find(p => p.label.startsWith('merge-lanes-'))
-  assert.ok(mergePrompt, 'the surviving lane must still be offered to merge-lanes')
-  assert.doesNotMatch(
-    mergePrompt.prompt,
-    /"label":"1\.1"/,
-    "the failed lane's worktree must not be handed to merge-lanes at all"
+test('an isolated batch captures the shared tree\'s base commit before its lanes fork', async () => {
+  // Read before, not after, so nothing else lands on the shared tree between
+  // the reading and the fold — and read by the CLI itself rather than by a
+  // ping, which is one fewer agent turn and one fewer place to lose it.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /mergeBase = ctx\.deps\.headCommit\(root\)/)
+  assert.match(
+    run,
+    /could not capture the shared-tree base commit before an isolated batch/,
+    'and an unreadable base halts rather than being guessed'
   )
-  assert.match(mergePrompt.prompt, /"label":"2\.1"/)
-  assert.match(output, /LANE WORKTREE PRESERVED: 1\.1 at \/tmp\/wt-1\.1/)
+  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.match(cli, /'rev-parse', 'HEAD'/)
 })
 
-test('a resumed pass assembles the identical merge-lanes prompt, so it cache-hits without touching the worktree', async () => {
-  // The workflow runtime caches an agent() call by (prompt, opts) equality: a
-  // resumed run that assembles the SAME prompt for the SAME label never re-runs
-  // the CLI, so `bin/interlock merge-lanes` — the one place that stats the
-  // worktree on disk — is never invoked on the cached pass at all. That is what
-  // makes a cached-clean batch a no-op even after its worktrees were removed:
-  // the merge decision the resumed pass "reaches" is the one already cached, not
-  // a fresh filesystem read. This is asserted here as determinism of the
-  // ASSEMBLED prompt across two independent runs of the same batch, since the
-  // harness stubs agent() and cannot exercise the runtime's own cache.
-  const run = () =>
-    runShip({
-      args: 'demo-change --isolate-waves',
-      responses: {
-        '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), worktreePath: '/tmp/wt-1.1' }
-      }
-    })
-  const first = await run()
-  const second = await run()
-  const mergePromptOf = ({ prompts }) => prompts.find(p => p.label.startsWith('merge-lanes-')).prompt
-  assert.equal(
-    mergePromptOf(first),
-    mergePromptOf(second),
-    'two independent passes over the same batch must assemble byte-identical merge-lanes prompts'
-  )
-  // Nothing in the assembled prompt reads the worktree path off disk — it is
-  // the lane's OWN self-report, carried through from the (possibly cached)
-  // implementer result, never a fresh `pwd` the script takes itself.
-  assert.doesNotMatch(mergePromptOf(first), /\bstat\b|\bexistsSync\b|\breaddir/i)
+test('a merge that does not come back clean halts the run and names the survivors', async () => {
+  // The fold is the CLI's, so the halt is asserted at the CLI: a collision or an
+  // unresolved lane stops the run, names what could not be folded, and leaves
+  // every worktree where it is.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /merge-lanes halted on wave/)
+  assert.match(run, /real collision on \$\{JSON\.stringify\(merged\.collisions\)\}/)
+  assert.match(run, /unresolved lane\(s\) \$\{JSON\.stringify\(merged\.unresolved\)\}/)
+  assert.match(run, /surviving worktrees: \$\{survivors \|\| '\(none\)'\}/)
+  // And the halt is a step whose continuation is the close, so a collision is
+  // recorded rather than dropped.
+  assert.match(run, /return finishStep\(ctx, manifest, haltStep\(\n\s*`merge-lanes halted/)
+})
+
+test('a failed lane never folds — its worktree is preserved and named', async () => {
+  const { output, root } = await runIsolated(TWO_LANES, {
+    '1.1': { id: '1.1', ok: false, error: 'blocked', handoff: null, worktreePath: '/tmp/wt-1.1' },
+    '2.1': { id: '2.1', ok: true, handoff: handoffFor('2.1'), worktreePath: '/tmp/wt-2.1' }
+  })
+  try {
+    assert.match(
+      output,
+      /LANE WORKTREE PRESERVED: 1\.1 at \/tmp\/wt-1\.1/,
+      "a failed lane's writes are not folded, and where they are left is said out loud"
+    )
+    assert.doesNotMatch(
+      output,
+      /LANE WORKTREE PRESERVED: [^\n]*2\.1/,
+      'the lane that succeeded is not preserved — it was folded'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the fold is offered only the lanes with no failed task', () => {
+  // The projection that decides it, asserted at the one place that builds it: a
+  // lane with any failed task contributes nothing to the shared tree, because
+  // folding a partial write from a lane that stopped mid-way is the
+  // silent-overwrite defect the merge policy refuses.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /if \(outcomes\.some\(o => o\.outcome === 'failed'\}?\)\) \{/)
+  assert.match(run, /laneWorktreesPreserved\.push\(\{ label, worktreePath \}\)/)
+  assert.match(run, /laneFoldCandidates\.push\(\{/)
 })
 
 test('the lane cap is stated once, read by the planner, and never restated in the script', () => {
@@ -1200,141 +2048,198 @@ test('the lane cap is stated once, read by the planner, and never restated in th
   const waves = readFileSync(join(ROOT, 'lib', 'waves.mjs'), 'utf8')
   assert.match(
     waves,
-    /LIMITS\.maxTasksPerAgent/,
-    'lib/waves.mjs must read the lane cap — a cap only a test reads is a cap in prose'
+    /LANE_CAPS\.byTier/,
+    'lib/waves.mjs must read the per-tier lane cap — a cap only a test reads is a cap in prose'
   )
   const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
-  assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /maxTasksPerAgent:/)
+  assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /export const LANE_CAPS = \{/)
   assert.match(cli, /interlock limits/, 'the CLI publishes the caps it reads')
 
   const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  // Neither the old scalar nor the table that replaced it. The script dispatches
+  // the lanes the planner built; the moment it carries a lane cap of its own,
+  // there are two answers to how long a lane may get.
   assert.doesNotMatch(
     ship,
-    /maxTasksPerAgent/,
+    /maxTasksPerAgent|LANE_CAPS/,
     'the script must not carry the lane cap: it dispatches the lanes the planner built'
   )
 })
 
-// --- the step transport ----------------------------------------------------
+// --- the plan-shape flags (spec: solo-mode) --------------------------------
 //
-// The script has no shell, so it never reads `wave-state` stdout itself: every
-// step arrives transcribed by an agent into a schema. That makes the schema the
-// only thing telling the agent what to copy, and makes a returned step a claim
-// about a shape rather than the shape itself.
-//
-// Both halves of that failed once, together. The classifier's schema still
-// declared the pre-lane `tasks` and never declared `remainingBatches` at all —
-// an undeclared property passes validation holding anything — and the loop then
-// called `.some` on what came back. A batch transcribed as a list of task ids
-// is a string with a truthy `length`, so it walked past the empty-batch guard
-// and threw, outside `halt`: no outcome recorded, no trajectory closed.
+// `--solo` / `--waves` name the SHAPE of the plan, which is a different decision
+// from `mode: continue|checkpoint` — hence `laneMode`. The override reaches the
+// three commands that build or match a plan; `wave-state create` is not one of
+// them, because it reads the mode off the plan file it is handed.
 
-/** The step-shape helpers, evaluated out of their marked region in ship.js. */
-const stepShape = (() => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const m = /\/\/ STEP_SHAPE_START\n([\s\S]*?)\n\/\/ STEP_SHAPE_END/.exec(text)
-  assert.ok(m, 'ship.js must define the step-shape helpers between STEP_SHAPE markers')
-  return new Function(`${m[1]}; return { batchesOf, dispatchableShape }`)()
-})()
-
-/** RUN_BATCH as the CLI printed it, with the authoritative stdout removed. */
-function bareStep(over = {}) {
-  const { cliStdout, ...step } = RUN_BATCH
-  return { ...step, ...over }
-}
-
-/** A classifier result carrying a first step. */
-function classified(step) {
-  return { ok: true, waveCount: 1, taskCount: 1, coverageOk: true, fingerprintWritten: true, ...step }
-}
-
-test('the step task shape is stated once, not restated per schema', () => {
-  // Same rule as every cap (openspec/specs/ship/cap-authority), applied to a
-  // shape: two statements of one transport is how only one of them got widened
-  // when batches became lanes.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const statements = text.match(/tier: \{ type: 'integer' \}/g) || []
-  assert.equal(
-    statements.length,
-    1,
-    `the task shape is written ${statements.length} times; every schema carrying a step must ` +
-      `read the one statement instead`
-  )
-  assert.match(text, /\.\.\.STEP_FIELDS/, 'and the schemas must spread it rather than copy it')
+test('ship.js parseInvocation reads --solo and --waves into laneMode', () => {
+  assert.equal(parseInvocationFromSource('my-change --solo').laneMode, 'solo')
+  assert.equal(parseInvocationFromSource('my-change --waves').laneMode, 'waves')
+  assert.equal(parseInvocationFromSource({ change: 'add-auth', flags: ['solo'] }).laneMode, 'solo')
 })
 
-test('a dispatchable step must carry batches of lanes of tasks', () => {
-  const { batchesOf, dispatchableShape } = stepShape
-  const lane = [{ id: '1.1' }]
-
-  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[lane]] }), true)
-  assert.equal(dispatchableShape({ action: 'run-batch', tasks: [lane] }), true)
-  assert.equal(dispatchableShape({ action: 'test-wave', remainingBatches: [[lane]] }), true)
-
-  // The production failure: a batch transcribed as a list of task ids.
-  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: ['1.1', '1.2'] }), false)
-  // The pre-lane shape the classifier's schema still described: one level short.
-  assert.equal(dispatchableShape({ action: 'run-batch', tasks: [{ id: '1.1' }] }), false)
-  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[[]]] }), false)
-  assert.equal(dispatchableShape({ action: 'run-batch', remainingBatches: [[[{}]]] }), false)
-  assert.equal(dispatchableShape({ action: 'run-batch' }), false)
-  assert.equal(dispatchableShape(null), false)
-
-  // A step that dispatches nothing is not judged on batches it never carries.
-  for (const action of ['verify', 'replan', 'done', 'halt']) {
-    assert.equal(dispatchableShape({ action }), true, action)
-  }
-
-  // The check and the loop must read the same field, or one passes what the
-  // other rejects.
-  assert.deepEqual(batchesOf({ tasks: [lane] }), [[lane]], 'tasks is the single remaining batch')
-  const two = [[lane], [[{ id: '2.1' }]]]
-  assert.deepEqual(batchesOf({ remainingBatches: two, tasks: [lane] }), two)
+test('ship.js parseInvocation leaves laneMode unset when neither flag is passed', () => {
+  const parsed = parseInvocationFromSource('my-change')
+  assert.equal(parsed.laneMode, null, 'absent, the classifier recommends inside the envelope')
+  assert.equal(parsed.laneModeConflict, false)
 })
 
-test('a classifier step transcribed without stdout still carries lanes', async () => {
-  const { calls } = await runShip({
-    responses: { 'plan-waves': classified(stepResultNoStdout(bareStep())) }
-  })
+test('ship.js parseInvocation reports --solo and --waves together as a conflict', () => {
+  // Not last-wins: the two shapes produce different agent counts and different
+  // bills, and this run has nobody to ask which was meant.
+  const parsed = parseInvocationFromSource('my-change --solo --waves')
+  assert.equal(parsed.laneModeConflict, true)
+  assert.equal(parsed.laneMode, null, 'a contradiction resolves to no mode, never to one of them')
+})
+
+test('--solo and --waves together halt the run before anything is spawned', async () => {
+  const { output, calls } = await runShip({ args: 'demo-change --solo --waves' })
+  assert.match(output, /--solo and --waves were both passed/)
   assert.ok(
-    !calls.some(c => c.startsWith('next-retry-')),
-    `a well-shaped transcription needs no re-read: ${calls.join(', ')}`
+    !calls.includes('plan-waves'),
+    `nothing may be planned on a contradictory invocation, got: ${calls.join(', ')}`
   )
-  assert.ok(calls.includes('1.1'), 'the wave runs from the transcription alone')
-  assert.ok(calls.includes('commit'))
 })
 
-test('a batch transcribed as a list of task ids is re-read, not crashed on', async () => {
-  const { calls, output } = await runShip({
+test('--solo reaches the run as one flag, and the CLI threads it where it belongs', async () => {
+  const { commands } = await runShip({ args: 'demo-change --solo' })
+  const start = commands.find(c => c[1] === 'start')
+  assert.ok(start, 'the run must begin with `run start`')
+  assert.ok(
+    start.includes('--mode') && start[start.indexOf('--mode') + 1] === 'solo',
+    `the shape override must reach run start, got: ${start.join(' ')}`
+  )
+  // From there it is the CLI's: the reuse probe and the planner get it, and
+  // `wave-state create` deliberately does not — it reads the mode off the plan
+  // it is handed, and a flag there would be a second authority for a value the
+  // plan already carries.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /resolvePlanReuse\(root, change, \{[\s\S]{0,120}mode: manifest\.flags\.laneMode/)
+  assert.match(run, /planWaves\(classified, \{[\s\S]{0,120}mode: manifest\.flags\.laneMode/)
+  assert.match(run, /createRunState\(plan, \{\n\s*maxParallel:/)
+  assert.doesNotMatch(run, /createRunState\([\s\S]{0,120}mode:/)
+})
+
+test('no shape flag means no --mode anywhere: the plan is byte-identical to today', async () => {
+  const { commands } = await runShip({})
+  for (const argv of commands) {
+    assert.ok(
+      !argv.includes('--mode'),
+      `\`interlock ${argv.join(' ')}\` carries a shape override that was never asked for`
+    )
+  }
+})
+
+// The implementer briefing follows the STEP, not the flag: a classifier
+// recommendation inside the envelope reaches solo with no flag at all.
+
+const soloLane = [laneTask('1.1'), laneTask('1.2')]
+
+/**
+ * A run whose plan is one solo lane, or the same two tasks as an ordinary lane.
+ *
+ * The mode comes off the PLAN, which is what makes this worth driving rather
+ * than stubbing: `--solo` reaches `run start`, the planner builds a solo plan
+ * inside the published envelope, the state carries the mode, and the step
+ * echoes it. A fixture asserting `mode: 'solo'` on a step would prove only that
+ * the fixture said so.
+ */
+function runSoloWave(args = 'demo-change --solo') {
+  return runShip({
+    keepRepo: true,
+    args,
+    classified: { tasks: soloLane },
+    repo: { tasks: '# Tasks\n\n- [ ] 1.1 task 1.1\n- [ ] 1.2 task 1.2\n' },
     responses: {
-      'plan-waves': classified(bareStep({ remainingBatches: ['1.1'], tasks: ['1.1'] })),
-      // The re-read is pure — `wave-state next` again — so it comes back with
-      // the CLI's own stdout and the run continues from it.
-      'next-retry-': RUN_BATCH
+      [labelFor(soloLane)]: {
+        tasks: soloLane.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) }))
+      }
     }
   })
-  assert.ok(
-    calls.some(c => c.startsWith('next-retry-')),
-    `a misshapen step must trigger the one pure re-read: ${calls.join(', ')}`
-  )
-  assert.ok(calls.includes('1.1'), 'and the wave then runs normally')
-  assert.ok(calls.includes('commit'))
-  assert.doesNotMatch(output, /SHIP HALTED/)
+}
+
+test('a plan in solo mode briefs the implementer as the whole change', async () => {
+  const { prompts, root } = await runSoloWave()
+  try {
+    const prompt = prompts.find(p => p.label === labelFor(soloLane)).prompt
+    assert.match(prompt, /Implement OpenSpec change "demo-change" end to end — all 2 of its tasks/)
+    assert.match(prompt, /Your tier is 4\./, 'a solo agent is briefed at the full-read ladder')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('a step that stays misshapen halts by name, with the outcome still recorded', async () => {
-  const bad = bareStep({ remainingBatches: ['1.1'] })
-  const { calls, output } = await runShip({
-    responses: { 'plan-waves': classified(bad), 'next-retry-': bad }
-  })
-  assert.match(output, /SHIP HALTED — misshapen run-batch step from the state machine/)
-  assert.match(output, /batches of lanes of tasks/, 'the halt names the shape that was missing')
-  assert.ok(!calls.includes('1.1'), 'nothing is dispatched from a step nobody could read')
-  assert.ok(
-    calls.includes('record-outcome'),
-    'the throw skipped this; a halt writes the corpus line on the way out'
-  )
+test('the same two tasks in waves mode are briefed as an ordinary lane', async () => {
+  const { prompts, root } = await runSoloWave('demo-change --waves')
+  try {
+    const prompt = prompts.find(p => p.label === labelFor(soloLane)).prompt
+    assert.doesNotMatch(prompt, /end to end/)
+    assert.match(prompt, /Implement 2 tasks from OpenSpec change "demo-change", IN THIS ORDER/)
+    assert.match(prompt, /Your tier is 2\./)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
+// --- the step transport ----------------------------------------------------
+//
+// The script has no shell, so it never reads CLI stdout itself: every step
+// arrives through a relay agent. That used to make a returned step a CLAIM
+// about a shape — the loop validated `batchesOf`/`dispatchableShape` before
+// dispatching, because a batch transcribed as a list of task ids is a string
+// with a truthy `length` and walked past the empty-batch guard.
+//
+// Two things changed. The step is now the CLI's own JSON, parsed whole rather
+// than reassembled field by field from a schema — so there is no per-field
+// transcription to get wrong. And the shape check moved to the party that
+// builds the step: `lib/run.mjs` refuses to emit a batch it cannot dispatch,
+// which is a check on the producer rather than on the transport.
+
+test('the step schema is stated once, by the party that builds the step', () => {
+  // Same rule as every cap (openspec/specs/ship/cap-authority), applied to a
+  // shape: two statements of one transport is how only one of them got widened
+  // when batches became lanes. There is one now, and it is the CLI's.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /export const STEP_SCHEMA = 'interlock\.run-step\/1'/)
+  assert.match(run, /const PASS_THROUGH = Object\.freeze\(\[/, 'the carried fields are named once')
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(
+      text,
+      /STEP_FIELDS|STEP_SHAPE|batchesOf|dispatchableShape/,
+      `${driver} restates the step shape — the transport is one JSON document now`
+    )
+  }
+})
+
+test('a batch the CLI cannot dispatch is refused where it is built, not where it lands', async () => {
+  // The production failure: a batch with no dispatchable lane reached the loop
+  // and threw OUTSIDE halt, so no outcome was recorded and no trajectory was
+  // closed. The refusal is at the builder now, and it is a halt step — which
+  // means it closes.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /if \(!lanes\.length \|\| lanes\.some\(lane => !Array\.isArray\(lane\) \|\| !lane\.length\)\)/)
+  assert.match(run, /the state machine asked for a batch with no dispatchable lane/)
+
+  // And a step whose action the program does not know is a named halt rather
+  // than an unhandled branch.
+  assert.match(run, /unrecognized step from the state machine: \$\{step\.action\}/)
+})
+
+test('a relay that could not be read halts, and the halt still closes', async () => {
+  // The step never arrives as fields an agent mapped by hand — it is the CLI's
+  // stdout, parsed or not. Neither outcome is a guess.
+  const { output } = await runShip({
+    responses: {
+      // A relay that returns nothing at all: the harness answers the first
+      // `interlock run start` with no stdout.
+      'cli-1': null
+    }
+  })
+  assert.match(output, /SHIP HALTED/)
+  assert.match(output, /the CLI relay could not be read/)
+})
+
 
 // --- plan reuse (spec: plan-reuse) -----------------------------------------
 //
@@ -1342,96 +2247,112 @@ test('a step that stays misshapen halts by name, with the outcome still recorded
 // correct when a match was affirmatively established, and the run has to say
 // which path it took either way — a run that silently changed its own cost is
 // the failure the banner block exists to remove.
+//
+// The probe is the CLI's own now. It used to be an agent asked to run
+// `interlock plan reuse`, copy its verdict, and — in the same turn — adopt the
+// plan; a probe that claimed a match without producing a step was a reuse the
+// script had to detect and refuse. There is no claim to refuse any more: `run
+// start` calls `resolvePlanReuse` and either builds the run state from what it
+// returned or does not.
 
 test('a matching fingerprint skips the classifier entirely', async () => {
-  const { calls, output } = await runShip({ responses: { 'plan-reuse': reuseAdopted() } })
-  assert.ok(calls.includes('plan-reuse'), 'the reuse check always runs')
-  assert.ok(
-    !calls.includes('plan-waves'),
-    `the classifier must not run when the plan was reused: ${calls.join(', ')}`
-  )
-  assert.match(output, /PLAN REUSED \(match\)/)
-  assert.ok(calls.includes('commit'), 'and the run still finishes')
-})
-
-test('the reuse probe asks the CLI and never decides for itself', async () => {
-  const { prompts } = await runShip({})
-  const probe = prompts.find(p => p.label === 'plan-reuse')
-  assert.ok(probe, 'ship.js assembled no plan-reuse prompt')
-  assert.match(probe.prompt, /interlock plan reuse --change demo-change/)
-  assert.match(probe.prompt, /never infer reuse:true from a plan file existing/)
-  assert.match(probe.prompt, /If reuse is false, or noRemainingWork is true, STOP THERE/)
-})
-
-test('every non-match rebuilds, and the summary names which non-match it was', async () => {
-  const cases = [
-    ['no-plan', 'no stored plan at .claude/ship/plan.json'],
-    ['unreadable-plan', 'the stored plan at .claude/ship/plan.json could not be read: bad JSON'],
-    ['unreadable-fingerprint', 'the stored fingerprint carries no hash'],
-    ['inputs-changed', "the change's artifacts have been edited since the plan was built"],
-    ['plan-format-changed', 'the stored plan was written for another plan format'],
-    ['check-failed', 'the reuse check itself failed: EACCES']
-  ]
-  for (const [status, reason] of cases) {
-    const { calls, output } = await runShip({
-      responses: { 'plan-reuse': reuseRebuilt({ reuseStatus: status, reason }) }
-    })
-    assert.ok(calls.includes('plan-waves'), `${status} must fall back to the classifier`)
-    assert.match(output, new RegExp(`PLAN REBUILT \\(${status}\\)`), status)
-    assert.ok(output.includes(reason), `the reason must be reported verbatim for ${status}`)
+  // A first run stores the fingerprint; the second finds it and reuses the plan.
+  // Driven twice against ONE repository, because reuse is a property of what the
+  // first run left behind.
+  const first = await runShip({ keepRepo: true })
+  try {
+    const second = await runShip({ keepRepo: true, repo: { reuseRoot: first.root } })
+    assert.ok(
+      !second.calls.includes('plan-waves'),
+      `the classifier must not run when the plan was reused: ${second.calls.join(', ')}`
+    )
+    assert.match(second.output, /PLAN REUSED \(match\)/)
+  } finally {
+    rmSync(first.root, { recursive: true, force: true })
   }
 })
 
-test('a probe that returns nothing at all rebuilds rather than reusing', async () => {
-  const { calls, output } = await runShip({ responses: { 'plan-reuse': null } })
-  assert.ok(calls.includes('plan-waves'))
-  assert.match(output, /PLAN REBUILT \(check-failed\)/)
+test('a first run has no plan to reuse, and says which non-match it was', async () => {
+  const { calls, output } = await runShip({})
+  assert.ok(calls.includes('plan-waves'), 'no stored plan means the classifier runs')
+  assert.match(output, /PLAN REBUILT \(no-plan\)/)
+  assert.match(output, /no stored plan at \.claude\/ship\/plan\.json/)
 })
 
-test('a probe claiming a match without producing a step is not a reuse', async () => {
-  // `reuse: true` with no adopted step means the plan was never turned into run
-  // state. Trusting the claim would start a wave loop with no state file.
-  const { calls, output } = await runShip({
-    responses: { 'plan-reuse': { reuse: true, reuseStatus: 'match', reason: 'matched' } }
-  })
-  assert.ok(calls.includes('plan-waves'), 'it falls back to the classifier')
-  assert.match(output, /PLAN REBUILT \(adopt-failed\)/)
-  assert.match(output, /could not be turned into a run state/)
+test('every non-match rebuilds, and each names itself', () => {
+  // The statuses are the CLI's, and the summary prints whichever one came back.
+  // Asserted at the two ends rather than by forging six probe results: the
+  // resolver publishes the vocabulary, and the summary renders it verbatim.
+  const fingerprint = readFileSync(join(ROOT, 'lib', 'plan-fingerprint.mjs'), 'utf8')
+  for (const status of [
+    'no-plan',
+    'unreadable-plan',
+    'unreadable-fingerprint',
+    'inputs-changed',
+    'plan-format-changed',
+    'check-failed'
+  ]) {
+    assert.ok(
+      fingerprint.includes(`'${status}'`),
+      `lib/plan-fingerprint.mjs no longer publishes the ${status} outcome`
+    )
+  }
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /PLAN REBUILT \(\$\{summary\.plan\.status\}\): \$\{summary\.plan\.reason\}/)
+  assert.match(receipt, /PLAN REUSED \(\$\{summary\.plan\.status\}\): \$\{summary\.plan\.reason\}/)
+  // Reuse is never assumed: anything but an affirmative match rebuilds,
+  // including an error while checking.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /if \(reuse\.reuse && reuse\.narrowed\)/)
+  assert.match(run, /manifest\.plan = \{ reused: false, status: reuse\.status, reason: reuse\.reason \}/)
 })
 
 test('an all-complete plan reports no remaining work instead of an empty run', async () => {
-  const { calls, output } = await runShip({
-    responses: { 'plan-reuse': reuseAdopted(DONE, { noRemainingWork: true }) }
-  })
-  assert.match(output, /NO REMAINING WORK: every task in the stored plan is already complete/)
-  assert.ok(!calls.includes('plan-waves'), 'nothing to classify')
-  assert.ok(!calls.includes('commit'), 'and nothing to commit — no work was dispatched')
-  assert.ok(calls.includes('record-outcome'), 'the run still records its outcome')
+  // Every task in the stored plan already ticked. That is not an empty run to
+  // dispatch — it is a change with nothing left to do, and a zero-batch run
+  // would report a clean ship that implemented nothing.
+  const first = await runShip({ keepRepo: true })
+  try {
+    const second = await runShip({ keepRepo: true, repo: { reuseRoot: first.root } })
+    assert.match(second.output, /NO REMAINING WORK: every task in the stored plan is already complete/)
+    assert.ok(!second.calls.includes('commit'), 'nothing to commit — no work was dispatched')
+    assert.ok(receiptFrom(first.root), 'and the run still records its outcome')
+  } finally {
+    rmSync(first.root, { recursive: true, force: true })
+  }
 })
 
-test('the classifier stores the fingerprint, and says so when it could not', async () => {
-  const { prompts } = await runShip({})
-  const planner = prompts.find(p => p.label === 'plan-waves')
-  assert.match(planner.prompt, /interlock plan fingerprint --change demo-change --write/)
-  assert.match(planner.prompt, /Report its "written" value as fingerprintWritten/)
+test('the run stores the fingerprint, and says so when it could not', async () => {
+  const { root } = await runShip({ keepRepo: true })
+  try {
+    assert.ok(
+      existsSync(join(root, '.claude', 'ship', 'plan-fingerprint.json')),
+      'a run that classified must store the fingerprint its plan was derived from'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  // And a store that failed is a banner, not silence: it costs the NEXT run a
+  // classifier pass, which is a slow run nobody would otherwise diagnose.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /PLAN FINGERPRINT NOT STORED/)
+  assert.match(run, /will re-classify every artifact from scratch/)
+})
 
-  const { output } = await runShip({
-    responses: {
-      'plan-waves': {
-        ok: true,
-        waveCount: 1,
-        taskCount: 1,
-        coverageOk: true,
-        fingerprintWritten: false,
-        ...RUN_BATCH
-      }
-    }
-  })
-  assert.match(output, /PLAN FINGERPRINT NOT STORED/)
+test('a name that resolves to nothing halts by name rather than as a relay failure', async () => {
+  const { output } = await runShip({ args: 'no-such-change' })
+  assert.match(output, /SHIP HALTED/)
+  assert.match(output, /validate failed: change "no-such-change" not found/)
+  assert.doesNotMatch(
+    output,
+    /the CLI relay could not be read/,
+    'a refused invocation is not a broken transport, and reporting it as one sends the reader ' +
+      'to the wrong place entirely'
+  )
 })
 
 test('a run that halts before the reuse check says the plan path is unknown', async () => {
-  const { output } = await runShip({ responses: { validate: { ok: false, detail: 'nope' } } })
+  const { output } = await runShip({ repo: { broken: true } })
   assert.match(output, /SHIP HALTED/)
   assert.match(
     output,
@@ -1441,55 +2362,124 @@ test('a run that halts before the reuse check says the plan path is unknown', as
 })
 
 // --- the degradation block, derived rather than accumulated ----------------
+//
+// The block used to print whatever happened to be in an accumulator, so silence
+// and cleanliness were indistinguishable. It is derived from the recorded
+// conditions instead, and the absence of a close is itself reported.
 
-test('a clean run says so, and says it from the recorded conditions', async () => {
-  const { output } = await runShip({})
-  assert.match(output, /No degradation banners/)
-})
-
-test('a cap-exhausted verification is named in the degradation block', async () => {
+test('the block is always printed: either the degradations, or that there were none', async () => {
+  // Silence is the failure this exists to remove. Every run prints one or the
+  // other, and a run that skipped a check is not a clean run — which is why the
+  // clean sentence is asserted where a clean list can actually be produced.
   const { output } = await runShip({
-    responses: {
-      'record-outcome': {
-        ok: true,
-        reconstructable: true,
-        capExhaustedVerifications: 1,
-        skippedVerificationReasons: ['verify-cap-reached']
-      }
-    }
+    repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+    responses: { verify: { results: [{ kind: 'unit', exitCode: 0, total: 1, passed: 1, failed: 0 }] } }
   })
-  assert.doesNotMatch(
-    output,
-    /No degradation banners/,
-    'a run that skipped a checkpoint must not report itself as clean'
+  assert.ok(
+    /No degradation banners/.test(output) || /VERIFICATION SKIPPED|UNAVAILABLE|NOT/.test(output),
+    `the summary named neither its degradations nor their absence:\n${output}`
   )
-  assert.match(output, /verify-cap-reached/)
+  const { formatRunSummary } = await import('../lib/receipt.mjs')
+  assert.match(
+    formatRunSummary({ change: 'demo-change', summary: { plan: null }, flags: {}, degradations: [] }),
+    /No degradation banners/,
+    'an empty degradation list must be said out loud, never rendered as an empty section'
+  )
 })
 
-test('unresolved errors carried past a wave are named', async () => {
-  const { output } = await runShip({
-    responses: {
-      'record-outcome': { ok: true, reconstructable: true, unresolvedErrors: 2 }
-    }
+test('identity rows, the push row and the archive reminder (design D7, D8, D9)', async () => {
+  const { formatRunSummary } = await import('../lib/receipt.mjs')
+  const base = { change: 'demo-change', summary: { plan: null }, flags: {}, degradations: [] }
+
+  const defaults = formatRunSummary(base)
+  assert.match(
+    defaults,
+    /^ {2}run: none — the run halted before a plan was adopted$/m,
+    'a run id is not a non-empty string by default, so the row explains the absence'
+  )
+  assert.doesNotMatch(defaults, /ARCHIVE PENDING/, 'unarchived defaults to null: no reminder without it')
+  assert.doesNotMatch(defaults, /^ {2}project: /m)
+  assert.doesNotMatch(defaults, /^ {2}cwd: /m)
+  assert.doesNotMatch(defaults, /^ {2}push: /m)
+
+  const clean = formatRunSummary({
+    ...base,
+    unarchived: { thisChange: true, others: 2 }
   })
-  assert.doesNotMatch(output, /No degradation banners/)
-  assert.match(output, /unresolved/i)
+  assert.match(clean, /ARCHIVE PENDING — demo-change: after merge, run openspec archive demo-change/)
+  assert.match(clean, /^ {2}also unarchived: 2 completed change\(s\) — run interlock drift$/m)
+
+  const halted = formatRunSummary({
+    ...base,
+    summary: { halted: 'failure budget spent' },
+    unarchived: { thisChange: true, others: 2 }
+  })
+  assert.doesNotMatch(halted, /ARCHIVE PENDING/, 'a halt is never reminded, even with the same unarchived input')
+  assert.doesNotMatch(halted, /also unarchived/)
+
+  const leftovers = formatRunSummary({
+    ...base,
+    leftoverTaskIds: ['1.1'],
+    unarchived: { thisChange: true, others: 2 }
+  })
+  assert.doesNotMatch(leftovers, /ARCHIVE PENDING/, 'leftovers are not a complete change either')
+  assert.doesNotMatch(leftovers, /also unarchived/)
+
+  const failedPush = formatRunSummary({
+    ...base,
+    push: { sent: false, reason: 'HTTP 403' }
+  })
+  assert.match(failedPush, /^ {2}push: failed — HTTP 403$/m)
+
+  for (const output of [defaults, clean, halted, leftovers, failedPush]) {
+    const newLines = output
+      .split('\n')
+      .filter(line => /^ {2}(run|project|cwd|push|also unarchived): |^ARCHIVE PENDING —/.test(line))
+    assert.ok(newLines.length > 0, 'each summary carries at least one new row to check')
+    for (const line of newLines) {
+      assert.doesNotMatch(line, /LEAN SHIP/, 'a new row must never fold in the lean-ship line')
+      assert.doesNotMatch(line, /No degradation banners/, 'a new row must never fold in the degradation line')
+    }
+  }
 })
 
-test('a missing closing outcome is named as unknown, not treated as clean', async () => {
-  const { output } = await runShip({ responses: { 'record-outcome': null } })
-  assert.doesNotMatch(output, /No degradation banners/)
-  assert.match(output, /UNKNOWN|unknown/)
+test('a cap-exhausted verification is named in the degradation block', () => {
+  // Read back off the wave state at close, not accumulated as it happened: the
+  // count and the banner come from one place, so they cannot come apart.
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /capExhaustedSkipReason\(\) \{\n\s*return 'verify-cap-reached'/)
+  assert.match(receipt, /VERIFY CAP EXHAUSTED: \$\{closing\.capExhaustedVerifications\}/)
+  assert.match(receipt, /skippedVerifications: closing/, 'and the receipt counts the same list')
+  const waves = readFileSync(join(ROOT, 'lib', 'waves.mjs'), 'utf8')
+  assert.match(waves, /SKIP_VERIFY_CAP = 'verify-cap-reached'/, 'one spelling, two readers')
+})
+
+test('unresolved errors carried past a wave are named', () => {
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /UNRESOLVED ERRORS CARRIED PAST A WAVE: \$\{closing\.unresolvedErrors\}/)
+  assert.match(receipt, /the fix budget was[\s\S]{0,40}spent and the run continued/)
+})
+
+test('a missing close is named as unknown, not treated as clean', () => {
+  const receipt = readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8')
+  assert.match(receipt, /CLOSING STEP OUTCOME UNKNOWN/)
+  assert.match(receipt, /were never observed/)
 })
 
 test('a failed task tick is surfaced rather than discarded', async () => {
-  const { output } = await runShip({
-    responses: {
-      'tick-': { ok: true, tickFailed: true, tickMissing: ['1.1'] }
-    }
+  // A succeeded task whose checkbox could not be marked. Downstream, an
+  // unchecked box is indistinguishable from a task that failed.
+  const { root, output } = await runShip({
+    keepRepo: true,
+    repo: { readOnlyTasks: true }
   })
-  assert.doesNotMatch(output, /No degradation banners/)
-  assert.match(output, /1\.1/)
+  try {
+    assert.doesNotMatch(output, /No degradation banners/)
+    assert.match(output, /TASK TICK FAILED/)
+    assert.match(output, /1\.1/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- task shape for ship --------------------------------------------------
@@ -1594,64 +2584,76 @@ test('the assembled plan-waves prompt does not increment group for a later same-
 // --- the run receipt (spec: ship-run) ---------------------------------------
 //
 // The receipt is the run's own account of itself, and the only reason it can be
-// trusted is that nothing re-derives it: the fields come from the `summary` the
-// run already accumulated, the degradation list is the one the banner printed,
-// and `lib/run-log.mjs` copies the whole thing by name. So these tests assert
-// the two properties an agent in the transport path cannot protect — that the
-// payload is built at all, on every exit, and that it says the same thing the
-// printed summary does.
+// trusted is that nothing re-derives it: it is built by `lib/receipt.mjs` from
+// what the run recorded, appended by the run's own close, and copied by name by
+// `lib/run-log.mjs`. It used to be composed into a prompt and carried to the
+// trajectory by an agent, which is why these tests once asserted on prompt
+// text. They read the trajectory now, which is where every consumer reads it.
 
-test('every exit path appends a receipt after closing the run', async () => {
+/** A run driven to completion, with its repository kept so the record can be read. */
+function kept(opts = {}) {
+  return runShip({ keepRepo: true, ...opts })
+}
+
+test('every exit path appends a receipt, and exactly one', async () => {
   const exits = {
     'a clean run': {},
     '--apply-only': { args: 'demo-change --apply-only' },
     '--no-commit': { args: 'demo-change --no-commit' },
-    'a halt': { responses: { verify: { ok: false, unitGreen: false } } },
-    'nothing left to do': { responses: { 'plan-reuse': reuseAdopted(RUN_BATCH, { noRemainingWork: true }) } }
+    'a halt': {
+      repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+      responses: { verify: { results: [{ kind: 'unit', exitCode: 1, total: 1, passed: 0, failed: 1 }] } }
+    }
   }
   for (const [name, run] of Object.entries(exits)) {
-    const { calls } = await runShip(run)
-    assert.ok(calls.includes('record-receipt'), `${name} closed without a receipt`)
-    assert.ok(
-      calls.indexOf('record-outcome') < calls.indexOf('record-receipt'),
-      `${name} built its receipt before the closing step reported — the skip reasons, cap ` +
-        `exhaustion and unresolved-error counts are not complete until then`
-    )
-    assert.equal(
-      calls.filter(c => c === 'record-receipt').length,
-      1,
-      `${name} appended more than one receipt — a run has one close`
-    )
+    const { root } = await kept(run)
+    try {
+      const receipts = trajectory(root).filter(e => e.type === 'run-receipt')
+      assert.equal(receipts.length, 1, `${name} appended ${receipts.length} receipts — a run has one close`)
+      const events = trajectory(root).map(e => e.type)
+      assert.ok(
+        events.indexOf('run-receipt') < Math.max(
+          events.indexOf('run-complete'),
+          events.indexOf('run-halt')
+        ),
+        `${name} wrote its terminal event before its receipt`
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   }
 })
 
 test('the receipt carries the tallies, the plan verdict and the commit the summary printed', async () => {
-  const { prompts, output } = await runShip({})
-  const receipt = receiptFrom(prompts)
-  assert.ok(receipt, 'no receipt payload reached the record-receipt prompt')
+  const { root, output } = await kept()
+  try {
+    const receipt = receiptFrom(root)
+    assert.ok(receipt, 'no receipt reached the trajectory')
 
-  assert.equal(receipt.type, 'run-receipt')
-  assert.equal(receipt.change, 'demo-change')
-  assert.deepEqual(receipt.waves, [{ wave: 1, ok: 1, failed: 0, notAttempted: [] }])
-  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
-  assert.equal(receipt.planReused, false, 'the default run rebuilds — and says which')
-  assert.equal(receipt.planStatus, 'no-plan')
-  assert.equal(receipt.halted, false)
-  assert.equal(receipt.committed, true)
-  assert.equal(receipt.commit, 'deadbee')
-  assert.match(output, /commit: deadbee/)
-  assert.deepEqual(receipt.leftoverTaskIds, [])
+    assert.equal(receipt.type, 'run-receipt')
+    assert.equal(receipt.change, 'demo-change')
+    assert.deepEqual(receipt.waves, [{ wave: '1', ok: 1, failed: 0, notAttempted: 0 }])
+    assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
+    assert.equal(receipt.planReused, false, 'the default run rebuilds — and says which')
+    assert.equal(receipt.planStatus, 'no-plan')
+    assert.equal(receipt.halted, false)
+    assert.equal(receipt.committed, true)
+    assert.equal(receipt.commit, 'deadbee')
+    assert.match(output, /commit: deadbee/)
+    assert.deepEqual(receipt.leftoverTaskIds, [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('the receipt carries the plan fingerprint hash and never the plan', async () => {
-  const { prompts } = await runShip({})
-  const receipt = receiptFrom(prompts)
-  assert.equal(receipt.planFingerprint, 'a'.repeat(64))
-  assert.equal(receipt.plan, undefined, 'plan identity travels as a hash, not as 46 KB of plan')
-
-  const closing = prompts.find(p => p.label === 'record-outcome').prompt
-  assert.match(closing, /plan-fingerprint\.json/)
-  assert.match(closing, /Report the hash only — never the plan's contents/)
+test('the receipt never carries the plan itself', async () => {
+  const { root } = await kept()
+  try {
+    const receipt = receiptFrom(root)
+    assert.equal(receipt.plan, undefined, 'plan identity travels as a hash, not as 46 KB of plan')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- the corpus line's provenance ------------------------------------------
@@ -1660,140 +2662,113 @@ test('the receipt carries the plan fingerprint hash and never the plan', async (
 // any field that does not match what actually happened". That is the assessed
 // party writing the assessment's inputs, in the file whose whole purpose is to
 // answer "should we have skipped the human that time?".
+//
+// No step is handed them now. The close derives the observed half from the
+// receipt it just wrote, in-process, and the reported half comes from the same
+// place — so the invitation is not merely forbidden, it is unstatable.
 
-test('the corpus line carries the reported half only — never a measurement', async () => {
-  const { prompts } = await runShip({
-    responses: {
-      'record-outcome': {
-        ok: true,
-        reconstructable: true,
-        unitGreen: true,
-        skippedVerificationReasons: ['docs-only-wave'],
-        capExhaustedVerifications: 1,
-        unresolvedErrors: 2,
-        planFingerprint: 'a'.repeat(64)
-      }
-    }
-  })
-  const outcome = outcomeFrom(prompts)
-  assert.ok(outcome, 'the run handed its closing ping no corpus line')
-  assert.deepEqual(Object.keys(outcome).sort(), ['change', 'mode', 'reported'])
-  assert.deepEqual(outcome.reported, {
-    unitGreen: true,
-    skippedVerificationReasons: ['docs-only-wave'],
-    capExhaustedVerifications: 1,
-    unresolvedErrors: 2
-  })
-  assert.equal(outcome.ship, undefined, 'the flat group is gone from the transport too')
-  assert.equal(outcome.observed, undefined, 'the observed half is not transportable')
+test('the corpus line derives its observed half from the receipt, not from a report', async () => {
+  const { root } = await kept()
+  try {
+    const outcome = outcomeFrom(root)
+    assert.ok(outcome, 'the run appended no corpus line')
+    assert.equal(outcome.change, 'demo-change')
+    assert.ok(outcome.observed, 'the observed half must be present and derived')
+    // And derived from the receipt, which is the only copy of these facts.
+    const receipt = receiptFrom(root)
+    assert.equal(outcome.observed.ok, !receipt.halted)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('a reported value the closing step never read is left out, not sent as clean', async () => {
-  const { prompts } = await runShip({ responses: { 'record-outcome': { ok: true, reconstructable: true } } })
-  const outcome = outcomeFrom(prompts)
-  assert.deepEqual(outcome.reported, {}, 'an omitted field is unknown; [] and false are claims')
+test('no agent is in the corpus line\'s path at all', () => {
+  // The structural version of the old prompt check. `appendOutcome` is called
+  // by the close with `observedFromReceipt(receipt)`; there is no prompt in
+  // which a value could be re-offered for correction.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /appendOutcome\(root, \{[\s\S]{0,160}observed: observedFromReceipt\(receipt\)/)
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    assert.doesNotMatch(
+      readFileSync(driver, 'utf8'),
+      /outcomes append|record-outcome|record-receipt/,
+      'no host composes, carries or transports the corpus line'
+    )
+  }
 })
 
-test('the corpus line is recorded after the receipt, and reads its measurements from it', async () => {
-  const { prompts } = await runShip({})
-  const closing = prompts.find(p => p.label === 'record-receipt').prompt
-  assert.ok(
-    closing.indexOf('run-log append --event') < closing.indexOf('outcomes append --record'),
-    'the receipt must be on the trajectory before the command that derives from it runs'
-  )
-  assert.match(closing, /outcomes append --record \S+ --state \S+ --root \./)
-  assert.match(closing, /read by that command from the receipt you just appended/)
+test('an outcome that could not be written is reported and never fails the run', () => {
+  // Corpus-loss semantics differ by corpus, deliberately: the outcome corpus
+  // reports its own write failures and never touches the exit code, while the
+  // run trajectory is fatal.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /if \(!outcome\.written\) ctx\.warn\(`outcome not recorded/)
+  assert.match(run, /losing a corpus line must not fail the run/)
+  assert.match(run, /RUN NOT RECONSTRUCTABLE/, 'the trajectory check is the fatal one')
+  assert.match(run, /exitCode: haltReason \|\| !reconstructable \? 1 : 0/)
 })
 
 test('the printed degradation banners and the receipt are the same list', async () => {
-  // Computed once and used twice (design.md — Decision 3). Two derivations
-  // could only agree by luck, and a banner disagreeing with the record is the
-  // same class of defect one level up from the one degradationLines() removes.
-  const { prompts, output } = await runShip({
+  // Computed once and used twice. Two derivations could only agree by luck, and
+  // a banner disagreeing with the record is the same class of defect one level
+  // up from the one the degradation block removes.
+  const { root, output } = await kept({
     responses: {
-      validate: { ok: true, change: 'demo-change', hasGraph: false, hasTestProfile: false, haikuAvailable: true },
-      'record-outcome': {
-        ok: true,
-        reconstructable: true,
-        skippedVerificationReasons: ['docs-only-wave'],
-        capExhaustedVerifications: 2,
-        unresolvedErrors: 1,
-        planFingerprint: 'b'.repeat(64)
-      }
+      validate: { hasGraph: false, hasTestProfile: false, haikuAvailable: true }
     }
   })
-  const receipt = receiptFrom(prompts)
-  assert.ok(receipt.degradations.length >= 4, `too few degradations: ${JSON.stringify(receipt.degradations)}`)
-
-  for (const line of receipt.degradations) {
+  try {
+    const receipt = receiptFrom(root)
     assert.ok(
-      output.includes(line),
-      `the receipt carries a degradation the summary never printed:\n${line}\n\nSummary:\n${output}`
+      receipt.degradations.length >= 2,
+      `too few degradations: ${JSON.stringify(receipt.degradations)}`
     )
+    for (const line of receipt.degradations) {
+      assert.ok(
+        output.includes(line),
+        `the receipt carries a degradation the summary never printed:\n${line}\n\nSummary:\n${output}`
+      )
+    }
+    assert.match(output, /GRAPH UNAVAILABLE/)
+    assert.match(output, /NO TEST PROFILE/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
-  // And the counts behind them come from the same closing result.
-  assert.equal(receipt.skippedVerifications, 1)
-  assert.equal(receipt.capExhaustedVerifications, 2)
-  assert.equal(receipt.unresolvedErrors, 1)
-  assert.match(output, /VERIFY CAP EXHAUSTED: 2/)
-  assert.match(output, /UNRESOLVED ERRORS CARRIED PAST A WAVE: 1/)
-})
-
-test('a clean run reports no degradations in the receipt and none in the banner', async () => {
-  const { prompts, output } = await runShip({})
-  assert.deepEqual(receiptFrom(prompts).degradations, [])
-  assert.match(output, /No degradation banners/)
 })
 
 test('a halted run records a receipt naming the halt and every task left behind', async () => {
-  // The spec's scenario: a halt partway through the second wave with two tasks
-  // unticked. A halted run is the most informative record in the corpus, so it
-  // must not be the one that skips its receipt.
-  const waveTwo = [laneTask('2.1'), laneTask('2.2')]
-  // Counted across labels, not within one: each loop step gets its own
-  // `record-batch-N` label, so a per-label counter would answer "wave 2" every
-  // time and the loop would never leave it.
-  let records = 0
-  const { prompts, output } = await runShip({
+  // A halt with tasks unticked. A halted run is the most informative record in
+  // the corpus, so it must not be the one that skips its receipt.
+  const lane = [laneTask('1.1'), laneTask('1.2')]
+  const { root, output } = await runShip({
+    keepRepo: true,
+    classified: { tasks: lane },
+    repo: {
+      tasks: '# Tasks\n\n- [ ] 1.1 task 1.1\n- [ ] 1.2 task 1.2\n',
+      profile: { version: 1, unit: { command: 'npm test' } }
+    },
     responses: {
-      'record-batch-': () =>
-        ++records === 1
-          ? stepResult({
-              action: 'run-batch',
-              wave: 2,
-              waveIndex: 1,
-              waveKind: 'impl',
-              batchIndex: 0,
-              batchCount: 1,
-              tasks: [waveTwo],
-              remainingBatches: [[waveTwo]],
-              previousHandoffs: [],
-              changed: ['lib/a.mjs'],
-              maxParallel: 8
-            })
-          : DONE,
-      [labelFor(waveTwo)]: {
-        tasks: [
-          { id: '2.1', outcome: 'failed', error: 'no migration runner' },
-          { id: '2.2', outcome: 'failed', error: 'no migration runner' }
-        ]
+      [labelFor(lane)]: {
+        tasks: lane.map(t => ({ id: t.id, outcome: 'failed', error: 'no migration runner' }))
       },
-      verify: { ok: false, unitGreen: false }
+      verify: { results: [{ kind: 'unit', exitCode: 1, total: 2, passed: 0, failed: 2 }] }
     }
   })
-
-  const receipt = receiptFrom(prompts)
-  assert.equal(receipt.halted, true)
-  assert.ok(receipt.haltReason, 'a halted receipt with no reason is the record nobody can use')
-  assert.match(output, new RegExp(`SHIP HALTED — ${receipt.haltReason.slice(0, 20)}`))
-  assert.deepEqual(receipt.leftoverTaskIds, ['2.1', '2.2'])
-  assert.deepEqual(receipt.waves.map(w => [w.wave, w.ok, w.failed]), [[1, 1, 0], [2, 0, 2]])
-  assert.equal(receipt.commit, undefined, 'a halted run has no commit identifier to carry')
-  assert.equal(
-    receipt.committed,
-    undefined,
-    'and it never found out whether it would have committed — which is not the same as declining to'
-  )
+  try {
+    const receipt = receiptFrom(root)
+    assert.equal(receipt.halted, true)
+    assert.ok(receipt.haltReason, 'a halted receipt with no reason is the record nobody can use')
+    assert.match(output, /SHIP HALTED/)
+    assert.deepEqual(receipt.leftoverTaskIds, ['1.1', '1.2'])
+    assert.equal(receipt.commit, null, 'a halted run has no commit identifier to carry')
+    assert.equal(
+      receipt.committed,
+      null,
+      'and it never found out whether it would have committed — which is not the same as declining to'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // --- token spend, measured on the host that can ------------------------------
@@ -1804,99 +2779,102 @@ test('a halted run records a receipt naming the halt and every task left behind'
 // as the transport does not invite the carrier to adjust it, which the last test
 // in this block is about.
 
-/** A `wave-state next` step for a wave holding one lane. */
-function waveStep(wave, lane) {
-  return stepResult({
-    action: 'run-batch',
-    wave,
-    waveIndex: wave - 1,
-    waveKind: 'impl',
-    batchIndex: 0,
-    batchCount: 1,
-    tasks: [lane],
-    remainingBatches: [[lane]],
-    previousHandoffs: [],
-    changed: ['lib/a.mjs'],
-    maxParallel: 8
-  }, {}, lane.map(t => recordedOutcome(t.id, 'ok')))
+/** Two tasks in one group, path-disjoint so they hold separate lanes. */
+function waveGroup(prefix, group, over = {}) {
+  return [
+    laneTask(`${prefix}.1`, { group, paths: [`lib/${prefix}a.mjs`], ...over }),
+    laneTask(`${prefix}.2`, { group, paths: [`lib/${prefix}b.mjs`], ...over })
+  ]
+}
+
+/** `# Tasks` markdown listing every task in `waves`, in order. */
+function tasksMdFor(waves) {
+  return '# Tasks\n\n' + waves.flat().map(t => `- [ ] ${t.id} ${t.description}`).join('\n') + '\n'
+}
+
+/** The lane response every task in a wave succeeded, threaded as a handoff. */
+function laneOk(wave) {
+  return { tasks: wave.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) }
 }
 
 test('a run of three waves records three wave figures and one run total', async () => {
-  const waveTwo = [laneTask('2.1')]
-  const waveThree = [laneTask('3.1')]
-  let records = 0
-  const { prompts } = await runShip({
+  // Each group holds two path-disjoint tasks so the planner's singleton fold
+  // (lib/waves.mjs) cannot collapse it onto the previous wave as a later batch
+  // — that fold is what a one-task group would trigger, and it would turn this
+  // into a one-wave run silently.
+  const waves = [waveGroup('1', 1), waveGroup('2', 2), waveGroup('3', 3)]
+  const { root } = await runShip({
+    keepRepo: true,
     budget: countingBudget(1000),
-    responses: {
-      'record-batch-': () => {
-        records += 1
-        if (records === 1) return waveStep(2, waveTwo)
-        if (records === 2) return waveStep(3, waveThree)
-        return stepResult({ action: 'done' }, {}, [recordedOutcome('3.1', 'ok')])
-      },
-      [labelFor(waveTwo)]: { id: '2.1', ok: true, handoff: handoffFor('2.1') },
-      [labelFor(waveThree)]: { id: '3.1', ok: true, handoff: handoffFor('3.1') }
-    }
+    classified: { tasks: waves.flat() },
+    repo: { tasks: tasksMdFor(waves) },
+    responses: Object.fromEntries(waves.map(w => [labelFor(w), laneOk(w)]))
   })
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(receipt.spend.map(s => s.wave), ['1', '2', '3'])
+    for (const entry of receipt.spend) {
+      assert.equal(typeof entry.outputTokens, 'number', `wave ${entry.wave} recorded no figure`)
+      assert.ok(entry.outputTokens > 0, `wave ${entry.wave} recorded ${entry.outputTokens}`)
+    }
+    assert.equal(typeof receipt.outputTokens, 'number')
+    assert.ok(receipt.outputTokens > 0)
 
-  const receipt = receiptFrom(prompts)
-  assert.deepEqual(receipt.spend.map(s => s.wave), ['1', '2', '3'])
-  for (const entry of receipt.spend) {
-    assert.equal(typeof entry.outputTokens, 'number', `wave ${entry.wave} recorded no figure`)
-    assert.ok(entry.outputTokens > 0, `wave ${entry.wave} recorded ${entry.outputTokens}`)
+    // Each wave's figure is its own span, not the cumulative reading: three waves
+    // in a row that all reported the running total would be the boundary-drift
+    // defect, and every number would still look plausible.
+    const cumulative = receipt.spend.reduce((sum, s) => sum + s.outputTokens, 0)
+    assert.ok(cumulative <= receipt.outputTokens, 'the wave spans sum to no more than the run')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
-  assert.equal(typeof receipt.outputTokens, 'number')
-  assert.ok(receipt.outputTokens > 0)
-
-  // Each wave's figure is its own span, not the cumulative reading: three waves
-  // in a row that all reported the running total would be the boundary-drift
-  // defect, and every number would still look plausible.
-  const cumulative = receipt.spend.reduce((sum, s) => sum + s.outputTokens, 0)
-  assert.ok(cumulative <= receipt.outputTokens, 'the wave spans sum to no more than the run')
 })
 
 test('a verification-only span records its measured delta, not an assumed zero', async () => {
-  // No implementer was spawned, which is exactly the wave a reader would expect
-  // to be free — and it is not: the orchestrator's own turns are in the span.
-  let records = 0
-  const { prompts } = await runShip({
-    budget: countingBudget(500),
+  // A red inter-wave verify halts the run before wave 2's batch ever spawns —
+  // so wave 1's recorded figure is either one mark's worth (if the verify
+  // step's own turns were assumed free) or two (if they were measured). Two is
+  // the only value a real inter-wave verify can produce.
+  const perRead = 500
+  const waves = [waveGroup('1', 1), waveGroup('2', 2)]
+  const { root } = await runShip({
+    keepRepo: true,
+    budget: countingBudget(perRead),
+    classified: { tasks: waves.flat() },
+    repo: {
+      tasks: tasksMdFor(waves),
+      profile: { version: 1, unit: { command: 'npm test' } }
+    },
     responses: {
-      'record-batch-': () => {
-        records += 1
-        return records === 1
-          ? stepResult({
-              action: 'verify',
-              wave: 2,
-              waveIndex: 1,
-              waveKind: 'impl',
-              mode: 'initial',
-              fixAttempt: 0,
-              errors: [],
-              changed: ['lib/a.mjs']
-            })
-          : DONE
-      },
-      'inter-wave-verify-': DONE
+      [labelFor(waves[0])]: laneOk(waves[0]),
+      'inter-wave-verify-': { ok: false, unitGreen: false, detail: 'suite is red' }
     }
   })
-
-  const receipt = receiptFrom(prompts)
-  const verifyWave = receipt.spend.find(s => s.wave === '2')
-  assert.ok(verifyWave, 'the verification span is recorded as its own wave figure')
-  assert.notEqual(verifyWave.outputTokens, 0, 'a span with no implementer is not a span with no cost')
-  assert.ok(verifyWave.outputTokens > 0)
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(receipt.spend.map(s => s.wave), ['1'], 'wave 2 never dispatched a batch')
+    assert.equal(
+      receipt.spend[0].outputTokens,
+      perRead * 2,
+      'a span with no implementer is not a span with no cost — the verify step added its own delta'
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('a runtime with no token accounting records unknown rather than throwing', async () => {
   // The harness passes no `budget` here, so the script sees no such global at
   // all — the ACP host's case, and the one a bare reference would have died on.
-  const { prompts, output } = await runShip()
-  const receipt = receiptFrom(prompts)
-
-  assert.deepEqual(receipt.spend, [{ wave: '1', outputTokens: null }])
-  assert.equal(receipt.outputTokens, null)
-  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run still finished')
+  const { root, output } = await runShip({ keepRepo: true })
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(receipt.spend, [{ wave: '1', outputTokens: null }])
+    assert.equal(receipt.outputTokens, null)
+    assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run still finished')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('a budget with no target set is still measured — the guard is on spent(), not total', async () => {
@@ -1905,10 +2883,14 @@ test('a budget with no target set is still measured — the guard is on spent(),
   // measurement on every ordinary run and nothing would say so.
   const budget = countingBudget(250)
   assert.equal(budget.total, null)
-  const { prompts } = await runShip({ budget })
-  const receipt = receiptFrom(prompts)
-  assert.equal(typeof receipt.outputTokens, 'number')
-  assert.ok(receipt.outputTokens > 0)
+  const { root } = await runShip({ keepRepo: true, budget })
+  try {
+    const receipt = receiptFrom(root)
+    assert.equal(typeof receipt.outputTokens, 'number')
+    assert.ok(receipt.outputTokens > 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('a runtime that stops exposing accounting mid-run degrades rather than failing the run', async () => {
@@ -1923,232 +2905,280 @@ test('a runtime that stops exposing accounting mid-run degrades rather than fail
       return spent
     }
   }
-  const { prompts, output } = await runShip({ budget })
-  const receipt = receiptFrom(prompts)
-
-  assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run must not fail over a measurement')
-  assert.ok(Array.isArray(receipt.spend))
-  for (const entry of receipt.spend) {
-    assert.ok(
-      entry.outputTokens === null || entry.outputTokens >= 0,
-      `wave ${entry.wave} recorded ${entry.outputTokens}`
-    )
+  const { root, output } = await runShip({ keepRepo: true, budget })
+  try {
+    const receipt = receiptFrom(root)
+    assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run must not fail over a measurement')
+    assert.ok(Array.isArray(receipt.spend))
+    for (const entry of receipt.spend) {
+      assert.ok(
+        entry.outputTokens === null || entry.outputTokens >= 0,
+        `wave ${entry.wave} recorded ${entry.outputTokens}`
+      )
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
-test('the receipt prompt forbids the carrier from touching the measurements', async () => {
-  // The whole basis for calling this a measurement rather than a self-report is
-  // that the script computed it and the agent only carried it. One sentence
-  // inviting a sanity-check would undo that, which is how the same defect got
-  // into `recordOutcome`.
-  const { prompts } = await runShip({ budget: countingBudget(100) })
-  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
-  assert.match(prompt, /"spend" and "outputTokens" were read from the runtime's own counter/)
-  assert.match(prompt, /sanity-checked, corrected or\s+re-derived/)
-  assert.doesNotMatch(prompt, /check that the (spend|token)/i)
+test('the host hands its measurements to the close, and the close does not re-derive them', () => {
+  // The whole basis for calling token spend a measurement rather than a
+  // self-report is that the host computed it from the runtime's own counter and
+  // the CLI merely records it. One place that recomputed it would undo that,
+  // which is how the same defect once got into the outcome record.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(ship, /'--host-observed'/, 'the host names the channel')
+  assert.match(ship, /outputTokens:\n?\s*spentAtClose === null \|\| spendOpenedAt === null/)
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  // The host's own figures WIN wherever it has any. A runner host has no
+  // process-wide counter, so its adapters read each vendor envelope's usage and
+  // the close adds those up (design D9) — addition of reported measurements,
+  // never a re-derivation of the Workflow runtime's.
+  assert.match(
+    run,
+    /const hostSpend = Array\.isArray\(observed\.spend\) && observed\.spend\.length \? observed\.spend : null/
+  )
+  assert.match(run, /spend: hostSpend \|\| counted\.spend/, 'the host measurement takes precedence')
+  assert.match(run, /outputTokens: hostTotal !== undefined \? hostTotal : counted\.outputTokens/)
+  assert.match(
+    run,
+    /UNKNOWN IS NOT ZERO, and it is contagious by design/,
+    'and one unmeasured spawn makes its group unknown rather than smaller'
+  )
+  assert.match(
+    run,
+    /this process — running BETWEEN agent turns — never sees/,
+    'and the CLI says why it cannot measure it itself'
+  )
+  // An absent figure stays absent rather than becoming zero.
+  assert.match(run, /: undefined\n\s*,?/)
+  assert.match(run, /An absent field stays absent — never zero/)
 })
 
 // --- what a halt left behind ------------------------------------------------
 //
-// Found by running the thing (tasks.md 7.3), not by reading it: a real halt at
-// verification produced a receipt with `leftoverTaskIds: []` while three boxes
-// sat unchecked in tasks.md. Leftovers had been derived from the failure list,
-// and a wave the halt stopped from ever running has no failures in it — so the
-// receipt of the run that most needed to say what it dropped said nothing.
+// Found by running the thing, not by reading it: a real halt at verification
+// produced a receipt with `leftoverTaskIds: []` while three boxes sat unchecked
+// in tasks.md. Leftovers had been derived from the failure list, and a wave the
+// halt stopped from ever running has no failures in it — so the receipt of the
+// run that most needed to say what it dropped said nothing.
 
 test('a halt names every unchecked task, not only the ones that failed', async () => {
-  // 2.1 and 2.2 failed; 3.1 never ran. All three are still unchecked, and all
-  // three are what a later reader has to be told.
-  const waveTwo = [laneTask('2.1'), laneTask('2.2')]
-  let records = 0
-  const { prompts, output } = await runShip({
+  // 1.1 failed; 2.1 sits in a later wave the halt stopped from ever running.
+  // Both are still unchecked, and both are what a later reader has to be told.
+  const tasks = [laneTask('1.1'), laneTask('2.1', { group: 2, paths: ['lib/b.mjs'] })]
+  const { root, output } = await runShip({
+    keepRepo: true,
+    classified: { tasks },
+    repo: { tasks: '# Tasks\n\n- [ ] 1.1 task 1.1\n- [ ] 2.1 task 2.1\n' },
     responses: {
-      'record-batch-': () =>
-        ++records === 1
-          ? stepResult({
-              action: 'run-batch',
-              wave: 2,
-              waveIndex: 1,
-              waveKind: 'impl',
-              batchIndex: 0,
-              batchCount: 1,
-              tasks: [waveTwo],
-              remainingBatches: [[waveTwo]],
-              previousHandoffs: [],
-              changed: ['lib/a.mjs'],
-              maxParallel: 8
-            })
-          : DONE,
-      [labelFor(waveTwo)]: {
-        tasks: [
-          { id: '2.1', outcome: 'failed', error: 'no migration runner' },
-          { id: '2.2', outcome: 'failed', error: 'no migration runner' }
-        ]
-      },
-      verify: { ok: false, unitGreen: false },
-      'record-outcome': {
-        ok: true,
-        reconstructable: true,
-        leftoverTaskIds: ['2.1', '2.2', '3.1']
-      }
+      '1.1': { id: '1.1', ok: false, error: 'no migration runner', handoff: null }
     }
   })
-
-  const receipt = receiptFrom(prompts)
-  assert.equal(receipt.halted, true)
-  assert.deepEqual(
-    receipt.leftoverTaskIds,
-    ['2.1', '2.2', '3.1'],
-    'a task the halt stopped from running is left behind exactly as much as one that failed'
-  )
-  // And the banner a human reads is the same list, not the failure subset.
-  assert.match(output, /3\.1/)
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(
+      receipt.leftoverTaskIds,
+      ['1.1', '2.1'],
+      'a task a halt stopped from running is left behind exactly as much as one that failed'
+    )
+    // And the banner a human reads is the same list, not the failure subset.
+    assert.match(output, /2\.1/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test('an unread checkbox leaves leftovers as what the run does know, never as none', async () => {
-  // The closing step could not read tasks.md, so it left the field out. The
-  // fallback is the failure list — smaller than the truth, but observed. What
-  // it must never become is `[]`, which would read as "finished everything".
-  const waveTwo = [laneTask('2.1')]
-  let records = 0
-  const { prompts } = await runShip({
-    responses: {
-      'record-batch-': () =>
-        ++records === 1
-          ? stepResult({
-              action: 'run-batch',
-              wave: 2,
-              waveIndex: 1,
-              waveKind: 'impl',
-              batchIndex: 0,
-              batchCount: 1,
-              tasks: [waveTwo],
-              remainingBatches: [[waveTwo]],
-              previousHandoffs: [],
-              changed: ['lib/a.mjs'],
-              maxParallel: 8
-            })
-          : DONE,
-      [labelFor(waveTwo)]: { id: '2.1', ok: false, error: 'no migration runner', handoff: null },
-      verify: { ok: false, unitGreen: false },
-      'record-outcome': { ok: true, reconstructable: true }
-    }
-  })
-
-  assert.deepEqual(receiptFrom(prompts).leftoverTaskIds, ['2.1'])
-})
-
-test('the closing step reads unchecked ids from the CLI rather than deriving them', async () => {
-  const { prompts } = await runShip({})
-  const prompt = prompts.find(p => p.label === 'record-outcome').prompt
-
-  assert.match(prompt, /interlock validate --change demo-change --json/)
-  assert.match(prompt, /every "id" from its tasks\.items whose "done" is false/)
+test('leftovers are read from the checkboxes, never derived from the failure list', () => {
+  // The failure list is a subset of the truth by construction. It survives only
+  // as the fallback for a run whose change cannot be read at all — and what it
+  // must never become is `[]`, which reads as "finished everything".
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /function readLeftoverIds\(root, manifest\)/)
+  assert.match(run, /items\.filter\(t => t && t\.done === false\)/, 'the checkbox is the source')
   assert.match(
-    prompt,
-    /Do not derive them from tasks\.md yourself/,
-    'the checkbox is the CLI\'s to read — an agent counting boxes is an agent that can miscount'
+    run,
+    /return \(manifest\.waves \|\| \[\]\)\.flatMap\(w => w\.failedIds \|\| \[\]\)/,
+    'and the failure list is only the fallback'
   )
-  assert.match(
-    prompt,
-    /omitted means unknown, and unknown must never be reported as an empty list/,
-    'an empty list claims the run finished everything'
-  )
+  assert.match(run, /"Left behind" is not "failed"/)
 })
 
 test('--no-commit and --apply-only record "did not commit", not "never found out"', async () => {
   for (const args of ['demo-change --no-commit', 'demo-change --apply-only']) {
-    const { prompts } = await runShip({ args })
-    const receipt = receiptFrom(prompts)
-    assert.equal(receipt.committed, false, `${args}: the run chose not to commit and must say so`)
-    assert.equal(receipt.commit, undefined, `${args}: and carries no identifier`)
-    assert.equal(receipt.halted, false, `${args}: an early return is not a halt`)
+    const { root } = await runShip({ keepRepo: true, args })
+    try {
+      const receipt = receiptFrom(root)
+      assert.equal(receipt.committed, false, `${args}: the run chose not to commit and must say so`)
+      assert.equal(receipt.commit, null, `${args}: and carries no identifier`)
+      assert.equal(receipt.halted, false, `${args}: an early return is not a halt`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   }
 })
 
 test('a run that never reviewed reports no review counts rather than zero blockers', async () => {
-  const lean = receiptFrom((await runShip({})).prompts)
-  assert.equal(lean.reviewBlockers, undefined, 'a lean run never reviewed — 0 blockers would be a lie')
-  assert.equal(lean.reviewRaised, undefined)
+  const lean = await runShip({ keepRepo: true })
+  const strict = await runShip({ keepRepo: true, args: 'demo-change --strict' })
+  try {
+    const leanReceipt = receiptFrom(lean.root)
+    assert.equal(
+      leanReceipt.reviewBlockers,
+      null,
+      'a lean run never reviewed — 0 blockers would be a lie'
+    )
+    assert.equal(leanReceipt.reviewRaised, null)
 
-  const strict = receiptFrom((await runShip({ args: 'demo-change --strict' })).prompts)
-  assert.equal(strict.reviewRaised, 2)
-  assert.equal(strict.reviewSurviving, 1)
-  assert.equal(strict.reviewBlockers, 0)
-  assert.equal(strict.reviewWarnings, 1, 'surviving minus blockers, from two counts that were observed')
-})
-
-test('the receipt prompt asks for verbatim transport and invites no correction', async () => {
-  const { prompts } = await runShip({})
-  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
-
-  assert.match(prompt, /exactly as given, byte for byte/)
-  assert.match(prompt, /Do not adjust, correct, re-derive, reorder or add to any field/)
-  assert.match(prompt, /interlock run-log append --event \.claude\/ship\/run-receipt\.json/)
-  assert.match(prompt, /never fails a run/, 'losing the receipt must not fail the run that earned it')
-  // The closing prompt's own invitation to correct fields is right for an
-  // outcome record the agent observed and wrong for a payload the run measured.
-  assert.doesNotMatch(prompt, /Correct any field/)
-  assert.doesNotMatch(prompt, /starting point/)
-})
-
-test('the receipt payload survives assembly with no coercion artifacts', async () => {
-  const { prompts } = await runShip({})
-  const prompt = prompts.find(p => p.label === 'record-receipt').prompt
-  assert.deepEqual(
-    coercionArtifacts(prompt.replace(/\{"type":"run-receipt".*?\}\n\n/s, '')),
-    [],
-    'the record-receipt prompt lost an interpolation somewhere'
-  )
-})
-
-test('the ACP driver writes the same receipt from ship.js own builder', async () => {
-  // A second implementation of "what the run observed" is drift a reader could
-  // never see: both hosts would look correct and their trajectories would not
-  // agree. So the driver evaluates the marked block instead of copying it.
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /\/\/ BUILD_RECEIPT_START/, 'ship.js must mark its receipt builder')
-  assert.match(driver, /BUILD_RECEIPT_START/)
-  assert.match(driver, /buildReceipt\(\{/)
-  for (const copied of [/reviewBlockers:/, /capExhaustedVerifications:\s*closing/, /planReused:/]) {
-    assert.doesNotMatch(driver, copied, `the ACP driver copies receipt fields: ${copied}`)
+    const strictReceipt = receiptFrom(strict.root)
+    assert.equal(strictReceipt.reviewRaised, 2)
+    assert.equal(strictReceipt.reviewSurviving, 1)
+    assert.equal(strictReceipt.reviewBlockers, 0)
+    assert.equal(
+      strictReceipt.reviewWarnings,
+      1,
+      'surviving minus blockers, from two counts that were observed'
+    )
+  } finally {
+    rmSync(lean.root, { recursive: true, force: true })
+    rmSync(strict.root, { recursive: true, force: true })
   }
-  // And it appends the event itself — no agent in the path.
-  assert.match(driver, /'run-log',\s*\n\s*'append',\s*\n\s*'--event',\s*\n\s*write\(workPath\('run-receipt\.json'\)/)
 })
 
-test('the ACP driver ticks and tallies from what the CLI recorded, from ship.js own block', async () => {
-  // The defect was in both hosts because both computed "what succeeded" from
-  // the agent's `ok` field. Fixing it in one and copying the rule into the
-  // other would leave two implementations of which observation is the run's.
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /\/\/ RECORDED_VERDICT_START/, 'ship.js must mark the adjudication')
-  assert.match(driver, /RECORDED_VERDICT_START/)
-  assert.match(driver, /adjudicateBatches\(accumulated, verdictMissing \? null : verdicts\)/)
-  assert.match(driver, /verdict\.tickIds\.join\(','\)/)
-  assert.doesNotMatch(
-    driver,
-    /accumulated\.flat\(\)\.filter\(r => r\.ok\)/,
-    'the tick list must not be rebuilt from the agents own claims'
-  )
-  assert.doesNotMatch(
-    driver,
-    /ok: reported\.filter\(r => r\.ok\)\.length/,
-    'and neither must the per-wave tally'
-  )
+/**
+ * A `commit` response that performs a REAL git commit against `root` and
+ * reports the sha it produced — the one way to exercise `readTouchedPaths`
+ * (`lib/run-paths.mjs`) honestly, since it shells out to git rather than
+ * trusting anything an agent claims. Touches only `lib/a.mjs`, so the observed
+ * set is exactly the one path these tests assert on.
+ */
+function realCommit(root, message = 'feat: bump a') {
+  return () => {
+    writeFileSync(join(root, 'lib', 'a.mjs'), 'export const a = 2\n')
+    execFileSync('git', ['add', 'lib/a.mjs'], { cwd: root })
+    execFileSync('git', ['commit', '-qm', message], { cwd: root })
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+    return { ok: true, sha }
+  }
+}
 
-  const m = /\/\/ RECORDED_VERDICT_START\n([\s\S]*?)\n\/\/ RECORDED_VERDICT_END/.exec(text)
-  const api = new Function(
-    `${m[1]}; return { recordedOutcomes, adjudicateBatches, claimDerivedBanner }`
-  )()
+test('a committing run records both path sets, read by the CLI and not by the agent', async () => {
+  // No agent ever reports a path set in this design — `run close` reads both
+  // itself (`lib/run-paths.mjs`, against the sha and the stored plan), which is
+  // the property this test now demonstrates structurally: the commit agent
+  // reports only `{ok, sha}` and the receipt's path sets still come out right.
+  const { root, change } = makeRepo({})
+  await runShip({
+    keepRepo: true,
+    repo: { reuseRoot: root, change },
+    responses: { commit: realCommit(root) }
+  })
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(receipt.touchedPaths, ['lib/a.mjs'])
+    assert.deepEqual(receipt.predictedPaths, ['lib/a.mjs'])
+    assert.equal(receipt.predictedPathsComplete, true)
+    assert.equal(receipt.touchedPathsReason, null, 'an observed set carries no reason')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a run with no commit records the touched set unobserved, never as empty', async () => {
+  for (const args of ['demo-change --no-commit', 'demo-change --apply-only']) {
+    const { root } = await runShip({ keepRepo: true, args })
+    try {
+      const receipt = receiptFrom(root)
+      assert.equal(receipt.touchedPaths, null, `${args}: unobserved, so the field is null`)
+      assert.notDeepEqual(receipt.touchedPaths, [], `${args}: [] would assert a commit that touched nothing`)
+      assert.match(receipt.touchedPathsReason, /does not commit/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a halted run records the touched set unobserved with a stated reason', async () => {
+  // The plan itself was already written to disk before verification ever ran,
+  // so a halt at verify leaves `predictedPaths` observed — it is only the
+  // commit half that never happened, and only that half reads as unobserved.
+  const { root } = await runShip({
+    keepRepo: true,
+    repo: { profile: { version: 1, unit: { command: 'npm test' } } },
+    responses: { verify: { ok: false, unitGreen: false, detail: 'suite is red' } }
+  })
+  try {
+    const receipt = receiptFrom(root)
+    assert.equal(receipt.halted, true)
+    assert.equal(receipt.touchedPaths, null)
+    assert.match(receipt.touchedPathsReason, /no commit identifier/)
+    assert.deepEqual(receipt.predictedPaths, ['lib/a.mjs'])
+    assert.equal(receipt.predictedPathsComplete, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a plan that predicted for only some tasks is carried as incomplete, not as short', async () => {
+  const laneTaskNoPath = laneTask('1.2', { paths: [] })
+  const wave1 = [laneTask('1.1'), laneTaskNoPath]
+  const { root } = await runShip({
+    keepRepo: true,
+    classified: { tasks: wave1 },
+    repo: { tasks: '# Tasks\n\n' + wave1.map(t => `- [ ] ${t.id} ${t.description}`).join('\n') + '\n' },
+    responses: {
+      [labelFor(wave1)]: { tasks: wave1.map(t => ({ id: t.id, outcome: 'ok', handoff: laneHandoff(t.id) })) }
+    }
+  })
+  try {
+    const receipt = receiptFrom(root)
+    assert.deepEqual(receipt.predictedPaths, ['lib/a.mjs'], 'the union carries only what was declared')
+    assert.equal(receipt.predictedPathsComplete, false, 'one task declared no paths, so the set is incomplete')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- the receipt and the adjudication live in lib/, reached through run close --
+//
+// These used to pin the ACP driver to ship.js's marked blocks (`BUILD_RECEIPT`,
+// `RECORDED_VERDICT`) — the mechanism by which two hosts wrote "the same"
+// receipt without a second implementation. The mechanism is gone with the
+// duplication it served: `lib/receipt.mjs` builds the receipt and the summary,
+// `lib/run.mjs` adjudicates and reads the leftovers and both path sets, and a
+// driver reaches all of it through `interlock run close`. So what is pinned now
+// is that the modules do what the blocks did, and that no driver has grown a
+// copy back.
+
+const RECEIPT_MODULE = await import('../lib/receipt.mjs')
+const RUN_MODULE = await import('../lib/run.mjs')
+
+test('the receipt builder is one module, and neither driver carries a marked block of it', () => {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(driver, 'utf8')
+    for (const marker of ['BUILD_RECEIPT_START', 'RECORDED_VERDICT_START', 'buildReceipt(', 'adjudicateBatches(']) {
+      assert.ok(!text.includes(marker), `${driver} carries ${marker} — the receipt and the verdict are the CLI's`)
+    }
+  }
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(
+    run,
+    /import \{\n(?:\s+\w+,\n)*\s+\w+\n\} from '\.\/receipt\.mjs'/,
+    'lib/run.mjs must take the receipt builder from the one module that owns it'
+  )
+  for (const name of ['buildReceipt', 'formatRunSummary', 'tailFromManifest']) {
+    assert.equal(typeof RECEIPT_MODULE[name], 'function', `lib/receipt.mjs must export ${name}`)
+  }
+})
+
+test('the CLI ticks and tallies from what it recorded, never from the agent\'s claim', () => {
+  // The defect was in both hosts because both computed "what succeeded" from the
+  // agent's `ok` field. There is one adjudication now, in the run program.
+  const { recordedOutcomes, adjudicateBatches, claimDerivedBanner } = RUN_MODULE
   const claims = [[{ id: '1.1', ok: true }, { id: '1.2', ok: true }]]
-  const verdict = api.adjudicateBatches(
+  const verdict = adjudicateBatches(
     claims,
-    api.recordedOutcomes({
-      recorded: [{ id: '1.1', outcome: 'failed', reason: 'invalid handoff' }, { id: '1.2', outcome: 'ok' }]
-    })
+    recordedOutcomes([{ id: '1.1', outcome: 'failed', reason: 'invalid handoff' }, { id: '1.2', outcome: 'ok' }])
   )
   assert.deepEqual(verdict.tickIds, ['1.2'])
   assert.deepEqual(verdict.waves, [{ ok: 1, failed: 1, failedIds: ['1.1'], recordedNotAttempted: [] }])
@@ -2157,42 +3187,39 @@ test('the ACP driver ticks and tallies from what the CLI recorded, from ship.js 
 
   // A payload covering only some of the claims is no payload: tallying the rest
   // from the claim while reading as recorded is the same defect one level down.
-  const partial = api.adjudicateBatches(claims, api.recordedOutcomes({ recorded: [{ id: '1.1', outcome: 'ok' }] }))
+  const partial = adjudicateBatches(claims, recordedOutcomes([{ id: '1.1', outcome: 'ok' }]))
   assert.equal(partial.claimDerived, true)
-  assert.match(api.claimDerivedBanner(), /CLAIM-DERIVED TALLIES/)
+  assert.match(claimDerivedBanner(), /CLAIM-DERIVED TALLIES/)
+
+  // And the tick reads the verdict, not the claims.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /verdict\.tickIds/)
+  assert.doesNotMatch(run, /\.filter\(r => r\.ok\)/, 'the tick list must not be rebuilt from the agents own claims')
 })
 
-test('the ACP driver asks the CLI what is unchecked instead of listing failures', async () => {
-  // Same rule as the workflow host, reached without an agent: this driver can
-  // run the CLI itself. What both must not do is call the failure list the
-  // leftover list — a halt leaves waves that never ran and never failed.
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  assert.match(driver, /async function unticked\(\)/)
-  assert.match(driver, /'validate',\s*'--change',\s*resolvedChange/)
-  assert.match(driver, /items\.filter\(t => t && !t\.done/)
-  assert.match(driver, /if \(!Array\.isArray\(items\)\) return null/, 'unreadable is unknown, not none')
-  assert.doesNotMatch(
-    driver,
-    /leftoverTaskIds: summary\.waves\.flatMap/,
-    'the failure list is not the leftover list'
-  )
+test('the CLI asks the checkboxes what is unchecked instead of listing failures', () => {
+  // A halt leaves waves that never ran and never failed. The leftover list is
+  // read from tasks.md by the close; no driver derives it, and no driver runs a
+  // second reader of its own.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /function readLeftoverIds\(root, manifest\)/)
+  assert.match(run, /leftoverTaskIds = readLeftoverIds\(root, manifest\)/)
+  assert.doesNotMatch(run, /leftoverTaskIds: .*waves\.flatMap/, 'the failure list is not the leftover list')
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(text, /leftoverTaskIds|unticked\(/, `${driver} derives leftovers — that is the close's`)
+  }
 })
 
-test('the ACP driver receipt builder loads and produces the whitelisted shape', async () => {
-  // Evaluated the way the driver evaluates it, so a marker block that no longer
-  // stands alone fails here rather than at the end of somebody's ship run.
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
-  assert.ok(m, 'ship.js must define buildReceipt between BUILD_RECEIPT markers')
-  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
-
-  const empty = build({})
+test('the receipt builder produces the whitelisted shape', () => {
+  const { buildReceipt } = RECEIPT_MODULE
+  const empty = buildReceipt({})
   assert.equal(empty.type, 'run-receipt')
   assert.equal(empty.halted, false)
   assert.deepEqual(empty.waves, [])
   assert.equal(empty.committed, undefined, 'an empty summary never found out anything')
 
-  const filled = build({
+  const filled = buildReceipt({
     change: 'add-widget',
     summary: {
       waves: [{ wave: 2, ok: 1, failed: 1, notAttempted: ['2.3'], handoffs: ['SECRET'] }],
@@ -2217,44 +3244,354 @@ test('the ACP driver receipt builder loads and produces the whitelisted shape', 
   assert.doesNotMatch(JSON.stringify(filled), /SECRET/)
 })
 
-test('an ACP-produced receipt reads as a host that could not measure, not a run that spent nothing', async () => {
-  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const m = /\/\/ BUILD_RECEIPT_START\n([\s\S]*?)\n\/\/ BUILD_RECEIPT_END/.exec(text)
-  const build = new Function('input', `${m[1]}; return buildReceipt(input)`)
-
-  // What the driver hands the shared builder: a spend row per wave, every figure
-  // explicitly absent, and an absent run total.
+test('a host that could not measure spend reads as unknown, not as a run that spent nothing', () => {
+  const { buildReceipt } = RECEIPT_MODULE
   const waves = [
     { wave: 1, ok: 2, failed: 0, notAttempted: [] },
     { wave: 2, ok: 1, failed: 0, notAttempted: [] }
   ]
-  const acp = build({
+  const unmeasured = buildReceipt({
     change: 'add-widget',
     summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: null })), outputTokens: null }
   })
-  assert.deepEqual(acp.spend, [
+  assert.deepEqual(unmeasured.spend, [
     { wave: 1, outputTokens: null },
     { wave: 2, outputTokens: null }
   ])
-  assert.equal(acp.outputTokens, null)
+  assert.equal(unmeasured.outputTokens, null)
 
-  // The distinction the whole field exists for: unknown is not zero.
-  const measuredNothing = build({
+  const measuredNothing = buildReceipt({
     change: 'add-widget',
     summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: 0 })), outputTokens: 0 }
   })
-  assert.notEqual(acp.spend[0].outputTokens, measuredNothing.spend[0].outputTokens)
-  assert.notEqual(acp.outputTokens, measuredNothing.outputTokens)
+  assert.notEqual(unmeasured.spend[0].outputTokens, measuredNothing.spend[0].outputTokens)
+  assert.notEqual(unmeasured.outputTokens, measuredNothing.outputTokens)
 })
 
-test('the ACP driver declares its lack of token accounting rather than estimating it', async () => {
-  const driver = readFileSync(ACP_DRIVER, 'utf8')
-  assert.match(driver, /spend: summary\.waves\.map\(wave => \(\{ wave: wave\.wave, outputTokens: null \}\)\)/)
-  assert.match(driver, /outputTokens: null/)
-  // The temptation is concrete — ship.js carries a per-agent token constant for
-  // another purpose — so the absence of an estimate here is asserted, not hoped
-  // for. A fabricated figure in this corpus costs it the only thing it has.
-  const figures = [...driver.matchAll(/outputTokens:\s*(\S+)/g)].map(m => m[1].replace(/[^A-Za-z0-9.]/g, ''))
-  assert.deepEqual(figures, ['null', 'null'], 'the ACP host must never compute a spend figure')
-  assert.match(driver, /It is NOT estimated/, 'the refusal is written down, not left to be rediscovered')
+test('the runner hands the close no spend figure, and the close never invents one', () => {
+  // ACP has no token counter. The temptation is concrete — the Workflow host
+  // carries a per-run counter for the same field — so the absence of an
+  // estimate is asserted, not hoped for: the driver names no figure at all, and
+  // the close records a figure only when a host observed one.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  assert.doesNotMatch(driver, /outputTokens/, 'the ACP host must never compute a spend figure')
+  assert.doesNotMatch(driver, /--host-observed/, 'and it hands the close nothing to read one from')
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(
+    run,
+    /typeof observed\.outputTokens === 'number' \|\| observed\.outputTokens === null\n\s*\? observed\.outputTokens\n\s*: undefined/,
+    'an unobserved spend stays undefined, which the writer records as unknown'
+  )
+})
+
+test('the close reads both path sets itself, so no host has to declare itself unable', () => {
+  // The one host difference that used to need declaring: the Workflow host
+  // asked an agent to run the two readers, the ACP driver ran them itself. The
+  // close runs them now, and neither driver mentions a path set.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(run, /import \{ readPredictedPaths, readTouchedPaths \} from '\.\/run-paths\.mjs'/)
+  assert.match(run, /paths: readPathSets\(root, manifest\)/, 'the sets ride in their own group, not folded into closing')
+  assert.doesNotMatch(run, /closing: \{[^}]*closingFromWaveState/)
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.doesNotMatch(text, /touchedPaths|predictedPaths|'paths',/, `${driver} reads a path set — that is the close's`)
+  }
+})
+
+test('the shared builder records a close that could read neither set as unobserved', () => {
+  const { buildReceipt } = RECEIPT_MODULE
+  const unread = buildReceipt({
+    change: 'add-widget',
+    summary: {
+      waves: [],
+      paths: {
+        touchedPathsReason: 'the run recorded no commit identifier',
+        predictedPathsReason: 'no executed plan was found at .claude/ship/plan.json'
+      }
+    }
+  })
+  assert.equal(unread.touchedPaths, undefined)
+  assert.equal(unread.predictedPaths, undefined)
+  assert.equal(unread.predictedPathsComplete, undefined)
+  assert.match(unread.touchedPathsReason, /no commit identifier/)
+  assert.match(unread.predictedPathsReason, /no executed plan/)
+
+  const read = buildReceipt({
+    change: 'add-widget',
+    summary: {
+      waves: [],
+      commit: { ok: true, sha: 'cafe123' },
+      paths: {
+        touchedPaths: ['lib/a.mjs'],
+        predictedPaths: ['lib/a.mjs', 'lib/b.mjs'],
+        predictedPathsComplete: true
+      }
+    }
+  })
+  assert.deepEqual(read.touchedPaths, ['lib/a.mjs'])
+  assert.equal(read.predictedPathsComplete, true)
+  assert.equal(read.touchedPathsReason, undefined)
+
+  // An unreadable wave state still leaves the verification conditions unknown,
+  // whichever way the path sets went.
+  assert.equal(read.skippedVerifications, undefined)
+  assert.equal(unread.unresolvedErrors, undefined)
+})
+
+// --- a driver holds no policy (spec: ship/run-program) ----------------------
+//
+// The reason `interlock run` exists: a driver that holds nothing cannot drift.
+// The sweep below is the published list of what "nothing" means — every token
+// is a piece of policy that lives in lib/ and is assembled into a briefing by
+// the CLI, so its appearance in a driver is a second statement.
+//
+// There is no allowance. The strict tail used to be one — a named
+// `HOST_TAIL_SEAM` marker whose text the sweep skipped — and
+// `emit-strict-tail-from-cli` deleted both the seam and the skip. The tail's
+// own tokens are in the list below precisely so the deletion cannot be undone
+// by accident.
+
+/** The policy a driver may not restate. Each entry names what the token is a piece of. */
+const NO_POLICY_TOKENS = [
+  ['the tier ladder', /Tier [1-5] [a-z]/],
+  ['the implementer tier line', /Your tier is/],
+  ['the dependsOn contract', /dependsOn/],
+  ['the handoff schema', /interlock\.wave-handoff\/1/],
+  ['the classifier mode field', /recommendedMode/],
+  ['the remediation budget', /remediationRounds|roundCap/],
+  ['the lane model table', /laneModel/],
+  ['the lane effort table', /laneEffort/],
+  ['the lane label rule', /laneLabel/],
+  ['the implementer assembler', /assembleImplementerPrompt/],
+  ['the docs-only verify skip', /docs-only/],
+  ['the no-command verify skip', /no-detectable-command/],
+  ['the verify cap skip', /verify-cap-reached/],
+  // The runner CREATES a lane worktree from the base the step named (design
+  // D7), so `step.mergeBase` is a field it reads, not a rule it states. What it
+  // must never do is DECIDE the fold or compute a base of its own — asserted
+  // both by these tokens and, positively, by the test below.
+  ['the lane merge', /merge-lanes|mergeDecision|rev-parse/],
+  ['the verify judgement', /verify judge|exitCode !== 0/],
+  ['the step-cap literal', /maxRunSteps\s*[=:]\s*\d/],
+  // The strict tail. Each of these was in ship.js until
+  // `emit-strict-tail-from-cli`, and each is a piece of the review, the
+  // remediation plan, the handoff decision or the autonomy record that the run
+  // program now states exactly once.
+  ['the skeptic verdict shape', /isReal|qualityScore|severityScore/],
+  ['the re-review dimension list', /reReviewDimensions/],
+  ['the fixer grouping', /byFile/],
+  ['the manual-test-plan decision', /needsManualTestPlan/],
+  ['the autonomy record', /autonomy record|autonomy/],
+  ['the review dimension set', /technical-lead/],
+  ['the skeptic effort literal', /xhigh/]
+]
+
+/** A driver's source with comments removed. */
+function policySurface(path) {
+  // A comment that CITES where a rule lives is not a statement of the rule.
+  return readFileSync(path, 'utf8').replace(/^\s*\/\/.*$/gm, '')
+}
+
+test('neither driver states any policy the run program emits', t => {
+  const drivers = [
+    ['workflows/ship.js', join(WORKFLOWS_DIR, 'ship.js')],
+    ['bin/interlock-run', RUNNER_DRIVER]
+  ]
+  for (const [name, path] of drivers) {
+    const surface = policySurface(path)
+    for (const [what, token] of NO_POLICY_TOKENS) {
+      assert.doesNotMatch(
+        surface,
+        token,
+        `${name} states ${what} (${token}) — it belongs in lib/, assembled by interlock run`
+      )
+    }
+  }
+  t.diagnostic(`swept ${NO_POLICY_TOKENS.length} policy tokens over ${drivers.length} drivers`)
+})
+
+test('the runner takes the merge base from the step and never computes one', () => {
+  // The compensating half of the sweep's `mergeBase` allowance. Reading the
+  // field a step handed it is the interpreter contract; deriving a base would
+  // make the driver an orchestrator, and a lane forked from a commit the CLI
+  // did not choose is a fold that silently finds the wrong diff.
+  const driver = policySurface(RUNNER_DRIVER)
+  assert.match(driver, /step\.mergeBase/, 'it reads the base off the step')
+  assert.doesNotMatch(driver, /mergeBase\s*=\s*(?!=)/, 'and never assigns one of its own')
+  assert.doesNotMatch(driver, /rev-parse/, 'so it never asks git for a base')
+  assert.doesNotMatch(driver, /collision|survivingWorktrees/, 'and it never adjudicates the fold')
+  // It creates and nothing else: removal is `run record-batch`'s, uniformly,
+  // so a folded worktree and an auto-removed empty one end the same way.
+  assert.match(driver, /'worktree',\s*'add'/, 'it creates the lane worktree')
+  assert.doesNotMatch(driver, /'worktree',\s*'remove'/, 'and does not remove it')
+})
+
+test('no driver carries a tail seam, and the sweep has no allowance to skip', () => {
+  // The property the deleted `HOST_TAIL_SEAM` allowance used to hold open. It
+  // is asserted from both ends: no marker survives in either driver, and the
+  // sweep helper reads the whole file rather than a prefix of it.
+  for (const path of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(path, 'utf8')
+    assert.ok(!text.includes('HOST_TAIL_SEAM'), `${path} still names a tail seam`)
+    assert.ok(!text.includes("'host-tail'"), `${path} still handles a host-tail step`)
+    assert.equal(
+      policySurface(path).length,
+      text.replace(/^\s*\/\/.*$/gm, '').length,
+      `${path}: the sweep must read the whole driver, not a prefix`
+    )
+  }
+})
+
+test('the bootstrap is plumbing pinned by fixture, so it cannot quietly grow instructions', () => {
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const m = /const BOOTSTRAP = \(label, path, sha\) =>\n([\s\S]*?Expected sha256: \$\{sha\}`)/.exec(ship)
+  assert.ok(m, 'ship.js must declare BOOTSTRAP as (label, path, sha) =>')
+  const bootstrap = new Function('label', 'path', 'sha', `return (${m[1]})`)
+  const expected = readFileSync(join(ROOT, 'test', 'fixtures', 'prompts', 'bootstrap.txt'), 'utf8')
+  assert.equal(
+    bootstrap('1.1', '.claude/ship/briefings/1.1.md', '0123456789abcdef'.repeat(4)),
+    expected,
+    'the bootstrap text differs from test/fixtures/prompts/bootstrap.txt'
+  )
+  // It names a file and a field and nothing about the work.
+  assert.doesNotMatch(expected, /tier|handoff|tasks\.md|openspec/i)
+})
+
+test('the Workflow script calls run start by literal and every later run subcommand from then.argv', () => {
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const literal = [...ship.matchAll(/cli\(\[\s*'run',\s*'([a-z-]+)'(,\s*'([^']+)')?/g)].map(m => ({
+    sub: m[1],
+    next: m[3] || null
+  }))
+  assert.deepEqual(
+    literal.map(l => l.sub).sort(),
+    ['close', 'start'],
+    `ship.js names a run subcommand by literal: ${literal.map(l => l.sub).join(', ')}`
+  )
+  // The one literal close is the halt path: a run that lost its step has no
+  // `then.argv` to follow, so the close is the only continuation it can name.
+  const close = literal.find(l => l.sub === 'close')
+  assert.equal(close.next, '--halt', 'a literal run close is only ever the halt close')
+  // Every other continuation is the step's own.
+  assert.match(ship, /: await cli\(step\.then\.argv, results\)/)
+  assert.match(ship, /await cli\(\[\.\.\.step\.then\.argv, \.\.\.closeArgs\(\)\], results, closeWrites\(\)\)/)
+})
+
+test('the runaway backstop is the runtime ceiling and not the step cap, on both drivers', () => {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
+    const text = readFileSync(driver, 'utf8')
+    const m = /const RUNAWAY_BACKSTOP = (\d+)\s*$/m.exec(text)
+    assert.ok(m, `${driver} must declare RUNAWAY_BACKSTOP as a bare integer literal, derived from nothing`)
+    const backstop = Number(m[1])
+    assert.notEqual(backstop, LIMITS.maxRunSteps, `${driver}: the backstop restates maxRunSteps`)
+    assert.ok(
+      backstop > LIMITS.maxRunSteps,
+      `${driver}: a backstop at or below the cap is a policy cap the CLI did not publish`
+    )
+    assert.doesNotMatch(text, /RUNAWAY_BACKSTOP = [^\n]*(\+|maxRunSteps|LIMITS)/, `${driver}: the backstop is derived`)
+    assert.doesNotMatch(text, /MAX_LOOP_STEPS/, `${driver}: the old literal is back`)
+  }
+})
+
+// --- docs/14: the consumer posture, pinned -----------------------------------
+//
+// Following the precedent above ('the docs frame ACP as an opt-in second host'):
+// distinguishing tokens rather than whole sentences, so an ordinary rewording
+// keeps the pin and a reversal of meaning does not survive it. This page is the
+// one place a consuming team is told what is checked, what is recorded and that
+// none of it gates — claims that are load-bearing precisely because nobody in
+// that team will read the harness to check them.
+
+const EVALS_DOC = join(ROOT, 'docs', '14-evals.md')
+
+/** Prose with line breaks and markdown emphasis flattened, so a pin matches the claim. */
+const flatten = text => text.replace(/\*\*/g, '').replace(/\s+/g, ' ')
+
+test('docs/14 exists and is reachable from the entry document', () => {
+  // A failure, never a skip: an absent page states nothing to anyone, and a
+  // skipping test would report the same green as a page that says everything.
+  assert.ok(existsSync(EVALS_DOC), 'docs/14-evals.md must exist — the consumer posture lives nowhere else')
+
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /docs\/14-evals\.md/, 'the entry document must link the page')
+})
+
+test('docs/14 states what is checked, by which command, and separates the preflight', () => {
+  // Read with whitespace and emphasis flattened: the pin is on the claim, and a
+  // line break or a pair of asterisks moving is exactly the reword it must survive.
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /exit code is the decision/i)
+  assert.match(doc, /interlock doctor/)
+  assert.match(doc, /grades the machine before the run/i)
+  assert.match(doc, /grade the run as it proceeds|grades the run as it proceeds/i)
+  // A sample of the in-run deciders, each named with its command rather than
+  // described in prose.
+  for (const command of [
+    'interlock validate',
+    'interlock gate',
+    'interlock verify unit',
+    'interlock run-log check'
+  ]) {
+    assert.ok(doc.includes(command), `docs/14 must name ${command} as the command that decides`)
+  }
+})
+
+test('docs/14 states what is recorded, where, that it gates nothing, and links the keep guidance', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /\.claude\/ship\/runs/)
+  assert.match(doc, /\.claude\/learning\/outcomes\.jsonl/)
+  assert.match(doc, /\.claude\/metrics/)
+  assert.match(doc, /nothing Interlock records about your run changes what your run does/i)
+  assert.match(doc, /gates nothing/i)
+  // Referenced, not restated: there must be exactly one place that answers
+  // whether the corpora belong in git.
+  assert.match(doc, /11-the-indicators\.md#whether-to-keep-them/)
+  assert.doesNotMatch(doc, /```gitignore/, 'the .gitignore blocks live in docs/11, not here')
+})
+
+test('docs/14 states the no-consumer-CI-evals posture with its three reasons', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /does not run those evals in a consuming repository's CI|no model evals run in your CI/i)
+  assert.match(doc, /model-facing surface is identical in every consumer/i)
+  assert.match(doc, /your own test suite/i)
+  assert.match(doc, /checkpoint/i)
+  assert.match(doc, /early-access and metered/i)
+
+  // The reversal. A single sentence saying consumers should run the suite in
+  // their pipeline would invert the page while leaving every pin above intact.
+  assert.doesNotMatch(
+    doc,
+    /(?:you |consumers? )(?:should|can|may) run (?:Interlock'?s? |the )?(?:model )?evals?(?: suite)? in (?:your|their|a consumer's) (?:CI|pipeline)/i,
+    'the page must never state that Interlock runs, or that you should run, model evals in a consumer CI'
+  )
+})
+
+test('docs/14 states how to file a failure, and that capture writes only where told', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /interlock evals capture --run/)
+  assert.match(doc, /provenance/i)
+  assert.match(doc, /writes only into the directory you named/i)
+  assert.match(doc, /refuses a run that cannot be reconstructed/i)
+})
+
+test('docs/14 names the command that publishes a cap and states no threshold as policy', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+  assert.match(doc, /interlock limits/, 'a cap is named by where to read it')
+
+  // No bare numeric threshold presented as policy. The page is allowed to carry
+  // exit codes and document numbers — those are identifiers, not thresholds —
+  // so the pattern targets the shapes a restated cap actually takes.
+  const policyNumbers = [
+    /\b(?:at most|no more than|up to|maximum of|max of|cap(?:ped)? (?:at|of)|limit of|ceiling of|threshold of)\s+\$?\d/i,
+    /\b\d+\s*(?:%|percent\b)/i,
+    /\$\s?\d/
+  ]
+  for (const pattern of policyNumbers) {
+    const hit = pattern.exec(doc)
+    assert.equal(hit, null, `docs/14 restates a threshold: "${hit && hit[0]}" — name interlock limits instead`)
+  }
 })

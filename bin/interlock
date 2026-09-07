@@ -15,7 +15,7 @@
 // wired to a subcommand here is a policy the model will improvise in prose.
 
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -29,11 +29,39 @@ import {
   formatRunState,
   batchOutcomes
 } from '../lib/waves.mjs'
+import {
+  CLASSIFIED_PATH,
+  checkSequence,
+  readManifest,
+  runClassified,
+  runClose,
+  runCommit,
+  runJudge,
+  runNext,
+  runRecordBatch,
+  runRemediated,
+  runReplan,
+  runReviewed,
+  runStart,
+  runVerifyFinal
+} from '../lib/run.mjs'
+import { haltStep } from '../lib/run.mjs'
+import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
 import { record, recordCleanFlow, getLevel, getState } from '../lib/autonomy.mjs'
-import { LIMITS, RUNTIME, EVAL_CAPS, REPORT_CAPS, EFFORT, formatLimits } from '../lib/limits.mjs'
+import {
+  LIMITS,
+  RUNTIME,
+  EVAL_CAPS,
+  MODEL_PRICES,
+  REPORT_CAPS,
+  EFFORT,
+  LANE_CAPS,
+  SOLO,
+  formatLimits
+} from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import {
   resolveReview,
@@ -71,8 +99,13 @@ import {
 
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { buildReport, formatReport } from '../lib/report.mjs'
+import { renderReportHtml } from '../lib/report-html.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
+import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
+import { calibrate, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
+import { promote, formatPromotion } from '../lib/evals-promote.mjs'
+import { readTouchedPaths, readPredictedPaths, formatPathSet } from '../lib/run-paths.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
 import {
   appendRunLogEvent,
@@ -89,6 +122,7 @@ const USAGE = `interlock — deterministic decisions for the spec-driven flow
 
 Usage:
   interlock waves --classified <file>       Plan execution waves from classified tasks
+                  [--mode solo|waves]       (--mode forces the plan shape)
   interlock surface --changed <files...>    Classify UI testability of changed files
   interlock gate --findings <file>          Decide whether a review gate blocks
   interlock validate [change]               Inspect OpenSpec change artifacts
@@ -109,6 +143,50 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock notify --title <t> [--body <b>]  Push one message so a run or a
+                 [--priority high|default]   checkpoint reached while nobody was
+  interlock notify checkpoint <change>       watching still reaches someone. The
+                                             only outbound request this CLI makes.
+                                             Topic from INTERLOCK_NTFY_TOPIC,
+                                             server from INTERLOCK_NTFY_URL
+                                             (default https://ntfy.sh). Unset
+                                             topic prints "not configured" and
+                                             exits 0; a failed push exits 1.
+                                             --json emits { sent, reason }
+  interlock run start --change <name>        The ship loop, as a program. Each
+  interlock run classified --classified <f>  subcommand returns one step record
+  interlock run record-batch --results <f>   (interlock.run-step/1): the agents
+  interlock run judge --context <ctx> --results <f>
+  interlock run verify-final                 to spawn — label, model, effort,
+  interlock run reviewed --results <f>       agent type, tools, result schema and
+  interlock run remediated --round <n> --results <f>
+  interlock run commit --results <f>         a briefing file with its sha256 —
+  interlock run replan --results <f>         and the exact argv to call once they
+  interlock run next                         return. A host spawns what a step
+  interlock run close [--halt <reason>]      names, writes the results, calls
+                      [--host-banners <f>]
+                      [--host-observed <f>]
+                                            \`then.argv\`, and repeats until
+                                            \`then\` is null. It decides nothing:
+                                            every branch the loop has (apply-only,
+                                            no-commit, skip-e2e, isolate-waves,
+                                            replan allowed, verify skipped, done)
+                                            is taken here from the run manifest
+                                            (.claude/ship/run.json) and the wave
+                                            state. The strict tail is part of
+                                            the program too: \`reviewed\`
+                                            adjudicates the findings and verdicts
+                                            the review step wrote and plans round
+                                            one, \`remediated --round <n>\`
+                                            re-adjudicates and asks for the next
+                                            round, the verdict or the halt, and
+                                            \`commit\` records what the handoff
+                                            wrote. No host carries the round
+                                            budget, and none may refuse a tail
+                                            flag. \`run close\` is the only one
+                                            that exits non-zero — on a halt, or
+                                            on a run whose trajectory cannot be
+                                            reconstructed
   interlock merge-lanes --base <sha> --lanes <file>
                                            Fold a batch's isolated lane worktrees
                                            back into the shared tree (--isolate-waves
@@ -123,6 +201,38 @@ Usage:
                                             No model, no network. Exit code is
                                             the verdict (1=regression,
                                             2=no signal, 3=configuration)
+  interlock evals capture --run <id> --out <dir>
+                        [--task <id>]      Emit an eval-case skeleton from a
+                                            recorded run trajectory, with its
+                                            provenance. A DRAFT: every derived
+                                            value is marked CONFIRM. Refuses a
+                                            run that is not reconstructable, an
+                                            --out inside evals/, and an --out
+                                            that already holds a case — writing
+                                            nothing on any refusal (exit 1)
+  interlock evals calibrate --results <file>
+                        [--labels <dir>]    Report how often each judged grader
+                                            agreed with a stored human label, with
+                                            its denominator. No model, no network,
+                                            NO verdict — it names unmeasured
+                                            graders and unmatched items and always
+                                            exits 0. promote applies the floor
+  interlock evals promote --history <dir>
+                        [--agreement <f>]   Decide whether each case in the
+                                            recorded history may move from
+                                            advisory to blocking. The rule's
+                                            numbers come from interlock limits.
+                                            Exit code is the verdict (1=at least
+                                            one refused, 2=insufficient history)
+  interlock paths touched --commit <sha>    Repository-relative paths one commit
+                                            touched, read from git
+  interlock paths predicted [--plan <file>] Paths the executed plan predicted its
+                                            tasks would touch, and whether every
+                                            task declared any. Both commands
+                                            always exit 0: an unreadable set is
+                                            reported unobserved with its reason,
+                                            never as an empty set and never as a
+                                            failed close
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
                                            Resolve a review against skeptic verdicts.
@@ -154,8 +264,11 @@ Usage:
   interlock verify cluster --failures <f>   Group failures by root-cause signature
   interlock verify repair --state <file>    Decide repair / halt / accept next
   interlock plan fingerprint [change]      Fingerprint a change's planning inputs
+                  [--mode solo|waves]      (the mode override is part of the print)
   interlock plan reuse [change]            Decide whether the stored plan may be
-                                           reused, and narrow it if so
+                  [--mode solo|waves]      reused, and narrow it if so (a mode
+                                           override that differs from the stored
+                                           plan's forces a rebuild)
   interlock wave-state create --plan <file> Start a run state from a wave plan
   interlock wave-state next --state <file>  Ask what the run should do next
   interlock wave-state record-batch --state <f> --result <f>
@@ -200,8 +313,24 @@ Exit codes:
                              that yielded no signal (exit 2) or a configuration
                              problem (exit 3) is non-zero but distinct, so
                              neither reads as a clean pass
+    evals capture            the capture was refused — the run is not
+                             reconstructable, the output directory resolves
+                             inside evals/, or it already holds a case. Nothing
+                             was written on any of the three
+    evals promote            at least one case may not yet be promoted (exit 1);
+                             a history too thin to decide (exit 2) is non-zero
+                             but distinct, because "not enough evidence" must
+                             never read as "the evidence says no"
+  paths touched and paths predicted never exit non-zero either: a host calls
+  them on its way out, and a read that failed must leave the receipt's set
+  unobserved rather than fail the close.
   risk never exits non-zero — branch on "continuityAllowed" instead, so a
   high-risk classification is a checkpoint rather than a failed command.
+  evals calibrate never exits non-zero. That is a contract, not a convenience:
+  the calibration report measures judge/human agreement and applies no floor to
+  it, so an exit code would be a verdict it is forbidden to issue. Low agreement
+  is stated with its denominator and the command still succeeds; evals promote is
+  the only reader that turns that number into a decision.
   drift, conformance and report never exit non-zero either. For report that is
   a policy, not a convenience: §4.15(a) forbids gating on the recorded corpora,
   and a non-zero status is exactly the comparison it forbids. Nothing in the
@@ -214,18 +343,32 @@ report:
   thin corpus must read as thin rather than as clean. Metrics files are
   classified by their "schema" key, never by filename: a skill also writes
   review-artifacts-*.json into that directory, and it carries finding bodies
-  rather than counts. One indicator, "does the merged diff match the plan", is
-  reported as not computable with what would close it, rather than approximated
-  from a nearby number.
+  rather than counts. "Does the merged diff match the plan" is computed from the
+  two path sets the receipt records — touched paths that the plan predicted,
+  over touched paths — and every run it could not be computed over is excluded
+  and counted under the reason it was excluded, rather than approximated from a
+  nearby number.
   --since <iso>          Keep runs whose earliest record is at or after this
   --change <name>        Keep one change's runs, outcomes and metrics
   --max-runs <n>         Lower the scan bound; the published cap is the ceiling
                          (see interlock limits). Truncation is reported.
+  --html [path]          Render the same report object as one self-contained
+                         HTML document — no stylesheet, script or font is
+                         fetched, so it opens offline. Bare, it writes to
+                         stdout; given a path, it writes only there. Mutually
+                         exclusive with --json. It is a generated file, not a
+                         service, and like every other surface here it issues
+                         no verdict: an unobserved indicator renders as
+                         UNOBSERVED with its reason, never as a zero.
 
 waves:
   --classified <file>    JSON: { "tasks": [{id, group, description, tier, model, isTestTask}] }
                          Use "-" to read from stdin.
   --max-parallel <n>     Cap agents spawned per batch (default ${LIMITS.maxParallel})
+  --mode solo|waves      Force the plan shape. Absent, the classified input's own
+                         recommendedMode decides inside the published envelope
+                         (see interlock limits); default is waves. Passing both
+                         solo and waves is rejected rather than resolved last-wins.
 
 surface:
   --changed <files...>   Repo-relative paths. Use "-" to read newline-separated stdin.
@@ -233,6 +376,10 @@ surface:
 gate:
   --findings <file>      JSON from the review dimensions. Use "-" for stdin.
   --dismissed <t1,t2>    Finding titles the skeptics verified away
+  --metrics <change>     Also append the counts to .claude/metrics/ under this
+                         change name, as "review" does. A metrics failure prints
+                         its reason and is never fatal — the verdict and the exit
+                         code are unaffected.
   --min-quality <n>      Quality-band floor (default ${TOLERANCE_BAND.minQualityToReport})
   --no-tolerance         Report every surviving finding, however weak
   Findings the skeptics scored below the quality band are dropped before
@@ -242,7 +389,9 @@ gate:
 
 limits:
   Prints the caps the loop obeys and the workflow-runtime ceilings above them.
-  Cite these rather than restating a number in prose.
+  Cite these rather than restating a number in prose. With --json the per-tier
+  lane-cap table and the solo envelope are their own top-level groups (laneCaps,
+  solo), never entries of the iteration-count limits.
 
 doctor:
   The preflight. Every condition here would otherwise be discovered mid-run, by
@@ -486,8 +635,10 @@ plan:
                          proposal.md, design.md, tasks.md (with checkbox markers
                          normalized, so ticking a task does not invalidate the
                          plan), every delta spec, the change name, --max-parallel,
-                         the lane cap, and the plan format version. --write
-                         stores it at ${FINGERPRINT_PATH}.
+                         the per-tier lane-cap table, the cohesion tier ceiling,
+                         the solo envelope, the --mode override (recorded as auto
+                         when absent), and the plan format version. --write stores
+                         it at ${FINGERPRINT_PATH}.
   reuse [change]         Compare a stored fingerprint against a fresh one and, on
                          a match, narrow the stored plan to incomplete tasks and
                          write it to --out (default ${NARROWED_PLAN_PATH}).
@@ -503,6 +654,9 @@ plan:
   --max-parallel <n>     The cap the plan was (or will be) built with; it is part
                          of the fingerprint, so asking for a different width
                          re-plans rather than reusing a differently-shaped plan.
+  --mode solo|waves      The mode override the plan was (or will be) built under;
+                         part of the fingerprint, so a stored plan built with a
+                         different override (or none) is rebuilt rather than reused.
   Never exits non-zero: every failure to establish a match — including an error
   raised while checking — is a reason to re-plan, which is what happens today.
   Branch on "reuse", and report "reason" either way.
@@ -574,7 +728,24 @@ const BOOLEAN_FLAGS = new Set([
   'no-profile',
   'pre-existing',
   'halted',
-  'write'
+  'write',
+  // `run start`'s invocation flags. Each is a shape decision the driver already
+  // parsed; the run manifest is where they stop being host-specific.
+  'apply-only',
+  'no-commit',
+  'skip-e2e',
+  'skip-coverage',
+  'isolate-waves',
+  'continue',
+  // `run close --notify`: both drivers pass it unconditionally, and the CLI —
+  // not the driver — decides whether a topic is configured (design D1).
+  'notify'
+  // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
+  // NOT here. `interlock ready --review <findings.json>` takes a value under
+  // the same spelling, and making the name boolean everywhere would silently
+  // turn that file path into a positional. On `run start` they take no value,
+  // and the parser already yields `true` for a flag followed by another flag or
+  // by nothing — which is the only way `run start` is ever invoked.
 ])
 
 function parseArgs(argv) {
@@ -597,6 +768,14 @@ function parseArgs(argv) {
       const vals = []
       while (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) vals.push(argv[++i])
       out.flags.changed = vals
+      continue
+    }
+    if (key === 'mode') {
+      // Accumulated rather than last-wins: `--mode solo --mode waves` must reach
+      // `decideMode` as an array so it is rejected as contradictory, not silently
+      // resolved to the last flag. A single `--mode solo` stays a scalar string.
+      const val = next === undefined || next.startsWith('--') ? true : argv[++i]
+      out.flags.mode = out.flags.mode === undefined ? val : [].concat(out.flags.mode, val)
       continue
     }
     if (next === undefined || next.startsWith('--')) {
@@ -650,6 +829,24 @@ function die(message) {
 
 function warn(message) {
   process.stderr.write(`interlock: ${message}\n`)
+}
+
+/**
+ * A run step in human form. The JSON is what a driver obeys; this is for the
+ * person running `interlock run` by hand to see what the program decided.
+ */
+function formatRunStep(step) {
+  const lines = [`${step.action}${step.wave === undefined ? '' : ` — wave ${step.wave}`}`]
+  if (step.reason) lines.push(`  reason: ${step.reason}`)
+  for (const s of step.spawns || []) {
+    lines.push(
+      `  spawn ${s.label} (${s.kind}${s.model ? `, ${s.model}` : ''}${s.effort ? `, ${s.effort}` : ''})` +
+        ` → ${s.promptPath}`
+    )
+  }
+  for (const banner of step.banners || []) lines.push(`  ${banner}`)
+  lines.push(step.then ? `  then: interlock ${step.then.argv.join(' ')}` : '  then: (terminal)')
+  return lines.join('\n') + '\n'
 }
 
 function emit(json, obj, text) {
@@ -1196,6 +1393,20 @@ function num(flags, key) {
   return n
 }
 
+// The plan mode override, resolved for the planner. Absent → undefined (the
+// classifier's recommendation decides inside the envelope). A single value is
+// passed through as a string so `decideMode` can accept or reject it; two
+// contradictory flags are passed through as the array they arrived as, because
+// resolving them here would hide the contradiction the planner is meant to name.
+function modeFlag(flags) {
+  const m = flags.mode
+  if (m === undefined) return undefined
+  const values = Array.isArray(m) ? m : [m]
+  if (values.some(v => v === true)) die('--mode requires a value (solo|waves)')
+  const distinct = [...new Set(values)]
+  return distinct.length === 1 ? distinct[0] : distinct
+}
+
 function requestedName(positional, flags) {
   if (typeof flags.change === 'string' && flags.change.trim()) return flags.change.trim()
   return positional[1]
@@ -1237,7 +1448,7 @@ function splitPaths(value) {
   return raw.map(p => p.trim()).filter(Boolean)
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2)
   if (!argv.length || argv[0] === '-h' || argv[0] === '--help') {
     process.stdout.write(USAGE)
@@ -1253,7 +1464,7 @@ function main() {
     case 'waves': {
       const input = readInput(flags.classified, '--classified')
       const maxParallel = flags['max-parallel'] ? Number(flags['max-parallel']) : undefined
-      const plan = planWaves(input, { maxParallel })
+      const plan = planWaves(input, { maxParallel, mode: modeFlag(flags) })
       emit(json, plan, formatPlan(plan))
       break
     }
@@ -1284,7 +1495,39 @@ function main() {
       // only tune or disable it.
       const band = parseBand(flags)
       const result = evaluateGate(input, { dismissed, band })
-      emit(json, result, formatGate(result))
+
+      // Metrics are bookkeeping, exactly as in `review`: they report their own
+      // failure and never touch the verdict or the exit code, so a read-only
+      // checkout cannot fail a gate.
+      //
+      // `evaluateGate().counts` is a severity histogram (blocker/warning/
+      // suggestion), NOT the four-way partition `writeReviewMetrics` records,
+      // so it cannot be handed over the way `resolveReview().counts` can. The
+      // four figures are derived here from the ones that produced the verdict —
+      // arithmetic over the returned counts, never a second reading of the
+      // input, which is what `review/metrics-emission` requires. A finding the
+      // gate refused to interpret still reached the verdict (it blocks), so
+      // `malformed` counts as surviving rather than vanishing from both sides.
+      let metrics = null
+      if (flags.metrics !== undefined) {
+        if (flags.metrics === true) die('--metrics requires a change name')
+        const surviving = result.total + result.malformed.length
+        metrics = writeReviewMetrics(root, {
+          change: String(flags.metrics),
+          counts: {
+            raised: result.dismissedCount + result.droppedByQuality + surviving,
+            dismissed: result.dismissedCount,
+            droppedByQuality: result.droppedByQuality,
+            surviving
+          }
+        })
+        if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
+      }
+
+      const text =
+        formatGate(result) +
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
+      emit(json, { ...result, ...(metrics ? { metrics } : {}) }, text)
       if (!result.passed) process.exit(1)
       break
     }
@@ -1326,6 +1569,46 @@ function main() {
         change: typeof flags.change === 'string' ? flags.change : undefined,
         maxRuns: num(flags, 'max-runs')
       })
+
+      if (flags.html !== undefined) {
+        // Refused rather than resolved by precedence. `emit` threads a single
+        // `json` flag, so a rule about which surface wins would be invisible at
+        // the call site and unlike every other subcommand here.
+        if (json) die('--html and --json are mutually exclusive: choose one surface')
+
+        const document = renderReportHtml(report)
+
+        // Bare --html goes to stdout, so the document composes with a shell
+        // redirect and no invocation writes to disk unasked. A named path is
+        // the only thing that makes this command a writer.
+        if (flags.html === true) {
+          process.stdout.write(document)
+          break
+        }
+
+        const dest = String(flags.html)
+        if (!dest.trim()) die('--html <path> requires a file path')
+        // Written beside the destination and renamed into place, so a failure
+        // partway through leaves nothing at the path the caller named — an
+        // aborted render must not look like a report that says less than it
+        // should. `rename` within a directory is atomic.
+        const staging = `${dest}.interlock-partial`
+        try {
+          writeFileSync(staging, document)
+          renameSync(staging, dest)
+        } catch (err) {
+          try {
+            rmSync(staging, { force: true })
+          } catch {
+            // The cleanup of a file that may never have existed cannot itself
+            // be the reported failure.
+          }
+          die(`could not write ${dest}: ${err && err.message}`)
+        }
+        process.stdout.write(`report written to ${dest}\n`)
+        break
+      }
+
       emit(json, report, formatReport(report))
       break
     }
@@ -1341,7 +1624,69 @@ function main() {
     }
 
     case 'limits': {
-      emit(json, { limits: LIMITS, runtime: RUNTIME, evals: EVAL_CAPS, report: REPORT_CAPS, effort: EFFORT }, formatLimits())
+      // `laneCaps` and `solo` are their OWN top-level groups, not entries of
+      // `limits`: LIMITS holds positive-integer loop counts (its invariant test
+      // asserts it), whereas the lane-cap table is a tier→cap map and the solo
+      // envelope is a separate object — the same reason `effort` is emitted apart.
+      emit(
+        json,
+        {
+          limits: LIMITS,
+          runtime: RUNTIME,
+          evals: EVAL_CAPS,
+          // Its own group, beside `evals` rather than inside it: the eval caps
+          // are scalars a reader compares a running total against, and this is
+          // the table that produced the total. Its `id` is what a recorded
+          // result row is keyed against.
+          prices: MODEL_PRICES,
+          report: REPORT_CAPS,
+          effort: EFFORT,
+          laneCaps: LANE_CAPS,
+          solo: SOLO
+        },
+        formatLimits()
+      )
+      break
+    }
+
+    case 'notify': {
+      // The CLI's ONE outbound request, and the only place a topic is ever
+      // read (design D1, D2). Unconfigured is not a failure: a skill or a
+      // driver calls this unconditionally, and an operator who never set a
+      // topic gets a line saying so and exit 0, never a halted loop.
+      const config = readNotifyConfig(process.env)
+      // Order matters: a malformed topic yields `{invalid}` with no `topic`
+      // key at all, and reporting that as "not configured" would tell an
+      // operator who DID configure it that they had not.
+      if (!config.invalid && !config.topic) {
+        const notConfigured = { sent: false, reason: `not configured — set ${NOTIFY_TOPIC_ENV}` }
+        emit(json, notConfigured, `push: not configured — set ${NOTIFY_TOPIC_ENV}\n`)
+        break
+      }
+
+      let message
+      if (positional[1] === 'checkpoint') {
+        const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
+        if (!change) die('interlock notify checkpoint <change> — the change name is required')
+        message = composeCheckpointMessage(change)
+      } else {
+        const title = typeof flags.title === 'string' ? flags.title.trim() : ''
+        if (!title) die('--title <text> is required (or use: interlock notify checkpoint <change>)')
+        const priority = flags.priority === 'high' ? 'high' : 'default'
+        message = { title, body: typeof flags.body === 'string' ? flags.body : '', priority }
+      }
+
+      if (config.invalid) {
+        const bad = { sent: false, reason: `invalid configuration: ${config.invalid}` }
+        emit(json, bad, `push: failed — ${bad.reason}\n`)
+        process.exit(1)
+      }
+
+      const result = await postNtfy({ url: config.url, topic: config.topic, ...message })
+      emit(json, result, result.sent ? 'push: sent (ntfy)\n' : `push: failed — ${result.reason}\n`)
+      // A push nobody asked about is advisory; a push someone invoked directly
+      // is a command, and a command that did not do its job exits non-zero.
+      if (!result.sent) process.exit(1)
       break
     }
 
@@ -1377,8 +1722,86 @@ function main() {
         const verdict = triage(results)
         emit(json, verdict, formatTriage(verdict))
         if (verdict.exitCode) process.exit(verdict.exitCode)
+      } else if (sub === 'capture') {
+        const runId = typeof flags.run === 'string' ? flags.run : ''
+        if (!runId) die('evals capture requires --run <runId>')
+        const outDir = typeof flags.out === 'string' ? flags.out : ''
+        if (!outDir) die('evals capture requires --out <dir>')
+        const result = captureCase(root, {
+          runId,
+          taskId: typeof flags.task === 'string' ? flags.task : undefined,
+          outDir
+        })
+        emit(json, result, formatCapture(result))
+        // A refusal is the contract, so it is an exit code rather than a
+        // sentence: a run nobody can replay, an output directory inside the
+        // suite, or one that already holds a case. Nothing was written on any
+        // of the three.
+        if (!result.ok) process.exit(1)
+      } else if (sub === 'calibrate') {
+        // Half the input is repository state (the committed human labels) and
+        // half is runtime state (the judge's recorded votes), which is why this
+        // is a command and the calibration PRESENCE check is a test.
+        //
+        // It issues no verdict and always exits 0, whatever the agreement says.
+        // The floor is EVAL_CAPS.judgeAgreementFloor and only `evals promote`
+        // applies it.
+        const results = readInput(flags.results, '--results')
+        const labelsDir = typeof flags.labels === 'string' ? flags.labels : join(root, 'evals')
+        const { labels, problems } = readLabels(labelsDir)
+        const report = calibrate({ labels, results })
+        emit(json, { ...report, problems }, formatCalibration(report, problems))
+      } else if (sub === 'promote') {
+        const dir = typeof flags.history === 'string' ? flags.history : ''
+        if (!dir) die('evals promote requires --history <dir>')
+        // Every entry is carried into the decision, readable or not. An
+        // unreadable file is passed through as `{ file, error }` so the module
+        // can name it and state that it was excluded — dropping it here would
+        // silently narrow the window, which is the one thing the promotion spec
+        // forbids about this path.
+        const entries = []
+        if (existsSync(dir)) {
+          for (const name of readdirSync(dir).filter(f => f.endsWith('.json')).sort()) {
+            const file = join(dir, name)
+            try {
+              entries.push({ file: name, record: JSON.parse(readFileSync(file, 'utf8')) })
+            } catch (err) {
+              entries.push({ file: name, error: `unparseable (${err && err.message})` })
+            }
+          }
+        }
+        // Agreement is optional input: without it, a judged case is refused for
+        // being unmeasured rather than promoted on run history alone.
+        const agreement =
+          typeof flags.agreement === 'string' ? readInput(flags.agreement, '--agreement') : {}
+        const verdict = promote({ history: entries, agreement })
+        emit(json, verdict, formatPromotion(verdict))
+        if (verdict.exitCode) process.exit(verdict.exitCode)
       } else {
-        die(`unknown evals subcommand: ${sub || '(none)'} — expected triage`)
+        die(`unknown evals subcommand: ${sub || '(none)'} — expected triage|capture|calibrate|promote`)
+      }
+      break
+    }
+
+    case 'paths': {
+      // The two deterministic reads behind the receipt's path sets. Neither
+      // ever exits non-zero: a host calls these on its way out, and a failed
+      // read must leave the receipt unobserved rather than fail the close. The
+      // reason is printed and carried in the payload.
+      const sub = positional[1]
+      if (sub === 'touched') {
+        const commit = typeof flags.commit === 'string' ? flags.commit : positional[2]
+        const result = readTouchedPaths(root, commit)
+        emit(json, result, formatPathSet('paths touched', result))
+        if (!result.observed && !json) process.stderr.write(`interlock: ${result.reason}\n`)
+      } else if (sub === 'predicted') {
+        const result = readPredictedPaths(root, {
+          planPath: typeof flags.plan === 'string' ? flags.plan : undefined
+        })
+        emit(json, result, formatPathSet('paths predicted', result))
+        if (!result.observed && !json) process.stderr.write(`interlock: ${result.reason}\n`)
+      } else {
+        die(`unknown paths subcommand: ${sub || '(none)'} — expected touched|predicted`)
       }
       break
     }
@@ -1775,10 +2198,11 @@ function main() {
       const requested =
         typeof flags.change === 'string' && flags.change.trim() ? flags.change.trim() : positional[2]
       const maxParallel = num(flags, 'max-parallel')
+      const mode = modeFlag(flags)
 
       if (sub === 'fingerprint') {
         const name = requireChange(root, requested, json)
-        const fp = computeFingerprint(root, name, { maxParallel })
+        const fp = computeFingerprint(root, name, { maxParallel, mode })
         let written = null
         if (flags.write === true) {
           const dest = typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
@@ -1798,6 +2222,7 @@ function main() {
         const name = requireChange(root, requested, json)
         const result = resolvePlanReuse(root, name, {
           maxParallel,
+          mode,
           planPath: typeof flags.plan === 'string' ? flags.plan : undefined,
           fingerprintPath: typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
         })
@@ -1855,6 +2280,175 @@ function main() {
       } else {
         die(`unknown plan subcommand: ${sub || '(none)'} — expected fingerprint|reuse`)
       }
+      break
+    }
+
+    // The run program (`lib/run.mjs`). Every step of the lean ship loop is
+    // emitted here: what to spawn, with which briefing, and which argv to call
+    // next. A host obeys the record and decides nothing (design D3).
+    //
+    // `wave-state` below is untouched by this and stays the pure thing `run`
+    // obeys. The three helpers `lib/run.mjs` cannot import — the git readers and
+    // the trajectory loggers that live in this file — are handed in as `deps`
+    // rather than written a second time there.
+    case 'run': {
+      const sub = positional[1]
+      const ctx = {
+        root,
+        warn,
+        deps: {
+          headCommit: repoRoot => {
+            try {
+              return execFileSync('git', ['rev-parse', 'HEAD'], {
+                cwd: repoRoot,
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore']
+              }).trim() || null
+            } catch {
+              // An unreadable base is null, never a guess: `decorate` halts on
+              // it rather than folding a batch against a commit nobody read.
+              return null
+            }
+          },
+          logWaveMutation,
+          logAgentSpawns,
+          observedChangedPaths,
+          runMergeLanes
+        }
+      }
+
+      // The sequence guard. The manifest records the argv the last step named as
+      // its continuation; a driver that skipped a step, repeated one, or invented
+      // a subcommand would otherwise advance the state machine twice or record a
+      // batch against the wrong wave — both silent.
+      //
+      // `close` is exempt, in both directions. A driver that hit an error of its
+      // own — a spawn that never returned, a transport that dropped — closes
+      // from wherever it is, and refusing that would leave the run with no
+      // receipt, no outcome record and no terminal event. A run nobody can
+      // reconstruct is the failure this trajectory exists to prevent; a
+      // mis-sequenced close is not.
+      if (sub !== 'start' && sub !== 'close') {
+        const manifest = readManifest(root)
+        if (manifest) {
+          // The RAW argv, not the parsed positionals: a step's continuation
+          // names its flags (`--classified <path>`, `--context inter-wave`) and
+          // those are part of what the program asked for.
+          const problem = checkSequence(manifest, argv)
+          if (problem) die(problem)
+        }
+      }
+
+      const results = flags.results ? readInput(flags.results, '--results <file|->') : []
+      const resultList = Array.isArray(results) ? results : [results]
+
+      let step
+      if (sub === 'start') {
+        // A name that resolves to nothing is a HALT STEP, not a `die`. Every
+        // other `run` subcommand answers with a step, and a host that got an
+        // error object where it expected one would report "the relay could not
+        // be read" — which is true of the transport and false of the run.
+        const requested = requestedName(positional.slice(1), flags)
+        const resolved = resolveChange(root, requested)
+        if (resolved.error) {
+          const step = haltStep(
+            `validate failed: ${resolved.error}${
+              Array.isArray(resolved.candidates) && resolved.candidates.length
+                ? ` (candidates: ${resolved.candidates.join(', ')})`
+                : ''
+            }`
+          )
+          emit(json, step, formatRunStep(step))
+          break
+        }
+        const name = resolved.name
+        const laneMode = modeFlag(flags)
+        // What the host declared it cannot do (design D1). A driver that passed
+        // only an id — `workflows/ship.js` does — is the Workflow host, and
+        // `newManifest` assumes exactly that shape for it.
+        let hostCapabilities
+        if (typeof flags['host-capabilities'] === 'string') {
+          try {
+            hostCapabilities = JSON.parse(flags['host-capabilities'])
+          } catch (err) {
+            die(`--host-capabilities must be a JSON object of the host's declared capabilities: ${err.message}`)
+          }
+        }
+        step = runStart(ctx, {
+          change: name,
+          host: typeof flags.host === 'string' ? flags.host : undefined,
+          hostCapabilities,
+          flags: {
+            applyOnly: flags['apply-only'] === true,
+            noCommit: flags['no-commit'] === true,
+            skipE2e: flags['skip-e2e'] === true,
+            skipCoverage: flags['skip-coverage'] === true,
+            isolateWaves: flags['isolate-waves'] === true,
+            laneMode: laneMode || null,
+            maxParallel: num(flags, 'max-parallel') ?? null,
+            mode: flags.continue === true ? 'continue' : 'checkpoint',
+            review: flags.review !== undefined || flags.strict !== undefined,
+            handoff: flags.handoff !== undefined || flags.strict !== undefined,
+            conformance: flags.conformance !== undefined || flags.strict !== undefined,
+            strict: flags.strict !== undefined
+          }
+        })
+      } else if (sub === 'classified') {
+        const classified =
+          typeof flags.classified === 'string' && flags.classified.trim()
+            ? flags.classified.trim()
+            : CLASSIFIED_PATH
+        step = runClassified(ctx, { classifiedPath: classified })
+      } else if (sub === 'record-batch') {
+        step = runRecordBatch(ctx, { results: resultList })
+      } else if (sub === 'judge') {
+        const context = flags.context === undefined ? 'final' : String(flags.context)
+        if (context !== 'inter-wave' && context !== 'final') {
+          die(`--context must be inter-wave|final (got "${context}")`)
+        }
+        step = runJudge(ctx, { context, results: resultList })
+      } else if (sub === 'verify-final') {
+        step = runVerifyFinal(ctx)
+      } else if (sub === 'reviewed') {
+        step = runReviewed(ctx, { results: resultList })
+      } else if (sub === 'remediated') {
+        const roundNum = num(flags, 'round')
+        if (!Number.isInteger(roundNum)) die('run remediated requires --round <n>')
+        step = runRemediated(ctx, { round: roundNum, results: resultList })
+      } else if (sub === 'commit') {
+        step = runCommit(ctx, { results: resultList })
+      } else if (sub === 'replan') {
+        step = runReplan(ctx, { results: resultList })
+      } else if (sub === 'next') {
+        step = runNext(ctx)
+      } else if (sub === 'close') {
+        const hostBanners = flags['host-banners']
+          ? readInput(flags['host-banners'], '--host-banners <file|->')
+          : []
+        const hostObserved = flags['host-observed']
+          ? readInput(flags['host-observed'], '--host-observed <file|->')
+          : null
+        step = await runClose(ctx, {
+          results: resultList,
+          halt: typeof flags.halt === 'string' ? flags.halt : null,
+          hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
+          hostObserved,
+          notify: flags.notify === true
+        })
+        emit(json, step, step.summary + '\n')
+        if (step.exitCode !== 0) process.exit(step.exitCode)
+        break
+      } else {
+        die(
+          `unknown run subcommand: ${sub || '(none)'} — expected ` +
+            'start|classified|record-batch|judge|verify-final|reviewed|remediated|commit|replan|next|close'
+        )
+      }
+
+      emit(json, step, formatRunStep(step))
+      // A halt step still exits 0: its `then` is the close, and a driver that
+      // stopped here would leave the run with no receipt and no terminal event.
+      // `run close` is the call that carries the non-zero exit.
       break
     }
 
@@ -1974,10 +2568,12 @@ function verifyJudgeOpts(flags) {
   return opts
 }
 
-try {
-  main()
-} catch (err) {
+// `main()` is async only because `run close` awaits one bounded `fetch`
+// (design D14). Every other case stays synchronous and returns before the
+// first await, so a rejection here reaches exactly the handler a throw used
+// to — same body, same `die()`, same exit code.
+main().catch(err => {
   if (err && err.userFacing) die(err.message)
   process.stderr.write(`interlock: ${err && err.message ? err.message : err}\n`)
   process.exit(1)
-}
+})

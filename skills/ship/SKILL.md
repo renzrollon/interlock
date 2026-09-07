@@ -3,7 +3,7 @@ name: ship
 description: Launch the Interlock ship workflow — take a reviewed OpenSpec change from tasks to commit in one uninterrupted run (waves, verify, commit). Default is lean; pass --strict for review, handoff and conformance. Use when the user ran /interlock:ship, asked to ship a reviewed change, or spec --continue passed the readiness gate. Never invoke after spec unless they asked.
 license: MIT
 compatibility: Requires Claude Code v2.1.154+ with dynamic workflows enabled. Node.js >= 18 for the bundled interlock CLI.
-argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage] [--review] [--handoff] [--conformance] [--strict]"
+argument-hint: "[<change-name>] [--apply-only] [--no-commit] [--skip-e2e] [--skip-coverage] [--solo] [--waves] [--review] [--handoff] [--conformance] [--strict]"
 disallowed-tools: AskUserQuestion
 allowed-tools: Read
 metadata:
@@ -27,7 +27,11 @@ From `$ARGUMENTS` (or the Skill `args` payload) build an **object**. Prefer `{ c
 | `--apply-only` `--no-commit` `--skip-e2e` `--skip-coverage` | `flags: ["apply-only", ...]` |
 | `--review` `--handoff` `--conformance` | `flags: ["review", ...]` — enable that tail piece |
 | `--strict` | `flags: ["strict"]` — review + handoff + conformance + autonomy record (previous default) |
+| `--solo` | `flags: ["solo"]` — force one agent to implement the whole change in order |
+| `--waves` | `flags: ["waves"]` — force the parallel plan, refusing a solo recommendation |
 | `--max-parallel N` | `maxParallel: N` |
+
+Pass a shape flag only when the user asked for one. Absent both, the classifier recommends a shape and the planner honours it inside a published envelope; the plan preview names the mode and why before a single implementer is spawned, so there is nothing to decide here. `--solo` and `--waves` together is a halt, not a preference to resolve.
 
 Do not invent `--strict` because the change looks large. Continuity (`spec --continue`) also launches default lean unless the user passed a tail flag.
 
@@ -56,4 +60,4 @@ If a `/goal` is active, it is satisfied when the transcript contains `GOAL MET: 
 
 Tell the user that, and that everything else in Interlock still works — `spec`, the reviews, `commit`. Do not offer to "just start on the first task".
 
-There is a second, experimental host — `bin/interlock-ship-acp`, which runs the lean loop over the Agent Client Protocol — but it is a **separate binary this skill never invokes**, and it is not a fallback for a missing Workflow tool. A user runs it themselves from a terminal; `/interlock:ship` is Claude Code only, and `--strict` stays Claude Code only.
+There is a second, experimental host — `bin/interlock-run`, which runs the same loop over a vendor coding CLI the user names (`--host claude | acp | codex | qwen`), `--strict` included: every step, the review and remediation rounds and the handoff among them, is emitted by `interlock run` and interpreted there as it is here. It is still a **separate binary this skill never invokes**, and it is still not a fallback for a missing Workflow tool. A user runs it themselves from a terminal; `/interlock:ship` is Claude Code only, and the runner refuses `--host workflow` from the other side.

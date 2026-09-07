@@ -1,4 +1,4 @@
-# wave-isolation Specification
+# ship/wave-isolation Specification
 
 ## Purpose
 

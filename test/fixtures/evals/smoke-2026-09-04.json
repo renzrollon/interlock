@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.260",
+  "startedAt": "2026-09-04T17:49:44.046Z",
+  "durationSeconds": 103,
+  "costUsd": 0.7222594999999999,
+  "partial": false,
+  "suite": {
+    "root": "/Users/caro/IdeaProjects/specflow",
+    "ablation": "none",
+    "tagFilters": [
+      "smoke"
+    ],
+    "threshold": 1,
+    "plugins": [
+      {
+        "name": "interlock",
+        "version": "0.2.0",
+        "path": "/Users/caro/IdeaProjects/specflow"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "cited-cap-resolution",
+      "dir": "evals/cited-cap-resolution",
+      "source": "mixed",
+      "runsPerCase": 1,
+      "timeoutSeconds": 300,
+      "maxTurns": 6,
+      "graders": [
+        {
+          "name": "limits-invoked",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Bash",
+            "input_match": "interlock limits",
+            "min": 1
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 8,
+            "costUsd": 0.27006975,
+            "judgeCostUsd": 0,
+            "durationSeconds": 34,
+            "startedAt": "2026-09-04T17:49:44.066Z",
+            "error": null,
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "limits-invoked",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Bash called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "control-plane-action",
+      "dir": "evals/control-plane-action",
+      "source": "mixed",
+      "runsPerCase": 1,
+      "timeoutSeconds": 180,
+      "maxTurns": 3,
+      "graders": [
+        {
+          "name": "action-copied",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "\"action\"\\s*:\\s*\"verify\"",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "no-invented-action",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "\"action\"\\s*:\\s*\"report\"",
+            "flags": "",
+            "match": "not_contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 1,
+            "costUsd": 0.0477045,
+            "judgeCostUsd": 0,
+            "durationSeconds": 4,
+            "startedAt": "2026-09-04T17:50:18.504Z",
+            "error": null,
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "action-copied",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"action\"\\s*:\\s*\"verify\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "no-invented-action",
+                "passed": true,
+                "weight": 1,
+                "explanation": "pattern absent as expected",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "handoff-status-enum",
+      "dir": "evals/handoff-status-enum",
+      "source": "mixed",
+      "runsPerCase": 1,
+      "timeoutSeconds": 600,
+      "maxTurns": 8,
+      "graders": [
+        {
+          "name": "status-enum",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "\"status\"\\s*:\\s*\"(ok|blocked|partial)\"",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 15,
+            "costUsd": 0.20542249999999998,
+            "judgeCostUsd": 0,
+            "durationSeconds": 36,
+            "startedAt": "2026-09-04T17:50:22.177Z",
+            "error": null,
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "status-enum",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"status\"\\s*:\\s*\"(ok|blocked|partial)\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "tier-read-scope",
+      "dir": "evals/tier-read-scope",
+      "source": "mixed",
+      "runsPerCase": 1,
+      "timeoutSeconds": 600,
+      "maxTurns": 8,
+      "graders": [
+        {
+          "name": "no-design-read",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "design\\.md",
+            "max": 0
+          }
+        },
+        {
+          "name": "no-spec-read",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "/specs/",
+            "max": 0
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0,
+            "passed": false,
+            "turns": 12,
+            "costUsd": 0.19906274999999998,
+            "judgeCostUsd": 0,
+            "durationSeconds": 30,
+            "startedAt": "2026-09-04T17:50:57.741Z",
+            "error": null,
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "no-design-read",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "no-spec-read",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..0)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 4,
+    "casesPassed": 3,
+    "overallScore": 0.75,
+    "overallPassRate": 0.75
+  }
+}

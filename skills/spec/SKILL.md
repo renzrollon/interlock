@@ -139,6 +139,8 @@ Filter each ready artifact independently; do not dump the full instructions resp
 
 These rules apply even when `openspec instructions tasks` injects no `rules.tasks`. Path collisions inside a section are the planner's problem (`paths`), and a cross-file dependency is an edge (`dependsOn`) — neither is a reason to increment the section number.
 
+**Never split a section to buy parallelism.** The planner packs low-tier siblings in one section into a single lane run by one agent, and a small change may ship solo — the whole change implemented in order by one agent — so a section written wide does not become a spawn per checkbox. Write the sections the work actually has; how many agents run them is the planner's decision, made under caps `interlock limits` publishes.
+
 ### 3a. The decision ledger
 
 Write `openspec/changes/<name>/decisions.md`. The format, the two classes, and what makes a row invalid are the contract in `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md` — read it and follow it; do not restate it here or invent a third class.
@@ -207,7 +209,15 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-Without `--continue`, the run ended here. Print this greppable line so a session `/goal` can stop instead of wandering into implementation:
+Without `--continue`, the run ended here. The checkpoint waits for a human, so tell them it is waiting:
+
+```bash
+interlock notify checkpoint "<change-name>"
+```
+
+That is a no-op that prints `push: not configured` and exits 0 when no topic is set, so run it unconditionally and never branch on the result.
+
+Then print this greppable line so a session `/goal` can stop instead of wandering into implementation:
 
 `GOAL MET: interlock spec stopped at the checkpoint.`
 

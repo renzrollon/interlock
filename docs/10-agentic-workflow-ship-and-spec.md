@@ -87,7 +87,7 @@ Anthropic's name for the shift is **context engineering**: curating the token se
 - **Subagents** — one task, one clean context. Ship never implements inline.
 - **Gates** — fail-closed checks. Artifact review before code; `interlock validate` before ship; unit suite before commit; `interlock ready` before skipping the human.
 - **Memory** — `.claude/memory/` (recurring failure modes, coupling). Written on `--handoff` / `--strict`, and the prompt asks for at most three entries. That bound is prose in the prompt, not an enforced cap: `LIMITS.memoryEntriesPerRun` used to be printed by `interlock limits` with nothing reading it, and was removed rather than backed by an enforcement point invented to justify it. Not Hermes-style self-improving skills; a human still owns the skill files.
-- **Evals** — 590+ unit tests of the *policy engine*, not of whether ship produces better product than a simpler loop. Do not confuse those.
+- **Evals** — `evals/`, the model-in-the-loop suite: cases that run Interlock's model-facing surface against a real model. Different thing from the unit suite, which tests the *policy engine* and not whether ship produces better product than a simpler loop. Do not confuse those two (§8).
 
 OpenAI's Codex loop is the same stack with different nouns: harness + `AGENTS.md` + skills + compaction ([Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/)). Cursor's is rules / `AGENTS.md` plus an agent that stays in your chat. Interlock's distinguishing bet: **decisions with a correct answer leave the model**.
 
@@ -149,21 +149,32 @@ End-to-end, default (lean): **validate → classify/plan waves → implement in 
 
 `--strict` (or `--review` / `--handoff` / `--conformance` individually) adds the tail: adversarial diff review, bounded remediation, manual test plan / teach-in / memory, spec-conformance questions.
 
-Source of truth: `workflows/ship.js`. The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental ACP driver (`bin/interlock-ship-acp`).
+`--solo` / `--waves` choose the plan's *shape* instead of its tail. Absent both, the classifier emits a `recommendedMode` beside its per-task classification and the planner honours a solo recommendation only inside the envelope `interlock limits` publishes, refusing it with a named warning above that; `--solo` forces solo even above the envelope, `--waves` refuses it outright, and passing both halts at parse rather than picking one. The mode reaches `interlock waves`, `plan fingerprint` and `plan reuse` as `--mode`, so a stored plan built under a different override is re-planned rather than adopted.
+
+Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli` the loop itself lives in `lib/run.mjs`, and the script is an interpreter of the steps `interlock run` emits — see §5 and [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine). The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental runner (`bin/interlock-run`), which interprets the same steps over a vendor coding CLI — `--host claude | acp | codex | qwen` — instead.
 
 ### Step by step (lean)
 
 1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. Also probes `CLAUDE_CODE_SUBAGENT_MODEL` and Bedrock/haiku reachability (banners, not quality gates).
-2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. Coverage check: `interlock tasks coverage` — omitted checkboxes halt. Then `interlock waves` → `.claude/ship/plan.json`, `interlock wave-state create` → `.claude/ship/state.json`, first `wave-state next`.
-3. **Wave loop** until action is `done` or `halt`. The script does not decide next; it copies `interlock wave-state next` stdout. Known actions: `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt`. An invented `action` is retried once (`next-retry-*`), then halt.
-4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per task, in **one working tree**. Each agent gets `assembleImplementerPrompt`: tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets (schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000). Invalid/missing packet on a returned result fails the task closed.
-5. **Record.** Haiku ping writes `.claude/ship/batch-N.json`, `wave-state record-batch --write-state`, `interlock tasks tick` for succeeded ids. If the next action is `verify`, the same ping fuses inter-wave verify (saves a turn).
+2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. The classifying agent never runs the CLI itself: `interlock run classified --classified <file>` does coverage (`interlock tasks coverage` — omitted checkboxes halt) → `interlock waves` → `.claude/ship/plan.json` → `interlock wave-state create` → `.claude/ship/state.json` → the first step, as one call (design D7).
+3. **Wave loop** until the action is `done` or `halt`. Neither the script nor the CLI's caller decides next; the driver spawns what a step's `spawns` name and calls the exact `interlock` argv its `then.argv` names, repeating until `then` is `null`. Underneath, `run` obeys one of six wave-level actions from the pure `wave-state next` — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step. An invented `action` is retried once (`next-retry-*`), then halt.
+4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), or — in solo mode — the whole change. Lane length is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. Each agent's briefing (`assembleImplementerPrompt`, tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets — schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000) is written to `.claude/ship/briefings/<label>.md` with its own sha256 on line one; the ACP driver reads it straight off the step, the Workflow script hands the worker the path and requires the hash back rather than pasting the text through a ping. Invalid/missing handoff packet, or an unacknowledged/wrong briefing hash, fails the task closed.
+5. **Record.** `interlock run record-batch` folds three things into one call: the lane merge under `--isolate-waves` (`lib/merge-lanes.mjs`), `wave-state record-batch --write-state`, and `interlock tasks tick` for succeeded ids. Its stdout *is* the next step — one ping either way, whether or not that step is `verify`.
 6. **Inter-wave verify.** Typecheck + unit can halt the *next* wave. Docs-only waves skip. Cap: `interWaveVerifications` (3). Output over 8 KB is spilled (`interlock verify spill`); judge rejects oversized result fields.
-7. **`--apply-only` exits here.** Otherwise **final verify**: unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
-8. **Commit** one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
-9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`). Unreconstructable trajectory → halt even on an otherwise clean run.
+7. **`--apply-only` exits here.** Otherwise **final verify** (`run verify-final`): unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
+8. **Commit** (`run` emits a `commit` step) — one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
+9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`) — both via `run close`, which also builds the receipt and the summary text every driver prints verbatim. Unreconstructable trajectory → halt even on an otherwise clean run.
 
-`--strict` inserts after waves, before final verify: dimension reviewers → two skeptics → `interlock review` → `interlock remediate` rounds 1–2, round 3 verdict-only.
+### The `--strict` sequence
+
+Since `emit-strict-tail-from-cli` the tail is part of the same program: `interlock run` emits each of these steps and names the argv that continues it, so both drivers interpret them the way they interpret a batch, and no driver holds review text or a round budget.
+
+1. **`review`**, emitted where the waves' `done` would otherwise go to final verification. One worker fans out the selected dimensions and two skeptics per finding in its own context. The CLI chose the dimensions from the run's observed changed paths — `language`, `architecture`, `qa`, `technical-lead` always, `devops` when the diff touches deploy/CI/config/infrastructure, `security` when it touches auth, input handling or data exposure — and inlined each one's written criteria plus the repo's `REVIEW.md` prose into the briefing. A dimension whose criteria could not be read is named in the briefing and bannered `REVIEW RUBRIC UNAVAILABLE: <dimension>`. The agent may add a dimension with a one-line reason, and the addition is recorded. It writes `.claude/ship/findings.json` and `.claude/ship/verdicts.json` and reports counts nothing reads. Continues to `run reviewed`.
+2. **`run reviewed`** adjudicates those two files with `lib/review-core.mjs` — the same survival, evidence and band rules `interlock review` applies — using the run's *observed* changed paths, writes `review.json` and the review metrics, and asks `lib/remediate.mjs` for round one. Nothing survived to fix → straight to final verification, no round spent.
+3. **`remediate` rounds 1..`remediationRounds`**, each inlining its own plan (one fixer per `byFile` group, the unscoped group last) and the criteria for every dimension to be re-reviewed. Each continues to `run remediated --round <n>`, which re-adjudicates the rewritten files, records fixed/deferred, and asks for the next round. Every blocker cleared → jump to the verdict rather than spend the rest of the budget.
+4. **The verdict round** (`remediationRounds + 1`) fixes nothing and re-reviews nothing. Blockers still standing → a `halt` step naming the surviving count, and no commit step is ever emitted. Otherwise final verification.
+5. **`handoff`**, after final verification passes, when `--handoff` or `--conformance` is set. The CLI ran `surface` and `conformance` itself and inlined the answers: whether a manual test plan is needed (with the reason when it is not) and the scenario checklist to answer. Continues to `run commit`.
+6. **`run close`** writes the autonomy-ladder record for a strict run, from the CLI's own last adjudication. No agent is asked for that count.
 
 ### Stock apply is not ship
 
@@ -194,14 +205,23 @@ A change proposed by `/opsx:propose` can still be shipped by `/interlock:ship` i
 Claude Code session (your chat)
   └─ /interlock:spec          skill in *this* conversation — explore, write files, review
   └─ /interlock:ship          trampoline → Workflow runtime
-        workflows/ship.js     no model; holds loop + summary + banners
+        workflows/ship.js     no model; interprets the steps `interlock run` emits
           ├─ validate / plan-waves / record-* / verify pings   usually haiku
           ├─ implementer agents                                 haiku|sonnet|opus by tier
-          └─ review/remediate agents                            --strict only
-  interlock CLI               policy, no tokens
+          └─ review/remediate agents                            --strict only (host-tail seam)
+  interlock CLI
+    └─ lib/run.mjs            the loop itself: every briefing, every branch, no tokens
   interlock-graph             retrieval budgets, no model
   openspec CLI                templates and schema, no model
 ```
+
+The host-specific part shrank to two things: an interpreter (spawn what a step names, call what it names next) and a transport (the Workflow `agent()`/`pipeline()` globals here, a vendor CLI subprocess for `bin/interlock-run`). No driver holds the loop, the branching or a prompt's text — `lib/run.mjs` does, so they cannot drift the way two full copies of the loop used to.
+
+| Layer | Where it lives | What it decides |
+|---|---|---|
+| Policy | `bin/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path and merge base |
+| Interpreter | `workflows/ship.js`, `bin/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
+| Transport | the Workflow runtime; `lib/host/{claude-cli,acp,codex,qwen}.mjs` | How a prompt reaches a model, and what that host cannot do — declared, and bannered by the runner |
 
 Claude Code is the harness: tools, permissions, compaction, subagent spawn, workflow runtime ([How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)). Interlock is process on top of that harness ([08](./08-harness-landscape.md)).
 
@@ -237,7 +257,8 @@ Inference, not a measurement from this session:
 | Step | Typical spend | Notes |
 |---|---|---|
 | `plan-waves` | One frontier-ish call + full artifact read | Most expensive *single* context; leash is deliberate |
-| Each implementer | Task + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps |
+| Each implementer | Lane + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps, and a lane of N is one spawn prefix rather than N |
+| A solo run | One opus agent, full artifacts, whole change | Fewest spawns and no re-reads; the cost is serial wall-clock |
 | Record/next pings | Haiku, structured JSON | Cheap if `CLAUDE_CODE_SUBAGENT_MODEL` is unset |
 | Inter-wave verify | Capped; spill above 8 KB | Fused into record-batch when possible |
 | `--strict` review | 4–6 dimensions + 2 skeptics per finding + fixers | Easy to trip Claude Code's "Large workflow" warning (>25 agents / 1.5M tokens). Advisory, does not halt |
@@ -245,7 +266,7 @@ Inference, not a measurement from this session:
 
 Kill switches that silently inflate cost: `CLAUDE_CODE_SUBAGENT_MODEL` (every agent on that model — banner `MODEL ROUTING OVERRIDDEN`); permission prompts mid-run (allowlist `interlock`, `interlock-graph`, `openspec`, `git`, your test runner *before* a long ship); missing graph (grep fallback).
 
-`.gitignore` ignores graph/handoff/metrics/testing but **not** `.claude/ship/` or `.claude/memory/`. This checkout currently carries a large untracked ship-run corpus. That is runtime state, not source.
+`.gitignore` now covers every `.claude/` runtime path this page names, `.claude/ship/` and `.claude/memory/` included. That is the right posture *for this repository*, whose ship runs are development exhaust rather than a record of shipping a product — a repository that runs `/interlock:ship` against its own product wants the opposite. The rule, both `.gitignore` blocks, and the two caveats that matter when committing are in [11 — the indicators](./11-the-indicators.md#whether-to-keep-them).
 
 ---
 
@@ -303,6 +324,8 @@ Context rot is the reason. Cost is the side effect.
 ### Already in the harness — use them
 
 - **Classification batches** (`.claude/ship/classified.json` → `interlock waves`): predicted `paths` serialize collisions into later batches of the *same* wave instead of extra waves (extra waves cost verify cycles). Omit `paths` when you cannot predict; invented paths serialize for nothing.
+- **Cohesion lanes**: disjoint tier ≤ 3 siblings inside one dependency layer are packed into one lane, so sixteen tier-2 test tasks are one agent reading the design once rather than sixteen paying the spawn prefix and the same read each. Nothing to pass — it is how `interlock waves` plans. Write the sections the work has; splitting one to buy parallelism only serializes it.
+- **Solo mode** for a small change: `--solo`, or the classifier's own recommendation inside the envelope `interlock limits` publishes. One opus agent implements the whole change in order, briefed on design and specs in full, inside the same verify-and-commit loop. It trades wall-clock for spawns and re-reads; `--waves` refuses it.
 - **Fused record-batch + verify** so a wave boundary is not automatically two agent turns.
 - **Haiku pings** when Bedrock/haiku is reachable and `CLAUDE_CODE_SUBAGENT_MODEL` is unset.
 - **`session-retro`** (from [shippable-skills](https://github.com/renzrollon/shippable-skills)) while the transcript is still in context: flags waste in relative magnitude, writes wire-ins. Target `workflows/ship.js` for ship, not the trampoline skill.
@@ -343,7 +366,13 @@ Lean ship trusts the unit suite. No `.claude/testing/profile.json` means inferre
 
 ### Evals
 
-There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a large, dependency-free test suite of the CLI. Use it as a regression net for policy, not as proof that a change was the right product. `interlock outcomes` is the intended corpus; it does not yet change gates. Until it does, **your read at the checkpoint is the eval that matters.**
+There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite on a schedule.
+
+What its cases exercise is the surface `ship` drives through a model: the assembled **implementer briefing** (its handoff status enum, and lane partial-failure reporting), **control-plane action** selection, the **trampoline halt**, **skill routing**, **evidence locators**, **tier read scope**, and **cited cap resolution**.
+
+What it does not exercise is the spec path. No case touches `skills/spec`, `review-artifacts`, `review-code`, `explore`, or `bootstrap` — that half of the product has no model-in-the-loop coverage at all. The job is advisory: it reports a verdict and gates nothing, so a case below threshold surfaces without failing a build. A metered run is bounded by a cost ceiling, but the value lives in the CLI — read it with `interlock limits`, which is also where CI reads it. As of 2026-09-03 the suite has not yet been run against a model, so there are no scores and no baseline to compare against.
+
+The unit suite stays the regression net for policy — use it as that, not as proof that a change was the right product. `interlock outcomes` is the intended corpus for outcomes; it does not yet change gates. Until it does, **your read at the checkpoint is the eval that matters.**
 
 ### Human gates that still pay
 
@@ -405,7 +434,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 1. **Archive the four completed changes** (`openspec archive <name>`, with spec sync). Until that happens, `interlock drift` will keep reporting the failure mode the tool was written to catch, and the next `/interlock:spec` on this repo plans against unmerged deltas plus empty living specs.
 2. **Point the README at this page** (and restore [05](./05-continuity.md) in the doc table — it is missing today). New engineers currently get "first hour" or a 15-section mechanism essay with nothing in between.
 3. **Fill `openspec/config.yaml`** with stack, test command, and artifact rules (proposal non-goals; tasks must name paths). Empty config wastes spec tokens rediscovering what `package.json` already says.
-4. **Gitignore `.claude/ship/`** (and decide whether `.claude/memory/` is source). Runtime JSONL does not belong in `git status`. Memory files are currently useful and untracked — either commit the index or ignore the directory.
+4. ~~**Gitignore `.claude/ship/`** (and decide whether `.claude/memory/` is source).~~ **Done.** Both are ignored, and the reasoning generalized into a policy — see [11 — whether to keep them](./11-the-indicators.md#whether-to-keep-them). Note the policy is repository-dependent: exclusion is right here and wrong for a repository that ships its own product through `/interlock:ship`.
 5. **Update [08](./08-harness-landscape.md) "Worth taking" items 1–2** to "shipped" (`lib/spill.mjs`, `lib/run-log.mjs`) so the landscape page stops assigning work that is done.
 6. **Mark `CONTEXT-HYGIENE.md` as aspirational or implement it.** A protocol that claims ship wraps `[[CHANGE_NAME]]` while `assembleImplementerPrompt` interpolates raw strings is the silent-degradation pattern the rest of the codebase refuses.
 
@@ -413,7 +442,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 
 1. **Add a short root `AGENTS.md`** (symlink or stub `CLAUDE.md`): host split (Claude Code for ship, Cursor for opsx), pointer to this page, "do not implement Interlock ship inline," test command. Keep it small; put procedures in skills. This is the 2026 portable default.
 2. **Default-path quality without full `--strict`.** Options: run `/interlock:review-code` on MRs rather than inside ship; or auto-`--review` when `interlock risk` is `high`/`critical` while keeping lean for `low`. Inference: not in the code today.
-3. **Make archive harder to skip** without taking the decision away from the merger: `interlock:mr` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.
+3. ~~**Make archive harder to skip** without taking the decision away from the merger: `interlock:mr` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.~~ **Shipped, and non-blocking by design.** A clean `SHIP COMPLETE` (no halt, no leftover tasks) now prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — see [04](./04-when-it-stops.md#archive-pending). It stays a reminder, not a gate: the shipped change satisfies the unarchived predicate by construction at every clean close, so a non-zero exit on this line would halt every clean ship forever. Archiving after merge is still the merger's own decision.
 4. **Wire or drop context-pack.** If wave handoffs replaced it, say so in explore/spec docs so people do not run a personal `~/.claude` skill that ship ignores.
 5. **Per-task worktrees** once a host port can spawn them. Predicted-path serialization is the honest interim. Hermes/dsh isolation is the actual close ([08](./08-harness-landscape.md)).
 6. **Read the outcomes corpus** before relaxing any gate. Earned autonomy is storage-only on purpose. Wiring a branch without a control group would be deciding without the data.

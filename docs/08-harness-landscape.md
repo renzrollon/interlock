@@ -786,15 +786,29 @@ loop would trade an unarguable boundary for a flexible one.
 
 Two things, stated plainly.
 
-**Per-task isolation is a real gap and it is blocked on the host.** Hermes runs its
-shell on seven backends including hibernating cloud sandboxes; `dsh` has a
-documented sandbox seam with per-session policy and fail-closed confinement.
-Interlock runs parallel implementers in one working tree and detects collisions
-from a model's *prediction* of which files each task will touch. Predicted-path
-collision detection narrows that race honestly and does not close it. Per-task
-worktrees or containers would close it, and Interlock cannot do that today because
-the workflow runtime owns the spawn. This is the strongest argument for the host
-port, stronger than portability-as-marketing.
+**Per-task isolation was a real gap, it was blocked on the host, and the host port
+closed it.** Hermes runs its shell on seven backends including hibernating cloud
+sandboxes; `dsh` has a documented sandbox seam with per-session policy and
+fail-closed confinement. Interlock used to run parallel implementers in one working
+tree and detect collisions from a model's *prediction* of which files each task
+would touch — a narrowing of that race, honestly stated, and not a closing of it.
+
+It is closed on both hosts now, by different owners of the same guarantee. On the
+Workflow runtime the spawn carries `isolation: 'worktree'` and the runtime creates
+it. On `interlock-run` the step names one worktree path per lane and a merge base,
+the driver runs `git worktree add`, and `interlock run record-batch` folds the
+clean lanes and **halts naming the path and both lanes** when two of them wrote the
+same file anyway. Which of the two happens is a capability the host declares, not a
+branch on its name. That was the strongest argument for the host port, stronger
+than portability-as-marketing — and it is the argument the port paid off.
+
+What the port did **not** buy is a free choice of vendor. A Claude subscription can
+only be spent through the real `claude` binary; `claude -p`, the Agent SDK and ACP
+are the usage Anthropic flagged for separate metered credit, and the interactive
+Workflow runtime is the path that change exempted. So the runner drives vendor CLIs
+rather than replacing them, `/interlock:ship` stays the default, and every run on
+the runner prints which billing path it is on. Portability here is a real capability
+with a stated price, which is the only kind worth claiming.
 
 **`dsh` is a slow-moving strategic problem, and not for the reason it looks like.**
 It will not out-spec Interlock; it has no opinion about specs at all. The risk is

@@ -7,7 +7,8 @@
 // missing receipt field leaves a denominator short instead of scoring the run
 // as first-pass, that a zero denominator yields `null` and never `0`, that a
 // skill-written metrics file whose filename matches the counts pattern reaches
-// no indicator, and that the uncomputable indicator stays uncomputable.
+// no indicator, and that a run whose path sets were never observed is excluded
+// from the diff-vs-plan share and counted by name rather than folded in at zero.
 //
 // Two structural properties are asserted separately because they are policy
 // rather than behaviour: the command always exits 0, and the reader creates no
@@ -17,13 +18,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildReport, formatReport, REPORT_SCHEMA, SOURCES, UNATTRIBUTED } from '../../lib/report.mjs'
+import {
+  buildReport,
+  formatReport,
+  NO_EVAL_RESULT,
+  REPORT_SCHEMA,
+  SOURCES,
+  UNATTRIBUTED
+} from '../../lib/report.mjs'
 import { REPORT_CAPS } from '../../lib/limits.mjs'
 import { REVIEW_METRICS_SCHEMA } from '../../lib/metrics.mjs'
+import { appendRunLogEvent, listRunLogs, readRunLog, formatRunLog } from '../../lib/run-log.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(REPO, 'bin', 'interlock')
@@ -299,9 +308,150 @@ test('remediation rounds and attempts per change are separate indicators', () =>
   }
 })
 
-// --- the declared gap ------------------------------------------------------
+// --- diff versus plan ------------------------------------------------------
+//
+// The indicator that used to be a declared gap. Every assertion below is about
+// the same property from a different side: a run only counts when both path
+// sets were actually observed, and a run that does not count is EXCLUDED AND
+// NAMED rather than folded in at zero. Folding one in would depress the share
+// for a recording gap and read as an implementer going off-plan.
 
-test('diffMatchesPlan is always uncomputable, whatever the corpus holds', () => {
+/** A receipt whose two path sets are both observed, complete and untruncated. */
+const PATHS_RECEIPT = {
+  ...RECEIPT,
+  committed: true,
+  commit: 'deadbee',
+  touchedPaths: ['lib/a.mjs', 'lib/b.mjs', 'test/a.test.mjs', 'README.md'],
+  touchedPathsTruncated: false,
+  predictedPaths: ['lib/a.mjs', 'lib/b.mjs', 'lib/c.mjs'],
+  predictedPathsTruncated: false,
+  predictedPathsComplete: true
+}
+
+test('diffMatchesPlan is a share pooled over paths, with its denominator', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [{ type: 'run-start' }, PATHS_RECEIPT])
+    const dmp = buildReport(dir).indicators.planFidelity.diffMatchesPlan
+
+    // 2 of 4 touched paths were predicted. `lib/c.mjs` was predicted and never
+    // touched, and it is not in the denominator — that is the other direction.
+    assert.equal(dmp.value, 0.5)
+    assert.equal(dmp.observedOf, 4, 'the denominator is touched paths, not runs')
+    assert.equal(dmp.paths.matched, 2)
+    assert.equal(dmp.paths.touched, 4)
+    assert.equal(dmp.runs, 1)
+    assert.equal(dmp.source, SOURCES.RECEIPT)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the share is pooled across runs, so a big run outweighs a small one', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [{ type: 'run-start' }, { ...PATHS_RECEIPT, touchedPaths: ['lib/a.mjs'] }])
+    trajectory(dir, 'run-b', [
+      { type: 'run-start' },
+      {
+        ...PATHS_RECEIPT,
+        touchedPaths: ['x/1.ts', 'x/2.ts', 'x/3.ts'],
+        predictedPaths: []
+      }
+    ])
+    const dmp = buildReport(dir).indicators.planFidelity.diffMatchesPlan
+    assert.equal(dmp.paths.touched, 4, 'summed across runs, not averaged per run')
+    assert.equal(dmp.paths.matched, 1)
+    assert.equal(dmp.value, 0.25)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('each exclusion reason is counted and named, and none is absorbed', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'ok-run', [{ type: 'run-start' }, PATHS_RECEIPT])
+    // No commit: the touched set was never observed, and the run is not a run
+    // whose diff matched nothing.
+    trajectory(dir, 'no-commit', [
+      { type: 'run-start' },
+      { ...PATHS_RECEIPT, committed: false, touchedPaths: null, touchedPathsTruncated: null }
+    ])
+    // A commit whose paths could not be read: a different fact, counted apart.
+    trajectory(dir, 'unreadable', [
+      { type: 'run-start' },
+      { ...PATHS_RECEIPT, committed: true, touchedPaths: null, touchedPathsTruncated: null }
+    ])
+    trajectory(dir, 'incomplete', [
+      { type: 'run-start' },
+      { ...PATHS_RECEIPT, predictedPathsComplete: false }
+    ])
+    trajectory(dir, 'truncated', [
+      { type: 'run-start' },
+      { ...PATHS_RECEIPT, touchedPathsTruncated: true }
+    ])
+
+    const report = buildReport(dir)
+    const dmp = report.indicators.planFidelity.diffMatchesPlan
+    assert.deepEqual(dmp.excluded, {
+      noCommit: 1,
+      unreadableSet: 1,
+      incompletePrediction: 1,
+      truncatedSet: 1
+    })
+    assert.equal(dmp.runs, 1, 'only the qualifying run contributes')
+    assert.equal(dmp.observedOf, 4)
+    assert.equal(dmp.notObserved, 4)
+
+    const text = formatReport(report)
+    assert.match(text, /excluded 1 run\(s\): the run made no commit/)
+    assert.match(text, /excluded 1 run\(s\): a path set was recorded unobserved/)
+    assert.match(text, /excluded 1 run\(s\): the executed plan did not predict paths for every task/)
+    assert.match(text, /excluded 1 run\(s\): a path set exceeded its recorded bound/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an all-excluded corpus reports unobserved with a reason, never zero', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [
+      { type: 'run-start' },
+      { ...PATHS_RECEIPT, committed: false, touchedPaths: null, touchedPathsTruncated: null }
+    ])
+    const report = buildReport(dir)
+    const dmp = report.indicators.planFidelity.diffMatchesPlan
+
+    assert.equal(dmp.value, null, 'a zero would assert that nothing touched was predicted')
+    assert.notEqual(dmp.value, 0)
+    assert.match(dmp.reason, /no scanned run recorded both path sets/)
+    assert.match(formatReport(report), /diff matches plan\s+unobserved/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the converse figure is never published under the diff-matches-plan name', () => {
+  const dir = root()
+  try {
+    // Touched 4, predicted 3, overlap 2. The converse — predicted paths that
+    // were touched — is 2/3; the published figure must be 2/4.
+    trajectory(dir, 'run-a', [{ type: 'run-start' }, PATHS_RECEIPT])
+    const report = buildReport(dir)
+    const dmp = report.indicators.planFidelity.diffMatchesPlan
+
+    assert.equal(dmp.value, 0.5)
+    assert.notEqual(dmp.value, Math.round((2 / 3) * 10000) / 10000, 'that is the other question')
+    assert.match(dmp.direction, /TOUCHED/)
+    assert.match(formatReport(report), /the touched set is the denominator/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the two recorded plan figures are still reported, and still not under that name', () => {
   const dir = root()
   try {
     trajectory(dir, 'run-a', [
@@ -310,13 +460,9 @@ test('diffMatchesPlan is always uncomputable, whatever the corpus holds', () => 
       { ...RECEIPT, planStatus: 'match' }
     ])
     const plan = buildReport(dir).indicators.planFidelity
-    assert.equal(plan.diffMatchesPlan.computable, false)
-    assert.ok(plan.diffMatchesPlan.reason)
-    assert.ok(plan.diffMatchesPlan.wouldRequire)
-    // The two recorded figures exist and are NOT published under that name.
     assert.deepEqual(plan.planStatus.counts, { match: 1 })
     assert.equal(plan.midRunRevision.value, 1)
-    assert.match(formatReport(buildReport(dir)), /diff matches plan\s+NOT COMPUTABLE/)
+    assert.equal(plan.diffMatchesPlan.value, null, 'neither of those is the diff figure')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -551,6 +697,260 @@ test('coverage precedes the indicators in the human-readable output', () => {
   try {
     const text = formatReport(buildReport(dir))
     assert.ok(text.indexOf('COVERAGE') < text.indexOf('INDICATORS'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- the HTML surface ------------------------------------------------------
+//
+// `--html` is a third rendering of the same object, so the property that
+// matters is not what the document looks like but that it cannot say anything
+// the other two surfaces do not. That is asserted directly below, indicator by
+// indicator, rather than trusted to a shared code path.
+
+/** Every reading in the document, as [headline, basis] pairs, in order. */
+function readings(doc) {
+  return [...doc.matchAll(
+    /<div class="ind-headline">([\s\S]*?)<\/div><div class="ind-basis">([\s\S]*?)<\/div>/g
+  )].map(m => [m[1], m[2]])
+}
+
+/** The (headline, basis) an indicator carries, formatted as every surface formats it. */
+function readingOf(ind, kind) {
+  if (!ind || ind.value === null) return ['UNOBSERVED', ind ? ind.reason : 'no indicator']
+  const headline = kind === 'pct' ? `${(ind.value * 100).toFixed(1)}%` : String(ind.value)
+  const basis = `of ${ind.observedOf} observed` + (ind.notObserved ? `, ${ind.notObserved} not observed` : '')
+  return [headline, basis]
+}
+
+test('the three surfaces cannot disagree about a value or a denominator', () => {
+  const dir = root()
+  try {
+    // A corpus with something in every indicator that can carry something, so
+    // the comparison is over real values rather than over nine absences.
+    trajectory(dir, 'run-a', [
+      { type: 'run-start' },
+      { type: 'cli-exit', command: 'gate', exitCode: 1 },
+      { type: 'cli-exit', command: 'gate', exitCode: 0 },
+      { type: 'wave', action: 'replan' },
+      RECEIPT,
+      { type: 'run-complete', leftoverTaskIds: [] }
+    ])
+    trajectory(dir, 'run-b', [
+      { type: 'run-start' },
+      { type: 'cli-exit', command: 'verify judge', exitCode: 0 },
+      { ...RECEIPT, remediationRounds: 2 },
+      { type: 'run-complete', leftoverTaskIds: [] }
+    ], { change: 'add-other' })
+    metricsFile(dir, 'review-add-widget-20260821-000000-000Z.json', {
+      schema: REVIEW_METRICS_SCHEMA,
+      timestamp: '2026-08-21T00:00:00.000Z',
+      change: 'add-widget',
+      counts: { raised: 8, dismissed: 5, droppedByQuality: 1, surviving: 2 }
+    })
+
+    const cli = args => {
+      const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, ...args], { encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      return r.stdout
+    }
+
+    const object = JSON.parse(cli(['--json']))
+    const text = cli([])
+    const doc = cli(['--html'])
+    const i = object.indicators
+
+    const expected = [
+      readingOf(i.firstPassShip.rate, 'pct'),
+      readingOf(i.rework.remediationRounds, 'plain'),
+      readingOf(i.rework.attemptsPerChange, 'plain'),
+      null, // plan-reuse status is a distribution, compared separately below
+      readingOf(i.planFidelity.midRunRevision, 'pct'),
+      readingOf(i.planFidelity.diffMatchesPlan, 'pct'),
+      readingOf(i.reviewFindings.fromMetrics.dismissalShare, 'pct'),
+      readingOf(i.reviewFindings.fromReceipts.survivalShare, 'pct'),
+      readingOf(i.gateExitHealth.nonZeroShare, 'pct'),
+      // The fourth corpus. This fixture writes no outcome-eval history, so the
+      // reading is the absence — and the two surfaces must word it identically,
+      // which is exactly the property being defended here.
+      ['UNOBSERVED', NO_EVAL_RESULT]
+    ]
+
+    const actual = readings(doc)
+    assert.equal(actual.length, expected.length, 'one reading per indicator the object carries')
+
+    for (let n = 0; n < expected.length; n += 1) {
+      if (!expected[n]) continue
+      const [headline, basis] = expected[n]
+      assert.deepEqual(actual[n], [headline, basis], `indicator ${n + 1} disagrees with the object`)
+      // And the same two figures reach the text surface. It words absence in
+      // lower case and parentheses rather than as a headline, which is the only
+      // difference between the surfaces that is permitted to exist: the reason
+      // itself must be identical, because both read it off the same object.
+      if (headline === 'UNOBSERVED') {
+        assert.ok(text.includes(`unobserved (${basis})`), `the text surface must carry "${basis}"`)
+      } else {
+        assert.ok(text.includes(headline), `the text surface must carry ${headline}`)
+        assert.ok(text.includes(basis), `the text surface must carry "${basis}"`)
+      }
+    }
+
+    // The two figures the readings above skip, checked in their own shape.
+    for (const status of Object.keys(i.planFidelity.planStatus.counts)) {
+      assert.ok(doc.includes(status), `plan status ${status} must appear`)
+      assert.ok(text.includes(status))
+    }
+    // The diff-vs-plan reading is compared with the rest, above: it is a share
+    // with a denominator now, so it is no longer the one indicator whose
+    // surfaces had to be compared by a word rather than by a figure.
+
+    // Coverage denominators, which every figure above rests on.
+    const c = object.coverage
+    assert.ok(doc.includes(`>${c.trajectories.scanned}</span> scanned of <span class="num">${c.trajectories.total}<`))
+    assert.ok(doc.includes(`>${c.metrics.recognized}</span> recognized of <span class="num">${c.metrics.total}<`))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an empty corpus still produces a document and exits 0', () => {
+  const dir = root()
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html'], { encoding: 'utf8' })
+    assert.equal(r.status, 0, 'a corpus with nothing in it is a report, not a failure')
+    assert.match(r.stdout, /^<!doctype html>/)
+    assert.match(r.stdout, /UNOBSERVED/)
+    assert.doesNotMatch(r.stdout, /<div class="ind-headline">0<\/div>/, 'absence is never a zero')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--html writes only where told, and producing it leaves the corpora untouched', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [{ type: 'run-start' }, RECEIPT, { type: 'run-complete', leftoverTaskIds: [] }])
+    const before = walk(dir).sort()
+
+    // Bare --html writes to stdout and touches no file at all.
+    const piped = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html'], { encoding: 'utf8' })
+    assert.equal(piped.status, 0)
+    assert.deepEqual(walk(dir).sort(), before, 'a report to stdout must create nothing')
+
+    // A named path is written, and it is the only thing written.
+    const out = join(dir, 'report.html')
+    const named = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', out], { encoding: 'utf8' })
+    assert.equal(named.status, 0, named.stderr)
+    assert.match(named.stdout, /report written to/)
+    assert.deepEqual(walk(dir).sort(), [...before, out].sort(), 'only the named destination is written')
+    assert.equal(readFileSync(out, 'utf8'), piped.stdout, 'the file and the stream are the same document')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unwritable destination is reported and leaves no partial document', () => {
+  const dir = root()
+  try {
+    const out = join(dir, 'no-such-dir', 'report.html')
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', out], { encoding: 'utf8' })
+    assert.notEqual(r.status, 0, 'a write that did not happen must not report success')
+    assert.match(r.stderr, /could not write/)
+    assert.equal(existsSync(out), false, 'nothing may be left at the named path')
+    assert.equal(existsSync(`${out}.interlock-partial`), false, 'nor beside it')
+    assert.doesNotMatch(r.stdout, /doctype/, 'a failed write must not also spill the document')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--html and --json are refused together rather than one silently winning', () => {
+  const dir = root()
+  try {
+    const r = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--html', '--json'], { encoding: 'utf8' })
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /--html and --json are mutually exclusive/)
+    assert.equal(r.stdout, '', 'neither surface may be produced')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- end to end: unobserved survives every hop ------------------------------
+
+test('the unobserved-versus-empty distinction survives writer, reader and report', () => {
+  const dir = root()
+  try {
+    // Written through the real writer rather than hand-rolled JSON, so the
+    // coercion the writer applies is part of what is being asserted: this is
+    // the one property that has to hold across three modules and four surfaces,
+    // and each hop is somewhere `null` could quietly become `[]`.
+    const write = (runId, receipt) => {
+      for (const event of [
+        { type: 'run-start', mode: 'checkpoint' },
+        { type: 'run-complete', leftoverTaskIds: [] },
+        { type: 'run-receipt', ...receipt }
+      ]) {
+        const r = appendRunLogEvent(dir, { runId, change: 'add-widget', ...event })
+        assert.equal(r.written, true, `${runId}: ${r.reason}`)
+      }
+    }
+
+    write('run-committed', {
+      halted: false,
+      remediationRounds: 0,
+      committed: true,
+      commit: 'deadbee',
+      touchedPaths: ['lib/a.mjs', 'lib/b.mjs'],
+      predictedPaths: ['lib/a.mjs'],
+      predictedPathsComplete: true
+    })
+    write('run-no-commit', {
+      halted: true,
+      haltReason: 'the unit suite was red at the final verification',
+      committed: false,
+      touchedPathsReason: 'the run made no commit',
+      predictedPaths: ['lib/a.mjs'],
+      predictedPathsComplete: true
+    })
+
+    // Hop 1 — the reader. The committing run has a count; the other has none,
+    // and `null` is not `0`.
+    const listed = Object.fromEntries(listRunLogs(dir).map(r => [r.runId, r]))
+    assert.equal(listed['run-committed'].touchedPathCount, 2)
+    assert.equal(listed['run-no-commit'].touchedPathCount, null)
+    assert.notEqual(listed['run-no-commit'].touchedPathCount, 0)
+    assert.match(listed['run-no-commit'].touchedPathsReason, /made no commit/)
+
+    // Hop 2 — the report. One run contributes; the other is excluded and named.
+    const report = buildReport(dir)
+    const dmp = report.indicators.planFidelity.diffMatchesPlan
+    assert.equal(dmp.runs, 1, 'only the committing run qualifies')
+    assert.equal(dmp.paths.touched, 2)
+    assert.equal(dmp.paths.matched, 1)
+    assert.equal(dmp.value, 0.5)
+    assert.equal(dmp.excluded.noCommit, 1, 'the halted run is excluded under the absent commit')
+    assert.equal(dmp.excluded.unreadableSet, 0, 'and not misfiled as a failed read')
+
+    // Hop 3 — every surface. No rendering may show the non-committing run's
+    // touched set as an empty list.
+    const surfaces = [
+      formatReport(report),
+      JSON.stringify(report),
+      formatRunLog(readRunLog(dir, 'run-no-commit')),
+      JSON.stringify(readRunLog(dir, 'run-no-commit'))
+    ]
+    for (const text of surfaces) {
+      assert.doesNotMatch(text, /"touchedPaths"\s*:\s*\[\s*\]/, 'an unobserved set rendered as an empty list')
+      assert.doesNotMatch(text, /touched paths[^\n]*: none/i, 'an unobserved set rendered as measured-empty')
+    }
+    assert.match(surfaces[2], /paths touched \(read from version control\): unknown \(the run made no commit\)/)
+
+    // And the receipt the writer stored says the same thing directly.
+    const stored = readRunLog(dir, 'run-no-commit').records.find(r => r.type === 'run-receipt')
+    assert.equal(stored.touchedPaths, null)
+    assert.notDeepEqual(stored.touchedPaths, [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -8,10 +8,11 @@
 // contract: changing the assembled text has to be a deliberate act that updates
 // a file, not a side effect of editing nearby control flow.
 //
-// The function is read out of workflows/ship.js and eval'd, the same trick
-// test/workflows.test.mjs already uses for parseInvocation. It cannot be
-// imported: the workflow runtime rejects a script containing import(), so
-// prompt assembly has to live in the script, and the markers are the seam.
+// The function is imported from lib/prompts/implementer.mjs. It used to be read
+// out of workflows/ship.js and eval'd, because the workflow runtime rejects a
+// script containing import() and prompt assembly had to live in the script. The
+// CLI assembles every briefing now, so the text lives in lib/ and this test can
+// import it like any other module.
 //
 // Deliberately Node-only. No network, no API key, no ACP or headless host —
 // snapshotting what a model would have seen does not require running one.
@@ -21,22 +22,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const SHIP = join(ROOT, 'workflows', 'ship.js')
 const FIXTURES = join(ROOT, 'test', 'fixtures', 'prompts')
 
 function assembleFromSource(input) {
-  const text = readFileSync(SHIP, 'utf8')
-  const m =
-    /\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_START\n([\s\S]*?)\n\/\/ ASSEMBLE_IMPLEMENTER_PROMPT_END/.exec(
-      text
-    )
-  assert.ok(
-    m,
-    'ship.js must define assembleImplementerPrompt between ASSEMBLE_IMPLEMENTER_PROMPT markers'
-  )
-  return new Function('input', `${m[1]}; return assembleImplementerPrompt(input)`)(input)
+  return assembleImplementerPrompt(input)
 }
 
 /** The fixed inputs the fixtures were generated from. */
@@ -77,7 +69,7 @@ test('the same inputs always produce the same prompt', () => {
 // lever rather than a differently-worded run — so the tier fixtures above are
 // re-asserted through the lane input, unmodified.
 
-const laneOf = (tier, ids = ['1.1', '1.3', '1.4']) => ({
+const laneOf = (tier, ids = ['1.1', '1.3', '1.4'], extra = {}) => ({
   change: 'add-widget',
   lane: ids.map((id, i) => ({
     id,
@@ -85,7 +77,8 @@ const laneOf = (tier, ids = ['1.1', '1.3', '1.4']) => ({
     tier,
     model: tier === 5 ? 'opus' : tier === 1 ? 'haiku' : 'sonnet'
   })),
-  previousHandoffs: []
+  previousHandoffs: [],
+  ...extra
 })
 
 for (const tier of TIERS) {
@@ -111,6 +104,79 @@ for (const tier of TIERS) {
     )
   })
 }
+
+test('the lane heading claims one owner, never shared files', () => {
+  // A cohesion lane packs path-DISJOINT tasks, so the old heading ("they edit
+  // the same files") is a false statement handed to every implementer. What the
+  // heading may claim is what is true of every lane: one agent owns it.
+  for (const tier of TIERS) {
+    const prompt = assembleFromSource(laneOf(tier))
+    assert.doesNotMatch(
+      prompt,
+      /edit the same files/,
+      `tier ${tier}: a lane is no longer necessarily a path-collision component`
+    )
+    assert.match(prompt, /one lane run by you alone/)
+    assert.match(prompt, /no other agent touches the files they claim/)
+  }
+})
+
+// --- solo lanes -------------------------------------------------------------
+//
+// A solo lane is the whole change in one agent. Two things about it are pinned
+// here rather than left to the fixtures alone: the heading says so, and the
+// briefing is the full-read ladder however cheap the tasks were classified —
+// the agent has no sibling wave to inherit context from.
+
+for (const tier of TIERS) {
+  test(`a solo lane matches its tier ${tier} snapshot exactly`, () => {
+    const expected = readFileSync(join(FIXTURES, `implementer-solo-tier-${tier}.txt`), 'utf8')
+    assert.equal(
+      assembleFromSource(laneOf(tier, ['1.1', '1.3', '1.4'], { solo: true })),
+      expected,
+      `the tier ${tier} solo prompt changed. If that was intended, regenerate ` +
+        `test/fixtures/prompts/implementer-solo-tier-${tier}.txt deliberately — this is a ` +
+        `cap-style pin.`
+    )
+  })
+}
+
+test('a solo lane of low-tier tasks is briefed as the whole change at the full-read ladder', () => {
+  const prompt = assembleFromSource(laneOf(2, ['1.1', '1.3', '1.4'], { solo: true }))
+  assert.match(prompt, /Implement OpenSpec change "add-widget" end to end — all 3 of its tasks/)
+  assert.match(prompt, /you own every task listed below, including its test tasks/)
+  assert.match(prompt, /Your tier is 4\./, 'a solo agent always reads design.md and the specs')
+  assert.doesNotMatch(
+    prompt,
+    /after typecheck\/lint pass, stop/,
+    'stop-on-green would end the run halfway through the change'
+  )
+})
+
+test('the same lane without the solo flag is the ordinary tier-2 lane prompt', () => {
+  const prompt = assembleFromSource(laneOf(2))
+  assert.match(prompt, /Your tier is 2\./)
+  assert.match(prompt, /after typecheck\/lint pass, stop/)
+  assert.doesNotMatch(prompt, /end to end/)
+})
+
+test('solo raises the briefing without touching the tasks it was given', () => {
+  // Tier is the classifier's record: effort and the promotion report are read
+  // off it, so raising the BRIEFING must not rewrite it.
+  const input = laneOf(2, ['1.1', '1.3', '1.4'], { solo: true })
+  assembleFromSource(input)
+  assert.deepEqual(
+    input.lane.map(t => t.tier),
+    [2, 2, 2]
+  )
+})
+
+test('a solo lane still reports an outcome per task and stops at the first failure', () => {
+  const prompt = assembleFromSource(laneOf(3, ['1.1', '1.3', '1.4'], { solo: true }))
+  assert.match(prompt, /STOP at the first task you cannot complete/)
+  assert.match(prompt, /"outcome": "ok" \| "failed" \| "not-attempted"/)
+  assert.match(prompt, /report all 3/)
+})
 
 test('a lane prompt names every task in execution order', () => {
   const prompt = assembleFromSource(laneOf(2))

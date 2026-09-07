@@ -1,0 +1,57 @@
+# Gap class: skill-routing discrimination, SIBLING DESTINATION — the other side
+# of `skill-routing`.
+#
+# This is a two-sided twin, not an independently observed failure. Its sibling
+# asserts that "implement this change" reaches `ship` and not `spec`. A suite
+# holding only that side rewards a plugin that routes everything to `ship`. The
+# sibling confusion its header already names is "explore the auth flow" routing
+# to `explore`, not `graph` — the same shape, in the other direction, and this is
+# that case.
+#
+# The confusion is real rather than contrived: `explore` and `graph` are both
+# `metadata.type: discovery`, both carry `Bash(interlock-graph *)` in their
+# allowed tools, and `graph`'s own description ends "...or before a deep explore
+# or review sweep" — so a model reading the two descriptions has to separate
+# "reconnoitre this subsystem for me" from "build me the index that a
+# reconnaissance would use".
+#
+# The scored dimension is judged, deliberately mirroring its twin. What is being
+# tested is the destination of an intent, and the deterministic evidence for it
+# is ambiguous by construction: `explore` legitimately runs `interlock-graph`
+# (skills/explore/SKILL.md:37-45, "graph, then grep, then Read spans"), so a tool
+# trace showing `interlock-graph` is consistent with BOTH destinations. The one
+# thing that separates them — did the agent go and reconnoitre, or did it stop at
+# building an index — is a judgement about what the reply is, which is why its
+# twin expresses the same dimension the same way. Both judged graders in the pair
+# are named in evals/CALIBRATION-DEFERRALS.md.
+#
+# The skill-invocation graders are `arm: with-only` per the case-suite spec: a
+# grader asserting a skill FIRED is a plugin-fired indicator reported against the
+# baseline arm, not part of the score.
+#
+# SMOKE TAG — deliberately absent: the case carries a judged grader, and the
+# structural gate requires a smoke case to use only deterministic graders. That
+# is the same reason its twin is untagged, and it is the correct outcome rather
+# than a limitation: a judged verdict is not trustworthy on the single run the
+# per-pull-request subset affords.
+#
+# Provenance: skills/explore/SKILL.md and skills/graph/SKILL.md (two discovery
+# skills sharing a tool surface and a description boundary), and
+# test/skills.test.mjs:90-98 — the only static assertion over a description is
+# its length, exactly as its twin records.
+schema_version: "1.0"
+name: skill-routing-explore
+twin_of: skill-routing
+provenance: "skills/explore/SKILL.md; skills/graph/SKILL.md; test/skills.test.mjs:90-98 (description length is the only static assertion)"
+exercises: ["skills/explore/SKILL.md", "skills/graph/SKILL.md", "skills/dispatch/SKILL.md"]
+runs: 3
+execution:
+  prompt: |
+    Explore how this codebase handles model credentials — where a key is read,
+    what happens when one is absent, and which paths would change if the source
+    of the credential moved.
+
+    I need the blast radius before I touch any of it.
+  max_turns: 4
+  timeout_seconds: 300
+  allowed_tools: [Skill, Read, Glob, Grep, Bash]

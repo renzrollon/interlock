@@ -165,7 +165,7 @@ test('ship skill is a workflow trampoline, not the loop', () => {
   assert.doesNotMatch(text, /cap two remediation/i, 'trampoline must not restate loop caps')
 })
 
-test('ship trampoline halts without the Workflow tool and never auto-starts the ACP host', () => {
+test('ship trampoline halts without the Workflow tool and never auto-starts the runner', () => {
   // add-interlock-acp-host §2: a second host must not weaken the default one.
   // The failure mode this guards is not "ACP is broken" — it is a trampoline
   // that quietly reaches for *any* other way to run the loop when the Workflow
@@ -180,15 +180,27 @@ test('ship trampoline halts without the Workflow tool and never auto-starts the 
   )
   assert.match(
     text,
-    /interlock-ship-acp/,
-    'the trampoline must name the ACP driver as a separate binary'
+    /interlock-run/,
+    'the trampoline must name the runner as a separate binary'
   )
   assert.match(
     text,
     /separate binary this skill never invokes/i,
-    'the ACP pointer must say the skill does not launch it'
+    'the runner pointer must say the skill does not launch it'
   )
   assert.match(text, /not a fallback for a missing Workflow tool/i)
+  // What the second host runs. It used to be "the lean loop", and `--strict`
+  // "stays Claude Code only" — both false since `emit-strict-tail-from-cli`
+  // made the tail a program the CLI emits. Tokens, not sentences, so the first
+  // reword does not delete the pin.
+  assert.match(text, /same loop/i, 'the runner pointer must say it runs the same loop')
+  assert.match(text, /--host/, 'and that the runner takes a host')
+  assert.match(text, /--strict/, 'and that --strict is part of it')
+  assert.doesNotMatch(
+    text,
+    /(strict|tail)[^.]{0,60}Claude Code only/i,
+    'the skill must not claim the strict tail is Claude Code only'
+  )
 
   // The loop itself, in any host's vocabulary, stays out of the trampoline.
   for (const forbidden of [
@@ -199,6 +211,155 @@ test('ship trampoline halts without the Workflow tool and never auto-starts the 
     /mapPipeline/
   ]) {
     assert.doesNotMatch(text, forbidden, `trampoline must not run the loop itself: ${forbidden}`)
+  }
+})
+
+test('the ship trampoline carries the plan-shape flags and forwards them verbatim', () => {
+  // A flag the trampoline does not know about is a flag the user cannot pass:
+  // the skill builds the `args` payload the script parses, so an unmapped
+  // `--solo` reaches ship.js as nothing at all and the run silently plans waves.
+  // Tokens, not sentences — the first reword must not delete the pin.
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  const hint = /^argument-hint:.*$/m.exec(text)
+  assert.ok(hint, 'the ship skill must publish an argument-hint')
+  for (const flag of ['--solo', '--waves']) {
+    assert.ok(hint[0].includes(flag), `the argument-hint must offer ${flag}`)
+  }
+  assert.match(text, /flags: \["solo"\]/, 'the flag table must map --solo onto the args payload')
+  assert.match(text, /flags: \["waves"\]/, 'and --waves')
+  // The preview names the mode before anything is spawned, which is why the
+  // trampoline has no shape judgement of its own to make.
+  assert.match(text, /plan preview names the mode/i)
+  assert.doesNotMatch(
+    text,
+    /interlock limits|envelope of \d+|\bat most \d+ tasks\b/i,
+    'the trampoline must cite no threshold: the envelope is the planner\'s to enforce'
+  )
+})
+
+test('the spec skill tells authors not to split a section to buy parallelism', () => {
+  // The mirror of the packing rule. An author who splits a section into
+  // one-checkbox sections to "get more agents" serializes the change instead:
+  // sections run in sequence, and the planner would have packed the siblings
+  // into one lane anyway.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.match(text, /Never split a section to buy parallelism/i)
+  assert.match(text, /packs low-tier siblings in one section into a single lane/i)
+  assert.match(text, /may ship solo/i, 'and must name solo as the small-change shape')
+})
+
+test('both review skills request review-metrics emission on their gated command line', () => {
+  // This is the assertion the defect it guards did not have. `--metrics` existed
+  // on `interlock review` for a year and no skill ever passed it, so the
+  // report's review-finding indicators read "unobserved" the entire time — not
+  // because nothing was reviewed, but because nothing recorded that it had
+  // been. Nothing fails when a skill drops the flag; the corpus just quietly
+  // stays empty, and an empty corpus reads exactly like a loop that never ran.
+  //
+  // So the pin is here rather than in prose. Both gated review paths are
+  // covered: `review-code` reaches a verdict through `interlock review`,
+  // `review-artifacts` through `interlock gate`.
+  const paths = {
+    'review-code': /interlock review [^\n]*--metrics/,
+    'review-artifacts': /interlock gate [^\n]*--metrics/
+  }
+
+  for (const [skill, pattern] of Object.entries(paths)) {
+    const file = join(SKILLS_DIR, skill, 'SKILL.md')
+    assert.ok(existsSync(file), `${skill}/SKILL.md must exist for this pin to mean anything`)
+    const text = readFileSync(file, 'utf8')
+    assert.match(
+      text,
+      pattern,
+      `${skill} must pass --metrics on its gated command line, or its review path becomes ` +
+        'permanently invisible to `interlock report`'
+    )
+    assert.match(
+      text,
+      /--metrics <change>/,
+      `${skill} must pass a change name to --metrics — the flag refuses a missing value, and ` +
+        'no name is ever inferred from the findings file'
+    )
+  }
+})
+
+test('bootstrap instructs a per-path corpus-persistence report via git check-ignore', () => {
+  // Same hazard as the --metrics pin above: this step is prose, nothing consumes
+  // its output, and a reword that drops a corpus path or swaps the matcher for a
+  // hand-rolled .gitignore read fails nothing. It just quietly stops asking the
+  // question it exists to ask.
+  //
+  // Tokens, not sentences. A pin that matched a phrase would be deleted by the
+  // first edit that improved the wording, which removes the only mitigation the
+  // step has.
+  const text = readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8')
+
+  for (const corpus of ['.claude/ship/', '.claude/learning/', '.claude/metrics/']) {
+    assert.ok(
+      text.includes(corpus),
+      `bootstrap must report the persistence posture of ${corpus} — a corpus it stops naming is ` +
+        'one nobody is asked about'
+    )
+  }
+
+  assert.match(
+    text,
+    /git check-ignore/,
+    'bootstrap must observe exclusion with git check-ignore, not by reading .gitignore — git ' +
+      'own matcher handles negation, nested files, info/exclude and the global excludes file'
+  )
+})
+
+test('bootstrap declares the permission its corpus-persistence step needs, narrowly', () => {
+  // The step instructs `git check-ignore`, and bootstrap's grant had no git verb
+  // at all. Shipping the instruction without the permission is worse than
+  // shipping neither: the denial lands at runtime on a consumer's repo, and
+  // because a failed check is routed to the "undetermined" branch, it is
+  // indistinguishable from a repo with no .gitignore — so the step reports
+  // "undetermined" on every repo forever and looks like it is working.
+  const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8'))
+  const allowed = fm.values['allowed-tools'] || ''
+
+  assert.match(
+    allowed,
+    /Bash\(git check-ignore \*\)/,
+    'bootstrap instructs `git check-ignore` but its allowed-tools does not admit it; the ' +
+      'instructed command would be denied at runtime'
+  )
+  assert.doesNotMatch(
+    allowed,
+    /Bash\(git \*\)/,
+    'the grant must stay narrowed to the check-ignore verb — the step uses no other git command'
+  )
+})
+
+test('bootstrap carries an explicit no-write instruction for .gitignore', () => {
+  // The boundary this change was scoped around: bootstrap is invoked to produce
+  // specs, and editing an unrelated file it was not asked to touch is a surprise
+  // in someone's diff, not a service.
+  //
+  // Asserted POSITIVELY, and the first draft of this test is why. It tried to
+  // assert the absence of write-like phrasing near `.gitignore` and failed on
+  // the skill's own prohibition — "Never write to `.gitignore`" contains
+  // "write to .gitignore". Prose cannot be checked for the absence of a phrase
+  // whose negation contains it. So: require the prohibition to be present, and
+  // separately forbid the one form that is unambiguous in any context, a shell
+  // redirect into the file.
+  const text = readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8')
+
+  assert.match(
+    text,
+    /never write to\s+`?\.gitignore/i,
+    'bootstrap must state the prohibition outright — a step that merely omits a write ' +
+      'instruction invites one back at the next edit'
+  )
+
+  for (const redirect of [/>>?\s*`?\.gitignore/, /tee\s+(?:-a\s+)?`?\.gitignore/]) {
+    assert.doesNotMatch(
+      text,
+      redirect,
+      `bootstrap must name the recommended entries, never apply them: ${redirect}`
+    )
   }
 })
 
@@ -270,6 +431,21 @@ test('spec checkpoint prints GOAL MET and does not use /goal to skip it', () => 
   assert.match(text, /Do not (call|invoke|run) \/goal|\/goal must not skip the checkpoint|does not skip the checkpoint/i)
 })
 
+test('the spec checkpoint pushes before it prints GOAL MET, so a waiting human is told', () => {
+  // A prose instruction nobody asserts silently stops running. The ORDER is
+  // half the instruction: a push after the goal line is a push the session may
+  // never reach, and the checkpoint's whole point is that it waits.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  const push = text.indexOf('interlock notify checkpoint')
+  const goal = text.indexOf('GOAL MET: interlock spec stopped at the checkpoint')
+  assert.ok(push !== -1, 'the spec skill no longer tells a waiting human that it is waiting')
+  assert.ok(goal !== -1)
+  assert.ok(push < goal, 'the push must come before the goal line, not after the session may have stopped')
+  // And it is unconditional: the CLI, not the skill, decides whether a topic
+  // is configured, so the skill must not be told to check first.
+  assert.match(text, /no-op|exits 0|unconditionally/i)
+})
+
 test('ship trampoline forbids a second Workflow call after the first returns', () => {
   const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
   assert.match(text, /Do not call Workflow again/i)
@@ -299,4 +475,68 @@ test('shared contracts and lib carry no predecessor skill names', () => {
     }
   }
   assert.deepEqual(offenders, [], `predecessor residue: ${offenders.join(', ')}`)
+})
+
+test('the evals skill admits a captured skeleton as evidence, and refuses an unresolved one', () => {
+  // The pin the `--metrics` defect argues for: an instruction nobody asserts
+  // silently stops running. `interlock evals capture` exists to make a failed
+  // run citable, and a skill that never names it leaves the command unreachable
+  // in exactly the way `interlock review --metrics` was for a year.
+  //
+  // Distinguishing tokens, never whole sentences: a reword must not delete the
+  // pin, but a reversal of meaning must not survive it.
+  const text = readFileSync(join(SKILLS_DIR, 'evals', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /interlock evals capture/, 'the command a consumer files a failure with')
+  assert.match(text, /captured skeleton/i, 'a skeleton is named among the admissible evidence')
+  assert.match(text, /draft, not a finished case/i, 'and it is a draft rather than a case')
+  assert.match(text, /CONFIRM/, 'the marker capture leaves on every derived value')
+  assert.match(
+    text,
+    /Never\s+author a case that still carries one/i,
+    'the rule that keeps an unconfirmed pattern out of the suite'
+  )
+
+  // The reversal: nothing may describe a skeleton as ready to run or to file
+  // unchanged. Capture refuses to write into evals/ precisely so that a human
+  // decides, and prose telling them not to bother would undo the refusal.
+  assert.doesNotMatch(text, /skeleton[^.]*(?:ready to (?:run|file)|as[- ]is|without review)/i)
+})
+
+test('the evals skill requires a transcript to be read before a judged case is explained', () => {
+  // The same pin, for the same reason, against the same precedent:
+  // `interlock review --metrics` was an instruction in a skill that nobody
+  // asserted, so it silently stopped running and the corpus it fed stayed empty
+  // for a year while reading exactly like a loop that never fired. This
+  // instruction — read a trace before you explain a judged score — has the same
+  // shape and would fail the same way. It is pinned here on the day it lands.
+  //
+  // Tokens, never sentences: a reword must not delete the pin, and pinning a
+  // sentence would guarantee the first edit does exactly that.
+  const text = readFileSync(join(SKILLS_DIR, 'evals', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /transcripts read:/, 'the report line that names what was read')
+  assert.match(
+    text,
+    /transcripts read:\s*none/,
+    'the explicit none-form — an omitted line cannot be told from an unexamined result'
+  )
+  assert.match(
+    text,
+    /transcripts read:\s*unavailable, because/,
+    'the unavailable-form, so a run with no readable trace is spoken rather than silent'
+  )
+  assert.match(text, /judged grader/i, 'the condition the step applies to')
+  assert.match(
+    text,
+    // Whitespace-tolerant on purpose: the skill body is hard-wrapped, so a
+    // literal space between the tokens would break the pin on a rewrap.
+    /read\s+at\s+least\s+one\s+transcript[\s\S]{0,120}before\s+you\s+write\s+your\s+explanation/i,
+    'the ordering the requirement is about: transcript first, explanation second'
+  )
+
+  // The reversal: reading is for explanation and never for reclassification.
+  // A skill that let a transcript overturn triage would reintroduce exactly the
+  // re-argued verdict the exit-code contract exists to prevent.
+  assert.match(text, /never for reclassification/i, 'reading does not overturn the verdict')
 })

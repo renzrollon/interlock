@@ -1,4 +1,4 @@
-# completion-gate Specification
+# ship/completion-gate Specification
 
 ## Purpose
 

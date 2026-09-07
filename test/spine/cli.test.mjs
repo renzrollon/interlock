@@ -11,8 +11,8 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,11 +21,28 @@ const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'in
 
 let dir
 
-/** Run the real binary. Never throws on a non-zero exit — that is the assertion. */
+/**
+ * Run the real binary. Never throws on a non-zero exit — that is the assertion.
+ *
+ * `cwd` is pinned to the per-test temp dir on purpose. The CLI's `--root`
+ * defaults to `.`, so a subcommand invoked without an explicit `--root` — and
+ * plenty here are, because the flag is not what they are testing — resolves its
+ * root from the child's cwd. Left unpinned that is the repository itself, and
+ * every `wave-state create` in this file appends to the developer's live
+ * `.claude/ship/runs/`. The suite would then be writing into the corpus that
+ * `interlock report` reads, which is both a measurement defect and a way for a
+ * test to pass on accumulated state it never wrote.
+ */
 function run(args, opts = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
+    cwd: opts.cwd === undefined ? dir : opts.cwd,
     encoding: 'utf8',
-    input: opts.input === undefined ? '' : opts.input
+    input: opts.input === undefined ? '' : opts.input,
+    // Push configuration is environment-only (design D2), so the tests that
+    // exercise it set it here. An `env` of `{INTERLOCK_NTFY_TOPIC: ''}` is how
+    // a test asserts the UNSET path regardless of what the developer running
+    // the suite happens to have exported.
+    env: opts.env ? { ...process.env, ...opts.env } : process.env
   })
   assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
   return { code: r.status, stdout: r.stdout, stderr: r.stderr }
@@ -259,6 +276,25 @@ test('limits prints the caps and emits them as JSON', () => {
   assert.equal(out.limits.remediationRounds, 2)
   assert.equal(out.limits.maxParallel, 8)
   assert.equal(out.runtime.maxConcurrentAgents, 16)
+  // The lane-cap table and the solo envelope are their own top-level groups, not
+  // entries of the iteration-count limits — the JSON surface the spec requires.
+  assert.deepEqual(out.laneCaps.byTier, { 1: 8, 2: 8, 3: 6, 4: 4, 5: 8 })
+  assert.equal(out.laneCaps.cohesionMaxTier, 3)
+  assert.equal(out.solo.maxTasks, 20)
+  assert.equal(out.limits.maxTasksPerAgent, undefined, 'the scalar lane cap is gone, not aliased')
+})
+
+// --- waves --mode ---------------------------------------------------------
+
+test('waves --mode solo plans one lane, and both modes together are rejected', () => {
+  const solo = runJson(['waves', '--classified', paths.classified, '--mode', 'solo'])
+  assert.equal(solo.mode, 'solo')
+  assert.equal(solo.modeSource, 'flag')
+  assert.equal(solo.laneCount, 1, 'a solo plan is one lane holding the whole change')
+
+  const both = run(['waves', '--classified', paths.classified, '--mode', 'solo', '--mode', 'waves'])
+  assert.equal(both.code, 1, both.stdout)
+  assert.match(both.stderr, /contradictory mode overrides \(solo and waves\)/)
 })
 
 // --- remediate ------------------------------------------------------------
@@ -347,6 +383,100 @@ test('review --metrics without a change name is an actionable error', () => {
   const r = run(['review', '--findings', paths.findings, '--verdicts', paths.verdicts, '--metrics'])
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /--metrics requires a change name/)
+})
+
+// --- gate --metrics -------------------------------------------------------
+//
+// `review-artifacts` reaches a verdict through `gate`, never through `review`,
+// so without this flag that whole path is permanently unobservable: the report's
+// review-finding indicators read "unobserved" no matter how many gates ran.
+
+test('gate --metrics writes the counts that produced the verdict, and the report recognizes them', () => {
+  const root = join(dir, 'gate-metrics-root')
+  mkdirSync(root, { recursive: true })
+
+  // The blocker is dismissed, so this gate passes — and a passing gate must
+  // record as readily as a blocking one.
+  const out = runJson([
+    'gate', '--findings', paths.findings,
+    '--dismissed', 'unchecked null deref',
+    '--metrics', 'add-auth', '--root', root
+  ])
+  assert.equal(out.passed, true)
+  assert.equal(out.metrics.written, true)
+  assert.match(out.metrics.path, /\.claude\/metrics\/review-add-auth-.*\.json$/)
+
+  // The four counts are the ones the verdict rests on, not a re-reading of the
+  // findings file: one dismissal removed, nothing scored away by the band.
+  const record = JSON.parse(readFileSync(out.metrics.path, 'utf8'))
+  assert.equal(record.change, 'add-auth')
+  assert.deepEqual(record.counts, {
+    raised: 3,
+    dismissed: 1,
+    droppedByQuality: 0,
+    surviving: 2
+  })
+
+  // The whole point of emitting: the report's classifier must count it.
+  const report = runJson(['report', '--root', root])
+  assert.equal(report.coverage.metrics.recognized, 1, JSON.stringify(report.coverage.metrics))
+  assert.deepEqual(report.coverage.metrics.unrecognized, [])
+})
+
+test('a passing gate with nothing raised still records zero as an observed count', () => {
+  const root = join(dir, 'gate-metrics-zero')
+  mkdirSync(root, { recursive: true })
+  const out = runJson([
+    'gate', '--findings', file('no-findings.json', []), '--metrics', 'add-auth', '--root', root
+  ])
+  assert.equal(out.passed, true)
+  assert.equal(out.metrics.written, true)
+  const record = JSON.parse(readFileSync(out.metrics.path, 'utf8'))
+  assert.deepEqual(record.counts, { raised: 0, dismissed: 0, droppedByQuality: 0, surviving: 0 })
+})
+
+test('gate --metrics leaves a blocking verdict and its exit 1 untouched when the write fails', { skip: isRoot() }, () => {
+  const root = join(dir, 'gate-metrics-readonly')
+  mkdirSync(root, { recursive: true })
+  chmodSync(root, 0o500)
+  try {
+    const r = run(['gate', '--findings', paths.findings, '--metrics', 'add-auth', '--root', root])
+    assert.equal(r.code, 1, 'bookkeeping must not rescue a blocked gate')
+    assert.match(r.stdout, /GATE BLOCKED/)
+    assert.match(r.stderr, /metrics not written:/)
+
+    const out = run([
+      'gate', '--findings', paths.findings, '--metrics', 'add-auth', '--root', root, '--json'
+    ])
+    assert.equal(out.code, 1)
+    const parsed = JSON.parse(out.stdout)
+    assert.equal(parsed.passed, false, 'the verdict must survive a failed write')
+    assert.equal(parsed.blockers.length, 1)
+    assert.equal(parsed.metrics.written, false)
+    assert.ok(parsed.metrics.reason, 'a failed metrics write must carry a reason')
+  } finally {
+    chmodSync(root, 0o700)
+  }
+})
+
+test('gate --metrics without a change name is an actionable error', () => {
+  const r = run(['gate', '--findings', paths.findings, '--metrics'])
+  assert.notEqual(r.code, 0)
+  assert.match(r.stderr, /--metrics requires a change name/)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+})
+
+test('gate without --metrics writes nothing and never infers a change name', () => {
+  const root = join(dir, 'gate-metrics-absent')
+  mkdirSync(root, { recursive: true })
+  const out = runJson(['gate', '--findings', paths.findings, '--root', root], 1)
+  assert.equal(out.passed, false)
+  assert.ok(!('metrics' in out), 'an unasked-for write must not even report itself')
+  assert.equal(
+    existsSync(join(root, '.claude', 'metrics')),
+    false,
+    'no change name means no record, never a record under a guessed name'
+  )
 })
 
 // --- verify ---------------------------------------------------------------
@@ -824,6 +954,24 @@ test('a run state round-trips through the CLI as JSON', () => {
   assert.equal(afterVerify.wave, 2)
 })
 
+test('wave-state carries the mode from the plan into the state and echoes it on next', () => {
+  // A waves plan reports mode waves; a solo plan reports mode solo. The step the
+  // host reads has to name it, or a solo run briefs its one agent as an ordinary
+  // lane. `create` carries it off the plan; `next` echoes it.
+  const wavesPlan = runJson(['waves', '--classified', paths.classified])
+  const wavesState = runJson(['wave-state', 'create', '--plan', file('mode-waves-plan.json', wavesPlan)])
+  assert.equal(wavesState.mode, 'waves')
+  const wavesStep = runJson(['wave-state', 'next', '--state', file('mode-waves-state.json', wavesState)])
+  assert.equal(wavesStep.mode, 'waves')
+
+  const soloPlan = runJson(['waves', '--classified', paths.classified, '--mode', 'solo'])
+  const soloState = runJson(['wave-state', 'create', '--plan', file('mode-solo-plan.json', soloPlan)])
+  assert.equal(soloState.mode, 'solo')
+  assert.deepEqual(soloState.laneCaps, { 1: 8, 2: 8, 3: 6, 4: 4, 5: 8 })
+  const soloStep = runJson(['wave-state', 'next', '--state', file('mode-solo-state.json', soloState)])
+  assert.equal(soloStep.mode, 'solo')
+})
+
 test('create → record-batch produces a JSONL with contiguous seq and a reconstructable walk', () => {
   const plan = runJson(['waves', '--classified', paths.classified])
   const planFile = file('plan-traj.json', plan)
@@ -859,7 +1007,7 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(kinds, [
     'wave-action', 'cli-exit', // create
     'wave-action', 'cli-exit', // next
-    'agent-spawn', 'agent-spawn', // next's run-batch step names both tasks
+    'agent-spawn', // next's run-batch step: one cohesion lane, one agent
     'wave-action', 'cli-exit' // record-batch
   ])
 
@@ -867,11 +1015,13 @@ test('create → record-batch produces a JSONL with contiguous seq and a reconst
   assert.deepEqual(waveActions.map(e => e.source), ['create', 'next', 'record-batch'])
   assert.deepEqual(waveActions.map(e => e.action), ['run-batch', 'run-batch', 'verify'])
 
-  // Two disjoint tasks are two lanes, so two spawns — one per agent.
+  // The two pathless tier≤3 tasks of group 1 pack into ONE cohesion lane, so one
+  // agent runs both — one spawn, labelled for the lane's anchor task plus its
+  // followers (`1.1+1`). Both task outcomes still record through record-batch.
   const spawns = events.filter(e => e.type === 'agent-spawn')
-  assert.deepEqual(spawns.map(e => e.taskId), ['1.1', '1.2'])
-  assert.deepEqual(spawns.map(e => e.label), ['1.1', '1.2'])
-  assert.deepEqual(spawns.map(e => e.kind), ['implementer', 'implementer'])
+  assert.deepEqual(spawns.map(e => e.taskId), ['1.1'])
+  assert.deepEqual(spawns.map(e => e.label), ['1.1+1'])
+  assert.deepEqual(spawns.map(e => e.kind), ['implementer'])
 
   const exits = events.filter(e => e.type === 'cli-exit')
   assert.deepEqual(exits.map(e => e.command), ['wave-state create', 'wave-state next', 'wave-state record-batch'])
@@ -1034,7 +1184,7 @@ test('agent-spawn events take the change name from the state too', () => {
   const events = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
     .split('\n').filter(Boolean).map(l => JSON.parse(l))
   const spawns = events.filter(e => e.type === 'agent-spawn')
-  assert.equal(spawns.length, 2, 'the run-batch step spawns one agent per lane')
+  assert.equal(spawns.length, 1, 'group 1 is one cohesion lane, so one agent — one spawn')
   for (const e of spawns) assert.equal(e.change, 'add-widget-export')
 })
 
@@ -1095,14 +1245,15 @@ test('a legacy state with no name falls back to the per-invocation --change', ()
 })
 
 test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
-  // Width-deferred at maxParallel 1 rather than path-serialized: same-file tasks
-  // are now ONE lane in one batch, so a collision fixture would leave a single
-  // batch and nothing to prove about later ones.
+  // Three disjoint lanes deferred across batches at maxParallel 1. The tasks are
+  // tier 4, ABOVE the cohesion ceiling, so they stay three separate lanes rather
+  // than packing into one — cohesion (not maxParallel) is what would fold them,
+  // and maxParallel 1 then spreads the three lanes one-per-batch.
   const classified = file('classified-serial.json', {
     tasks: [
-      { id: '1.1', group: 1, description: 'auth a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
-      { id: '1.2', group: 1, description: 'auth b', tier: 2, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] },
-      { id: '1.3', group: 1, description: 'auth c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] }
+      { id: '1.1', group: 1, description: 'auth a', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+      { id: '1.2', group: 1, description: 'auth b', tier: 4, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] },
+      { id: '1.3', group: 1, description: 'auth c', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] }
     ]
   })
   const plan = runJson(['waves', '--classified', classified, '--max-parallel', '1'])
@@ -2072,3 +2223,261 @@ test('plan rejects an unknown subcommand instead of guessing', () => {
 function isRoot() {
   return typeof process.getuid === 'function' && process.getuid() === 0
 }
+
+// --- paths: the two deterministic reads a host makes at close ---------------
+//
+// Neither may ever exit non-zero. A host calls these on its way out, and a read
+// that failed the close would cost the run its receipt — the one record that
+// explains what happened — over a set the receipt is perfectly able to record
+// as unobserved.
+
+function gitRepo(sub, files) {
+  const root = join(dir, sub)
+  mkdirSync(root, { recursive: true })
+  const git = args =>
+    spawnSync('git', args, {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Test',
+        GIT_AUTHOR_EMAIL: 'test@example.invalid',
+        GIT_COMMITTER_NAME: 'Test',
+        GIT_COMMITTER_EMAIL: 'test@example.invalid'
+      }
+    })
+  git(['init', '-q', '-b', 'main'])
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true })
+    writeFileSync(join(root, rel), body)
+  }
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'test'])
+  return { root, sha: git(['rev-parse', 'HEAD']).stdout.trim() }
+}
+
+test('paths touched reads a real commit through the binary', () => {
+  const repo = gitRepo('paths-repo', { 'lib/a.mjs': 'a\n', 'test/a.test.mjs': 'b\n' })
+  const result = runJson(['paths', 'touched', '--commit', repo.sha, '--root', repo.root])
+  assert.equal(result.observed, true)
+  assert.deepEqual(result.paths.sort(), ['lib/a.mjs', 'test/a.test.mjs'])
+})
+
+test('every unobserved paths read exits 0 and names its reason', () => {
+  const repo = gitRepo('paths-repo-2', { 'a.txt': 'a\n' })
+  for (const args of [
+    ['paths', 'touched', '--root', repo.root],
+    ['paths', 'touched', '--commit', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', '--root', repo.root],
+    ['paths', 'touched', '--commit', '--not-an-object', '--root', repo.root],
+    ['paths', 'predicted', '--root', repo.root],
+    ['paths', 'predicted', '--plan', 'nowhere/plan.json', '--root', repo.root]
+  ]) {
+    const result = runJson(args, 0)
+    assert.equal(result.observed, false, `${args.join(' ')} should be unobserved`)
+    assert.equal(result.paths, null, 'an unobserved read is null, never an empty set')
+    assert.ok(result.reason, 'and it carries its reason')
+  }
+})
+
+test('paths predicted reports the union and whether every task predicted', () => {
+  const root = join(dir, 'paths-plan')
+  mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
+  const plan = tasks => JSON.stringify({ waves: [{ group: 1, batches: [[tasks]] }], testWave: null })
+
+  writeFileSync(join(root, '.claude/ship/plan.json'), plan([{ id: '1.1', paths: ['lib/a.mjs'] }]))
+  const complete = runJson(['paths', 'predicted', '--root', root])
+  assert.equal(complete.observed, true)
+  assert.deepEqual(complete.paths, ['lib/a.mjs'])
+  assert.equal(complete.complete, true)
+
+  writeFileSync(join(root, '.claude/ship/plan.json'), plan([{ id: '1.1', paths: ['lib/a.mjs'] }, { id: '1.2' }]))
+  const partial = runJson(['paths', 'predicted', '--root', root])
+  assert.equal(partial.complete, false, 'a task that declined to predict is not a task that predicted nothing')
+  assert.match(partial.reason, /declared no paths/)
+})
+
+test('paths rejects an unknown subcommand instead of guessing', () => {
+  const r = run(['paths', 'sniff'])
+  assert.notEqual(r.code, 0)
+  assert.match(r.stderr, /unknown paths subcommand: sniff/)
+})
+
+// --- evals capture ----------------------------------------------------------
+
+/** A reconstructable run under `root`, written through the CLI's own appender. */
+function recordCapturableRun(root, runId) {
+  const append = event => {
+    const p = file(`${runId}-${event.type}-${Math.random().toString(36).slice(2)}.json`, { runId, change: 'add-widget', ...event })
+    const r = run(['run-log', 'append', '--event', p, '--root', root, '--json'])
+    assert.equal(r.code, 0)
+  }
+  append({ type: 'run-start', mode: 'checkpoint' })
+  append({ type: 'wave-action', action: 'run-batch', wave: '1', source: 'next' })
+  append({ type: 'cli-exit', command: 'interlock wave-state next', exitCode: 0 })
+  append({ type: 'run-halt', reason: 'record-batch refused: status "done" is not one of ok, blocked, partial' })
+}
+
+test('evals capture emits a draft into the caller\'s directory and touches nothing else', () => {
+  const root = join(dir, 'capture-ok')
+  mkdirSync(join(root, 'evals'), { recursive: true })
+  recordCapturableRun(root, 'run-cli-1')
+
+  const result = runJson(['evals', 'capture', '--run', 'run-cli-1', '--out', 'drafts/case', '--root', root])
+  assert.equal(result.ok, true)
+  assert.ok(existsSync(join(root, 'drafts/case/case.yaml')))
+  assert.ok(existsSync(join(root, 'drafts/case/graders/observed-value.md')))
+  assert.match(result.provenance, /run-cli-1\.jsonl events/)
+  assert.deepEqual(readdirSync(join(root, 'evals')), [], 'the suite is never written to')
+
+  const grader = readFileSync(join(root, 'drafts/case/graders/observed-value.md'), 'utf8')
+  assert.match(grader, /pattern: 'done'/, 'the pattern is the value the run named, quoted')
+})
+
+test('evals capture refuses an output inside the suite, an occupied one, and an unciteable run', () => {
+  const root = join(dir, 'capture-refuse')
+  mkdirSync(join(root, 'evals'), { recursive: true })
+  recordCapturableRun(root, 'run-cli-2')
+  mkdirSync(join(root, 'taken'), { recursive: true })
+  writeFileSync(join(root, 'taken', 'case.yaml'), 'name: mine\n')
+
+  const refusals = [
+    [['evals', 'capture', '--run', 'run-cli-2', '--out', 'evals/new-case', '--root', root], /never writes into the suite/],
+    [['evals', 'capture', '--run', 'run-cli-2', '--out', 'taken', '--root', root], /already holds a case/],
+    [['evals', 'capture', '--run', 'run-never-happened', '--out', 'drafts/x', '--root', root], /not reconstructable/]
+  ]
+  for (const [args, expected] of refusals) {
+    const r = run(args)
+    assert.equal(r.code, 1, `${args.join(' ')} must exit non-zero`)
+    assert.match(r.stdout + r.stderr, expected)
+  }
+
+  assert.deepEqual(readdirSync(join(root, 'evals')), [], 'no refusal creates anything under evals/')
+  assert.equal(readFileSync(join(root, 'taken', 'case.yaml'), 'utf8'), 'name: mine\n', 'nor overwrites a case')
+  assert.equal(existsSync(join(root, 'drafts')), false, 'nor leaves a directory behind')
+})
+
+test('evals capture requires both --run and --out, and names the subcommands it knows', () => {
+  const missingRun = run(['evals', 'capture', '--out', 'drafts/x'])
+  assert.notEqual(missingRun.code, 0)
+  assert.match(missingRun.stderr, /requires --run/)
+
+  const missingOut = run(['evals', 'capture', '--run', 'x'])
+  assert.notEqual(missingOut.code, 0)
+  assert.match(missingOut.stderr, /requires --out/)
+
+  const unknown = run(['evals', 'sniff'])
+  assert.notEqual(unknown.code, 0)
+  assert.match(unknown.stderr, /unknown evals subcommand: sniff — expected triage\|capture/)
+})
+
+test('the new commands are in the usage text, with capture\'s refusal exit', () => {
+  const r = run(['--help'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /interlock evals capture --run <id> --out <dir>/)
+  assert.match(r.stdout, /interlock paths touched --commit <sha>/)
+  assert.match(r.stdout, /interlock paths predicted/)
+  assert.match(r.stdout, /evals capture\s+the capture was refused/)
+})
+
+// --- interlock notify (design D1, D2) ---------------------------------------
+//
+// The relay runs in its own process for the same reason it does in
+// `run.test.mjs`: `run()` here is `spawnSync`, which blocks this process's
+// event loop for the whole child run, so an in-process server would never
+// accept the connection.
+
+/** A ntfy stand-in on loopback, in its own process. Answers with `status`. */
+async function relay(status = 200) {
+  const relayDir = mkdtempSync(join(tmpdir(), 'interlock-cli-relay-'))
+  const log = join(relayDir, 'requests.jsonl')
+  const script = `
+    const { createServer } = require('node:http')
+    const { appendFileSync } = require('node:fs')
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => {
+        appendFileSync(${JSON.stringify(log)},
+          JSON.stringify({ url: req.url, method: req.method, headers: req.headers, body }) + '\\n')
+        res.writeHead(${status})
+        res.end('x')
+      })
+    })
+    server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
+  `
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const port = await new Promise((resolve, reject) => {
+    child.stdout.once('data', d => resolve(Number(String(d).trim())))
+    child.once('error', reject)
+  })
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests: () =>
+      existsSync(log)
+        ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [],
+    close: () => {
+      child.kill()
+      rmSync(relayDir, { recursive: true, force: true })
+    }
+  }
+}
+
+/** Read back a `Title` header — a headline travels RFC 2047 encoded. */
+function decodeTitle(value) {
+  const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
+  return match ? Buffer.from(match[1], 'base64').toString('utf8') : value
+}
+
+test('notify with no topic configured says so and exits 0 — an optional feature left off is not a failure', () => {
+  const r = run(['notify', '--title', 'anything'], { env: { INTERLOCK_NTFY_TOPIC: '' } })
+  assert.equal(r.code, 0, 'a skill or a driver calls this unconditionally; it must never halt a loop')
+  assert.match(r.stdout, /^push: not configured — set INTERLOCK_NTFY_TOPIC$/m)
+})
+
+test('notify --json emits { sent, reason } whether or not a push was attempted', () => {
+  const r = run(['notify', '--title', 'anything', '--json'], { env: { INTERLOCK_NTFY_TOPIC: '' } })
+  assert.equal(r.code, 0)
+  const parsed = JSON.parse(r.stdout)
+  assert.equal(parsed.sent, false)
+  assert.match(parsed.reason, /not configured/)
+})
+
+test('notify checkpoint posts the spec checkpoint title at default priority', async () => {
+  const stub = await relay()
+  try {
+    const r = run(['notify', 'checkpoint', 'add-thing'], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
+    })
+    assert.equal(r.code, 0)
+    assert.match(r.stdout, /^push: sent \(ntfy\)$/m)
+    const posted = stub.requests()
+    assert.equal(posted.length, 1)
+    assert.equal(posted[0].url, '/secret-topic-abc')
+    assert.equal(decodeTitle(posted[0].headers.title), 'SPEC CHECKPOINT — add-thing')
+    assert.equal(posted[0].headers.priority, 'default')
+    assert.ok(!r.stdout.includes('secret-topic-abc'), 'the topic is a capability and never printed')
+  } finally {
+    stub.close()
+  }
+})
+
+test('a notify a person invoked directly exits 1 when the relay refused it', async () => {
+  const broken = await relay(500)
+  try {
+    const r = run(['notify', '--title', 'a title', '--body', 'a body'], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: broken.url }
+    })
+    assert.equal(r.code, 1, 'a command that did not do its job exits non-zero — unlike the close, which is advisory')
+    assert.match(r.stdout, /^push: failed — HTTP 500$/m)
+    assert.ok(!r.stdout.includes('secret-topic-abc'))
+  } finally {
+    broken.close()
+  }
+})
+
+test('notify refuses a form it cannot build a message from, rather than posting an empty one', () => {
+  const r = run(['notify'], { env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc' } })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /--title/)
+})

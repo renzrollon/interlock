@@ -1,4 +1,4 @@
-# continuity-provenance Specification
+# spec/continuity-provenance Specification
 
 ## Purpose
 
