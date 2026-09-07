@@ -45,7 +45,9 @@ Every one of those halts is a non-zero exit from a `interlock` subcommand rather
 
 ### Reading a `SHIP HALTED` run
 
-The final summary tells you *that* a run halted and why in one sentence. To see the whole walk that led there — every wave-state action, every agent the loop spawned, every verify judgement — read the run's trajectory instead of re-deriving it from git history or from the summary alone:
+The final summary tells you *that* a run halted and why in one sentence. Every terminal summary also carries a `run: <runId>` row, a `project: <slug>` row and a `cwd: <absolute path>` row — the run id is the join key: it is the exact filename of the trajectory below, `<slug>` is a pure function of the directory the close ran in (every character outside `[A-Za-z0-9]` becomes `-`), which is the host's project directory under `~/.claude/projects` only when the session started there, and `cwd` is that directory itself. Use them to find the right trajectory file when more than one run is on disk, before falling back to `run-log list`. When a run halted before any plan was adopted there is no run id yet, and the row says so instead of printing an empty value: `run: none — the run halted before a plan was adopted`.
+
+To see the whole walk that led there — every wave-state action, every agent the loop spawned, every verify judgement — read the run's trajectory instead of re-deriving it from git history or from the summary alone:
 
 ```bash
 interlock run-log list                       # every recorded run: change, halted?, event/skip counts
@@ -97,7 +99,7 @@ Exit `0` is a terminal summary and `1` is a halt. Exit `2` means the invocation 
 
 `interlock-ship-acp <change>` still works: it prints a deprecation line on stderr and runs `interlock-run --host acp` with your arguments. It is removed in the next minor version.
 
-**The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner before a long run. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
+**The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Run `interlock doctor` before a long run — it prints the derived `requiredCommands` list and the exact allow rules to add, rather than a fixed list this page would have to keep in sync. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
 
 **You stopped the run, and resuming re-ran more than you expected.** Resume from `/workflows` keeps completed agents' results, but two rules decide which ones survive, and the second one surprises people:
 
@@ -162,6 +164,16 @@ LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / 
 
 `--strict` (or all three flags together) omits this line. Continuity (`spec --continue`) also launches lean unless you pass a tail flag.
 
+### `ARCHIVE PENDING`
+
+Printed on a clean completion — no halt, and no leftover tasks — immediately before `Do not start another ship run unless the user asks.`:
+
+```text
+ARCHIVE PENDING — <change>: after merge, run openspec archive <change>
+```
+
+Archiving happens after the change merges, not before, so the run cannot do it for you and does not try — this line is a reminder, never an action, and it never changes the exit code. When other completed changes under the planning directory are also sitting there unarchived, a second line follows: `also unarchived: <n> completed change(s) — run interlock drift`. Neither line prints on a halt or on a run that finished with unticked tasks, because in both cases the change is not actually complete.
+
 ## The soft continues
 
 ### `GRAPH UNAVAILABLE`
@@ -178,6 +190,12 @@ If your repo *is* JS/TS, Python, or shell and the graph is still empty, build it
 interlock-graph build .
 interlock-graph report .
 ```
+
+### `PUSH FAILED`
+
+Only when a topic was configured and the driver passed `--notify` to the close. `interlock run close` then posts one message per terminal outcome — a halt at ntfy priority `high`, a completion at default — to `INTERLOCK_NTFY_TOPIC`, against the server named by `INTERLOCK_NTFY_URL` (defaulting to the public `https://ntfy.sh`). Treat the topic like a secret: it is the only authentication the public server has, so anyone who knows it reads every message this run — or any other run configured with it — ever sends. Point `INTERLOCK_NTFY_URL` at a server you run yourself if the public relay is not an acceptable trust boundary.
+
+When the push fails — a non-2xx status, a network error, a timeout, or invalid configuration — the summary carries a `push: failed — <reason>` row and the degradation block carries a matching `PUSH FAILED: <reason>` banner, so the "No degradation banners" line is not printed for a run whose operator expected a message and got none. The reason never echoes the topic or the server URL. The exit code never moves because of the push, on success or failure: a close that would have exited `0` or `1` without `--notify` exits the same way with it. With no topic configured, nothing is attempted and neither the row nor the banner prints — an optional feature left off is not a degraded run.
 
 ### `NO TEST PROFILE`
 

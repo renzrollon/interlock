@@ -13,10 +13,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -69,7 +70,7 @@ function repo(name = 'add-thing', over = {}) {
 }
 
 /** Run one `interlock` command in the repo and return its parsed step. */
-function run(root, argv, { results, expectExit = 0 } = {}) {
+function run(root, argv, { results, expectExit = 0, env } = {}) {
   const full = [...argv]
   if (results !== undefined) {
     file(root, '.claude/ship/results.json', results)
@@ -82,7 +83,10 @@ function run(root, argv, { results, expectExit = 0 } = {}) {
     stdout = execFileSync(process.execPath, [BIN, ...full], {
       cwd: root,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Push configuration reaches the close the same way it reaches a real
+      // run: through the child's environment, never through a file in the tree.
+      env: env ? { ...process.env, ...env } : process.env
     })
   } catch (err) {
     code = err.status === undefined ? 1 : err.status
@@ -1180,5 +1184,225 @@ test('a host that reports no usage says so once, rather than leaving empty figur
     assert.match(closed.summary, /recorded as unknown/)
   } finally {
     cleanup(root)
+  }
+})
+
+// --- the close's identity rows, archive reminder and push (design D5/D7/D9) --
+//
+// Everything below drives the REAL close through the CLI, because that is the
+// only party that reads the environment, calls `detectUnarchived` and awaits
+// the one outbound request this codebase makes. The relay is a loopback
+// `http.createServer`: the suite never touches the network, and a test that
+// stubbed `fetch` would prove only that the stub works — not that the child
+// process the drivers actually spawn posts anything at all.
+
+/**
+ * Read back a `Title` header. Every headline contains an em dash, which is not
+ * a ByteString, so it travels RFC 2047 encoded (`lib/notify.mjs`).
+ */
+function decodeHeader(value) {
+  const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
+  return match ? Buffer.from(match[1], 'base64').toString('utf8') : value
+}
+
+/**
+ * A ntfy stand-in on loopback, in a process of its OWN.
+ *
+ * It cannot live in this one. Every command here goes through `execFileSync`,
+ * which blocks this process's event loop for the whole child run — an
+ * in-process server would never accept the connection, and the close would
+ * report a five-second timeout that says nothing about the code under test.
+ * So the relay is a separate node process and it records what it received to
+ * a file this process reads after the close has returned.
+ */
+async function relay(status = 200) {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-relay-'))
+  const log = join(dir, 'requests.jsonl')
+  const script = `
+    const { createServer } = require('node:http')
+    const { appendFileSync } = require('node:fs')
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => {
+        appendFileSync(${JSON.stringify(log)},
+          JSON.stringify({ url: req.url, method: req.method, headers: req.headers, body }) + '\\n')
+        res.writeHead(${status})
+        res.end('x')
+      })
+    })
+    server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
+  `
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const port = await new Promise((resolve, reject) => {
+    child.stdout.once('data', d => resolve(Number(String(d).trim())))
+    child.once('error', reject)
+  })
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests: () =>
+      existsSync(log)
+        ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [],
+    close: () => {
+      child.kill()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/** A sibling change in the same tree, with every box ticked or none. */
+function siblingChange(root, name, { complete = true } = {}) {
+  file(root, `openspec/changes/${name}/proposal.md`, `# ${name}\n\nWhy: because.\n`)
+  file(root, `openspec/changes/${name}/tasks.md`, `# Tasks\n\n- [${complete ? 'x' : ' '}] 1.1 Do it\n`)
+}
+
+/** Drive a repo all the way to a clean, leftover-free close and return it. */
+function toCleanClose(root, change, closeArgs = [], opts = {}) {
+  const verified = toTail(root, change, [])
+  const commit = run(root, [...verified.then.argv]).step
+  assert.equal(commit.action, 'commit')
+  return run(root, [...commit.then.argv, ...closeArgs], {
+    results: [{ ok: true, sha: 'abc1234' }],
+    ...opts
+  }).step
+}
+
+test('a clean close prints the run id, the project slug, the cwd and the archive reminder', () => {
+  const { root, change } = repo()
+  try {
+    const closed = toCleanClose(root, change)
+    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+    assert.ok(manifest.runId, 'a run that adopted a plan has a run id')
+    assert.match(closed.summary, new RegExp(`^  run: ${manifest.runId}$`, 'm'))
+    assert.match(closed.summary, /^ {2}project: -/m, 'the slug is the absolute cwd with every non-alphanumeric hyphenated')
+    assert.match(closed.summary, new RegExp(`^ {2}cwd: `, 'm'))
+    assert.match(closed.summary, new RegExp(`^ARCHIVE PENDING — ${change}: after merge, run openspec archive ${change}$`, 'm'))
+    assert.equal(closed.exitCode, 0, 'the reminder is unmissable, never a gate — every clean ship would halt forever')
+    assert.doesNotMatch(closed.summary, /also unarchived/, 'no sibling change is complete in this fixture')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('another completed change is counted beside the reminder, never conflated with it', () => {
+  const { root, change } = repo()
+  try {
+    siblingChange(root, 'earlier-thing', { complete: true })
+    siblingChange(root, 'unfinished-thing', { complete: false })
+    const closed = toCleanClose(root, change)
+    assert.match(closed.summary, new RegExp(`^ARCHIVE PENDING — ${change}`, 'm'))
+    assert.match(closed.summary, /^ {2}also unarchived: 1 completed change\(s\) — run interlock drift$/m)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an unreadable sibling change skips the archive check and never fails the close', () => {
+  const { root, change } = repo()
+  try {
+    // A directory where `tasks.md` should be: `inspectChange` reads it
+    // unguarded, so this is the shape that turns the whole sweep into a throw.
+    mkdirSync(join(root, 'openspec/changes/broken-thing/tasks.md'), { recursive: true })
+    file(root, 'openspec/changes/broken-thing/proposal.md', '# broken\n')
+    const closed = toCleanClose(root, change)
+    assert.equal(closed.exitCode, 0, 'one unreadable sibling must not turn a clean close into exit 1')
+    assert.doesNotMatch(closed.summary, /ARCHIVE PENDING/, 'a check that did not run must not claim a result')
+    assert.match(closed.summary, /^ {2}archive check skipped: /m, 'and the degradation is spoken, never swallowed')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a halted close prints no archive reminder — the change is not complete', () => {
+  const { root, change } = repo()
+  try {
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close', '--halt', 'stopped for the test'], { expectExit: 1 }).step
+    assert.match(closed.summary, /^SHIP HALTED — stopped for the test$/m)
+    assert.doesNotMatch(closed.summary, /ARCHIVE PENDING/)
+    assert.match(closed.summary, /^ {2}run: /m, 'the identity rows print on a halt too — that is when they matter most')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a close without --notify makes no request, even with a topic configured', async () => {
+  const stub = await relay()
+  const { root, change } = repo()
+  try {
+    const closed = toCleanClose(root, change, [], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
+    })
+    assert.equal(stub.requests().length, 0, 'the driver requests the push; a configured topic alone never does')
+    assert.doesNotMatch(closed.summary, /push:/)
+  } finally {
+    cleanup(root)
+    await stub.close()
+  }
+})
+
+test('a close with --notify posts the summary\'s own first line, at high priority on a halt', async () => {
+  const stub = await relay()
+  const { root, change } = repo()
+  try {
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close', '--halt', 'stopped for the test', '--notify'], {
+      expectExit: 1,
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
+    }).step
+
+    const posted = stub.requests()
+    assert.equal(posted.length, 1, 'exactly one push per close')
+    const [request] = posted
+    assert.equal(request.method, 'POST')
+    assert.equal(request.url, '/secret-topic-abc')
+    assert.equal(
+      decodeHeader(request.headers.title),
+      closed.summary.split('\n')[0],
+      'the push and the print carry ONE headline, so they cannot disagree'
+    )
+    assert.equal(request.headers.priority, 'high', 'a halt is what the reader who walked away needs loudest')
+    assert.match(request.body, new RegExp(`^change: ${change}$`, 'm'))
+    assert.match(request.body, /^run: /m)
+    assert.match(closed.summary, /^ {2}push: sent \(ntfy\)$/m)
+  } finally {
+    cleanup(root)
+    await stub.close()
+  }
+})
+
+test('a rejected push is a banner and a row, and never the exit code', async () => {
+  const forbidden = await relay(403)
+  const { root, change } = repo()
+  try {
+    const closed = toCleanClose(root, change, ['--notify'], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: forbidden.url }
+    })
+    assert.match(closed.summary, /^ {2}push: failed — HTTP 403$/m)
+    assert.ok(closed.banners.includes('PUSH FAILED: HTTP 403'), 'the failure is a degradation banner, not only a row')
+    assert.doesNotMatch(closed.summary, /No degradation banners/, 'a run with a banner must not claim it had none')
+    assert.equal(closed.exitCode, 0, 'the run happened; a relay that would not take the news did not unhappen it')
+  } finally {
+    cleanup(root)
+    await forbidden.close()
+  }
+})
+
+test('the topic reaches the relay and nothing else — not the summary, not the trajectory', async () => {
+  const forbidden = await relay(403)
+  const { root, change } = repo()
+  const topic = 'secret-topic-abc'
+  try {
+    const closed = toCleanClose(root, change, ['--notify'], {
+      env: { INTERLOCK_NTFY_TOPIC: topic, INTERLOCK_NTFY_URL: forbidden.url }
+    })
+    assert.ok(!closed.summary.includes(topic), 'the topic is the relay\'s only auth — it is a capability, not a label')
+    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+    const trajectory = readFileSync(join(root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
+    assert.ok(!trajectory.includes(topic), 'nor may it reach the corpus the trajectory writes for later readers')
+  } finally {
+    cleanup(root)
+    await forbidden.close()
   }
 })

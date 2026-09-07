@@ -51,7 +51,7 @@ OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 1
 
 **Interlock is a Claude Code plugin.** It relies on Claude Code's skill frontmatter, plugin `bin/` PATH injection, subagent fan-out, and the workflow runtime — Cursor and Copilot are not supported in 0.x. Claude Code is the **default and supported host**, and `/interlock:ship` launches the workflow there or halts; it never falls back to anything else. There is an experimental **runner** you invoke yourself — `interlock-run`, which drives the same loop over the Claude Code CLI, an [ACP](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code, described under [Experimental](#experimental) — and no slash command starts it for you.
 
-Before a long `ship` run, allowlist the commands its agents use (`interlock`, `interlock-graph`, `openspec`, `git`, and your test runner). Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
+Before a long `ship` run, allowlist the commands its agents use — run `interlock doctor` to get the exact list (derived from what the flow shells out to, plus your own test profile) rather than one enumerated here. Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt — which is exactly what a zero-touch run should never do.
 
 Also decide once whether this repository keeps its run corpora. If you will run `/interlock:ship` against your own product, the trajectory, outcome record and review metrics are your audit trail and belong in git; if you are developing a harness, they are exhaust and belong in `.gitignore`. Both `.gitignore` blocks and the two caveats that bite when committing are in [11 — whether to keep them](docs/11-the-indicators.md#whether-to-keep-them).
 
@@ -146,7 +146,22 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 | `interlock run` | The whole ship loop, as steps: every briefing and every branch a driver obeys next |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one |
 
-Every one of them runs without a model and without the network, so you can check any decision the loop made yourself.
+Every one of them runs without a model and without the network, so you can check any decision the loop made yourself — with one exception: `interlock notify` and `run close --notify` open a network connection, and only when `INTERLOCK_NTFY_TOPIC` is set. See [Configuration: push notifications](#configuration-push-notifications) below.
+
+### Configuration: push notifications
+
+A ship run that halts or completes while nobody is watching can push you a message. It is off by default and reads only from the environment — nothing is read from or written to the repo tree for this:
+
+| Variable | Meaning |
+|---|---|
+| `INTERLOCK_NTFY_TOPIC` | The [ntfy](https://ntfy.sh) topic to post to. Unset (the default) means `run close` posts nothing, and the suite never makes a request. Treat the value as a secret — anyone who knows it reads every message, since it is the only authentication the public server offers. |
+| `INTERLOCK_NTFY_URL` | The ntfy server, defaulting to the public `https://ntfy.sh`. Point it at a self-hosted server if the public relay is not an acceptable trust boundary for your halt reasons. |
+
+With a topic set, both `workflows/ship.js` and `bin/interlock-run` pass `--notify` on every close, so one message goes out per terminal outcome — `high` priority on `SHIP HALTED`, default priority otherwise — naming only the summary's first line, the change and the run id, never the topic, the working directory or the project slug. A failed push shows up as `push: failed — <reason>` in the summary and a `PUSH FAILED: <reason>` banner, and never changes the run's exit code. See [when it stops](docs/04-when-it-stops.md#push-failed) for the failure modes, or run a one-off yourself:
+
+```bash
+interlock notify --title "<title>" --body "<body>"
+```
 
 **`interlock-graph`** — a local, deterministic code knowledge graph. No vector store, no network. Agents navigate with token-budgeted subgraphs instead of re-grepping:
 

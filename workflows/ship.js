@@ -504,7 +504,11 @@ function closeArgs() {
   return [
     ...(banners.length ? ['--host-banners', `${WORK}/host-banners.json`] : []),
     '--host-observed',
-    `${WORK}/host-observed.json`
+    `${WORK}/host-observed.json`,
+    // Unconditional: this driver knows nothing about topics, servers or
+    // notification text. It requests the push; the CLI decides whether one is
+    // configured and what it says (design D1).
+    '--notify'
   ]
 }
 

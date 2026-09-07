@@ -127,7 +127,13 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
     assert.ok(ship.includes(banner), `the host no longer emits the "${banner}" banner`)
     assert.ok(!run.includes(banner), `lib/run.mjs restates the host's "${banner}" banner`)
   }
-  for (const banner of ['VERIFICATION SKIPPED: reason=', 'E2E FAILED (non-blocking by policy):']) {
+  for (const banner of [
+    'VERIFICATION SKIPPED: reason=',
+    'E2E FAILED (non-blocking by policy):',
+    // The push is the CLI's alone: the drivers pass `--notify` and know nothing
+    // about topics, servers or what a failed push is called.
+    'PUSH FAILED: '
+  ]) {
     assert.ok(run.includes(banner), `the run program no longer emits the "${banner}" banner`)
     assert.ok(!ship.includes(banner), `ship.js restates the CLI's "${banner}" banner`)
   }
@@ -1115,6 +1121,80 @@ test('a run with leftovers does not print a clean complete', () => {
   const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   assert.match(ship, /GOAL MET: interlock ship returned a terminal summary/)
   assert.doesNotMatch(receipt, /GOAL MET/, 'and means nothing on another host')
+
+  // The close's newer verbatim lines, pinned the same way and at the same
+  // single party. `ARCHIVE PENDING` is what a reader greps for after a merge;
+  // the other three are what a reader who was not watching reads first.
+  for (const line of [
+    'ARCHIVE PENDING — ',
+    'also unarchived: ',
+    'run: none — the run halted before a plan was adopted',
+    'push: sent (ntfy)'
+  ]) {
+    assert.ok(receipt.includes(line), `the receipt no longer prints "${line}"`)
+    assert.ok(!ship.includes(line), `ship.js restates the receipt's "${line}"`)
+  }
+})
+
+test('the archive fix command is one string, on every surface that prints it', () => {
+  // Three surfaces tell someone to archive: the drift report, the ship close,
+  // and the mr skill. A reader who greps one and finds the others worded
+  // differently learns that one of them is stale — so they are the same token.
+  for (const rel of ['lib/drift.mjs', 'lib/receipt.mjs', 'skills/mr/SKILL.md']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(text.includes('openspec archive '), `${rel} no longer names "openspec archive "`)
+  }
+})
+
+test('the network lives in exactly one module, and in neither driver', () => {
+  // The CLI makes ONE outbound request and README says so. The way that claim
+  // stops being true is a second `fetch` somewhere nobody looked, so this is a
+  // sweep rather than a pin on the module that has it.
+  const sources = []
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.name.endsWith('.mjs')) sources.push(full)
+    }
+  }
+  walk(join(ROOT, 'lib'))
+  for (const rel of ['bin/interlock', 'bin/interlock-graph', 'bin/interlock-run', 'workflows/ship.js']) {
+    sources.push(join(ROOT, rel))
+  }
+
+  const withFetch = sources
+    .filter(path => {
+      const text = readFileSync(path, 'utf8')
+      return /\bfetch\(/.test(text) || text.includes('globalThis.fetch')
+    })
+    .map(path => path.slice(ROOT.length + 1))
+  assert.deepEqual(
+    withFetch,
+    ['lib/notify.mjs'],
+    `the CLI's one network call moved or multiplied: ${withFetch.join(', ')}`
+  )
+
+  // And neither driver knows what a relay is. They request the push; the CLI
+  // decides whether one is configured and what it says.
+  for (const rel of ['bin/interlock-run', 'workflows/ship.js']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(!text.includes('ntfy'), `${rel} names the relay`)
+    assert.ok(!text.includes('INTERLOCK_NTFY'), `${rel} reads the push configuration itself`)
+  }
+})
+
+test('README names the one command that reaches the network, beside the claim that none does', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.ok(readme.includes('interlock notify'), 'README no longer names the one exception')
+  assert.ok(readme.includes('INTERLOCK_NTFY_TOPIC'), 'README no longer documents where the topic comes from')
+  assert.ok(readme.includes('INTERLOCK_NTFY_URL'), 'README no longer documents the self-hosted server')
+})
+
+test('docs/04 has a section for each new banner a reader will grep for', () => {
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.match(docs, /^#+ .*`?ARCHIVE PENDING`?/m, 'a reader who greps ARCHIVE PENDING must land on a section')
+  assert.match(docs, /^#+ .*`?PUSH FAILED`?/m, 'a reader who greps PUSH FAILED must land on a section')
 })
 
 test('succeeded tasks are ticked by the CLI, from what it recorded', () => {
@@ -1315,6 +1395,19 @@ function invokedSubcommands(text) {
   names.delete('ship') // the shim `interlock-ship-acp` names this binary
   return names
 }
+
+test('both drivers request the close push, and neither decides anything about it', () => {
+  // `--notify` is unconditional on both drivers by design (D1): the CLI owns
+  // whether a topic is configured. A driver that grew a condition here would
+  // be a driver deciding policy, and the two would drift apart silently.
+  for (const rel of ['workflows/ship.js', 'bin/interlock-run']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const start = text.indexOf('function closeArgs()')
+    assert.ok(start !== -1, `${rel} no longer assembles its close arguments in closeArgs()`)
+    const body = text.slice(start, text.indexOf('\n}', start))
+    assert.ok(body.includes("'--notify'"), `${rel}'s closeArgs() no longer requests the push`)
+  }
+})
 
 test('the runner and ship.js drive the same interlock subcommands', () => {
   const script = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
@@ -2292,6 +2385,62 @@ test('the block is always printed: either the degradations, or that there were n
     /No degradation banners/,
     'an empty degradation list must be said out loud, never rendered as an empty section'
   )
+})
+
+test('identity rows, the push row and the archive reminder (design D7, D8, D9)', async () => {
+  const { formatRunSummary } = await import('../lib/receipt.mjs')
+  const base = { change: 'demo-change', summary: { plan: null }, flags: {}, degradations: [] }
+
+  const defaults = formatRunSummary(base)
+  assert.match(
+    defaults,
+    /^ {2}run: none — the run halted before a plan was adopted$/m,
+    'a run id is not a non-empty string by default, so the row explains the absence'
+  )
+  assert.doesNotMatch(defaults, /ARCHIVE PENDING/, 'unarchived defaults to null: no reminder without it')
+  assert.doesNotMatch(defaults, /^ {2}project: /m)
+  assert.doesNotMatch(defaults, /^ {2}cwd: /m)
+  assert.doesNotMatch(defaults, /^ {2}push: /m)
+
+  const clean = formatRunSummary({
+    ...base,
+    unarchived: { thisChange: true, others: 2 }
+  })
+  assert.match(clean, /ARCHIVE PENDING — demo-change: after merge, run openspec archive demo-change/)
+  assert.match(clean, /^ {2}also unarchived: 2 completed change\(s\) — run interlock drift$/m)
+
+  const halted = formatRunSummary({
+    ...base,
+    summary: { halted: 'failure budget spent' },
+    unarchived: { thisChange: true, others: 2 }
+  })
+  assert.doesNotMatch(halted, /ARCHIVE PENDING/, 'a halt is never reminded, even with the same unarchived input')
+  assert.doesNotMatch(halted, /also unarchived/)
+
+  const leftovers = formatRunSummary({
+    ...base,
+    leftoverTaskIds: ['1.1'],
+    unarchived: { thisChange: true, others: 2 }
+  })
+  assert.doesNotMatch(leftovers, /ARCHIVE PENDING/, 'leftovers are not a complete change either')
+  assert.doesNotMatch(leftovers, /also unarchived/)
+
+  const failedPush = formatRunSummary({
+    ...base,
+    push: { sent: false, reason: 'HTTP 403' }
+  })
+  assert.match(failedPush, /^ {2}push: failed — HTTP 403$/m)
+
+  for (const output of [defaults, clean, halted, leftovers, failedPush]) {
+    const newLines = output
+      .split('\n')
+      .filter(line => /^ {2}(run|project|cwd|push|also unarchived): |^ARCHIVE PENDING —/.test(line))
+    assert.ok(newLines.length > 0, 'each summary carries at least one new row to check')
+    for (const line of newLines) {
+      assert.doesNotMatch(line, /LEAN SHIP/, 'a new row must never fold in the lean-ship line')
+      assert.doesNotMatch(line, /No degradation banners/, 'a new row must never fold in the degradation line')
+    }
+  }
 })
 
 test('a cap-exhausted verification is named in the degradation block', () => {

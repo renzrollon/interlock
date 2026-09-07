@@ -11,7 +11,7 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -37,7 +37,12 @@ function run(args, opts = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
     cwd: opts.cwd === undefined ? dir : opts.cwd,
     encoding: 'utf8',
-    input: opts.input === undefined ? '' : opts.input
+    input: opts.input === undefined ? '' : opts.input,
+    // Push configuration is environment-only (design D2), so the tests that
+    // exercise it set it here. An `env` of `{INTERLOCK_NTFY_TOPIC: ''}` is how
+    // a test asserts the UNSET path regardless of what the developer running
+    // the suite happens to have exported.
+    env: opts.env ? { ...process.env, ...opts.env } : process.env
   })
   assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
   return { code: r.status, stdout: r.stdout, stderr: r.stderr }
@@ -2372,4 +2377,107 @@ test('the new commands are in the usage text, with capture\'s refusal exit', () 
   assert.match(r.stdout, /interlock paths touched --commit <sha>/)
   assert.match(r.stdout, /interlock paths predicted/)
   assert.match(r.stdout, /evals capture\s+the capture was refused/)
+})
+
+// --- interlock notify (design D1, D2) ---------------------------------------
+//
+// The relay runs in its own process for the same reason it does in
+// `run.test.mjs`: `run()` here is `spawnSync`, which blocks this process's
+// event loop for the whole child run, so an in-process server would never
+// accept the connection.
+
+/** A ntfy stand-in on loopback, in its own process. Answers with `status`. */
+async function relay(status = 200) {
+  const relayDir = mkdtempSync(join(tmpdir(), 'interlock-cli-relay-'))
+  const log = join(relayDir, 'requests.jsonl')
+  const script = `
+    const { createServer } = require('node:http')
+    const { appendFileSync } = require('node:fs')
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', chunk => { body += chunk })
+      req.on('end', () => {
+        appendFileSync(${JSON.stringify(log)},
+          JSON.stringify({ url: req.url, method: req.method, headers: req.headers, body }) + '\\n')
+        res.writeHead(${status})
+        res.end('x')
+      })
+    })
+    server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
+  `
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const port = await new Promise((resolve, reject) => {
+    child.stdout.once('data', d => resolve(Number(String(d).trim())))
+    child.once('error', reject)
+  })
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests: () =>
+      existsSync(log)
+        ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+        : [],
+    close: () => {
+      child.kill()
+      rmSync(relayDir, { recursive: true, force: true })
+    }
+  }
+}
+
+/** Read back a `Title` header — a headline travels RFC 2047 encoded. */
+function decodeTitle(value) {
+  const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
+  return match ? Buffer.from(match[1], 'base64').toString('utf8') : value
+}
+
+test('notify with no topic configured says so and exits 0 — an optional feature left off is not a failure', () => {
+  const r = run(['notify', '--title', 'anything'], { env: { INTERLOCK_NTFY_TOPIC: '' } })
+  assert.equal(r.code, 0, 'a skill or a driver calls this unconditionally; it must never halt a loop')
+  assert.match(r.stdout, /^push: not configured — set INTERLOCK_NTFY_TOPIC$/m)
+})
+
+test('notify --json emits { sent, reason } whether or not a push was attempted', () => {
+  const r = run(['notify', '--title', 'anything', '--json'], { env: { INTERLOCK_NTFY_TOPIC: '' } })
+  assert.equal(r.code, 0)
+  const parsed = JSON.parse(r.stdout)
+  assert.equal(parsed.sent, false)
+  assert.match(parsed.reason, /not configured/)
+})
+
+test('notify checkpoint posts the spec checkpoint title at default priority', async () => {
+  const stub = await relay()
+  try {
+    const r = run(['notify', 'checkpoint', 'add-thing'], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
+    })
+    assert.equal(r.code, 0)
+    assert.match(r.stdout, /^push: sent \(ntfy\)$/m)
+    const posted = stub.requests()
+    assert.equal(posted.length, 1)
+    assert.equal(posted[0].url, '/secret-topic-abc')
+    assert.equal(decodeTitle(posted[0].headers.title), 'SPEC CHECKPOINT — add-thing')
+    assert.equal(posted[0].headers.priority, 'default')
+    assert.ok(!r.stdout.includes('secret-topic-abc'), 'the topic is a capability and never printed')
+  } finally {
+    stub.close()
+  }
+})
+
+test('a notify a person invoked directly exits 1 when the relay refused it', async () => {
+  const broken = await relay(500)
+  try {
+    const r = run(['notify', '--title', 'a title', '--body', 'a body'], {
+      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: broken.url }
+    })
+    assert.equal(r.code, 1, 'a command that did not do its job exits non-zero — unlike the close, which is advisory')
+    assert.match(r.stdout, /^push: failed — HTTP 500$/m)
+    assert.ok(!r.stdout.includes('secret-topic-abc'))
+  } finally {
+    broken.close()
+  }
+})
+
+test('notify refuses a form it cannot build a message from, rather than posting an empty one', () => {
+  const r = run(['notify'], { env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc' } })
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /--title/)
 })

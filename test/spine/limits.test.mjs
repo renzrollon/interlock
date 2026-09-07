@@ -84,6 +84,14 @@ test('the wave handoff budget is pinned at 2000 characters', () => {
   assert.equal(LIMITS.maxHandoffChars, 2000)
 })
 
+test('the notify push timeout is pinned at 5000ms', () => {
+  // design D5, add-harden-unattended-ship-runs: a hanging relay must not stall
+  // the close. Read by `postNtfy` in lib/notify.mjs (task 1.1).
+  assert.equal(LIMITS.notifyTimeoutMs, 5000)
+  assert.match(formatLimits(), /push timeout \(ms\)/)
+  assert.match(formatLimits(), new RegExp(String(LIMITS.notifyTimeoutMs)))
+})
+
 test('the default fan-out sits under the runtime concurrency ceiling', () => {
   assert.ok(
     LIMITS.maxParallel <= RUNTIME.maxConcurrentAgents,

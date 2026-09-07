@@ -130,7 +130,7 @@ The number of `interlock run` calls a run may make MUST be a cap stated once in 
 
 ### Requirement: The closing step SHALL produce the summary and exit code both hosts print, from what the run observed
 
-`interlock run close` MUST build the run receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary text and the banner list. Both drivers MUST print that summary verbatim. Host-only banners MUST be accepted on the call so the summary's degradation block stays complete.
+`interlock run close` MUST build the run receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary text and the banner list. Both drivers MUST print that summary verbatim. Host-only banners MUST be accepted on the call so the summary's degradation block stays complete. The close MUST accept a `--notify` flag requesting the terminal push, and both drivers MUST pass it from the same place they pass their host-observed inputs, so the push is one implementation the CLI owns and two hosts request rather than two implementations; the driver-parity test MUST fail when one driver passes it and the other does not.
 
 #### Scenario: Happy path — a clean lean run closes with the shared summary
 
@@ -151,6 +151,19 @@ The number of `interlock run` calls a run may make MUST be a cap stated once in 
 - **WHEN** the summary is built
 - **THEN** the banner appears in the degradation block
 - **AND** the "No degradation banners" line is not printed
+
+#### Scenario: Happy path — both drivers request the push through the close
+
+- **GIVEN** the Workflow script and the runner after this change
+- **WHEN** each assembles the arguments for `run close`
+- **THEN** both include `--notify`
+- **AND** neither contains a network call, a topic, or any notification text of its own
+
+#### Scenario: Failure — one driver stops requesting the push
+
+- **GIVEN** a driver from which `--notify` has been removed
+- **WHEN** the driver-parity test runs
+- **THEN** it fails naming that driver and the missing flag
 
 ### Requirement: The run program SHALL emit the review, remediation and handoff steps with criteria and policy inlined
 

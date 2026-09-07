@@ -431,6 +431,21 @@ test('spec checkpoint prints GOAL MET and does not use /goal to skip it', () => 
   assert.match(text, /Do not (call|invoke|run) \/goal|\/goal must not skip the checkpoint|does not skip the checkpoint/i)
 })
 
+test('the spec checkpoint pushes before it prints GOAL MET, so a waiting human is told', () => {
+  // A prose instruction nobody asserts silently stops running. The ORDER is
+  // half the instruction: a push after the goal line is a push the session may
+  // never reach, and the checkpoint's whole point is that it waits.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  const push = text.indexOf('interlock notify checkpoint')
+  const goal = text.indexOf('GOAL MET: interlock spec stopped at the checkpoint')
+  assert.ok(push !== -1, 'the spec skill no longer tells a waiting human that it is waiting')
+  assert.ok(goal !== -1)
+  assert.ok(push < goal, 'the push must come before the goal line, not after the session may have stopped')
+  // And it is unconditional: the CLI, not the skill, decides whether a topic
+  // is configured, so the skill must not be told to check first.
+  assert.match(text, /no-op|exits 0|unconditionally/i)
+})
+
 test('ship trampoline forbids a second Workflow call after the first returns', () => {
   const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
   assert.match(text, /Do not call Workflow again/i)

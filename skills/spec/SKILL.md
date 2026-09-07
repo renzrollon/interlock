@@ -209,7 +209,15 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-Without `--continue`, the run ended here. Print this greppable line so a session `/goal` can stop instead of wandering into implementation:
+Without `--continue`, the run ended here. The checkpoint waits for a human, so tell them it is waiting:
+
+```bash
+interlock notify checkpoint "<change-name>"
+```
+
+That is a no-op that prints `push: not configured` and exits 0 when no topic is set, so run it unconditionally and never branch on the result.
+
+Then print this greppable line so a session `/goal` can stop instead of wandering into implementation:
 
 `GOAL MET: interlock spec stopped at the checkpoint.`
 

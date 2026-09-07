@@ -15,7 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +28,10 @@ import {
   ruleOverlaps,
   whichSync,
   evalPrerequisiteChecks,
+  extractInstructedCommands,
   REQUIRED_COMMANDS,
+  HOST_READ_ONLY,
+  IGNORED_INSTRUCTION_SPANS,
   STATE_DIRS
 } from '../../lib/doctor.mjs'
 
@@ -224,6 +227,9 @@ const ALL_ALLOWED = {
       'Bash(interlock-graph:*)',
       'Bash(openspec:*)',
       'Bash(git:*)',
+      'Bash(test:*)',
+      'Bash(printenv:*)',
+      'Bash(mkdir:*)',
       'Bash(npm test:*)'
     ]
   }
@@ -264,9 +270,12 @@ test('an uncovered required command fails, and the fix names the rule to add', (
     assert.equal(report.ok, false)
     assert.deepEqual(
       permissions.uncovered.map(u => u.command),
-      ['interlock', 'interlock-graph', 'openspec', 'npm test']
+      ['interlock', 'interlock-graph', 'openspec', 'test', 'printenv', 'mkdir', 'npm test']
     )
     assert.match(permissions.fix, /"Bash\(npm test:\*\)"/)
+    assert.match(permissions.fix, /"Bash\(test:\*\)"/)
+    assert.match(permissions.fix, /"Bash\(printenv:\*\)"/)
+    assert.match(permissions.fix, /"Bash\(mkdir:\*\)"/)
     // git was allowed, so it is not in the fix.
     assert.doesNotMatch(permissions.fix, /"Bash\(git:\*\)"/)
   } finally {
@@ -700,7 +709,19 @@ test('the eval rows change no exit status: clean stays clean, broken breaks for 
     assert.ok(gitInit(dir), 'this assertion needs a real work tree')
     file(dir, '.claude/testing/profile.json', PROFILE)
     file(dir, '.claude/settings.json', {
-      permissions: { allow: ['Bash(interlock:*)', 'Bash(interlock-graph:*)', 'Bash(openspec:*)', 'Bash(git:*)', 'Bash(npm test:*)', 'Bash(npm run test:unit:*)'] }
+      permissions: {
+        allow: [
+          'Bash(interlock:*)',
+          'Bash(interlock-graph:*)',
+          'Bash(openspec:*)',
+          'Bash(git:*)',
+          'Bash(test:*)',
+          'Bash(printenv:*)',
+          'Bash(mkdir:*)',
+          'Bash(npm test:*)',
+          'Bash(npm run test:unit:*)'
+        ]
+      }
     })
     const opts = baseOpts(dir, { pluginRoot: pluginWithSuite(dir) })
 
@@ -717,6 +738,199 @@ test('the eval rows change no exit status: clean stays clean, broken breaks for 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// Push notification advice — never a gate (design D5, D12)
+// ---------------------------------------------------------------------------
+
+test('the notify row is ok when a topic is configured, naming the server and never the topic', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const secret = 'super-secret-topic'
+    const opts = baseOpts(dir)
+    const report = diagnose(dir, { ...opts, env: { ...opts.env, INTERLOCK_NTFY_TOPIC: secret } })
+    const notify = byId(report, 'notify')
+    assert.equal(notify.status, 'ok')
+    assert.match(notify.detail, /https:\/\/ntfy\.sh/)
+    assert.doesNotMatch(notify.detail, new RegExp(secret))
+    assert.doesNotMatch(JSON.stringify(report), new RegExp(secret))
+    assert.doesNotMatch(formatDoctor(report), new RegExp(secret))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the notify row honours a self-hosted server URL, still never the topic', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const opts = baseOpts(dir)
+    const report = diagnose(dir, {
+      ...opts,
+      env: { ...opts.env, INTERLOCK_NTFY_TOPIC: 'a-topic', INTERLOCK_NTFY_URL: 'https://ntfy.example.internal' }
+    })
+    assert.match(byId(report, 'notify').detail, /https:\/\/ntfy\.example\.internal/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the notify row is skip when no topic is configured, naming the variable, and is never a failure', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const report = diagnose(dir, baseOpts(dir))
+    const notify = byId(report, 'notify')
+    assert.equal(notify.status, 'skip')
+    assert.match(notify.detail, /INTERLOCK_NTFY_TOPIC/)
+    assert.ok(!report.failures.includes('notify'))
+    assert.ok(!report.warnings.includes('notify'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the notify row is never fail, whatever the env holds', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const hostile = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const opts = baseOpts(dir)
+    const report = diagnose(dir, { ...opts, env: hostile })
+    assert.equal(byId(report, 'notify').status, 'skip')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('HOST_READ_ONLY names the host-auto-approved commands and excludes what the run needs allowlisted', () => {
+  assert.ok(Object.isFrozen(HOST_READ_ONLY))
+  assert.ok(HOST_READ_ONLY.includes('echo'))
+  assert.ok(HOST_READ_ONLY.includes('pwd'))
+  for (const name of ['test', 'printenv', 'mkdir']) {
+    assert.ok(!HOST_READ_ONLY.includes(name), `${name} must not be treated as auto-approved`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Instructed-command extraction (design D12)
+// ---------------------------------------------------------------------------
+
+test('extractInstructedCommands reports a command a Run: line instructs', () => {
+  assert.deepEqual(extractInstructedCommands('Run: chmod +x bin/x'), ['chmod'])
+})
+
+test('extractInstructedCommands reports a command inside an escaped-backtick code span', () => {
+  assert.deepEqual(extractInstructedCommands('do not run \\`echo $PPID\\` yourself'), ['echo'])
+})
+
+test('extractInstructedCommands splits compound shell text on && ; and |', () => {
+  assert.deepEqual(extractInstructedCommands('Run: test -f a && echo yes || echo no').sort(), ['echo', 'test'])
+})
+
+test('extractInstructedCommands does not treat an unescaped backtick (a JS template-literal delimiter) as a code span', () => {
+  // Exactly the shape a JS source line takes: a real backtick opens/closes the
+  // template literal, and reading it as a markdown code span would swallow
+  // the whole line as one "command".
+  assert.deepEqual(extractInstructedCommands('`some prose about rm -rf /`'), [])
+})
+
+test('extractInstructedCommands ignores a bare backticked field name or placeholder', () => {
+  assert.deepEqual(
+    extractInstructedCommands('populate \\`group\\` and \\`paths\\`, never \\`dependsOn\\`'),
+    []
+  )
+})
+
+test('extractInstructedCommands strips VAR=value prefixes, $( and quotes before taking the token', () => {
+  assert.deepEqual(extractInstructedCommands('Run: CI=1 npm test'), ['npm'])
+  assert.deepEqual(extractInstructedCommands('Run: $(git rev-parse HEAD)'), ['git'])
+  assert.deepEqual(extractInstructedCommands('Run: "git" status'), ['git'])
+})
+
+test('extractInstructedCommands is defensive about its input and exports a frozen, pinned ignore list', () => {
+  assert.deepEqual(extractInstructedCommands(''), [])
+  assert.deepEqual(extractInstructedCommands(null), [])
+  assert.deepEqual(extractInstructedCommands(undefined), [])
+  assert.ok(Array.isArray(IGNORED_INSTRUCTION_SPANS))
+  assert.ok(Object.isFrozen(IGNORED_INSTRUCTION_SPANS))
+})
+
+test('the live drift test — every command the driver and every briefing instructs is allowlistable', () => {
+  const files = [
+    join(REPO, 'workflows', 'ship.js'),
+    ...readdirSync(join(REPO, 'lib', 'prompts'))
+      .filter(f => f.endsWith('.mjs'))
+      .map(f => join(REPO, 'lib', 'prompts', f))
+  ]
+  const allowed = new Set([...REQUIRED_COMMANDS.map(c => c.tokens.join(' ')), 'npm test', 'node --test', ...HOST_READ_ONLY])
+  const violations = []
+  for (const filePath of files) {
+    const text = readFileSync(filePath, 'utf8')
+    for (const cmd of extractInstructedCommands(text)) {
+      if (!allowed.has(cmd)) violations.push(`${filePath}: ${cmd}`)
+    }
+  }
+  assert.deepEqual(violations, [], `instructed command(s) not covered by any allowlist source:\n${violations.join('\n')}`)
+})
+
+// ---------------------------------------------------------------------------
+// Repo fact — this repository's own settings cover its own required set (D11/D12)
+// ---------------------------------------------------------------------------
+//
+// Never calls `diagnose(REPO)`, which would read `~/.claude` and the machine's
+// own PATH. Reads exactly `<repo>/.claude/settings.json` and matches it with
+// the preflight's own `parseRule`/`ruleCovers`, so this is the same claim
+// `interlock doctor` would make about this repository, checked without
+// depending on the developer's own machine having anything installed.
+
+test("this repository's own .claude/settings.json covers REQUIRED_COMMANDS plus its own runner commands", () => {
+  const settingsPath = join(REPO, '.claude', 'settings.json')
+  assert.ok(
+    existsSync(settingsPath),
+    '.claude/settings.json must exist and be committed — it is the whole reason `interlock doctor` is green here'
+  )
+  const parsed = JSON.parse(readFileSync(settingsPath, 'utf8'))
+  const allowRaw = (parsed.permissions && parsed.permissions.allow) || []
+  const rules = allowRaw.map(parseRule).filter(Boolean)
+
+  // .claude/testing/ is gitignored and absent on CI, so the profile is
+  // consulted only when present; the repo's own runner commands are pinned
+  // explicitly rather than relying on it.
+  const profilePath = join(REPO, '.claude', 'testing', 'profile.json')
+  const profile = existsSync(profilePath) ? JSON.parse(readFileSync(profilePath, 'utf8')) : null
+
+  const required = [
+    ...REQUIRED_COMMANDS,
+    ...(profile ? profileCommands(profile) : []),
+    { tokens: ['npm', 'test'], open: true, why: "this repository's own unit runner (pinned: profile is gitignored)" },
+    {
+      tokens: ['node', '--test'],
+      open: true,
+      why: "this repository's own unit runner, single-file form (pinned: profile is gitignored)"
+    }
+  ]
+
+  const uncovered = required.filter(req => !rules.some(rule => ruleCovers(rule, req)))
+  assert.deepEqual(
+    uncovered.map(u => u.tokens.join(' ')),
+    [],
+    `.claude/settings.json has no covering allow rule for: ${uncovered.map(u => u.tokens.join(' ')).join(', ')}`
+  )
 })
 
 // ---------------------------------------------------------------------------

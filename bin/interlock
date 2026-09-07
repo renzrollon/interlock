@@ -46,6 +46,7 @@ import {
   runVerifyFinal
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
@@ -142,6 +143,16 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock notify --title <t> [--body <b>]  Push one message so a run or a
+                 [--priority high|default]   checkpoint reached while nobody was
+  interlock notify checkpoint <change>       watching still reaches someone. The
+                                             only outbound request this CLI makes.
+                                             Topic from INTERLOCK_NTFY_TOPIC,
+                                             server from INTERLOCK_NTFY_URL
+                                             (default https://ntfy.sh). Unset
+                                             topic prints "not configured" and
+                                             exits 0; a failed push exits 1.
+                                             --json emits { sent, reason }
   interlock run start --change <name>        The ship loop, as a program. Each
   interlock run classified --classified <f>  subcommand returns one step record
   interlock run record-batch --results <f>   (interlock.run-step/1): the agents
@@ -725,7 +736,10 @@ const BOOLEAN_FLAGS = new Set([
   'skip-e2e',
   'skip-coverage',
   'isolate-waves',
-  'continue'
+  'continue',
+  // `run close --notify`: both drivers pass it unconditionally, and the CLI —
+  // not the driver — decides whether a topic is configured (design D1).
+  'notify'
   // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
   // NOT here. `interlock ready --review <findings.json>` takes a value under
   // the same spelling, and making the name boolean everywhere would silently
@@ -1434,7 +1448,7 @@ function splitPaths(value) {
   return raw.map(p => p.trim()).filter(Boolean)
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2)
   if (!argv.length || argv[0] === '-h' || argv[0] === '--help') {
     process.stdout.write(USAGE)
@@ -1632,6 +1646,47 @@ function main() {
         },
         formatLimits()
       )
+      break
+    }
+
+    case 'notify': {
+      // The CLI's ONE outbound request, and the only place a topic is ever
+      // read (design D1, D2). Unconfigured is not a failure: a skill or a
+      // driver calls this unconditionally, and an operator who never set a
+      // topic gets a line saying so and exit 0, never a halted loop.
+      const config = readNotifyConfig(process.env)
+      // Order matters: a malformed topic yields `{invalid}` with no `topic`
+      // key at all, and reporting that as "not configured" would tell an
+      // operator who DID configure it that they had not.
+      if (!config.invalid && !config.topic) {
+        const notConfigured = { sent: false, reason: `not configured — set ${NOTIFY_TOPIC_ENV}` }
+        emit(json, notConfigured, `push: not configured — set ${NOTIFY_TOPIC_ENV}\n`)
+        break
+      }
+
+      let message
+      if (positional[1] === 'checkpoint') {
+        const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
+        if (!change) die('interlock notify checkpoint <change> — the change name is required')
+        message = composeCheckpointMessage(change)
+      } else {
+        const title = typeof flags.title === 'string' ? flags.title.trim() : ''
+        if (!title) die('--title <text> is required (or use: interlock notify checkpoint <change>)')
+        const priority = flags.priority === 'high' ? 'high' : 'default'
+        message = { title, body: typeof flags.body === 'string' ? flags.body : '', priority }
+      }
+
+      if (config.invalid) {
+        const bad = { sent: false, reason: `invalid configuration: ${config.invalid}` }
+        emit(json, bad, `push: failed — ${bad.reason}\n`)
+        process.exit(1)
+      }
+
+      const result = await postNtfy({ url: config.url, topic: config.topic, ...message })
+      emit(json, result, result.sent ? 'push: sent (ntfy)\n' : `push: failed — ${result.reason}\n`)
+      // A push nobody asked about is advisory; a push someone invoked directly
+      // is a command, and a command that did not do its job exits non-zero.
+      if (!result.sent) process.exit(1)
       break
     }
 
@@ -2373,11 +2428,12 @@ function main() {
         const hostObserved = flags['host-observed']
           ? readInput(flags['host-observed'], '--host-observed <file|->')
           : null
-        step = runClose(ctx, {
+        step = await runClose(ctx, {
           results: resultList,
           halt: typeof flags.halt === 'string' ? flags.halt : null,
           hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
-          hostObserved
+          hostObserved,
+          notify: flags.notify === true
         })
         emit(json, step, step.summary + '\n')
         if (step.exitCode !== 0) process.exit(step.exitCode)
@@ -2512,10 +2568,12 @@ function verifyJudgeOpts(flags) {
   return opts
 }
 
-try {
-  main()
-} catch (err) {
+// `main()` is async only because `run close` awaits one bounded `fetch`
+// (design D14). Every other case stays synchronous and returns before the
+// first await, so a rejection here reaches exactly the handler a throw used
+// to — same body, same `die()`, same exit code.
+main().catch(err => {
   if (err && err.userFacing) die(err.message)
   process.stderr.write(`interlock: ${err && err.message ? err.message : err}\n`)
   process.exit(1)
-}
+})

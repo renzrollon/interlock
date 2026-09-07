@@ -431,7 +431,11 @@ function closeArgs() {
   // Routing is resolved here rather than pushed as it happened, because the
   // question it answers — did EVERY spawn get its model — is only answerable
   // once the last spawn has returned.
-  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners()])]
+  //
+  // `--notify` is unconditional: this driver knows nothing about topics,
+  // servers or notification text. It requests the push; the CLI decides
+  // whether one is configured and what it says (design D1).
+  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners()]), '--notify']
 }
 
 /** Print the close's summary and exit on its status. */

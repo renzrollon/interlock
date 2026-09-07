@@ -23,7 +23,7 @@ This page takes you from install to one committed change. Onboard the repo once,
 
 Worth two minutes before your first `ship`. Workflow agents inherit your own permission settings, so a command that is not allowlisted stops the run on an approval prompt — in the middle of a run that is supposed to need nothing from you, possibly while you are away from the keyboard.
 
-Allowlist `interlock`, `interlock-graph`, `openspec`, `git`, and your test runner. `/permissions` is the quickest route.
+Run `interlock doctor` — it prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names.
 
 ## Step 1 — Onboard the repo (once)
 
