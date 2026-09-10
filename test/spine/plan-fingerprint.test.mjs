@@ -607,3 +607,100 @@ test('a narrowed solo plan keeps one lane, its mode and its promotion report', (
   )
   assert.deepEqual(shapeOf(narrowed.plan), [[[['1.2', '2.1']]]])
 })
+
+// ---------------------------------------------------------------------------
+// The red wave in the fingerprint.
+//
+// Two obligations that pull against each other, which is why they are pinned
+// together. A plan built for a TDD shape must not be reused for an ordinary run
+// (or the reverse) — and a plan built before red waves existed must still match
+// its stored fingerprint, or every consumer repo re-classifies from scratch on
+// upgrade for a signal none of its changes use.
+// ---------------------------------------------------------------------------
+
+test('no red wave leaves the fingerprint byte-identical to one taken without the field', () => {
+  const { root } = makeRepo()
+  const base = computeFingerprint(root, CHANGE, { maxParallel: 8 })
+
+  // Every value that is not an integer section number. `-0` and `0` are
+  // deliberately absent from this list: they ARE integers, so they read as a
+  // claim on section 0 — which the planner then refuses because no task is
+  // classified there. Non-integers are the absence of a claim.
+  for (const absent of [undefined, null, 'yes', 0.5, NaN, Infinity, {}, []]) {
+    assert.equal(
+      computeFingerprint(root, CHANGE, { maxParallel: 8, redWave: absent }).hash,
+      base.hash,
+      `redWave: ${String(absent)} must hash exactly as the absent field does`
+    )
+  }
+
+  // The line is OMITTED, not hashed as a null — the same guarantee `edges`
+  // makes. Asserted on the reported field so a future refactor that starts
+  // emitting `red-wave none` is caught here rather than by every consumer's
+  // next run re-planning.
+  assert.equal(base.redWave, null)
+  clean(root)
+})
+
+test('a red wave is part of the fingerprint, so a shape change re-plans', () => {
+  const { root } = makeRepo()
+  const ordinary = computeFingerprint(root, CHANGE, { maxParallel: 8 })
+  const red = computeFingerprint(root, CHANGE, { maxParallel: 8, redWave: 1 })
+  const other = computeFingerprint(root, CHANGE, { maxParallel: 8, redWave: 2 })
+
+  assert.notEqual(
+    ordinary.hash,
+    red.hash,
+    'a plan that defers its tests does not describe the same schedule as one that runs them first'
+  )
+  assert.notEqual(red.hash, other.hash, 'and which section leads is part of the schedule')
+  assert.equal(red.redWave, 1, 'carried on the result so a reader can see WHY two hashes differ')
+  assert.match(formatFingerprint(red), /red wave 1/)
+  assert.doesNotMatch(formatFingerprint(ordinary), /red wave/, 'and is not printed when absent')
+  clean(root)
+})
+
+test('a stored plan built for a red wave is not reused by an ordinary run', () => {
+  // The failure this exists to prevent: reusing a cached plan whose test tasks
+  // were deferred for a --tdd run, so the run believes it has the new shape and
+  // lands the failing suite last anyway.
+  const { root } = makeRepo()
+  const plan = planWaves(
+    {
+      tasks: [
+        { id: '1.1', group: 1, description: 'red', tier: 2, model: 'sonnet', isTestTask: true },
+        { id: '2.1', group: 2, description: 'green a', tier: 2, model: 'sonnet', isTestTask: false },
+        { id: '2.2', group: 2, description: 'green b', tier: 2, model: 'sonnet', isTestTask: false }
+      ]
+    },
+    { redWave: 1 }
+  )
+  writePlan(root, plan)
+  writeFingerprint(root, computeFingerprint(root, CHANGE, { redWave: 1 }))
+
+  const sameShape = checkPlanReuse(root, CHANGE, { redWave: 1 })
+  assert.equal(sameShape.reuse, true, 'the same shape reuses its own plan')
+
+  const ordinary = checkPlanReuse(root, CHANGE)
+  assert.equal(ordinary.reuse, false, 'an ordinary run must rebuild rather than inherit the shape')
+  assert.equal(ordinary.status, REUSE_MISMATCH)
+  clean(root)
+})
+
+test('narrowing a reused plan keeps the red marker on its wave', () => {
+  // The plan a run adopts is the NARROWED copy. A narrow that dropped `red`
+  // would restore the halt-on-red bug on exactly the runs that reuse a plan.
+  const plan = planWaves(
+    {
+      tasks: [
+        { id: '1.1', group: 1, description: 'red', tier: 2, model: 'sonnet', isTestTask: true },
+        { id: '2.1', group: 2, description: 'green a', tier: 2, model: 'sonnet', isTestTask: false },
+        { id: '2.2', group: 2, description: 'green b', tier: 2, model: 'sonnet', isTestTask: false }
+      ]
+    },
+    { redWave: 1 }
+  )
+  const narrowed = narrowPlan(plan, id => id === '2.2')
+  assert.equal(narrowed.plan.redWave, 1, 'the plan-level field survives')
+  assert.equal(narrowed.plan.waves[0].red, true, 'and so does the marker on the wave itself')
+})

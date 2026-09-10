@@ -78,6 +78,12 @@ Flags:
   --solo                 plan the whole change as one lane (mutually exclusive
                          with --waves; neither lets the classifier recommend)
   --waves                force the waves shape even for a small change
+  --tdd                  run the change's leading failing-test section FIRST
+                         rather than deferring its tests to the trailing wave
+                         (mutually exclusive with --no-tdd; neither lets the
+                         "Failing tests first" heading in tasks.md decide)
+  --no-tdd               never run a leading failing-test wave, whatever
+                         tasks.md is marked with
   --continue             resume rather than start a fresh checkpoint
   --isolate-waves        run each lane in its own git worktree, folded per batch
   --apply-only           stop after the waves
@@ -175,10 +181,18 @@ if (flags.solo === true && flags.waves === true) {
   )
 }
 
+if (flags.tdd === true && flags['no-tdd'] === true) {
+  refuse(
+    'contradictory task-shape flags: --tdd and --no-tdd were both passed — pass exactly one, or ' +
+      "neither to let tasks.md's own leading-section heading decide"
+  )
+}
+
 // The plan shape and the resume mode, forwarded to `run start` exactly as
 // `workflows/ship.js` forwards them. This driver never reads either again:
 // which plan a mode buys is the run program's decision, taken once, in the CLI.
 const laneMode = flags.solo === true ? 'solo' : flags.waves === true ? 'waves' : null
+const tddMode = flags.tdd === true ? 'tdd' : flags['no-tdd'] === true ? 'no-tdd' : null
 const continueRun = flags.continue === true
 
 const root = typeof flags.root === 'string' ? flags.root : process.cwd()
@@ -403,6 +417,7 @@ let step = await cli([
   ...(skipCoverage ? ['--skip-coverage'] : []),
   ...(isolateWaves ? ['--isolate-waves'] : []),
   ...(laneMode ? ['--mode', laneMode] : []),
+  ...(tddMode === 'tdd' ? ['--tdd'] : tddMode === 'no-tdd' ? ['--no-tdd'] : []),
   ...(Number.isInteger(maxParallel) ? ['--max-parallel', String(maxParallel)] : []),
   ...(continueRun ? ['--continue'] : []),
   ...(review ? ['--review'] : []),

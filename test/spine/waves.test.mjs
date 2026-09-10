@@ -16,6 +16,7 @@ import {
   HALT_INTER_WAVE_VERIFY,
   SKIP_VERIFY_DOCS,
   SKIP_VERIFY_CAP,
+  SKIP_VERIFY_RED,
   HANDOFF_SCHEMA,
   AUDIT_CONFIRMED,
   AUDIT_UNCONFIRMED,
@@ -3067,4 +3068,333 @@ test('a replanned group keeps the edge order of its revision', () => {
     [['2.1'], ['2.2']],
     'the replan path must re-derive the edge order, not drop it'
   )
+})
+
+// ---------------------------------------------------------------------------
+// The red wave — the execution half of the TDD task shape.
+//
+// `redWave` names the group that runs as a LEADING failing-test wave instead of
+// deferring. Every test below has a twin obligation: prove the new shape works,
+// and prove that WITHOUT the option nothing moved. The second half is the whole
+// reason the option exists rather than a mode switch — an ordinary change must
+// plan today exactly as it planned yesterday.
+// ---------------------------------------------------------------------------
+
+/** Two impl tasks in group 2, and a red suite in group 1. */
+const tddTasks = () => [
+  task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/auth.test.ts'] }),
+  task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
+  task({ id: '2.2', group: 2, paths: ['src/b.ts'] })
+]
+
+test('with no redWave option a plan is identical to one that never heard of it', () => {
+  // THE acceptance criterion for this feature. Same input, three ways of not
+  // asking for a red wave, and the resulting plans must be deep-equal — not
+  // merely equivalent. A new key on every plan would be a change to every
+  // consumer, every fixture and every stored plan in every consumer repo.
+  const tasks = tddTasks()
+  const omitted = planOf(tasks)
+  const explicitUndefined = planOf(tasks, { redWave: undefined })
+  const notANumber = planOf(tasks, { redWave: 'yes' })
+
+  assert.deepEqual(explicitUndefined, omitted, 'passing undefined must change nothing')
+  assert.deepEqual(notANumber, omitted, 'a non-integer is the ABSENCE of a claim, not a bad one')
+
+  // And it really is the old shape: the test task deferred.
+  assert.equal(omitted.redWave, null)
+  assert.equal(omitted.testCount, 1)
+  assert.ok(omitted.testWave, 'the test task defers to the trailing wave, as always')
+  for (const wave of omitted.waves) {
+    assert.equal(wave.red, undefined, 'no wave carries a red marker')
+  }
+})
+
+test('the red wave keeps its group and runs before the implementation it pins', () => {
+  const plan = planOf(tddTasks(), { redWave: 1 })
+
+  assert.equal(plan.redWave, 1)
+  // Not deferred: it is an implementation wave now, so there is no trailing
+  // test wave at all in this fixture.
+  assert.equal(plan.testWave, null, 'a red-wave test does not also defer')
+  assert.equal(plan.testCount, 0)
+  assert.equal(plan.implCount, 3)
+
+  assert.equal(plan.waves[0].group, 1)
+  assert.equal(plan.waves[0].red, true, 'the leading wave is marked red')
+  assert.deepEqual(plan.waves[0].batches[0][0].map(t => t.id), ['1.1'])
+  assert.equal(plan.waves[1].group, 2)
+  assert.equal(plan.waves[1].red, undefined, 'and only that wave is')
+  assertRunsBefore(plan, '1.1', '2.1', 'the failing suite must run before the code that passes it')
+})
+
+test('a red wave leaves every OTHER test task deferring as before', () => {
+  // The shape moves one section, not the concept of a test task. A suite
+  // covering later work still belongs after that work.
+  const plan = planOf(
+    [
+      ...tddTasks(),
+      task({ id: '3.1', group: 3, isTestTask: true, paths: ['test/later.test.ts'] })
+    ],
+    { redWave: 1 }
+  )
+  assert.equal(plan.testCount, 1)
+  assert.ok(plan.testWave)
+  assert.deepEqual(plan.testWave.batches[0][0].map(t => t.id), ['3.1'])
+})
+
+test('a red-wave claim the task list contradicts is refused, and said out loud', () => {
+  // Refused, never halted: the change is perfectly implementable in the
+  // ordinary shape, so the correct outcome is that shape plus a warning. A
+  // silent fallback would be the worse half of both options.
+  const noTests = [
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] })
+  ]
+  const wrongGroup = planOf(noTests, { redWave: 1 })
+  assert.equal(wrongGroup.redWave, null)
+  assert.ok(
+    wrongGroup.warnings.some(w => /red wave refused[\s\S]*no test task/i.test(w)),
+    `expected a refusal naming the missing test task, got: ${wrongGroup.warnings.join(' | ')}`
+  )
+
+  // Not the first section: a failing-test section AFTER implementation is not a
+  // red wave, and promoting it would move tests earlier than the author did.
+  const late = planOf(
+    [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+      task({ id: '2.1', group: 2, isTestTask: true })
+    ],
+    { redWave: 2 }
+  )
+  assert.equal(late.redWave, null)
+  assert.ok(
+    late.warnings.some(w => /red wave refused[\s\S]*not the first section/i.test(w)),
+    `expected a refusal naming the ordering, got: ${late.warnings.join(' | ')}`
+  )
+
+  // A section nobody classified into.
+  const absent = planOf(tddTasks(), { redWave: 9 })
+  assert.equal(absent.redWave, null)
+  assert.ok(absent.warnings.some(w => /red wave refused[\s\S]*no task is classified/i.test(w)))
+
+  // Each refusal falls back to EXACTLY the ordinary plan, not to something near it.
+  assert.deepEqual(absent.waves, planOf(tddTasks()).waves)
+})
+
+test('an honoured red wave says what it costs, since a skipped check is invisible', () => {
+  const plan = planOf(tddTasks(), { redWave: 1 })
+  const spoken = plan.warnings.join(' | ')
+  assert.match(spoken, /section 1 is the red wave/i)
+  assert.match(spoken, /run FIRST/)
+  assert.match(spoken, /inter-wave check is skipped/i)
+  assert.match(
+    spoken,
+    /cannot tell a genuinely failing suite from one that already passed/i,
+    'the cost of the skip is the part nobody can infer from the plan'
+  )
+  // And it is visible in the preview an operator actually reads.
+  assert.match(formatPlan(plan), /Wave 1:[^\n]*RED: failing tests, check skipped/)
+})
+
+test('an implementation task may depend on a red-wave test, and still not on a deferred one', () => {
+  // The edge used to fail the plan unconditionally, because a trailing wave can
+  // never satisfy it. A red-wave test runs first, so the same edge is now
+  // exactly the ordering its author meant.
+  const tasks = [
+    task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/a.test.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/a.ts'], dependsOn: ['1.1'] }),
+    task({ id: '2.2', group: 2, paths: ['src/b.ts'] })
+  ]
+  const plan = planOf(tasks, { redWave: 1 })
+  assert.equal(plan.redWave, 1)
+  assertRunsBefore(plan, '1.1', '2.1', 'the edge is honoured by the section boundary')
+
+  // Without the red wave the very same input is still rejected — the relaxation
+  // is gated, not a general loosening of the rule.
+  assert.throws(() => planOf(tasks), /depends on test task 1\.1/)
+
+  // And a test task NOT in the red wave is still an illegal target.
+  assert.throws(
+    () =>
+      planOf(
+        [
+          task({ id: '1.1', group: 1, isTestTask: true }),
+          task({ id: '2.1', group: 2, isTestTask: true }),
+          task({ id: '2.2', group: 2, dependsOn: ['2.1'] })
+        ],
+        { redWave: 1 }
+      ),
+    /depends on test task 2\.1/
+  )
+})
+
+test('the relaxation cannot become a backdoor around the section model', () => {
+  // The edge relaxation is safe because of an invariant, not because of a
+  // second check: only the LOWEST group is ever honoured as a red wave, so no
+  // task can sit earlier than a red-wave test and a backward edge onto one is
+  // unreachable. This pins the invariant that carries that argument — if a
+  // future change honours a non-lowest red wave, the group-order check for red
+  // targets has to come back with it.
+  const backwardEdge = [
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'], dependsOn: ['2.1'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '2.1', group: 2, isTestTask: true })
+  ]
+
+  // Asking for section 2 as the red wave does NOT buy that edge: the claim is
+  // refused before the edges are judged, so the ordinary rule applies and the
+  // plan fails exactly as it would with no flag at all.
+  assert.throws(() => planOf(backwardEdge, { redWave: 2 }), /depends on test task 2\.1/)
+  assert.throws(() => planOf(backwardEdge), /depends on test task 2\.1/)
+
+  // And the refusal itself, on the same shape minus the illegal edge.
+  const refused = planOf(
+    [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+      task({ id: '2.1', group: 2, isTestTask: true })
+    ],
+    { redWave: 2 }
+  )
+  assert.equal(refused.redWave, null, 'a non-lowest red wave is never honoured')
+})
+
+test('a later singleton wave is not folded onto the red wave', () => {
+  // The fold is "ordering, not a checkpoint" — true between implementation
+  // waves, false here. Absorbing the green work into the red wave would erase
+  // the boundary AND hand the merged wave the red wave's skipped check.
+  const plan = planOf(
+    [
+      task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/a.test.ts'] }),
+      task({ id: '2.1', group: 2, paths: ['src/a.ts'] })
+    ],
+    { redWave: 1 }
+  )
+  assert.equal(plan.waveCount, 2, 'the green singleton keeps its own wave')
+  assert.equal(plan.waves[0].red, true)
+  assert.equal(plan.waves[1].group, 2)
+  assert.deepEqual(plan.folded, [], 'nothing was folded')
+
+  // The same two tasks with no red wave DO fold, which is what makes the guard
+  // above a real branch rather than a restatement of existing behaviour.
+  const ordinary = planOf([
+    task({ id: '1.1', group: 1, paths: ['test/a.test.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/a.ts'] })
+  ])
+  assert.equal(ordinary.waveCount, 1, 'an ordinary singleton still folds')
+})
+
+test('solo mode puts the red suite first inside the single lane', () => {
+  // Solo has no inter-wave checkpoint to skip, so the shape reduces to pure
+  // ordering — and that ordering has to be right, because `soloOrder` walks
+  // groups first and test tasks last.
+  const plan = planOf(tddTasks(), { redWave: 1, mode: 'solo' })
+  const lane = plan.waves[0].batches[0][0]
+  assert.deepEqual(lane.map(t => t.id), ['1.1', '2.1', '2.2'])
+
+  // Without it, the same suite goes last.
+  const ordinary = planOf(tddTasks(), { mode: 'solo' })
+  assert.deepEqual(ordinary.waves[0].batches[0][0].map(t => t.id), ['2.1', '2.2', '1.1'])
+})
+
+test('the red wave skips its inter-wave check without spending a verification slot', () => {
+  // The decision that makes the whole feature safe. Left to the ordinary path,
+  // the red suite fails its check, burns every fix attempt trying to repair
+  // tests that were written to fail, and then halts the run.
+  const plan = planOf(tddTasks(), { redWave: 1 })
+  const verifies = []
+  const { state, actions } = drive(createRunState(plan), {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+
+  assert.deepEqual(
+    state.skippedVerifications.map(s => ({ wave: s.wave, reason: s.reason })),
+    [{ wave: 1, reason: SKIP_VERIFY_RED }],
+    'the red wave is skipped, by its own named reason'
+  )
+  assert.deepEqual(verifies, [], 'and no check ran between the red wave and the green one')
+  assert.equal(state.verificationsUsed || 0, 0, 'the skip must not spend a checkpoint from the budget')
+  assert.equal(actions.at(-1), 'done')
+
+  // The ordinary plan over the same tasks DOES verify after wave 1, so the skip
+  // above is a branch this option took and not a property of the fixture.
+  const ordinaryVerifies = []
+  drive(createRunState(planOf(tddTasks())), {
+    onVerify: step => {
+      ordinaryVerifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(ordinaryVerifies, [2], 'without a red wave, wave 2 is followed by a check')
+})
+
+test('the red marker survives a replan of that group', () => {
+  // A revision changes a group's TASKS, never which group leads with the
+  // failing suite. Rebuilding the wave without the marker would restore the
+  // halt-on-red bug on replanned runs only — the hardest version to find.
+  const plan = planOf(tddTasks(), { redWave: 1 })
+  const state = createRunState(plan)
+  const replanned = applyReplan(state, [
+    {
+      group: 1,
+      tasks: [task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/auth.test.ts'] })]
+    }
+  ])
+  const wave = replanned.waves.find(w => w.kind === 'impl' && w.group === 1)
+  assert.equal(wave.red, true, 'the revised wave is still the red wave')
+})
+
+test('a run state written before red waves existed is not red', () => {
+  // Forward compatibility in the direction that actually happens: a state
+  // persisted by an older build carries no marker, and `undefined` has to read
+  // as "an ordinary wave" rather than as an error or as red.
+  const plan = planOf(tddTasks())
+  const state = createRunState(plan)
+  for (const wave of state.waves) assert.equal(wave.red, undefined)
+})
+
+test('a red-wave task may not depend on the work it pins', () => {
+  // The hole the relaxation opened, closed. A deferred test task ran last, so
+  // any edge it declared had already happened and nothing checked them. A
+  // red-wave task runs FIRST, so the same edge names work that has not
+  // happened — and would be silently ignored rather than honoured, because
+  // layering only orders within a group.
+  assert.throws(
+    () =>
+      planOf(
+        [
+          task({ id: '1.1', group: 1, isTestTask: true, dependsOn: ['2.1'] }),
+          task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
+          task({ id: '2.2', group: 2, paths: ['src/b.ts'] })
+        ],
+        { redWave: 1 }
+      ),
+    /runs in the red wave \(section 1\)[\s\S]*cannot depend on the work it pins/
+  )
+
+  // Inside the red wave the edge is ordinary layering and stays legal.
+  const layered = planOf(
+    [
+      task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/a.test.ts'] }),
+      task({ id: '1.2', group: 1, isTestTask: true, paths: ['test/b.test.ts'], dependsOn: ['1.1'] }),
+      task({ id: '2.1', group: 2, paths: ['src/a.ts'] })
+    ],
+    { redWave: 1 }
+  )
+  assert.equal(layered.redWave, 1)
+  assertRunsBefore(layered, '1.1', '1.2', 'an edge inside the red wave still orders it')
+
+  // And the SAME outward edge is accepted without a red wave, because there it
+  // really is satisfiable — the rejection is gated, not a new general rule.
+  const deferred = planOf([
+    task({ id: '1.1', group: 1, isTestTask: true, dependsOn: ['2.1'] }),
+    task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
+    task({ id: '2.2', group: 2, paths: ['src/b.ts'] })
+  ])
+  assert.equal(deferred.redWave, null)
+  assert.ok(deferred.testWave, 'the test task defers, so its edge points backwards in time')
 })

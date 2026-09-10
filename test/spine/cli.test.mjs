@@ -2496,3 +2496,58 @@ test('notify refuses a form it cannot build a message from, rather than posting 
   assert.equal(r.code, 1)
   assert.match(r.stderr, /--title/)
 })
+
+// --- waves: the red wave --------------------------------------------------
+
+test('waves --red-wave runs a section first, and --tdd derives it from the classification', () => {
+  // This subcommand has no change name and so no tasks.md — the red wave is
+  // either named outright or derived from the classified input's own structure.
+  // A run resolves it from the section heading instead.
+  const tdd = file('classified-tdd.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'red suite', tier: 2, model: 'sonnet', isTestTask: true },
+      { id: '2.1', group: 2, description: 'impl a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+      { id: '2.2', group: 2, description: 'impl b', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/b.ts'] }
+    ]
+  })
+
+  const explicit = runJson(['waves', '--classified', tdd, '--red-wave', '1'])
+  assert.equal(explicit.redWave, 1)
+  assert.equal(explicit.testWave, null, 'the red suite does not also defer')
+  assert.equal(explicit.waves[0].red, true)
+
+  const derived = runJson(['waves', '--classified', tdd, '--tdd'])
+  assert.equal(derived.redWave, 1, '--tdd finds the all-test first section')
+  assert.deepEqual(derived.waves, explicit.waves, 'and plans it identically')
+
+  // Default: no red wave at all, and the suite defers as it always did.
+  const plain = runJson(['waves', '--classified', tdd])
+  assert.equal(plain.redWave, null)
+  assert.ok(plain.testWave, 'the trailing test wave is the default for a test task')
+
+  // --no-tdd beats --red-wave: an explicit refusal is not overridden by an
+  // explicit section, because only one of them can be what the operator meant.
+  const refused = runJson(['waves', '--classified', tdd, '--red-wave', '1', '--no-tdd'])
+  assert.equal(refused.redWave, null)
+  assert.deepEqual(refused.waves, plain.waves)
+})
+
+test('waves --tdd on an ordinary change plans exactly as it would without the flag', () => {
+  // The constraint the feature was built under, at the CLI boundary. The stock
+  // fixture's first section is implementation work, so there is no failing
+  // suite to run first and the flag must change nothing.
+  const withFlag = runJson(['waves', '--classified', paths.classified, '--tdd'])
+  const without = runJson(['waves', '--classified', paths.classified])
+  assert.equal(withFlag.redWave, null)
+  assert.deepEqual(withFlag, without, '--tdd must not invent a red wave that is not there')
+})
+
+test('waves rejects a non-numeric --red-wave and refuses both task-shape flags at once', () => {
+  const bad = run(['waves', '--classified', paths.classified, '--red-wave', 'first'])
+  assert.equal(bad.code, 1, bad.stdout)
+  assert.match(bad.stderr, /--red-wave requires an integer section number/)
+
+  const both = run(['waves', '--classified', paths.classified, '--tdd', '--no-tdd'])
+  assert.equal(both.code, 1, both.stdout)
+  assert.match(both.stderr, /contradictory task-shape flags/)
+})

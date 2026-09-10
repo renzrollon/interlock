@@ -122,7 +122,9 @@ const USAGE = `interlock — deterministic decisions for the spec-driven flow
 
 Usage:
   interlock waves --classified <file>       Plan execution waves from classified tasks
-                  [--mode solo|waves]       (--mode forces the plan shape)
+                  [--mode solo|waves]       (--mode forces the plan shape;
+                  [--red-wave <n>]           --red-wave/--tdd run a leading
+                  [--tdd|--no-tdd]           failing-test wave first)
   interlock surface --changed <files...>    Classify UI testability of changed files
   interlock gate --findings <file>          Decide whether a review gate blocks
   interlock validate [change]               Inspect OpenSpec change artifacts
@@ -154,6 +156,8 @@ Usage:
                                              exits 0; a failed push exits 1.
                                              --json emits { sent, reason }
   interlock run start --change <name>        The ship loop, as a program. Each
+                      [--tdd|--no-tdd]       (--tdd/--no-tdd override the task
+                                             shape read from tasks.md)
   interlock run classified --classified <f>  subcommand returns one step record
   interlock run record-batch --results <f>   (interlock.run-step/1): the agents
   interlock run judge --context <ctx> --results <f>
@@ -369,6 +373,15 @@ waves:
                          recommendedMode decides inside the published envelope
                          (see interlock limits); default is waves. Passing both
                          solo and waves is rejected rather than resolved last-wins.
+  --red-wave <n>         Run section <n> as a LEADING failing-test wave instead of
+                         deferring its tests: they execute first and that wave's
+                         inter-wave check is skipped, because the suite is expected
+                         to fail there. Refused, with a warning, when the section
+                         holds no test task or is not the first section.
+  --tdd                  Derive --red-wave from the classification: the lowest
+                         section whose tasks are ALL test tasks. A run resolves it
+                         from the tasks.md section heading instead.
+  --no-tdd               Never treat any section as a red wave.
 
 surface:
   --changed <files...>   Repo-relative paths. Use "-" to read newline-separated stdin.
@@ -657,6 +670,11 @@ plan:
   --mode solo|waves      The mode override the plan was (or will be) built under;
                          part of the fingerprint, so a stored plan built with a
                          different override (or none) is rebuilt rather than reused.
+  --red-wave <n>         The leading failing-test section the plan was (or will be)
+                         built under. Part of the fingerprint for the same reason,
+                         and OMITTED from it entirely when absent — so no plan
+                         predating the TDD task shape invalidates for a signal it
+                         never used.
   Never exits non-zero: every failure to establish a match — including an error
   raised while checking — is a reason to re-plan, which is what happens today.
   Branch on "reuse", and report "reason" either way.
@@ -737,6 +755,10 @@ const BOOLEAN_FLAGS = new Set([
   'skip-coverage',
   'isolate-waves',
   'continue',
+  // The task-shape override. `--red-wave` is deliberately NOT here: it takes a
+  // section number, and making the name boolean would swallow that value.
+  'tdd',
+  'no-tdd',
   // `run close --notify`: both drivers pass it unconditionally, and the CLI —
   // not the driver — decides whether a topic is configured (design D1).
   'notify'
@@ -1407,6 +1429,44 @@ function modeFlag(flags) {
   return distinct.length === 1 ? distinct[0] : distinct
 }
 
+// `--tdd` / `--no-tdd`, resolved the way `modeFlag` resolves `--mode`: both at
+// once is refused rather than settled last-wins, because the two produce
+// different wave orders and different verifications, and picking one silently
+// would run the shape the operator did not ask for.
+function tddFlag(flags) {
+  const on = flags.tdd === true || flags.tdd !== undefined
+  const off = flags['no-tdd'] === true || flags['no-tdd'] !== undefined
+  if (on && off) {
+    die('contradictory task-shape flags: --tdd and --no-tdd were both passed — pass exactly one, or neither')
+  }
+  if (on) return 'tdd'
+  if (off) return 'no-tdd'
+  return null
+}
+
+// The red wave for a bare `interlock waves` call. `--red-wave <n>` is the
+// explicit form; `--tdd` derives it from the classification — the lowest group
+// whose tasks are all test tasks — which is all this subcommand can see. The
+// planner adjudicates whatever comes back and refuses a claim the tasks
+// contradict, so nothing here has to validate the answer.
+function redWaveFlag(flags, input) {
+  if (tddFlag(flags) === 'no-tdd') return undefined
+  if (flags['red-wave'] !== undefined) {
+    const n = Number(flags['red-wave'])
+    if (!Number.isInteger(n)) die('--red-wave requires an integer section number')
+    return n
+  }
+  if (tddFlag(flags) !== 'tdd') return undefined
+  const tasks = Array.isArray(input && input.tasks) ? input.tasks : []
+  const groups = [...new Set(tasks.map(t => t && t.group).filter(Number.isInteger))].sort(
+    (a, b) => a - b
+  )
+  const lowest = groups[0]
+  if (lowest === undefined) return undefined
+  const inLowest = tasks.filter(t => t && t.group === lowest)
+  return inLowest.length && inLowest.every(t => t.isTestTask === true) ? lowest : undefined
+}
+
 function requestedName(positional, flags) {
   if (typeof flags.change === 'string' && flags.change.trim()) return flags.change.trim()
   return positional[1]
@@ -1464,7 +1524,16 @@ async function main() {
     case 'waves': {
       const input = readInput(flags.classified, '--classified')
       const maxParallel = flags['max-parallel'] ? Number(flags['max-parallel']) : undefined
-      const plan = planWaves(input, { maxParallel, mode: modeFlag(flags) })
+      // This subcommand sees only the classified input — it has no change name
+      // and therefore no tasks.md to read the section marker from. So the red
+      // wave is either named outright (`--red-wave`) or derived from the
+      // classification's own structure (`--tdd`). A run resolves it from the
+      // marker instead; see `resolveRedWave` in lib/run.mjs.
+      const plan = planWaves(input, {
+        maxParallel,
+        mode: modeFlag(flags),
+        redWave: redWaveFlag(flags, input)
+      })
       emit(json, plan, formatPlan(plan))
       break
     }
@@ -2199,10 +2268,15 @@ async function main() {
         typeof flags.change === 'string' && flags.change.trim() ? flags.change.trim() : positional[2]
       const maxParallel = num(flags, 'max-parallel')
       const mode = modeFlag(flags)
+      // Part of the hash exactly as `--mode` is, and for the same reason: a
+      // stored plan built under a different shape has to be rebuilt rather than
+      // reused. Only the explicit form is accepted here — this subcommand does
+      // not re-derive the shape, it reports the hash for the one it is told.
+      const redWave = num(flags, 'red-wave')
 
       if (sub === 'fingerprint') {
         const name = requireChange(root, requested, json)
-        const fp = computeFingerprint(root, name, { maxParallel, mode })
+        const fp = computeFingerprint(root, name, { maxParallel, mode, redWave })
         let written = null
         if (flags.write === true) {
           const dest = typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
@@ -2223,6 +2297,7 @@ async function main() {
         const result = resolvePlanReuse(root, name, {
           maxParallel,
           mode,
+          redWave,
           planPath: typeof flags.plan === 'string' ? flags.plan : undefined,
           fingerprintPath: typeof flags.fingerprint === 'string' ? flags.fingerprint : undefined
         })
@@ -2385,6 +2460,7 @@ async function main() {
             skipCoverage: flags['skip-coverage'] === true,
             isolateWaves: flags['isolate-waves'] === true,
             laneMode: laneMode || null,
+            tddMode: tddFlag(flags),
             maxParallel: num(flags, 'max-parallel') ?? null,
             mode: flags.continue === true ? 'continue' : 'checkpoint',
             review: flags.review !== undefined || flags.strict !== undefined,

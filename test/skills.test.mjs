@@ -12,6 +12,8 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { RED_SECTION_MARKER } from '../lib/artifacts.mjs'
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILLS_DIR = join(ROOT, 'skills')
 
@@ -222,11 +224,22 @@ test('the ship trampoline carries the plan-shape flags and forwards them verbati
   const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
   const hint = /^argument-hint:.*$/m.exec(text)
   assert.ok(hint, 'the ship skill must publish an argument-hint')
-  for (const flag of ['--solo', '--waves']) {
+  for (const flag of ['--solo', '--waves', '--tdd', '--no-tdd']) {
     assert.ok(hint[0].includes(flag), `the argument-hint must offer ${flag}`)
   }
   assert.match(text, /flags: \["solo"\]/, 'the flag table must map --solo onto the args payload')
   assert.match(text, /flags: \["waves"\]/, 'and --waves')
+  // The TASK shape, which is a third decision beside the plan shape and the
+  // resume mode. An unmapped --tdd reaches ship.js as nothing at all and the
+  // run silently plans the ordinary shape.
+  assert.match(text, /flags: \["tdd"\]/, 'and --tdd')
+  assert.match(text, /flags: \["no-tdd"\]/, 'and --no-tdd')
+  // Its default lives in the CLI, read off tasks.md — the trampoline must not
+  // grow shape judgement of its own here either.
+  assert.ok(
+    text.includes(RED_SECTION_MARKER),
+    'the trampoline must name the heading the CLI reads the task shape from'
+  )
   // The preview names the mode before anything is spawned, which is why the
   // trampoline has no shape judgement of its own to make.
   assert.match(text, /plan preview names the mode/i)
@@ -246,6 +259,180 @@ test('the spec skill tells authors not to split a section to buy parallelism', (
   assert.match(text, /Never split a section to buy parallelism/i)
   assert.match(text, /packs low-tier siblings in one section into a single lane/i)
   assert.match(text, /may ship solo/i, 'and must name solo as the small-change shape')
+})
+
+// ---------------------------------------------------------------------------
+// Task-shape flag (--tdd / --no-tdd).
+//
+// The whole feature is prose: there is no CLI verb, no persisted field and no
+// consumer that would fail if the instruction went missing. That is precisely
+// the `interlock review --metrics` shape — an instruction nobody asserts
+// silently stops running, and a spec skill that quietly forgot how to pick a
+// shape reads exactly like one that never had the flag. So it is pinned on the
+// day it lands, in tokens rather than sentences.
+// ---------------------------------------------------------------------------
+
+test('the spec skill publishes both task-shape flags where a user can find them', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  const hint = /^argument-hint:.*$/m.exec(text)
+  assert.ok(hint, 'the spec skill must publish an argument-hint')
+  for (const flag of ['--tdd', '--no-tdd']) {
+    assert.ok(hint[0].includes(flag), `the argument-hint must offer ${flag}`)
+    // The table is the only place the flag's effect is stated. A hint without a
+    // row is a flag the model sees and cannot interpret.
+    assert.match(
+      text,
+      new RegExp(`^\\|\\s*\`${flag}\`\\s*\\|`, 'm'),
+      `the flag table must carry a row for ${flag}`
+    )
+  }
+})
+
+test('the spec skill decides a task shape, and resolves the flags in a fixed order', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /^#### Decide the task shape$/m, 'the shape decision needs its own heading')
+  // Explicit beats inferred, and two contradicting explicit flags are a question
+  // rather than a coin flip.
+  assert.match(text, /`--tdd` or `--no-tdd` wins/i, 'an explicit flag must win')
+  assert.match(text, /Both passed[\s\S]{0,80}ask/i, 'both flags together must ask, not guess')
+  // The smart default, named by its criterion rather than by example.
+  assert.match(text, /behaviour-critical/i, 'the default classifier needs its criterion named')
+  assert.match(
+    text,
+    /pass\/fail core[\s\S]{0,120}before the code exists/i,
+    'and the test that criterion actually applies'
+  )
+  assert.match(
+    text,
+    /Plumbing, wiring, config, prose and scaffolding are not/i,
+    'and the excluded half — a criterion with no exclusions selects everything'
+  )
+  // Transience is the locked decision. A future edit that persists the shape as
+  // an artifact field would make every downstream skill a consumer of it.
+  assert.match(text, /shape is transient/i, 'the shape must stay transient')
+  assert.match(
+    text,
+    /not written into `openspec\/changes\/<name>\/` as a field/i,
+    'and say outright that it is not an artifact field'
+  )
+})
+
+test('a bug fix keeps its repro-first task whichever way the shape flag points', () => {
+  // The one precedence rule that is a correctness matter and not a preference:
+  // `--no-tdd` suppresses a leading red section, and a repro is not one. A
+  // reword that let the flag reach the repro would silently delete the only
+  // pass/fail signal a bug fix has.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.match(
+    text,
+    /`--no-tdd`[\s\S]{0,160}never relaxes the repro/i,
+    'the skill must state that --no-tdd cannot reach the repro-first task'
+  )
+  assert.match(
+    text,
+    /repro-first task is not the TDD shape/i,
+    'and keep the two rules distinct, so neither is read as the other'
+  )
+})
+
+test('the TDD task shape carries both template markers and keeps the anti-split rule', () => {
+  // The markers are the contract between this skill and whoever reads the
+  // resulting tasks.md: without them a "TDD" file is indistinguishable from a
+  // standard one whose tests happened to sort first.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /^#### Where the tests go$/m, 'the shape branch needs its own heading')
+  assert.ok(text.includes('Failing tests first'), 'the leading red section needs its title marker')
+  assert.ok(text.includes('make §1 green'), 'and later sections need the marker that satisfies it')
+
+  // Reconciliation with rule 2. The anti-split rule predates this flag and is
+  // the reason a leading test wave is even contentious; a shape branch that did
+  // not say how the two coexist would read as repealing it.
+  assert.match(
+    text,
+    /failing suite is one checkbox, not one checkbox per TDD beat/i,
+    'the red wave must stay one checkbox — rule 2 is not repealed by the shape'
+  )
+  assert.match(text, /not a licen[cs]e to split/i)
+  // And the standard shape is genuinely unchanged, which is what makes the
+  // default path safe to leave alone.
+  assert.match(
+    text,
+    /\*\*standard\*\*[\s\S]{0,120}unchanged/i,
+    'the standard shape must be stated as unchanged from the four rules'
+  )
+})
+
+test('the red-wave heading the spec skill writes is the one the CLI reads', () => {
+  // The single prose↔code contract in this repo, asserted against the code
+  // rather than against a copy of the string. `lib/run.mjs` resolves the task
+  // shape from this heading; a reword on the skill side would silently stop
+  // every TDD change from being detected as one, and nothing else would fail.
+  // That is the `interlock review --metrics` failure exactly, so the two sides
+  // are pinned to one another here.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.ok(
+    text.includes(RED_SECTION_MARKER),
+    `the spec skill must write the marker lib/artifacts.mjs reads ("${RED_SECTION_MARKER}")`
+  )
+})
+
+test('the spec skill states how ship treats the red wave, including the check it skips', () => {
+  // Tier 2 made the red wave real: `lib/waves.mjs` keeps it in its own group,
+  // runs it first (solo included), and SKIPS its inter-wave check because the
+  // suite is expected to be failing there. Two things about that are load-
+  // bearing for whoever writes the file and cannot be discovered from it —
+  // that the heading is an exact-match contract, and that a skipped check means
+  // nobody verifies the suite was genuinely red.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+
+  assert.match(
+    text,
+    /reworded heading is not a smaller signal, it is no signal/i,
+    'the exact-match nature of the heading must be stated — a near miss reads as an ordinary change'
+  )
+  assert.match(
+    text,
+    /own inter-wave check is skipped, by design/i,
+    'the skipped check is the one surprising thing about the red wave'
+  )
+  assert.match(
+    text,
+    /cannot tell a genuinely failing suite from one that already passed/i,
+    'and what that skip costs, since nothing downstream will say it'
+  )
+  assert.match(
+    text,
+    // Emphasis-tolerant: the skill bolds "next", and a pin that died on a pair
+    // of asterisks would be deleted by the first edit that improved the prose.
+    /next\W{0,4}section's check is the gate/i,
+    'plus where the real gate moved to'
+  )
+  // The edge that used to abort the plan is now legal, and the skill has to
+  // stop calling it a prohibition — but still steer away from it, because the
+  // section boundary already provides the ordering.
+  assert.match(text, /is now legal/i, 'an impl→red-wave edge is no longer a plan failure')
+  assert.match(text, /leave it out anyway/i, 'and is still not the way to express the ordering')
+
+  // Spoken at the checkpoint, which is the only place a human is looking.
+  const handoff = text.indexOf('## 6. Hand off to the human')
+  assert.ok(handoff !== -1, 'the handoff section must still exist for the report to live in')
+  const closing = text.slice(handoff)
+  assert.match(closing, /task shape/i, 'the handoff must report the shape it chose')
+  assert.match(
+    closing,
+    /skip that wave's check/i,
+    'and hand the reviewer the one question the run cannot answer for them'
+  )
+
+  // The reversal: nothing may claim the red wave IS verified. That would send a
+  // reader looking for a checkpoint the planner deliberately does not spend.
+  assert.doesNotMatch(
+    text,
+    /red wave[^.\n]{0,40}(?:is|gets) verified/i,
+    'the skill must not imply the red wave is checked'
+  )
 })
 
 test('fix-tests resolves the typecheck and lint commands, the only supplier a ship run has', () => {

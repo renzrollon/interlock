@@ -3670,3 +3670,95 @@ test('docs/14 names the command that publishes a cap and states no threshold as 
     assert.equal(hit, null, `docs/14 restates a threshold: "${hit && hit[0]}" — name interlock limits instead`)
   }
 })
+
+// --- the task shape flags ---------------------------------------------------
+//
+// A third decision beside the plan shape (--solo/--waves) and the resume mode.
+// Parsed here and forwarded verbatim: a flag the trampoline swallows is a flag
+// the user cannot pass, and the run would silently plan the ordinary shape.
+
+test('ship.js parses --tdd and --no-tdd, in every form the runtime delivers args', () => {
+  for (const args of ['x --tdd', ['x', '--tdd'], { change: 'x', flags: ['tdd'] }]) {
+    const parsed = parseInvocationFromSource(args)
+    assert.equal(parsed.tddMode, 'tdd', `--tdd from ${JSON.stringify(args)}`)
+    assert.equal(parsed.tddModeConflict, false)
+  }
+  for (const args of ['x --no-tdd', ['x', '--no-tdd'], { change: 'x', flags: ['no-tdd'] }]) {
+    const parsed = parseInvocationFromSource(args)
+    assert.equal(parsed.tddMode, 'no-tdd', `--no-tdd from ${JSON.stringify(args)}`)
+  }
+})
+
+test('ship.js defaults the task shape to unset, so tasks.md decides', () => {
+  // The default is not "off" — it is "nobody overrode it", which is what lets
+  // the CLI read the shape off the file. A parse that emitted 'no-tdd' here
+  // would turn the whole feature off for every run that did not pass a flag.
+  const parsed = parseInvocationFromSource('x')
+  assert.equal(parsed.tddMode, null)
+  assert.equal(parsed.tddModeConflict, false)
+})
+
+test('ship.js reports both task-shape flags as a conflict rather than picking one', () => {
+  // Same treatment as --solo --waves: the two produce different wave orders and
+  // different verifications, so a last-wins guess ships the shape the operator
+  // did not ask for. Reported, not thrown, so the halt happens where the others do.
+  const parsed = parseInvocationFromSource('x --tdd --no-tdd')
+  assert.equal(parsed.tddModeConflict, true)
+  assert.equal(parsed.tddMode, null, 'and no shape is resolved from a contradiction')
+
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(
+    text,
+    /if \(tddModeConflict\) \{[\s\S]{0,200}stop\(/,
+    'the conflict must halt the run before anything is spawned'
+  )
+  assert.match(text, /contradictory task-shape flags/)
+})
+
+test('ship.js forwards the task-shape flag to run start verbatim', () => {
+  // The failure this guards: parsed, then never put on the argv, so the
+  // manifest never carries it and `run classified` plans the ordinary shape.
+  const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.match(
+    text,
+    /tddMode === 'tdd' \? \['--tdd'\] : tddMode === 'no-tdd' \? \['--no-tdd'\] : \[\]/,
+    'both values must reach the run-start argv, and neither may be inferred from the other'
+  )
+})
+
+test('both drivers carry the task-shape flags, refuse the contradiction, and forward them', () => {
+  // Cross-driver parity, in the one place it still matters: the flags a host
+  // accepts. The loop itself is the CLI's, so there is nothing else to compare —
+  // but a flag one driver takes and the other silently drops is a run that
+  // degraded because of which host launched it, which is the failure the host
+  // registry exists to make impossible.
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+    const text = readFileSync(driver, 'utf8')
+    assert.match(text, /contradictory task-shape flags/, `${driver} must refuse --tdd --no-tdd`)
+    assert.match(
+      text,
+      /\['--tdd'\][\s\S]{0,40}\['--no-tdd'\]/,
+      `${driver} must forward BOTH values to run start, not just the affirmative one`
+    )
+    // And neither driver may resolve the shape for itself. Naming the marker in
+    // help text is fine and useful — it tells the operator where the default
+    // comes from. READING tasks.md is not: two resolvers would be two answers,
+    // and the CLI's is the one the plan and the fingerprint are built from.
+    assert.doesNotMatch(
+      text,
+      /detectRedSection|readFileSync[^\n]*tasks\.md|resolveRedWave/,
+      `${driver} must not resolve the task shape itself — that is the CLI's`
+    )
+  }
+
+  // interlock-run refuses unknown flags by name, and derives the known set from
+  // its own USAGE — so the flags must be documented there or they are unusable.
+  const runner = readFileSync(join(ROOT, 'bin', 'interlock-run'), 'utf8')
+  for (const flag of ['--tdd', '--no-tdd']) {
+    assert.match(
+      runner,
+      new RegExp(`^ {2}${flag}\\b`, 'm'),
+      `${flag} must appear in interlock-run's USAGE or KNOWN_FLAGS will reject it`
+    )
+  }
+})

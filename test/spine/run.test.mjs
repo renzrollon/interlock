@@ -28,6 +28,8 @@ import { tmpdir } from 'node:os'
 import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS } from '../../lib/limits.mjs'
+import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
+import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 import {
   BRIEFING_HEADER,
@@ -1718,6 +1720,232 @@ test('the inter-wave verify budget is measured across the round trip and then bo
         'a degraded path is spoken, never silent'
       )
     }
+  } finally {
+    cleanup(root)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The TDD task shape, end to end through the real binary.
+//
+// `resolveRedWave` reads the shape off tasks.md; the planner honours or refuses
+// it; the run skips exactly one inter-wave check. These tests drive the CLI
+// rather than the module so the flag plumbing — ship.js → `run start` → the
+// manifest → `run classified` → the planner — is covered too. A flag that is
+// parsed and dropped is the failure mode this whole file exists for.
+// ---------------------------------------------------------------------------
+
+const TDD_TASKS =
+  '# Tasks\n\n' +
+  `## 1. ${RED_SECTION_MARKER}\n\n` +
+  '- [ ] 1.1 Cover the transform boundary in test/thing.test.mjs\n\n' +
+  '## 2. Make §1 green\n\n' +
+  '- [ ] 2.1 Add the thing to docs/guide.md\n' +
+  '- [ ] 2.2 Note it in README.md\n'
+
+const TDD_CLASSIFIED = {
+  tasks: [
+    {
+      id: '1.1',
+      group: 1,
+      description: 'Cover the transform boundary in test/thing.test.mjs',
+      tier: 2,
+      model: 'sonnet',
+      isTestTask: true,
+      paths: ['test/thing.test.mjs']
+    },
+    {
+      id: '2.1',
+      group: 2,
+      description: 'Add the thing to docs/guide.md',
+      tier: 2,
+      model: 'sonnet',
+      isTestTask: false,
+      paths: ['docs/guide.md']
+    },
+    {
+      id: '2.2',
+      group: 2,
+      description: 'Note it in README.md',
+      tier: 2,
+      model: 'sonnet',
+      isTestTask: false,
+      paths: ['README.md']
+    }
+  ]
+}
+
+/** start → classify → classified, with a TDD-shaped tasks.md. */
+function toTddPlan(root, change, startFlags = []) {
+  const started = run(root, ['run', 'start', '--change', change, ...startFlags]).step
+  assert.equal(started.action, 'classify')
+  file(root, '.claude/ship/classified.json', TDD_CLASSIFIED)
+  const step = run(root, [...started.then.argv]).step
+  const plan = JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+  return { step, plan, manifest }
+}
+
+test('the tasks.md heading alone makes a run red-first — no flag needed', () => {
+  const { root, change } = repo('tdd-thing', { tasks: TDD_TASKS })
+  try {
+    const { plan, step } = toTddPlan(root, change)
+    assert.equal(plan.redWave, 1, 'the shape came from the file')
+    assert.equal(plan.testWave, null, 'so the suite does not also defer')
+    assert.equal(plan.waves[0].red, true)
+    // And the first thing dispatched is the failing suite — read off the
+    // spawns, which is what the host actually acts on.
+    assert.equal(step.action, 'run-batch')
+    assert.equal(step.wave, 1)
+    assert.deepEqual(step.spawns.map(s => s.label), ['1.1'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('--no-tdd overrides the heading, and says that it did', () => {
+  const { root, change } = repo('tdd-thing', { tasks: TDD_TASKS })
+  try {
+    const { plan, manifest } = toTddPlan(root, change, ['--no-tdd'])
+    assert.equal(manifest.flags.tddMode, 'no-tdd', 'the flag reached the manifest')
+    assert.equal(plan.redWave, null)
+    assert.ok(plan.testWave, 'the suite defers like any other test task')
+    assert.ok(
+      manifest.banners.some(b => /TDD SHAPE REFUSED/.test(b)),
+      `expected a refusal banner, got: ${manifest.banners.join(' | ')}`
+    )
+    // Said once, not once per step that re-resolved it.
+    assert.equal(manifest.banners.filter(b => /TDD SHAPE REFUSED/.test(b)).length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an ordinary change is untouched by any of this, flag or no flag', () => {
+  // The constraint the whole feature was built under. A change with no marker
+  // plans identically whether or not the shape machinery exists — and --tdd on
+  // one is refused out loud rather than guessing at a section.
+  const { root, change } = repo()
+  try {
+    const plain = toFirstBatch(root, change)
+    assert.equal(plain.action, 'run-batch')
+    const plan = JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
+    assert.equal(plan.redWave, null)
+    for (const wave of plan.waves) assert.equal(wave.red, undefined)
+    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+    assert.deepEqual(
+      manifest.banners.filter(b => /TDD/.test(b)),
+      [],
+      'nothing about task shape is said on a change that has none'
+    )
+  } finally {
+    cleanup(root)
+  }
+
+  const forced = repo()
+  try {
+    const started = run(forced.root, ['run', 'start', '--change', forced.change, '--tdd']).step
+    file(forced.root, '.claude/ship/classified.json', CLASSIFIED)
+    run(forced.root, [...started.then.argv])
+    const plan = JSON.parse(readFileSync(join(forced.root, '.claude/ship/plan.json'), 'utf8'))
+    assert.equal(plan.redWave, null, '--tdd cannot invent a failing suite that is not there')
+    const manifest = JSON.parse(readFileSync(join(forced.root, '.claude/ship/run.json'), 'utf8'))
+    assert.ok(
+      manifest.banners.some(b => /TDD SHAPE UNAVAILABLE/.test(b)),
+      `expected an unavailable banner, got: ${manifest.banners.join(' | ')}`
+    )
+  } finally {
+    cleanup(forced.root)
+  }
+})
+
+test('--tdd infers the shape from an all-test first section when the heading is absent', () => {
+  // The flag's own job: a change written test-first without the exact heading.
+  const { root, change } = repo('tdd-thing', {
+    tasks:
+      '# Tasks\n\n## 1. Tests\n\n- [ ] 1.1 Cover the transform boundary in test/thing.test.mjs\n\n' +
+      '## 2. Implement\n\n- [ ] 2.1 Add the thing to docs/guide.md\n- [ ] 2.2 Note it in README.md\n'
+  })
+  try {
+    const { plan, manifest } = toTddPlan(root, change, ['--tdd'])
+    assert.equal(plan.redWave, 1)
+    assert.ok(
+      manifest.banners.some(b => /TDD SHAPE INFERRED/.test(b)),
+      `an inferred shape must be spoken: ${manifest.banners.join(' | ')}`
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a red-first run skips exactly one inter-wave check, and the green wave still gates', () => {
+  // The behavioural payoff, and the thing that would otherwise halt the run:
+  // the red suite's own check is skipped, the implementation wave's is not.
+  const { root, change } = repo('tdd-thing', { tasks: TDD_TASKS })
+  try {
+    const { step } = toTddPlan(root, change)
+
+    // Wave 1 (red) → its check is skipped, so the next step is wave 2's batch.
+    const afterRed = run(root, [...step.then.argv], { results: laneOk(['1.1']) }).step
+    assert.equal(afterRed.action, 'run-batch', 'no verify step between red and green')
+    assert.equal(afterRed.wave, 2)
+
+    const state = JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+    assert.deepEqual(
+      state.skippedVerifications.map(s => ({ wave: s.wave, reason: s.reason })),
+      [{ wave: 1, reason: SKIP_VERIFY_RED }]
+    )
+    assert.equal(state.verificationsUsed || 0, 0, 'and no checkpoint was spent on it')
+
+    // Wave 2 is the last wave, so it goes to final verification rather than an
+    // inter-wave one — either way the suite is checked after the code exists.
+    const afterGreen = run(root, [...afterRed.then.argv], { results: laneOk(['2.1', '2.2']) }).step
+    assert.notEqual(afterGreen.action, 'done', 'the green wave is not waved through unverified')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a marker on a later section is refused by the planner and bannered by the run', () => {
+  // The bridge between the two adjudicators: `resolveRedWave` reports what the
+  // file says, the PLANNER refuses a claim the classification contradicts, and
+  // the run has to surface that refusal as a banner rather than leaving it as
+  // one line in plan.json. A failing-test section that runs after
+  // implementation is not a red wave, and promoting it would move tests earlier
+  // than the author put them.
+  const { root, change } = repo('late-marker', {
+    tasks:
+      '# Tasks\n\n## 1. Scaffold\n\n- [ ] 1.1 Add the thing to docs/guide.md\n- [ ] 1.2 Note it in README.md\n\n' +
+      `## 2. ${RED_SECTION_MARKER}\n\n- [ ] 2.1 Cover it in test/thing.test.mjs\n`
+  })
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    file(root, '.claude/ship/classified.json', {
+      tasks: [
+        ...CLASSIFIED.tasks,
+        {
+          id: '2.1',
+          group: 2,
+          description: 'Cover it in test/thing.test.mjs',
+          tier: 2,
+          model: 'sonnet',
+          isTestTask: true,
+          paths: ['test/thing.test.mjs']
+        }
+      ]
+    })
+    run(root, [...started.then.argv])
+
+    const plan = JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
+    assert.equal(plan.redWave, null, 'the claim is refused, not honoured')
+    assert.ok(plan.testWave, 'so the suite defers as it always would')
+
+    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+    const refusal = manifest.banners.find(b => /TDD SHAPE REFUSED/.test(b))
+    assert.ok(refusal, `the refusal must reach the banners: ${manifest.banners.join(' | ')}`)
+    assert.match(refusal, /not the first section/, 'and say which rule it broke')
+    // Readable, not a shouted sentence: only the label is capitalised.
+    assert.doesNotMatch(refusal, /IS NOT THE FIRST SECTION/)
   } finally {
     cleanup(root)
   }

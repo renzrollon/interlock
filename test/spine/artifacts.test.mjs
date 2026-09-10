@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  RED_SECTION_MARKER,
+  detectRedSection,
   isCoverableSource,
   listChanges,
   resolveChange,
@@ -194,4 +196,98 @@ test('degenerate paths are not coverable', () => {
   for (const p of ['', null, undefined, 42, 'noext']) {
     assert.equal(isCoverableSource(p), false, String(p))
   }
+})
+
+// ---------------------------------------------------------------------------
+// The TDD task shape, read off tasks.md.
+//
+// This is the input to `resolveRedWave` in lib/run.mjs, which is the only thing
+// that turns a red-first tasks.md into a red-first RUN. It is deliberately a
+// pure text reader rather than a model judgement: the shape is a fact the author
+// wrote down, and re-deciding it on every run would let two runs of the same
+// unedited change execute in different orders.
+// ---------------------------------------------------------------------------
+
+test('the red section is detected from the numbered heading that carries the marker', () => {
+  const markdown = [
+    '# Tasks',
+    '',
+    `## 1. ${RED_SECTION_MARKER}`,
+    '',
+    '- [ ] 1.1 write the failing suite',
+    '',
+    '## 2. Make it green',
+    '',
+    '- [ ] 2.1 implement'
+  ].join('\n')
+  assert.equal(detectRedSection(markdown), 1)
+})
+
+test('a change with no marker has no red section, which is every ordinary change', () => {
+  const markdown = '# Tasks\n\n## 1. Scaffold\n\n- [ ] 1.1 do it\n\n## 2. Tests\n\n- [ ] 2.1 cover it\n'
+  assert.equal(detectRedSection(markdown), null)
+})
+
+test('the marker is matched case-insensitively and inside a longer heading', () => {
+  // The skill writes a plain heading, but an author retitling the section is
+  // not trying to turn the shape off. Substring + case-insensitive keeps the
+  // common edits working; anything further from the words is genuinely a
+  // different heading and reads as no signal, which `run` then says out loud.
+  assert.equal(detectRedSection('## 1. FAILING TESTS FIRST\n'), 1)
+  assert.equal(detectRedSection(`## 1. ${RED_SECTION_MARKER} (parser boundary)\n`), 1)
+  assert.equal(detectRedSection('## 1. Failing  tests  first\n'), null, 'respaced is a different heading')
+})
+
+test('only the LOWEST marked section counts', () => {
+  // A marked section further down describes tests that run AFTER
+  // implementation, which is not a red wave. Honouring the later one would move
+  // tests earlier than the author put them.
+  const markdown = [
+    '## 1. Scaffold',
+    '- [ ] 1.1 x',
+    `## 2. ${RED_SECTION_MARKER}`,
+    '- [ ] 2.1 y',
+    `## 3. ${RED_SECTION_MARKER}`,
+    '- [ ] 3.1 z'
+  ].join('\n')
+  // Reported as 2; the PLANNER then refuses it, because 2 is not the first
+  // section. Detection reports what it read, adjudication happens once.
+  assert.equal(detectRedSection(markdown), 2)
+})
+
+test('detection survives degenerate input rather than throwing', () => {
+  for (const value of ['', null, undefined, '# Tasks\n', '- [ ] 1.1 no headings at all\n']) {
+    assert.equal(detectRedSection(value), null, String(value))
+  }
+})
+
+test('a marker that is not a numbered section heading is not a section', () => {
+  // Prose mentioning the phrase, a bullet, and a deeper heading level are all
+  // text — only `## N.` names a wave.
+  assert.equal(detectRedSection(`We will do ${RED_SECTION_MARKER}.\n`), null)
+  assert.equal(detectRedSection(`- [ ] 1.1 ${RED_SECTION_MARKER}\n`), null)
+  assert.equal(detectRedSection(`### 1. ${RED_SECTION_MARKER}\n`), null)
+  assert.equal(detectRedSection(`## ${RED_SECTION_MARKER}\n`), null, 'an unnumbered section names no wave')
+})
+
+test('inspectChange reports the red section beside the tasks it was read from', () => {
+  // Same bytes, one read: the shape of a change and its task list must not be
+  // able to disagree about which file they came from.
+  const dir = join(root, 'openspec', 'changes', 'tdd-shaped')
+  mkdirSync(join(dir, 'specs'), { recursive: true })
+  writeFileSync(join(dir, 'proposal.md'), '# Proposal\n')
+  writeFileSync(join(dir, 'design.md'), '# Design\n')
+  writeFileSync(
+    join(dir, 'tasks.md'),
+    `# Tasks\n\n## 1. ${RED_SECTION_MARKER}\n\n- [ ] 1.1 red\n\n## 2. Green\n\n- [ ] 2.1 impl\n`
+  )
+
+  const info = inspectChange(root, 'tdd-shaped')
+  assert.equal(info.tasks.redSection, 1)
+  assert.equal(info.tasks.total, 2)
+
+  // And an ordinary change reports null rather than omitting the field, so a
+  // reader can tell "no red section" from "this build does not know about them".
+  assert.equal(inspectChange(root, 'add-auth').tasks.redSection, null)
+  assert.equal(inspectChange(root, 'does-not-exist').tasks.redSection, null)
 })

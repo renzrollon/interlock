@@ -3,7 +3,7 @@ name: spec
 description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs. Use when starting a new feature, refactor, or bug fix.
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
-argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint]"
+argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd]"
 allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
 metadata:
   type: planning
@@ -25,6 +25,8 @@ This skill writes specifications. It does not write code. By default it does not
 |------|--------|
 | `--no-explore` | Skip the explore phase (intent is already sharp, or a brief exists) |
 | `--brief <path>` | Use this explore brief; skip brief matching |
+| `--tdd` | Force test-first task shape: `tasks.md` leads with a failing-test section, later sections make it green |
+| `--no-tdd` | Force standard implementation-first shape; no leading red section. Never relaxes a bug fix's repro-first task |
 | `--continue` | Advanced. After a clean artifact review, Read `${CLAUDE_SKILL_DIR}/continuity.md` — ask `interlock ready` whether the checkpoint may be skipped, and ship if it says yes |
 | `--continue --force-checkpoint` | Opt back out mid-flight. Always stops at the checkpoint, whatever readiness would have said |
 
@@ -53,6 +55,25 @@ A bug-fix `tasks.md` must:
 - Land the failing repro test as its **first** task.
 - Constrain later tasks to the root cause only. No opportunistic renames, refactors or tidy-ups — those are a separate change.
 - **"Root cause only" excludes unrelated cleanup. It does not exclude other readers of the same invariant.** If the root cause is a shared or transformed value — a normalized identity, a cache or dedup key, a canonicalized field — then every consumer still reading the raw form is part of this fix. Enumerate them per `${CLAUDE_PLUGIN_ROOT}/shared/INVARIANT-SWEEP.md` and give each a task. Fixing one call site and leaving its siblings on the raw form is exactly how the original bug survives its own fix.
+
+#### Decide the task shape
+
+Two shapes exist, and this picks the one §3 writes:
+
+- **standard** — tests live inside the section that implements the behaviour they cover.
+- **TDD** — a leading section of failing tests, then implementation that makes them pass.
+
+Resolve in this order:
+
+1. **`--tdd` or `--no-tdd` wins.** Both passed → ask which one. Do not guess between two explicit instructions that contradict each other.
+2. **Neither passed → behaviour-critical work gets TDD, everything else gets standard.** Behaviour-critical means the change has a pass/fail core a test can pin before the code exists: a pure function, an algorithm, a parser, a transform, a state machine, or a shared or derived invariant of the kind `${CLAUDE_PLUGIN_ROOT}/shared/INVARIANT-SWEEP.md` sweeps. Plumbing, wiring, config, prose and scaffolding are not — those get standard. When a change is part core and part plumbing, judge the part the change is *about*, not the part with the most files.
+3. **A bug fix is already test-first and stays that way.** §1a's repro-first task is not the TDD shape and is not negotiable. `--no-tdd` suppresses the leading red section for the rest of the fix and **never relaxes the repro**; `--tdd` on a bug fix adds nothing the repro rule did not already require.
+
+Announce the call in one line before creating any artifact — the shape, and the reason:
+
+> `task shape: TDD (pure transform with a pass/fail core) — section 1 is failing tests.`
+
+**The shape is transient.** It is not written into `openspec/changes/<name>/` as a field and no later skill reads it back. What survives the run is the shape of `tasks.md` itself, which is the only thing ship consumes.
 
 ### 1b. Load the explore brief
 
@@ -141,6 +162,24 @@ These rules apply even when `openspec instructions tasks` injects no `rules.task
 
 **Never split a section to buy parallelism.** The planner packs low-tier siblings in one section into a single lane run by one agent, and a small change may ship solo — the whole change implemented in order by one agent — so a section written wide does not become a spawn per checkbox. Write the sections the work actually has; how many agents run them is the planner's decision, made under caps `interlock limits` publishes.
 
+#### Where the tests go
+
+The four rules above are about grouping and hold under either shape. The shape decided in §1a decides only where the tests sit inside that grouping.
+
+- **standard** — unchanged from the four rules: a test checkbox lives in the section that implements the behaviour it covers.
+- **TDD** — `## 1.` is the failing-test wave. Title it **`Failing tests first`**, and have each later section that satisfies it say so: `(make §1 green)`. Cover the transform boundary the invariant sweep found, not just the happy path.
+
+**Rule 2 still binds inside the red wave: the failing suite is one checkbox, not one checkbox per TDD beat.** A leading test section is a wave, not a licence to split. One checkbox per assertion serializes the change and buys nothing — the anti-split rule was never about disliking TDD, it was about the planner packing what you wrote.
+
+**The heading is the contract with ship, so write it exactly.** `/interlock:ship` reads `Failing tests first` off the `## 1.` heading and plans that section as a leading red wave: its tests run **first** instead of deferring to the trailing test wave, in solo mode too. A reworded heading is not a smaller signal, it is no signal — the change plans as an ordinary one, and nothing fails to tell you so except the plan preview, which will not say `RED`.
+
+Two things follow from how ship treats that wave:
+
+- **The red wave's own inter-wave check is skipped, by design.** The suite is supposed to be failing there, so checking it would spend the run's fix attempts trying to repair tests that were just written on purpose. The **next** section's check is the gate: by then the implementation exists, and a still-red suite is a real failure. So the section that makes §1 green must be a section, not a later batch of §1 — which the numbered-section rule already gives you.
+- **A dependency from an implementation task onto the red wave is now legal**, where it used to fail the plan outright. Prefer to leave it out anyway: `## 1.` already runs before `## 2.`, so `(make §1 green)` as prose is enough, and an edge buys ordering the sections had already.
+
+One consequence worth stating at the checkpoint: because the red wave's check is skipped, a run cannot tell a genuinely failing suite from one that already passed. Tests that pass before the implementation exists are not pinning new behaviour — that is a review question, and §6 flags it as one.
+
 ### 3a. The decision ledger
 
 Write `openspec/changes/<name>/decisions.md`. The format, the two classes, and what makes a row invalid are the contract in `${CLAUDE_PLUGIN_ROOT}/shared/DECISION-LEDGER.md` — read it and follow it; do not restate it here or invent a third class.
@@ -203,6 +242,7 @@ This is where the default run ends. Close with:
 - What the change does, in two or three lines
 - Assumptions made and any pending clarifications
 - Task count, and the wave shape if it is obvious
+- The task shape, and — **when it is TDD** — that ship will run section 1's failing tests first and skip that wave's check, so nobody is told whether the suite was genuinely red. Ask the reviewer to confirm the leading tests actually fail against the current code; a test that passes before the implementation exists pins nothing.
 - Anything the artifact review flagged below blocker severity
 
 Then say plainly: **review the spec, and run `/interlock:ship` when it looks right.**

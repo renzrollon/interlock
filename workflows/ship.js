@@ -102,6 +102,14 @@ function parseInvocation(args) {
   // parse stays pure and the halt happens where every other halt does.
   const soloFlag = has('solo')
   const wavesFlag = has('waves')
+  // The TASK shape, which is a third decision again: whether the change's
+  // leading failing-test section runs first instead of deferring. Absent both
+  // flags, `tasks.md`'s own section heading decides — so an ordinary change is
+  // planned exactly as it was before either flag existed. Contradictory flags
+  // are reported and stopped on for the same reason --solo/--waves are: the two
+  // produce different wave orders and different verifications.
+  const tddFlag = has('tdd')
+  const noTddFlag = has('no-tdd')
   return {
     changeArg: named || tokens.find(t => !t.startsWith('-')) || '',
     applyOnly: has('apply-only'),
@@ -118,6 +126,8 @@ function parseInvocation(args) {
     isolateWaves: has('isolate-waves'),
     laneMode: soloFlag && wavesFlag ? null : soloFlag ? 'solo' : wavesFlag ? 'waves' : null,
     laneModeConflict: soloFlag && wavesFlag,
+    tddMode: tddFlag && noTddFlag ? null : tddFlag ? 'tdd' : noTddFlag ? 'no-tdd' : null,
+    tddModeConflict: tddFlag && noTddFlag,
     maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
     mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
   }
@@ -244,6 +254,8 @@ const {
   isolateWaves,
   laneMode,
   laneModeConflict,
+  tddMode,
+  tddModeConflict,
   maxParallel,
   mode
 } = parseInvocation(typeof args === 'undefined' ? undefined : args)
@@ -357,6 +369,13 @@ if (laneModeConflict) {
   )
 }
 
+if (tddModeConflict) {
+  return await stop(
+    'contradictory task-shape flags: --tdd and --no-tdd were both passed — pass exactly one, or ' +
+      "neither to let tasks.md's own leading-section heading decide"
+  )
+}
+
 // The environment probe. Everything it asks about is a property of THIS HOST —
 // whether haiku is reachable, whether the graph was built, whether a test
 // profile exists, whether model routing is overridden — so it is asked here and
@@ -432,6 +451,7 @@ let step = await cli([
   ...(skipCoverage ? ['--skip-coverage'] : []),
   ...(isolateWaves ? ['--isolate-waves'] : []),
   ...(laneMode ? ['--mode', laneMode] : []),
+  ...(tddMode === 'tdd' ? ['--tdd'] : tddMode === 'no-tdd' ? ['--no-tdd'] : []),
   ...(Number.isInteger(maxParallel) ? ['--max-parallel', String(maxParallel)] : []),
   ...(mode === 'continue' ? ['--continue'] : []),
   ...(review ? ['--review'] : []),
