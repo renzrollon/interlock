@@ -36,6 +36,11 @@ This file is the canonical root instruction file. `AGENTS.md`, if present, is a 
 
 ## Verifying your work
 
-Run `npm test` before reporting any task complete, and paste the output.
+Before reporting a task complete, run the tests that pin what you changed, and paste the output. Which tests that is depends on the diff, not on habit:
+
+- **Code:** anything under `lib/`, `bin/`, `hooks/`, `workflows/`, `skills/`, `agents/`, `shared/`, `evals/`, `test/`, `.claude-plugin/`, or `package.json` gets the whole suite, `npm test`.
+- **Prose:** `docs/`, `README.md`, `CHANGELOG.md`, `site/`, `openspec/`, `.github/`. Find what reads each touched file — `grep -rl '<filename>' test/` — and run only the test files that come back, with `node --test <file>`. If nothing comes back, skip the suite and say so in the report. Do not assume prose is untested: `test/workflows.test.mjs` reads `docs/04`, `docs/06`, `docs/10`, `docs/14` and `README.md`, and `test/skills.test.mjs` pins every skill. CI runs the full suite on every pull request either way, so the local run exists for changes whose fix loop is local.
+
+This is the rule the ship loop applies to itself — `isDocsPath` in `lib/risk.mjs` skips a docs-only wave's verification — so a hand-run task should not be stricter than the loop.
 
 If a test fails, fix the code. Do not edit, weaken, skip, or delete the test — `hooks/guard-tests.mjs` denies test edits during a run's `remediation` and `fix-tests` stages for exactly this reason, and doing it by hand outside a run is the same mistake without the guard.
