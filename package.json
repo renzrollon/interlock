@@ -7,10 +7,10 @@
     "node": ">=18"
   },
   "bin": {
-    "interlock": "./bin/interlock",
-    "interlock-graph": "./bin/interlock-graph",
-    "interlock-run": "./bin/interlock-run",
-    "interlock-ship-acp": "./bin/interlock-ship-acp"
+    "interlock": "bin/interlock",
+    "interlock-graph": "bin/interlock-graph",
+    "interlock-run": "bin/interlock-run",
+    "interlock-ship-acp": "bin/interlock-ship-acp"
   },
   "files": [
     "bin",
