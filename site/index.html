@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interlock</title>
+<meta name="description" content="Autonomous spec-driven development for Claude Code, layered on OpenSpec. Two commands. One human checkpoint.">
+<style>
+  /* Placeholder until site/DESIGN-PROMPT.md is rendered into this file. */
+  :root { --paper:#f5f3ee; --ink:#161512; --muted:#6b675f; --rule:#161512; --accent:#c8451b; }
+  @media (prefers-color-scheme: dark) { :root { --paper:#161512; --ink:#f5f3ee; --muted:#a39e94; --rule:#f5f3ee; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; padding:6vh 16px; }
+  main { max-width:880px; margin:0 auto }
+  .eyebrow { font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.18em; text-transform:uppercase; color:var(--accent) }
+  h1 { font-size:clamp(40px,8vw,88px); line-height:.95; letter-spacing:-.03em; margin:.3em 0 .4em; font-weight:800 }
+  p.lede { font-size:20px; max-width:38em; color:var(--muted) }
+  pre { background:transparent; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); padding:16px 0; font:14px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-x:auto }
+  .stop { background:var(--accent); color:#fff; padding:20px 24px; margin:24px 0 }
+  .stop b { display:block; font-size:24px; margin-bottom:4px }
+  footer { margin-top:48px; font:13px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted) }
+  a { color:inherit }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Interlock · autonomous spec-driven development for Claude Code</div>
+  <h1>Two commands.<br>One human checkpoint.</h1>
+  <p class="lede">Spec a change, read it, then ship it start-to-commit with parallel agents. Caps and gates are code, not prose. Zero-touch is a property of the runtime, not a promise in a prompt.</p>
+<pre>/plugin marketplace add renzrollon/interlock
+/plugin install interlock@interlock
+
+/interlock:bootstrap          # once per repo: code → understanding → graph
+/interlock:spec "&lt;idea&gt;"      # explore → artifacts → review, then stops
+/interlock:ship               # waves → verify → commit</pre>
+  <div class="stop"><b>You read the spec.</b>A spec is the cheapest place to catch a wrong idea, so that is the one place a person is required to look.</div>
+  <footer>
+    The script holds the loop · the CLI holds the rules · the agents do the work<br>
+    <a href="https://github.com/renzrollon/interlock">github.com/renzrollon/interlock</a> · <a href="https://www.npmjs.com/package/@renzrollon/interlock">npm: @renzrollon/interlock</a> · MIT · layered on <a href="https://github.com/Fission-AI/OpenSpec">OpenSpec</a>
+  </footer>
+</main>
+</body>
+</html>
