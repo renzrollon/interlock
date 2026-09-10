@@ -32,6 +32,12 @@ jobs:
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
+      # OIDC trusted publishing (auth without a token) needs npm >= 11.5.1;
+      # Node 22 ships npm 10.x, which can sign provenance but cannot exchange
+      # the OIDC identity for a publish credential — so the PUT arrives
+      # unauthenticated and the registry returns E404. Upgrade before publish.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
       # No dependencies to install — the whole toolchain is stdlib Node.
       - name: Test
         run: npm test
