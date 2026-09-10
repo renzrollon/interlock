@@ -1,0 +1,80 @@
+{
+  "schema": "interlock.ship-eval-sample/1",
+  "note": "Trajectories the process walker must decide, laid down through lib/run-log.mjs's own writer exactly as clean-run.json is. Each one is reconstructable — `interlock run-log check` passes on all of them — so a process failure here is a process failure and never reconstructability wearing a different hat. The unknown-`type` direction is deliberately absent: appendRunLogEvent refuses to write a type it does not accept, so that case is fed to the walker as a hand-built record list in test/spine/ship-trajectory.test.mjs.",
+  "runs": {
+    "complete-missing-verify": {
+      "note": "A run that closed with run-complete having never recorded a verify judgement. Reconstructable — checkRunLog does not require verify-judgement — and a required-types failure.",
+      "expect": { "trajectory-required-event-types": "fail", "trajectory-known-actions": "pass", "trajectory-halt-on-unit-red": "pass" },
+      "events": [
+        { "type": "run-start", "mode": "continue", "strict": false },
+        { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+        { "type": "agent-spawn", "label": "impl 1.1", "kind": "implementer", "taskId": "1.1" },
+        { "type": "run-complete", "leftoverTaskIds": [] },
+        { "type": "run-receipt", "waves": [], "remediationRounds": 0, "outputTokens": 100, "leftoverTaskIds": [], "halted": false }
+      ]
+    },
+    "complete-missing-receipt": {
+      "note": "A completed ship that never wrote its own receipt. checkRunLog documents the receipt as optional so a halt-before-close stays reconstructable; a run that COMPLETED without one is the process miss.",
+      "expect": { "trajectory-required-event-types": "fail", "trajectory-known-actions": "pass", "trajectory-halt-on-unit-red": "pass" },
+      "events": [
+        { "type": "run-start", "mode": "continue", "strict": false },
+        { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+        { "type": "verify-judgement", "context": "final", "halt": false, "reason": "unit suite green", "unitStatus": "green" },
+        { "type": "cli-exit", "command": "verify judge", "exitCode": 0 },
+        { "type": "run-complete", "leftoverTaskIds": [] }
+      ]
+    },
+    "unknown-action": {
+      "note": "The invented action. `report` is not in the run program's ACTIONS — makeStep would throw on it — but lib/run-log.mjs copies wave-action.action as bounded text without checking, so a value like this reaches the file intact and stays reconstructable.",
+      "expect": { "trajectory-required-event-types": "pass", "trajectory-known-actions": "fail", "trajectory-halt-on-unit-red": "pass" },
+      "events": [
+        { "type": "run-start", "mode": "continue", "strict": false },
+        { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+        { "type": "wave-action", "action": "report", "wave": "1", "waveIndex": 0, "batchIndex": 1, "phase": "code", "source": "next" },
+        { "type": "cli-exit", "command": "wave-state next", "exitCode": 0 },
+        { "type": "verify-judgement", "context": "final", "halt": false, "reason": "unit suite green", "unitStatus": "green" },
+        { "type": "cli-exit", "command": "verify judge", "exitCode": 0 },
+        { "type": "run-complete", "leftoverTaskIds": [] },
+        { "type": "run-receipt", "waves": [], "remediationRounds": 0, "outputTokens": 100, "leftoverTaskIds": [], "halted": false }
+      ]
+    },
+    "unit-red-completed": {
+      "note": "The verdict the run had already recorded and then walked past: a red unit judgement, closed with run-complete.",
+      "expect": { "trajectory-required-event-types": "pass", "trajectory-known-actions": "pass", "trajectory-halt-on-unit-red": "fail" },
+      "events": [
+        { "type": "run-start", "mode": "continue", "strict": false },
+        { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+        { "type": "verify-judgement", "context": "final", "halt": true, "reason": "unit suite red", "unitStatus": "red" },
+        { "type": "cli-exit", "command": "verify judge", "exitCode": 1 },
+        { "type": "run-complete", "leftoverTaskIds": [] },
+        { "type": "run-receipt", "waves": [], "remediationRounds": 0, "outputTokens": 100, "leftoverTaskIds": [], "halted": false }
+      ]
+    },
+    "unit-red-halted": {
+      "note": "The same judgement honoured: red, then run-halt. Nothing here is a process failure, and the absence of a receipt is not one either — a halted run never reached its own close.",
+      "expect": { "trajectory-required-event-types": "pass", "trajectory-known-actions": "pass", "trajectory-halt-on-unit-red": "pass" },
+      "events": [
+        { "type": "run-start", "mode": "continue", "strict": false },
+        { "type": "wave-action", "action": "run-batch", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "code", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 0 },
+        { "type": "verify-judgement", "context": "inter-wave", "halt": true, "reason": "unit suite red", "unitStatus": "red" },
+        { "type": "cli-exit", "command": "verify judge", "exitCode": 1 },
+        { "type": "run-halt", "reason": "unit suite red at the inter-wave gate" }
+      ]
+    },
+    "halt-before-verify": {
+      "note": "An honest early stop: halted at classification, never reached verification or a receipt. A run-halt close is not held to the types only a completed ship emits.",
+      "expect": { "trajectory-required-event-types": "pass", "trajectory-known-actions": "pass", "trajectory-halt-on-unit-red": "pass" },
+      "events": [
+        { "type": "run-start", "mode": "checkpoint", "strict": false },
+        { "type": "wave-action", "action": "classify", "wave": "1", "waveIndex": 0, "batchIndex": 0, "phase": "plan", "source": "create" },
+        { "type": "cli-exit", "command": "wave-state create", "exitCode": 1 },
+        { "type": "run-halt", "reason": "the planner produced no executable plan" }
+      ]
+    }
+  }
+}

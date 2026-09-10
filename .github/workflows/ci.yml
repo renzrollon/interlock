@@ -93,3 +93,36 @@ jobs:
           done
           echo "--- interlock limits"
           "$RUNNER_TEMP/prefix/bin/interlock" limits >/dev/null
+
+  # The outcome eval's model-free prepare path. Ordinary CI runs it so a broken
+  # fixture, a failed copy or an isolation refusal fails the build here, on every
+  # pull request, instead of waiting for the metered Wednesday sweep in
+  # `.github/workflows/ship-outcome-eval.yml` to notice.
+  #
+  # NO CREDENTIAL, AND NO SKIP. This job never reads `secrets.ANTHROPIC_API_KEY`
+  # and must never grow the metered job's "no credential → skip" step: that skip
+  # is correct for a sweep that produces no signal without a model, and here it
+  # would hide exactly the broken fixture this job exists to catch. The empty
+  # `env` below keeps a repository-level secret out of the step.
+  #
+  # NOT THE METERED EVAL. `--prepare-only` copies, git-inits and discards each
+  # fixture outside this repository. It invokes no model, records no spend and
+  # appends no row to `evals/history/ship-outcomes.jsonl`. A non-zero exit here
+  # fails this workflow; it is not a graded outcome-eval result, and no gate,
+  # readiness check or promotion decision reads it.
+  #
+  # ONE JOB, NOT A MATRIX STEP. The unit suite already spawns this flag as an
+  # assertion on every Node version; the named contract runs once, on Node 22.
+  outcome-prepare:
+    name: Outcome eval prepare (model-free)
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # No install step: the repository has no dependencies.
+      - name: Prepare every outcome fixture without a model
+        run: node evals/ship/run.mjs --prepare-only

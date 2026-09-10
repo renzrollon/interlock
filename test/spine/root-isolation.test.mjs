@@ -83,6 +83,11 @@ test('no test that spawns the binary writes into this repository\'s corpora', ()
   // never having run anything.
   const env = { ...process.env, [CHILD_ENV]: '1' }
   delete env.NODE_TEST_CONTEXT
+  // FORCE_COLOR wraps the spec reporter's `ℹ pass N` line in CSI sequences,
+  // which would make the summary regex below miss a run that did execute.
+  delete env.FORCE_COLOR
+  env.NO_COLOR = '1'
+  env.FORCE_COLOR = '0'
 
   const before = snapshot()
   const r = spawnSync(process.execPath, ['--test', ...files], {
@@ -91,8 +96,9 @@ test('no test that spawns the binary writes into this repository\'s corpora', ()
     env
   })
   assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  const stdout = (r.stdout || '').replace(/\u001b\[[0-9;]*m/g, '')
   assert.match(
-    r.stdout,
+    stdout,
     /^(?:#|ℹ) pass \d+$/m,
     `the child test run produced no summary, so nothing was exercised:\n${r.stdout}\n${r.stderr}`
   )

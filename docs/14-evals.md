@@ -1,10 +1,14 @@
 # 14 — Evals, and what a consumer's run is actually checked by
 
-This page is for a repository that runs `/interlock:spec` and `/interlock:ship`
-**against its own product**, rather than developing Interlock. It answers four
-questions a consuming team should not have to read the harness to answer: what
-is checked on your run and by what, what is recorded and where, why Interlock
-runs no model evaluations in your CI, and how to report a run that misbehaved.
+This page answers evals for two audiences. The first half is for a repository
+that runs `/interlock:spec` and `/interlock:ship` **against its own product**,
+rather than developing Interlock. It answers four questions a consuming team
+should not have to read the harness to answer: what is checked on your run and
+by what, what is recorded and where, why Interlock runs no model evaluations in
+your CI, and how to report a run that misbehaved.
+
+The second half is for people changing Interlock: which layers are evals, which
+are not, and how the suite should grow. Skip it if you only ship with Interlock.
 
 One sentence up front, because everything else depends on it: **nothing Interlock
 records about your run changes what your run does.** No recorded figure feeds a
@@ -150,3 +154,146 @@ accumulate for it to mean more. You cannot turn one into a gate. If a recorded
 figure ever starts deciding whether a run proceeds, that is a change to be
 proposed and argued, not a threshold added to a report — see
 [11 — Why it gates nothing](11-the-indicators.md#why-it-gates-nothing).
+
+---
+
+## What Interlock itself is evaluated by
+
+The rest of this page is for maintainers. A consuming team's green `verify unit`
+says their product tests passed. It does not say Interlock's trampoline still
+halts, or that tier-1 still stays off `design.md`. Those questions belong to
+Interlock's own suite, run in this repository, never in a consumer's CI.
+
+**Do not treat `npm test` as an agent eval.** `npm test` is `node --test` over a
+`find`-piped file list. It is the policy-engine regression net. Skill-token pins
+in `test/skills.test.mjs` are also not agent evals: they assert that instruction
+bytes exist, not that a model followed them.
+
+### Four layers that are not substitutes
+
+| Layer | What it is | What it proves | What it does not prove |
+|---|---|---|---|
+| **Unit tests** (`npm test`) | Deterministic `node:test` over `lib/`, `bin/`, hooks, fixtures, eval *structure* | Policy, CLI exit codes, schema, isolation, fail-open | That a model followed an instruction |
+| **Skill-token pins** (`test/skills.test.mjs`) | Regex/token assertions over `SKILL.md` bodies | The instruction is still on disk | The model will halt, route, or copy an enum |
+| **In-run CLI gates** | Exit-code decisions the ship loop branches on | One live run's artifacts, suite, trajectory | Recurring model behaviour across versions |
+| **True agent evals** (`evals/` cases + `evals/ship/`) | A model (or the real loop) in a controlled task, graded | Instruction-following and/or shipped outcome | Nothing, until they actually run and triage can read the results |
+
+A case that only duplicates a `node:test` assertion is refused for the same
+reason the layers are separate: the unit suite already covers it, cheaper and
+without a model.
+
+### The spine
+
+Stay on stdlib Node. Three runners, one decision CLI. Do not add a fourth
+framework.
+
+```
+npm test                          → structure, CLI, isolation, fail-open
+claude plugin eval                → transcript cases (early-access vendor harness)
+node evals/ship/run.mjs           → outcome cases (this repo's harness)
+interlock evals triage|calibrate|promote|capture  → verdicts, never models
+```
+
+`claude plugin eval` is already the transcript harness. Replacing it with
+AgentEvals, Harbor, Braintrust or LangSmith would duplicate graders this repo
+already has, add a runtime dependency CI does not install, and — for AgentEvals
+— score the wrong object (chat messages versus Interlock's JSONL events). A
+dependency for isolation or a judge SDK is a design decision with a pinned
+version in a change's `design.md`. It is not needed to grow this suite.
+
+Metered jobs stay off the pull-request critical path except smoke, stay advisory
+until `interlock evals promote` says otherwise, stay bounded by `interlock
+limits`, and never feed `interlock ready`, `gate`, or the ship loop. Online
+LLM scoring of a live ship would put a judge on the hot path and invent a gate
+from a figure, which this page and [11](11-the-indicators.md) refuse.
+
+### Transcript, outcome, process
+
+Three measurements, not one with three names:
+
+| Surface | Grades | Runner |
+|---|---|---|
+| **Transcript** | One briefing or skill against a real model (`regex`, `tool_used`, `tool_order`, judged graders) | `claude plugin eval` over `evals/<case>/` |
+| **Outcome** | Disk after a real ship: ticks, suite, commit, receipt, weakened-suite | `node evals/ship/run.mjs` |
+| **Process** | The reconstructable JSONL, not chat: required event types, known `action` values, halt when unit was red | `evals/ship/trajectory.mjs`, on the loop arm only |
+
+The loop's stage sequence is a contract (`lib/run.mjs`). Implementer tool order
+is not. Match the former by event type on the run-log. Match the latter with
+set-membership (`tool_used` min/max). Strict tool-order on an implementer trace
+punishes valid alternatives.
+
+Smoke cases are **regression** evals: they should stay near pass, and they use
+deterministic graders only. Outcome fixtures are **capability** evals: small,
+distinct hills, two arms, no verdict on the difference. Do not mix a
+known-failing capability case into smoke. Cases, fixtures, and the outcome
+runner's spoken limits (ACP only, default config, apparatus agent labelled on
+every row) live in `evals/` and `evals/ship/README.md` — this page does not
+restate them.
+
+Scores are model × harness. The outcome eval already treats the ACP apparatus
+agent as a labelled confounder and refuses to pretend ACP is Workflow. A later
+host matrix is the same fixture on another headless driver, with `host` on every
+row — not a new framework.
+
+### How the suite should grow
+
+The closed loop is already specified: **capture** a real miss → author a case
+from resolved evidence → scheduled or dispatched **run** → **triage** → a
+maintainer commits a history record → **promote** may move advisory to blocking.
+Authoring is `skills/evals/SKILL.md`. Classification is `interlock evals
+triage`, never the skill. Caps, windows and floors are `interlock limits --json`
+under `evals` — not restated here.
+
+Add a case only from an observed failure (archived proposal, changelog, run
+artifact, or a captured skeleton whose every `CONFIRM` is resolved). No
+observed failure, no case. Spec, review, explore-as-skill-body, and bootstrap
+stay uncased until capture or a changelog cites a miss. Hypothetical coverage
+of those skills would teach the team to ignore the suite.
+
+Keep skill-token pins when you add an instruction. Do not replace them with a
+model case, and do not add a model case that only re-asserts the pin.
+
+Pick the cheapest grader that expresses the assertion. A judged grader needs a
+human-labelled calibration set before promote may consider that case; until
+transcripts exist, name the grader in `evals/CALIBRATION-DEFERRALS.md` rather
+than labelling invented ones.
+
+Guard fail-open stays a unit test (`test/hooks.test.mjs`). An eval that a live
+model in `remediation` was denied a test edit waits for a reproduced miss. The
+same for review-band behaviour: plant findings and assert `interlock gate` in
+`node:test`. Do not LLM-judge a threshold.
+
+`interlock evals capture` never writes into `evals/`. History under
+`evals/history/` is a maintainer commit after a run, not CI committing to the
+default branch. Empty history means promote reports insufficient history and
+the eval workflow stays advisory — that is the correct posture, not a bug to
+work around with a YAML boolean.
+
+Do not wire outcome scores, transcript scores, or `interlock report` figures
+into any gate.
+
+### What still needs a run, not a new case
+
+The harness for evals is built. Improving evals means closing the loop above,
+not adding frameworks or hypothetical tasks.
+
+1. **Record history.** After a smoke or full-suite run, triage it and commit
+   the summary `evals/history/` expects. Promotion cannot fire on an empty
+   window, and a single file is a start rather than a window.
+2. **Calibrate the judged graders** from those transcripts, then delete the
+   deferral rows. Until then those cases cannot promote.
+3. **Keep producing outcome rows.** Ordinary CI already runs
+   `node evals/ship/run.mjs --prepare-only` (no credential, no spend). A
+   metered sweep is schedule and `workflow_dispatch` only. Partial-at-ceiling
+   is allowed; the deliverable is rows, not a verdict.
+4. **Host matrix and `--strict`** wait until a headless driver exists for the
+   host, or until a fixture can plant surviving blockers and assert the loop
+   does not emit commit — the latter can start as CLI-driven, without a model.
+5. **Optional later:** fire the smoke job on `evals/**` and `lib/evals-*.mjs`
+   so a grader or triage-reader edit is metered; a counts-and-denominators
+   view over `evals/history/` (not a gate); a harder fixture only when the
+   three current ones saturate.
+
+Everything else — Harbor, AgentEvals, spec-path hypotheticals, online judges —
+would make the suite look busier while the existing one still needs trials in
+git.

@@ -4,6 +4,18 @@
 `docs-and-code` fixture leaves behind: which tasks its state machine recorded as
 done, and every trajectory event it wrote, ending in a receipt.
 
+`process-runs.json` is the same idea for the *process* criteria: several named
+trajectories a loop might leave, each declaring the status the walker in
+`evals/ship/trajectory.mjs` must reach on it — a completed run missing its
+verify judgement, a completed run missing its receipt, an invented `action`, a
+unit-red judgement closed with `run-complete` and the same one closed with
+`run-halt`, and an honest halt before verification. Every one of them passes
+`interlock run-log check`, deliberately: a process fixture that failed
+reconstructability would prove nothing about the process criteria, because the
+existing criterion would already have caught it. The unknown-`type` direction is
+absent from the file because `appendRunLogEvent` refuses to write one — that
+case is a hand-built record list in the test.
+
 ## Why it exists
 
 The graders are the part of the outcome eval that must be right before a single

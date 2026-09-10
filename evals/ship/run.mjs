@@ -541,9 +541,9 @@ export function differenceFor(loop, control) {
     available: true,
     reason: null,
     over:
-      'the criteria both arms can be graded on, and every measure. The tick, trajectory and ' +
-      'receipt criteria are not applicable to the control arm and are excluded rather than ' +
-      'counted against it.',
+      'the criteria both arms can be graded on, and every measure. The tick, trajectory, ' +
+      'receipt and process criteria are not applicable to the control arm and are excluded ' +
+      'rather than counted against it.',
     criteria,
     measures,
     note: 'values and denominators only — no arm is labelled better, acceptable, degraded or passing'

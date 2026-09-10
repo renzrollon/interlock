@@ -175,7 +175,8 @@ nothing qualifies, the share is unobserved with its reason, never zero.
 
 If you run Interlock against your own product rather than developing it, the
 consumer-facing version of all of this — what is checked, what is recorded, and
-how to file a failure — is [14 — Evals and the consumer posture](14-evals.md).
+how to file a failure — is [14 — Evals](14-evals.md). The same page is where
+Interlock's own eval layers and the rules for growing the suite live.
 
 ### review findings — two series, kept apart
 

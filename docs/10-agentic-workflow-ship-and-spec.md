@@ -366,11 +366,13 @@ Lean ship trusts the unit suite. No `.claude/testing/profile.json` means inferre
 
 ### Evals
 
-There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite on a schedule.
+The layers, the spine, and the rules for growing Interlock's own suite are [14](./14-evals.md). What follows is the coverage snapshot for this review.
+
+There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite on a schedule. The outcome eval at `evals/ship/` grades disk and the run-log after a real loop, not a transcript.
 
 What its cases exercise is the surface `ship` drives through a model: the assembled **implementer briefing** (its handoff status enum, and lane partial-failure reporting), **control-plane action** selection, the **trampoline halt**, **skill routing**, **evidence locators**, **tier read scope**, and **cited cap resolution**.
 
-What it does not exercise is the spec path. No case touches `skills/spec`, `review-artifacts`, `review-code`, `explore`, or `bootstrap` — that half of the product has no model-in-the-loop coverage at all. The job is advisory: it reports a verdict and gates nothing, so a case below threshold surfaces without failing a build. A metered run is bounded by a cost ceiling, but the value lives in the CLI — read it with `interlock limits`, which is also where CI reads it. As of 2026-09-03 the suite has not yet been run against a model, so there are no scores and no baseline to compare against.
+What it does not exercise is the spec path. No case touches `skills/spec`, `review-artifacts`, `review-code`, `explore`, or `bootstrap` — that half of the product has no model-in-the-loop coverage at all. The job is advisory: it reports a verdict and gates nothing, so a case below threshold surfaces without failing a build. A metered run is bounded by a cost ceiling, but the value lives in the CLI — read it with `interlock limits`, which is also where CI reads it. A smoke subset ran against a model on 2026-09-04: three of its four cases passed and `tier-read-scope` failed both of its deterministic graders. That is a first baseline, not a trend — one run of a subset says nothing about variance — and it adds no spec-path coverage.
 
 The unit suite stays the regression net for policy — use it as that, not as proof that a change was the right product. `interlock outcomes` is the intended corpus for outcomes; it does not yet change gates. Until it does, **your read at the checkpoint is the eval that matters.**
 

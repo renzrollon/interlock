@@ -27,12 +27,14 @@ import { fileURLToPath } from 'node:url'
 import { appendRunLogEvent } from '../../lib/run-log.mjs'
 import { applyReference, readFixture } from '../../evals/ship/fixtures.mjs'
 import { prepareScratchRoot, removeScratchRoot } from '../../evals/ship/run.mjs'
+import { PROCESS_CRITERIA } from '../../evals/ship/trajectory.mjs'
 import {
   CRITERIA,
   SHARED_CRITERIA,
   STATUS,
   gradeArm,
   gradeCommit,
+  gradeProcess,
   gradeTicks,
   gradeUnit,
   parseNodeTestCounts,
@@ -158,6 +160,24 @@ test('parseNodeTestCounts reads a run and records an unparsed one as absent, nev
   )
   assert.deepEqual(spec.failures, ['formats bytes'])
 
+  // FORCE_COLOR wraps the spec reporter in CSI sequences. A parser that only
+  // read the uncolored form would make the weakened-suite check silently
+  // unavailable whenever the eval ran under a color-forcing parent.
+  const colored = parseNodeTestCounts(
+    [
+      '\x1b[31m✖ formats bytes \x1b[90m(0.6ms)\x1b[39m\x1b[39m',
+      '\x1b[34mℹ tests 7\x1b[39m',
+      '\x1b[34mℹ pass 5\x1b[39m',
+      '\x1b[34mℹ fail 2\x1b[39m',
+      '\x1b[34mℹ skipped 0\x1b[39m'
+    ].join('\n')
+  )
+  assert.deepEqual(
+    { total: colored.total, passed: colored.passed, failed: colored.failed, skipped: colored.skipped },
+    { total: 7, passed: 5, failed: 2, skipped: 0 }
+  )
+  assert.deepEqual(colored.failures, ['formats bytes'])
+
   // The absence that matters: a run whose summary never printed. A zeroed count
   // here would make the weakened-suite check compare a real baseline against a
   // fabricated present and report every run as having deleted its whole suite.
@@ -194,8 +214,14 @@ test('a clean sample root grades every loop-arm criterion, each from a command e
     }
 
     const tally = tallyCriteria(graded.criteria)
-    assert.deepEqual(tally, { met: 6, applicable: 6, notApplicable: 0, unobserved: 0 })
+    assert.deepEqual(tally, { met: 9, applicable: 9, notApplicable: 0, unobserved: 0 })
     assert.equal(graded.receipt.outputTokens, 8190)
+
+    // The three process criteria are among them, and they are decided over the
+    // run's own events rather than over anything an agent said.
+    for (const id of Object.values(PROCESS_CRITERIA)) {
+      assert.equal(statusOf(graded.criteria, id), STATUS.PASS, `${id} must be graded on the loop arm`)
+    }
   } finally {
     removeScratchRoot(root)
   }
@@ -351,7 +377,12 @@ test('a control arm names its arm and records three criteria not-applicable, nev
     // produced it could be read as a loop result with three criteria missing.
     assert.equal(graded.arm, 'control')
 
-    for (const id of [CRITERIA.TICKS, CRITERIA.TRAJECTORY, CRITERIA.RECEIPT]) {
+    for (const id of [
+      CRITERIA.TICKS,
+      CRITERIA.TRAJECTORY,
+      CRITERIA.RECEIPT,
+      ...Object.values(PROCESS_CRITERIA)
+    ]) {
       const c = graded.criteria.find(x => x.id === id)
       assert.equal(c.status, STATUS.NOT_APPLICABLE, `${id} must be not-applicable on the control arm`)
       // The load-bearing half: `met: null` is neither met nor failed. Recording
@@ -366,7 +397,85 @@ test('a control arm names its arm and records three criteria not-applicable, nev
       assert.equal(statusOf(graded.criteria, id), STATUS.PASS, `${id} must still be graded`)
     }
     const tally = tallyCriteria(graded.criteria)
-    assert.deepEqual(tally, { met: 3, applicable: 3, notApplicable: 3, unobserved: 0 })
+    assert.deepEqual(tally, { met: 3, applicable: 3, notApplicable: 6, unobserved: 0 })
+
+    // And the process ids stay out of the set the arms are differenced over.
+    // Counting a control-arm `n/a` into that comparison would score the arm
+    // down for lacking a mechanism it was defined not to have.
+    for (const id of Object.values(PROCESS_CRITERIA)) {
+      assert.equal(SHARED_CRITERIA.includes(id), false, `${id} must not join the arm-difference set`)
+    }
+  } finally {
+    removeScratchRoot(root)
+  }
+})
+
+test('an invented action fails process while the run stays reconstructable', () => {
+  // The split the whole change rests on: `interlock run-log check` is an in-run
+  // gate and must not learn to reject an invented action, so a log carrying one
+  // passes reconstructability and fails known-actions. If these two ever moved
+  // together, an eval-only check would have been folded into a consumer's gate.
+  const { root } = sampleRoot()
+  try {
+    const runId = 'sample-invented-action'
+    for (const event of [
+      { type: 'run-start', mode: 'continue', strict: false },
+      { type: 'wave-action', action: 'report', wave: '1', waveIndex: 0, batchIndex: 0, source: 'create' },
+      { type: 'cli-exit', command: 'wave-state create', exitCode: 0 },
+      { type: 'verify-judgement', context: 'final', halt: false, reason: 'green', unitStatus: 'green' },
+      { type: 'cli-exit', command: 'verify judge', exitCode: 0 },
+      { type: 'run-complete', leftoverTaskIds: [] },
+      { type: 'run-receipt', waves: [], remediationRounds: 0, outputTokens: 1, leftoverTaskIds: [] }
+    ]) {
+      const written = appendRunLogEvent(root, { runId, change: fixture.change, ...event })
+      assert.equal(written.written, true, `planting: ${event.type} — ${written.reason}`)
+    }
+
+    const reconstructable = spawnSync(
+      process.execPath,
+      [BIN, 'run-log', 'check', '--run-id', runId, '--root', root, '--json'],
+      { cwd: ROOT, encoding: 'utf8' }
+    )
+    assert.equal(
+      reconstructable.status,
+      0,
+      `run-log check must still pass on a log carrying an invented action: ${reconstructable.stdout}`
+    )
+
+    const process_ = gradeProcess({ root, runId })
+    assert.equal(statusOf(process_, PROCESS_CRITERIA.KNOWN_ACTIONS), STATUS.FAIL)
+    assert.equal(statusOf(process_, PROCESS_CRITERIA.REQUIRED_TYPES), STATUS.PASS)
+    assert.equal(statusOf(process_, PROCESS_CRITERIA.HALT_ON_UNIT_RED), STATUS.PASS)
+
+    // Every process criterion names the invocation that supplied its events.
+    for (const c of process_) {
+      assert.match(c.command, /run-log show/, `${c.id} names no source for the events it read`)
+      assert.equal(c.runId, runId)
+    }
+
+    // And the reconstructability criterion, graded through the same root, is
+    // unmoved.
+    const graded = gradeArm({ root, fixture, arm: 'loop', runId, baselineCommit: null, baselineCounts: null })
+    assert.equal(statusOf(graded.criteria, CRITERIA.TRAJECTORY), STATUS.PASS)
+    assert.equal(statusOf(graded.criteria, PROCESS_CRITERIA.KNOWN_ACTIONS), STATUS.FAIL)
+  } finally {
+    removeScratchRoot(root)
+  }
+})
+
+test('a loop arm with no trajectory records the process criteria unobserved, never passing', () => {
+  const { root } = sampleRoot()
+  try {
+    for (const c of gradeProcess({ root, runId: null })) {
+      assert.equal(c.status, STATUS.UNOBSERVED)
+      assert.equal(c.met, false, 'an unobserved process criterion must never read as met')
+    }
+    // A run id that names no file is the same answer: `run-log show` exits 0
+    // with no events, and no events is not a clean process record.
+    for (const c of gradeProcess({ root, runId: 'no-such-run' })) {
+      assert.equal(c.status, STATUS.UNOBSERVED)
+      assert.equal(c.met, false)
+    }
   } finally {
     removeScratchRoot(root)
   }

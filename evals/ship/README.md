@@ -13,10 +13,22 @@ node evals/ship/run.mjs --prepare-only  # no model, no spend, no row
 node evals/ship/run.mjs                 # METERED: every fixture, both arms
 ```
 
+**Ordinary CI runs the prepare-only path**, on every pull request and every push
+to the default branch, as its own job in `.github/workflows/ci.yml`. That job
+invokes no model, needs no credential, records no spend and appends no history
+row — it copies, isolates and discards each fixture, and a non-zero exit fails
+the build. So a broken fixture, a failed copy or an isolation refusal is caught
+where changes land, not by the metered sweep a week later.
+
+The metered sweep is the other half of the split: schedule and
+`workflow_dispatch` only, never a pull request, in its own workflow file. A red
+prepare job in ordinary CI is apparatus hygiene and not a graded outcome-eval
+result — nothing in the loop reads either one.
+
 ## What it grades
 
-Five criteria, each an invocation against the scratch root, none of them a new
-judgement:
+Six **outcome** criteria, each an invocation against the scratch root, none of
+them a new judgement:
 
 | Criterion | Decided by |
 |---|---|
@@ -27,9 +39,31 @@ judgement:
 | the trajectory is reconstructable | `interlock run-log check` |
 | the receipt is present and observed | `interlock run-log query --type run-receipt` — tallies, spend, remediation rounds and leftover ids as observed values |
 
+…and, **on the loop arm only**, three **process** criteria, decided by walking
+the events the run already wrote (`interlock run-log show --json`):
+
+| Criterion | Decided by |
+|---|---|
+| `trajectory-required-event-types` | a run that closed with `run-complete` emitted `wave-action`, `cli-exit`, `verify-judgement` and `run-receipt`, and carries no event type the writer would refuse. A `run-halt` close is not held to the types only a completed ship emits |
+| `trajectory-known-actions` | every recorded `action` is one the run program allows. An invented value — `report`, say — fails, because `lib/run-log.mjs` copies the field as text without checking it |
+| `trajectory-halt-on-unit-red` | a `verify-judgement` whose `unitStatus` the CLI already recorded as halting (`red`, `error`, `weakened`) closed with `run-halt` and not with `run-complete` |
+
+**These walk JSONL events, not chat.** The run-log is the loop's own record of
+its CLI invocations — the same file the reconstructability criterion reads — so
+grading it is not reading a transcript. No chat message, plugin-eval trace or
+implementer tool-call list is consulted, and **implementer tool order is not a
+criterion**: the walk checks that the required event types are present, never
+that they arrived in a particular sequence.
+
+The process checks sit **beside** `interlock run-log check` and never inside it.
+A log carrying an invented action is still reconstructable, and stays so: the
+reconstructability check is an in-run gate, and folding an eval-only check into
+it would halt a consumer's ship over a finding this eval only observes.
+
 An **unknown fails its criterion**. A receipt field the run never observed is
 recorded `unobserved`, never as a clean value: reading absence as cleanliness
-would flatter exactly the runs this eval exists to explain.
+would flatter exactly the runs this eval exists to explain. A loop arm that wrote
+no trajectory leaves all three process criteria `unobserved` for the same reason.
 
 Nothing here reads a transcript. A run that claimed success while leaving the
 suite red grades red, because the suite was consulted and the claim was not.
@@ -80,12 +114,13 @@ repository cannot know what an external agent is.
   once per task in `tasks.md` order with the task text and nothing else, then the
   fixture's unit command, then a commit. No planner, no waves, no state machine.
 
-The control arm has no state machine and no trajectory, so the tick, trajectory
-and receipt criteria **do not apply to it**. They are recorded not-applicable,
-never as failures — recording an inapplicable criterion as a failure would
-manufacture exactly the difference the eval exists to measure. The reported
-difference therefore covers the criteria both arms can be graded on (suite green,
-no weakened test, commit present) plus every measure, and carries no verdict.
+The control arm has no state machine and no trajectory, so the tick, trajectory,
+receipt and the three process criteria **do not apply to it**. They are recorded
+not-applicable, never as failures — recording an inapplicable criterion as a
+failure would manufacture exactly the difference the eval exists to measure. The
+reported difference therefore covers the criteria both arms can be graded on
+(suite green, no weakened test, commit present) plus every measure, and carries
+no verdict.
 
 ## What it costs, and what stops it
 

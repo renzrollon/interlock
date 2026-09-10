@@ -8,6 +8,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { triage, formatTriage, EXIT } from '../../lib/evals-triage.mjs'
 
 const det = (name, passed) => ({ name, type: 'pattern', passed })
@@ -133,6 +135,57 @@ test('an unloadable case alongside scored cases is reported but does not block s
   assert.equal(r.exitCode, 0)
   assert.ok(r.unloadable.includes('broken'))
   assert.equal(r.cases.length, 1)
+})
+
+// The harness shape. The three tests below are the other half of the dual-read:
+// the hand-built cases above pin the legacy `id` / `runs` shape, these pin what
+// `claude plugin eval` actually writes at schemaVersion 1.
+
+test('the committed 2026-09-04 smoke results file triages as a regression', () => {
+  const fixture = fileURLToPath(new URL('../fixtures/evals/smoke-2026-09-04.json', import.meta.url))
+  const results = JSON.parse(readFileSync(fixture, 'utf8'))
+  const r = triage(results)
+
+  // The run's own report: aggregates.casesPassed 3 of 4, tier-read-scope scored 0.
+  assert.equal(r.verdict, 'regression')
+  assert.equal(r.exitCode, EXIT.regression)
+  assert.equal(r.exitCode, 1)
+
+  const failed = r.cases.find(c => c.id === 'tier-read-scope')
+  assert.ok(failed, 'the failing case is named by its harness `name`')
+  assert.equal(failed.classification, 'regression')
+  assert.ok(failed.graders.includes('no-design-read'))
+  assert.ok(failed.graders.includes('no-spec-read'))
+
+  const out = formatTriage(r)
+  assert.match(out, /tier-read-scope/)
+  assert.match(out, /no-design-read/)
+  assert.match(out, /no-spec-read/)
+})
+
+test('a harness case scored from the with-only arm is classified', () => {
+  const r = triage({
+    cases: [{ name: 'ablation-only', arms: { 'with-only': [run(det('shape', false))] } }]
+  })
+  assert.equal(r.verdict, 'regression')
+  assert.equal(r.exitCode, 1)
+  assert.equal(r.cases[0].id, 'ablation-only')
+  assert.ok(r.cases[0].graders.includes('shape'))
+})
+
+test('the without arm is the baseline and is not scored', () => {
+  const r = triage({
+    cases: [
+      {
+        name: 'compared-case',
+        arms: { with: [run(det('ok', true))], without: [run(det('baseline-fail', false))] }
+      }
+    ]
+  })
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.cases[0].classification, 'pass')
+  assert.deepEqual(r.cases[0].graders, [])
 })
 
 test('the verdict is reproducible from the same input', () => {

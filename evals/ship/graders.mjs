@@ -12,6 +12,14 @@
 // agent said about itself: a run that claimed success while leaving the suite
 // red grades red, because the suite was consulted and the claim was not.
 //
+// The loop arm also carries three PROCESS criteria (`./trajectory.mjs`), and
+// they are the one thing here that is not a CLI exit code: they are
+// deterministic set-membership checks over events the CLI already wrote. That is
+// still not a transcript — the run-log is the loop's own JSONL, the same file
+// the reconstructability criterion reads, and no chat message, plugin-eval trace
+// or implementer tool-call list reaches this module. They introduce no scoring
+// function, no threshold and no second judgement of redness.
+//
 // Four statuses, and the difference between the last two is the whole point:
 //
 //   pass          the decision came back clean
@@ -29,6 +37,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readUnitCommand } from './fixtures.mjs'
+import { PROCESS_CRITERIA, walkTrajectory } from './trajectory.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -42,15 +51,23 @@ export const CRITERIA = Object.freeze({
   UNIT_GREEN: 'unit-suite-green',
   UNIT_NOT_WEAKENED: 'unit-suite-not-weakened',
   TRAJECTORY: 'trajectory-reconstructable',
-  RECEIPT: 'receipt-observed'
+  RECEIPT: 'receipt-observed',
+  // The process criteria, decided by `./trajectory.mjs` over the events the run
+  // itself wrote. They sit BESIDE reconstructability rather than inside it:
+  // `interlock run-log check` is an in-run gate, and folding an eval-only check
+  // into it would make an invented action halt a consumer's ship.
+  ...PROCESS_CRITERIA
 })
 
 /**
  * The criteria both arms can be graded on.
  *
  * The control arm has no planner, no state machine and no trajectory, so the
- * tick, trajectory and receipt criteria do not apply to it (design D4). The
- * arm-to-arm difference is reported over these three and over every measure —
+ * tick, trajectory, receipt and process criteria do not apply to it (design D4).
+ * This set MUST NOT gain a process id: counting a control-arm `n/a` into the
+ * comparison would score that arm down for lacking a mechanism it was defined
+ * not to have. The arm-to-arm difference is reported over these three and over
+ * every measure —
  * the asymmetry is a property of the comparison and is stated rather than
  * averaged away.
  */
@@ -151,6 +168,9 @@ export function shell(command, { cwd, env } = {}) {
   }
 }
 
+/** CSI SGR sequences. Same class `lib/verify.mjs` strips from failure text. */
+const ANSI = /\u001b\[[0-9;]*m/g
+
 /**
  * Counts out of a `node:test` run's summary.
  *
@@ -161,13 +181,18 @@ export function shell(command, { cwd, env } = {}) {
  * would make the weakened-suite check silently unavailable on half the Node
  * versions this repository supports.
  *
+ * CSI sequences are stripped first. `FORCE_COLOR=1` (Cursor's runner, some CI)
+ * wraps those same lines — `\x1b[34mℹ tests 7\x1b[39m` — and a parser that
+ * required the uncolored form would make the weakened-suite check silently
+ * unavailable whenever the eval ran under a color-forcing parent.
+ *
  * Absent when no summary was printed — `null`, never `0`. A zeroed count from an
  * unparsed run would make the weakened-suite check compare a real baseline
  * against a fabricated present, and report every run as having deleted its whole
  * suite.
  */
 export function parseNodeTestCounts(output) {
-  const text = typeof output === 'string' ? output : ''
+  const text = (typeof output === 'string' ? output : '').replace(ANSI, '')
   const read = key => {
     const match = text.match(new RegExp(`^[#ℹ] ${key} (\\d+)\\s*$`, 'm'))
     return match ? Number(match[1]) : null
@@ -466,6 +491,64 @@ export function gradeTrajectory({ root, runId }) {
 }
 
 /**
+ * The loop's process contract, decided over the events the run already wrote.
+ *
+ * The records come through `interlock run-log show --json` — the same reader the
+ * reconstructability criterion goes through — so nothing here parses a JSONL
+ * file of its own. The walk itself is `./trajectory.mjs` and is pure, which is
+ * why the planted-trajectory tests need no scratch root.
+ *
+ * NOT a transcript grader. These events are the loop's own records of its CLI
+ * invocations, not chat messages, and the distinction is the whole reason this
+ * can live in an eval whose first rule is that it never reads what an agent
+ * said.
+ *
+ * A run with no id, an unreadable show, or a trajectory with no events leaves
+ * all three UNOBSERVED — never passing. `exitCode` carries the show's exit code
+ * rather than `null`, because it is a real code from a real command and every
+ * criterion in this file is re-derivable by hand from the row alone.
+ */
+export function gradeProcess({ root, runId }) {
+  const unobserved = detail =>
+    Object.values(PROCESS_CRITERIA).map(id =>
+      criterion(id, { status: STATUS.UNOBSERVED, detail, runId: runId || null })
+    )
+
+  if (!runId) {
+    return unobserved('the run wrote no trajectory, so there are no events to inspect')
+  }
+
+  const shown = interlock(['run-log', 'show', runId, '--root', root, '--json'])
+  if (!shown.json || !Array.isArray(shown.json.records)) {
+    return Object.values(PROCESS_CRITERIA).map(id =>
+      criterion(id, {
+        status: STATUS.UNOBSERVED,
+        command: shown.command,
+        exitCode: shown.exitCode,
+        detail:
+          `run-log show produced no readable events` +
+          `${shown.stderr ? `: ${shown.stderr.trim().slice(0, 200)}` : ''}`,
+        runId
+      })
+    )
+  }
+
+  return walkTrajectory(shown.json.records).map(({ id, status, detail, ...rest }) =>
+    criterion(id, {
+      status,
+      // The check that decided it and the invocation that supplied the events,
+      // on every process criterion, for the same reason the disk criteria name
+      // their command: a recorded row must be re-derivable without the run.
+      command: shown.command,
+      exitCode: shown.exitCode,
+      detail,
+      runId,
+      ...rest
+    })
+  )
+}
+
+/**
  * The fields a receipt must carry as observed values for the run to have
  * accounted for itself.
  *
@@ -576,13 +659,31 @@ export function gradeArm({
         'the control arm has no state machine, so no recorded outcome set exists to compare the ticks against'
       ],
       [CRITERIA.TRAJECTORY, 'the control arm runs no ship loop, so it writes no trajectory'],
-      [CRITERIA.RECEIPT, 'the control arm runs no ship loop, so it writes no receipt']
+      [CRITERIA.RECEIPT, 'the control arm runs no ship loop, so it writes no receipt'],
+      // The process criteria, for the same structural reason and never as
+      // failures: the control arm has no run program, so it emits no event
+      // types, records no actions and reaches no verify judgement to honour.
+      // Failing it for lacking a mechanism it was defined not to have would
+      // manufacture the very difference the eval exists to measure.
+      [
+        PROCESS_CRITERIA.REQUIRED_TYPES,
+        'the control arm runs no ship loop, so it emits none of the event types a loop is held to'
+      ],
+      [
+        PROCESS_CRITERIA.KNOWN_ACTIONS,
+        'the control arm has no run program, so it records no actions to check against its vocabulary'
+      ],
+      [
+        PROCESS_CRITERIA.HALT_ON_UNIT_RED,
+        'the control arm has no state machine, so it records no verify judgement it could halt on'
+      ]
     ]) {
       criteria.push(criterion(id, { status: STATUS.NOT_APPLICABLE, detail: why }))
     }
   } else {
     criteria.push(gradeTicks({ root, change: fixture.change }))
     criteria.push(gradeTrajectory({ root, runId }))
+    criteria.push(...gradeProcess({ root, runId }))
     const graded = gradeReceipt({ root, runId })
     criteria.push(graded.criterion)
     receipt = graded.receipt
@@ -598,7 +699,13 @@ export function gradeArm({
     CRITERIA.UNIT_GREEN,
     CRITERIA.UNIT_NOT_WEAKENED,
     CRITERIA.COMMIT,
+    // Reconstructability first, then the process criteria that sit beside it:
+    // a reader who sees a process failure should already have read whether the
+    // run was reconstructable at all.
     CRITERIA.TRAJECTORY,
+    PROCESS_CRITERIA.REQUIRED_TYPES,
+    PROCESS_CRITERIA.KNOWN_ACTIONS,
+    PROCESS_CRITERIA.HALT_ON_UNIT_RED,
     CRITERIA.RECEIPT
   ]
   criteria.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))

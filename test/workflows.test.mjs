@@ -3661,6 +3661,17 @@ test('docs/14 states how to file a failure, and that capture writes only where t
   assert.match(doc, /refuses a run that cannot be reconstructed/i)
 })
 
+test('docs/14 distinguishes unit tests from agent evals and names the spine', () => {
+  const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
+
+  assert.match(doc, /Do not treat `npm test` as an agent eval/i)
+  assert.match(doc, /not substitutes/i)
+  assert.match(doc, /claude plugin eval/)
+  assert.match(doc, /evals\/ship/)
+  assert.match(doc, /interlock evals triage/)
+  assert.match(doc, /Do not add a fourth framework/i)
+})
+
 test('docs/14 names the command that publishes a cap and states no threshold as policy', () => {
   const doc = flatten(readFileSync(EVALS_DOC, 'utf8'))
   assert.match(doc, /interlock limits/, 'a cap is named by where to read it')

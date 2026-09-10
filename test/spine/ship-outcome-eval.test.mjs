@@ -20,6 +20,7 @@ import { applyReference, readFixture, readFixtures } from '../../evals/ship/fixt
 import { AGENT_IDENTITY } from '../../evals/ship/agent/main.mjs'
 import { DEFAULT_MODEL } from '../../evals/ship/agent/model.mjs'
 import { priceUsage, readAgentUsage } from '../../evals/ship/arms.mjs'
+import { PROCESS_CRITERIA } from '../../evals/ship/trajectory.mjs'
 import {
   ceilingStop,
   checkFixtureSolvable,
@@ -37,6 +38,22 @@ import {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const README = join(ROOT, 'evals', 'ship', 'README.md')
 const WORKFLOW = join(ROOT, '.github', 'workflows', 'ship-outcome-eval.yml')
+const CI_WORKFLOW = join(ROOT, '.github', 'workflows', 'ci.yml')
+
+// The `outcome-prepare:` block only, so an assertion about the model-free job
+// cannot be satisfied — or broken — by a sibling job in the same file.
+const prepareJob = text => {
+  const start = text.indexOf('\n  outcome-prepare:')
+  assert.notEqual(
+    start,
+    -1,
+    '.github/workflows/ci.yml no longer defines the `outcome-prepare` job — ordinary CI must run ' +
+      'the outcome eval’s model-free prepare path'
+  )
+  const rest = text.slice(start + 1)
+  const next = rest.slice(1).search(/^ {2}\S/m)
+  return next === -1 ? rest : rest.slice(0, next + 1)
+}
 
 // --- the ceiling and the price table (spec: the eval is bounded) ------------
 
@@ -186,7 +203,14 @@ const gradedResult = (arm, overrides = {}) => ({
     { id: 'unit-suite-green', status: 'pass', met: true },
     { id: 'unit-suite-not-weakened', status: 'pass', met: true },
     { id: 'commit-present', status: arm === 'control' ? 'fail' : 'pass', met: arm !== 'control' },
-    { id: 'ticks-match-recorded-outcomes', status: arm === 'control' ? 'n/a' : 'pass', met: arm === 'control' ? null : true }
+    { id: 'ticks-match-recorded-outcomes', status: arm === 'control' ? 'n/a' : 'pass', met: arm === 'control' ? null : true },
+    // The process criteria: graded on the loop arm, structurally inapplicable on
+    // the control arm, which has no run program to emit any of it.
+    ...Object.values(PROCESS_CRITERIA).map(id => ({
+      id,
+      status: arm === 'control' ? 'n/a' : 'pass',
+      met: arm === 'control' ? null : true
+    }))
   ],
   measures: {
     agentsSpawned: { value: arm === 'control' ? 4 : 6, reason: null },
@@ -212,6 +236,17 @@ test('the arm difference is values and denominators, with no verdict anywhere in
     loop: 'pass',
     control: 'fail'
   })
+
+  // Nor are the process criteria: the control arm runs no loop, so counting its
+  // not-applicable rows into the comparison would manufacture the difference the
+  // eval exists to measure.
+  for (const id of Object.values(PROCESS_CRITERIA)) {
+    assert.equal(
+      diff.criteria.some(c => c.criterion === id),
+      false,
+      `${id} must be excluded from the arm difference, not counted against the control arm`
+    )
+  }
 
   const spawned = diff.measures.find(m => m.measure === 'agentsSpawned')
   assert.deepEqual(spawned, { measure: 'agentsSpawned', loop: 6, control: 4, difference: 2, reason: null })
@@ -297,6 +332,27 @@ test('the eval README states the coverage its host excludes', () => {
   assert.match(text, new RegExp(`${AGENT_IDENTITY.replace(/\/\d+$/, '')}/N`))
 })
 
+test('the eval README states what the loop arm grades as process, and over what', () => {
+  // Token pins, not sentences: the three criterion ids are keys in a committed
+  // history record, and `JSONL` is the word that keeps a reader from taking this
+  // for transcript grading — which is the one thing this eval must never do.
+  const text = readFileSync(README, 'utf8')
+  for (const token of [
+    ...Object.values(PROCESS_CRITERIA),
+    'JSONL',
+    'run-log show',
+    'tool order'
+  ]) {
+    assert.match(
+      text,
+      new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
+      `evals/ship/README.md no longer states "${token}" — an instruction nobody asserts silently ` +
+        `stops being true, and the process criteria are the half a reader is most likely to ` +
+        `mistake for transcript grading`
+    )
+  }
+})
+
 test('the eval README records the harness case-discovery confirmation', () => {
   const text = readFileSync(README, 'utf8')
   assert.match(text, /case\.yaml/, 'the discovery rule must be named, not summarised')
@@ -316,6 +372,22 @@ test('the eval README records the harness case-discovery confirmation', () => {
     'a file under evals/ship/ or evals/history/ is named case.yaml or prompt.md, which is exactly ' +
       'what the plugin eval harness discovers as a case'
   )
+})
+
+test('the eval README states that ordinary CI runs the model-free prepare path', () => {
+  // Token pins, not a sentence. Without this, a reader infers that only the
+  // metered Wednesday sweep ever exercises the apparatus.
+  const text = readFileSync(README, 'utf8')
+  // Whitespace-tolerant: the README is hard-wrapped, so a reflow must not read
+  // as the sentence having been deleted.
+  for (const token of ['ordinary\\s+CI', 'prepare-only', 'ci\\.yml', 'history\\s+row', 'metered']) {
+    assert.match(
+      text,
+      new RegExp(token, 'i'),
+      `evals/ship/README.md no longer states "${token}" — the split between the cheap CI path and ` +
+        `the metered sweep has to be spoken, not inferred`
+    )
+  }
 })
 
 // --- the scheduled job (spec: scheduled, bounded, never on a pull request) --
@@ -370,6 +442,66 @@ test('the scheduled job restates no ceiling and configures itself as no required
   assert.doesNotMatch(text, /continue-on-error/)
   assert.doesNotMatch(text, /--threshold/)
   assert.match(text, /NOT A REQUIRED CHECK/)
+})
+
+// --- ordinary CI runs the model-free prepare path (spec: outcome-run) -------
+//
+// The unit suite already spawns `--prepare-only` above; that spawn is an
+// assertion, not the contract. What is pinned here is the CI job, because a
+// test can move or skip without the spec noticing and a deleted job cannot.
+
+test('ordinary CI stays tracked', { skip: NOT_A_CHECKOUT }, () => {
+  // Same gitignore trap as the scheduled workflow: `.github/workflows/` is
+  // ignored, so this file exists only because it was force-added.
+  const rel = '.github/workflows/ci.yml'
+  assert.ok(existsSync(CI_WORKFLOW), `${rel} is missing`)
+  const listed = spawnSync('git', ['ls-files', '--', rel], { cwd: ROOT, encoding: 'utf8' })
+  assert.equal(listed.status, 0, `git ls-files exited ${listed.status}: ${listed.stderr}`)
+  assert.equal(
+    listed.stdout.trim(),
+    rel,
+    `${rel} is not tracked. .github/workflows/ is gitignored, so it must be force-added ` +
+      `(\`git add -f ${rel}\`) — otherwise ordinary CI silently never runs on the remote.`
+  )
+})
+
+test('ordinary CI invokes the model-free prepare path on a pull request and a push', () => {
+  const text = readFileSync(CI_WORKFLOW, 'utf8')
+
+  // "Ordinary CI" is the workflow that already runs on a pull request and on a
+  // push to the default branch. If those triggers left, this job would no
+  // longer be on the path a change actually takes.
+  const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\njobs:'))
+  assert.match(triggers, /^\s+pull_request/m, 'ordinary CI must run on a pull request')
+  assert.match(triggers, /^\s+push:/m, 'ordinary CI must run on a push')
+
+  const job = prepareJob(text)
+  assert.match(job, /node evals\/ship\/run\.mjs --prepare-only/, 'the job must invoke the prepare path')
+})
+
+test('the CI prepare job carries no credential and can never be skipped into a pass', () => {
+  const job = prepareJob(readFileSync(CI_WORKFLOW, 'utf8'))
+
+  // The metered sweep's "no credential → skip" step is correct there (a run
+  // without a model produces no signal) and would hide a broken fixture here.
+  assert.doesNotMatch(
+    job,
+    /secrets\.ANTHROPIC_API_KEY/,
+    'the prepare path spends nothing and must not be handed a model credential'
+  )
+  assert.doesNotMatch(
+    job,
+    /^\s+if:/m,
+    'a conditional step is how a missing credential becomes a skip — the prepare job runs unconditionally'
+  )
+  assert.doesNotMatch(
+    job,
+    /continue-on-error/,
+    'a non-zero exit from the prepare path must fail the workflow'
+  )
+  // And it is not the metered sweep wearing a different hat: that one is
+  // schedule + workflow_dispatch, in its own file.
+  assert.doesNotMatch(job, /workflow_dispatch/)
 })
 
 test('no gate, skill or workflow step consumes an outcome-eval result', () => {
