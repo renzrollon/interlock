@@ -101,6 +101,34 @@ Exit `0` is a terminal summary and `1` is a halt. Exit `2` means the invocation 
 
 **The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Run `interlock doctor` before a long run — it prints the derived `requiredCommands` list and the exact allow rules to add, rather than a fixed list this page would have to keep in sync. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
 
+### Two different caches, and only one of them is on this page
+
+This page has always used the word "cache" for one thing. There are two, they are unrelated, and prose about one currently reads as advice about the other.
+
+| | **Workflow replay cache** | **Anthropic prompt cache** |
+|---|---|---|
+| Keyed on | the exact prompt text of a step | the leading prefix of a request |
+| What it does | a resumed run skips agents that already finished | a repeated prefix is re-read instead of re-sent |
+| Expires | when the session ends, or the prompt text changes | on idleness, after a lifetime you configure |
+| You control it by | not editing prompts mid-run | two settings keys, below |
+
+Everything else in this section — resume, replay order, the cache-busting warning below — is the **replay** cache. Nothing on this page about it says anything about the prompt cache.
+
+**The prompt cache is the one that costs money between waves.** A request's stable prefix is written to cache once and read back cheaply while the entry lives; once it expires, the next request re-writes it cold. Wave boundaries in a ship run routinely outlive the short default, so a run can re-pay for the same ~30–40k-token spawn prefix wave after wave without anything saying so.
+
+The host splits requests into **two buckets with two independent lifetimes**, and setting one leaves the other on its default:
+
+| Setting | Governs | Matters because |
+|---|---|---|
+| `promptCacheTtl` | your main conversation | the CLI's main conversation runs on the short default |
+| `subagentPromptCacheTtl` | subagents and workflows | **this is the one that governs a ship run's wave agents** |
+
+Both are ordinary settings keys, valid in any of the four scopes Claude Code merges, and **both require Claude Code v2.1.242 or newer** — below that they are accepted and silently ignored, with no error and no effect.
+
+**Interlock cannot set either one.** A plugin's component model is skills, agents, hooks, MCP servers, LSP servers, monitors, commands and workflows; there is no settings component and no session-env component. So `interlock doctor` carries a `prompt-cache` row that reports whether each key is configured, in which scopes, and which authentication mode was detected — advice only, `ok` or `skip`, never a failing check, because an unset lifetime costs money and never costs correctness. The row reports **configuration only**: nothing exposes to a hook or a command the lifetime a session is actually running under, so it never claims one.
+
+What a run records: cache-read and cache-creation tokens, per wave and for the run, split by lifetime tier and sourced from the host's own usage envelope. A host whose runtime cannot decompose its usage records them as **absent, never zero**, and says so in the summary as `CACHE ACCOUNTING NOT REPORTED` — the Workflow runtime is such a host, because it exposes one cumulative spend scalar and no breakdown.
+
 **You stopped the run, and resuming re-ran more than you expected.** Resume from `/workflows` keeps completed agents' results, but two rules decide which ones survive, and the second one surprises people:
 
 - An agent still running when you stopped is not saved, so it starts over.

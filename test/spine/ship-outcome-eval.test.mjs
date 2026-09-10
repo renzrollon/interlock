@@ -291,7 +291,10 @@ test('the eval README states the coverage its host excludes', () => {
   }
   // The agent's identity is the instrument's identity, and the README is where a
   // reader learns it is apparatus rather than something Interlock ships.
-  assert.match(text, new RegExp(AGENT_IDENTITY.replace('/1', '/N')))
+  // Matched version-agnostically: the README names the family (`.../N`) on
+  // purpose, and the identity is bumped whenever the instrument changes — so
+  // pinning the current number here would break the README on every bump.
+  assert.match(text, new RegExp(`${AGENT_IDENTITY.replace(/\/\d+$/, '')}/N`))
 })
 
 test('the eval README records the harness case-discovery confirmation', () => {

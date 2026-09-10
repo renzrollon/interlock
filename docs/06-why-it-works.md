@@ -83,7 +83,7 @@ Two rules keep that true rather than aspirational, and both are tested. **A boun
 
 ---
 
-## 4. Token economy: three mechanisms, measured
+## 4. Token economy: four mechanisms, measured
 
 Cost is not the point — degradation is. But the two are the same lever, and the numbers are worth being concrete about. For calibration, one published comparison put the same CRM feature at **12 minutes on OpenSpec, 90 on Spec Kit, 5.5 hours on BMAD**, with BMAD's frontier-model spend at **$800–2,000/month/developer**. The diagnosed cause of that spend was not reasoning — it was re-injecting the same standards documents into every agent invocation.
 
@@ -132,6 +132,18 @@ Retrieval is explicitly budgeted, in tokens estimated as `ceil(chars / 4)`:
 `context` splits its budget 45/55 between structural and prose by default. The digest exists because the alternative — `find docs -exec cat` — is how a 40k-token preload happens, most of it irrelevant to the task.
 
 **The exception is load-bearing.** When implementing against an active change, agents read `proposal.md`, `design.md`, `tasks.md` and the delta specs *in full*. Budgeted retrieval replaces exploratory preload, not the implementation contract. Getting this backwards produces an agent that budget-retrieves its own specification and implements two-thirds of it.
+
+### 4.4 Prefix lifetime: the axis the three above never touch
+
+Everything above reasons about prefix **size** — read less, route cheaper, shrink the spawn prefix. None of it reaches prefix **lifetime**, and lifetime is what decides whether a prefix you already paid for is read back or re-written from cold.
+
+The arithmetic is simple and it runs the wrong way by default. Writing a prefix to cache costs *more* than not caching — 1.25x base input for the five-minute tier, 2x for the one-hour tier. Reading one back costs 0.1x. So a prefix that survives to be read is a 90% saving, and a prefix that expires before the next wave is a 25% surcharge on work you would have paid full price for anyway. §5.1's spawn-prefix repair makes each write and each read smaller; it does nothing about how many writes there are.
+
+That number is set by an idle timer, and ship runs idle at exactly the wrong granularity: wave boundaries in this repository's own trajectory have measured **363s and 1017s**, both past the short default. Every one of those boundaries re-writes its ~30–40k spawn prefix cold.
+
+**Interlock cannot fix this, and says so rather than pretending otherwise.** Both lifetimes are settings keys — `promptCacheTtl` for the main conversation, `subagentPromptCacheTtl` for subagents and workflows, the bucket wave agents fall in — and a plugin has no settings component to ship them in. What Interlock does instead is the three things that *are* its to do: `interlock doctor` names both keys and reports whether they are configured; a run records its cache-read and cache-creation tokens per wave, split by lifetime tier, so the next decision has a number instead of an argument; and the run says out loud when its host cannot report them at all. See [docs/04 — two different caches](04-when-it-stops.md#two-different-caches-and-only-one-of-them-is-on-this-page) for the settings themselves and the version floor.
+
+The multipliers above live in `interlock limits` beside the base rates, under the price-table id every recorded row carries — not in this prose, which cannot be read by anything that computes with them.
 
 ---
 

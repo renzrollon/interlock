@@ -36,7 +36,14 @@ import { fileURLToPath } from 'node:url'
 
 import { createAgent, createLineReader, promptText, ACP_PROTOCOL_VERSION } from '../../evals/ship/agent/wire.mjs'
 import { createToolExecutor, resolveInside, TOOL_DEFINITIONS } from '../../evals/ship/agent/tools.mjs'
-import { createModelClient, addUsage, emptyUsage, DEFAULT_MODEL } from '../../evals/ship/agent/model.mjs'
+import {
+  createModelClient,
+  addUsage,
+  cacheStatusOf,
+  emptyUsage,
+  markStablePrefix,
+  DEFAULT_MODEL
+} from '../../evals/ship/agent/model.mjs'
 import { reportUsage, AGENT_IDENTITY, USAGE_SCHEMA } from '../../evals/ship/agent/main.mjs'
 import {
   assertScratchRootOutsideRepo,
@@ -343,7 +350,161 @@ test('the model loop executes tool calls and returns them in one user message', 
   assert.equal(calls[0].headers['anthropic-version'], '2023-06-01')
   assert.equal(calls[0].headers['x-api-key'], 'test-key')
   assert.equal(calls[0].body.model, DEFAULT_MODEL)
-  assert.equal(calls[0].body.system, 'be brief')
+  // The system prompt travels as a block list, not a bare string: a string
+  // cannot carry the `cache_control` breakpoint the prefix needs.
+  assert.deepEqual(calls[0].body.system.map(b => b.text), ['be brief'])
+})
+
+/**
+ * A stub `fetch` that models the one provider rule this fix exists for: an
+ * entry is written ONLY where the request marks a breakpoint, and read back
+ * only when a later request repeats that exact prefix.
+ *
+ * Canning a `cache_read_input_tokens` figure directly would let the assertion
+ * pass against a loop that asks for nothing, which is the defect. So the usage
+ * this stub returns is *derived from the request it received*, and a loop with
+ * no `cache_control` gets zeros no matter how many turns it takes.
+ */
+function cachingStubFetch(responses, { minPrefixChars = 60 } = {}) {
+  const calls = []
+  const written = new Set()
+  const impl = async (url, init) => {
+    const body = JSON.parse(init.body)
+    calls.push({ url, body, headers: init.headers })
+    const next = responses.shift()
+    if (!next) throw new Error('stub fetch ran out of responses')
+    if (next.status && next.status !== 200) {
+      return { ok: false, status: next.status, text: async () => next.body || '' }
+    }
+    const usage = { input_tokens: 100, output_tokens: 10 }
+    const prefix = markedPrefix(body)
+    // Below the provider's minimum cacheable size the breakpoint is accepted
+    // and nothing is written — the silent no-op the design flagged as a risk.
+    if (prefix !== null && prefix.length >= minPrefixChars) {
+      if (written.has(prefix)) usage.cache_read_input_tokens = prefix.length
+      else {
+        written.add(prefix)
+        usage.cache_creation_input_tokens = prefix.length
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({ ...next, usage }) }
+  }
+  return { impl, calls }
+}
+
+/** The serialized span a request marks cacheable, or null where it marks none. */
+function markedPrefix(body) {
+  const blocks = [
+    ...(Array.isArray(body.tools) ? body.tools : []),
+    ...(Array.isArray(body.system) ? body.system : [])
+  ]
+  const at = blocks.findIndex(b => b && b.cache_control)
+  return at === -1 ? null : JSON.stringify(blocks.slice(0, at + 1))
+}
+
+test('the loop marks its stable prefix, so the second request reads it back from cache', async () => {
+  const { impl, calls } = cachingStubFetch([
+    {
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'c', name: 'read_file', input: { path: 'a.txt' } }]
+    },
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] }
+  ])
+
+  const client = createModelClient({ apiKey: 'k', fetchImpl: impl })
+  await client.run({
+    prompt: 'go',
+    system: 'a system prompt long enough to clear the stub floor, standing in for the real one',
+    tools: TOOL_DEFINITIONS,
+    executeTool: () => ({ content: 'ok', isError: false })
+  })
+
+  // The first request writes the entry; the second reads it back. Against a
+  // loop that sends no `cache_control` both figures are zero — not because the
+  // cache missed, but because nothing was ever asked for.
+  assert.ok(client.usage.cacheCreationInputTokens > 0, 'the first request must write a cache entry')
+  assert.ok(client.usage.cacheReadInputTokens > 0, 'the second request must read that entry back')
+  assert.equal(client.cacheStatus(), 'measured')
+
+  // Exactly one breakpoint, and it sits on the prefix that is identical every
+  // turn. A breakpoint in `messages` would move each turn and re-write the
+  // entry instead of reading it.
+  for (const call of calls) {
+    const marks = [
+      ...(Array.isArray(call.body.tools) ? call.body.tools : []),
+      ...(Array.isArray(call.body.system) ? call.body.system : [])
+    ].filter(b => b && b.cache_control)
+    assert.equal(marks.length, 1, 'one breakpoint per request')
+    assert.equal(marks[0].cache_control.type, 'ephemeral')
+    assert.equal(
+      JSON.stringify(call.body.messages).includes('cache_control'),
+      false,
+      'the growing message list is never marked'
+    )
+  }
+  // The prefix the two requests sent is byte-identical, which is what makes the
+  // second one a read.
+  assert.equal(markedPrefix(calls[0].body), markedPrefix(calls[1].body))
+})
+
+test('a prefix below the provider floor is unmeasured, not a cache miss', async () => {
+  // Same loop, same breakpoint — but a prefix too short for the provider to
+  // write. Both tallies are zero, and reporting that as a miss would be a
+  // finding about the loop rather than about the apparatus.
+  const { impl } = cachingStubFetch(
+    [
+      { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'c', name: 'read_file', input: { path: 'a' } }] },
+      { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] }
+    ],
+    { minPrefixChars: 1e9 }
+  )
+  const client = createModelClient({ apiKey: 'k', fetchImpl: impl })
+  await client.run({ prompt: 'go', system: 'short', executeTool: () => ({ content: 'ok', isError: false }) })
+
+  assert.equal(client.usage.cacheReadInputTokens, 0)
+  assert.equal(client.usage.cacheCreationInputTokens, 0)
+  assert.equal(client.cacheStatus(), 'unmeasured')
+
+  // And that is a different report from a prefix that was written and then not
+  // reused, which is the distinction the eval must not flatten.
+  const reused = cachingStubFetch([
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] }
+  ])
+  const measured = createModelClient({ apiKey: 'k', fetchImpl: reused.impl })
+  await measured.run({
+    prompt: 'go',
+    system: 'a system prompt long enough to clear the stub floor, standing in for the real one',
+    executeTool: () => ({ content: 'ok', isError: false })
+  })
+  assert.ok(measured.usage.cacheCreationInputTokens > 0)
+  assert.equal(measured.usage.cacheReadInputTokens, 0)
+  assert.equal(measured.cacheStatus(), 'measured')
+})
+
+test('markStablePrefix marks the last block of the prefix, and nothing when there is none', () => {
+  const withSystem = markStablePrefix({ system: 'be brief', tools: TOOL_DEFINITIONS })
+  assert.equal(withSystem.system.at(-1).cache_control.type, 'ephemeral')
+  assert.ok(!withSystem.tools.some(t => t.cache_control), 'the breakpoint is the last block, not every block')
+
+  // No system: the tools are the whole stable prefix, so the last tool carries it.
+  const toolsOnly = markStablePrefix({ tools: TOOL_DEFINITIONS })
+  assert.equal(toolsOnly.system, null)
+  assert.equal(toolsOnly.tools.at(-1).cache_control.type, 'ephemeral')
+  assert.equal(toolsOnly.tools.filter(t => t.cache_control).length, 1)
+  // The originals are untouched — the caller's tool definitions are shared.
+  assert.ok(!TOOL_DEFINITIONS.some(t => t.cache_control))
+
+  // Nothing stable to cache: no breakpoint is invented.
+  assert.deepEqual(markStablePrefix({}), { tools: [], system: null })
+})
+
+test('cacheStatusOf never calls an unrequested or unwritable prefix a miss', () => {
+  const zero = emptyUsage()
+  assert.equal(cacheStatusOf(zero, 1), 'no-requests')
+  assert.equal(cacheStatusOf({ ...zero, requests: 2 }, 0), 'unrequested')
+  assert.equal(cacheStatusOf({ ...zero, requests: 2 }, 2), 'unmeasured')
+  assert.equal(cacheStatusOf({ ...zero, requests: 2, cacheCreationInputTokens: 9 }, 2), 'measured')
+  assert.equal(cacheStatusOf({ ...zero, requests: 2, cacheReadInputTokens: 9 }, 2), 'measured')
 })
 
 test('a failing tool travels back as an error result, not as a dropped call', async () => {

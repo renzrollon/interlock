@@ -52,7 +52,11 @@ const ADAPTERS = [
     // Claude's own CLI accepts the planner's slugs, so an unmapped spawn is
     // still routed — the one host where that is true.
     passesSlugThrough: true,
-    usageByDefault: true
+    usageByDefault: true,
+    // The only adapter whose vendor envelope decomposes usage into cache reads
+    // and per-tier cache writes — the registry declares it, and this is where
+    // the wire half of that declaration is checked.
+    cacheAccounting: true
   },
   {
     id: 'codex',
@@ -194,7 +198,18 @@ for (const adapter of ADAPTERS) {
       fixtureFlags: [adapter.usageByDefault ? '--fixture-echo' : '--fixture-usage', '--fixture-echo']
     })
     const reported = await withUsage.spawn(request())
-    assert.deepEqual(reported.usage, { inputTokens: 11, outputTokens: 23 })
+    assert.equal(reported.usage.inputTokens, 11)
+    assert.equal(reported.usage.outputTokens, 23)
+    // Cache figures ride the same envelope on the one adapter that decomposes
+    // it, and are simply not there on the adapters that do not — absent, never
+    // a zero standing in for a measurement nobody made. The fake-claude
+    // envelope reports a MEASURED zero read, which survives as a zero.
+    if (adapter.cacheAccounting) {
+      assert.equal(reported.usage.cacheReadInputTokens, 0, 'a measured zero is kept as a zero')
+    } else {
+      assert.ok(!('cacheReadInputTokens' in reported.usage))
+      assert.ok(!('cacheCreationInputTokens' in reported.usage))
+    }
 
     const without = hosted(adapter, {
       fixtureFlags: adapter.usageByDefault ? ['--fixture-no-usage', '--fixture-echo'] : ['--fixture-echo']

@@ -24,6 +24,9 @@ import {
   parseAgentJson,
   runCli
 } from '../../lib/host.mjs'
+import { readClaudeEnvelope } from '../../lib/host/claude-cli.mjs'
+import { CAPABILITY_KEYS, HOSTS } from '../../lib/host/registry.mjs'
+import { ASSUMED_CAPABILITIES } from '../../lib/run.mjs'
 import { makeRepo, DEMO_CHANGE } from '../helpers/ship-harness.mjs'
 
 let dir
@@ -362,6 +365,87 @@ async function interpretLeanRun(root, change) {
     'the interpreter must reach run close through the same port, not a shortcut'
   )
 }
+
+// --- the usage envelope's cache fields (spec: run-host-adapters) ------------
+
+/** The envelope shape the vendor CLI returns, with whatever usage a case needs. */
+const envelope = usage => JSON.stringify({ structured_output: { ok: true }, ...(usage ? { usage } : {}) })
+
+test('both lifetime tiers survive the parse, and neither is summed into the other', () => {
+  const { usage } = readClaudeEnvelope(
+    envelope({
+      input_tokens: 120,
+      output_tokens: 30,
+      cache_read_input_tokens: 40_000,
+      cache_creation: { ephemeral_5m_input_tokens: 900, ephemeral_1h_input_tokens: 7 }
+    })
+  )
+  assert.equal(usage.inputTokens, 120)
+  assert.equal(usage.outputTokens, 30)
+  assert.equal(usage.cacheReadInputTokens, 40_000)
+  // Split by tier, because the two are priced differently and a total could not
+  // be priced back apart.
+  assert.deepEqual(usage.cacheCreationInputTokens, { ephemeral_5m: 900, ephemeral_1h: 7 })
+  assert.notEqual(usage.cacheCreationInputTokens, 907)
+})
+
+test('an omitted cache field is absent, never a zero', () => {
+  const read = readClaudeEnvelope(
+    envelope({ input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 12 })
+  ).usage
+  assert.equal(read.cacheReadInputTokens, 12)
+  assert.ok(!('cacheCreationInputTokens' in read), 'an omitted creation block is absent, not {}')
+
+  // One tier reported, the other omitted: the omitted one does not appear at all.
+  const oneTier = readClaudeEnvelope(
+    envelope({ input_tokens: 1, output_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 5 } })
+  ).usage
+  assert.deepEqual(oneTier.cacheCreationInputTokens, { ephemeral_5m: 5 })
+  assert.ok(!('cacheReadInputTokens' in oneTier))
+
+  // A MEASURED zero is kept as a zero — that is a different fact from absence.
+  const measuredZero = readClaudeEnvelope(
+    envelope({
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_read_input_tokens: 0,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }
+    })
+  ).usage
+  assert.equal(measuredZero.cacheReadInputTokens, 0)
+  assert.deepEqual(measuredZero.cacheCreationInputTokens, { ephemeral_5m: 0, ephemeral_1h: 0 })
+})
+
+test('an unparseable or usage-free envelope is a host that did not report', () => {
+  for (const stdout of ['not json at all', '', '[1,2,3]', undefined]) {
+    assert.equal(readClaudeEnvelope(stdout).usage, null, `${String(stdout)} must report nothing`)
+  }
+  // Present, parseable, and carrying no usage block: still absent, never zeros.
+  const noUsage = readClaudeEnvelope(envelope(null))
+  assert.equal(noUsage.usage, null)
+  // And the spawn's other recorded outcomes are unaffected.
+  assert.deepEqual(noUsage.result, { ok: true })
+})
+
+test('cache accounting is its own declared capability, not one implied by usage', () => {
+  // Declared by every adapter, with a boolean — a fifth adapter cannot arrive
+  // with it silently absent.
+  for (const [id, entry] of Object.entries(HOSTS)) {
+    assert.equal(typeof entry.capabilities.cacheAccounting, 'boolean', `${id} declares no cacheAccounting`)
+  }
+  assert.ok(CAPABILITY_KEYS.includes('cacheAccounting'))
+
+  // And it is NOT implied by usage: codex reports token usage and no cache
+  // decomposition, which is exactly the gap the separate declaration exists for.
+  assert.equal(HOSTS.codex.capabilities.usage, true)
+  assert.equal(HOSTS.codex.capabilities.cacheAccounting, false)
+  assert.equal(HOSTS.claude.capabilities.cacheAccounting, true)
+
+  // The Workflow host — the run program's assumption for a manifest that
+  // declared nothing — exposes a cumulative scalar and no decomposition.
+  assert.equal(ASSUMED_CAPABILITIES.usage, true)
+  assert.equal(ASSUMED_CAPABILITIES.cacheAccounting, false)
+})
 
 test('parseAgentJson recovers a result from prose, a fence, or neither', () => {
   assert.deepEqual(parseAgentJson('{"ok":true}'), { ok: true })

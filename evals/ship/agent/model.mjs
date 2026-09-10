@@ -64,6 +64,61 @@ export function addUsage(tally, usage) {
   return tally
 }
 
+/**
+ * The cache lifetime the breakpoint asks for. `ephemeral` is the API's default
+ * tier and needs no beta header; a longer one is a different price and is not
+ * this loop's decision to make.
+ */
+const CACHE_CONTROL = Object.freeze({ type: 'ephemeral' })
+
+/**
+ * Mark the request's stable prefix as cacheable.
+ *
+ * The provider writes a cache entry ONLY at an explicit breakpoint, so a loop
+ * that marks none re-pays full base input on every one of its turns and reports
+ * a cache-read tally that is zero for structural reasons — indistinguishable
+ * from "caching is unavailable". That was this loop's defect.
+ *
+ * The prefix is `tools` then `system`: both are byte-identical on every turn of
+ * one loop, while `messages` grows by two entries per turn. The breakpoint goes
+ * on the LAST block of that prefix, which caches all of it. Marking anything
+ * inside `messages` would move the breakpoint every turn and re-write the entry
+ * instead of reading it — the opposite of the fix.
+ *
+ * The caller's `tools` array is never mutated: it is a module-level constant
+ * shared across every request in the process.
+ */
+export function markStablePrefix({ system, tools = [] } = {}) {
+  const list = Array.isArray(tools) ? tools : []
+  if (system) return { tools: list, system: [{ type: 'text', text: system, cache_control: CACHE_CONTROL }] }
+  if (list.length) {
+    return { tools: [...list.slice(0, -1), { ...list[list.length - 1], cache_control: CACHE_CONTROL }], system: null }
+  }
+  // Nothing is stable across turns, so there is no prefix to cache. A breakpoint
+  // invented here would mark the growing message list.
+  return { tools: list, system: null }
+}
+
+/**
+ * What a cache tally means — because a zero has four causes and only one of them
+ * is a miss.
+ *
+ * `no-requests` nothing was billed. `unrequested` requests were made with no
+ * breakpoint, so the provider was never asked to write; the zero is structural.
+ * `unmeasured` a breakpoint was sent and the provider still wrote nothing, which
+ * is what a prefix below the minimum cacheable size looks like — a fact about
+ * the apparatus, not a finding about the loop. `measured` an entry was written
+ * or read, so the figures mean what they say; a prefix written and then not
+ * reused reports `measured` with a zero read, which is a real miss and is
+ * distinguishable from every case above.
+ */
+export function cacheStatusOf(usage, breakpointsSent) {
+  if (!usage || !usage.requests) return 'no-requests'
+  if (!breakpointsSent) return 'unrequested'
+  if (!usage.cacheCreationInputTokens && !usage.cacheReadInputTokens) return 'unmeasured'
+  return 'measured'
+}
+
 /** The text blocks of one assistant message, joined. */
 function textOf(content) {
   return (Array.isArray(content) ? content : [])
@@ -115,6 +170,7 @@ export function createModelClient({
   }
 
   const usage = emptyUsage()
+  let breakpointsSent = 0
 
   async function send(body) {
     const response = await fetchImpl(`${baseUrl}/v1/messages`, {
@@ -138,14 +194,20 @@ export function createModelClient({
     let lastText = ''
     let turns = 0
 
+    // Marked once, outside the loop: every turn must send the *same* prefix
+    // bytes, or the provider writes a new entry instead of reading the old one.
+    const prefix = markStablePrefix({ system, tools })
+    const marksPrefix = Boolean(prefix.system) || prefix.tools.some(t => t && t.cache_control)
+
     for (; turns < maxTurns; turns++) {
       const data = await send({
         model,
         max_tokens: MAX_TOKENS,
-        ...(system ? { system } : {}),
-        ...(tools.length ? { tools } : {}),
+        ...(prefix.system ? { system: prefix.system } : {}),
+        ...(prefix.tools.length ? { tools: prefix.tools } : {}),
         messages
       })
+      if (marksPrefix) breakpointsSent += 1
       addUsage(usage, data.usage)
 
       const content = Array.isArray(data.content) ? data.content : []
@@ -180,5 +242,5 @@ export function createModelClient({
     throw new Error(`the tool loop reached its ceiling of ${maxTurns} model turns without finishing`)
   }
 
-  return { model, usage, run }
+  return { model, usage, run, cacheStatus: () => cacheStatusOf(usage, breakpointsSent) }
 }

@@ -329,15 +329,57 @@ test('a host that cannot measure spend is distinguishable from a run that measur
   assert.match(formatRunLog(readRunLog(tmp, 'run-workflow')), /wave 1: 0\n/)
 })
 
-test('a spend entry cannot carry anything but a wave label and a figure', () => {
+test('a spend entry cannot carry anything but a wave label and its figures', () => {
   const r = appendRunLogEvent(tmp, {
     runId: RUN_ID,
     type: 'run-receipt',
     spend: [{ wave: 1, outputTokens: 900, lanes: ['SECRET-LANE'], prompt: 'SECRET-PROMPT' }]
   })
   const record = JSON.parse(lines(r.path)[0])
-  assert.deepEqual(Object.keys(record.spend[0]).sort(), ['outputTokens', 'wave'])
+  assert.deepEqual(Object.keys(record.spend[0]).sort(), [
+    'cacheCreationInputTokens',
+    'cacheReadInputTokens',
+    'outputTokens',
+    'wave'
+  ])
   assert.doesNotMatch(readFileSync(r.path, 'utf8'), /SECRET-LANE|SECRET-PROMPT/)
+})
+
+test('cache figures are absent, never zero, and their tiers are never summed', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    spend: [
+      // Reported: both tiers survive as themselves.
+      {
+        wave: 1,
+        outputTokens: 10,
+        cacheReadInputTokens: 40_000,
+        cacheCreationInputTokens: { ephemeral_5m: 900, ephemeral_1h: 7, 'BAD KEY': 5 }
+      },
+      // Not reported: absent, and specifically not `0` and not `{}`.
+      { wave: 2, outputTokens: 10 }
+    ],
+    cacheReadInputTokens: 40_000,
+    cacheCreationInputTokens: { ephemeral_5m: 900, ephemeral_1h: 7 }
+  })
+  const record = JSON.parse(lines(r.path)[0])
+
+  assert.equal(record.spend[0].cacheReadInputTokens, 40_000)
+  assert.deepEqual(record.spend[0].cacheCreationInputTokens, { ephemeral_5m: 900, ephemeral_1h: 7 })
+  assert.notEqual(record.spend[0].cacheCreationInputTokens, 907, 'the tiers are never summed')
+
+  assert.equal(record.spend[1].cacheReadInputTokens, null)
+  assert.equal(record.spend[1].cacheCreationInputTokens, null)
+
+  // A measured zero survives as a zero, which is a different fact from absence.
+  const measured = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    spend: [{ wave: 1, outputTokens: 1, cacheReadInputTokens: 5, cacheCreationInputTokens: { ephemeral_5m: 0 } }]
+  })
+  const zeroed = JSON.parse(lines(measured.path).at(-1))
+  assert.deepEqual(zeroed.spend[0].cacheCreationInputTokens, { ephemeral_5m: 0 })
 })
 
 // --- the rendering must not undo the coercion --------------------------------
@@ -597,9 +639,11 @@ test('a receipt records every field it was handed, per-wave tallies included', (
   assert.equal(record.committed, true)
   assert.equal(record.commit, 'deadbee')
   assert.equal(record.degradations.length, 1)
+  // The cache figures ride the same rows, absent on a fixture that reported
+  // none — never zero, which would assert a run that read nothing from cache.
   assert.deepEqual(record.spend, [
-    { wave: '1', outputTokens: 41200 },
-    { wave: '2', outputTokens: 18700 }
+    { wave: '1', outputTokens: 41200, cacheReadInputTokens: null, cacheCreationInputTokens: null },
+    { wave: '2', outputTokens: 18700, cacheReadInputTokens: null, cacheCreationInputTokens: null }
   ])
   // Not the sum of the wave figures, and deliberately so: validation, planning,
   // review and the commit are in the run total and in none of the wave spans.

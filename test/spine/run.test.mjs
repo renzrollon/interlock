@@ -933,6 +933,83 @@ test('close exits 1 with a run-halt event on --halt, and 0 with run-complete oth
   }
 })
 
+// --- the host session identifier on run-start (D11) -------------------------
+
+/** The `run-start` record of a run, read back off its trajectory. */
+function runStartEvent(root) {
+  const runId = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8')).runId
+  const lines = readFileSync(join(root, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+  return lines.find(r => r.type === 'run-start')
+}
+
+test('a run on the Workflow host records the session it ran under', () => {
+  const { root, change } = repo()
+  try {
+    // Read from the CLI's own environment, never carried by a driver: the run
+    // command is invoked with no session argument at all.
+    run(root, ['run', 'start', '--change', change, '--host', 'workflow'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'sess-abc-123' }
+    })
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    run(root, ['run', 'classified', '--classified', '.claude/ship/classified.json'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'sess-abc-123' }
+    })
+    assert.equal(runStartEvent(root).sessionId, 'sess-abc-123')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an absent session identifier is recorded absent, never fabricated, and changes nothing', () => {
+  for (const env of [{ CLAUDE_CODE_SESSION_ID: '' }, { CLAUDE_CODE_SESSION_ID: '   ' }]) {
+    const { root, change } = repo()
+    try {
+      run(root, ['run', 'start', '--change', change, '--host', 'workflow'], { env })
+      file(root, '.claude/ship/classified.json', CLASSIFIED)
+      run(root, ['run', 'classified', '--classified', '.claude/ship/classified.json'], { env })
+
+      const start = runStartEvent(root)
+      const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
+      assert.equal(start.sessionId, null, 'absent, not an empty string and not a placeholder')
+      // No substitute is synthesised from anything else on the record.
+      for (const substitute of [manifest.runId, String(process.pid), start.ts]) {
+        assert.notEqual(start.sessionId, substitute)
+      }
+
+      // And the absence alone leaves the run reconstructable, at exit 0: a
+      // closed run with no session identifier still checks clean.
+      run(root, ['run', 'close'])
+      const check = run(root, ['run-log', 'check', '--run-id', manifest.runId])
+      assert.equal(check.code, 0)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('the runner records no session identifier: its agents are processes, not a session', () => {
+  const { root, change } = repo()
+  try {
+    // A `claude` runner host launched from a shell that happens to be inside a
+    // Claude Code session. Recording that session would join the trajectory to a
+    // transcript that does not contain the run — the D11 hazard from the other
+    // direction.
+    run(root, ['run', 'start', '--change', change, '--host', 'claude'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'the-shell-that-launched-the-runner' }
+    })
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    run(root, ['run', 'classified', '--classified', '.claude/ship/classified.json'], {
+      env: { CLAUDE_CODE_SESSION_ID: 'the-shell-that-launched-the-runner' }
+    })
+    assert.equal(runStartEvent(root).sessionId, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('close folds host-only banners into the summary so "no degradation" stays truthful', () => {
   const { root, change } = repo()
   try {
@@ -1036,6 +1113,15 @@ function manifestOf(root) {
   return JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
 }
 
+/** The `run-receipt` this run wrote, read back off its own trajectory. */
+function receiptOf(root) {
+  return readFileSync(join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .find(event => event.type === 'run-receipt')
+}
+
 test('run start records the host id and its declared capabilities on the manifest', () => {
   const { root, change } = repo()
   try {
@@ -1136,10 +1222,57 @@ test('one spawn without usage makes its wave and the run unknown, never smaller'
   recordUsage(manifest, [{ usage: { outputTokens: 5 } }, { ok: true }], 2)
   const summary = summarizeUsage(manifest)
   assert.deepEqual(summary.spend, [
-    { wave: 1, outputTokens: 30 },
-    { wave: 2, outputTokens: null }
+    { wave: 1, outputTokens: 30, cacheReadInputTokens: null, cacheCreationInputTokens: null },
+    { wave: 2, outputTokens: null, cacheReadInputTokens: null, cacheCreationInputTokens: null }
   ])
   assert.equal(summary.outputTokens, null, 'and the run total is unknown, not 35')
+  // These spawns reported no cache fields at all, so the cache figures are
+  // unknown throughout — never the zero a host with no accounting would imply.
+  assert.equal(summary.cacheReadInputTokens, null)
+  assert.equal(summary.cacheCreationInputTokens, null)
+})
+
+test('cache figures fold per wave and per run under the same unknown-not-zero rule', async () => {
+  const { summarizeUsage, recordUsage } = await import('../../lib/run.mjs')
+  const cached = (out, read, creation) => ({
+    usage: { outputTokens: out, cacheReadInputTokens: read, cacheCreationInputTokens: creation }
+  })
+  const manifest = { usage: [] }
+  // Wave 1: both spawns measured, both tiers reported. Sums, tiers kept apart.
+  recordUsage(
+    manifest,
+    [
+      cached(10, 1000, { ephemeral_5m: 400, ephemeral_1h: 2 }),
+      cached(20, 500, { ephemeral_5m: 100, ephemeral_1h: 3 })
+    ],
+    1
+  )
+  // Wave 2: one spawn's host reported cache fields and the other's did not.
+  // The wave is unknown rather than the lower bound of what one spawn said.
+  recordUsage(manifest, [cached(5, 900, { ephemeral_5m: 50 }), { usage: { outputTokens: 5 } }], 2)
+
+  const summary = summarizeUsage(manifest)
+  assert.deepEqual(summary.spend[0], {
+    wave: 1,
+    outputTokens: 30,
+    cacheReadInputTokens: 1500,
+    cacheCreationInputTokens: { ephemeral_5m: 500, ephemeral_1h: 5 }
+  })
+  assert.deepEqual(summary.spend[1], {
+    wave: 2,
+    outputTokens: 10,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: { ephemeral_5m: null }
+  })
+  // The run total inherits the same contagion: one unmeasured spawn anywhere
+  // makes the run's cache read unknown, not 2400.
+  assert.equal(summary.cacheReadInputTokens, null)
+  assert.equal(summary.cacheCreationInputTokens.ephemeral_5m, null)
+  // A wave that read entirely from cache records the MEASURED zero for creation,
+  // which is distinguishable from the absence above.
+  const warm = { usage: [] }
+  recordUsage(warm, [cached(4, 8000, { ephemeral_5m: 0, ephemeral_1h: 0 })], 1)
+  assert.deepEqual(summarizeUsage(warm).cacheCreationInputTokens, { ephemeral_5m: 0, ephemeral_1h: 0 })
 })
 
 test('a wave split across batches sums, and a run with no entries reports nothing', async () => {
@@ -1149,9 +1282,16 @@ test('a wave split across batches sums, and a run with no entries reports nothin
   recordUsage(manifest, [{ usage: { outputTokens: 7 } }], 1)
   recordUsage(manifest, [{ usage: { outputTokens: 3 } }], null)
   const summary = summarizeUsage(manifest)
-  assert.deepEqual(summary.spend, [{ wave: 1, outputTokens: 17 }])
+  assert.deepEqual(summary.spend, [
+    { wave: 1, outputTokens: 17, cacheReadInputTokens: null, cacheCreationInputTokens: null }
+  ])
   assert.equal(summary.outputTokens, 20, 'the run total counts steps outside the waves too')
-  assert.deepEqual(summarizeUsage({ usage: [] }), { spend: [], outputTokens: undefined })
+  assert.deepEqual(summarizeUsage({ usage: [] }), {
+    spend: [],
+    outputTokens: undefined,
+    cacheReadInputTokens: undefined,
+    cacheCreationInputTokens: undefined
+  })
 })
 
 // --- the receipt's host block (spec: run-host-adapters — name the path) -----
@@ -1192,6 +1332,111 @@ test('a host that reports no usage says so once, rather than leaving empty figur
     const closed = run(root, ['run', 'close', '--halt', 'stopped for the test'], { expectExit: 1 }).step
     assert.match(closed.summary, /TOKEN USAGE NOT REPORTED/)
     assert.match(closed.summary, /recorded as unknown/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a host without cache accounting is bannered, and one with it is not', () => {
+  // Codex reports token usage and no cache decomposition — so the usage banner
+  // must stay quiet while the cache banner fires. Nothing here branches on the
+  // host's name: both rows come off the declared capability.
+  const noCache = repo()
+  try {
+    startWithHost(noCache.root, noCache.change, 'codex', {
+      worktree: 'driver',
+      usage: true,
+      cacheAccounting: false
+    })
+    const closed = run(noCache.root, ['run', 'close', '--halt', 'stopped for the test'], {
+      expectExit: 1
+    }).step
+    assert.match(closed.summary, /CACHE ACCOUNTING NOT REPORTED/)
+    assert.match(closed.summary, /rather than as a measured zero/)
+    assert.doesNotMatch(closed.summary, /TOKEN USAGE NOT REPORTED/)
+
+    const receipt = receiptOf(noCache.root)
+    assert.equal(receipt.host.cacheAccounting, false, 'the declaration is recorded, so a reader can partition')
+    assert.equal(receipt.cacheReadInputTokens, null)
+    assert.equal(receipt.cacheCreationInputTokens, null)
+  } finally {
+    cleanup(noCache.root)
+  }
+
+  const withCache = repo()
+  try {
+    startWithHost(withCache.root, withCache.change, 'claude', {
+      worktree: 'driver',
+      usage: true,
+      cacheAccounting: true
+    })
+    const closed = run(withCache.root, ['run', 'close', '--halt', 'stopped for the test'], {
+      expectExit: 1
+    }).step
+    assert.doesNotMatch(closed.summary, /CACHE ACCOUNTING NOT REPORTED/)
+    assert.equal(receiptOf(withCache.root).host.cacheAccounting, true)
+  } finally {
+    cleanup(withCache.root)
+  }
+})
+
+test('a host reporting cache fields for some spawns and not others degrades, never fails', () => {
+  const { root, change } = repo('add-thing', {
+    tasks:
+      '# Tasks\n\n- [ ] 1.1 Add the thing to docs/guide.md\n\n- [ ] 2.1 Note it in README.md\n'
+  })
+  try {
+    const started = run(root, [
+      'run',
+      'start',
+      '--change',
+      change,
+      '--host',
+      'claude',
+      '--host-capabilities',
+      JSON.stringify({ worktree: 'driver', usage: true, cacheAccounting: true })
+    ]).step
+    // Two dependency layers, so two waves — and the host reports cache fields on
+    // the first wave's spawn and omits them on the second's.
+    file(root, '.claude/ship/classified.json', {
+      tasks: [
+        { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['docs/guide.md'] },
+        { id: '2.1', group: 2, description: 'b', tier: 2, model: 'sonnet', isTestTask: false, paths: ['README.md'] }
+      ]
+    })
+
+    let step = run(root, [...started.then.argv]).step
+    const usages = [
+      { outputTokens: 10, cacheReadInputTokens: 900, cacheCreationInputTokens: { ephemeral_5m: 4 } },
+      { outputTokens: 10 }
+    ]
+    let batches = 0
+    while (step.then) {
+      if (step.action === 'run-batch') {
+        const usage = usages[Math.min(batches++, usages.length - 1)]
+        step = run(root, [...step.then.argv], {
+          results: step.spawns.map((_, i) => ({ ...laneOk(step.lanes[i].map(t => t.id)), usage }))
+        }).step
+      } else {
+        step = run(root, [...step.then.argv]).step
+      }
+      // A missing measurement is never a reason to stop.
+      assert.notEqual(step.action, 'halt', 'a run must not halt over an unmeasured cache figure')
+    }
+    assert.equal(batches, 2, 'two dispatches, so the mixed case is real')
+    assert.equal(step.exitCode, 0, 'and the exit code is untouched by the missing measurement')
+
+    // The span that mixes a reported spawn with an unreported one records
+    // ABSENT — never the 900 the one measured spawn reported, which would be a
+    // lower bound wearing the shape of a total.
+    const receipt = receiptOf(root)
+    assert.ok(receipt.spend.length, 'the run recorded spend rows to be judged')
+    for (const entry of receipt.spend) {
+      assert.equal(entry.cacheReadInputTokens, null, `wave ${entry.wave} must be absent, not partial`)
+      assert.deepEqual(entry.cacheCreationInputTokens, { ephemeral_5m: null })
+    }
+    assert.equal(receipt.cacheReadInputTokens, null)
+    assert.equal(receipt.cacheCreationInputTokens.ephemeral_5m, null)
   } finally {
     cleanup(root)
   }

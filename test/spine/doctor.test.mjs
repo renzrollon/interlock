@@ -32,6 +32,9 @@ import {
   REQUIRED_COMMANDS,
   HOST_READ_ONLY,
   IGNORED_INSTRUCTION_SPANS,
+  PROMPT_CACHE_MAIN_KEY,
+  PROMPT_CACHE_MIN_HOST_VERSION,
+  PROMPT_CACHE_SUBAGENT_KEY,
   STATE_DIRS
 } from '../../lib/doctor.mjs'
 
@@ -812,6 +815,139 @@ test('the notify row is never fail, whatever the env holds', () => {
     const opts = baseOpts(dir)
     const report = diagnose(dir, { ...opts, env: hostile })
     assert.equal(byId(report, 'notify').status, 'skip')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Prompt-cache lifetime advice — never a gate, never a measurement (D3, D4)
+// ---------------------------------------------------------------------------
+
+/** A project whose settings carry the allowlist plus whatever lifetime keys are asked for. */
+function promptCacheReport(dir, settings = {}, env = {}) {
+  file(dir, '.claude/testing/profile.json', PROFILE)
+  file(dir, '.claude/settings.json', { ...ALL_ALLOWED, ...settings })
+  const opts = baseOpts(dir)
+  return diagnose(dir, { ...opts, env: { ...opts.env, ...env } })
+}
+
+test('the prompt-cache row is ok when both lifetimes are configured, and leaves the verdict alone', () => {
+  const dir = tmp()
+  try {
+    const report = promptCacheReport(dir, {
+      [PROMPT_CACHE_MAIN_KEY]: '1h',
+      [PROMPT_CACHE_SUBAGENT_KEY]: '1h'
+    })
+    const row = byId(report, 'prompt-cache')
+    assert.equal(row.status, 'ok')
+    assert.ok(!report.failures.includes('prompt-cache'))
+    assert.ok(!report.warnings.includes('prompt-cache'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unset lifetime is skip, never fail, and does not move the exit code', () => {
+  const dir = tmp()
+  try {
+    const report = promptCacheReport(dir)
+    const row = byId(report, 'prompt-cache')
+    assert.equal(row.status, 'skip')
+    assert.notEqual(row.status, 'fail')
+    assert.ok(!report.failures.includes('prompt-cache'))
+    assert.ok(!report.warnings.includes('prompt-cache'))
+    // The row names both keys, says which governs wave agents, and carries the floor.
+    assert.match(row.detail, new RegExp(PROMPT_CACHE_MAIN_KEY))
+    assert.match(row.detail, new RegExp(PROMPT_CACHE_SUBAGENT_KEY))
+    assert.match(row.detail, /wave agents/)
+    assert.match(row.detail, new RegExp(PROMPT_CACHE_MIN_HOST_VERSION.replace(/\./g, '\\.')))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('one lifetime configured is still skip — setting one leaves the other on its default', () => {
+  const dir = tmp()
+  try {
+    const report = promptCacheReport(dir, { [PROMPT_CACHE_SUBAGENT_KEY]: '1h' })
+    const row = byId(report, 'prompt-cache')
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, new RegExp(`${PROMPT_CACHE_SUBAGENT_KEY}[^;]*set in project`))
+    assert.match(row.detail, new RegExp(`${PROMPT_CACHE_MAIN_KEY}[^;]*not set`))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a lifetime set in any readable scope counts, and no scope wins a printed value', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', { ...ALL_ALLOWED, [PROMPT_CACHE_SUBAGENT_KEY]: '5m' })
+    file(dir, 'home/.claude/settings.json', { [PROMPT_CACHE_SUBAGENT_KEY]: '1h' })
+    const opts = baseOpts(dir, {
+      settingsSources: [
+        { scope: 'user', path: join(dir, 'home', '.claude', 'settings.json') },
+        { scope: 'project', path: join(dir, '.claude', 'settings.json') }
+      ]
+    })
+    const row = byId(diagnose(dir, opts), 'prompt-cache')
+    assert.match(row.detail, new RegExp(`${PROMPT_CACHE_SUBAGENT_KEY}[^;]*set in user, project`))
+    // Neither value is printed: resolving the merge is the host's job, and a row
+    // that printed one would be recommending a value it did not compute.
+    assert.doesNotMatch(row.detail, /5m|1h/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the row names the detected auth mode and never claims an effective lifetime', () => {
+  const dir = tmp()
+  try {
+    const report = promptCacheReport(dir, {}, { ANTHROPIC_API_KEY: 'sk-not-a-real-key' })
+    const row = byId(report, 'prompt-cache')
+    assert.match(row.detail, /auth mode: API key/)
+    // Presence only — the value never reaches the report.
+    assert.doesNotMatch(JSON.stringify(report), /sk-not-a-real-key/)
+    // And nothing asserts what the running session is actually getting.
+    assert.doesNotMatch(row.detail, /currently|in force|effective lifetime is/)
+    assert.match(row.detail, /nothing exposes the lifetime a session is actually running under/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an undetectable auth mode is named as undetected rather than guessed', () => {
+  const dir = tmp()
+  try {
+    const row = byId(promptCacheReport(dir), 'prompt-cache')
+    assert.match(row.detail, /auth mode: not determined/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the prompt-cache row is never fail, whatever the env or the settings tree holds', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const hostile = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const opts = baseOpts(dir)
+    assert.equal(byId(diagnose(dir, { ...opts, env: hostile }), 'prompt-cache').status, 'skip')
+
+    // A settings file that is present and unparseable is not evidence either way.
+    file(dir, '.claude/settings.json', '{ not json')
+    assert.equal(byId(diagnose(dir, baseOpts(dir)), 'prompt-cache').status, 'skip')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

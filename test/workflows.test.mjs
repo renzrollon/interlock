@@ -2944,8 +2944,14 @@ test('a runtime with no token accounting records unknown rather than throwing', 
   const { root, output } = await runShip({ keepRepo: true })
   try {
     const receipt = receiptFrom(root)
-    assert.deepEqual(receipt.spend, [{ wave: '1', outputTokens: null }])
+    // The cache figures are absent on the same terms as the output figure: this
+    // runtime exposes neither, and both must read as unknown rather than zero.
+    assert.deepEqual(receipt.spend, [
+      { wave: '1', outputTokens: null, cacheReadInputTokens: null, cacheCreationInputTokens: null }
+    ])
     assert.equal(receipt.outputTokens, null)
+    assert.equal(receipt.cacheReadInputTokens, null)
+    assert.equal(receipt.cacheCreationInputTokens, null)
     assert.match(output, /SHIP COMPLETE|SHIP HALTED/, 'the run still finished')
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -3329,9 +3335,11 @@ test('a host that could not measure spend reads as unknown, not as a run that sp
     change: 'add-widget',
     summary: { waves, spend: waves.map(w => ({ wave: w.wave, outputTokens: null })), outputTokens: null }
   })
+  // The cache columns carry through unobserved rather than being invented: the
+  // summary named no figure, so the receipt names none either.
   assert.deepEqual(unmeasured.spend, [
-    { wave: 1, outputTokens: null },
-    { wave: 2, outputTokens: null }
+    { wave: 1, outputTokens: null, cacheReadInputTokens: undefined, cacheCreationInputTokens: undefined },
+    { wave: 2, outputTokens: null, cacheReadInputTokens: undefined, cacheCreationInputTokens: undefined }
   ])
   assert.equal(unmeasured.outputTokens, null)
 

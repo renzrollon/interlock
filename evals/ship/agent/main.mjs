@@ -20,13 +20,13 @@ import { createModelClient, DEFAULT_MODEL, MODEL_ENV } from './model.mjs'
  * runs whose instrument differed. Bump the version when its prompt, tools or
  * loop change in a way that could move a measurement.
  */
-export const AGENT_IDENTITY = 'interlock-eval-acp-agent/1'
+export const AGENT_IDENTITY = 'interlock-eval-acp-agent/2'
 
 /** Where the runner asks for the per-session usage record to be appended. */
 export const USAGE_FILE_ENV = 'INTERLOCK_EVAL_USAGE_FILE'
 
 /** The schema of one usage record. Declared, so a reader classifies rather than guesses. */
-export const USAGE_SCHEMA = 'interlock.ship-eval-agent-usage/1'
+export const USAGE_SCHEMA = 'interlock.ship-eval-agent-usage/2'
 
 const SYSTEM_PROMPT = [
   'You are an implementation agent running inside an automated evaluation. You are working in a',
@@ -52,7 +52,7 @@ const SYSTEM_PROMPT = [
  * what a missing record means — and a missing record is exactly what "not
  * measured" looks like, which is why nothing here ever writes a zeroed one.
  */
-export function reportUsage({ sessionId, model, usage, env = process.env, warn = () => {} }) {
+export function reportUsage({ sessionId, model, usage, cacheStatus = null, env = process.env, warn = () => {} }) {
   const path = env[USAGE_FILE_ENV]
   if (!path) return false
   const record = {
@@ -66,7 +66,11 @@ export function reportUsage({ sessionId, model, usage, env = process.env, warn =
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadInputTokens: usage.cacheReadInputTokens,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    // What the two figures above mean. A zero has four causes and only one of
+    // them is a miss; without this a reader of the corpus cannot tell a prefix
+    // below the provider's floor from one that was cacheable and not reused.
+    cacheStatus
   }
   try {
     appendFileSync(path, `${JSON.stringify(record)}\n`)
@@ -97,7 +101,13 @@ function main() {
         executeTool
       })
       emit(reply)
-      reportUsage({ sessionId, model: model.model, usage: model.usage, warn })
+      reportUsage({
+        sessionId,
+        model: model.model,
+        usage: model.usage,
+        cacheStatus: model.cacheStatus(),
+        warn
+      })
       return { stopReason: 'end_turn' }
     }
   })

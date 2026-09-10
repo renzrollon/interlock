@@ -245,6 +245,23 @@ test('the outcome-eval ceiling and price table are published, and the price tabl
     assert.equal(typeof price.output, 'number', `${model} has no output price`)
     assert.match(formatLimits(), new RegExp(`price: ${model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   }
+
+  // Cache pricing arrived as a new id, not as an edit under the old one: rows
+  // written before it were priced by a table with no cache structure, and
+  // reusing the identifier would let them be read as though they had been.
+  assert.notEqual(MODEL_PRICES.id, 'anthropic-list-2026-09', 'a revised table must mint a new id')
+
+  // A write multiplier per lifetime tier, never one flattened figure — the two
+  // tiers are different prices and a total could not be priced back apart.
+  const { write, read } = MODEL_PRICES.cacheMultipliers
+  assert.deepEqual(Object.keys(write).sort(), ['ephemeral_1h', 'ephemeral_5m'])
+  for (const [tier, factor] of Object.entries(write)) {
+    assert.equal(typeof factor, 'number', `${tier} has no write multiplier`)
+    assert.ok(factor > 1, `a cache write costs more than base input, not less (${tier})`)
+    assert.match(formatLimits(), new RegExp(`cache write multiplier: ${tier}`))
+  }
+  assert.ok(read > 0 && read < 1, 'a cache read costs a fraction of base input')
+  assert.match(formatLimits(), /cache read multiplier/)
 })
 
 test('interlock limits --json emits the ceiling and the price table', () => {
