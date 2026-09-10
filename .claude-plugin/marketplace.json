@@ -10,7 +10,7 @@
       "name": "interlock",
       "source": "./",
       "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "Carl Rollon"
       }
