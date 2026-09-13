@@ -6,18 +6,32 @@ This page takes you from install to one committed change. Onboard the repo once,
 
 | Requirement | Why |
 |---|---|
-| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | Interlock is a Claude Code plugin. Cursor and Copilot are not supported in 0.x. |
+| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | Interlock is a Claude Code plugin. Cursor and Copilot are not supported. Known-good on 2.1.229. |
 | Dynamic workflows **enabled** | `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start. |
-| The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. |
-| Node.js ≥ 18 | Runs the bundled `interlock` and `interlock-graph` CLIs. |
+| `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. The run banners this rather than hiding it — see [when it stops](./04-when-it-stops.md#model-routing-overridden). |
+| The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. Installed below. |
+| Node.js ≥ 18 | Runs the three bundled CLIs: `interlock`, `interlock-graph` and `interlock-run`. |
 | A git repo with code in it | `bootstrap` documents what already exists. |
 
 ## Install
+
+Interlock drives the `openspec` CLI, so install it and initialize it in the repo first ([OpenSpec quick start](https://github.com/Fission-AI/OpenSpec#quick-start)):
+
+```bash
+npm install -g @fission-ai/openspec@latest
+cd your-project && openspec init
+```
+
+OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them ([03](./03-openspec-vs-interlock.md)).
+
+Then the plugin:
 
 ```bash
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
 ```
+
+The CLIs also ship as an npm package for use without the plugin — see [07](./07-cli-and-configuration.md#install-the-clis-without-the-plugin).
 
 ## Allowlist the commands first
 
@@ -128,9 +142,13 @@ Everything below is real and supported, but none of it is part of hour one. Each
 | `/interlock:manual-test-plan` | `ship --handoff` / `--strict` emits this when the diff touches UI. |
 | `/interlock:explain-code` | `ship --handoff` / `--strict` writes the commit teach-in. |
 | `/interlock:commit` | `ship` calls it. Calling it directly is for recovery. |
+| `/interlock:report` | Indicators over the run corpora. Nothing to read until you have runs — and it gates nothing when you do ([11](./11-the-indicators.md)). |
+| `/interlock:evals` | Authoring model evals for Interlock itself. A maintainer's tool ([14](./14-evals.md)). |
 | `/interlock:spec --continue` | The opt-out from Step 3. Skipping the read before you have done it once is skipping the part of the loop that earns the rest. [**05 — Continuity**](./05-continuity.md) when you are ready. |
 
 Autonomy levels, the wave planner and the graph query surface are all deeper machinery. You can ship for weeks without touching them.
+
+Live-session retro (`session-retro`) is not in this plugin: it ships from [shippable-skills](https://github.com/renzrollon/shippable-skills) so it can run on Cursor, Copilot, Codex and Claude Code. Install it with `npx skills add renzrollon/shippable-skills`.
 
 ## Next
 

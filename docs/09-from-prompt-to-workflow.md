@@ -72,10 +72,10 @@ Take a real question from the middle of a run: *which of these twelve tasks can 
 
 Two things fall out of that, and they are the whole payoff.
 
-1. **You can check it yourself.** Run the same command, with no model and no network, and see the same decision the run made. Every one of the nineteen subcommands works this way.
+1. **You can check it yourself.** Run the same command, with no model and no network, and see the same decision the run made. Every subcommand works this way.
 2. **The rule cannot be quietly re-argued next run.** It is not written anywhere a model can read and reinterpret — only somewhere a model can *call*. There is no wording to soften.
 
-A policy in the employee handbook, versus a badge reader on the door. The README's [subcommand table](../README.md#why-this-and-not-a-folder-of-prompts) lists what has moved through that door so far; [why it works §3](./06-why-it-works.md) explains the test for what belongs there.
+A policy in the employee handbook, versus a badge reader on the door. The [subcommand table](./07-cli-and-configuration.md#interlock--the-deterministic-spine) lists what has moved through that door so far; [why it works §3](./06-why-it-works.md) explains the test for what belongs there.
 
 ---
 

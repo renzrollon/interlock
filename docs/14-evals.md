@@ -207,6 +207,21 @@ limits`, and never feed `interlock ready`, `gate`, or the ship loop. Online
 LLM scoring of a live ship would put a judge on the hot path and invent a gate
 from a figure, which this page and [11](11-the-indicators.md) refuse.
 
+### Running the model evals
+
+```bash
+export CLAUDE_CODE_WALNUT_SPIRE=1          # early-access enablement — env only, never committed
+claude plugin eval . --tag smoke --no-publish --json evals-results.json
+interlock evals triage --results evals-results.json   # regression / variance / no signal — exit code is the verdict
+```
+
+- **Enablement is a local prerequisite.** `claude plugin eval` is early-access and does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set *in the environment*. Do not commit it to `.claude/settings.json` — a committed value produces a suite that looks configured and does not run.
+- **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
+- **Advisory, pending a baseline.** The CI eval job reports and does not block. No baseline scores exist yet, so any blocking threshold would be a guess; promotion needs observed variance across more than one run. The offline structural gate `test/evals.test.mjs` runs in `npm test` and *does* gate every pull request.
+- **CI skips until access is provisioned.** The eval job (`.github/workflows/evals.yml`) skips fork pull requests and skips cleanly when no model credential is present, so the suite lands and is maintained before paid access exists.
+
+The cases each encode a reproduced failure: tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication. Each case cites the failure it encodes.
+
 ### Transcript, outcome, process
 
 Three measurements, not one with three names:

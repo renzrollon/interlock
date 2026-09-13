@@ -825,6 +825,20 @@ finish the host port.
 
 ---
 
+## The spec-driven neighbours: Spec Kit, BMAD, Kiro
+
+The three projects above are harnesses. The tools Interlock is usually compared with are process layers like itself, and the comparison is short because it is on one axis. Most of the category competes on how much structure you write before coding — Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on **how many decisions the model is not allowed to make.**
+
+- **Caps and gates are code.** Remediation rounds, the task-failure budget, parallelism, the review quality floor — all in a tested CLI, not in markdown a model can talk itself past.
+- **The zero-touch contract is the runtime's, not a prompt's.** `ship` is a workflow, so there is nobody to ask. Everyone else promises autonomy in prose. Default ship is waves → verify → commit; `--strict` is the review/handoff tail.
+- **A dismissal must cite evidence; a report needn't.** On `--review` / `--strict` or `/interlock:review-code`, findings are attacked before you see them, dismissal counts are printed, and a refutation that cites nothing refutes nothing.
+- **The invariant sweep is the licensed exception to the diff leash** — a value canonicalized in one place and still read raw in three others is the one bug class every diff-scoped review is structurally blind to.
+- **Spec drift is measured, not hand-waved** — and reported at separate confidence levels rather than one misleading number.
+
+The trade is portability. Spec Kit runs on thirty agents; Interlock runs on one, because the guarantees above come from Claude Code's workflow runtime and its plugin surface. A portable version of this would be a folder of prompts, which is the thing it exists not to be.
+
+That is a bet, not a wall. The part of Interlock that is host-specific turns out to be small — spawn an agent, run the CLI, branch on its exit code — so it is a stated contract with a second implementation behind it ([07 — the experimental runner](./07-cli-and-configuration.md#interlock-run--the-experimental-runner)). Everything the loop actually decides lives in a CLI any host shells out to. Portability here means *a second host adapter*, not thirty prompt templates.
+
 ## Hype decoder
 
 One line each, separating what is technically real from what is distribution.

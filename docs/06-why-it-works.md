@@ -47,7 +47,7 @@ The runtime imposes its own ceilings: 16 concurrent agents, 1,000 per run, no mo
 
 ## 3. The judgement/mechanism split
 
-The organising principle: **a decision with a correct answer belongs in code; a decision requiring judgement belongs to the model.** Thirteen `interlock` subcommands exist because each replaces a judgement the model used to re-derive in prose, differently every run.
+The organising principle: **a decision with a correct answer belongs in code; a decision requiring judgement belongs to the model.** Each `interlock` subcommand ([07](./07-cli-and-configuration.md) lists them) exists because it replaces a judgement the model used to re-derive in prose, differently every run.
 
 The test for whether something belongs in the CLI: *if two competent runs could reach different answers from the same inputs, and only one is right, it is not a judgement.*
 
@@ -407,7 +407,7 @@ The same instinct, repeated across the codebase:
 
 **A moving substrate.** Dynamic workflows require v2.1.154+. The plugin contract has been stable, but observable behaviour above it — agent caps, size guidelines, warning thresholds, resume semantics — has moved across patch versions, and none of it can be pinned.
 
-**Surface area.** Fifteen skills, three CLIs, eight shared protocol documents, nineteen subcommands. Four commands are the product and the rest is called by them, but the machinery underneath is not small.
+**Surface area.** Sixteen skills, three CLIs, eight shared protocol documents, and every subcommand [07](./07-cli-and-configuration.md) lists. Four commands are the product and the rest is called by them, but the machinery underneath is not small.
 
 **Prediction-shaped inputs.** Wave path collision detection, tier classification, and spec conformance all depend on a model predicting something. The *checks* on those predictions are deterministic; the predictions are not.
 
