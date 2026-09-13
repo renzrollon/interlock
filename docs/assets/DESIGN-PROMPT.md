@@ -276,11 +276,26 @@ Every frame's text was checked line by line against Appendix B; nothing was inve
 
 | File | Used by |
 |---|---|
-| `hero-light.png`, `hero-dark.png` | `README.md` hero |
+| `hero-light.png`, `hero-dark.png` | Not in use. The README kept `interlock-flow-wide.png` as its hero (2026-09-14); these stay here for the docs or a later swap |
 | `social-preview.png` | GitHub → Settings → General → Social preview (uploaded, not committed to a path the README reads) |
 | `doctor.png`, `plan-preview.png` | `docs/01-first-hour.md` (allowlist step; ship step) |
 | `halted.png` | `docs/04-when-it-stops.md` (reading a `SHIP HALTED` run) |
 | `strict-complete.png` | `docs/06-why-it-works.md` §7 (reviews) |
 | `limits.png` | `docs/07-cli-and-configuration.md` |
 
-`interlock-flow-wide.png` stays: `docs/09` uses it, and it remains the right image for the flow. Its ship strip reads `waves → review → remediate → verify → commit`, which is the `--strict` sequence; if it is regenerated, the default strip is `waves → verify → commit`.
+`interlock-flow-wide.png` is the README hero and the `docs/09` flow image. Its ship strip is stale; the revision prompt is below.
+
+## Appendix E — poster revision prompt (`interlock-flow-wide.png`)
+
+Paste into Claude Design with the current poster attached. Keep everything not named here exactly as it is: layout, type, palette, the 3200 × 1800 canvas, the left column, the red "You read the spec." block.
+
+Change these four things and nothing else:
+
+1. **The `ship` strip.** It reads `waves → review → remediate → verify → commit`. That is the `--strict` sequence, not the default. Replace it with `waves → verify → commit`, same monospace, same size, right-aligned as now.
+2. **Add one small line under the `ship` row**, in the same grey monospace as the "RUN ONCE, AFTER YOU CLONE" labels: `--strict adds review → remediate → handoff`. Left-aligned under the word `ship`, not in the accent colour.
+3. **The `mr` row label** reads "OPTIONAL, WHEN YOU WANT A REVIEW". `mr` opens a merge request; it does not run the review. Replace with "OPTIONAL, WHEN YOU WANT THE MERGE REQUEST".
+4. **The `bootstrap` strip** reads `code → understanding → graph`. Keep it.
+
+Do not add text, icons, a version number or a URL. Export at 3200 × 1800 PNG as `interlock-flow-wide.png`, replacing the current file.
+
+The default-versus-strict distinction is stated in `README.md` (The flow table) and `docs/01-first-hour.md` Step 4; the poster must agree with both.
