@@ -47,6 +47,10 @@ Every one of those halts is a non-zero exit from a `interlock` subcommand rather
 
 The final summary tells you *that* a run halted and why in one sentence. Every terminal summary also carries a `run: <runId>` row, a `project: <slug>` row and a `cwd: <absolute path>` row — the run id is the join key: it is the exact filename of the trajectory below, `<slug>` is a pure function of the directory the close ran in (every character outside `[A-Za-z0-9]` becomes `-`), which is the host's project directory under `~/.claude/projects` only when the session started there, and `cwd` is that directory itself. Use them to find the right trajectory file when more than one run is on disk, before falling back to `run-log list`. When a run halted before any plan was adopted there is no run id yet, and the row says so instead of printing an empty value: `run: none — the run halted before a plan was adopted`.
 
+<p align="center">
+  <img src="./assets/halted.png" alt="Example SHIP HALTED summary: the halt reason, the one leftover task, a push notification sent, and a MODEL ROUTING OVERRIDDEN banner." width="800">
+</p>
+
 To see the whole walk that led there — every wave-state action, every agent the loop spawned, every verify judgement — read the run's trajectory instead of re-deriving it from git history or from the summary alone:
 
 ```bash
@@ -95,7 +99,7 @@ INTERLOCK_ACP_COMMAND="<agent>" interlock-run <change-name> --host acp
 
 It runs the whole loop, `--strict` and its pieces included: adversarial review, bounded remediation, the verdict and the handoff artifacts are steps `interlock run` emits, and this driver interprets them the way it interprets a wave. Every judgement with a correct answer — what a finding survives to, how many rounds the budget allows, which dimensions run — stays in the CLI, so a strict run here halts on the same terms as one on Claude Code. Under `--isolate-waves` the runner also creates one git worktree per lane from the batch's merge base and folds them back through the same `record-batch` that halts on a real collision, so lane isolation is not a Claude-Code-only guarantee any more.
 
-Exit `0` is a terminal summary and `1` is a halt. Exit `2` means the invocation could not be started at all — an unknown `--host`, the Workflow host id, or a host command that is missing or unusable — and nothing is written for a run that never happened: no manifest, no briefing, no trajectory event. Its banners are in [the soft continues](#runner-host-experimental-and-the-rest-of-the-runners-banners) below, and the README's Experimental section says what it is for.
+Exit `0` is a terminal summary and `1` is a halt. Exit `2` means the invocation could not be started at all — an unknown `--host`, the Workflow host id, or a host command that is missing or unusable — and nothing is written for a run that never happened: no manifest, no briefing, no trajectory event. Its banners are in [the soft continues](#runner-host-id-experimental-and-the-rest-of-the-runners-banners) below, and the README's Experimental section says what it is for.
 
 `interlock-ship-acp <change>` still works: it prints a deprecation line on stderr and runs `interlock-run --host acp` with your arguments. It is removed in the next minor version.
 

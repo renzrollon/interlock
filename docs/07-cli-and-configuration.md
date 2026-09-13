@@ -63,6 +63,10 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 
 `--json` on any command emits JSON instead of prose. Any `<file>` argument accepts `-` to read that input from stdin.
 
+<p align="center">
+  <img src="./assets/limits.png" alt="Example output of interlock limits: the caps the ship loop obeys, printed by the CLI." width="800">
+</p>
+
 ### Where the loop itself lives
 
 The wave loop, the halt conditions and the verification order live in `lib/run.mjs`, which emits the whole program as steps — the agents to spawn, with their briefings, and the exact `interlock` argv to call once they return. `workflows/ship.js` and the experimental `bin/interlock-run` are interpreters of that program, not two copies of it: each spawns what a step names and calls what it names next, and branches on nothing — not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of; control flow written twice in two drivers is control flow that drifts.

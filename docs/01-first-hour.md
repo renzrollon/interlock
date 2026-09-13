@@ -37,6 +37,10 @@ The CLIs also ship as an npm package for use without the plugin — see [07](./0
 
 Worth two minutes before your first `ship`. Workflow agents inherit your own permission settings, so a command that is not allowlisted stops the run on an approval prompt — in the middle of a run that is supposed to need nothing from you, possibly while you are away from the keyboard.
 
+<p align="center">
+  <img src="./assets/doctor.png" alt="Example output of interlock doctor: nine checks, one FAIL on the missing test profile with the command that fixes it, and the permission allowlist reported as complete." width="800">
+</p>
+
 Run `interlock doctor` — it prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names.
 
 ## Step 1 — Onboard the repo (once)
@@ -90,6 +94,10 @@ Do not skip it. There is an advanced flag that skips it for you, and it is liste
 ## Step 4 — Ship it
 
 When the spec looks right:
+
+<p align="center">
+  <img src="./assets/plan-preview.png" alt="Example output of interlock waves: mode, wave and lane layout, and the warnings explaining each fold and serialization." width="800">
+</p>
 
 ```bash
 /interlock:ship

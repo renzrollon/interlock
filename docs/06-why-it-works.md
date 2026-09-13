@@ -239,6 +239,10 @@ Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `
 
 This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — four to six dimensions, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
 
+<p align="center">
+  <img src="./assets/strict-complete.png" alt="Example ship --strict summary: nine findings raised, four dismissed by skeptics, two dropped as too weak, three surviving; three fixed; six of six spec scenarios confirmed; a commit." width="800">
+</p>
+
 The tail is **emitted by the CLI**, like every other step. `interlock run` decides which dimensions run, reads each one's written criteria and the repository's review policy off disk and inlines them into the briefing, then adjudicates the findings and verdicts the review agent wrote — against the run's own observed changed paths, never a list the agent reported about the diff it was reviewing. Survival, the tolerance band, the round budget and the halt are computed there and handed to a host as steps. So neither driver holds review text or review policy, and a strict run is identical on both hosts because there is only one program: the review agent is asked for findings and counts, and for nothing that has a correct answer.
 
 ### 7.1 Why adversarial review at all

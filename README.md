@@ -7,9 +7,10 @@
 [![Claude Code ≥ 2.1.154](https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.154-blue)](docs/01-first-hour.md#before-you-start)
 [![MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
-<p align="center">
-  <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.png">
+  <img src="docs/assets/hero-light.png" alt="Example output of /interlock:ship: the plan preview names the mode, six tasks in two waves with a maximum of eight parallel agents, two tasks serialized because they share a file; the run ends with SHIP COMPLETE, a commit hash and no degradation banners." width="900">
+</picture>
 
 ```bash
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
