@@ -123,7 +123,7 @@ $ interlock doctor
 PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run, 1 warning(s)     [accent]
   root: /Users/you/projects/interlock
   [ok  ] node: Node v24.19.0 (plugin requires >=18, OpenSpec requires 20.19.0+)
-  [ok  ] plugin: plugin 1.0.2 complete: workflow, both agent types, both binaries
+  [ok  ] plugin: plugin 1.1.0 complete: workflow, both agent types, both binaries
   [warn] binaries: interlock, interlock-graph not on PATH — present in the plugin's bin/, which Claude Code injects inside a session
       fix: Nothing to do for a run inside Claude Code. For a plain shell: export PATH="/Users/you/projects/interlock/bin:$PATH"
   [ok  ] openspec: openspec CLI available and this project is initialised
@@ -176,7 +176,7 @@ Do not start another ship run unless the user asks.
 No degradation banners — graph, test profile, model routing, verification and e2e were all clean.
 ```
 
-### B6 — the envelope (`interlock limits`, v1.0.2)
+### B6 — the envelope (`interlock limits`, v1.1.0)
 
 ```
 $ interlock limits
