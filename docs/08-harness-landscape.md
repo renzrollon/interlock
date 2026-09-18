@@ -797,8 +797,9 @@ It is closed on both hosts now, by different owners of the same guarantee. On th
 Workflow runtime the spawn carries `isolation: 'worktree'` and the runtime creates
 it. On `interlock-run` the step names one worktree path per lane and a merge base,
 the driver runs `git worktree add`, and `interlock run record-batch` folds the
-clean lanes and **halts naming the path and both lanes** when two of them wrote the
-same file anyway. Which of the two happens is a capability the host declares, not a
+clean lanes and **halts naming the path and both lanes** when two of them mutated
+the same file anyway — created, modified or deleted it, which is why a lane that
+renames a file away contends with a lane that edited it. Which of the two happens is a capability the host declares, not a
 branch on its name. That was the strongest argument for the host port, stronger
 than portability-as-marketing — and it is the argument the port paid off.
 

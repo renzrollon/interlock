@@ -1152,7 +1152,17 @@ function logWaveMutation(root, { source, change, state }) {
   if (!exit.written) {
     process.stderr.write(`interlock: cli-exit not recorded: ${exit.reason}\n`)
   }
-  return { step, ok: wave.written && exit.written }
+  // `reason` is additive, and it is what a HALT can say out loud. stderr reaches
+  // a terminal on the runner host and nothing at all on the Workflow host, which
+  // relays stdout only — so a live-run halt that carried the bare fact of the
+  // failure could never name the full disk or the unwritable directory that
+  // caused it. Both reasons when both appends failed: they are different files'
+  // worth of the same corpus and a reader wants whichever one is informative.
+  const failed = [
+    !wave.written ? `wave-action: ${wave.reason}` : null,
+    !exit.written ? `cli-exit: ${exit.reason}` : null
+  ].filter(Boolean)
+  return { step, ok: wave.written && exit.written, reason: failed.join('; ') || null }
 }
 
 /**

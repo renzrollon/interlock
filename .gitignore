@@ -28,6 +28,7 @@ __pycache__/
 .claude/commands/
 .claude/memory/
 .claude/ship/
+.claude/skills/
 
 # Cursor IDE
 .cursor/

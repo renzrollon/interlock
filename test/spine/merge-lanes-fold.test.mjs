@@ -144,7 +144,7 @@ test('a rename whose source nobody else touched folds cleanly', () => {
   assert.match(readFileSync(join(repo.root, 'lib', 'c.mjs'), 'utf8'), /export const edited = true/)
 })
 
-test('a copy source is not a contention key — the fold does not delete it', () => {
+test('an edit of a file another lane copied does not halt the batch', () => {
   const repo = baseRepo('copy-vs-edit')
   const wtA = laneWorktree(repo, 'A')
   const wtB = laneWorktree(repo, 'B')
@@ -152,6 +152,16 @@ test('a copy source is not a contention key — the fold does not delete it', ()
   // A copy leaves the source in place, which is why `applyLaneDiff` never
   // rmSync's it and why entering it as a contention key would halt a batch
   // that is genuinely disjoint.
+  //
+  // What this proves, exactly: git does NOT detect copies here, so `laneDiff`
+  // reports `A lib/b.mjs` and lane A's mutation set is the destination alone.
+  // That is the shape a real copy-then-add takes on the production path — a
+  // `C` row needs `--find-copies-harder`, which `laneDiff` does not pass, and
+  // even `diff.renames = copies` only finds copies whose source was modified in
+  // the same diff. So the `C` branch of `foldMutationPaths` is defensive, and
+  // it is pinned where it is reachable: the unit test in `merge-lanes.test.mjs`.
+  // This case guards the outcome that matters end to end — an edit of a file
+  // another lane copied does not halt the batch.
   copyFileSync(join(wtA, 'lib', 'a.mjs'), join(wtA, 'lib', 'b.mjs'))
   git(wtA, ['add', 'lib/b.mjs'])
   const editedA = `${A_BODY}export const five = 5\n`

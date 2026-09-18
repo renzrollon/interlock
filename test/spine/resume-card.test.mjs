@@ -8,9 +8,10 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, existsSync, chmodSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { LIMITS } from '../../lib/limits.mjs'
 import {
   HANDOFF_DIR,
@@ -20,6 +21,21 @@ import {
   resumeCardPath,
   writeResumeCard
 } from '../../lib/resume-card.mjs'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+/** Every file under `dir` with one of these extensions, recursively. */
+function sourcesUnder(dir, exts) {
+  const out = []
+  if (!existsSync(dir)) return out
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+    const abs = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...sourcesUnder(abs, exts))
+    else if (exts.some(e => entry.name.endsWith(e))) out.push(abs)
+  }
+  return out
+}
 
 let tmp
 
@@ -81,10 +97,109 @@ test('the card names the halt reason, the run, the leftover ids and the next com
   assert.match(text, /interlock run-log show run-20260918-abc/)
   assert.match(text, /`1\.2`/)
   assert.match(text, /`1\.4`/)
-  assert.match(text, /interlock tasks tick add-widget --ids 1\.2,1\.4/)
+  assert.match(text, /interlock tasks tick add-widget --ids /)
   assert.match(text, /\/interlock:ship add-widget/)
   assert.match(text, /wave 1 \(implement\): 2 ok, 1 failed/)
   assert.match(text, /NO TEST PROFILE: inferred/)
+})
+
+test('the tick command is never paste-ready over the whole leftover list', () => {
+  // `interlock tasks tick` is mechanical — it flips a marker by id and verifies
+  // nothing. Most leftover ids on a halt were never dispatched, so a command
+  // carrying all of them would tick unimplemented work and delete the only
+  // on-disk record of what remains. That is the exact outcome the halt which
+  // writes this card exists to prevent.
+  const text = formatResumeCard(HALTED)
+  assert.doesNotMatch(
+    text,
+    /--ids\s+1\.2,1\.4/,
+    'the leftover ids must not be interpolated into a runnable tick command'
+  )
+  assert.match(text, /--ids <the ids above you verified are done>/, 'a placeholder the reader must fill')
+  assert.match(text, /only\*\* the ones you have checked are implemented/i)
+})
+
+test('nothing reads the card back, so a hand-edited one cannot change a later run', () => {
+  // spec: ship/halt-resume-card — "Failure — a hand-edited card does not change
+  // a later run". design.md calls this "the whole hazard", and it was the one
+  // property with no test: every existing case would still pass the day someone
+  // adds a "resume from the card" convenience to dispatch.
+  //
+  // Asserted structurally rather than behaviourally, because the claim is an
+  // ABSENCE — there is no call to observe. Two halves: the writer has exactly
+  // one importer, and no other source reads the directory without the
+  // `explore-` prefix that separates briefs from halt cards.
+  const sources = [
+    ...sourcesUnder(join(ROOT, 'lib'), ['.mjs']),
+    ...sourcesUnder(join(ROOT, 'bin'), ['']).filter(f => /interlock/.test(f)),
+    ...sourcesUnder(join(ROOT, 'workflows'), ['.js', '.mjs']),
+    ...sourcesUnder(join(ROOT, 'hooks'), ['.mjs'])
+  ]
+  assert.ok(sources.length >= 20, `expected to sweep the source tree, found ${sources.length} files`)
+
+  const importers = sources.filter(
+    abs => abs !== join(ROOT, 'lib', 'resume-card.mjs') && /from ['"].*resume-card\.mjs['"]/.test(readFileSync(abs, 'utf8'))
+  )
+  assert.deepEqual(
+    importers.map(f => f.slice(ROOT.length + 1)),
+    ['lib/run.mjs'],
+    'only the close may import the card writer — a second importer is a consumer'
+  )
+  assert.match(
+    readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8'),
+    /import \{ writeResumeCard \} from '\.\/resume-card\.mjs'/,
+    'and it imports the WRITER only, never a reader'
+  )
+  assert.doesNotMatch(
+    readFileSync(join(ROOT, 'lib', 'resume-card.mjs'), 'utf8'),
+    /readFileSync|readdirSync/,
+    'the module itself must not grow a read path'
+  )
+
+  // The prose half: any handoff pointer that would match `ship-*` would hand a
+  // model a halt card as session context. `skills/` and `shared/` are swept by
+  // test/skills.test.mjs; this covers the executable surfaces.
+  const offenders = []
+  for (const abs of sources) {
+    for (const [, glob] of readFileSync(abs, 'utf8').matchAll(/\.claude\/handoff\/([^\s`)"'*]*)/g)) {
+      if (glob && !glob.startsWith('explore-') && !glob.startsWith('ship-')) {
+        offenders.push(`${abs.slice(ROOT.length + 1)}: .claude/handoff/${glob}`)
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `unscoped handoff reads: ${offenders.join(', ')}`)
+})
+
+test('the card states that mid-run state is NOT resumed', () => {
+  // spec: ship/halt-resume-card — "Edge case — the card states that mid-run
+  // state is not resumed". Required by the spec and by tasks.md 1.2, and until
+  // now asserted nowhere: exactly the shape CLAUDE.md warns about, where a
+  // prose instruction nobody pins silently stops running. Tokens, not the
+  // sentence — `state.json` and the fact it is replaced are what carry it.
+  const text = formatResumeCard(HALTED)
+  assert.match(text, /state\.json/, 'the file whose replacement loses the cursor')
+  assert.match(text, /replaced at wave 0/, 'and when it is replaced')
+  assert.match(text, /not\*{0,2} resumed|\*\*not\*\* resumed/, 'stated as a negation, not left to inference')
+  assert.match(
+    text,
+    /dispatched again/,
+    'and the consequence a reader must act on — unticked work runs a second time'
+  )
+})
+
+test('a change name that reduces to nothing still yields a card inside the handoff dir', () => {
+  // spec: ship/halt-resume-card — "Edge case — a name that reduces to nothing
+  // still yields a card". The traversal test covers `../../etc/passwd`; this
+  // covers the inputs that sanitize to an EMPTY string, where the risk is not
+  // escape but a path ending in a bare separator or a dotfile.
+  for (const change of ['', '..', '///', '.', '---', '   ']) {
+    const path = resumeCardPath({ change, runId: 'run-1' })
+    assert.equal(path, join(HANDOFF_DIR, 'ship-unnamed-run-1.md'), `bad card path for ${JSON.stringify(change)}`)
+  }
+  // And it is writable, not merely well-named.
+  const written = writeResumeCard(tmp, { ...HALTED, change: '..' })
+  assert.equal(written.written, true)
+  assert.equal(written.path, join(HANDOFF_DIR, 'ship-unnamed-run-20260918-abc.md'))
 })
 
 test('the card says it is a record, not a trigger, and forbids a self-started retry', () => {
@@ -176,18 +291,20 @@ test('a second close of the same run replaces its own card rather than adding on
 test('an unwritable tree reports a reason and never throws', () => {
   // The run already halted. Losing its card must not change how it halted, so
   // the caller gets a reason it can banner, never an exception.
-  const readonly = join(tmp, 'readonly')
-  mkdirSync(readonly)
-  chmodSync(readonly, 0o500)
-  try {
-    const written = writeResumeCard(readonly, HALTED)
-    assert.equal(written.written, false)
-    assert.equal(written.path, null)
-    assert.equal(typeof written.reason, 'string')
-    assert.ok(written.reason.length > 0)
-  } finally {
-    chmodSync(readonly, 0o700)
-  }
+  //
+  // A regular file where the handoff DIRECTORY goes, rather than a chmod: mode
+  // bits do not stop uid 0, so a chmod fixture makes this assertion FAIL — not
+  // skip — when the suite runs as root, which a CI container routinely does.
+  // This fixture fails the write for every uid.
+  const blocked = join(tmp, 'blocked')
+  mkdirSync(join(blocked, '.claude'), { recursive: true })
+  writeFileSync(join(blocked, HANDOFF_DIR), 'not a directory\n')
+
+  const written = writeResumeCard(blocked, HALTED)
+  assert.equal(written.written, false)
+  assert.equal(written.path, null)
+  assert.equal(typeof written.reason, 'string')
+  assert.ok(written.reason.length > 0)
 })
 
 test('a missing or empty root is refused by name rather than by exception', () => {

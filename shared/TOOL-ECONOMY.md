@@ -110,9 +110,16 @@ one you need. When Rule 0 applies, graph query/consumers counts as “locate.”
 
 At session start, current-task context comes from a few cheap, authoritative
 sources — `git log --oneline`, `git status --short`, `openspec status --json`,
-an open-task grep over `openspec/changes/*/tasks.md`, and the latest handoff.
+an open-task grep over `openspec/changes/*/tasks.md`, and the latest explore
+brief (`.claude/handoff/explore-*.md`).
 Front-load these in one pass. Read them,
 then act. Do not re-traverse the tree to reconstruct what they already tell you.
+
+The glob is load-bearing, not tidiness. `.claude/handoff/` also holds
+`ship-*.md` halt resume cards, which are records of runs that already stopped —
+nothing reads them, and finding one is not permission to start anything. Reading
+"the latest handoff" unqualified after a halt would hand you one as if it were
+session context.
 
 **Explore brief as Rule-3 state:** when `/interlock:spec` runs after explore
 (especially after `/clear` or prompt-cache expiry), read the latest matching

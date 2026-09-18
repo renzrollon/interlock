@@ -681,6 +681,40 @@ test('shared contracts and lib carry no predecessor skill names', () => {
   assert.deepEqual(offenders, [], `predecessor residue: ${offenders.join(', ')}`)
 })
 
+test('every handoff pointer is scoped to explore briefs, never the whole directory', () => {
+  // `.claude/handoff/` holds two unrelated artifacts: `explore-*.md` briefs,
+  // which are session context a later skill is meant to read, and `ship-*.md`
+  // halt resume cards, which are records of runs that already stopped and which
+  // nothing reads. The prefix is the only thing keeping them apart, so an
+  // unqualified "read the latest handoff" hands a model a halt card as if it
+  // were a brief — the one way a record becomes a trigger.
+  const targets = [
+    join(ROOT, 'shared', 'TOOL-ECONOMY.md'),
+    join(ROOT, 'shared', 'EXPLORE-BRIEF.md'),
+    join(SKILLS_DIR, 'dispatch', 'SKILL.md'),
+    join(SKILLS_DIR, 'spec', 'SKILL.md')
+  ]
+  const offenders = []
+  for (const abs of targets) {
+    if (!existsSync(abs)) continue
+    const text = readFileSync(abs, 'utf8')
+    for (const [, glob] of text.matchAll(/\.claude\/handoff\/([^\s`)"']*)/g)) {
+      // A bare directory reference is fine when it is not an instruction to
+      // READ one; what must never appear is a glob that would match a card.
+      if (/^(\*|[^e])/.test(glob)) offenders.push(`${abs.slice(ROOT.length + 1)}: .claude/handoff/${glob}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `handoff pointers that would match a ship halt card: ${offenders.join(', ')}`)
+
+  const economy = readFileSync(join(ROOT, 'shared', 'TOOL-ECONOMY.md'), 'utf8')
+  assert.match(economy, /explore-\*\.md/, 'Rule 3 must name the explore glob, not "the latest handoff"')
+  assert.doesNotMatch(
+    economy,
+    /and the latest handoff\./,
+    'the unqualified form is what points a session-start read at a halt card'
+  )
+})
+
 test('the report skill quotes the command and recomputes nothing', () => {
   // `interlock review --metrics` existed for a year and no skill ever passed it:
   // the corpus stayed empty and read exactly like a loop that never ran. The
@@ -708,10 +742,16 @@ test('the continuity procedure passes --findings and forbids a transcribed block
 
   assert.match(text, /interlock ready/, 'the gate the procedure asks')
   assert.match(text, /--findings/, 'and the flag that hands it evidence rather than a count')
+  // Tokens, not the sentence: `blocker count` is the distinctive noun phrase,
+  // and the second assert requires it to sit inside a prohibition rather than
+  // merely appear. A reword ("Never write a file holding a blocker count")
+  // survives both; deleting the instruction, or flipping it into an
+  // instruction to compose one, fails the second.
+  assert.match(text, /blocker count/i, 'the value the gated party must never supply')
   assert.match(
     text,
-    /Do not compose a file containing a blocker count/i,
-    'the instruction that keeps the gated party out of its own input'
+    /(?:do not|never|must not)[^.]{0,80}blocker count/i,
+    'and it is named in a prohibition, not merely mentioned'
   )
 })
 

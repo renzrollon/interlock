@@ -34,6 +34,7 @@ import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 import {
   BRIEFING_HEADER,
   briefingHash,
+  runClassified,
   runRecordBatch,
   runRemediated,
   runReviewed
@@ -955,6 +956,99 @@ test('a failed record-batch trajectory append halts before the tick and the comm
 
     const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
     assert.doesNotMatch(tasks, /- \[x\]/, 'no box is ticked on a run nobody can reconstruct')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// The implementer lanes are the majority of every trajectory's agent-spawn
+// rows, and they are the one set `logSpawns` deliberately does NOT write — they
+// are logged here, through the same writer `wave-state next` uses. `bin/
+// interlock` has always exited 1 on this boolean; these two pin that the live
+// run path now owes the trajectory the same fatality, at both sites that dispatch.
+
+test('a failed implementer agent-spawn append halts instead of dispatching an unrecorded wave', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(started.action, 'classify')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+
+    const warnings = []
+    const ctx = {
+      root,
+      warn: message => warnings.push(message),
+      deps: {
+        headCommit: () => null,
+        observedChangedPaths: () => [],
+        runMergeLanes: () => ({ status: 'clean', cleanupWarnings: [] }),
+        logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: true }),
+        logAgentSpawns: () => false
+      }
+    }
+    const step = runClassified(ctx, { classifiedPath: '.claude/ship/classified.json' })
+
+    assert.equal(step.action, 'halt', 'a wave whose agents nobody recorded must not dispatch')
+    assert.match(step.reason, /trajectory append failed: agent-spawn/)
+    assert.equal(step.spawns.length, 0, 'and it dispatches nothing')
+    assert.ok(warnings.length, 'the failure is spoken as well as fatal')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a failed implementer agent-spawn append at record-batch halts before the tick', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const results = batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+
+    const warnings = []
+    const ctx = {
+      root,
+      warn: message => warnings.push(message),
+      deps: {
+        headCommit: () => null,
+        observedChangedPaths: () => ['README.md'],
+        runMergeLanes: () => ({ status: 'clean', cleanupWarnings: [] }),
+        // The wave-action lands; only the lane spawns for the NEXT batch do not.
+        logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: true }),
+        logAgentSpawns: () => false
+      }
+    }
+    const step = runRecordBatch(ctx, { results })
+
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, /trajectory append failed: agent-spawn/)
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.doesNotMatch(tasks, /- \[x\]/, 'the tick is downstream of the halt, and must not have run')
+    assert.ok(warnings.length)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a stubbed logAgentSpawns that reports nothing is not read as a failure', () => {
+  // `=== false` and not a truthiness check: the dep is injected as `() => {}` in
+  // half this file, and an undefined return is "said nothing", not "failed".
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const step = runRecordBatch(
+      {
+        root,
+        warn: () => {},
+        deps: {
+          headCommit: () => null,
+          observedChangedPaths: () => ['README.md'],
+          runMergeLanes: () => ({ status: 'clean', cleanupWarnings: [] }),
+          logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: true }),
+          logAgentSpawns: () => {}
+        }
+      },
+      { results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))) }
+    )
+    assert.notEqual(step.action, 'halt', 'a dep that returns nothing must not halt the run')
   } finally {
     cleanup(root)
   }

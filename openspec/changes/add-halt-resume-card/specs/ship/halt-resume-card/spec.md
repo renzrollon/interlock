@@ -127,7 +127,9 @@ It SHALL NOT state or imply what the next run will decide. The fingerprint is re
 
 ### Requirement: The card SHALL carry what a reader with no context needs, and SHALL state each absence
 
-The card SHALL carry: the halt reason; where the run stopped — the change, the run id, the project slug, the directory the close ran in, the trajectory path, and the commands that replay that trajectory and filter it to the events explaining the halt; the task ids still unticked, with a ready-to-paste command that ticks them; the plan section; the per-wave tallies as far as the run got; the degradation banners raised before the halt; and how to pick the change up, including the command that starts a new run when a person asks for one.
+The card SHALL carry: the halt reason; where the run stopped — the change, the run id, the project slug, the directory the close ran in, the trajectory path, and the commands that replay that trajectory and filter it to the events explaining the halt; the task ids still unticked, with the tick command a reader runs after deciding which of them are actually done; the plan section; the per-wave tallies as far as the run got; the degradation banners raised before the halt; and how to pick the change up, including the command that starts a new run when a person asks for one.
+
+The tick command SHALL NOT be runnable over the whole leftover list. A halt leaves two kinds of unticked box — work done on disk and never marked, and work never attempted at all — and the card cannot tell them apart: `interlock tasks tick` flips a marker by id and verifies nothing. A command carrying every leftover id would therefore tick unimplemented work, destroying the only on-disk record of what remains, which is the outcome the halt that wrote the card exists to prevent. The ids SHALL be listed for reading, and the command SHALL carry a placeholder the reader replaces with the subset they have checked.
 
 Each absent section SHALL be stated as a sentence rather than printed as an empty section: every box already ticked, no wave recorded, no banner raised, and a halt that recorded no reason at all. A heading over nothing reads as a fact the writer failed to gather.
 
@@ -139,7 +141,8 @@ A replay command SHALL be printed only when there is a run id to name in it. A c
 - **WHEN** the card is written
 - **THEN** it names the halt reason, the run id, the project slug and the directory the close ran in
 - **AND** it names the trajectory and the commands that replay it and filter it to the halt
-- **AND** it lists the unticked task ids and a ready-to-paste command that ticks exactly those ids
+- **AND** it lists the unticked task ids, and a tick command whose id list is a placeholder rather than those ids
+- **AND** it says to tick only the ids the reader has checked are implemented
 - **AND** it lists the wave tallies and the banners
 
 #### Scenario: Edge case — an empty run states each absence

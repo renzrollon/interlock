@@ -83,13 +83,22 @@ would have been committing pollution and calling it an audit trail.
 .claude/ship/
 .claude/learning/
 .claude/metrics/
+.claude/handoff/
 ```
 
 ```gitignore
 # Repo that ships its own product with Interlock: keep the audit trail.
 # Ignore only the volume, not the record.
 .claude/ship/spill/
+.claude/handoff/
 ```
+
+`.claude/handoff/` is on **both** sides, which is the one line that does not
+follow the volume-versus-record split above. It holds explore briefs and halt
+resume cards, and neither is a record anybody should keep: both are written for
+a person to read once, in this checkout, and nothing reads either back. A halt
+card also carries the absolute `cwd` the close ran in, so committing one leaks a
+local path into a shared history for no gain.
 
 Two caveats worth knowing before choosing the commit side.
 

@@ -1195,6 +1195,90 @@ test('docs/04 has a section for each new banner a reader will grep for', () => {
   const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
   assert.match(docs, /^#+ .*`?ARCHIVE PENDING`?/m, 'a reader who greps ARCHIVE PENDING must land on a section')
   assert.match(docs, /^#+ .*`?PUSH FAILED`?/m, 'a reader who greps PUSH FAILED must land on a section')
+  assert.match(docs, /^#+ .*`?RESUME CARD NOT WRITTEN`?/m, 'a halt that left no card must be greppable')
+  assert.match(docs, /^#+ .*`?TRAJECTORY APPEND FAILED`?/m, 'a lost trajectory line must be greppable')
+})
+
+// Banners that predate this ratchet and have no docs/04 section. This list is
+// a record of debt, not a standard — nothing may be added to it. A hand-kept
+// list of DOCUMENTED banners is what let two ship undocumented; deriving the
+// set from the source and freezing the gap means the next banner either gets a
+// section or turns this test red, which is the direction that cannot rot.
+const UNDOCUMENTED_BANNERS = Object.freeze([
+  'AUTONOMY RECORD NOT WRITTEN',
+  'CACHE ACCOUNTING NOT REPORTED',
+  'CLAIM OVERRIDDEN',
+  'CONFORMANCE CHECKLIST UNAVAILABLE',
+  'LANE STOPPED EARLY',
+  'LANE WORKTREE CLEANUP WARNING',
+  'LANE WORKTREE PRESERVED',
+  'NO REMAINING WORK',
+  'PLAN FINGERPRINT NOT STORED',
+  'REVIEW METRICS NOT WRITTEN',
+  'REVIEW RUBRIC UNAVAILABLE',
+  'RUN NOT RECONSTRUCTABLE',
+  'STAGE MARKER NOT CLEARED',
+  'STAGE MARKER NOT PUBLISHED',
+  'TASK TICK FAILED',
+  'TDD SHAPE INFERRED',
+  'TDD SHAPE REFUSED',
+  'TDD SHAPE UNAVAILABLE',
+  'TOKEN USAGE NOT REPORTED'
+])
+
+test('the exit-code contract documents the completed-but-unrecorded run', () => {
+  // `exitCode: haltReason || !reconstructable || !trajectoryComplete ? 1 : 0` —
+  // two of those three terms are true on runs that finished and committed, so
+  // a reader who takes "1 means halted" literally concludes the change was not
+  // shipped. The code has been able to do this since the reconstructability
+  // gate landed; nothing said so until the trajectory halt made it likelier.
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  assert.match(
+    run,
+    /exitCode: haltReason \|\| !reconstructable \|\| !trajectoryComplete \? 1 : 0/,
+    'the three terms this doc claim is about'
+  )
+  assert.match(
+    docs,
+    /Exit `0`[^.]*and `1` is a halt[^.]*could not write its own record/,
+    'docs/04 must not claim exit 1 means only a halt'
+  )
+  assert.match(docs, /still reads `SHIP COMPLETE`/, 'and must say the summary still reads complete')
+})
+
+test('no NEW degradation banner ships without a docs/04 section', () => {
+  // A banner is a shipped surface: an operator greps the exact string their run
+  // printed. `TRAJECTORY APPEND FAILED` and `RESUME CARD NOT WRITTEN` both
+  // reached a release candidate with nowhere to land, because the pin above
+  // named the documented ones by hand and nobody extended it.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  const raised = new Set()
+  for (const [, banner] of run.matchAll(/["'`]([A-Z][A-Z ]{6,}[A-Z]):/g)) raised.add(banner)
+  assert.ok(raised.size >= 10, `expected to find banners in lib/run.mjs, found ${[...raised]}`)
+
+  const undocumented = [...raised]
+    .filter(b => !new RegExp(`^#+ .*\`?${b}\`?`, 'm').test(docs))
+    .filter(b => !UNDOCUMENTED_BANNERS.includes(b))
+    .sort()
+  assert.deepEqual(
+    undocumented,
+    [],
+    `new banner(s) with no docs/04 section: ${undocumented.join(', ')} — add a \`### \` section ` +
+      'rather than an entry to UNDOCUMENTED_BANNERS'
+  )
+
+  // The ratchet only tightens: a banner that gained a section must leave the
+  // debt list, so the list cannot quietly become the place banners go to hide.
+  const documentedButListed = UNDOCUMENTED_BANNERS.filter(b =>
+    new RegExp(`^#+ .*\`?${b}\`?`, 'm').test(docs)
+  )
+  assert.deepEqual(
+    documentedButListed,
+    [],
+    `documented now — remove from UNDOCUMENTED_BANNERS: ${documentedButListed.join(', ')}`
+  )
 })
 
 test('succeeded tasks are ticked by the CLI, from what it recorded', () => {
