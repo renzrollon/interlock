@@ -13,7 +13,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import {
   chmodSync,
   cpSync,
@@ -109,6 +109,27 @@ function run(root, argv, { results, expectExit = 0, env } = {}) {
   }
   assert.equal(code, expectExit, `interlock ${full.join(' ')} exit code`)
   return { step: stdout.trim() ? JSON.parse(stdout) : null, code }
+}
+
+/**
+ * Like `run`, but keeps stderr — which is where a `ctx.warn` lands, and the
+ * only place a degradation that is deliberately NOT an exit code can be read.
+ */
+function runCapturing(root, argv, { results, expectExit = 0 } = {}) {
+  const full = [...argv]
+  if (results !== undefined) {
+    file(root, '.claude/ship/results.json', results)
+    full.push('--results', '.claude/ship/results.json')
+  }
+  full.push('--json')
+  const r = spawnSync(process.execPath, [BIN, ...full], { cwd: root, encoding: 'utf8' })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  assert.equal(r.status, expectExit, `interlock ${full.join(' ')} exit code\nstderr: ${r.stderr}`)
+  return {
+    step: r.stdout.trim() ? JSON.parse(r.stdout) : null,
+    code: r.status,
+    stderr: r.stderr || ''
+  }
 }
 
 const CLASSIFIED = {
@@ -888,6 +909,110 @@ test('a tick that cannot mark a checkbox is reported rather than swallowed', () 
       (recorded.banners || []).some(b => b.startsWith('TASK TICK FAILED:')),
       `a failed tick must be a banner; got ${JSON.stringify(recorded.banners)}`
     )
+  } finally {
+    cleanup(root)
+  }
+})
+
+const runs = root => join(root, '.claude', 'ship', 'runs')
+
+// --- the trajectory is fatal, the outcome corpus is not (spec: ship-run) ----
+//
+// `.claude/ship/runs` is `fatal: true` in lib/doctor.mjs's STATE_DIRS, and
+// `wave-state` in bin/interlock has always exited 1 when its append did not
+// land. The live `interlock run` path used to warn and walk on — into the tick
+// and into the commit — so a run nobody could reconstruct still ticked boxes
+// and shipped. These tests are the difference, and the last of them is the
+// other half of the rule: the learning corpus stays non-fatal on purpose.
+
+test('a failed record-batch trajectory append halts before the tick and the commit', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const results = batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+
+    // In-process, so the write failure is injected exactly where the run reads
+    // it, and so `ctx.warn` can be observed rather than inferred.
+    const warnings = []
+    const ctx = {
+      root,
+      warn: message => warnings.push(message),
+      deps: {
+        headCommit: () => null,
+        observedChangedPaths: () => ['README.md'],
+        runMergeLanes: () => ({ status: 'clean', cleanupWarnings: [] }),
+        logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: false }),
+        logAgentSpawns: () => {}
+      }
+    }
+    const step = runRecordBatch(ctx, { results })
+
+    assert.equal(step.action, 'halt', 'a warning is not a gate')
+    assert.match(step.reason, /trajectory append failed/)
+    assert.match(step.reason, /record-batch/, 'the reason names the site, so the gap can be found')
+    assert.deepEqual(step.then.argv, ['run', 'close', '--halt', step.reason], 'a halt still closes')
+    assert.ok(warnings.length, 'the failure is still spoken — the halt is the part that is new')
+
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.doesNotMatch(tasks, /- \[x\]/, 'no box is ticked on a run nobody can reconstruct')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a failed close trajectory append is a banner and moves the exit code', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+
+    // A regular file where the trajectory directory goes: every append fails,
+    // whatever the uid running the suite — no chmod, so this holds under root.
+    rmSync(runs(root), { recursive: true, force: true })
+    writeFileSync(runs(root), 'not a directory\n')
+
+    const closed = runCapturing(root, ['run', 'close'], {
+      results: [{ ok: true, sha: 'abc1234' }],
+      expectExit: 1
+    })
+    assert.ok(
+      (closed.step.banners || []).some(b => b.startsWith('TRAJECTORY APPEND FAILED: run-receipt')),
+      `the lost receipt is named; got ${JSON.stringify(closed.step.banners)}`
+    )
+    assert.ok(
+      (closed.step.banners || []).some(b => b.startsWith('TRAJECTORY APPEND FAILED: run-complete')),
+      'and so is the lost terminal event'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an outcome-write failure is reported and never halts the close', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    const runId = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8')).runId
+
+    // A directory where the corpus line goes: the append throws, `appendOutcome`
+    // reports `written: false`, and the run's exit code is unaffected.
+    mkdirSync(join(root, '.claude', 'learning', 'outcomes.jsonl'), { recursive: true })
+
+    const closed = runCapturing(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] })
+    assert.equal(closed.code, 0, 'losing a corpus line must not fail the run that produced it')
+    assert.equal(closed.step.action, 'complete')
+    assert.match(closed.stderr, /outcome not recorded/, 'reported rather than silent')
+
+    const types = readFileSync(join(runs(root), `${runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line).type)
+    assert.ok(types.includes('run-complete'), 'the fatal corpus is untouched by the non-fatal one')
   } finally {
     cleanup(root)
   }

@@ -2780,7 +2780,10 @@ test('an outcome that could not be written is reported and never fails the run',
   assert.match(run, /if \(!outcome\.written\) ctx\.warn\(`outcome not recorded/)
   assert.match(run, /losing a corpus line must not fail the run/)
   assert.match(run, /RUN NOT RECONSTRUCTABLE/, 'the trajectory check is the fatal one')
-  assert.match(run, /exitCode: haltReason \|\| !reconstructable \? 1 : 0/)
+  // Every term in the exit code is trajectory-side or the halt itself; the
+  // outcome corpus appears in none of them.
+  assert.match(run, /exitCode: haltReason \|\| !reconstructable \|\| !trajectoryComplete \? 1 : 0/)
+  assert.match(run, /TRAJECTORY APPEND FAILED/, 'and a lost trajectory line is the fatal one too')
 })
 
 test('the printed degradation banners and the receipt are the same list', async () => {

@@ -82,7 +82,7 @@ import {
 } from '../lib/verify.mjs'
 import { spillBytes } from '../lib/spill.mjs'
 import { classifyRisk, formatRisk } from '../lib/risk.mjs'
-import { mergeDecision } from '../lib/merge-lanes.mjs'
+import { mergeDecision, foldMutationPaths } from '../lib/merge-lanes.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
@@ -1333,7 +1333,10 @@ function runMergeLanes(root, laneEntries, base) {
     const diff = laneDiff(path, base)
     if (diff === null) continue // git could not diff this worktree — unresolved
     diffsByLabel.set(label, diff)
-    changedByLane[label] = diff.map(d => d.path)
+    // Contention keys are every path this lane's fold will mutate, not only the
+    // destination git named — a rename deletes its source, so an edit of that
+    // source by another lane is a collision, not a disjoint write.
+    changedByLane[label] = foldMutationPaths(diff)
   }
 
   const decision = mergeDecision({ lanes: lanesForDecision, changedByLane, base })

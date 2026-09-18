@@ -14,13 +14,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeStage } from '../lib/ship-stage.mjs'
 
-const HOOKS = join(dirname(fileURLToPath(import.meta.url)), '..', 'hooks')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const HOOKS = join(ROOT, 'hooks')
 
 function tmpRoot() {
   const root = mkdtempSync(join(tmpdir(), 'interlock-hooks-'))
@@ -333,4 +334,153 @@ test('guard-commit: ignores a non-Bash tool', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// preflight (SessionStart)
+// ---------------------------------------------------------------------------
+//
+// The only hook here that is not a guard, and the one that had no process test
+// at all: it was implemented fail-open and asserted nowhere. The direction that
+// matters is the opposite of a guard's — this hook must NEVER stop a session,
+// so every case below asserts exit 0, including the ones where its own binary
+// cannot be found. A SessionStart hook that exits non-zero is a plugin nobody
+// can install.
+
+/** Spawn the hook the way the host does: empty stdin, cwd at a project root. */
+function runPreflight({ cwd, hook = join(HOOKS, 'preflight.mjs'), path }) {
+  const env = { ...process.env }
+  if (path !== undefined) env.PATH = path
+  // `process.execPath` rather than `node`: these cases hand the child a PATH
+  // with nothing on it, and the interpreter must still be findable.
+  const res = spawnSync(process.execPath, [hook], { cwd, input: '', encoding: 'utf8', env })
+  let context = null
+  const out = (res.stdout || '').trim()
+  if (out) {
+    try {
+      const parsed = JSON.parse(out)
+      context = parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext
+    } catch {
+      context = null
+    }
+  }
+  return { code: res.status, stdout: out, stderr: res.stderr || '', context }
+}
+
+/**
+ * A copy of the hook in a tree whose PLUGIN_ROOT has no `bin/interlock`.
+ *
+ * `PLUGIN_ROOT` is derived from the hook's own URL, so the bundled binary is
+ * always found when the real file is spawned — the PATH fallback, and the
+ * ENOENT that follows a PATH miss, are unreachable without this copy. A
+ * test-only env override in the hook would be the alternative, and a production
+ * seam that exists only for a test is worse than a fixture.
+ */
+function detachedHook(root) {
+  const dir = join(root, 'plugin-copy', 'hooks')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, 'preflight.mjs')
+  copyFileSync(join(HOOKS, 'preflight.mjs'), path)
+  return path
+}
+
+/** An `interlock` on PATH that prints exactly these bytes and exits with this code. */
+function stubBin(root, { stdout, code = 0 }) {
+  const dir = join(root, 'stub-bin')
+  mkdirSync(dir, { recursive: true })
+  const bin = join(dir, 'interlock')
+  // The interpreter is named absolutely: PATH here holds this stub and nothing
+  // else, so `#!/usr/bin/env node` would not resolve.
+  writeFileSync(
+    bin,
+    `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(stdout)})\nprocess.exit(${code})\n`
+  )
+  chmodSync(bin, 0o755)
+  return dir
+}
+
+test('preflight: a clean doctor exits 0 with one confirming line, not a wall of output', () => {
+  const root = tmpRoot()
+  try {
+    const path = stubBin(root, { stdout: JSON.stringify({ ok: true, checks: [], counts: { warn: 0 } }) })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path })
+    assert.equal(r.code, 0)
+    assert.match(r.context, /interlock preflight OK/)
+    assert.equal(r.context.split('\n').length, 1, `a clean preflight is quiet; got ${JSON.stringify(r.context)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a failing doctor still exits 0 and names the check and its fix', () => {
+  // The REAL bundled doctor against an empty root, so this is the production
+  // failure path rather than a stub agreeing with itself: no test profile and
+  // no git work tree are both fails there, and the doctor exits 1 with its JSON
+  // on stdout — the branch that parses `err.stdout`.
+  const root = mkdtempSync(join(tmpdir(), 'interlock-preflight-'))
+  try {
+    const r = runPreflight({ cwd: root })
+    assert.equal(r.code, 0, 'a failing preflight must never abort the session')
+    assert.match(r.context, /interlock preflight found issues/)
+    assert.match(r.context, /\[FAIL\] test-profile:/)
+    assert.match(r.context, /fix: /, 'the doctor\'s fix string is what makes the report actionable')
+    assert.match(r.context, /The session still starts/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: an unresolvable interlock binary exits 0 and says the preflight could not run', () => {
+  const root = tmpRoot()
+  try {
+    const empty = join(root, 'empty-bin')
+    mkdirSync(empty, { recursive: true })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: empty })
+    assert.equal(r.code, 0, 'a missing binary is the one failure that must not cost the session')
+    assert.match(r.context, /interlock preflight could not run/)
+    assert.match(r.context, /advisory/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: unparseable doctor output exits 0 and says so rather than guessing', () => {
+  const root = tmpRoot()
+  try {
+    const path = stubBin(root, { stdout: 'not json at all\n' })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path })
+    assert.equal(r.code, 0)
+    assert.match(r.context, /could not be parsed/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: the manifest still registers this hook on SessionStart', () => {
+  // Without this, the hook could be dropped from the manifest and every case
+  // above would still pass — a preflight nobody runs, which is the same shape
+  // as an instruction nobody asserts.
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+  const sessionStart = manifest.hooks && manifest.hooks.SessionStart
+  assert.ok(Array.isArray(sessionStart) && sessionStart.length, 'no SessionStart hook is registered')
+  const commands = sessionStart.flatMap(entry => (entry.hooks || []).map(h => h.command))
+  assert.ok(
+    commands.some(c => typeof c === 'string' && c.includes('hooks/preflight.mjs')),
+    `SessionStart does not name the preflight hook: ${JSON.stringify(commands)}`
+  )
+})
+
+test('preflight: an internal throw is caught and the process still exits 0', () => {
+  // The production `catch` wraps `run()` itself, so reaching it from a fixture
+  // would need a broken import or a test-only throw flag in the hook. Neither
+  // is worth a seam in production for, so the two tokens that MAKE it fail open
+  // are pinned instead: the ignored-error report, and the unconditional exit 0
+  // as the file's last statement.
+  const source = readFileSync(join(HOOKS, 'preflight.mjs'), 'utf8')
+  assert.match(source, /catch \(err\) \{/, 'the hook body must be wrapped in a catch')
+  assert.match(source, /preflight hook error \(ignored\)/, 'and an ignored error is still spoken')
+  assert.ok(
+    source.trimEnd().endsWith('process.exit(0)'),
+    'the last statement must be an unconditional exit 0, whatever ran before it'
+  )
 })

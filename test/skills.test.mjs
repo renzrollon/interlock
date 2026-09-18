@@ -681,6 +681,40 @@ test('shared contracts and lib carry no predecessor skill names', () => {
   assert.deepEqual(offenders, [], `predecessor residue: ${offenders.join(', ')}`)
 })
 
+test('the report skill quotes the command and recomputes nothing', () => {
+  // `interlock review --metrics` existed for a year and no skill ever passed it:
+  // the corpus stayed empty and read exactly like a loop that never ran. The
+  // report skill's contract has the same shape — it is prose, and prose nobody
+  // asserts silently stops running. These are the three tokens that make the
+  // figures the CLI's rather than the model's.
+  //
+  // Tokens, never sentences: a reword must survive the pin, and a reversal of
+  // meaning must not.
+  const text = readFileSync(join(SKILLS_DIR, 'report', 'SKILL.md'), 'utf8')
+
+  assert.match(text, /interlock report --json/, 'the command the figures are quoted from')
+  assert.match(text, /Never recompute/, 'the rule that keeps the model out of the arithmetic')
+  assert.match(text, /Licenses nothing/, 'the form an unobserved indicator is reported in')
+})
+
+test('the continuity procedure passes --findings and forbids a transcribed blocker count', () => {
+  // The number that decides whether a human reads a spec must not be written by
+  // the agent being gated. `interlock ready` derives it from the artifact
+  // review's own findings file, and the only thing standing between that and a
+  // model composing a tidy `{blockers: 0}` is this instruction — which, until
+  // now, nothing asserted. The leftover Workflow pin below covers a different
+  // contract entirely and never covered this one.
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'continuity.md'), 'utf8')
+
+  assert.match(text, /interlock ready/, 'the gate the procedure asks')
+  assert.match(text, /--findings/, 'and the flag that hands it evidence rather than a count')
+  assert.match(
+    text,
+    /Do not compose a file containing a blocker count/i,
+    'the instruction that keeps the gated party out of its own input'
+  )
+})
+
 test('the evals skill admits a captured skeleton as evidence, and refuses an unresolved one', () => {
   // The pin the `--metrics` defect argues for: an instruction nobody asserts
   // silently stops running. `interlock evals capture` exists to make a failed

@@ -668,6 +668,33 @@ test('verify judge without --state or --run-id logs nothing and still exits norm
   assert.equal(existsSync(join(nologRoot, '.claude', 'ship', 'runs')), false)
 })
 
+// The fatality these two have always had, pinned so a future edit cannot
+// quietly demote either to a warning. `lib/run.mjs` now halts the live run on
+// the same failure; that is one rule for `.claude/ship/runs`, and this is the
+// half of it that predates the rule.
+test('wave-state and verify judge exit non-zero when their trajectory append fails', () => {
+  // A regular file where the trajectory DIRECTORY goes: every append fails for
+  // any uid, so this holds when the suite runs as root — no chmod, no skip.
+  const blocked = join(dir, 'blocked-trajectory-root')
+  mkdirSync(join(blocked, '.claude', 'ship'), { recursive: true })
+  writeFileSync(join(blocked, '.claude', 'ship', 'runs'), 'not a directory\n')
+
+  const wavePlan = runJson(['waves', '--classified', paths.classified])
+  const created = run([
+    'wave-state', 'create', '--plan', file('plan-blocked.json', wavePlan), '--root', blocked
+  ])
+  assert.equal(created.code, 1, 'a wave-state mutation nobody could record is not a success')
+
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  const judged = run([
+    'verify', 'judge', '--plan', file('vplan-blocked.json', plan), '--results', paths.greenResults,
+    '--run-id', 'blocked-run-1', '--change', 'add-widget', '--root', blocked
+  ])
+  assert.equal(judged.code, 1, 'a green verdict nobody could record is still not a clean exit')
+})
+
 test('verify spill writes bytes to disk and prints locator, preview, hash', () => {
   const inputFile = join(dir, 'raw-suite-output.txt')
   writeFileSync(inputFile, 'x'.repeat(10_000))

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeDecision } from '../../lib/merge-lanes.mjs'
+import { mergeDecision, foldMutationPaths } from '../../lib/merge-lanes.mjs'
 
 const lane = label => ({ label })
 
@@ -93,6 +93,78 @@ test('a lane whose worktree could not be located errors, naming the lane', () =>
   })
   assert.equal(result.status, 'error')
   assert.ok(result.unresolved.some(u => u.label === 'B'))
+})
+
+// --- foldMutationPaths ------------------------------------------------------
+//
+// The contention key set. A rename mutates twice (creates the destination,
+// deletes the source); a copy mutates once. Keyed on the destination alone, an
+// edit of a renamed-away source reads as disjoint and the fold order decides
+// who wins — the defect this function exists to close.
+
+test('a rename contributes both its destination and its source', () => {
+  assert.deepEqual(
+    foldMutationPaths([{ status: 'R', path: 'lib/b.mjs', oldPath: 'lib/a.mjs' }]),
+    ['lib/b.mjs', 'lib/a.mjs']
+  )
+})
+
+test('a copy contributes only its destination — the fold never deletes the source', () => {
+  assert.deepEqual(
+    foldMutationPaths([{ status: 'C', path: 'lib/b.mjs', oldPath: 'lib/a.mjs' }]),
+    ['lib/b.mjs']
+  )
+})
+
+test('add, modify and delete each contribute their one path', () => {
+  assert.deepEqual(
+    foldMutationPaths([
+      { status: 'A', path: 'lib/new.mjs' },
+      { status: 'M', path: 'lib/edited.mjs' },
+      { status: 'D', path: 'lib/gone.mjs' }
+    ]),
+    ['lib/new.mjs', 'lib/edited.mjs', 'lib/gone.mjs']
+  )
+})
+
+test('a rename whose source equals its destination, or reports none, contributes one path', () => {
+  assert.deepEqual(foldMutationPaths([{ status: 'R', path: 'lib/a.mjs', oldPath: 'lib/a.mjs' }]), ['lib/a.mjs'])
+  assert.deepEqual(foldMutationPaths([{ status: 'R', path: 'lib/a.mjs' }]), ['lib/a.mjs'])
+})
+
+test('foldMutationPaths de-duplicates and never invents a path from junk input', () => {
+  assert.deepEqual(
+    foldMutationPaths([
+      { status: 'R', path: 'lib/b.mjs', oldPath: 'lib/a.mjs' },
+      { status: 'M', path: 'lib/a.mjs' },
+      null,
+      { status: 'A', path: '   ' },
+      { status: 'A' }
+    ]),
+    ['lib/b.mjs', 'lib/a.mjs']
+  )
+  assert.deepEqual(foldMutationPaths(undefined), [])
+})
+
+test('spellings pass through untouched — canonicalization stays in mergeDecision', () => {
+  // Two transforms of one identity is the split INVARIANT-SWEEP forbids.
+  assert.deepEqual(
+    foldMutationPaths([{ status: 'R', path: './lib/b.mjs', oldPath: './lib/a.mjs' }]),
+    ['./lib/b.mjs', './lib/a.mjs']
+  )
+})
+
+test('a rename source keyed into contention collides with another lane\'s edit', () => {
+  // The decision function is unchanged — it is the fed set that grew.
+  const result = mergeDecision({
+    lanes: [lane('A'), lane('B')],
+    changedByLane: {
+      A: foldMutationPaths([{ status: 'R', path: 'lib/b.mjs', oldPath: 'lib/a.mjs' }]),
+      B: foldMutationPaths([{ status: 'M', path: './lib/a.mjs' }])
+    }
+  })
+  assert.equal(result.status, 'collision')
+  assert.deepEqual(result.collisions, [{ canonicalPath: 'lib/a.mjs', lanes: ['A', 'B'] }])
 })
 
 test('mergeDecision touches no fs, clock, or random source', () => {
