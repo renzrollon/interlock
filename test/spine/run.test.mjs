@@ -933,6 +933,76 @@ test('close exits 1 with a run-halt event on --halt, and 0 with run-complete oth
   }
 })
 
+test('a halt writes a resume card the summary names, and a clean close writes none', () => {
+  for (const halt of [true, false]) {
+    const { root, change } = repo()
+    try {
+      const batch = toFirstBatch(root, change)
+      run(root, [...batch.then.argv], {
+        results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+      })
+      const runId = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8')).runId
+
+      const { step } = halt
+        ? run(root, ['run', 'close', '--halt', 'the test halted it'], { expectExit: 1 })
+        : run(root, ['run', 'close'])
+
+      const card = join(root, '.claude', 'handoff', `ship-${change}-${runId}.md`)
+      if (!halt) {
+        // A clean close has nothing to resume, and its summary ends in the
+        // archive reminder instead.
+        assert.equal(existsSync(card), false, 'a completed run must not leave a resume card')
+        assert.doesNotMatch(step.summary, /resume card:/)
+        continue
+      }
+
+      assert.equal(existsSync(card), true, 'a halted run must leave one')
+      assert.match(step.summary, new RegExp(`resume card: \\.claude/handoff/ship-${change}-${runId}\\.md`))
+
+      // The card is the handoff, so it has to carry what a reader with none of
+      // this session's context needs: why it stopped, which run to read, and
+      // that nothing consumes the file itself.
+      const text = readFileSync(card, 'utf8')
+      assert.match(text, /# Ship halted — add-thing/)
+      assert.match(text, /the test halted it/)
+      assert.match(text, new RegExp(`interlock run-log show ${runId}`))
+      assert.match(text, /\/interlock:ship add-thing/)
+      assert.match(text, /record, not a trigger/)
+      assert.match(text, /Do not start another ship run unless the user asks/)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a resume card that cannot be written is bannered and never moves the exit code', () => {
+  // The run already halted; the card is a pointer to records that were written
+  // either way. Losing it is the outcome-corpus class of this repository's
+  // deliberately different corpus-loss semantics, not the trajectory's.
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    // A file where the directory has to go: the only way to make one write fail
+    // without making the whole `.claude/` tree unwritable and taking the
+    // trajectory down with it.
+    writeFileSync(join(root, '.claude', 'handoff'), 'not a directory\n')
+
+    const { step } = run(root, ['run', 'close', '--halt', 'the test halted it'], { expectExit: 1 })
+    assert.equal(step.exitCode, 1, 'the halt exit code, not a second failure')
+    assert.ok(
+      step.banners.some(b => b.startsWith('RESUME CARD NOT WRITTEN: ')),
+      `the close must say the card was lost: ${JSON.stringify(step.banners)}`
+    )
+    assert.match(step.summary, /RESUME CARD NOT WRITTEN: /)
+    assert.doesNotMatch(step.summary, /resume card: \./)
+  } finally {
+    cleanup(root)
+  }
+})
+
 // --- the host session identifier on run-start (D11) -------------------------
 
 /** The `run-start` record of a run, read back off its trajectory. */

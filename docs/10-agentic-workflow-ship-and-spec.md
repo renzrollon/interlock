@@ -163,7 +163,7 @@ Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli`
 6. **Inter-wave verify.** Typecheck + unit can halt the *next* wave. Docs-only waves skip. Cap: `interWaveVerifications` (3). Output over 8 KB is spilled (`interlock verify spill`); judge rejects oversized result fields.
 7. **`--apply-only` exits here.** Otherwise **final verify** (`run verify-final`): unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
 8. **Commit** (`run` emits a `commit` step) — one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
-9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`) — both via `run close`, which also builds the receipt and the summary text every driver prints verbatim. Unreconstructable trajectory → halt even on an otherwise clean run.
+9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`) — both via `run close`, which also builds the receipt and the summary text every driver prints verbatim. On a halt it additionally writes the resume card (below) and names it in that summary. Unreconstructable trajectory → halt even on an otherwise clean run.
 
 ### The `--strict` sequence
 
@@ -192,6 +192,7 @@ After merge, archive is stock OpenSpec: `openspec archive <name>` or `/opsx:arch
 | `.claude/testing/profile.json` | verify plan; absence banners `NO TEST PROFILE` and blocks continuity |
 | `.claude/graph/` | implementers (optional; grep fallback) |
 | `.claude/ship/{classified,plan,state,batch-*,runs/*.jsonl,spill/}` | the run itself |
+| `.claude/handoff/ship-<change>-<runId>.md` | you — the halt resume card is written for a reader and read back by nothing |
 
 A change proposed by `/opsx:propose` can still be shipped by `/interlock:ship` if `interlock validate` passes. Ship does not care who wrote the markdown.
 
@@ -247,6 +248,7 @@ Claude Code is the harness: tools, permissions, compaction, subagent spawn, work
 - **Graph** — `.claude/graph/graph.json`. JS/TS, Python, shell for structural edges; other languages get docs/OpenSpec indexing only.
 - **Ship trajectory** — `.claude/ship/runs/<runId>.jsonl`. Verbose on disk, not loaded into implementers. `interlock run-log show`.
 - **Spill** — `.claude/ship/spill/<runId>/`. Locator + preview in context; full log on disk.
+- **Halt resume card** — `.claude/handoff/ship-<change>-<runId>.md`, written by `run close` and only when a run halts. It shares a directory with the explore briefs above, and that is all it shares with them: a brief is spec's durable input and *is* read back, a card is ship's terminal record and nothing reads it at all — not the next ship, which decides what to skip from the stored plan fingerprint, and not dispatch. The `ship-` prefix is what keeps the two apart. [04](./04-when-it-stops.md#reading-a-ship-halted-run) has what it contains.
 - **Learned constraints** — `.claude/memory/MEMORY.md` plus one file per entry. Current examples: backticks in `bin/interlock` USAGE; ship.js prose grepped by `test/workflows.test.mjs`.
 - **Context pack** — not in this plugin. External skill writes `openspec/changes/<name>/.claude/context-pack.md`. Ship does not Read it.
 
@@ -266,7 +268,7 @@ Inference, not a measurement from this session:
 
 Kill switches that silently inflate cost: `CLAUDE_CODE_SUBAGENT_MODEL` (every agent on that model — banner `MODEL ROUTING OVERRIDDEN`); permission prompts mid-run (allowlist `interlock`, `interlock-graph`, `openspec`, `git`, your test runner *before* a long ship); missing graph (grep fallback).
 
-`.gitignore` now covers every `.claude/` runtime path this page names, `.claude/ship/` and `.claude/memory/` included. That is the right posture *for this repository*, whose ship runs are development exhaust rather than a record of shipping a product — a repository that runs `/interlock:ship` against its own product wants the opposite. The rule, both `.gitignore` blocks, and the two caveats that matter when committing are in [11 — the indicators](./11-the-indicators.md#whether-to-keep-them).
+`.gitignore` now covers every `.claude/` runtime path this page names, `.claude/ship/`, `.claude/handoff/` and `.claude/memory/` included. That is the right posture *for this repository*, whose ship runs are development exhaust rather than a record of shipping a product — a repository that runs `/interlock:ship` against its own product wants the opposite. The rule, both `.gitignore` blocks, and the two caveats that matter when committing are in [11 — the indicators](./11-the-indicators.md#whether-to-keep-them).
 
 ---
 

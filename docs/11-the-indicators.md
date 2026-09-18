@@ -23,6 +23,13 @@ Interlock writes three corpora and, until this command, read none of them.
 | `.claude/ship/runs/*.jsonl` | `interlock wave-state`, `verify`, `run-log append` | one trajectory per run: wave actions, command exits, agent spawns, and a closing receipt |
 | `.claude/metrics/review-*.json` | `interlock review --metrics` and `interlock gate --metrics` | one review's four counts — raised, dismissed, dropped by quality, surviving |
 
+A halted run also leaves a **resume card** at
+`.claude/handoff/ship-<change>-<runId>.md`, and it is not a fourth corpus. It is
+one markdown file written for a person, pointing at the three above; it holds no
+counts of its own, `interlock report` never opens it, and no indicator on this
+page has it as a source. It is documented where the halts are, in
+[04 — When it stops](04-when-it-stops.md#reading-a-ship-halted-run).
+
 The first run of this command against its own repository found three things
 nobody knew: the receipt path had never once fired, 727 of 729 trajectories were
 attributed to no change at all, and every file in `.claude/metrics/` had been

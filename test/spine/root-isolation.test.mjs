@@ -24,8 +24,13 @@ const HERE = fileURLToPath(import.meta.url)
 const REPO = join(dirname(HERE), '..', '..')
 const TEST_DIR = join(REPO, 'test')
 
-/** The corpora `interlock report` reads. A write to either is the defect. */
-const CORPORA = [join('.claude', 'ship'), join('.claude', 'metrics')]
+/**
+ * The corpora `interlock report` reads, plus the handoff directory a halted
+ * close writes its resume card into. A write to any of them from an unpinned
+ * test is the same defect: it lands in the developer's live `.claude/`, where a
+ * later read cannot tell it from a real run's.
+ */
+const CORPORA = [join('.claude', 'ship'), join('.claude', 'metrics'), join('.claude', 'handoff')]
 
 /** Set on the child so the guard does not spawn itself. */
 const CHILD_ENV = 'INTERLOCK_ROOT_ISOLATION_CHILD'

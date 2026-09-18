@@ -332,3 +332,25 @@ test('the archive reminder appears only on a clean, leftover-free close', () => 
     assert.doesNotMatch(text, /ARCHIVE PENDING/, 'an incomplete change must not be reported as ready to archive')
   }
 })
+
+test('the resume card row prints only when a card was actually written', () => {
+  // A row naming a file that is not there is worse than no row: the close that
+  // could not write one reports that in the degradation block instead.
+  assert.match(
+    formatRunSummary({
+      change: 'add-thing',
+      summary: { halted: 'stopped' },
+      resumeCard: '.claude/handoff/ship-add-thing-run-9.md'
+    }),
+    /^ {2}resume card: \.claude\/handoff\/ship-add-thing-run-9\.md$/m
+  )
+  assert.doesNotMatch(formatRunSummary({ change: 'add-thing' }), /resume card:/)
+  assert.doesNotMatch(
+    formatRunSummary({
+      change: 'add-thing',
+      summary: { halted: 'stopped' },
+      degradations: ['RESUME CARD NOT WRITTEN: EACCES']
+    }),
+    /resume card:/
+  )
+})
