@@ -262,7 +262,7 @@ Fix it once, and every later run is faster and more accurate:
 
 You have `CLAUDE_CODE_SUBAGENT_MODEL` set in your environment, and it wins over everything the plan decided. Per the [workflow docs](https://code.claude.com/docs/en/workflows), that variable overrides both your session model *and* a per-agent model a script asks for — so every agent in the run used it, whatever tier the planner assigned.
 
-That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` for everything below tier 5, and lets `opus` survive only on genuinely novel architecture. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
+That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` on a task's recorded model below tier 5, and dispatches opus for a lane of two or more tasks or for a tier-5 task. A single-task lane keeps its clamped model. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
 
 The work is still correct — this is a cost and latency degradation, not a quality one. To check and clear it:
 

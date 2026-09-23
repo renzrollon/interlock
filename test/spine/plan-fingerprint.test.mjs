@@ -241,6 +241,19 @@ test('an edited artifact does not match, and says the inputs changed', () => {
   clean(root)
 })
 
+test('a plan written as ship-plan/3 is rebuilt because the format changed', () => {
+  const { root } = shipped()
+  const fpPath = join(root, ...FINGERPRINT_PATH.split('/'))
+  const stored = JSON.parse(readFileSync(fpPath, 'utf8'))
+  writeFileSync(fpPath, JSON.stringify({ ...stored, planFormat: 'interlock.ship-plan/3' }))
+  const result = checkPlanReuse(root, CHANGE)
+  assert.equal(result.reuse, false)
+  assert.equal(result.status, REUSE_FORMAT_VERSION)
+  assert.match(result.reason, /interlock\.ship-plan\/3/)
+  assert.doesNotMatch(result.reason, /edited since the plan was built/)
+  clean(root)
+})
+
 test('a differing format version does not reuse even when the content matches', () => {
   const { root } = shipped()
   const fpPath = join(root, ...FINGERPRINT_PATH.split('/'))

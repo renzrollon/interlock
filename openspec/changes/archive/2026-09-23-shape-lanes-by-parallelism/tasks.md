@@ -1,0 +1,79 @@
+## 1. Failing tests first
+
+- [x] 1.1 In `test/spine/waves.test.mjs`, add failing tests for every planner-decided scenario in this change's `lanes`, `waves`, `task-dependencies` and `effort-routing` deltas (design D2, D4–D10, D13).
+  - **Fusion rules:**
+    - a serial staircase fuses into one chain lane in batch order, not id order;
+    - a batch of two lanes is never fused and closes an open chain;
+    - next-fit closes a chain at the hardest-tier cap: the `4.2, 4.3, 4.4, 5.1, 5.2` then `6.1` scenario;
+    - an over-cap collision split is not re-joined;
+    - a uniform override of 1 fuses nothing.
+  - **Where fusion may and may not reach:**
+    - fusion never crosses a wave boundary: implementation→implementation, red→next, implementation→test;
+    - dependent test tasks fuse inside the test wave;
+    - a solo plan is untouched.
+  - **Model and effort:**
+    - `laneModel` returns opus for every lane of two or more tasks, and the task's clamped model (haiku, sonnet, or tier-5 opus) for a lane of one;
+    - an opus chain of tier-2 tasks keeps `laneEffort` at `low`.
+  - **Reports:**
+    - `plan.lanes` lists chain entries with kind `chain`, `fusedBatches` and model;
+    - the chain warning and the `formatPlan` chain line are emitted;
+    - `laneCount` and `projectedWaveLoopAgents` count dispatched lanes;
+    - the "effectively serial" warning does not fire on a fused staircase.
+  - **Replan and edges:**
+    - `applyReplan` fuses a revised dependency chain under the run's carried caps, and clamps a revised tier-3 opus task to sonnet;
+    - an edge-free plan equals the same plan with `dependsOn` stripped.
+  - **Rewrite superseded pins in the same file, to the new contract, without dropping any assertion's intent:** the cross-group staircase (~361-392), the 1-task group after a multi-task group (~409-425), projected record pings (~452-459), two sections never sharing a cohesion lane (~781-793), a dependent task never sharing a lane or batch (~795-816), the dependency-edge tests (~2868-2946), the test-wave edge test (~2948-2968), and the replan edge order (~3045-3070).
+  - **Keep batch-level properties that are not about fusion.** For the remaining-batches handoff test (~1600-1636) and the no-pull-forward test (~1948-1968), keep the property by planning with `maxTasksPerAgent: 1` or with a batch of two lanes.
+  - **Verify:** `npm test` runs, and each new or rewritten test fails against the current planner for the reason it names.
+- [x] 1.2 In `test/spine/run.test.mjs`, add failing tests (design D2, D11).
+  - Retarget the lane-spawn test (~343-357): its two-task cohesion lane now requests opus, with effort still `low`.
+  - A single-task lane still requests its clamped model.
+  - A four-task lane with no result: `laneOutcomes` records the first task failed with `agent returned no result` and the other three `not-attempted`. The following record-batch counts one failure and ticks nothing.
+  - A lane result that omits an outcome still fails every task.
+  - **Verify:** the opus-spawn and no-result tests fail against the current code.
+- [x] 1.3 In `test/spine/cli.test.mjs`, add failing tests (design D3).
+  - For a multi-task lane, the `agent-spawn` trajectory rows name the same model as the dispatched spawn. Retarget ~1328-1368 from `['sonnet', 'haiku']` to `['opus', 'haiku']`.
+  - `interlock waves` prints a chain line for a wave of serial single-lane batches.
+  - Rewrite the maxParallel-1 remaining-batches test (~1274-1310) so it still exercises several batches, and keep its no-duplicate-spawn assertions. For example, use `--max-parallel 2` with three path-disjoint tier-4 tasks: a two-lane batch, then a one-lane batch that does not fuse.
+  - **Verify:** the trajectory-model and chain-line tests fail against the current code.
+- [x] 1.4 In `test/spine/plan-fingerprint.test.mjs`, add a failing test (design D12): a stored plan whose fingerprint records `interlock.ship-plan/3`, with otherwise matching inputs, is not reused, and the stated reason is the format version, not an artifact edit. **Verify:** it fails against the current code.
+
+## 2. Implement lane shaping and routing (make §1 green)
+
+- [x] 2.1 In `lib/waves.mjs` (make §1 green; design D2, D4–D10, D13):
+  - **Lane model.** Change `laneModel` so a lane of two or more tasks returns `opus` and a lane of one returns its task's model, falling back to `sonnet`. Move its orphaned docblock onto it.
+  - **Fusion helper.** Add `LANE_CHAIN = 'chain'` and the pure `fuseSerialBatches(batches, laneCaps)`:
+    - next-fit over single-lane batches, under `capForTier` of the effective table;
+    - a multi-lane batch closes the open chain and passes through untouched;
+    - a run drawn from a single batch keeps its original lane array;
+    - batch order is never re-sorted.
+  - **Where it is called.** In `planWaves`, on every implementation wave after `foldSingletonWaves` and on the test wave's batches, before the reports. Never in solo mode.
+  - **Reports.**
+    - Report dispatched lanes in `plan.lanes` and `effort`; chain entries carry `kind: 'chain'` and `fusedBatches`.
+    - Keep the build-time collision, cohesion, fold, serialized and deferral warnings. Add one chain warning per fused lane.
+    - Reword the deferral warning to "a later batch, wave or lane position".
+    - Measure the "effectively serial" warning on the pre-fusion lane count.
+    - Add the `chain` line to `formatPlan`.
+  - **Replan.** In `makeWave`, clone each revised task, apply `clampModel`, and fuse its batches under the caps passed in. `applyReplan` records any clamp as a run-state warning.
+  - **No fusion elsewhere.** Never fuse in `adoptWave` or `createRunState`.
+  - **Comments.** Rewrite the header rules so they state the new behaviour: rule 1, the clamp governs single-task lanes; rules 5–7, lanes; a new rule 8, chain fusion. Update the `laneEffort` note to match.
+  - **Verify:** every §1 test in `test/spine/waves.test.mjs` passes, and `npm test` shows no other planner regression.
+- [x] 2.2 In `lib/run.mjs` (make §1 green; design D11):
+  - Change `laneOutcomes` so a multi-task lane with no result returns its first task `failed` with `agent returned no result` and every later task `not-attempted`.
+  - Leave the single-task, no-per-task-outcome and omitted-outcome branches as they are.
+  - Update the function's comment to say why a lost agent costs one failure.
+  - **Verify:** the no-result tests in `test/spine/run.test.mjs` pass.
+- [x] 2.3 In `bin/interlock` (make §1 green; design D3):
+  - Replace `laneLabelOf` and `laneModelOf` with imports of `laneLabel` and `laneModel` from `lib/waves.mjs`, and delete the copies, so `logAgentSpawns` records the model the spawn requested.
+  - **Verify:** the trajectory-model test in `test/spine/cli.test.mjs` passes, and `grep -n "laneModelOf\|laneLabelOf" bin/interlock` prints nothing.
+- [x] 2.4 In `lib/plan-fingerprint.mjs` (make §1 green; design D12):
+  - Bump `PLAN_FORMAT` to `interlock.ship-plan/4`, and extend its doc comment to say what `/4` changed.
+  - **Verify:** the `/3`-rejection test in `test/spine/plan-fingerprint.test.mjs` passes.
+- [x] 2.5 Update the prose that restates the old rules (design D16, D17, Invariant sweep):
+  - `lib/limits.mjs`: replace the `LANE_CAPS` comment's "a tier-5 lane is the only opus lane in waves mode" rationale, and add that chain lanes are bounded by the same table.
+  - `docs/06-why-it-works.md`: tier-to-model mapping (~105-115), lane kinds and caps (~156-199), the model-clamp bullet (~402).
+  - `docs/10-agentic-workflow-ship-and-spec.md`: ~25, 161, 211, 262-263, 329-330.
+  - `docs/07-cli-and-configuration.md`: ~36, 76, 116, including that map-only hosts map `opus` as well as `sonnet` in `INTERLOCK_MODEL_MAP`.
+  - `docs/04-when-it-stops.md:265`.
+  - `CHANGELOG.md`: a `### Changed` entry under `[Unreleased]` naming chain lanes, lane-shape model routing, one failure per lost agent, and the `/4` format bump.
+  - **Verify:** `grep -rn "only opus lane" lib docs` prints nothing, and `npm test` passes.

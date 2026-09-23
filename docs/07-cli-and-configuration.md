@@ -33,7 +33,7 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 
 | Command | Decides |
 |---|---|
-| `interlock waves` | Wave order, per-task model, a **hard cap on parallel agents**, and whether two tasks in one wave would edit the same file. `--mode solo\|waves` forces the plan shape |
+| `interlock waves` | Wave order, the model a lane dispatches on, a **hard cap on parallel agents**, and whether two tasks in one wave would edit the same file. `--mode solo\|waves` forces the plan shape |
 | `interlock surface` | Whether a diff touches UI, and therefore needs a manual test plan |
 | `interlock gate` | Whether a review blocks, which findings are too weak to report, and how the rest partition for parallel fixers |
 | `interlock review` | Which findings survive two skeptics, and how many were dismissed versus dropped as too weak. Reads the repo-root `REVIEW.md` and drops findings on its do-not-report paths |
@@ -73,7 +73,7 @@ The wave loop, the halt conditions and the verification order live in `lib/run.m
 
 Without a shape flag, the classifier recommends `solo` or `waves` and the planner honours it inside the envelope `interlock limits` publishes; `--solo` and `--waves` force it. The plan preview names the mode before anything is spawned.
 
-Tasks in a wave run in parallel in one working tree. The planner takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. The prediction is still a model's — but with `--isolate-waves`, each lane in a batch runs in its own git worktree, so a mis-predicted shared write can no longer overwrite a sibling lane. Their worktrees fold back afterward (`interlock merge-lanes`); a prediction miss surfaces as a named halt at merge time, never as a silently discarded write.
+Tasks in a wave run in parallel in one working tree. The planner takes each task's predicted file list and moves any task that would collide with a sibling into a later batch of the same wave. Collision is compared on the **canonical** path, so `src/a.ts` and `./src/a.ts` are one file; a path that is absolute or escapes the repo root is reported as unusable rather than rewritten into scope. After that, consecutive batches that each hold one lane are fused into one chain lane — they were already serial — and a batch of two or more lanes is left parallel. The prediction is still a model's — but with `--isolate-waves`, each lane in a batch runs in its own git worktree, so a mis-predicted shared write can no longer overwrite a sibling lane. Their worktrees fold back afterward (`interlock merge-lanes`); a prediction miss surfaces as a named halt at merge time, never as a silently discarded write.
 
 ---
 
@@ -113,12 +113,12 @@ interlock-graph context "<query>" --budget 2000
 
 ## Model routing
 
-The planner assigns a tier slug — `haiku`, `sonnet` or `opus` — to every spawn. On Claude Code those pass through unmapped. Two environment variables change what actually runs:
+The planner assigns a slug — `haiku`, `sonnet` or `opus` — to every spawn. A lane of two or more tasks is `opus`; a lane of one task is that task's clamped model. On Claude Code those pass through unmapped. Two environment variables change what actually runs:
 
 | Variable | Meaning |
 |---|---|
 | `CLAUDE_CODE_SUBAGENT_MODEL` | **Leave it unset.** If set, Claude Code applies it to every subagent, overriding every per-tier model the planner assigned, so `ship` runs entirely on that model. The run banners this as `MODEL ROUTING OVERRIDDEN` rather than hiding it — see [04](./04-when-it-stops.md#model-routing-overridden). |
-| `INTERLOCK_MODEL_MAP` | Runner only. A JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. Codex and Qwen have no idea what the slugs mean, so an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry. |
+| `INTERLOCK_MODEL_MAP` | Runner only. A JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. Codex and Qwen have no idea what the slugs mean, so an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default. Map `opus` as well as `sonnet`: a lane of two or more tasks dispatches on `opus`. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry. |
 
 ```bash
 export INTERLOCK_MODEL_MAP='{"codex":{"haiku":"gpt-5-mini","sonnet":"gpt-5","opus":"gpt-5-pro"}}'

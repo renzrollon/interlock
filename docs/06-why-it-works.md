@@ -104,7 +104,7 @@ A twelve-task change is not twelve full artifact reads. It is nine task descript
 
 Tier maps to model: tier 1 → `haiku`, tiers 2–4 → `sonnet`, tier 5 → `opus`. The mechanical control-plane steps (`record-batch`, `replan`, `record-outcome`, and `next-retry`) are pinned to `haiku` — they parse JSON and report it verbatim, which does not need a frontier model. The planner itself runs the first `wave-state next` (and the coverage check) in the same turn as classification, so the loop does not pay a separate `plan-coverage` or `next-1` agent.
 
-The clamp is the part that matters. Classifiers reliably over-assign `opus` to anything touching several files, so `lib/waves.mjs` overrides it:
+The clamp is the part that matters for a task's recorded model. Classifiers reliably over-assign `opus` to anything touching several files, so `lib/waves.mjs` overrides it:
 
 ```js
 if (task.tier < 5 || task.model !== 'opus') {
@@ -113,6 +113,8 @@ if (task.tier < 5 || task.model !== 'opus') {
 ```
 
 The rule stated in the classifier prompt — *a mechanical refactor across many files is tier 4 sonnet, because breadth is not depth* — is a prompt. The clamp is not. Every override is recorded in `plan.clamped` and printed, so the correction is visible rather than silent.
+
+What a lane *dispatches* on is a second rule, and it is not the clamp. A lane of two or more tasks — collision, cohesion, or chain — dispatches on opus. A lane of one task dispatches on that task's clamped model. The task's recorded model is not rewritten to match. Effort stays derived from the hardest task's tier, so an opus lane of tier-1 or tier-2 tasks still runs at low effort. The classifier is not told about the dispatch rule.
 
 One environment variable defeats all of this: `CLAUDE_CODE_SUBAGENT_MODEL` overrides both the session model *and* a per-agent model a script requests. `ship` detects it and banners `MODEL ROUTING OVERRIDDEN` rather than reporting a clean run on which the entire ladder was bypassed.
 
@@ -153,7 +155,7 @@ The multipliers above live in `interlock limits` beside the base rates, under th
 
 One agent per **lane**, always, in parallel. Never inline in the orchestrator. That is not a throughput optimisation — it is context isolation, and implementing a task in the orchestrator's context defeats the entire mechanism. Each implementer gets a clean window containing its lane, its tier's slice of the artifacts, and nothing about the other eleven tasks.
 
-A lane is an ordered task list one agent runs start to finish, and it forms one of three ways. A **collision** lane is the original case: a path collision had *already* forced those tasks to run one after another, and isolating a task from the other edits to the file it is about to edit is not isolation — it is one spawn prefix and one re-read of that file per task, bought for nothing. A **cohesion** lane packs path-*disjoint* siblings inside one dependency layer whose hardest tier is at or below `LANE_CAPS.cohesionMaxTier`: sixteen tier-2 test tasks were sixteen spawns each re-reading the same design, and one agent doing them in order is cheaper in tokens than it is expensive in wall-clock. Tier 4 and 5 work is excluded on purpose — cross-file and novel work is where a fresh context per task still pays. A **solo** lane is the whole change in one agent, for a small change where holding all of it beats slicing it.
+A lane is an ordered task list one agent runs start to finish, and it forms one of four ways. A **collision** lane is the original case: a path collision had *already* forced those tasks to run one after another, and isolating a task from the other edits to the file it is about to edit is not isolation — it is one spawn prefix and one re-read of that file per task, bought for nothing. A **cohesion** lane packs path-*disjoint* siblings inside one dependency layer whose hardest tier is at or below `LANE_CAPS.cohesionMaxTier`: sixteen tier-2 test tasks were sixteen spawns each re-reading the same design, and one agent doing them in order is cheaper in tokens than it is expensive in wall-clock. Tier 4 and 5 work is excluded on purpose — cross-file and novel work is where a fresh context per task still pays. A **chain** lane is what remains after that: consecutive batches of one wave that each hold a single lane were already going to run one after another, so they become one agent, in that batch order, bounded by the same per-tier cap. A batch of two or more lanes is never fused, and a chain never crosses a wave. A **solo** lane is the whole change in one agent, for a small change where holding all of it beats slicing it; a solo plan is not chain-fused.
 
 How long a lane may get is `LANE_CAPS.byTier`, a per-tier table rather than one number, because a cap that is right for eight trivial edits is wrong for four cross-file refactors. **The rollback lever is unchanged: a `maxTasksPerAgent` override of 1 is a uniform ceiling and reproduces one agent per task exactly**, which is why a one-task lane's prompt stays byte-identical to the pre-lane prompt, pinned by the fixtures in `test/fixtures/prompts/`. `--waves` refuses solo for a run; `--solo` forces it. Every fold and every mode decision is named in the plan preview before an agent is spawned — the preview opens with the mode and its source, and prints one line per folded lane.
 
@@ -176,13 +178,14 @@ The comparison is on the **canonical** path, from the single transform in `lib/r
 ```
 Wave 1: lane [1.1 → 1.2] and lane [1.3] in batch 1
   serialized 1.2: same lane in wave 1 (src/auth.ts held by 1.1)
-  lane 1.1 → 1.2: 2 tasks in wave 1 on one sonnet/T2 agent
+  lane 1.1 → 1.2: 2 tasks in wave 1 on one opus/T2 agent
   folded 2.1: 1-task wave 2 → later batch of wave 1
+  chain 2.1 → 3.1: 2 tasks in wave 1 on one opus/T2 agent (2 batches, cap 8)
 ```
 
 The second line is the same move applied to the other over-split. A classifier that mints a group per sequential slice of one file turns 22 tasks into 15 waves, most of them one task — and each of those still buys a record ping and, until the cap, an inter-wave verification. A 1-task wave expresses one thing, "run after the previous wave", which a later **batch** of that wave expresses for free. So `planWaves` folds it there, keeps the order, drops the checkpoint, and reports it in `plan.folded`. A leading singleton has nothing to fold onto and stays; two waves that each hold real parallel work are left alone; the trailing test wave is never folded in either direction. Because a folded task's path usually does *not* collide with anything, `createRunState` may only **split** planned batches, never re-pack them — re-packing would find no collision and co-schedule the task with the work it was ordered after.
 
-The serial-plan warning is measured after the fold and counted in **lanes**, so a staircase the planner already collapsed — into one wave, or into one lane — is reported as folds rather than as waves you still have to fix. The projected agent bill counts lanes too: a lane is one agent however many tasks it carries, and billing it per task is what would make the saving invisible.
+The serial-plan warning is measured after the fold and before chain fusion, counted in **lanes**, so a staircase the planner already collapsed — into one wave, or into one chain — is reported as folds rather than as waves you still have to fix. The projected agent bill counts the lanes that dispatch, after fusion: a lane is one agent however many tasks it carries, and billing it per task is what would make the saving invisible.
 
 A lane reports an outcome per task — `ok`, `failed`, or `not-attempted` — and stops at the first task it cannot complete. The three are not interchangeable: `interlock tasks tick` must not mark a task nobody ran, and the failure budget must not be spent on one, or a single early blocker in a four-task lane would halt a run that has one real problem. A lane result that omits a task it was given fails every task in that lane closed. What is genuinely traded away is that an agent can now drift across a task boundary inside its own lane; the per-task packets with evidence locators make that visible in the record rather than silent, which narrows the risk without pretending to remove it.
 
@@ -399,7 +402,7 @@ The same instinct, repeated across the codebase:
 
 - A verification skip **always** carries a machine-readable reason.
 - Review reports dismissed, dropped-by-quality, and refused-refutation counts separately.
-- The model clamp records every override.
+- The model clamp records every override. A lane of two or more tasks dispatches on opus without rewriting those tasks' recorded models.
 - `drift` distinguishes "checked, clean" from "nothing to check".
 - E2E failure is reported and never repaired — auto-fixing e2e is how a real regression gets papered over.
 

@@ -10,7 +10,9 @@ Gives the wave planner a second, finer capability dial beside the model clamp: t
 
 The planner SHALL derive a lane's reasoning effort from the highest tier among the lane's tasks — never from the first task — mapping tier to effort through the table published in `lib/limits.mjs`. A lane is one agent, and that agent must be capable of the hardest thing in the lane; taking a lower tier's effort is the one direction of this trade that is not survivable. The default table is: tier 1 and tier 2 → `low`; tier 3 and tier 4 → the session default (unset, inherited); tier 5 → `xhigh`.
 
-Rationale: mirrors `laneModel`'s existing "capable of everything in it" rule so effort and model are derived by the same principle.
+Effort MUST be derived from tier alone, independently of the model the lane dispatches on, which follows the lane's shape. A lane that runs on opus because it holds several tasks therefore keeps its tier's effort.
+
+Rationale: effort and model are two independent dials. Deriving effort from tier rather than from the model means a change to model routing never silently moves effort.
 
 #### Scenario: Happy path — a mechanical lane routes at low effort
 
@@ -24,6 +26,12 @@ Rationale: mirrors `laneModel`'s existing "capable of everything in it" rule so 
 - **WHEN** the planner derives the lane's effort
 - **THEN** the emitted `effort` is `xhigh`
 - **AND** it is NOT `low`, even though tier 1 was the lane's first task
+
+#### Scenario: Edge case — an opus multi-task lane of low-tier tasks keeps low effort
+
+- **GIVEN** a chain lane of three tier-2 tasks
+- **WHEN** the lane is dispatched
+- **THEN** it dispatches on opus with `effort` `low`
 
 #### Scenario: Edge case — a lane with no usable tier falls to the inherited default and is reported
 

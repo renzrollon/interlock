@@ -23,10 +23,12 @@ import {
   AUDIT_NOT_AUDITED,
   isDocsOnlyWave,
   batchOutcomes,
+  laneModel,
   OUTCOME_OK,
   OUTCOME_FAILED,
   OUTCOME_NOT_ATTEMPTED
 } from '../../lib/waves.mjs'
+import { narrowPlan } from '../../lib/plan-fingerprint.mjs'
 import { LIMITS, RUNTIME, LANE_CAPS, SOLO } from '../../lib/limits.mjs'
 
 const task = (over = {}) => ({
@@ -370,15 +372,19 @@ test('a staircase of 1-task groups becomes one wave of sequential batches', () =
   assert.equal(plan.waves[0].group, 2, 'the surviving wave keeps the first group number')
   assert.equal(plan.waves[0].taskCount, 6)
   assert.deepEqual(
-    batchIds(plan.waves[0]),
-    [['2.1'], ['3.1'], ['4.1'], ['5.1'], ['6.1'], ['7.1']],
-    'order is what the fold preserves'
+    laneIds(plan.waves[0]),
+    [[['2.1', '3.1', '4.1', '5.1', '6.1', '7.1']]],
+    'the six single-lane batches fuse into one chain, in the order the fold appended them'
   )
-  assert.equal(
-    plan.laneCount,
-    6,
-    'lanes are built per classified group, so a cross-group staircase is not folded into one agent'
+  assert.equal(plan.laneCount, 1, 'laneCount counts the chain that dispatches, not the batches it replaced')
+  assert.equal(plan.lanes[0].kind, 'chain')
+  assert.equal(plan.lanes[0].fusedBatches, 6)
+  assert.equal(projectedWaveLoopAgents(plan).implementers, 1)
+  assert.ok(
+    !plan.warnings.some(w => /effectively serial/.test(w)),
+    'a fused staircase is not a shape the operator still has to fix'
   )
+  assert.match(formatPlan(plan), /chain 2\.1 → 3\.1 → 4\.1 → 5\.1 → 6\.1 → 7\.1/)
   assert.deepEqual(
     plan.folded.map(f => [f.id, f.from, f.to]),
     [['3.1', 3, 2], ['4.1', 4, 2], ['5.1', 5, 2], ['6.1', 6, 2], ['7.1', 7, 2]]
@@ -417,9 +423,9 @@ test('a 1-task group after a multi-task group folds onto it', () => {
   assert.equal(plan.waveCount, 1)
   assert.equal(plan.waves[0].group, 9)
   assert.deepEqual(
-    batchIds(plan.waves[0]),
-    [['9.1', '9.2'], ['12.1']],
-    'the singleton is a later batch of wave 9, not a wave of its own'
+    laneIds(plan.waves[0]),
+    [[['9.1', '9.2', '12.1']]],
+    'group 9 occupies one lane, so the folded singleton is the last task of the chain'
   )
   assert.deepEqual(plan.folded, [{ id: '12.1', from: 12, to: 9 }])
 })
@@ -455,7 +461,11 @@ test('projected record pings follow the collapsed waves, not the classified grou
   const plan = planWaves({ tasks })
   const cost = projectedWaveLoopAgents(plan)
   assert.equal(cost.recordPings, 2, 'one implementation wave + one test wave, not seven')
-  assert.equal(cost.implementers, 7, 'six impl tasks plus the test task')
+  assert.equal(
+    cost.implementers,
+    2,
+    'six impl tasks fuse into one chain; the test task stays its own lane'
+  )
 })
 
 // ===========================================================================
@@ -779,22 +789,25 @@ test('a cohesion lane is capped by its hardest component, fixed when it opened',
 })
 
 test('two sections never share a cohesion lane', () => {
-  // lanes/spec.md, the edge case: a section is a barrier, and cohesion is packed
-  // inside one layer of one section — never across.
+  // Cohesion stays inside one section. The singleton fold then puts section 2
+  // on section 1's wave, and those two single-lane batches fuse into a chain
+  // that runs the section-1 task first.
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
       task({ id: '2.1', group: 2, tier: 1, model: 'haiku', paths: ['src/b.ts'] })
     ]
   })
-  assert.deepEqual(plan.lanes, [], 'no fold — the two are in different waves')
-  const laneOf = id => plan.waves.flatMap(w => w.batches.flat(1)).find(l => l.some(t => t.id === id))
-  assert.notEqual(laneOf('1.1'), laneOf('2.1'))
+  assert.ok(!plan.lanes.some(l => l.kind === 'cohesion'), 'cohesion does not cross a section')
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '2.1']]])
+  assert.equal(plan.lanes[0].kind, 'chain')
+  assert.equal(plan.waves[0].batches[0][0][0].id, '1.1', 'section 1 runs first')
 })
 
-test('a dependent task never shares a lane or a batch with its dependency', () => {
-  // lanes/spec.md: 1.1 and 1.2 may pack; 1.3 depends on 1.1 and stays out of
-  // both its lane and its batch. Cohesion is per LAYER, so an edge still orders.
+test('a dependent task stays out of its dependency cohesion lane and follows it in the chain', () => {
+  // 1.1 and 1.2 may pack by cohesion. 1.3 depends on 1.1, so it is never in
+  // that cohesion lane and never a second lane of the same batch. The two
+  // single-lane batches then fuse, and 1.3 runs after 1.1.
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
@@ -802,17 +815,14 @@ test('a dependent task never shares a lane or a batch with its dependency', () =
       task({ id: '1.3', group: 1, tier: 2, paths: ['src/c.ts'], dependsOn: ['1.1'] })
     ]
   })
-  const placements = plan.waves.flatMap((w, wi) =>
-    w.batches.flatMap((b, bi) => b.flatMap((lane, li) => lane.map(t => [t.id, `${wi}/${bi}/${li}`])))
-  )
-  const at = id => placements.find(p => p[0] === id)[1]
-  assert.equal(at('1.1'), at('1.2'), '1.1 and 1.2 may share a cohesion lane')
-  assert.notEqual(at('1.3'), at('1.1'), '1.3 is never in its dependency’s lane')
-  assert.notEqual(
-    at('1.3').split('/').slice(0, 2).join('/'),
-    at('1.1').split('/').slice(0, 2).join('/'),
-    'nor in its batch'
-  )
+  const cohesion = plan.warnings.find(w => /cohesion lane/.test(w))
+  assert.ok(cohesion, 'the cohesion fold is still named after fusion')
+  assert.match(cohesion, /1\.1/)
+  assert.match(cohesion, /1\.2/)
+  assert.doesNotMatch(cohesion, /1\.3/, '1.3 is never in its dependency’s cohesion lane')
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2', '1.3']]])
+  assert.equal(plan.lanes[0].kind, 'chain')
+  assert.equal(plan.waves[0].batches[0].length, 1, '1.3 is not a second lane of 1.1’s batch')
 })
 
 test('a uniform override of 1 reproduces one agent per task, cohesion included', () => {
@@ -878,7 +888,300 @@ test('a lane of one is never reported as a fold of size one', () => {
     tasks: [task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] })]
   })
   assert.deepEqual(plan.lanes, [])
-  assert.doesNotMatch(formatPlan(plan), /cohesion |^ {2}lane /m)
+  assert.doesNotMatch(formatPlan(plan), /cohesion |^ {2}lane |^ {2}chain /m)
+})
+
+// --- chain fusion (specs: lanes, waves, task-dependencies, effort-routing) --
+
+test('a serial staircase fuses in batch order, not id order', () => {
+  // 1.1 and 1.3 pack by cohesion. 1.2 depends on 1.3, so it is a later batch,
+  // and the chain runs 1.1, then 1.3, then 1.2 — id order would put 1.2 first.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.3', group: 1, tier: 2, paths: ['src/c.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'], dependsOn: ['1.3'] })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.3', '1.2']]])
+  assert.equal(plan.lanes[0].kind, 'chain')
+  assert.equal(plan.lanes[0].model, 'opus')
+  for (const t of plan.waves[0].batches[0][0]) assert.equal(t.model, 'sonnet')
+})
+
+test('a batch of parallel lanes is never fused and closes an open chain', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 4, paths: ['src/b.ts'] }),
+      task({ id: '1.3', group: 1, tier: 4, paths: ['src/c.ts'], dependsOn: ['1.1'] })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1'], ['1.2']], [['1.3']]])
+  assert.ok(!plan.lanes.some(l => l.kind === 'chain'))
+  assert.doesNotMatch(formatPlan(plan), /^ {2}chain /m)
+})
+
+test('the cap closes a chain and opens the next', () => {
+  // Tier-3 cohesion of three, then 5.1 (tier 3) and 5.2 (tier 2) still fit the
+  // tier-3 cap of 6. 6.1 is tier 4, and 6 tasks do not fit a tier-4 cap of 4.
+  const plan = planWaves({
+    tasks: [
+      task({ id: '4.2', group: 1, tier: 3, paths: ['src/4.2.ts'] }),
+      task({ id: '4.3', group: 1, tier: 3, paths: ['src/4.3.ts'] }),
+      task({ id: '4.4', group: 1, tier: 3, paths: ['src/4.4.ts'] }),
+      task({ id: '5.1', group: 1, tier: 3, paths: ['src/5.1.ts'], dependsOn: ['4.2'] }),
+      task({ id: '5.2', group: 1, tier: 2, paths: ['src/5.2.ts'], dependsOn: ['5.1'] }),
+      task({ id: '6.1', group: 1, tier: 4, paths: ['src/6.1.ts'], dependsOn: ['5.2'] })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.waves[0]), [
+    [['4.2', '4.3', '4.4', '5.1', '5.2']],
+    [['6.1']]
+  ])
+  const lengths = plan.waves[0].batches.flat(1).map(l => l.length)
+  assert.ok(lengths[0] <= LANE_CAPS.byTier[3])
+  assert.ok(lengths[1] <= LANE_CAPS.byTier[4])
+  assert.equal(plan.lanes.filter(l => l.kind === 'chain').length, 1)
+})
+
+test('an over-cap collision split is not re-joined', () => {
+  const tasks = Array.from({ length: 6 }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, tier: 4, paths: ['src/auth.ts'] })
+  )
+  const plan = planWaves({ tasks })
+  assert.deepEqual(laneIds(plan.waves[0]), [
+    [['1.1', '1.2', '1.3', '1.4']],
+    [['1.5', '1.6']]
+  ])
+  assert.ok(!plan.lanes.some(l => l.ids.length === 6), 'fusion does not rebuild the component the cap split')
+})
+
+test('a uniform override of 1 fuses nothing', () => {
+  const plan = planWaves(
+    {
+      tasks: [1, 2, 3].map(g => task({ id: `${g}.1`, group: g, tier: 2, paths: [`src/${g}.ts`] }))
+    },
+    { maxTasksPerAgent: 1 }
+  )
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1']], [['2.1']], [['3.1']]])
+  assert.ok(!plan.lanes.some(l => l.kind === 'chain'))
+})
+
+test('fusion never crosses a wave boundary', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '2.1', group: 2, paths: ['src/b.ts'] }),
+      task({ id: '2.2', group: 2, paths: ['src/b.ts'] })
+    ]
+  })
+  assert.equal(plan.waveCount, 2)
+  const spanning = plan.waves
+    .flatMap(w => w.batches.flat(1))
+    .filter(lane => new Set(lane.map(t => t.group)).size > 1)
+  assert.deepEqual(spanning, [])
+})
+
+test('fusion never crosses from the red wave into the next wave', () => {
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/a.test.ts'] }),
+        task({ id: '2.1', group: 2, paths: ['src/a.ts'] })
+      ]
+    },
+    { redWave: 1 }
+  )
+  assert.equal(plan.waveCount, 2)
+  assert.equal(plan.waves[0].red, true)
+  const ids = lane => lane.map(t => t.id)
+  assert.deepEqual(ids(plan.waves[0].batches[0][0]), ['1.1'])
+  assert.deepEqual(ids(plan.waves[1].batches[0][0]), ['2.1'])
+})
+
+test('fusion never crosses from an implementation wave into the test wave', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: 't.1', group: 9, isTestTask: true, paths: ['test/a.test.mjs'] })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1']]])
+  assert.deepEqual(laneIds(plan.testWave), [[['t.1']]])
+})
+
+test('dependent test tasks fuse inside the test wave', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+      task({ id: '2.1', group: 2, tier: 2, isTestTask: true, paths: ['test/a.test.mjs'] }),
+      task({
+        id: '2.2',
+        group: 2,
+        tier: 2,
+        isTestTask: true,
+        paths: ['test/b.test.mjs'],
+        dependsOn: ['2.1']
+      })
+    ]
+  })
+  assert.deepEqual(laneIds(plan.testWave), [[['2.1', '2.2']]])
+  assert.equal(plan.lanes.find(l => l.group === null).kind, 'chain')
+  assert.ok(!plan.testWave.batches.flat(2).some(t => t.id === '1.1'))
+})
+
+test('a solo plan is not fused into chain lanes', () => {
+  const tasks = [1, 2, 3].map(g => task({ id: `${g}.1`, group: g, paths: [`src/${g}.ts`] }))
+  const plan = planWaves({ tasks }, { mode: 'solo' })
+  assert.equal(plan.lanes[0].kind, 'solo')
+  assert.ok(!plan.lanes.some(l => l.kind === 'chain'))
+  assert.equal(plan.waves[0].batches.length, 1)
+  assert.equal(plan.waves[0].batches[0].length, 1)
+})
+
+test('laneModel follows lane shape', () => {
+  assert.equal(
+    laneModel([task({ model: 'haiku', tier: 1 }), task({ id: '1.2', model: 'sonnet', tier: 4 })]),
+    'opus',
+    'a lane of two or more dispatches on opus'
+  )
+  assert.equal(laneModel([task({ model: 'haiku', tier: 1 })]), 'haiku')
+  assert.equal(laneModel([task({ model: 'sonnet', tier: 4 })]), 'sonnet')
+  assert.equal(laneModel([task({ model: 'opus', tier: 5 })]), 'opus')
+
+  const parallel = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 1, model: 'haiku', paths: ['src/b.ts'] }),
+      task({ id: '1.3', group: 1, tier: 5, model: 'opus', paths: ['src/c.ts'] })
+    ]
+  })
+  const byId = Object.fromEntries(
+    parallel.waves[0].batches.flat(1).map(lane => [lane[0].id, laneModel(lane)])
+  )
+  assert.equal(byId['1.1'], 'sonnet')
+  assert.equal(byId['1.2'], 'haiku')
+  assert.equal(byId['1.3'], 'opus')
+})
+
+test('an opus chain of tier-2 tasks keeps low effort', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'], dependsOn: ['1.1'] }),
+      task({ id: '1.3', group: 1, tier: 2, paths: ['src/c.ts'], dependsOn: ['1.2'] })
+    ]
+  })
+  const lane = plan.waves[0].batches[0][0]
+  assert.deepEqual(lane.map(t => t.id), ['1.1', '1.2', '1.3'])
+  assert.equal(laneModel(lane), 'opus')
+  assert.equal(laneEffort(lane), 'low')
+  assert.equal(plan.lanes[0].effort, 'low')
+  assert.equal(plan.effort[0].effort, 'low')
+})
+
+test('a chain is reported on the plan, in the warning, and in the preview', () => {
+  const plan = planWaves({
+    tasks: [1, 2, 3].map(g => task({ id: `${g}.1`, group: g, tier: 2, paths: [`src/${g}.ts`] }))
+  })
+  const chain = plan.lanes.find(l => l.kind === 'chain')
+  assert.deepEqual(chain.ids, ['1.1', '2.1', '3.1'])
+  assert.equal(chain.fusedBatches, 3)
+  assert.equal(chain.model, 'opus')
+  assert.equal(plan.laneCount, 1)
+  assert.equal(projectedWaveLoopAgents(plan).implementers, 1)
+  const warning = plan.warnings.find(w => /chain lane/.test(w))
+  assert.ok(warning, 'a chain is warned about, not only listed')
+  assert.match(warning, /1\.1, 2\.1, 3\.1/)
+  assert.match(warning, /3 /)
+  assert.match(warning, /cap/)
+  assert.match(formatPlan(plan), /chain 1\.1 → 2\.1 → 3\.1/)
+  assert.match(formatPlan(plan), /opus/)
+})
+
+test('applyReplan fuses a revised chain under the caps the run was planned with', () => {
+  const base = {
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 4, paths: ['src/b.ts'] })
+    ]
+  }
+  const revision = [
+    {
+      group: 1,
+      tasks: [
+        task({ id: '2.1', group: 1, tier: 2, paths: ['src/c.ts'] }),
+        task({ id: '2.2', group: 1, tier: 2, paths: ['src/d.ts'], dependsOn: ['2.1'] })
+      ]
+    }
+  ]
+  const fused = applyReplan(createRunState(planWaves(base)), revision)
+  assert.deepEqual(laneIds(fused.waves[0]), [[['2.1', '2.2']]])
+
+  const capped = applyReplan(
+    createRunState(planWaves(base, { maxTasksPerAgent: 1 })),
+    revision
+  )
+  assert.deepEqual(
+    laneIds(capped.waves[0]),
+    [[['2.1']], [['2.2']]],
+    'an override of 1 carried on the run disables fusion at replan too'
+  )
+})
+
+test('applyReplan clamps a revised tier-3 opus task to sonnet', () => {
+  const state = createRunState(
+    planWaves({
+      tasks: [task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] })]
+    })
+  )
+  const replanned = applyReplan(state, [
+    {
+      group: 1,
+      tasks: [task({ id: '1.3', group: 1, tier: 3, model: 'opus', paths: ['src/c.ts'] })]
+    }
+  ])
+  const revised = replanned.waves[0].batches[0][0][0]
+  assert.equal(revised.model, 'sonnet')
+  assert.equal(laneModel(replanned.waves[0].batches[0][0]), 'sonnet')
+  assert.ok(
+    replanned.warnings.some(w => /1\.3/.test(w) && /clamp/i.test(w) && /sonnet/.test(w)),
+    'the clamp is a run-state warning, not a silent rewrite'
+  )
+})
+
+test('narrowing a lane to one task returns it to that task model', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/a.ts'] })
+    ]
+  })
+  assert.equal(laneModel(plan.waves[0].batches[0][0]), 'opus')
+  const narrowed = narrowPlan(plan, id => id === '1.1')
+  const left = narrowed.plan.waves[0].batches[0][0]
+  assert.deepEqual(left.map(t => t.id), ['1.2'])
+  assert.equal(laneModel(left), 'sonnet')
+  assert.equal(left[0].model, 'sonnet')
+})
+
+test('an edge-free plan matches the same tasks with dependsOn removed', () => {
+  const withEmpty = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'], dependsOn: [] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'], dependsOn: [] })
+    ]
+  })
+  const stripped = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 2, paths: ['src/b.ts'] })
+    ]
+  })
+  assert.deepEqual(shapeOf(withEmpty), shapeOf(stripped))
+  assert.deepEqual(withEmpty.deferred, [])
 })
 
 // --- solo mode (spec: solo-mode) -------------------------------------------
@@ -1614,7 +1917,9 @@ test('every remaining batch of a wave shares the previous wave, not each other',
       task({ id: '2.2', group: 2, tier: 4, paths: ['src/b.ts'] }),
       task({ id: '2.3', group: 2, tier: 4, paths: ['src/c.ts'] })
     ],
-    { maxParallel: 1 }
+    // A cap of 1 keeps the three width-deferred batches from fusing. The
+    // property under test is the handoff contract between batches, not fusion.
+    { maxParallel: 1, maxTasksPerAgent: 1 }
   )
   const start = createRunState(plan)
   const afterWave1 = recordBatchResult(start, allOk(nextStep(start)))
@@ -1950,12 +2255,17 @@ test('createRunState does not pull a folded disjoint-path batch into batch 0', (
   // collision — the two tasks claim different files. A createRunState that
   // flattened the wave and re-packed it would find no collision, see room under
   // maxParallel, and run 2.1 in parallel with the work it was ordered after.
-  const plan = planWaves({
-    tasks: [
-      task({ id: '1.1', group: 1, paths: ['src/match_runner.py'] }),
-      task({ id: '2.1', group: 2, paths: ['scripts/run_match.py'] })
-    ]
-  })
+  const plan = planWaves(
+    {
+      tasks: [
+        task({ id: '1.1', group: 1, paths: ['src/match_runner.py'] }),
+        task({ id: '2.1', group: 2, paths: ['scripts/run_match.py'] })
+      ]
+    },
+    // Fusion would make these one chain at plan time. A cap of 1 leaves the
+    // batch boundary in place, which is what createRunState must not erase.
+    { maxTasksPerAgent: 1 }
+  )
   assert.deepEqual(plan.folded, [{ id: '2.1', from: 2, to: 1 }])
 
   const start = createRunState(plan, { maxParallel: 4 })
@@ -2028,7 +2338,9 @@ test(`exactly LIMITS.taskFailureHalt task failures continue; one more halts`, ()
   const width = LIMITS.taskFailureHalt + 1
   const tasks = Array.from({ length: width }, (_, i) => task({ id: `1.${i + 1}`, group: 1 }))
   tasks.push(task({ id: '2.1', group: 2 }))
-  const start = createRunState(planOf(tasks))
+  // A cap of 1 keeps the following singleton out of this batch. The property
+  // under test is the failure budget, and fusion would pull 2.1 into it.
+  const start = createRunState(planOf(tasks, { maxTasksPerAgent: 1 }))
 
   const first = nextStep(start)
   const atCap = recordBatchResult(start, {
@@ -2764,13 +3076,34 @@ function positionOf(plan, id) {
   return { wave: -1, batch: -1 }
 }
 
-/** Strictly earlier in the run: an earlier wave, or an earlier batch of one. */
+/**
+ * Strictly earlier in the run: an earlier wave, an earlier batch, or an earlier
+ * position in the same lane. Two lanes of one batch are concurrent, so a later
+ * lane of that batch does not count — a chain is the case where order moved
+ * inside the lane.
+ */
 function assertRunsBefore(plan, a, b, why) {
-  const pa = positionOf(plan, a)
-  const pb = positionOf(plan, b)
-  assert.ok(pa.wave >= 0, `${a} is not in the plan`)
-  assert.ok(pb.wave >= 0, `${b} is not in the plan`)
-  assert.ok(pa.wave < pb.wave || (pa.wave === pb.wave && pa.batch < pb.batch), why)
+  const locate = id => {
+    for (let w = 0; w < plan.waves.length; w++) {
+      const wave = plan.waves[w]
+      for (let bi = 0; bi < wave.batches.length; bi++) {
+        for (let li = 0; li < wave.batches[bi].length; li++) {
+          const index = wave.batches[bi][li].findIndex(t => t.id === id)
+          if (index >= 0) return { wave: w, batch: bi, lane: li, index }
+        }
+      }
+    }
+    return null
+  }
+  const pa = locate(a)
+  const pb = locate(b)
+  assert.ok(pa, `${a} is not in the plan`)
+  assert.ok(pb, `${b} is not in the plan`)
+  const earlier =
+    pa.wave < pb.wave ||
+    (pa.wave === pb.wave && pa.batch < pb.batch) ||
+    (pa.wave === pb.wave && pa.batch === pb.batch && pa.lane === pb.lane && pa.index < pb.index)
+  assert.ok(earlier, why)
 }
 
 /** Everything an edge-free plan must reproduce byte for byte. */
@@ -2795,6 +3128,8 @@ test('a valid edge is accepted and constrains ordering', () => {
     ]
   })
   assertRunsBefore(plan, '2.1', '2.2', 'the edge from 2.2 to 2.1 must order them')
+  assert.deepEqual(laneIds(plan.waves[0]), [[['2.1', '2.2']]], 'the two single-lane batches fuse')
+  assert.equal(plan.lanes[0].kind, 'chain')
   assert.deepEqual(
     plan.deferred,
     [{ id: '2.2', group: 2, after: ['2.1'] }],
@@ -2875,13 +3210,13 @@ test('a cross-file edge orders without a new section, and a sibling stays parall
   })
   assertRunsBefore(plan, '1.1', '1.2', '1.2 needs 1.1, so it runs strictly after it')
   assert.deepEqual(
-    positionOf(plan, '1.3'),
-    positionOf(plan, '1.1'),
-    '1.3 has no edge, so the ordering of 1.2 must not drag it anywhere'
+    laneIds(plan.waves[0]),
+    [[['1.1', '1.3', '1.2']]],
+    '1.3 stays with 1.1; the chain then runs 1.2, in batch order rather than id order'
   )
 })
 
-test('a lone dependent folds back as a later batch rather than buying a verify', () => {
+test('a lone dependent folds back into the wave rather than buying a verify', () => {
   const plan = planWaves({
     tasks: [
       fileTask('1.1', 1, 'src/a.ts'),
@@ -2890,7 +3225,7 @@ test('a lone dependent folds back as a later batch rather than buying a verify',
     ]
   })
   assert.equal(plan.waveCount, 1, 'the singleton dependency layer folds onto the wave before it')
-  assert.deepEqual(batchIds(plan.waves[0]), [['1.1', '1.3'], ['1.2']])
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.3', '1.2']]])
 })
 
 test('an edge cannot pull a task earlier than its section', () => {
@@ -2907,12 +3242,14 @@ test('an edge cannot pull a task earlier than its section', () => {
 })
 
 test('a diamond serializes only along its edges', () => {
+  // Tier 4 so the middle pair stays two concurrent lanes. At tier 2 cohesion
+  // would pack them, and the following singleton would then fuse into that lane.
   const plan = planWaves({
     tasks: [
-      fileTask('1.1', 1, 'src/a.ts'),
-      fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] }),
-      fileTask('1.3', 1, 'src/c.ts', { dependsOn: ['1.1'] }),
-      fileTask('1.4', 1, 'src/d.ts', { dependsOn: ['1.2', '1.3'] })
+      fileTask('1.1', 1, 'src/a.ts', { tier: 4 }),
+      fileTask('1.2', 1, 'src/b.ts', { tier: 4, dependsOn: ['1.1'] }),
+      fileTask('1.3', 1, 'src/c.ts', { tier: 4, dependsOn: ['1.1'] }),
+      fileTask('1.4', 1, 'src/d.ts', { tier: 4, dependsOn: ['1.2', '1.3'] })
     ]
   })
   assertRunsBefore(plan, '1.1', '1.2', '1.1 runs first')
@@ -2924,28 +3261,23 @@ test('a diamond serializes only along its edges', () => {
     positionOf(plan, '1.3'),
     '1.2 and 1.3 have no edge between them, so nothing serializes them'
   )
+  assert.equal(plan.waves.flatMap(w => w.batches).find(b => b.length === 2).length, 2)
+  assert.ok(!plan.lanes.some(l => l.kind === 'chain'), 'the middle batch runs two lanes, so nothing fuses')
 })
 
-test('a dependent pair is never co-scheduled, and is never folded into one lane', () => {
+test('a dependent pair is never co-scheduled, and fuses into one chain', () => {
   const plan = planWaves({
     tasks: [
       fileTask('1.1', 1, 'src/a.ts'),
       fileTask('1.2', 1, 'src/b.ts', { dependsOn: ['1.1'] })
     ]
   })
-  const pa = positionOf(plan, '1.1')
-  const pb = positionOf(plan, '1.2')
-  assert.notDeepEqual(pa, pb, 'an edge-connected pair may never share a batch')
-  const laneWith = id =>
-    plan.waves
-      .flatMap(w => w.batches.flat())
-      .find(lane => lane.some(t => t.id === id))
-      .map(t => t.id)
-  assert.deepEqual(laneWith('1.1'), ['1.1'], 'lane membership is a path collision, not an edge')
-  assert.deepEqual(laneWith('1.2'), ['1.2'], 'so two path-disjoint tasks stay two agents')
+  assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.2']]])
+  assert.equal(plan.lanes[0].kind, 'chain')
+  assert.equal(plan.waves[0].batches[0].length, 1, 'never two lanes of one batch')
 })
 
-test('two test tasks joined by an edge are not chunked side by side', () => {
+test('two test tasks joined by an edge fuse inside the test wave', () => {
   const plan = planWaves({
     tasks: [
       fileTask('1.1', 1, 'src/a.ts'),
@@ -2961,10 +3293,11 @@ test('two test tasks joined by an edge are not chunked side by side', () => {
     ]
   })
   assert.deepEqual(
-    plan.testWave.batches.map(b => b.flat().map(t => t.id)),
-    [['2.1'], ['2.2']],
-    'the trailing test wave honours edges between test tasks as later batches'
+    laneIds(plan.testWave),
+    [[['2.1', '2.2']]],
+    'the trailing test wave fuses the edge into one chain, 2.1 then 2.2'
   )
+  assert.ok(!plan.testWave.batches.flat(2).some(t => !t.isTestTask))
 })
 
 test('an empty dependsOn plans identically to the field being absent', () => {
@@ -3065,8 +3398,8 @@ test('a replanned group keeps the edge order of its revision', () => {
   const wave = replanned.waves.find(w => w.group === 2)
   assert.deepEqual(
     wave.batches.map(b => b.flat().map(t => t.id)),
-    [['2.1'], ['2.2']],
-    'the replan path must re-derive the edge order, not drop it'
+    [['2.1', '2.2']],
+    'the replan path fuses the edge into one chain, in dependency order'
   )
 })
 

@@ -1272,10 +1272,10 @@ test('a legacy state with no name falls back to the per-invocation --change', ()
 })
 
 test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does not duplicate them', () => {
-  // Three disjoint lanes deferred across batches at maxParallel 1. The tasks are
-  // tier 4, ABOVE the cohesion ceiling, so they stay three separate lanes rather
-  // than packing into one — cohesion (not maxParallel) is what would fold them,
-  // and maxParallel 1 then spreads the three lanes one-per-batch.
+  // Three path-disjoint tier-4 tasks at maxParallel 2: a two-lane batch, then a
+  // one-lane batch. The first batch holds two lanes, so it does not fuse, and
+  // the later batch stays a later batch. The property under test is that
+  // wave-entry logs every remaining lane once.
   const classified = file('classified-serial.json', {
     tasks: [
       { id: '1.1', group: 1, description: 'auth a', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
@@ -1283,16 +1283,16 @@ test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does n
       { id: '1.3', group: 1, description: 'auth c', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] }
     ]
   })
-  const plan = runJson(['waves', '--classified', classified, '--max-parallel', '1'])
-  assert.equal(plan.waves[0].batches.length, 3, 'one lane per batch at maxParallel 1')
+  const plan = runJson(['waves', '--classified', classified, '--max-parallel', '2'])
+  assert.equal(plan.waves[0].batches.length, 2, 'two lanes, then the deferred third')
 
-  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-serial.json', plan), '--max-parallel', '1', '--change', 'add-widget', '--root', dir])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-serial.json', plan), '--max-parallel', '2', '--change', 'add-widget', '--root', dir])
   const runId = state0.runId
   const first = runJson(['wave-state', 'next', '--state', file('serial-run0.json', state0), '--change', 'add-widget', '--root', dir])
-  assert.equal(first.remainingBatches.length, 3)
+  assert.equal(first.remainingBatches.length, 2)
   assert.deepEqual(
     first.remainingBatches.map(b => b.map(l => l.map(t => t.id))),
-    [[['1.1']], [['1.2']], [['1.3']]]
+    [[['1.1'], ['1.2']], [['1.3']]]
   )
 
   const afterNext = readFileSync(join(dir, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
@@ -1311,7 +1311,7 @@ test('wave-entry next logs remainingBatches spawns; mid-wave record-batch does n
   runJson([
     'wave-state', 'record-batch',
     '--state', file('serial-run0b.json', state0),
-    '--result', file('serial-batch0.json', { tasks: [okTask('1.1')] }),
+    '--result', file('serial-batch0.json', { tasks: [okTask('1.1'), okTask('1.2')] }),
     '--write-state', written,
     '--change', 'add-widget',
     '--root', dir
@@ -1362,9 +1362,21 @@ test('spawns are counted per lane, not per task', () => {
   assert.deepEqual(spawns.map(e => e.label), ['1.1+2', '1.4'])
   assert.deepEqual(
     spawns.map(e => e.model),
-    ['sonnet', 'haiku'],
-    'a lane runs on its hardest task\'s model'
+    ['opus', 'haiku'],
+    'a multi-task lane and its single-task neighbour record the model dispatch uses'
   )
+})
+
+test('interlock waves prints a chain line for serial single-lane batches', () => {
+  const classified = file('classified-chain.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+      { id: '2.1', group: 2, description: 'b', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/b.ts'] }
+    ]
+  })
+  const r = run(['waves', '--classified', classified])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /chain 1\.1 → 2\.1/)
 })
 
 test('record-batch --write-state writes the new state and stdout is the next step', () => {

@@ -21,6 +21,8 @@ import { performance } from 'node:perf_hooks'
 import {
   planWaves,
   formatPlan,
+  laneLabel,
+  laneModel,
   createRunState,
   nextStep,
   recordBatchResult,
@@ -955,20 +957,6 @@ function spawnLanesOf(step) {
     .filter(lane => lane.length)
 }
 
-// The label the workflow gives the same agent (`workflows/ship.js` laneLabel), so
-// a trajectory line and the agent it describes carry one name rather than two.
-function laneLabelOf(lane) {
-  return lane.length === 1 ? lane[0].id : `${lane[0].id}+${lane.length - 1}`
-}
-
-// The model the lane runs on: its hardest task's. A lane is one agent and that
-// agent has to be capable of everything in it.
-function laneModelOf(lane) {
-  const tier = lane.reduce((m, t) => (Number.isInteger(t.tier) && t.tier > m ? t.tier : m), 0)
-  const hardest = lane.find(t => t.tier === tier) || lane[0]
-  return hardest && typeof hardest.model === 'string' ? hardest.model : undefined
-}
-
 // Takes the run's `state` rather than a runId, so the change name is resolved
 // from it the same way `logWaveMutation` does instead of being threaded in by a
 // caller who may not have been given one.
@@ -983,8 +971,8 @@ function logAgentSpawns(root, { state, change, step, source }) {
       runId,
       change: changeName,
       type: 'agent-spawn',
-      label: laneLabelOf(lane),
-      model: laneModelOf(lane),
+      label: laneLabel(lane),
+      model: laneModel(lane),
       kind: 'implementer',
       // The lane's anchor task. A multi-task lane's later ids are recoverable
       // from the plan and from its per-task record-batch results; what this line

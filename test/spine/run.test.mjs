@@ -34,6 +34,7 @@ import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 import {
   BRIEFING_HEADER,
   briefingHash,
+  laneOutcomes,
   runClassified,
   runRecordBatch,
   runRemediated,
@@ -350,12 +351,83 @@ test('a lane spawn declares the worker agent, its tools, and its lane model and 
     const s = batch.spawns[0]
     assert.equal(s.type, 'interlock:worker')
     assert.deepEqual(s.tools, ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'])
-    assert.equal(s.model, 'sonnet', 'the lane runs on its hardest task\'s model')
+    assert.equal(s.model, 'opus', 'a two-task cohesion lane dispatches on opus')
     assert.equal(s.effort, 'low', 'and at its hardest task\'s tier effort')
     assert.equal(s.schema.type, 'object', 'a spawn always names the schema its result must satisfy')
   } finally {
     cleanup(root)
   }
+})
+
+test('a single-task lane still requests its clamped model', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 A\n- [ ] 1.2 B\n'
+  })
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    file(root, '.claude/ship/classified.json', {
+      tasks: [
+        { id: '1.1', group: 1, description: 'A', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+        { id: '1.2', group: 1, description: 'B', tier: 1, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] }
+      ]
+    })
+    const batch = run(root, [...started.then.argv]).step
+    const byLabel = Object.fromEntries(batch.spawns.map(s => [s.label, s.model]))
+    assert.equal(byLabel['1.1'], 'sonnet')
+    assert.equal(byLabel['1.2'], 'haiku')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a four-task lane with no result costs one failure and ticks nothing', () => {
+  const ids = ['1.1', '1.2', '1.3', '1.4']
+  const lane = ids.map(id => ({
+    id,
+    group: 1,
+    description: id,
+    tier: 2,
+    model: 'sonnet',
+    isTestTask: false,
+    paths: [`src/${id}.ts`]
+  }))
+  const outcomes = laneOutcomes(lane, null)
+  assert.equal(outcomes[0].outcome, 'failed')
+  assert.equal(outcomes[0].error, 'agent returned no result')
+  assert.deepEqual(
+    outcomes.slice(1).map(o => o.outcome),
+    ['not-attempted', 'not-attempted', 'not-attempted']
+  )
+
+  const { root, change } = repo('add-thing', {
+    tasks: `# Tasks\n\n${ids.map(id => `- [ ] ${id} Do ${id}`).join('\n')}\n`
+  })
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    file(root, '.claude/ship/classified.json', { tasks: lane })
+    const batch = run(root, [...started.then.argv]).step
+    assert.equal(batch.lanes[0].length, 4)
+    run(root, [...batch.then.argv], { results: [null] })
+    const state = JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+    assert.equal(state.failures.length, 1)
+    assert.equal(state.failures[0].error, 'agent returned no result')
+    assert.deepEqual(state.completed, [])
+    assert.equal(state.halt, null, 'one lost agent is under the halt threshold')
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.doesNotMatch(tasks, /- \[x\]/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a lane result that omits an outcome still fails every task', () => {
+  const lane = [
+    { id: '1.1', tier: 2, model: 'sonnet' },
+    { id: '1.2', tier: 2, model: 'sonnet' }
+  ]
+  const outcomes = laneOutcomes(lane, { tasks: [{ id: '1.1', outcome: 'ok' }] })
+  assert.ok(outcomes.every(o => o.outcome === 'failed'))
+  assert.equal(outcomes.length, 2)
 })
 
 // --- the flags, decided by the CLI ------------------------------------------
@@ -1672,7 +1744,8 @@ test('a host without cache accounting is bannered, and one with it is not', () =
 test('a host reporting cache fields for some spawns and not others degrades, never fails', () => {
   const { root, change } = repo('add-thing', {
     tasks:
-      '# Tasks\n\n- [ ] 1.1 Add the thing to docs/guide.md\n\n- [ ] 2.1 Note it in README.md\n'
+      '# Tasks\n\n- [ ] 1.1 Add the thing to src/a.ts\n- [ ] 1.2 Note it in src/b.ts\n\n' +
+      '- [ ] 2.1 Note it in README.md\n'
   })
   try {
     const started = run(root, [
@@ -1685,12 +1758,15 @@ test('a host reporting cache fields for some spawns and not others degrades, nev
       '--host-capabilities',
       JSON.stringify({ worktree: 'driver', usage: true, cacheAccounting: true })
     ]).step
-    // Two dependency layers, so two waves — and the host reports cache fields on
-    // the first wave's spawn and omits them on the second's.
+    // One wave, two dispatches. The first batch holds two tier-4 lanes, so chain
+    // fusion will not absorb the folded singleton behind it. Both dispatches
+    // land in the same wave: the first reports cache fields and the second
+    // omits them, which is the mixed span this test exists for.
     file(root, '.claude/ship/classified.json', {
       tasks: [
-        { id: '1.1', group: 1, description: 'a', tier: 2, model: 'sonnet', isTestTask: false, paths: ['docs/guide.md'] },
-        { id: '2.1', group: 2, description: 'b', tier: 2, model: 'sonnet', isTestTask: false, paths: ['README.md'] }
+        { id: '1.1', group: 1, description: 'a', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+        { id: '1.2', group: 1, description: 'b', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/b.ts'] },
+        { id: '2.1', group: 2, description: 'c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['README.md'] }
       ]
     })
 
@@ -1704,7 +1780,18 @@ test('a host reporting cache fields for some spawns and not others degrades, nev
       if (step.action === 'run-batch') {
         const usage = usages[Math.min(batches++, usages.length - 1)]
         step = run(root, [...step.then.argv], {
-          results: step.spawns.map((_, i) => ({ ...laneOk(step.lanes[i].map(t => t.id)), usage }))
+          results: step.spawns.map((_, i) => {
+            const lane = step.lanes[i]
+            // A single-task lane is read off the result's own ok and handoff.
+            // A multi-task lane is read off per-task outcomes. Both have to
+            // succeed here: this test is about a mixed cache span, and a
+            // failed task would spend the halt budget instead.
+            if (lane.length === 1) {
+              const [task] = laneOk([lane[0].id]).tasks
+              return { ok: true, id: task.id, filesChanged: task.filesChanged, handoff: task.handoff, usage }
+            }
+            return { ...laneOk(lane.map(t => t.id)), usage }
+          })
         }).step
       } else {
         step = run(root, [...step.then.argv]).step

@@ -8,7 +8,16 @@ Stops the most expensive fixed step of a run — the classifier reading every ch
 
 ### Requirement: A reusable plan SHALL carry a fingerprint of the inputs it was derived from
 
-A persisted execution plan MUST be accompanied by a fingerprint computed from the change's planning inputs: the content of `proposal.md`, `design.md`, `tasks.md`, and every delta spec, together with the change name, the parallelism cap, the per-tier lane-cap table, the cohesion tier ceiling, the solo envelope, and the mode override in force when the plan was built (recorded as `auto` when no override was passed). The plan MUST be reused only when a fingerprint recomputed from the current inputs equals the stored one. The fingerprint MUST also record the plan format version, so a plan written by a different plan shape is not reused against a reader that expects another; a plan written before cohesion lanes and mode existed MUST be rebuilt rather than reused. A narrowed plan MUST keep its mode and its promotion report.
+A persisted execution plan MUST be accompanied by a fingerprint computed from the change's planning inputs:
+
+- the content of `proposal.md`, `design.md`, `tasks.md`, and every delta spec;
+- the change name and the parallelism cap;
+- the per-tier lane-cap table, the cohesion tier ceiling and the solo envelope;
+- the mode override in force when the plan was built, recorded as `auto` when no override was passed.
+
+The plan MUST be reused only when a fingerprint recomputed from the current inputs equals the stored one.
+
+The fingerprint MUST also record the plan format version, so a plan written in one plan shape is not reused by a reader that expects another. A plan written before cohesion lanes and mode existed, or before chain lanes existed, MUST be rebuilt rather than reused. A narrowed plan MUST keep its mode and its promotion report.
 
 #### Scenario: Happy path — unchanged inputs reuse the plan
 
@@ -37,6 +46,13 @@ A persisted execution plan MUST be accompanied by a fingerprint computed from th
 - **WHEN** `ship` starts
 - **THEN** the plan is not reused, regardless of whether the input fingerprint matches
 - **AND** the classifier step runs
+
+#### Scenario: Edge case — a plan built before chain lanes existed is rebuilt
+
+- **GIVEN** a stored plan and fingerprint written in the plan format that preceded chain lanes, with artifacts, caps and mode override otherwise unchanged
+- **WHEN** `ship` starts
+- **THEN** the plan is not reused, and the reuse decision names the format version change as its reason rather than an artifact edit
+- **AND** the classifier step runs and the fresh plan carries chain lanes wherever serial single-lane batches occur
 
 #### Scenario: Edge case — a narrowed solo plan stays solo
 
