@@ -69,6 +69,8 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 
 ## How it compares
 
+- [MySpec](https://myspec.dev): Interactive spec discovery interview platform compiling guided developer discovery interviews into deterministic 4-file specification bundles with MCP server integration for AI coding assistants.
+
 Most of the category competes on how much structure you write before coding — Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on a different axis: **how many decisions the model is not allowed to make.**
 
 It composes OpenSpec rather than replacing it. `openspec init` installs its own skills, and `/interlock:spec` drives the `openspec` CLI directly, so both stay available. Use `/interlock:spec` when you want the gates, and the stock skills when you want the plain artifact loop. What Interlock adds, and when plain OpenSpec is the right call: [03](docs/03-openspec-vs-interlock.md). Where it sits against OpenClaw, Hermes Agent and DeepSeek Harness: [08](docs/08-harness-landscape.md).
