@@ -13,7 +13,7 @@
 import { appendFileSync } from 'node:fs'
 import { createAgent, createLineReader } from './wire.mjs'
 import { createToolExecutor, TOOL_DEFINITIONS } from './tools.mjs'
-import { createModelClient, DEFAULT_MODEL, MODEL_ENV } from './model.mjs'
+import { createModelClient, DEFAULT_MODEL, EFFORT_ENV, MODEL_ENV } from './model.mjs'
 
 /**
  * This agent's identity, recorded on every result row so a reader can exclude
@@ -95,11 +95,26 @@ export function reportUsage({ sessionId, model, usage, cacheStatus = null, env =
   }
 }
 
+/**
+ * The model client's options, read from the environment the runner handed over.
+ *
+ * The model is the override or the eval's default, as it always was. The
+ * effort is passed ONLY when the environment names one — which only a
+ * cost-per-task cell does — so the outcome eval's client is built with no
+ * effort and sends no `output_config`. Exported so that claim is tested on the
+ * same function the agent runs.
+ */
+export function clientOptionsFromEnv(env = process.env) {
+  const effort = env[EFFORT_ENV]
+  return {
+    apiKey: env.ANTHROPIC_API_KEY,
+    model: env[MODEL_ENV] || DEFAULT_MODEL,
+    ...(effort ? { effort } : {})
+  }
+}
+
 function main() {
-  const model = createModelClient({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: process.env[MODEL_ENV] || DEFAULT_MODEL
-  })
+  const model = createModelClient(clientOptionsFromEnv(process.env))
 
   const send = message => process.stdout.write(`${JSON.stringify(message)}\n`)
   const warn = text => process.stderr.write(`interlock eval agent: ${text}\n`)

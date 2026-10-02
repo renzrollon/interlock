@@ -186,6 +186,16 @@ test('every cap the limits surface prints is read by the code path it governs', 
     // duplicates the tracked-workflow assertion rather than conflicting with it.
     if (existsSync(root)) walk(root)
   }
+  // The eval runners — the `.mjs` modules directly under `evals/ship/` — are code
+  // readers too: each reads its ceiling from `interlock limits --json` by the
+  // published field. Only those modules count. Not recursive (the fixtures and
+  // the agent are not runners) and never prose: `evals/ship/README.md` names a
+  // ceiling for a human, and a README counted as a reader is the prose cap this
+  // check exists to refuse.
+  const runners = join(ROOT, 'evals', 'ship')
+  for (const entry of readdirSync(runners, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.mjs')) sources.push(readFileSync(join(runners, entry.name), 'utf8'))
+  }
 
   // `tokens` builds every form a legitimate reader may name a cap by. LIMITS has
   // only code readers, so the export name is the whole vocabulary. EVAL_CAPS is
@@ -225,11 +235,11 @@ test('every cap the limits surface prints is read by the code path it governs', 
 // The cap lands WITH both of its readers, which is the condition on publishing
 // one at all: `runsPerCase` sat here printed and unread for a release, and
 // `reportingThreshold` was removed rather than left in that state. The
-// cap-authority sweep above already refuses an unread cap, but it walks only
-// lib/, bin/, workflows/ and .github/workflows/ — the eval runner lives under
-// evals/, which that sweep cannot see. So the runner's readership is asserted
-// here, by name, or a cap could pass the sweep on its CI reader alone while the
-// thing that actually enforces it had drifted to a literal.
+// cap-authority sweep above already refuses an unread cap, and it now walks the
+// eval runners under evals/ship/ too — but a cap with two readers can pass that
+// sweep on either one alone. So the runner's readership is asserted here, by
+// name, or a cap could pass the sweep on its CI reader alone while the thing
+// that actually enforces it had drifted to a literal.
 
 test('the outcome-eval ceiling and price table are published, and the price table is identified', () => {
   assert.equal(typeof EVAL_CAPS.shipEvalCostUsd, 'number')
@@ -395,6 +405,35 @@ test('the outcome eval and its scheduled job are the ceiling’s readers', () =>
     job.replace(/shipEvalCostUsd/g, ''),
     /\$\s?\d+(\.\d+)?\b/,
     'the scheduled job restates a dollar figure; the ceiling is published by interlock limits'
+  )
+})
+
+// --- the cost-per-task sweep's ceiling (spec: evals/cost-per-task) -----------
+//
+// A separate cap from the outcome eval's, published the same way and read the
+// same way. Its one reader is the sweep; no workflow reads it, because no
+// workflow runs the sweep.
+
+test('the cost-per-task ceiling is published by interlock limits, in prose and in --json', () => {
+  assert.equal(EVAL_CAPS.matrixCostUsd, 40)
+  assert.match(formatLimits(), /eval cost-per-task sweep ceiling/)
+  assert.match(formatLimits(), new RegExp(`cost-per-task sweep ceiling \\(by hand\\)\\s+\\$${EVAL_CAPS.matrixCostUsd}\\s*$`, 'm'))
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(JSON.parse(run.stdout).evals.matrixCostUsd, EVAL_CAPS.matrixCostUsd)
+})
+
+test('the cost-per-task sweep is the ceiling’s reader, through the CLI, with no literal', () => {
+  const sweep = readFileSync(join(ROOT, 'evals', 'ship', 'matrix.mjs'), 'utf8')
+  assert.match(sweep, /evals\.matrixCostUsd/, 'the sweep must read the published ceiling by its field')
+  assert.match(sweep, /limits', '--json'|limits --json/, 'the sweep must read it from the CLI')
+  assert.doesNotMatch(
+    sweep.replace(/matrixCostUsd/g, ''),
+    new RegExp(`\\$\\s?${EVAL_CAPS.matrixCostUsd}\\b|\\b${EVAL_CAPS.matrixCostUsd}\\s*(usd|dollars)`, 'i'),
+    'the sweep restates its ceiling; the number is published by interlock limits'
   )
 })
 

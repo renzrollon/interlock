@@ -191,8 +191,12 @@ framework.
 npm test                          → structure, CLI, isolation, fail-open
 claude plugin eval                → transcript cases (early-access vendor harness)
 node evals/ship/run.mjs           → outcome cases (this repo's harness)
+node evals/ship/matrix.mjs        → cost-per-task rows (same harness, by hand)
 interlock evals triage|calibrate|promote|capture  → verdicts, never models
 ```
+
+The cost-per-task sweep is not a fourth framework. It reuses the outcome
+harness's fixtures, isolation, graders and pricer, and is described below.
 
 `claude plugin eval` is already the transcript harness. Replacing it with
 AgentEvals, Harbor, Braintrust or LangSmith would duplicate graders this repo
@@ -249,6 +253,43 @@ Scores are model × harness. The outcome eval already treats the ACP apparatus
 agent as a labelled confounder and refuses to pretend ACP is Workflow. A later
 host matrix is the same fixture on another headless driver, with `host` on every
 row — not a new framework.
+
+### Cost per task — model × effort
+
+`node evals/ship/matrix.mjs` records what this repository's own fixtures cost
+across the models and effort levels a routing edit would choose between.
+
+**What it runs.** Every outcome fixture, crossed with the two Claude API model
+ids and the effort levels the sweep declares (`GRID_MODELS` × `GRID_EFFORTS` in
+`evals/ship/matrix.mjs` — this page does not restate them). Each cell runs the
+control-arm procedure: the committed eval agent prompted once per task at that
+cell's model and effort, then the fixture's unit command and graders, in a
+scratch root outside this repository. A root inside it is refused before any
+cell starts. A model the current price table does not contain is not run, and
+makes no request. Each cell that ran appends one row to
+`evals/history/cost-per-task.jsonl` (schema `interlock.cost-per-task/1`):
+fixture, model, effort, judge pass or fail, tokens, cache reads and writes by
+tier, dollars with the price-table id — or the reason there are no dollars —
+and wall clock.
+
+**It is not the outcome eval.** It is a different command writing a different
+file. The outcome eval holds one model constant and varies the loop. This sweep
+holds the procedure constant and varies model and effort. It runs no wave loop,
+no planner and no verify step, so a row measures model × effort on the fixture
+tasks, not planner or verify spend. It never writes `ship-outcomes.jsonl`, its
+rows are not promotion trials, and no pull-request workflow starts it. A red
+grader is a field on a row, not a failed run.
+
+**It is bounded and gates nothing.** The dollar ceiling is the one `interlock
+limits` publishes for this sweep. It is checked between cells only. It stops the
+next cell from starting and never kills one in flight. A sweep stopped there is
+partial, and partial is a result, not a failure.
+
+**A dial change cites its rows.** The effort defaults and the multi-task opus
+floor are printed by `interlock limits` and are not restated here. An edit to
+either cites the `cost-per-task.jsonl` rows it relies on, by fixture, model,
+effort and price-table id. The sweep itself changes neither, and a row is
+evidence for that edit, not a verdict on it.
 
 ### How the suite should grow
 

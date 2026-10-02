@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpHost } from '../../lib/host/acp.mjs'
+import { EFFORT_ENV } from './agent/model.mjs'
 import { interlock, runUnitCommand, shell } from './graders.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -53,12 +54,18 @@ function messageOf(err) {
  * measured of its own token usage. It is deliberately OUTSIDE the scratch root:
  * a bookkeeping file inside the repository the run is committing would show up
  * in that run's own diff and in the paths the receipt records.
+ *
+ * The effort variable is NEVER inherited. It is set only from `effort`, which
+ * only a cost-per-task cell passes; the outcome eval passes none, so its agent
+ * sends no effort even when the operator's shell exported one (design D3).
  */
-export function armEnv({ agent, usageFile, env = process.env }) {
+export function armEnv({ agent, usageFile, effort, env = process.env }) {
+  const { [EFFORT_ENV]: _inherited, ...inherited } = env
   return {
-    ...env,
+    ...inherited,
     INTERLOCK_ACP_COMMAND: agent.command,
-    ...(usageFile ? { INTERLOCK_EVAL_USAGE_FILE: usageFile } : {})
+    ...(usageFile ? { INTERLOCK_EVAL_USAGE_FILE: usageFile } : {}),
+    ...(effort ? { [EFFORT_ENV]: effort } : {})
   }
 }
 
@@ -150,12 +157,16 @@ export function readTasksInOrder(root, change) {
  * A prompt whose transport failed is counted and named. If every prompt failed
  * that way the caller reads it as no signal rather than as a control arm that
  * did badly: an unreachable model is not a measurement.
+ *
+ * `effort` is the cost-per-task sweep's input and nobody else's: the outcome
+ * eval omits it, and its agent then sends no effort at all.
  */
 export async function runControlArm({
   fixture,
   root,
   agent,
   usageFile,
+  effort,
   env = process.env,
   timeoutMs,
   onLog = () => {}
@@ -183,7 +194,7 @@ export async function runControlArm({
     host = createAcpHost({
       command: agent.command,
       cwd: root,
-      env: armEnv({ agent, usageFile, env }),
+      env: armEnv({ agent, usageFile, effort, env }),
       ...(Number.isInteger(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
       onEvent: event => {
         if (event && event.type === 'spawn-failed') failures.push(`${event.label}: ${event.error}`)

@@ -34,6 +34,15 @@ export const DEFAULT_MODEL = 'claude-opus-5-5'
 /** Where the model's identity is overridden. */
 export const MODEL_ENV = 'INTERLOCK_EVAL_MODEL'
 
+/**
+ * Where a cost-per-task cell hands the agent its effort level.
+ *
+ * Set only by the sweep, per cell, on the agent's own environment. The outcome
+ * eval strips it from the environment it passes on (`armEnv`), so a level an
+ * operator's shell happened to export can never reach an outcome-eval request.
+ */
+export const EFFORT_ENV = 'INTERLOCK_EVAL_EFFORT'
+
 /** Non-streaming ceiling. Kept under the HTTP timeout a single request has. */
 const MAX_TOKENS = 16000
 
@@ -222,14 +231,24 @@ function textOf(content) {
  * session per process and the figure the runner wants is what this process
  * spent — see `reportUsage` in `main.mjs`.
  *
+ * `effort` is OPTIONAL AND OMITTED BY DEFAULT. When it is given, every Messages
+ * request this client sends carries `output_config.effort` at that level; when
+ * it is omitted, the body has no `output_config` at all — not a null one, not a
+ * default level. The outcome eval never passes it, so its request shape is the
+ * one it had before the argument existed and its "one model, held constant"
+ * comparison is not quietly turned into a model-and-effort comparison. Only the
+ * cost-per-task sweep passes it, one cell at a time (design D3).
+ *
  * @param {object} options
  * @param {string} options.apiKey
  * @param {string} [options.model]
+ * @param {string} [options.effort] e.g. `low`; sent as given, never defaulted
  * @param {string} [options.baseUrl]
  * @param {typeof fetch} [options.fetchImpl] injected for tests; no network by default in one
  * @param {number} [options.maxTurns]
  * @returns {{
  *   model: string,
+ *   effort: string|null,
  *   usage: ReturnType<typeof emptyUsage>,
  *   run: (req: {
  *     prompt: string,
@@ -242,6 +261,7 @@ function textOf(content) {
 export function createModelClient({
   apiKey,
   model = DEFAULT_MODEL,
+  effort,
   baseUrl = DEFAULT_BASE_URL,
   fetchImpl = globalThis.fetch,
   maxTurns = DEFAULT_MAX_TURNS
@@ -255,6 +275,17 @@ export function createModelClient({
   if (typeof fetchImpl !== 'function') {
     throw new Error('global fetch is unavailable — Node >= 18 is required')
   }
+  // Absent means absent. Anything else must be a level the API can read as one:
+  // a non-string, an empty string or one padded with whitespace is refused here
+  // rather than sent, because a cell whose effort the API quietly ignored or
+  // rejected mid-run would be recorded under a level it never ran at.
+  const hasEffort = effort !== undefined && effort !== null
+  if (hasEffort && (typeof effort !== 'string' || !effort || effort.trim() !== effort)) {
+    throw new Error(`effort must be a non-empty level name with no surrounding whitespace, got ${JSON.stringify(effort)}`)
+  }
+  // Built once: every turn of one loop sends the same level, so the cell's own
+  // prompt cache is not invalidated by an effort that moved between turns.
+  const outputConfig = hasEffort ? { output_config: { effort } } : {}
 
   const usage = emptyUsage()
   let breakpointsSent = 0
@@ -290,6 +321,7 @@ export function createModelClient({
       const data = await send({
         model,
         max_tokens: MAX_TOKENS,
+        ...outputConfig,
         ...(prefix.system ? { system: prefix.system } : {}),
         ...(prefix.tools.length ? { tools: prefix.tools } : {}),
         messages
@@ -329,5 +361,11 @@ export function createModelClient({
     throw new Error(`the tool loop reached its ceiling of ${maxTurns} model turns without finishing`)
   }
 
-  return { model, usage, run, cacheStatus: () => cacheStatusOf(usage, breakpointsSent) }
+  return {
+    model,
+    effort: hasEffort ? effort : null,
+    usage,
+    run,
+    cacheStatus: () => cacheStatusOf(usage, breakpointsSent)
+  }
 }
