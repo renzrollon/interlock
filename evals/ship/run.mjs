@@ -395,6 +395,11 @@ export async function runArm({
         ? await runControlArm({ fixture, root, agent, usageFile, env, timeoutMs, onLog })
         : runLoopArm({ fixture, root, agent, usageFile, env, timeoutMs })
 
+    // The usage object goes to the pricer exactly as `readAgentUsage` summed it
+    // — cache reads and the tier-keyed write record included — and the model
+    // string exactly as recorded. No second conversion here: `priceUsage` is the
+    // one place tokens become dollars, and a usage missing a cache count comes
+    // back unpriced with its reason rather than priced on input and output alone.
     const usage = readAgentUsage(usageFile)
     const priced = priceUsage(usage, model, prices)
 

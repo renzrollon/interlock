@@ -45,6 +45,7 @@ import {
   DEFAULT_MODEL
 } from '../../evals/ship/agent/model.mjs'
 import { reportUsage, AGENT_IDENTITY, USAGE_SCHEMA } from '../../evals/ship/agent/main.mjs'
+import { readAgentUsage } from '../../evals/ship/arms.mjs'
 import {
   assertScratchRootOutsideRepo,
   prepareScratchRoot,
@@ -336,13 +337,14 @@ test('the model loop executes tool calls and returns them in one user message', 
   assert.equal(resultMessages[0].content.length, 2)
   assert.deepEqual(resultMessages[0].content.map(b => b.tool_use_id), ['call_a', 'call_b'])
 
-  // Usage accumulated across every request, by name.
+  // Usage accumulated across every request, by name. Neither response carried
+  // a cache-write field, so the write record is absent — not a zero write.
   assert.deepEqual(client.usage, {
     requests: 2,
     inputTokens: 400,
     outputTokens: 60,
     cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0
+    cacheCreationInputTokens: null
   })
 
   // The wire shape the API requires.
@@ -376,7 +378,9 @@ function cachingStubFetch(responses, { minPrefixChars = 60 } = {}) {
     if (next.status && next.status !== 200) {
       return { ok: false, status: next.status, text: async () => next.body || '' }
     }
-    const usage = { input_tokens: 100, output_tokens: 10 }
+    // Explicit zeros, as the API reports them: a loop with no breakpoint gets
+    // measured zeros, never an absent field.
+    const usage = { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
     const prefix = markedPrefix(body)
     // Below the provider's minimum cacheable size the breakpoint is accepted
     // and nothing is written — the silent no-op the design flagged as a risk.
@@ -422,7 +426,8 @@ test('the loop marks its stable prefix, so the second request reads it back from
   // The first request writes the entry; the second reads it back. Against a
   // loop that sends no `cache_control` both figures are zero — not because the
   // cache missed, but because nothing was ever asked for.
-  assert.ok(client.usage.cacheCreationInputTokens > 0, 'the first request must write a cache entry')
+  assert.ok(client.usage.cacheCreationInputTokens.ephemeral_5m > 0, 'the first request must write a cache entry')
+  assert.equal(client.usage.cacheCreationInputTokens.ephemeral_1h, 0, 'an ephemeral breakpoint writes the five-minute tier')
   assert.ok(client.usage.cacheReadInputTokens > 0, 'the second request must read that entry back')
   assert.equal(client.cacheStatus(), 'measured')
 
@@ -462,7 +467,7 @@ test('a prefix below the provider floor is unmeasured, not a cache miss', async 
   await client.run({ prompt: 'go', system: 'short', executeTool: () => ({ content: 'ok', isError: false }) })
 
   assert.equal(client.usage.cacheReadInputTokens, 0)
-  assert.equal(client.usage.cacheCreationInputTokens, 0)
+  assert.deepEqual(client.usage.cacheCreationInputTokens, { ephemeral_5m: 0, ephemeral_1h: 0 })
   assert.equal(client.cacheStatus(), 'unmeasured')
 
   // And that is a different report from a prefix that was written and then not
@@ -476,7 +481,7 @@ test('a prefix below the provider floor is unmeasured, not a cache miss', async 
     system: 'a system prompt long enough to clear the stub floor, standing in for the real one',
     executeTool: () => ({ content: 'ok', isError: false })
   })
-  assert.ok(measured.usage.cacheCreationInputTokens > 0)
+  assert.ok(measured.usage.cacheCreationInputTokens.ephemeral_5m > 0)
   assert.equal(measured.usage.cacheReadInputTokens, 0)
   assert.equal(measured.cacheStatus(), 'measured')
 })
@@ -560,8 +565,55 @@ test('an unmeasured usage tally is never fabricated from a response that carried
     inputTokens: 5,
     outputTokens: 0,
     cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0
+    // No creation field on a billed response: the write record is absent, and
+    // stays absent — a later response cannot turn a skipped one into a total.
+    cacheCreationInputTokens: null
   })
+  addUsage(tally, { input_tokens: 1, cache_creation_input_tokens: 40 })
+  assert.equal(tally.cacheCreationInputTokens, null)
+})
+
+test('addUsage keeps a cache write by lifetime tier, from either response shape', () => {
+  // The split, when the response carries it, is copied tier by tier and the
+  // scalar total is NOT also added — adding both would count every write twice.
+  const split = emptyUsage()
+  addUsage(split, {
+    input_tokens: 10,
+    output_tokens: 2,
+    cache_read_input_tokens: 7,
+    cache_creation_input_tokens: 130,
+    cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 30 }
+  })
+  assert.deepEqual(split.cacheCreationInputTokens, { ephemeral_5m: 100, ephemeral_1h: 30 })
+  assert.equal(split.cacheReadInputTokens, 7)
+
+  // Scalar only: attributed to the five-minute tier, because this client's
+  // breakpoint is `type: 'ephemeral'`; the one-hour tier is a measured zero.
+  const scalar = emptyUsage()
+  addUsage(scalar, { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 55 })
+  assert.deepEqual(scalar.cacheCreationInputTokens, { ephemeral_5m: 55, ephemeral_1h: 0 })
+
+  // Both shapes sum per tier across responses, never into one figure.
+  addUsage(scalar, {
+    input_tokens: 1,
+    cache_creation_input_tokens: 9,
+    cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 5 }
+  })
+  assert.deepEqual(scalar.cacheCreationInputTokens, { ephemeral_5m: 59, ephemeral_1h: 5 })
+
+  // A present zero is a measured zero and stays one.
+  const zero = emptyUsage()
+  addUsage(zero, { input_tokens: 3, cache_creation_input_tokens: 0 })
+  assert.deepEqual(zero.cacheCreationInputTokens, { ephemeral_5m: 0, ephemeral_1h: 0 })
+
+  // A split that omits a tier prices that tier at zero; one that carries a tier
+  // as a non-count is an explicit unknown for that tier.
+  const omitted = emptyUsage()
+  addUsage(omitted, { input_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 12 } })
+  assert.deepEqual(omitted.cacheCreationInputTokens, { ephemeral_5m: 12, ephemeral_1h: 0 })
+  const unknown = emptyUsage()
+  addUsage(unknown, { input_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 12, ephemeral_1h_input_tokens: null } })
+  assert.deepEqual(unknown.cacheCreationInputTokens, { ephemeral_5m: 12, ephemeral_1h: null })
 })
 
 // --- the agent reports its usage to the runner ------------------------------
@@ -570,10 +622,16 @@ test('the agent appends one usage record per session where the runner asked', ()
   const dir = scratchDir('usage')
   try {
     const path = join(dir, 'usage.jsonl')
-    const usage = { requests: 3, inputTokens: 900, outputTokens: 120, cacheReadInputTokens: 0, cacheCreationInputTokens: 8 }
+    const usage = {
+      requests: 3,
+      inputTokens: 900,
+      outputTokens: 120,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: { ephemeral_5m: 8, ephemeral_1h: 0 }
+    }
     const wrote = reportUsage({
       sessionId: 'sess-1',
-      model: 'claude-opus-5',
+      model: DEFAULT_MODEL,
       usage,
       env: { INTERLOCK_EVAL_USAGE_FILE: path }
     })
@@ -582,9 +640,84 @@ test('the agent appends one usage record per session where the runner asked', ()
     assert.equal(record.schema, USAGE_SCHEMA)
     assert.equal(record.agent, AGENT_IDENTITY)
     assert.equal(record.sessionId, 'sess-1')
-    assert.equal(record.model, 'claude-opus-5')
+    assert.equal(record.model, 'claude-opus-5-5')
     assert.equal(record.outputTokens, 120)
     assert.equal(record.inputTokens, 900)
+    // The write is stored as the tier object, never as one scalar total.
+    assert.equal(record.cacheReadInputTokens, 0)
+    assert.deepEqual(record.cacheCreationInputTokens, { ephemeral_5m: 8, ephemeral_1h: 0 })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the runner sums the tier object a current agent line carries, and never a scalar-only one into a zero', () => {
+  const dir = scratchDir('usage-sum')
+  try {
+    // Two current lines, written by the agent itself: the runner sums each tier
+    // and the cache reads beside the base counts.
+    const current = join(dir, 'current.jsonl')
+    const env = { INTERLOCK_EVAL_USAGE_FILE: current }
+    reportUsage({
+      sessionId: 'a',
+      model: 'm',
+      usage: {
+        requests: 2,
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadInputTokens: 300,
+        cacheCreationInputTokens: { ephemeral_5m: 50, ephemeral_1h: 5 }
+      },
+      env
+    })
+    reportUsage({
+      sessionId: 'b',
+      model: 'm',
+      usage: {
+        requests: 1,
+        inputTokens: 20,
+        outputTokens: 4,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: { ephemeral_5m: 7, ephemeral_1h: 0 }
+      },
+      env
+    })
+    const summed = readAgentUsage(current)
+    assert.equal(summed.reason, null)
+    assert.equal(summed.requests, 3)
+    assert.equal(summed.inputTokens, 120)
+    assert.equal(summed.outputTokens, 14)
+    assert.equal(summed.cacheReadInputTokens, 300)
+    assert.deepEqual(summed.cacheCreationInputTokens, { ephemeral_5m: 57, ephemeral_1h: 5 })
+
+    // A line that still carries the old scalar write: its total cannot be split
+    // back into the two prices, so the summed write record is absent — never a
+    // zero write, and never a tier guessed for it.
+    const stale = join(dir, 'stale.jsonl')
+    writeFileSync(
+      stale,
+      [
+        JSON.stringify({ requests: 1, inputTokens: 10, outputTokens: 1, cacheReadInputTokens: 4, cacheCreationInputTokens: { ephemeral_5m: 3, ephemeral_1h: 0 } }),
+        JSON.stringify({ requests: 1, inputTokens: 10, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 8 })
+      ].join('\n') + '\n'
+    )
+    const unsplit = readAgentUsage(stale)
+    assert.equal(unsplit.inputTokens, 20, 'the base counts still sum')
+    assert.equal(unsplit.cacheReadInputTokens, 4)
+    assert.equal(unsplit.cacheCreationInputTokens, null)
+    assert.match(unsplit.cacheReason, /single cache-write total/)
+
+    // A scalar-only file on its own is absent too, not `{ ephemeral_5m: 0 }`.
+    const scalarOnly = join(dir, 'scalar-only.jsonl')
+    writeFileSync(scalarOnly, JSON.stringify({ requests: 1, inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }) + '\n')
+    assert.equal(readAgentUsage(scalarOnly).cacheCreationInputTokens, null)
+
+    // A line with no cache-read count makes the summed read absent as well.
+    const noRead = join(dir, 'no-read.jsonl')
+    writeFileSync(noRead, JSON.stringify({ requests: 1, inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0 } }) + '\n')
+    const readAbsent = readAgentUsage(noRead)
+    assert.equal(readAbsent.cacheReadInputTokens, null)
+    assert.match(readAbsent.cacheReason, /no cache-read count/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

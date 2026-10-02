@@ -21,6 +21,8 @@ import {
   clampParallel,
   formatLimits
 } from '../../lib/limits.mjs'
+import { DEFAULT_MODEL } from '../../evals/ship/agent/model.mjs'
+import { priceUsage } from '../../evals/ship/arms.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -260,8 +262,96 @@ test('the outcome-eval ceiling and price table are published, and the price tabl
     assert.ok(factor > 1, `a cache write costs more than base input, not less (${tier})`)
     assert.match(formatLimits(), new RegExp(`cache write multiplier: ${tier}`))
   }
-  assert.ok(read > 0 && read < 1, 'a cache read costs a fraction of base input')
-  assert.match(formatLimits(), /cache read multiplier/)
+  // A read multiplier per MODEL, keyed by the same ids as the base rates: the
+  // published read multiplier is not one figure, so a single scalar would
+  // misprice every model whose rate differs from it.
+  assert.equal(typeof read, 'object', 'the cache read multiplier is a per-model map, not one figure')
+  for (const model of Object.keys(MODEL_PRICES.perMillionTokens)) {
+    const factor = read[model]
+    assert.equal(typeof factor, 'number', `${model} has no cache read multiplier`)
+    assert.ok(factor > 0 && factor < 1, `a cache read costs a fraction of base input (${model})`)
+    const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    assert.match(
+      formatLimits(),
+      new RegExp(`cache read multiplier: ${escaped} \\(x input\\)\\s+${String(factor).replace('.', '\\.')}\\s*$`, 'm'),
+      `interlock limits must print ${model}'s own read multiplier`
+    )
+  }
+})
+
+/**
+ * The identity half of the price table, as a function of the table so the same
+ * assertions can be run against an older table and seen to fail there.
+ */
+function assertCurrentPriceTable(prices) {
+  // The October 2026 list is a new id: a later list, not a revision of a
+  // September one, and reusing either September id would let rows recorded
+  // under it be read as priced by these rates.
+  assert.equal(prices.id, 'anthropic-list-2026-10', 'the price table must be anthropic-list-2026-10')
+  for (const previous of ['anthropic-list-2026-09', 'anthropic-list-2026-09b']) {
+    assert.notEqual(prices.id, previous, `a revised table must not reuse ${previous}`)
+  }
+  // The models the new list replaced are gone, not kept beside their successors
+  // so that an old name still prices.
+  for (const dropped of ['claude-opus-5', 'claude-sonnet-5']) {
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(prices.perMillionTokens, dropped),
+      `${dropped} must not be priced by ${prices.id}`
+    )
+  }
+}
+
+test('the price table is anthropic-list-2026-10, and the models it replaced are gone', () => {
+  assertCurrentPriceTable(MODEL_PRICES)
+})
+
+// The cache multipliers are printed by `interlock limits`, so they owe a reader
+// on the terms every printed cap does. Their reader lives under evals/, which
+// the cap-authority sweep cannot see, so it is asserted here by name AND by
+// behaviour: a multiplier the pricer only mentioned would pass the first check
+// and fail the second.
+test('every printed cache multiplier is read by name by the outcome-eval pricer', () => {
+  const arms = readFileSync(join(ROOT, 'evals', 'ship', 'arms.mjs'), 'utf8')
+  const pricer = arms.slice(arms.indexOf('export function priceUsage'))
+  assert.ok(pricer.length < arms.length, 'priceUsage is missing from evals/ship/arms.mjs')
+  assert.match(pricer, /cacheMultipliers\.read\[model\]/, 'priceUsage must read the per-model read multiplier by name')
+  assert.match(pricer, /cacheMultipliers\.write\[tier\]/, 'priceUsage must read each write tier by name')
+
+  const usage = over => ({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0 },
+    reason: null,
+    ...over
+  })
+  for (const model of Object.keys(MODEL_PRICES.perMillionTokens)) {
+    const input = MODEL_PRICES.perMillionTokens[model].input
+    // One million cache-read tokens cost exactly this model's printed read
+    // multiplier times its input rate — the pricer reads THAT entry, not a
+    // shared figure and not the base input rate.
+    const read = priceUsage(usage({ cacheReadInputTokens: 1_000_000 }), model, MODEL_PRICES)
+    assert.equal(read.usd, Math.round(input * MODEL_PRICES.cacheMultipliers.read[model] * 10000) / 10000, `${model} read`)
+    for (const tier of Object.keys(MODEL_PRICES.cacheMultipliers.write)) {
+      const write = priceUsage(
+        usage({ cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0, [tier]: 1_000_000 } }),
+        model,
+        MODEL_PRICES
+      )
+      assert.equal(write.usd, Math.round(input * MODEL_PRICES.cacheMultipliers.write[tier] * 10000) / 10000, `${model} ${tier}`)
+    }
+  }
+})
+
+test('the outcome eval’s default model is a key in the published price table', () => {
+  // Design D4: the default and the table move together. A default the table did
+  // not contain would leave every unconfigured run unpriced, silently.
+  assert.equal(DEFAULT_MODEL, 'claude-opus-5-5')
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(MODEL_PRICES.perMillionTokens, DEFAULT_MODEL),
+    `the outcome eval's default model ${DEFAULT_MODEL} is not priced by ${MODEL_PRICES.id}`
+  )
+  assert.equal(typeof MODEL_PRICES.cacheMultipliers.read[DEFAULT_MODEL], 'number')
 })
 
 test('interlock limits --json emits the ceiling and the price table', () => {
@@ -274,6 +364,13 @@ test('interlock limits --json emits the ceiling and the price table', () => {
   assert.equal(payload.evals.shipEvalCostUsd, EVAL_CAPS.shipEvalCostUsd)
   assert.equal(payload.prices.id, MODEL_PRICES.id)
   assert.deepEqual(payload.prices.perMillionTokens, MODEL_PRICES.perMillionTokens)
+  // Each model's own read multiplier and both write tiers travel on the JSON
+  // surface too: the runner prices from this payload, not from the module.
+  assert.deepEqual(payload.prices.cacheMultipliers.read, MODEL_PRICES.cacheMultipliers.read)
+  assert.deepEqual(payload.prices.cacheMultipliers.write, MODEL_PRICES.cacheMultipliers.write)
+  for (const model of Object.keys(MODEL_PRICES.perMillionTokens)) {
+    assert.equal(typeof payload.prices.cacheMultipliers.read[model], 'number', `${model} has no read multiplier in --json`)
+  }
 })
 
 test('the outcome eval and its scheduled job are the ceiling’s readers', () => {

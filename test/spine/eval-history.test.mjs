@@ -61,9 +61,9 @@ function result(overrides = {}) {
     fixture: 'docs-and-code',
     arm: 'loop',
     host: 'acp',
-    model: 'claude-opus-5',
+    model: 'claude-opus-5-5',
     evalAgent: 'interlock-eval-acp-agent/1',
-    priceTable: 'anthropic-list-2026-09',
+    priceTable: 'anthropic-list-2026-10',
     node: 'v22.0.0',
     criteria: [
       { id: 'unit-suite-green', status: 'pass', exitCode: 0 },

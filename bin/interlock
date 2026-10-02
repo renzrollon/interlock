@@ -1707,7 +1707,8 @@ async function main() {
           // Its own group, beside `evals` rather than inside it: the eval caps
           // are scalars a reader compares a running total against, and this is
           // the table that produced the total. Its `id` is what a recorded
-          // result row is keyed against.
+          // result row is keyed against. Emitted whole, so each model's own
+          // `cacheMultipliers.read` entry and both write tiers travel with it.
           prices: MODEL_PRICES,
           report: REPORT_CAPS,
           effort: EFFORT,

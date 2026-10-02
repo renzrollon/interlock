@@ -25,8 +25,14 @@ export const AGENT_IDENTITY = 'interlock-eval-acp-agent/2'
 /** Where the runner asks for the per-session usage record to be appended. */
 export const USAGE_FILE_ENV = 'INTERLOCK_EVAL_USAGE_FILE'
 
-/** The schema of one usage record. Declared, so a reader classifies rather than guesses. */
-export const USAGE_SCHEMA = 'interlock.ship-eval-agent-usage/2'
+/**
+ * The schema of one usage record. Declared, so a reader classifies rather than guesses.
+ *
+ * `/3`: `cacheCreationInputTokens` is a tier object keyed `ephemeral_5m` and
+ * `ephemeral_1h` (or `null`), where `/2` wrote one scalar a pricer could not
+ * split back into its two prices.
+ */
+export const USAGE_SCHEMA = 'interlock.ship-eval-agent-usage/3'
 
 const SYSTEM_PROMPT = [
   'You are an implementation agent running inside an automated evaluation. You are working in a',
@@ -41,6 +47,11 @@ const SYSTEM_PROMPT = [
   'When the prompt asks for a JSON result, your final message must be that JSON object and nothing',
   'else: no prose before or after it, and no code fence.'
 ].join('\n')
+
+/** The write record as it is stored: a copy of the tier object, or `null` for anything else. */
+function cacheWriteRecordOf(creation) {
+  return creation && typeof creation === 'object' && !Array.isArray(creation) ? { ...creation } : null
+}
 
 /**
  * Append this process's token usage, as measured by the agent itself, where the
@@ -66,7 +77,10 @@ export function reportUsage({ sessionId, model, usage, cacheStatus = null, env =
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadInputTokens: usage.cacheReadInputTokens,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    // The tier object `addUsage` built, or `null` where a billed response
+    // reported no write. Never a scalar: a reader of the corpus prices each tier
+    // at its own multiplier, and one total cannot be priced back apart.
+    cacheCreationInputTokens: cacheWriteRecordOf(usage.cacheCreationInputTokens),
     // What the two figures above mean. A zero has four causes and only one of
     // them is a miss; without this a reader of the corpus cannot tell a prefix
     // below the provider's floor from one that was cacheable and not reused.

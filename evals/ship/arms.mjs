@@ -249,6 +249,11 @@ export async function runControlArm({
 
 // --- what the agent measured of itself --------------------------------------
 
+/** A finite, non-negative token count — the only value a sum or a price may use. */
+function isCount(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
 /**
  * Sum the usage records the eval's own agent appended.
  *
@@ -260,12 +265,23 @@ export async function runControlArm({
  *
  * A missing file is "not measured", carried as `null` with its reason — never
  * as a zero, which would be indistinguishable from an agent that made no call.
+ *
+ * The cache figures are summed beside the base counts, unknown-contagiously:
+ * `cacheReadInputTokens` is `null` once one record lacks a count, and
+ * `cacheCreationInputTokens` — the tier object `addUsage` built — is `null` once
+ * one record carries no tier object. A record that still holds the old scalar
+ * write is such a record: its total cannot be split back into the two prices,
+ * so the sum is absent rather than a zero write or a guessed tier. Inside an
+ * object a tier the record omits adds zero, and a tier it carries as a
+ * non-count is `null` for the sum. `cacheReason` says why either is absent.
  */
 export function readAgentUsage(usageFile) {
   const absent = reason => ({
     requests: null,
     inputTokens: null,
     outputTokens: null,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null,
     reason
   })
   if (!usageFile) return absent('no usage file was requested of the agent')
@@ -276,7 +292,8 @@ export function readAgentUsage(usageFile) {
     )
   }
   try {
-    const tally = { requests: 0, inputTokens: 0, outputTokens: 0 }
+    const tally = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: {} }
+    const cacheReasons = new Set()
     let records = 0
     for (const line of readFileSync(usageFile, 'utf8').split('\n')) {
       if (!line.trim()) continue
@@ -293,35 +310,126 @@ export function readAgentUsage(usageFile) {
       tally.requests += Number(parsed.requests) || 0
       tally.inputTokens += Number(parsed.inputTokens) || 0
       tally.outputTokens += Number(parsed.outputTokens) || 0
+
+      if (tally.cacheReadInputTokens !== null) {
+        if (isCount(parsed.cacheReadInputTokens)) tally.cacheReadInputTokens += parsed.cacheReadInputTokens
+        else {
+          tally.cacheReadInputTokens = null
+          cacheReasons.add('a usage record carries no cache-read count')
+        }
+      }
+
+      const write = parsed.cacheCreationInputTokens
+      if (tally.cacheCreationInputTokens === null) continue
+      if (!write || typeof write !== 'object' || Array.isArray(write)) {
+        tally.cacheCreationInputTokens = null
+        cacheReasons.add(
+          typeof write === 'number'
+            ? 'a usage record carries a single cache-write total rather than one count per lifetime tier'
+            : 'a usage record carries no cache-write record'
+        )
+        continue
+      }
+      const sum = tally.cacheCreationInputTokens
+      for (const tier of new Set([...Object.keys(sum), ...Object.keys(write)])) {
+        const before = tier in sum ? sum[tier] : 0
+        const add = tier in write ? write[tier] : 0
+        sum[tier] = before !== null && isCount(add) ? before + add : null
+      }
     }
     if (!records) return absent('the usage file holds no readable record')
-    return { ...tally, reason: null }
+    return { ...tally, reason: null, ...(cacheReasons.size ? { cacheReason: [...cacheReasons].join('; ') } : {}) }
   } catch (err) {
     return absent(`the usage file could not be read: ${messageOf(err)}`)
   }
 }
 
 /**
+ * Why a usage cannot be priced on its own counts, or `null` where every count
+ * the price needs was measured.
+ *
+ * Each reason names the field it is about. A measured zero is a count; `null`,
+ * a missing key or anything that is not a non-negative number is not. Inside a
+ * present write record a tier the record omits is zero, and a tier it carries
+ * as a non-count is an explicit unknown that withholds the whole figure.
+ */
+function unmeasuredField(usage) {
+  if (!usage || typeof usage !== 'object') return 'no usage was measured'
+  const why = usage.reason ? ` — ${usage.reason}` : ''
+  const cacheWhy = usage.cacheReason ? ` — ${usage.cacheReason}` : why
+  if (!isCount(usage.inputTokens)) return `no uncached input count (inputTokens) was measured${why}`
+  if (!isCount(usage.outputTokens)) return `no output count (outputTokens) was measured${why}`
+  if (!isCount(usage.cacheReadInputTokens)) {
+    return `no cache-read count (cacheReadInputTokens) was measured${cacheWhy}`
+  }
+  const write = usage.cacheCreationInputTokens
+  if (!write || typeof write !== 'object' || Array.isArray(write)) {
+    return `no cache-write record (cacheCreationInputTokens) was measured${cacheWhy}`
+  }
+  for (const [tier, count] of Object.entries(write)) {
+    if (!isCount(count)) {
+      return `the cache-write record carries tier ${tier} as unknown (cacheCreationInputTokens.${tier})${cacheWhy}`
+    }
+  }
+  return null
+}
+
+/**
  * What a measured usage tally cost, at a published price table.
  *
- * `null` with a reason for a model the table does not price — never a zero, and
- * never a tier guessed from the model's name. An unpriced run still runs; it
- * simply cannot be counted against the ceiling, and the sweep says so.
+ * Four terms, each at its own published rate: uncached input at the model's
+ * input rate, output at its output rate, cache reads at the input rate times
+ * THAT MODEL's `cacheMultipliers.read`, and each cache-write tier at the input
+ * rate times the shared `cacheMultipliers.write` for that tier. `inputTokens` is
+ * the uncached count alone, so a cache read is never also billed at base input.
+ *
+ * `usd: null` with a reason — never a zero, never a partial figure — when any of
+ * those counts is absent, when the table prices no model by EXACTLY this string,
+ * or when it lists the model but publishes no read multiplier for it. A reason
+ * about the table names the table id. An unpriced run still runs; it simply
+ * cannot be counted against the ceiling, and the sweep says so.
  */
 export function priceUsage(usage, model, prices) {
   const table = prices && prices.perMillionTokens ? prices.perMillionTokens : null
   if (!table) return { usd: null, reason: 'no price table was available' }
-  if (!usage || usage.inputTokens === null || usage.outputTokens === null) {
-    return { usd: null, reason: usage && usage.reason ? usage.reason : 'no usage was measured' }
-  }
-  const entry = table[model]
+  const unpriced = reason => ({ usd: null, reason, priceTable: prices.id })
+  const missing = unmeasuredField(usage)
+  const also = missing ? `; ${missing}` : ''
+
+  // The exact string, and an own key only: `Claude-Sonnet-5-5`, a trailing
+  // space or `constructor` is not a model this table prices.
+  const entry =
+    typeof model === 'string' && Object.prototype.hasOwnProperty.call(table, model) ? table[model] : null
   if (!entry) {
-    return {
-      usd: null,
-      reason: `${prices.id} prices no model named "${model}" — the spend is unpriced rather than estimated`
-    }
+    return unpriced(`${prices.id} prices no model named "${model}" — the spend is unpriced rather than estimated${also}`)
   }
-  const usd =
-    (usage.inputTokens / 1e6) * Number(entry.input) + (usage.outputTokens / 1e6) * Number(entry.output)
-  return { usd: Math.round(usd * 10000) / 10000, reason: null }
+  const multipliers = prices.cacheMultipliers || {}
+  const readMultipliers = multipliers.read && typeof multipliers.read === 'object' ? multipliers.read : {}
+  const writeMultipliers = multipliers.write && typeof multipliers.write === 'object' ? multipliers.write : {}
+  const readFactor = Object.prototype.hasOwnProperty.call(readMultipliers, model)
+    ? prices.cacheMultipliers.read[model]
+    : undefined
+  if (!isCount(readFactor)) {
+    return unpriced(
+      `${prices.id} lists "${model}" but publishes no cache read multiplier for it — the spend is ` +
+        `unpriced rather than priced at another model's rate${also}`
+    )
+  }
+  if (missing) return unpriced(missing)
+
+  const input = Number(entry.input)
+  let usd =
+    (usage.inputTokens / 1e6) * input +
+    (usage.outputTokens / 1e6) * Number(entry.output) +
+    (usage.cacheReadInputTokens / 1e6) * input * readFactor
+  for (const [tier, count] of Object.entries(usage.cacheCreationInputTokens)) {
+    const writeFactor = Object.prototype.hasOwnProperty.call(writeMultipliers, tier)
+      ? prices.cacheMultipliers.write[tier]
+      : undefined
+    if (!isCount(writeFactor)) {
+      return unpriced(`${prices.id} publishes no cache write multiplier for tier "${tier}" — the spend is unpriced`)
+    }
+    usd += (count / 1e6) * input * writeFactor
+  }
+  return { usd: Math.round(usd * 10000) / 10000, reason: null, priceTable: prices.id }
 }

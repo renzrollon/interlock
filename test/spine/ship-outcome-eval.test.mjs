@@ -81,7 +81,14 @@ test('the ceiling stops the next arm and never a run in flight', () => {
 })
 
 test('an unpriced model yields no spend figure rather than a zero or a guessed tier', () => {
-  const usage = { requests: 2, inputTokens: 1_000_000, outputTokens: 200_000, reason: null }
+  const usage = {
+    requests: 2,
+    inputTokens: 1_000_000,
+    outputTokens: 200_000,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0 },
+    reason: null
+  }
   const priced = priceUsage(usage, DEFAULT_MODEL, MODEL_PRICES)
   assert.ok(priced.usd > 0, 'a priced model must produce a figure')
 
@@ -90,10 +97,118 @@ test('an unpriced model yields no spend figure rather than a zero or a guessed t
   assert.match(unpriced.reason, /prices no model named/)
   assert.match(unpriced.reason, new RegExp(MODEL_PRICES.id))
 
-  // And an unmeasured usage is not priced at zero either.
+  // And an unmeasured usage is not priced at zero either: the usage's own
+  // reason travels, beside the field it is about.
   const unmeasured = priceUsage({ inputTokens: null, outputTokens: null, reason: 'no record' }, DEFAULT_MODEL, MODEL_PRICES)
   assert.equal(unmeasured.usd, null)
-  assert.equal(unmeasured.reason, 'no record')
+  assert.match(unmeasured.reason, /no record/)
+  assert.match(unmeasured.reason, /inputTokens/)
+
+  // A usage with input and output but no cache-read count is unpriced — never
+  // priced on input and output alone, which would read as the whole cost.
+  const { cacheReadInputTokens: _unread, ...noRead } = usage
+  const partial = priceUsage(noRead, DEFAULT_MODEL, MODEL_PRICES)
+  assert.equal(partial.usd, null)
+  assert.match(partial.reason, /cacheReadInputTokens/)
+})
+
+test('the runner hands the summed usage to the one pricer, with no second conversion', () => {
+  // `run.mjs` prices through `priceUsage` and nothing else: no rate, multiplier
+  // or per-million arithmetic of its own that could drift from the table.
+  const runner = readFileSync(join(ROOT, 'evals', 'ship', 'run.mjs'), 'utf8')
+  assert.match(runner, /const usage = readAgentUsage\(usageFile\)\s*\n\s*const priced = priceUsage\(usage, model, prices\)/)
+  for (const token of ['perMillionTokens', 'cacheMultipliers', '1e6', '1_000_000']) {
+    assert.ok(!runner.includes(token), `evals/ship/run.mjs carries its own pricing (${token})`)
+  }
+})
+
+test('a cached usage prices each term at its own published rate, and an absent count withholds the figure', () => {
+  // The spec's happy path: one million each of uncached input, cache read and
+  // five-minute write on Opus 5.5 is 4 + 0.2 + 5. The input term is the uncached
+  // count alone — the cache read is not also billed at base input.
+  const cached = {
+    requests: 1,
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadInputTokens: 1_000_000,
+    cacheCreationInputTokens: { ephemeral_5m: 1_000_000, ephemeral_1h: 0 },
+    reason: null
+  }
+  const opus = priceUsage(cached, 'claude-opus-5-5', MODEL_PRICES)
+  assert.equal(opus.usd, 9.2)
+  assert.equal(opus.reason, null)
+  assert.equal(opus.priceTable, 'anthropic-list-2026-10')
+
+  // The read multiplier is the model's own: Sonnet 5.5 reads at a tenth, so the
+  // same tokens are 2 + 0.2 + 2.5. The one-hour tier is its own price, never
+  // summed into the five-minute one.
+  assert.equal(priceUsage(cached, 'claude-sonnet-5-5', MODEL_PRICES).usd, 4.7)
+  const hour = priceUsage(
+    { ...cached, cacheReadInputTokens: 0, cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 1_000_000 } },
+    'claude-opus-5-5',
+    MODEL_PRICES
+  )
+  assert.equal(hour.usd, 12)
+  // A tier the write record omits prices as zero; one it carries as null withholds it.
+  assert.equal(priceUsage({ ...cached, cacheCreationInputTokens: { ephemeral_5m: 1_000_000 } }, 'claude-opus-5-5', MODEL_PRICES).usd, 9.2)
+  const nullTier = priceUsage(
+    { ...cached, cacheCreationInputTokens: { ephemeral_5m: 1_000_000, ephemeral_1h: null } },
+    'claude-opus-5-5',
+    MODEL_PRICES
+  )
+  assert.equal(nullTier.usd, null)
+  assert.match(nullTier.reason, /cacheCreationInputTokens\.ephemeral_1h/)
+
+  // A missing count is absent, with a reason that names the field.
+  for (const field of ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens']) {
+    const absent = priceUsage({ ...cached, [field]: null }, 'claude-opus-5-5', MODEL_PRICES)
+    assert.equal(absent.usd, null, `${field} absent must withhold the figure`)
+    assert.match(absent.reason, new RegExp(`\\(${field}\\)`), `the reason must name ${field}`)
+  }
+  const { cacheReadInputTokens: _dropped, ...noRead } = cached
+  const unread = priceUsage(noRead, 'claude-opus-5-5', MODEL_PRICES)
+  assert.equal(unread.usd, null)
+  assert.match(unread.reason, /cacheReadInputTokens/)
+
+  // The same usage for a model the table no longer carries is absent too, and
+  // the reason names the table id rather than a guessed rate.
+  const stale = priceUsage(noRead, 'claude-opus-5', MODEL_PRICES)
+  assert.equal(stale.usd, null)
+  assert.match(stale.reason, /anthropic-list-2026-10/)
+  assert.match(stale.reason, /prices no model named "claude-opus-5"/)
+
+  // A measured zero is priced as zero: input and output still price.
+  const zeros = priceUsage(
+    {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0 },
+      reason: null
+    },
+    'claude-sonnet-5-5',
+    MODEL_PRICES
+  )
+  assert.equal(zeros.usd, 12)
+  assert.equal(zeros.reason, null)
+
+  // The lookup is the exact string: case and surrounding whitespace are not the key.
+  for (const lookalike of ['Claude-Sonnet-5-5', 'claude-sonnet-5-5 ', ' claude-opus-5-5', 'constructor']) {
+    const miss = priceUsage(cached, lookalike, MODEL_PRICES)
+    assert.equal(miss.usd, null, `"${lookalike}" must not price`)
+    assert.match(miss.reason, new RegExp(MODEL_PRICES.id))
+  }
+
+  // A listed model with no read multiplier is unpriced and names the table id —
+  // never priced at some other model's read rate.
+  const partial = {
+    ...MODEL_PRICES,
+    cacheMultipliers: { ...MODEL_PRICES.cacheMultipliers, read: { 'claude-sonnet-5-5': 0.1 } }
+  }
+  const noFactor = priceUsage(cached, 'claude-opus-5-5', partial)
+  assert.equal(noFactor.usd, null)
+  assert.match(noFactor.reason, /anthropic-list-2026-10/)
+  assert.match(noFactor.reason, /no cache read multiplier/)
 })
 
 // --- measures: absent with a reason, never zero -----------------------------
@@ -180,6 +295,30 @@ test('an operator-supplied agent is not recorded as running this repository’s 
   const committed = selectAgent({})
   assert.equal(modelUnderTest(committed, {}), DEFAULT_MODEL)
   assert.equal(modelUnderTest(committed, { INTERLOCK_EVAL_MODEL: 'claude-sonnet-5' }), 'claude-sonnet-5')
+
+  // An unconfigured run calls, and records, the priced default: a key in the
+  // current table, so the default run is never unpriced by construction.
+  assert.equal(modelUnderTest(committed, {}), 'claude-opus-5-5')
+  assert.ok(Object.prototype.hasOwnProperty.call(MODEL_PRICES.perMillionTokens, DEFAULT_MODEL))
+  const usage = {
+    requests: 1,
+    inputTokens: 1000,
+    outputTokens: 100,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: { ephemeral_5m: 0, ephemeral_1h: 0 },
+    reason: null
+  }
+  assert.ok(priceUsage(usage, modelUnderTest(committed, {}), MODEL_PRICES).usd > 0)
+
+  // An override is recorded as given — a model the table dropped, or the priced
+  // key with a leading space — and prices nothing, naming the table id.
+  for (const override of ['claude-opus-5', ' claude-opus-5-5']) {
+    const recorded = modelUnderTest(committed, { INTERLOCK_EVAL_MODEL: override })
+    assert.equal(recorded, override, 'the override must be recorded exactly as given')
+    const priced = priceUsage(usage, recorded, MODEL_PRICES)
+    assert.equal(priced.usd, null, `"${override}" must not price`)
+    assert.match(priced.reason, /anthropic-list-2026-10/)
+  }
 
   // The row must not claim a model the eval never observed: an external agent
   // chooses its own, and a row that named ours would pair in a comparison with
