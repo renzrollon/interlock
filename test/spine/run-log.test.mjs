@@ -733,6 +733,29 @@ test('"did not commit" and "never found out" are different receipts', () => {
   assert.equal(unobserved.written, true)
 })
 
+// --- the effort capability on the receipt's host block -----------------------
+//
+// Read as bounded text, the way `billing` is: this module cannot import the
+// registry's legal values. A receipt written before the capability existed reads
+// `null` — not recorded — never the assumed `flag` nor `unsupported`.
+
+const HOST = { id: 'claude', billing: 'claude-subscription-programmatic', hooks: true, usage: true, cacheAccounting: true }
+
+test('a stored receipt\'s effort capability reads back as stored', () => {
+  for (const effort of ['flag', 'negotiated', 'unsupported']) {
+    const runId = `${RUN_ID}-${effort}`
+    appendRunLogEvent(tmp, { runId, type: 'run-receipt', host: { ...HOST, effort } })
+    const [record] = readRunLog(tmp, runId).records
+    assert.equal(record.host.effort, effort, `a receipt recording effort: ${effort}`)
+  }
+})
+
+test('a stored receipt with no effort capability reads null, never flag or unsupported', () => {
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt', host: { ...HOST } })
+  const [record] = readRunLog(tmp, RUN_ID).records
+  assert.equal(record.host.effort, null, 'not recorded')
+})
+
 // --- the two path sets -------------------------------------------------------
 //
 // These are the receipt's contribution to "did the merged diff match the plan",

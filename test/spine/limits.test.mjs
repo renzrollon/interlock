@@ -163,8 +163,8 @@ test('formatLimits names every cap it prints', () => {
 //     matcher that accepted the bare identifier would find it there and mark
 //     every eval cap read, restoring exactly the blindness being removed.
 //
-// REPORT_CAPS and EFFORT stay outside this check: neither has been reported as
-// unread, and widening the sweep further is a separate judgement.
+// REPORT_CAPS stays outside this check: it has not been reported as unread, and
+// widening the sweep further is a separate judgement.
 
 test('every cap the limits surface prints is read by the code path it governs', () => {
   const dirs = ['lib', 'bin', 'workflows', join('.github', 'workflows')]
@@ -210,7 +210,11 @@ test('every cap the limits surface prints is read by the code path it governs', 
     // reader per tier would only invite five `LANE_CAPS.byTier[n]` lookups
     // written to satisfy a test.
     { name: 'LANE_CAPS', caps: LANE_CAPS, tokens: cap => [`LANE_CAPS.${cap}`, `laneCaps.${cap}`] },
-    { name: 'SOLO', caps: SOLO, tokens: cap => [`SOLO.${cap}`, `solo.${cap}`] }
+    { name: 'SOLO', caps: SOLO, tokens: cap => [`SOLO.${cap}`, `solo.${cap}`] },
+    // The effort table joins once a published effort was found unread: the verify
+    // effort was printed while every verify spawn ran at the host's default.
+    // `byTier` counts as one cap, on the terms `LANE_CAPS.byTier` does.
+    { name: 'EFFORT', caps: EFFORT, tokens: cap => [`EFFORT.${cap}`] }
   ]
   const unread = []
   for (const group of groups) {
@@ -459,8 +463,36 @@ test('interlock limits surfaces the tier→effort mapping and the fixed step eff
   // Tiers 3 and 4 emit no override; the surface says "inherit", never a number
   // that would read as a forced effort.
   assert.match(text, /effort: tier 3 lane\s+inherit/)
-  assert.match(text, /effort: inter-wave verify step\s+xhigh/)
+  assert.match(text, /effort: verify step \(inter-wave and final\)\s+xhigh/)
   assert.match(text, /effort: review skeptic step\s+xhigh/)
+})
+
+// No effort level is written beside an `effort` key in the run program, the
+// wave planner or either driver: every effort is read from the published table.
+// Level words only — the capability value `effort: 'flag'` is not a level.
+const EFFORT_LEVEL_WORDS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+test('no effort level is written beside an effort key outside the published table', () => {
+  const pattern = new RegExp(
+    `\\beffort['"]?\\s*[:=]\\s*['"\`](${EFFORT_LEVEL_WORDS.join('|')})['"\`]`
+  )
+  const offenders = []
+  for (const rel of ['lib/run.mjs', 'lib/waves.mjs', 'workflows/ship.js', 'bin/interlock-run']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const hit = text.split('\n').findIndex(line => pattern.test(line))
+    if (hit !== -1) offenders.push(`${rel}:${hit + 1}`)
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `an effort level is written beside an effort key in: ${offenders.join(', ')}. ` +
+      `Read it from EFFORT in lib/limits.mjs instead.`
+  )
+  // The matcher itself: a level is a hit, the capability value is not.
+  assert.ok(pattern.test(`effort: 'xhigh'`))
+  assert.ok(pattern.test(`{ "effort": "low" }`))
+  assert.ok(!pattern.test(`effort: 'flag'`))
+  assert.ok(!pattern.test(`effort: EFFORT.verify`))
 })
 
 // --- lane caps and the solo envelope (spec: solo-mode, lanes) --------------
@@ -470,16 +502,17 @@ test('interlock limits surfaces the tier→effort mapping and the fixed step eff
 // the fleet builds. That is a product decision, updated here deliberately — not
 // a refactor that quietly moved a number.
 
-test('the lane-cap table and cohesion ceiling are the ones the design pinned', () => {
+test('the lane-cap table, cohesion ceiling and opus floor are the ones the design pinned', () => {
   assert.deepEqual(LANE_CAPS.byTier, { 1: 8, 2: 8, 3: 6, 4: 4, 5: 8 })
   assert.equal(LANE_CAPS.cohesionMaxTier, 3)
+  assert.equal(LANE_CAPS.opusMinTier, 4)
 })
 
 test('the solo envelope is the one the design pinned', () => {
   assert.equal(SOLO.maxTasks, 20)
 })
 
-test('interlock limits prints every tier cap, the cohesion ceiling and the solo envelope', () => {
+test('interlock limits prints every tier cap, the cohesion ceiling, the opus floor and the solo envelope', () => {
   const text = formatLimits()
   for (const tier of [1, 2, 3, 4, 5]) {
     assert.match(
@@ -489,6 +522,7 @@ test('interlock limits prints every tier cap, the cohesion ceiling and the solo 
     )
   }
   assert.match(text, new RegExp(`cohesion tier ceiling[^\\n]*\\s${LANE_CAPS.cohesionMaxTier}\\s*$`, 'm'))
+  assert.match(text, new RegExp(`multi-task opus floor[^\\n]*\\s${LANE_CAPS.opusMinTier}\\s*$`, 'm'))
   assert.match(text, new RegExp(`solo envelope[^\\n]*\\s${SOLO.maxTasks}\\s*$`, 'm'))
 })
 

@@ -1363,7 +1363,7 @@ test('spawns are counted per lane, not per task', () => {
   assert.deepEqual(
     spawns.map(e => e.model),
     ['opus', 'haiku'],
-    'a multi-task lane and its single-task neighbour record the model dispatch uses'
+    'a multi-task lane at the opus floor and its single-task neighbour record the model dispatch uses'
   )
 })
 
@@ -2589,4 +2589,53 @@ test('waves rejects a non-numeric --red-wave and refuses both task-shape flags a
   const both = run(['waves', '--classified', paths.classified, '--tdd', '--no-tdd'])
   assert.equal(both.code, 1, both.stdout)
   assert.match(both.stderr, /contradictory task-shape flags/)
+})
+
+test('verify exec passes a check through untouched and records how long it ran', () => {
+  // The inter-wave budget's clock. The command's output and exit code must be
+  // exactly its own — the verify agent reads and spills them as before — and
+  // the timing lands beside it, measured by the CLI around the command alone.
+  const root = mkdtempSync(join(tmpdir(), 'interlock-exec-'))
+  try {
+    mkdirSync(join(root, 'pkg'))
+    const ok = run(
+      ['verify', 'exec', '--kind', 'unit', '--command', `node -e "process.stdout.write('suite out'); process.stderr.write('suite err')"`],
+      { cwd: root }
+    )
+    assert.equal(ok.code, 0, ok.stderr)
+    assert.equal(ok.stdout, 'suite out', 'nothing is added to the command\'s own output')
+    assert.equal(ok.stderr, 'suite err')
+
+    const red = run(['verify', 'exec', '--kind', 'lint', '--command', 'node -e "process.exit(3)"'], { cwd: root })
+    assert.equal(red.code, 3, 'a red check exits as the check did')
+
+    const inPkg = run(
+      ['verify', 'exec', '--kind', 'typecheck', '--cwd', 'pkg', '--command', 'node -e "process.stdout.write(process.cwd())"'],
+      { cwd: root }
+    )
+    assert.equal(inPkg.code, 0, inPkg.stderr)
+    assert.ok(inPkg.stdout.endsWith(`${join('', 'pkg')}`), `ran in ${inPkg.stdout}, not in --cwd`)
+
+    const lines = readFileSync(join(root, '.claude/ship/verify-timings.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line))
+    assert.deepEqual(
+      lines.map(l => [l.kind, l.exitCode]),
+      [['unit', 0], ['lint', 3], ['typecheck', 0]],
+      'every run is recorded, red ones included, under the root rather than the --cwd'
+    )
+    for (const l of lines) assert.ok(Number.isInteger(l.durationMs) && l.durationMs >= 0, JSON.stringify(l))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('verify exec refuses to run without a kind or a command', () => {
+  const noKind = run(['verify', 'exec', '--command', 'true'])
+  assert.notEqual(noKind.code, 0)
+  assert.match(noKind.stderr, /--kind is required/)
+  const noCommand = run(['verify', 'exec', '--kind', 'unit'])
+  assert.notEqual(noCommand.code, 0)
+  assert.match(noCommand.stderr, /--command is required/)
 })

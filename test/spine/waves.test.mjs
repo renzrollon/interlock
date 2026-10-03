@@ -905,7 +905,7 @@ test('a serial staircase fuses in batch order, not id order', () => {
   })
   assert.deepEqual(laneIds(plan.waves[0]), [[['1.1', '1.3', '1.2']]])
   assert.equal(plan.lanes[0].kind, 'chain')
-  assert.equal(plan.lanes[0].model, 'opus')
+  assert.equal(plan.lanes[0].model, 'sonnet')
   for (const t of plan.waves[0].batches[0][0]) assert.equal(t.model, 'sonnet')
 })
 
@@ -1041,11 +1041,24 @@ test('a solo plan is not fused into chain lanes', () => {
   assert.equal(plan.waves[0].batches[0].length, 1)
 })
 
-test('laneModel follows lane shape', () => {
+test('laneModel follows lane shape and the opus floor', () => {
+  assert.equal(
+    laneModel([task({ model: 'haiku', tier: 1 }), task({ id: '1.2', model: 'sonnet', tier: 2 })]),
+    'sonnet',
+    'a multi-task lane below the opus floor dispatches on sonnet'
+  )
   assert.equal(
     laneModel([task({ model: 'haiku', tier: 1 }), task({ id: '1.2', model: 'sonnet', tier: 4 })]),
     'opus',
-    'a lane of two or more dispatches on opus'
+    'a multi-task lane at or above the opus floor dispatches on opus'
+  )
+  assert.equal(
+    laneModel([
+      task({ model: 'opus', tier: 2 }),
+      task({ id: '1.2', model: 'opus', tier: 2 })
+    ]),
+    'opus',
+    'an all-opus multi-task lane (solo promotion) stays on opus below the floor'
   )
   assert.equal(laneModel([task({ model: 'haiku', tier: 1 })]), 'haiku')
   assert.equal(laneModel([task({ model: 'sonnet', tier: 4 })]), 'sonnet')
@@ -1066,7 +1079,7 @@ test('laneModel follows lane shape', () => {
   assert.equal(byId['1.3'], 'opus')
 })
 
-test('an opus chain of tier-2 tasks keeps low effort', () => {
+test('a sonnet chain of tier-2 tasks keeps low effort', () => {
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', group: 1, tier: 2, paths: ['src/a.ts'] }),
@@ -1076,10 +1089,22 @@ test('an opus chain of tier-2 tasks keeps low effort', () => {
   })
   const lane = plan.waves[0].batches[0][0]
   assert.deepEqual(lane.map(t => t.id), ['1.1', '1.2', '1.3'])
-  assert.equal(laneModel(lane), 'opus')
+  assert.equal(laneModel(lane), 'sonnet')
   assert.equal(laneEffort(lane), 'low')
   assert.equal(plan.lanes[0].effort, 'low')
   assert.equal(plan.effort[0].effort, 'low')
+})
+
+test('a multi-task lane at the opus floor still keeps the hardest tier effort', () => {
+  const plan = planWaves({
+    tasks: [
+      task({ id: '1.1', group: 1, tier: 4, paths: ['src/a.ts'] }),
+      task({ id: '1.2', group: 1, tier: 4, paths: ['src/a.ts'] })
+    ]
+  })
+  const lane = plan.waves[0].batches[0][0]
+  assert.equal(laneModel(lane), 'opus')
+  assert.equal(laneEffort(lane), null, 'tier 4 inherits the session default')
 })
 
 test('a chain is reported on the plan, in the warning, and in the preview', () => {
@@ -1089,7 +1114,7 @@ test('a chain is reported on the plan, in the warning, and in the preview', () =
   const chain = plan.lanes.find(l => l.kind === 'chain')
   assert.deepEqual(chain.ids, ['1.1', '2.1', '3.1'])
   assert.equal(chain.fusedBatches, 3)
-  assert.equal(chain.model, 'opus')
+  assert.equal(chain.model, 'sonnet')
   assert.equal(plan.laneCount, 1)
   assert.equal(projectedWaveLoopAgents(plan).implementers, 1)
   const warning = plan.warnings.find(w => /chain lane/.test(w))
@@ -1097,8 +1122,9 @@ test('a chain is reported on the plan, in the warning, and in the preview', () =
   assert.match(warning, /1\.1, 2\.1, 3\.1/)
   assert.match(warning, /3 /)
   assert.match(warning, /cap/)
+  assert.match(warning, /sonnet agent/)
   assert.match(formatPlan(plan), /chain 1\.1 → 2\.1 → 3\.1/)
-  assert.match(formatPlan(plan), /opus/)
+  assert.match(formatPlan(plan), /sonnet/)
 })
 
 test('applyReplan fuses a revised chain under the caps the run was planned with', () => {
@@ -1159,7 +1185,7 @@ test('narrowing a lane to one task returns it to that task model', () => {
       task({ id: '1.2', group: 1, tier: 2, paths: ['src/a.ts'] })
     ]
   })
-  assert.equal(laneModel(plan.waves[0].batches[0][0]), 'opus')
+  assert.equal(laneModel(plan.waves[0].batches[0][0]), 'sonnet')
   const narrowed = narrowPlan(plan, id => id === '1.1')
   const left = narrowed.plan.waves[0].batches[0][0]
   assert.deepEqual(left.map(t => t.id), ['1.2'])

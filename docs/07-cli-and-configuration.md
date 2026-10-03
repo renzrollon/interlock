@@ -113,12 +113,13 @@ interlock-graph context "<query>" --budget 2000
 
 ## Model routing
 
-The planner assigns a slug — `haiku`, `sonnet` or `opus` — to every spawn. A lane of two or more tasks is `opus`; a lane of one task is that task's clamped model. On Claude Code those pass through unmapped. Two environment variables change what actually runs:
+The planner assigns a slug — `haiku`, `sonnet` or `opus` — to every spawn. A lane of two or more tasks is `opus` when its hardest tier is at or above the published multi-task opus floor (`LANE_CAPS.opusMinTier`, printed by `interlock limits`); below that floor it is `sonnet`. A lane of one task is that task's clamped model. On Claude Code those pass through unmapped. Three environment variables change what actually runs:
 
 | Variable | Meaning |
 |---|---|
 | `CLAUDE_CODE_SUBAGENT_MODEL` | **Leave it unset.** If set, Claude Code applies it to every subagent, overriding every per-tier model the planner assigned, so `ship` runs entirely on that model. The run banners this as `MODEL ROUTING OVERRIDDEN` rather than hiding it — see [04](./04-when-it-stops.md#model-routing-overridden). |
-| `INTERLOCK_MODEL_MAP` | Runner only. A JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. Codex and Qwen have no idea what the slugs mean, so an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default. Map `opus` as well as `sonnet`: a lane of two or more tasks dispatches on `opus`. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry. |
+| `CLAUDE_CODE_EFFORT_LEVEL` | **Leave it unset.** If set, the Claude CLI applies it to every agent, above its own `--effort` flag and above every per-step effort the plan assigned from `interlock limits`. Both drivers banner it as `EFFORT ROUTING OVERRIDDEN`, and neither strips it — see [04](./04-when-it-stops.md#effort-routing-overridden). The runner banners it on `--host claude` and on `--host acp` when the command is the Claude binary or a known wrapper (`claude-agent-acp`, `claude-code-acp`). |
+| `INTERLOCK_MODEL_MAP` | Runner only. A JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. Codex and Qwen have no idea what the slugs mean, so an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default. Map `opus` as well as `sonnet`: a multi-task lane whose hardest tier clears the opus floor (and every solo lane) still asks for `opus`. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry. |
 
 ```bash
 export INTERLOCK_MODEL_MAP='{"codex":{"haiku":"gpt-5-mini","sonnet":"gpt-5","opus":"gpt-5-pro"}}'
@@ -135,12 +136,12 @@ interlock-run <change-name> --host claude
 INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-run <change-name> --host acp
 ```
 
-| `--host` | Drives | Result schema | Model selection | Plugin hooks | Token usage | Billing path |
-|---|---|---|---|---|---|---|
-| `claude` | `claude -p` | enforced by the CLI | the planner's slugs, passed through | yes (`--plugin-dir`) | yes | Anthropic, programmatic |
-| `acp` | your `INTERLOCK_ACP_COMMAND` | recovered from text | negotiated on `session/new` | only over the Claude binary | no | whatever the agent is |
-| `codex` | `codex exec` | enforced by the CLI | mapped, or unrouted | **no** | yes | ChatGPT plan or API key |
-| `qwen` | `qwen -p` | enforced by the CLI | mapped, or unrouted | **no** | no | whatever you configured |
+| `--host` | Drives | Result schema | Model selection | Effort | Plugin hooks | Token usage | Billing path |
+|---|---|---|---|---|---|---|---|
+| `claude` | `claude -p` | enforced by the CLI | the planner's slugs, passed through | `--effort`, when the CLI's help lists it | yes (`--plugin-dir`) | yes | Anthropic, programmatic |
+| `acp` | your `INTERLOCK_ACP_COMMAND` | recovered from text | negotiated on `session/new` | negotiated with `session/set_config_option`, when advertised | only over the Claude binary | no | whatever the agent is |
+| `codex` | `codex exec` | enforced by the CLI | mapped, or unrouted | **not routed** | **no** | yes | ChatGPT plan or API key |
+| `qwen` | `qwen -p` | enforced by the CLI | mapped, or unrouted | **none** | **no** | no | whatever you configured |
 
 An adapter under `lib/host/` is a transport plus a declaration of what that host cannot do, and the run program reads the declaration rather than branching on a name. What that means for a run:
 
@@ -148,6 +149,7 @@ An adapter under `lib/host/` is a transport plus a declaration of what that host
 - **Isolation is the runner's, on every host.** Under `--isolate-waves` the step names one worktree path per lane, the runner creates it from the batch's merge base, and `interlock run record-batch` folds the clean lanes and halts naming the path and both lanes when two of them mutated the same file — created, modified or deleted it, so a rename's source counts against a lane that edited it.
 - **The runner names the billing path it is on.** Every summary prints `RUNNER HOST: <id> (experimental)`. A run over the Claude binary — directly, or through ACP — prints `SUBSCRIPTION PATH: programmatic`, because `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit; the interactive Workflow runtime is the path that change exempted, which is why `/interlock:ship` stays the default and this runner is not started for you. A Codex run with neither `CODEX_API_KEY` nor `OPENAI_API_KEY` prints `CHATGPT PLAN PATH`. A host with no hooks prints `HOOKS NOT IN FORCE (<host>)`. The receipt records the host, its billing path and its hook availability.
 - **What a host cannot do is declared, not discovered.** Codex and Qwen have no equivalent of the `PreToolUse` guards, so nothing stops a repair step from weakening a test there except the CLI's own unit-suite shrink check. Qwen reports no token accounting, so every wave and the run total are recorded as `unknown` — never as zero.
+- **Effort is forwarded, and what landed is reported per spawn.** Each spawn carries the effort `interlock limits` publishes for it, or none, and the runner hands it to the adapter unchanged. Each host declares an `effort` capability — `flag`, `negotiated` or `unsupported` — recorded in the manifest and in the receipt's host block. `--host claude` reads the CLI's `--help` once, when the host is created, to see whether it has the `--effort` flag; a CLI without it, or one whose help cannot be read, is declared `unsupported` for the run and is passed no flag, so it does not reject the spawn. The summary says `effort routing: applied on N/N spawns`, or prints `EFFORT ROUTING UNAVAILABLE (<host>)` with one line per spawn that missed, naming the level it requested and the reason. A missed effort never fails a spawn.
 - **The zero-touch contract is weaker.** On Claude Code nobody can interrupt a run because the runtime has no channel for it. Here the driver just declines to ask — a policy in a file, not a property of a runtime.
 
 Every banner the runner prints, with what to do about it, is in [04 — When it stops](./04-when-it-stops.md#runner-host-id-experimental-and-the-rest-of-the-runners-banners). `interlock-ship-acp` still works and prints a deprecation line; it is removed in the next minor version. **Code Mode is out of scope**: running the loop as generated code against a tool API would need Interlock to own a runtime to execute that code in, which it does not — future work, contingent on that, not a supported ship host today.
@@ -165,6 +167,7 @@ Every banner the runner prints, with what to do about it, is in [04 — When it 
 | `INTERLOCK_ACP_COMMAND` | `interlock-run --host acp` | The ACP agent command to drive |
 | `INTERLOCK_RUN_HOST` | `interlock-run` | Default for `--host` |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code | **Must be unset**, or every tier runs on that model (bannered) |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Claude Code | **Leave unset**, or every agent runs at that effort, whatever the plan assigned (bannered as `EFFORT ROUTING OVERRIDDEN`, never stripped) |
 | `CLAUDE_CODE_DISABLE_WORKFLOWS` | Claude Code | **Must be unset**, or `/interlock:ship` cannot start |
 | `CLAUDE_CODE_WALNUT_SPIRE` | `claude plugin eval` | Maintainers only: enables the early-access eval harness. Environment only, never committed — see [14](./14-evals.md#running-the-model-evals) |
 

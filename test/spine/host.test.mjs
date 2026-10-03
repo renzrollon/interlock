@@ -447,6 +447,16 @@ test('cache accounting is its own declared capability, not one implied by usage'
   assert.equal(ASSUMED_CAPABILITIES.cacheAccounting, false)
 })
 
+test('effort control is declared by every host, and an unprobed manifest still merges flag', () => {
+  for (const [id, entry] of Object.entries(HOSTS)) {
+    assert.equal(typeof entry.capabilities.effort, 'string', `${id} declares no effort capability`)
+  }
+  assert.ok(CAPABILITY_KEYS.includes('effort'))
+  // The merge default when a caller omits the key. `run start --host workflow`
+  // replaces it with the help probe before the manifest is written.
+  assert.equal(ASSUMED_CAPABILITIES.effort, 'flag')
+})
+
 test('parseAgentJson recovers a result from prose, a fence, or neither', () => {
   assert.deepEqual(parseAgentJson('{"ok":true}'), { ok: true })
   assert.deepEqual(parseAgentJson('Here you go:\n```json\n{"ok":false,"error":"x"}\n```\n'), {

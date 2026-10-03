@@ -9,6 +9,7 @@ This page takes you from install to one committed change. Onboard the repo once,
 | [Claude Code](https://claude.com/claude-code) **v2.1.154+** | Interlock is a Claude Code plugin. Cursor and Copilot are not supported. Known-good on 2.1.229. |
 | Dynamic workflows **enabled** | `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. The run banners this rather than hiding it — see [when it stops](./04-when-it-stops.md#model-routing-overridden). |
+| `CLAUDE_CODE_EFFORT_LEVEL` **unset** | Its effort twin. If it is set every agent runs at that effort, whatever the plan assigned to each step. The run banners it as `EFFORT ROUTING OVERRIDDEN` — see [when it stops](./04-when-it-stops.md#effort-routing-overridden). |
 | The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. Installed below. |
 | Node.js ≥ 18 | Runs the three bundled CLIs: `interlock`, `interlock-graph` and `interlock-run`. |
 | A git repo with code in it | `bootstrap` documents what already exists. |

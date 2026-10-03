@@ -41,7 +41,7 @@ import {
   formatFingerprint
 } from '../../lib/plan-fingerprint.mjs'
 import { SOLO, LANE_CAPS } from '../../lib/limits.mjs'
-import { planWaves } from '../../lib/waves.mjs'
+import { planWaves, laneEffort, laneModel } from '../../lib/waves.mjs'
 
 const CHANGE = 'add-widget'
 
@@ -716,4 +716,100 @@ test('narrowing a reused plan keeps the red marker on its wave', () => {
   const narrowed = narrowPlan(plan, id => id === '2.2')
   assert.equal(narrowed.plan.redWave, 1, 'the plan-level field survives')
   assert.equal(narrowed.plan.waves[0].red, true, 'and so does the marker on the wave itself')
+})
+
+// ---------------------------------------------------------------------------
+// The opus floor.
+//
+// A multi-task lane's model is derived live from `LANE_CAPS.opusMinTier`, and
+// the plan's lane report records it. A stored plan built under another floor —
+// including every `/4` plan, built when every multi-task lane ran on opus — must
+// be rebuilt, or `PLAN REUSED` would hold a report naming one model while the
+// spawn and its `agent-spawn` row ask for another.
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with the opus floor at `tier`, restoring it whatever happens. */
+function withOpusFloor(tier, fn) {
+  const was = LANE_CAPS.opusMinTier
+  LANE_CAPS.opusMinTier = tier
+  try {
+    return fn()
+  } finally {
+    LANE_CAPS.opusMinTier = was
+  }
+}
+
+test('a plan written as ship-plan/4 is rebuilt, so its opus-for-every-pair report is not reused', () => {
+  const { root } = shipped()
+  const fpPath = join(root, ...FINGERPRINT_PATH.split('/'))
+  const stored = JSON.parse(readFileSync(fpPath, 'utf8'))
+  writeFileSync(fpPath, JSON.stringify({ ...stored, planFormat: 'interlock.ship-plan/4' }))
+  const result = checkPlanReuse(root, CHANGE)
+  assert.equal(result.reuse, false)
+  assert.equal(result.status, REUSE_FORMAT_VERSION)
+  assert.match(formatPlanReuse(result), /^PLAN REBUILT \(plan-format-changed\)/)
+  assert.doesNotMatch(formatPlanReuse(result), /PLAN REUSED/)
+  clean(root)
+})
+
+test('the opus floor is part of the fingerprint and printed with the other caps', () => {
+  const { root } = makeRepo()
+  const fp = computeFingerprint(root, CHANGE)
+  assert.equal(fp.opusMinTier, LANE_CAPS.opusMinTier)
+  assert.match(formatFingerprint(fp), new RegExp(`opus-min-tier ${LANE_CAPS.opusMinTier}\\b`))
+  const lowered = withOpusFloor(LANE_CAPS.opusMinTier - 1, () => computeFingerprint(root, CHANGE))
+  assert.notEqual(lowered.hash, fp.hash, 'a plan built under another floor is a different plan')
+  clean(root)
+})
+
+test('a stored plan built under another opus floor is rebuilt, and the reason names the floor', () => {
+  const { root } = shipped()
+  const was = LANE_CAPS.opusMinTier
+  const result = withOpusFloor(was - 1, () => checkPlanReuse(root, CHANGE))
+  assert.equal(result.reuse, false)
+  assert.equal(result.status, REUSE_MISMATCH)
+  assert.match(result.reason, new RegExp(`opusMinTier ${was} → ${was - 1}`))
+  assert.doesNotMatch(result.reason, /edited since the plan was built/, 'no artifact was edited')
+  clean(root)
+})
+
+test('a moved cap and an edited artifact are both named', () => {
+  const { root, dir } = shipped()
+  artifact(dir, 'design.md', '## Decisions\n\nD1 — actually, do it differently.\n')
+  const result = withOpusFloor(LANE_CAPS.opusMinTier - 1, () => checkPlanReuse(root, CHANGE))
+  assert.equal(result.status, REUSE_MISMATCH)
+  assert.match(result.reason, /opusMinTier/)
+  assert.match(result.reason, /edited since the plan was built/)
+  clean(root)
+})
+
+test('narrowing re-derives the lane report from the lanes that will dispatch', () => {
+  // One collision lane whose hardest task clears the floor. Narrowing that task
+  // away leaves a pair below it: the report must follow the spawn to sonnet.
+  const t = (id, tier) => ({
+    id,
+    group: 1,
+    description: `task ${id}`,
+    tier,
+    model: 'sonnet',
+    isTestTask: false,
+    paths: ['src/a.ts']
+  })
+  const plan = planWaves({ tasks: [t('1.1', LANE_CAPS.opusMinTier), t('1.2', 2), t('1.3', 2)] })
+  assert.deepEqual(plan.lanes.map(l => [l.ids, l.model]), [[['1.1', '1.2', '1.3'], 'opus']])
+
+  const narrowed = narrowPlan(plan, id => id === '1.1').plan
+  const dispatched = narrowed.waves.flatMap(w => w.batches.flat())
+  assert.deepEqual(dispatched.map(l => l.map(x => x.id)), [['1.2', '1.3']])
+  assert.deepEqual(
+    narrowed.lanes.map(l => ({ ids: l.ids, tier: l.tier, model: l.model, effort: l.effort })),
+    [{ ids: ['1.2', '1.3'], tier: 2, model: laneModel(dispatched[0]), effort: laneEffort(dispatched[0]) }]
+  )
+  assert.equal(narrowed.lanes[0].model, 'sonnet')
+  assert.deepEqual(narrowed.effort.map(e => e.ids), [['1.2', '1.3']])
+
+  // Narrowed to one task, the lane is no longer a fold and is not listed.
+  const single = narrowPlan(plan, id => id !== '1.3').plan
+  assert.deepEqual(single.lanes, [])
+  assert.deepEqual(single.effort, [])
 })

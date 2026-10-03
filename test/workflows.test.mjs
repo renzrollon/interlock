@@ -13,12 +13,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { laneEffort as laneEffortSource } from '../lib/waves.mjs'
+import { EFFORT } from '../lib/limits.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -122,7 +122,10 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
   for (const banner of [
     'GRAPH UNAVAILABLE:',
     'NO TEST PROFILE:',
-    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL='
+    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
+    // The effort twin: a property of the host's environment, so only the host
+    // can raise it, and the run program must not restate it.
+    'EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL='
   ]) {
     assert.ok(ship.includes(banner), `the host no longer emits the "${banner}" banner`)
     assert.ok(!run.includes(banner), `lib/run.mjs restates the host's "${banner}" banner`)
@@ -559,14 +562,72 @@ test('the docs carry every banner the runner prints, verbatim', () => {
     'SUBSCRIPTION PATH: programmatic',
     'CHATGPT PLAN PATH',
     'HOOKS NOT IN FORCE',
-    'MODEL ROUTING UNAVAILABLE'
+    'MODEL ROUTING UNAVAILABLE',
+    'EFFORT ROUTING UNAVAILABLE',
+    'EFFORT ROUTING OVERRIDDEN'
   ]) {
     assert.ok(driver.includes(banner), `the runner no longer prints ${banner}`)
     assert.ok(docs.includes(banner), `docs/04 does not explain ${banner}`)
   }
+  // Known Claude ACP adapters are recognised by their own command name, so both
+  // banners fire. A launcher named npx is not: its name does not say what it runs.
+  assert.match(docs, /claude-agent-acp/)
+  assert.match(docs, /claude-code-acp/)
+  assert.match(docs, /whose own name is `npx` is not recognised/)
   // The one host-only banner the CLI raises rather than the driver.
   assert.ok(readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8').includes('TOKEN USAGE NOT REPORTED'))
   assert.ok(docs.includes('TOKEN USAGE NOT REPORTED'))
+})
+
+test('the runner collects effort events in a list of its own and reads the unapplied set off them', () => {
+  // The model fold already filters `routing`, so a pin that did not name the
+  // effort list would pass today. The list is named so the unapplied set can be
+  // shown to come from the adapter's events and from nowhere else.
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  assert.match(driver, /\beffortRouting\b/, 'the runner keeps effort events in a list named effortRouting')
+  assert.match(
+    driver,
+    /effortRouting\.filter\(event => event\.applied === false\)/,
+    'the unapplied effort set must be the events the adapter marked unapplied'
+  )
+})
+
+test('every effort reason the adapters can give is explained in docs/04, verbatim', async () => {
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  // Loaded inside the test: until the module exists this fails here, and not
+  // the whole file at import.
+  const effort = await import('../lib/host/effort.mjs')
+  const strings = value =>
+    typeof value === 'string'
+      ? [value]
+      : value && typeof value === 'object'
+        ? Object.values(value).flatMap(strings)
+        : []
+  // A reason is a sentence. The override variable's name and the capability
+  // values are single tokens, so a space tells them apart without naming exports.
+  const reasons = [...new Set(Object.values(effort).flatMap(strings))].filter(text => /\s/.test(text))
+  for (const reason of [
+    'host has no effort control',
+    'effort is not routed on this host',
+    'this claude CLI has no --effort flag',
+    'could not establish whether this claude CLI accepts --effort',
+    'no effort option advertised',
+    'level not among advertised values',
+    'agent rejected the effort option'
+  ]) {
+    assert.ok(reasons.includes(reason), `lib/host/effort.mjs no longer exports the reason "${reason}"`)
+  }
+  for (const reason of reasons) {
+    assert.ok(docs.includes(reason), `docs/04 does not explain the effort reason "${reason}"`)
+  }
+})
+
+test('the doctor names the effort variable in the reason it reads the environment', () => {
+  const doctor = readFileSync(join(ROOT, 'lib', 'doctor.mjs'), 'utf8')
+  const at = doctor.indexOf("tokens: ['printenv']")
+  assert.ok(at !== -1, 'the doctor no longer allowlists printenv')
+  const entry = doctor.slice(Math.max(0, at - 600), at + 600)
+  assert.match(entry, /CLAUDE_CODE_EFFORT_LEVEL/, 'the printenv allowlist reason must name the effort variable')
 })
 
 test('the docs state why the Workflow runtime stays the default, in one place', () => {
@@ -600,7 +661,7 @@ const RUNNER_BIN = join(ROOT, 'bin', 'interlock-run')
 const ACP_FIXTURE = join(ROOT, 'test', 'fixtures', 'acp', 'agent.mjs')
 
 /** A temp repo with one classified task, ready for a lean ship run. */
-function acpShipRepo() {
+function acpShipRepo({ tasks = [{ id: '1.1', tier: 2, model: 'sonnet', path: 'README.md' }] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'interlock-acp-routing-'))
   const change = 'add-thing'
   const base = `openspec/changes/${change}`
@@ -611,20 +672,21 @@ function acpShipRepo() {
   }
   put(`${base}/proposal.md`, '# Add thing\n\nWhy: because.\n')
   put(`${base}/design.md`, '# Design\n\nD1: keep it small.\n')
-  put(`${base}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Note it in README.md\n')
+  put(
+    `${base}/tasks.md`,
+    `# Tasks\n\n${tasks.map(t => `- [ ] ${t.id} Note it in ${t.path}`).join('\n')}\n`
+  )
   put('README.md', 'hello\n')
   put('.claude/ship/classified.json', {
-    tasks: [
-      {
-        id: '1.1',
-        group: 1,
-        description: 'Note it in README.md',
-        tier: 2,
-        model: 'sonnet',
-        isTestTask: false,
-        paths: ['README.md']
-      }
-    ]
+    tasks: tasks.map(t => ({
+      id: t.id,
+      group: 1,
+      description: `Note it in ${t.path}`,
+      tier: t.tier,
+      model: t.model,
+      isTestTask: false,
+      paths: [t.path]
+    }))
   })
   execFileSync('git', ['init', '-q', '.'], { cwd: root })
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root })
@@ -634,32 +696,41 @@ function acpShipRepo() {
   return { root, change }
 }
 
-/** Run the runner on its ACP host against the fixture agent; return its stdout. */
-function runAcpShip(fixtureFlags) {
-  const { root, change } = acpShipRepo()
+/**
+ * Run the runner on its ACP host against the fixture agent, and keep both
+ * streams: the summary is on stdout, the `--verbose` event lines on stderr.
+ *
+ * `CLAUDE_CODE_EFFORT_LEVEL` is removed from the child's environment unless the
+ * test sets it, so a developer's own export cannot change a result.
+ */
+function runAcpCaptured(fixtureFlags, { repo = {}, flags = [], env = {} } = {}) {
+  const { root, change } = acpShipRepo(repo)
   try {
-    try {
-      return execFileSync(
-        process.execPath,
-        [RUNNER_BIN, change, '--host', 'acp', '--no-commit', '--root', '.'],
-        {
-          cwd: root,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: 120000,
-          env: {
-            ...process.env,
-            INTERLOCK_ACP_COMMAND: `${process.execPath} ${ACP_FIXTURE} --ship ${fixtureFlags}`.trim()
-          }
+    const r = spawnSync(
+      process.execPath,
+      [RUNNER_BIN, change, '--host', 'acp', '--no-commit', '--root', '.', ...flags],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 120000,
+        env: {
+          ...process.env,
+          CLAUDE_CODE_EFFORT_LEVEL: undefined,
+          INTERLOCK_ACP_COMMAND: `${process.execPath} ${ACP_FIXTURE} --ship ${fixtureFlags}`.trim(),
+          ...env
         }
-      )
-    } catch (err) {
-      // A halt is a verdict, not a test failure: the summary is on stdout either way.
-      return err.stdout || ''
-    }
+      }
+    )
+    // A halt is a verdict, not a test failure: the summary is on stdout either way.
+    return { stdout: r.stdout || '', stderr: r.stderr || '' }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+}
+
+/** Run the runner on its ACP host against the fixture agent; return its stdout. */
+function runAcpShip(fixtureFlags) {
+  return runAcpCaptured(fixtureFlags).stdout
 }
 
 test('the runner stays silent about routing failure when every model was applied', () => {
@@ -740,7 +811,11 @@ const HOST_FIXTURES = join(ROOT, 'test', 'fixtures', 'hosts')
  * A temp repo with two classified tasks whose predicted paths are disjoint, so
  * the planner puts them in one batch of two lanes.
  */
-function runnerRepo({ paths = [['docs/a.md'], ['docs/b.md']] } = {}) {
+function runnerRepo({
+  paths = [['docs/a.md'], ['docs/b.md']],
+  tiers = [4, 4],
+  profile = null
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), 'interlock-runner-'))
   const change = 'add-thing'
   const base = `openspec/changes/${change}`
@@ -751,16 +826,26 @@ function runnerRepo({ paths = [['docs/a.md'], ['docs/b.md']] } = {}) {
   }
   put(`${base}/proposal.md`, '# Add thing\n\nWhy: because.\n')
   put(`${base}/design.md`, '# Design\n\nD1: keep it small.\n')
-  put(`${base}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Write docs/a.md\n- [ ] 1.2 Write docs/b.md\n')
+  const ids = tiers.map((_, i) => `1.${i + 1}`)
+  const names = paths.map(p => p[0])
+  put(`${base}/tasks.md`, `# Tasks\n\n${ids.map((id, i) => `- [ ] ${id} Write ${names[i]}`).join('\n')}\n`)
   put('README.md', 'hello\n')
+  // A test profile makes final verification plan a step, which is the only way
+  // a run emits a verify spawn.
+  if (profile) put('.claude/testing/profile.json', profile)
   // Tier 4 on purpose: cohesion packs path-disjoint components at or below
   // `LANE_CAPS.cohesionMaxTier` into ONE lane, and a batch of one lane proves
   // nothing about isolation between lanes.
   put('.claude/ship/classified.json', {
-    tasks: [
-      { id: '1.1', group: 1, description: 'Write docs/a.md', tier: 4, model: 'sonnet', isTestTask: false, paths: paths[0] },
-      { id: '1.2', group: 1, description: 'Write docs/b.md', tier: 4, model: 'sonnet', isTestTask: false, paths: paths[1] }
-    ]
+    tasks: ids.map((id, i) => ({
+      id,
+      group: 1,
+      description: `Write ${names[i]}`,
+      tier: tiers[i],
+      model: tiers[i] >= 5 ? 'opus' : 'sonnet',
+      isTestTask: false,
+      paths: paths[i]
+    }))
   })
   execFileSync('git', ['init', '-q', '.'], { cwd: root })
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root })
@@ -770,37 +855,44 @@ function runnerRepo({ paths = [['docs/a.md'], ['docs/b.md']] } = {}) {
   return { root, change }
 }
 
-/** Run the runner on one host against its fixture CLI; return stdout and the repo. */
-function runRunner(host, { fixture, fixtureFlags = [], flags = [], env = {}, root, change }) {
+/**
+ * Run the runner on one host against its fixture CLI; keep both streams.
+ *
+ * `CLAUDE_CODE_EFFORT_LEVEL` is removed from the child's environment unless the
+ * test passes it in `env`, so a developer's own export cannot change a result.
+ */
+function runRunnerCaptured(host, { fixture, fixtureFlags = [], flags = [], env = {}, root, change }) {
   const commandEnv = {
     claude: 'INTERLOCK_CLAUDE_COMMAND',
     codex: 'INTERLOCK_CODEX_COMMAND',
     qwen: 'INTERLOCK_QWEN_COMMAND'
   }[host]
-  try {
-    return execFileSync(
-      process.execPath,
-      [RUNNER_BIN, change, '--host', host, '--no-commit', '--root', '.', ...flags],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 180000,
-        env: {
-          ...process.env,
-          CODEX_API_KEY: undefined,
-          OPENAI_API_KEY: undefined,
-          ...(commandEnv && fixture
-            ? { [commandEnv]: [process.execPath, fixture, ...fixtureFlags].join(' ') }
-            : {}),
-          ...env
-        }
+  const r = spawnSync(
+    process.execPath,
+    [RUNNER_BIN, change, '--host', host, '--no-commit', '--root', '.', ...flags],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 180000,
+      env: {
+        ...process.env,
+        CODEX_API_KEY: undefined,
+        OPENAI_API_KEY: undefined,
+        CLAUDE_CODE_EFFORT_LEVEL: undefined,
+        ...(commandEnv && fixture
+          ? { [commandEnv]: [process.execPath, fixture, ...fixtureFlags].join(' ') }
+          : {}),
+        ...env
       }
-    )
-  } catch (err) {
-    // A halt is a verdict, not a test failure: the summary is on stdout either way.
-    return err.stdout || ''
-  }
+    }
+  )
+  // A halt is a verdict, not a test failure: the summary is on stdout either way.
+  return { stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
+/** Run the runner on one host against its fixture CLI; return stdout. */
+function runRunner(host, opts) {
+  return runRunnerCaptured(host, opts).stdout
 }
 
 test('the runner forks a worktree per lane, folds both, and removes them', () => {
@@ -932,6 +1024,283 @@ test('a Codex run WITH an API key does not claim the ChatGPT plan path', () => {
   }
 })
 
+// --- effort routing on the runner (spec: effort-routing, run-host-adapters) --
+//
+// The runner forwards a spawn's effort to its host and banners what the host
+// could not apply. The facts come from the adapter's `effort-routing` events;
+// what is asserted here is that they reach the operator, per spawn, with the
+// level as requested and a reason true of the host.
+
+/** The tier-2 lane's effort, read from the published table rather than restated. */
+const TIER2_EFFORT = EFFORT.byTier[2]
+const TIER5_EFFORT = EFFORT.byTier[5]
+const CLAUDE_FIXTURE = join(HOST_FIXTURES, 'fake-claude.mjs')
+const ONE_LANE = { paths: [['docs/a.md']], tiers: [2] }
+const UNIT_PROFILE = { version: 1, unit: { command: 'npm test' } }
+
+/** The `— label: …` lines under one banner heading. */
+function bannerLines(stdout, heading) {
+  const lines = stdout.split('\n')
+  const at = lines.findIndex(line => line.includes(heading))
+  if (at === -1) return null
+  const out = []
+  for (const line of lines.slice(at + 1)) {
+    if (!/^\s*— /.test(line)) break
+    out.push(line.trim())
+  }
+  return out
+}
+
+test('--host claude forwards the lane effort, says so, and banners nothing', () => {
+  assert.ok(TIER2_EFFORT, 'the tier-2 lane must publish an effort for this test to mean anything')
+  const { root, change } = runnerRepo(ONE_LANE)
+  try {
+    const { stdout, stderr } = runRunnerCaptured('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship'],
+      flags: ['--verbose'],
+      root,
+      change
+    })
+    assert.match(
+      stderr,
+      new RegExp(`effort routing[^\\n]*\\b1\\.1\\b[^\\n]*\\b${TIER2_EFFORT}\\b`),
+      `stderr must carry an effort-routing line naming the lane and its level:\n${stderr}`
+    )
+    assert.doesNotMatch(
+      stderr,
+      /effort routing[^\n]*plan-waves/,
+      'the planner names no effort, so it has no effort-routing line'
+    )
+    assert.match(stdout, /effort routing: applied on (\d+)\/\1 spawns/, stdout)
+    assert.doesNotMatch(stdout, /EFFORT ROUTING UNAVAILABLE/, stdout)
+    const manifest = JSON.parse(readFileSync(join(root, '.claude', 'ship', 'run.json'), 'utf8'))
+    assert.equal(manifest.host.effort, 'flag', 'the manifest records the capability the adapter observed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--host claude forwards the verify step its published effort', () => {
+  assert.ok(EFFORT.verify, 'the verify step must publish an effort for this test to mean anything')
+  const { root, change } = runnerRepo({ ...ONE_LANE, profile: UNIT_PROFILE })
+  try {
+    const { stderr } = runRunnerCaptured('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship'],
+      flags: ['--verbose'],
+      root,
+      change
+    })
+    assert.match(
+      stderr,
+      new RegExp(`effort routing[^\\n]*\\bverify\\b[^\\n]*\\b${EFFORT.verify}\\b`),
+      `the verify spawn's effort must reach the host:\n${stderr}`
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--host claude over a CLI with no --effort flag banners it and still records the lane', () => {
+  const { root, change } = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship', '--fixture-no-effort-flag'],
+      root,
+      change
+    })
+    assert.match(stdout, /EFFORT ROUTING UNAVAILABLE \(claude\)/, stdout)
+    assert.match(stdout, /this claude CLI has no --effort flag/, stdout)
+    assert.match(stdout, /wave 1 \(run-batch\): 1 ok, 0 failed/, `the lane's result is still recorded:\n${stdout}`)
+    assert.doesNotMatch(stdout, /effort routing: applied on/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--host qwen banners effort as unavailable, names the lane, and closes the run', () => {
+  const { root, change } = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('qwen', {
+      fixture: join(HOST_FIXTURES, 'fake-qwen.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      root,
+      change
+    })
+    assert.match(stdout, /EFFORT ROUTING UNAVAILABLE \(qwen\)/, stdout)
+    assert.match(
+      stdout,
+      new RegExp(`— 1\\.1: ${TIER2_EFFORT} requested, host has no effort control`),
+      `the banner names the lane, the level as requested and the reason:\n${stdout}`
+    )
+    assert.match(stdout, /wave 1 \(run-batch\): 1 ok, 0 failed/, stdout)
+    assert.match(stdout, /SHIP COMPLETE/, `the run closes:\n${stdout}`)
+    const manifest = JSON.parse(readFileSync(join(root, '.claude', 'ship', 'run.json'), 'utf8'))
+    assert.equal(manifest.host.effort, 'unsupported')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--host codex gives its own effort reason, not the one that is false for it', () => {
+  const { root, change } = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      root,
+      change
+    })
+    assert.match(stdout, /EFFORT ROUTING UNAVAILABLE \(codex\)/, stdout)
+    assert.match(stdout, /effort is not routed on this host/, stdout)
+    assert.doesNotMatch(stdout, /host has no effort control/, 'codex has a knob; this change just does not route it')
+    const manifest = JSON.parse(readFileSync(join(root, '.claude', 'ship', 'run.json'), 'utf8'))
+    assert.equal(manifest.host.effort, 'unsupported')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('--host acp applies an advertised effort and banners one that is not advertised', () => {
+  const applied = runAcpCaptured('--effort-options')
+  assert.match(applied.stdout, /effort routing: applied on (\d+)\/\1 spawns/, applied.stdout)
+  assert.doesNotMatch(applied.stdout, /EFFORT ROUTING UNAVAILABLE \(acp\)/, applied.stdout)
+
+  const bare = runAcpCaptured('')
+  assert.match(bare.stdout, /EFFORT ROUTING UNAVAILABLE \(acp\)/, bare.stdout)
+  assert.match(bare.stdout, /no effort option advertised/, bare.stdout)
+  assert.doesNotMatch(bare.stdout, /effort routing: applied on/, bare.stdout)
+})
+
+test('--host acp reports effort per spawn: one lane applied, one banner line for the other', () => {
+  assert.ok(TIER2_EFFORT && TIER5_EFFORT && TIER2_EFFORT !== TIER5_EFFORT, 'the two tiers must publish different efforts')
+  // Two tasks on disjoint paths, at tiers that never pack into one lane. If the
+  // planner ever packs them, reshape the repo until it plans two.
+  const { stdout, stderr } = runAcpCaptured(`--effort-values=${TIER2_EFFORT}`, {
+    repo: {
+      tasks: [
+        { id: '1.1', tier: 2, model: 'sonnet', path: 'docs/a.md' },
+        { id: '1.2', tier: 5, model: 'opus', path: 'docs/b.md' }
+      ]
+    },
+    flags: ['--verbose']
+  })
+  const eventLines = stderr.split('\n').filter(line => /effort routing/.test(line))
+  assert.equal(eventLines.length, 2, `one effort-routing line per spawn:\n${stderr}`)
+  assert.ok(
+    eventLines.some(line => /\b1\.1\b/.test(line) && !/not applied/.test(line)),
+    `the tier-2 lane's level was advertised and applied:\n${eventLines.join('\n')}`
+  )
+  const lines = bannerLines(stdout, 'EFFORT ROUTING UNAVAILABLE (acp)')
+  assert.ok(lines, `a lane that could not be applied is bannered:\n${stdout}`)
+  assert.equal(lines.length, 1, `exactly one lane is named:\n${lines.join('\n')}`)
+  assert.match(lines[0], new RegExp(`1\\.2: ${TIER5_EFFORT} requested, level not among advertised values`))
+  assert.doesNotMatch(stdout, /effort routing: applied on/, 'a run with an unapplied spawn must not also claim it applied')
+})
+
+test('the runner prints the override banner only on a host that drives the claude binary', () => {
+  const override = { CLAUDE_CODE_EFFORT_LEVEL: 'medium' }
+  const claude = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship'],
+      env: override,
+      root: claude.root,
+      change: claude.change
+    })
+    assert.match(stdout, /EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=medium/, stdout)
+  } finally {
+    rmSync(claude.root, { recursive: true, force: true })
+  }
+
+  // Pins: the variable means nothing to codex, and unset means nothing to say.
+  const codex = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: override,
+      root: codex.root,
+      change: codex.change
+    })
+    assert.doesNotMatch(stdout, /EFFORT ROUTING OVERRIDDEN/, `codex ignores the variable:\n${stdout}`)
+  } finally {
+    rmSync(codex.root, { recursive: true, force: true })
+  }
+  const unset = runnerRepo(ONE_LANE)
+  try {
+    const stdout = runRunner('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship'],
+      root: unset.root,
+      change: unset.change
+    })
+    assert.doesNotMatch(stdout, /EFFORT ROUTING OVERRIDDEN/, `nothing exported, nothing to banner:\n${stdout}`)
+  } finally {
+    rmSync(unset.root, { recursive: true, force: true })
+  }
+})
+
+test('a known ACP wrapper prints the subscription and override banners; a launcher named npx does not', () => {
+  // The command's own name is what the runner reads. A copy of the fixture
+  // agent, invoked through a launcher of that name, is the same agent either way.
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-acp-name-'))
+  const launcher = name => {
+    const bin = join(dir, name)
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(ACP_FIXTURE)} "$@"\n`
+    )
+    chmodSync(bin, 0o755)
+    return bin
+  }
+  try {
+    const wrapped = runAcpCaptured('', {
+      env: {
+        INTERLOCK_ACP_COMMAND: `${launcher('claude-agent-acp')} --ship`,
+        CLAUDE_CODE_EFFORT_LEVEL: 'high'
+      }
+    })
+    assert.match(wrapped.stdout, /SUBSCRIPTION PATH: programmatic \(acp\)/, wrapped.stdout)
+    assert.match(wrapped.stdout, /EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=high/, wrapped.stdout)
+    assert.match(wrapped.stdout, /HOOKS NOT IN FORCE \(acp\)/, wrapped.stdout)
+
+    const launched = runAcpCaptured('', {
+      env: {
+        INTERLOCK_ACP_COMMAND: `${launcher('npx')} --ship`,
+        CLAUDE_CODE_EFFORT_LEVEL: 'high'
+      }
+    })
+    assert.doesNotMatch(launched.stdout, /SUBSCRIPTION PATH/, launched.stdout)
+    assert.doesNotMatch(launched.stdout, /EFFORT ROUTING OVERRIDDEN/, launched.stdout)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a run whose spawns all carry a null effort prints neither effort line', () => {
+  // The tier-4 pair: no published effort, so nothing was requested and nothing
+  // can be unavailable. Silence here is correct; a banner would be a false alarm.
+  const { root, change } = runnerRepo()
+  try {
+    const { stdout, stderr } = runRunnerCaptured('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship'],
+      flags: ['--verbose'],
+      root,
+      change
+    })
+    assert.doesNotMatch(stdout, /effort routing: applied on/, stdout)
+    assert.doesNotMatch(stdout, /EFFORT ROUTING UNAVAILABLE/, stdout)
+    assert.doesNotMatch(stderr, /effort routing/, stderr)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('an unknown host and the Workflow host are refused before anything is written', () => {
   for (const [host, pattern] of [['gemini', /unknown host "gemini"/], ['workflow', /\/interlock:ship/]]) {
     const { root, change } = runnerRepo()
@@ -980,6 +1349,7 @@ test('the shim prints its deprecation line on stderr and forwards every argument
           timeout: 120000,
           env: {
             ...process.env,
+            CLAUDE_CODE_EFFORT_LEVEL: undefined,
             INTERLOCK_ACP_COMMAND: `${process.execPath} ${ACP_FIXTURE} --ship`
           }
         }
@@ -1360,19 +1730,26 @@ test('no driver mirrors laneEffort or laneModel any more', () => {
   }
 })
 
-test('the CLI applies the lane effort at dispatch and pins the review skeptics at xhigh', () => {
+test('the CLI dispatches every published effort — lanes, verify and the skeptics — and a driver forwards it', () => {
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   // The lane spawn carries its lane's derived effort, beside the model.
   assert.match(run, /model: laneModel\(lane\),\n\s*effort: laneEffort\(lane\)/)
-  // And a host passes it through rather than choosing one.
+  // The verify step reads its published effort, for both the inter-wave check
+  // and the final one: a table row nobody reads is a row that stops governing.
+  assert.match(run, /effort: EFFORT\.verify/)
+  // And a host passes it through rather than choosing one — both hosts, with
+  // the same truthy-only spread, so a null effort never reaches a host as a key.
+  const spread = /\.\.\.\(s\.effort \? \{ effort: s\.effort \} : \{\}\)/
   const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(ship, /\.\.\.\(s\.effort \? \{ effort: s\.effort \} : \{\}\)/)
+  const driver = readFileSync(RUNNER_DRIVER, 'utf8')
+  assert.match(ship, spread)
+  assert.match(driver, spread, 'the runner forwards effort exactly as the Workflow driver does')
   // The adversarial steps are pinned at the published skeptic effort rather
   // than left at the session default, and the pin is the CLI's — the literal
   // left the script with the tail (design D8).
   assert.match(run, /effort: EFFORT\.skeptic/)
   assert.doesNotMatch(ship, /xhigh/, 'no host declares an effort level of its own')
-  assert.doesNotMatch(readFileSync(RUNNER_DRIVER, 'utf8'), /xhigh/)
+  assert.doesNotMatch(driver, /xhigh/)
 })
 
 test('the review and remediation briefings ask for counts only', () => {
@@ -2496,6 +2873,131 @@ test('the run stores the fingerprint, and says so when it could not', async () =
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   assert.match(run, /PLAN FINGERPRINT NOT STORED/)
   assert.match(run, /will re-classify every artifact from scratch/)
+})
+
+test('a relay whose copy does not parse halts with the reason, not just the fact', async () => {
+  // The jumphour halt: the CLI ran, recorded the batch and printed a valid
+  // step; the relay retyped it with two brackets missing. The halt used to say
+  // only "could not be read", and finding out why took a transcript dig.
+  const { output, root } = await runShip({
+    keepRepo: true,
+    responses: {
+      'cli-2': stdout => stdout.replace('"action"', '"action" "')
+    }
+  })
+  try {
+    assert.match(output, /SHIP HALTED/)
+    assert.match(output, /the CLI relay could not be read/)
+    assert.match(output, /RELAY UNREADABLE/, 'and it is a banner, so it reaches the degradation block')
+    assert.match(output, /cli-2 \(interlock run classified\)/, 'naming which relay and which subcommand')
+    assert.match(output, /\d+ relayed chars do not parse as JSON/, 'how much was copied, and that it broke')
+    assert.match(output, /last-step\.json/, 'and where the CLI\'s own bytes are')
+    // The file the halt names still holds the step that failed to relay — the
+    // close that recorded the halt ran after it and must not have replaced it.
+    const kept = JSON.parse(readFileSync(join(root, '.claude/ship/last-step.json'), 'utf8'))
+    assert.equal(kept.action, 'run-batch')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the Workflow host relays every field ship.js reads, and no briefing', async () => {
+  // `relayStep` is a whitelist, so the risk runs one way: ship.js starting to
+  // read a step field the slim step drops, and getting undefined forever. The
+  // interpreter's reads are scanned here rather than listed, so a new one
+  // cannot land without this failing.
+  const { RELAY_STEP_FIELDS } = await import('../lib/run.mjs')
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  const stepReads = new Set([...ship.matchAll(/(?<![\w-])step\.(\w+)/g)].map(m => m[1]))
+  assert.ok(stepReads.has('then') && stepReads.has('spawns'), `the scan found ${[...stepReads]}`)
+  for (const field of stepReads) {
+    assert.ok(RELAY_STEP_FIELDS.includes(field), `ship.js reads step.${field}, which relayStep drops`)
+  }
+  // From a spawn, relayStep drops `prompt` and nothing else — and the
+  // interpreter must be the one host that never needs it.
+  const spawnOne = ship.slice(ship.indexOf('async function spawnOne(s)'), ship.indexOf('async function spawnAll('))
+  const spawnReads = new Set([...spawnOne.matchAll(/\bs\.(\w+)/g)].map(m => m[1]))
+  assert.ok(spawnReads.has('promptPath') && spawnReads.has('promptSha256'), `the scan found ${[...spawnReads]}`)
+  assert.equal(spawnReads.has('prompt'), false, 'the Workflow host delivers briefings by reference only')
+})
+
+// --- effort on the Workflow driver (spec: effort-routing, workflow-host) ---
+//
+// The script forwards what a step names; the run program decides what it names.
+// Both halves are observed here by running the script: the harness records the
+// options each agent was spawned with, and whether the `effort` key was there
+// at all.
+
+const effortOf = (prompts, label) => prompts.find(p => p.label === label)
+
+test('a verify agent is spawned with the published verify effort', async () => {
+  assert.ok(EFFORT.verify, 'the verify step must publish an effort for this test to mean anything')
+  const { prompts } = await runShip({ repo: { profile: { version: 1, unit: { command: 'npm test' } } } })
+  const verify = effortOf(prompts, 'verify')
+  assert.ok(verify, 'a repo with a test profile must reach a verify spawn')
+  assert.equal(verify.effort, EFFORT.verify)
+})
+
+test('a lane is spawned at its tier\'s published effort', async () => {
+  for (const tier of [1, 2]) {
+    assert.ok(EFFORT.byTier[tier], `tier ${tier} must publish an effort for this test to mean anything`)
+    const { prompts } = await runShip({
+      classified: {
+        tasks: [
+          {
+            id: '1.1',
+            group: 1,
+            description: 'task 1.1',
+            tier,
+            model: tier === 1 ? 'haiku' : 'sonnet',
+            isTestTask: false,
+            paths: ['lib/a.mjs']
+          }
+        ]
+      }
+    })
+    const lane = effortOf(prompts, '1.1')
+    assert.ok(lane, `tier ${tier}: no lane was spawned`)
+    assert.equal(lane.effort, EFFORT.byTier[tier], `tier ${tier} lane`)
+  }
+})
+
+test('relay pings, the planner and the commit agent are spawned with no effort key at all', async () => {
+  const { prompts } = await runShip()
+  for (const label of ['validate', 'cli-', 'plan-waves', 'commit']) {
+    const seen = prompts.filter(p => p.label === label || (label.endsWith('-') && p.label.startsWith(label)))
+    assert.ok(seen.length > 0, `the run never spawned a "${label}" agent`)
+    for (const p of seen) {
+      assert.equal(p.hasEffort, false, `${p.label} was spawned with an effort key; it must inherit the session's`)
+    }
+  }
+})
+
+test('an effort override reported by the probe is bannered, and silence raises nothing', async () => {
+  const overridden = await runShip({
+    responses: {
+      validate: { hasGraph: true, hasTestProfile: true, haikuAvailable: true, effortLevelOverride: 'medium' }
+    }
+  })
+  assert.match(overridden.output, /EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=medium/, overridden.output)
+
+  // The field left out is the normal case: the variable is unset.
+  const omitted = await runShip()
+  assert.doesNotMatch(omitted.output, /EFFORT ROUTING OVERRIDDEN/, omitted.output)
+
+  // A probe that returned no answer at all reports nothing and halts nothing.
+  const silent = await runShip({ responses: { validate: null } })
+  assert.doesNotMatch(silent.output, /EFFORT ROUTING OVERRIDDEN/, silent.output)
+  assert.doesNotMatch(silent.output, /SHIP HALTED/, 'a probe with no answer must not halt the run')
+})
+
+test('the probe asks for the effort override by name, and the script reports it as effortLevelOverride', () => {
+  // The harness answers the probe by label and never reads its prompt, so
+  // without this pin the instruction could be deleted with every other test
+  // still green.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  assert.ok(ship.includes('printenv CLAUDE_CODE_EFFORT_LEVEL'), 'the probe no longer reads the variable')
+  assert.ok(ship.includes('effortLevelOverride'), 'the probe no longer reports the override')
 })
 
 test('a name that resolves to nothing halts by name rather than as a relay failure', async () => {

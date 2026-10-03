@@ -39,3 +39,14 @@ This file is the canonical root instruction file. `AGENTS.md`, if present, is a 
 Run `npm test` before reporting any task complete, and paste the output.
 
 If a test fails, fix the code. Do not edit, weaken, skip, or delete the test — `hooks/guard-tests.mjs` denies test edits during a run's `remediation` and `fix-tests` stages for exactly this reason, and doing it by hand outside a run is the same mistake without the guard.
+
+## Testing
+
+<!-- BEGIN interlock:testing -->
+**Unit:** `npm test` (cwd: `.`)
+**Filter:** `node --test --test-name-pattern <pattern> <file>`
+**Single file:** `node --test path/to/file.test.mjs`
+**E2E:** opt-in via /fix-tests --e2e (not configured)
+**Prerequisites:** none
+**Profile:** `.claude/testing/profile.json` (managed by `/interlock:fix-tests`)
+<!-- END interlock:testing -->

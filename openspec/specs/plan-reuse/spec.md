@@ -12,12 +12,14 @@ A persisted execution plan MUST be accompanied by a fingerprint computed from th
 
 - the content of `proposal.md`, `design.md`, `tasks.md`, and every delta spec;
 - the change name and the parallelism cap;
-- the per-tier lane-cap table, the cohesion tier ceiling and the solo envelope;
+- the per-tier lane-cap table, the cohesion tier ceiling, the multi-task opus floor and the solo envelope;
 - the mode override in force when the plan was built, recorded as `auto` when no override was passed.
 
 The plan MUST be reused only when a fingerprint recomputed from the current inputs equals the stored one.
 
-The fingerprint MUST also record the plan format version, so a plan written in one plan shape is not reused by a reader that expects another. A plan written before cohesion lanes and mode existed, or before chain lanes existed, MUST be rebuilt rather than reused. A narrowed plan MUST keep its mode and its promotion report.
+The fingerprint MUST also record the plan format version, so a plan written in one plan shape is not reused by a reader that expects another. A plan written before cohesion lanes and mode existed, before chain lanes existed, or before multi-task lanes were routed by the opus floor, MUST be rebuilt rather than reused. A narrowed plan MUST keep its mode and its promotion report, and its lane report MUST be re-derived from the lanes that remain, so it names the model each will dispatch on.
+
+When a recomputed fingerprint differs because a cap moved, the reuse decision MUST name the cap and its old and new values rather than report an artifact edit.
 
 #### Scenario: Happy path — unchanged inputs reuse the plan
 
@@ -53,6 +55,20 @@ The fingerprint MUST also record the plan format version, so a plan written in o
 - **WHEN** `ship` starts
 - **THEN** the plan is not reused, and the reuse decision names the format version change as its reason rather than an artifact edit
 - **AND** the classifier step runs and the fresh plan carries chain lanes wherever serial single-lane batches occur
+
+#### Scenario: Edge case — a plan built before the opus floor is rebuilt
+
+- **GIVEN** a stored plan and fingerprint written in the plan format that preceded the multi-task opus floor, with artifacts, caps and mode override otherwise unchanged
+- **WHEN** `ship` starts
+- **THEN** the plan is not reused, and the reuse decision names the format version change as its reason
+- **AND** the fresh plan's lane report names the model each multi-task lane dispatches on under the floor
+
+#### Scenario: Edge case — a moved opus floor re-plans and says so
+
+- **GIVEN** a stored plan and fingerprint built under one opus floor
+- **WHEN** the published floor changes and `ship` starts
+- **THEN** the plan is not reused, and the reason names the floor's old and new values
+- **AND** the reason does not claim an artifact was edited
 
 #### Scenario: Edge case — a narrowed solo plan stays solo
 

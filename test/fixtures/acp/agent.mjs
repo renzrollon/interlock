@@ -25,6 +25,18 @@
 //   --config-error    advertise the option, reject set_config_option, accept
 //                     set_model — the fallback path
 //
+// And six that exist for effort routing (dispatch-published-effort). The effort
+// option is advertised and settable whether or not the model option is:
+//   --effort-options       advertise an `effort` select (category
+//                          `thought_level`) of default/low/medium/high/xhigh
+//   --effort-values=<csv>  advertise exactly those values instead; on its own it
+//                          advertises the option, without --effort-options
+//   --effort-id=<id>       use that option id, keeping the category
+//   --effort-grouped       advertise the values in groups, not a flat list
+//   --effort-reject        answer set_config_option for effort with an error
+//   --effort-after-model   leave the option out of session/new and return it
+//                          in the response to the model's set_config_option
+//
 // Whichever way a model arrived, the payload echoes it as `appliedModel` and
 // names the method as `appliedVia`, so a test asserts what the AGENT saw rather
 // than what the adapter reported about itself.
@@ -44,6 +56,21 @@ const mode = {
   configOptions: process.argv.includes('--config-options'),
   setModel: process.argv.includes('--set-model'),
   configError: process.argv.includes('--config-error')
+}
+
+const flagValue = name => {
+  const prefix = `--${name}=`
+  const hit = process.argv.find(arg => arg.startsWith(prefix))
+  return hit === undefined ? null : hit.slice(prefix.length)
+}
+
+const effortMode = {
+  options: process.argv.includes('--effort-options'),
+  values: flagValue('effort-values'),
+  id: flagValue('effort-id') || 'effort',
+  grouped: process.argv.includes('--effort-grouped'),
+  reject: process.argv.includes('--effort-reject'),
+  afterModel: process.argv.includes('--effort-after-model')
 }
 
 if (mode.die) process.exit(3)
@@ -67,6 +94,33 @@ const modelOption = () => ({
   ]
 })
 
+/** True when the effort option is advertised at all, whatever else is on offer. */
+const advertisesEffort = effortMode.options || effortMode.values !== null
+
+const effortValues = () =>
+  effortMode.values !== null
+    ? effortMode.values.split(',').filter(Boolean)
+    : ['default', 'low', 'medium', 'high', 'xhigh']
+
+/** The advertised effort select: flat by default, grouped under --effort-grouped. */
+const effortOption = () => {
+  const values = effortValues().map(value => ({ value, name: value }))
+  return {
+    id: effortMode.id,
+    name: 'Effort',
+    category: 'thought_level',
+    type: 'select',
+    currentValue: appliedEffort || 'default',
+    options: effortMode.grouped ? [{ group: 'levels', name: 'Levels', options: values }] : values
+  }
+}
+
+/** The options a response carries: the model's when advertised, the effort's when it is due. */
+const currentOptions = ({ effortDue }) => [
+  ...(advertisesModel ? [modelOption()] : []),
+  ...(advertisesEffort && effortDue ? [effortOption()] : [])
+]
+
 /** True when session/new advertises the model option at all. */
 const advertisesModel = mode.configOptions || mode.configError
 /** True when session/set_model is accepted rather than answered -32601. */
@@ -74,6 +128,8 @@ const acceptsSetModel = mode.setModel || mode.configError
 
 let appliedModel = null
 let appliedVia = null
+let appliedEffort = null
+let appliedEffortVia = null
 
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`)
 
@@ -122,6 +178,9 @@ async function handlePrompt(id, params) {
     model: (params._meta && params._meta['interlock/model']) || null,
     appliedModel,
     appliedVia,
+    appliedEffort,
+    appliedEffortVia,
+    metaKeys: Object.keys(params._meta || {}),
     permissionOptionId
   }
   const body = JSON.stringify(payload)
@@ -168,9 +227,21 @@ async function handle(message) {
       id,
       result: {
         sessionId: `sess-${process.pid}-${++nextId}`,
-        ...(advertisesModel ? { configOptions: [modelOption()] } : {})
+        ...(advertisesModel || (advertisesEffort && !effortMode.afterModel)
+          ? { configOptions: currentOptions({ effortDue: !effortMode.afterModel }) }
+          : {})
       }
     })
+    return
+  }
+  if (method === 'session/set_config_option' && advertisesEffort && params.configId === effortMode.id) {
+    if (effortMode.reject) {
+      send({ jsonrpc: '2.0', id, error: { code: -32602, message: 'fixture agent: effort option rejected' } })
+      return
+    }
+    appliedEffort = params.value
+    appliedEffortVia = 'set_config_option'
+    send({ jsonrpc: '2.0', id, result: { configOptions: currentOptions({ effortDue: true }) } })
     return
   }
   if (method === 'session/set_config_option') {
@@ -185,7 +256,7 @@ async function handle(message) {
     appliedModel = params.value
     appliedVia = 'set_config_option'
     // The real method replies with the full option list, so the fixture does too.
-    send({ jsonrpc: '2.0', id, result: { configOptions: [modelOption()] } })
+    send({ jsonrpc: '2.0', id, result: { configOptions: currentOptions({ effortDue: true }) } })
     return
   }
   if (method === 'session/set_model') {

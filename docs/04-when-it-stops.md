@@ -71,6 +71,14 @@ The trajectory lives at `.claude/ship/runs/<runId>.jsonl` — an append-only JSO
 
 A `verify-judgement` line never carries the raw suite log — a red unit suite's full stdout lives under `.claude/ship/spill/<runId>/`, and the trajectory line points at it with a locator and a short preview instead. If a judgement's preview does not tell you enough, open the locator with `offset`/`limit` rather than reading the whole file — it can be hundreds of KB.
 
+### `RELAY UNREADABLE`
+
+This halt is about the transport, not your change. On the `/interlock:ship` workflow host, every `interlock run` call is made by a relay: a small model runs the command and copies its stdout back into the script. When that copy does not parse, the script cannot see the step the CLI emitted, and it halts rather than guess. The reason reads `the run program returned no step — the CLI relay could not be read: <label> (interlock run <sub>): <why>`, and the banner repeats it. `<why>` says whether the relay returned nothing, returned no stdout, or returned a copy of N characters that did not parse, and gives the parser's own message, which usually includes the failing position.
+
+The CLI's own bytes are always on disk. Every `run` call except the close writes exactly what it printed to `.claude/ship/last-step.json` (the close that records the halt would otherwise overwrite it), so you can compare that file with the relay's length without digging the relay out of a transcript. The run state is intact: the failed copy happened after the CLI had already recorded the batch. So do not replay the last call by hand; a repeated `record-batch` would record the batch twice. Re-run `/interlock:ship` once the cause is clear.
+
+This was far likelier before the workflow host's steps were slimmed. A step used to carry every briefing inline, plus the wave's carried state, and a relay retyping 23 KB of JSON dropped two brackets. The relay now copies only the fields the script reads (`relayStep` in `lib/run.mjs`), and briefings travel by path and hash.
+
 ### `/interlock:spec` stops too
 
 **Blockers at the artifact review.** It reports them and stops rather than fixing and continuing, because a blocker there means the spec was wrong and you should see that.
@@ -262,7 +270,7 @@ Fix it once, and every later run is faster and more accurate:
 
 You have `CLAUDE_CODE_SUBAGENT_MODEL` set in your environment, and it wins over everything the plan decided. Per the [workflow docs](https://code.claude.com/docs/en/workflows), that variable overrides both your session model *and* a per-agent model a script asks for — so every agent in the run used it, whatever tier the planner assigned.
 
-That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` on a task's recorded model below tier 5, and dispatches opus for a lane of two or more tasks or for a tier-5 task. A single-task lane keeps its clamped model. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
+That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` on a task's recorded model below tier 5, and dispatches opus for a multi-task lane whose hardest tier clears the published floor (or for a tier-5 / solo lane). Routine multi-task work below that floor runs on sonnet. A single-task lane keeps its clamped model. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
 
 The work is still correct — this is a cost and latency degradation, not a quality one. To check and clear it:
 
@@ -279,6 +287,27 @@ interlock limits
 
 If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
 
+### `EFFORT ROUTING OVERRIDDEN`
+
+The effort twin of the banner above. You have `CLAUDE_CODE_EFFORT_LEVEL` set, and the Claude CLI ranks it above its own `--effort` flag, above `/effort` and settings, and above the effort a single agent is given. So every agent in the run used that effort, whatever the plan assigned:
+
+```
+EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=<value> — every agent runs at that effort, so the per-step effort in the plan is not in effect
+```
+
+Both drivers raise it. `/interlock:ship` reads the variable in its environment probe; `interlock-run` reads its own environment, and only when the host it drives is Claude — `--host claude`, or `--host acp` whose command is the Claude binary (`claude`, `claude-code`) or a known ACP adapter that wraps it (`claude-agent-acp`, `claude-code-acp`). The variable means nothing to Codex or Qwen, so those hosts never print it. A launcher whose own name is `npx` is not recognised: the command name does not say what it launches, so that run prints neither `SUBSCRIPTION PATH` nor this banner.
+
+Neither driver unsets or strips the variable. It is your environment, and a deliberate override gets a receipt rather than a fight. It can also print beside `effort routing: applied on N/N spawns` (below): that line says the flag was passed, and this one says the environment outranked it.
+
+To check and clear it:
+
+```bash
+printenv CLAUDE_CODE_EFFORT_LEVEL
+unset CLAUDE_CODE_EFFORT_LEVEL
+```
+
+`interlock limits` prints the effort the plan would have assigned to each tier and to the verify and skeptic steps.
+
 ### `RUNNER HOST: <id> (experimental)` and the rest of the runner's banners
 
 Only from `interlock-run` (or the `interlock-ship-acp` shim), never from `/interlock:ship`. `RUNNER HOST` prints on every run of that driver: it is saying that you are on the second host, and that the supported path has more around it.
@@ -287,9 +316,9 @@ The rest are conditional, and each names one way this run is weaker than a run o
 
 | Banner | When | What it means |
 |---|---|---|
-| `SUBSCRIPTION PATH: programmatic (<host>)` | `--host claude`, or `--host acp` over the `claude` binary | This run spends through `claude -p` / ACP, which is the usage Anthropic flagged for separate metered credit. The exempted path is the interactive Workflow runtime — `/interlock:ship`. See the paragraph above. |
+| `SUBSCRIPTION PATH: programmatic (<host>)` | `--host claude`, or `--host acp` over the `claude` binary or a known wrapper (`claude-agent-acp`, `claude-code-acp`) | This run spends through `claude -p` / ACP, which is the usage Anthropic flagged for separate metered credit. The exempted path is the interactive Workflow runtime — `/interlock:ship`. See the paragraph above. |
 | `CHATGPT PLAN PATH (codex)` | `--host codex` with neither `CODEX_API_KEY` nor `OPENAI_API_KEY` set | Codex is running on your ChatGPT plan's device-auth session. It goes stale in about a week, and OpenAI directs unattended volume to an API key. Set one to silence it. |
-| `HOOKS NOT IN FORCE (<host>)` | any host that declares `hooks: false` — `codex`, `qwen`, and `acp` over a non-Claude agent | This repository's `PreToolUse` guards are Claude Code's. Nothing stops a repair step from weakening a test on this host except the CLI's own unit-suite shrink check. |
+| `HOOKS NOT IN FORCE (<host>)` | any host that declares `hooks: false` — `codex`, `qwen`, `acp` over anything but the `claude` binary, including a Claude ACP wrapper | This repository's `PreToolUse` guards are Claude Code's. Nothing stops a repair step from weakening a test on this host except the CLI's own unit-suite shrink check. A wrapper spends the subscription and still does not load these hooks. |
 | `TOKEN USAGE NOT REPORTED` | a host whose CLI returns no token accounting — `qwen`, `acp` | Every wave and the run total are recorded as `unknown`. Never as zero: a wave that ran agents did not spend nothing, so a zero there would be a silent, systematic error. |
 
 The receipt records the host id, its billing path and its hook availability, so a run's terms can be read back later rather than reconstructed from which banners someone remembered to look at.
@@ -323,11 +352,52 @@ It is a JSON object keyed by host id, each entry mapping the planner's slugs to 
 
 The tier ladder is most of the cost story, so the banner is worth acting on: on a long change with forty tier-1 tasks, an unrouted run costs whatever your agent's single configured model costs, forty times. `interlock limits` prints what the planner decided; unrouted, read it as intent rather than as what ran.
 
+### `EFFORT ROUTING UNAVAILABLE (<host>)`
+
+The effort twin of the banner above. On the runner, each spawn the run program emits carries the effort `interlock limits` publishes for it — a lane its tier's effort, both verify checks the verify effort, the review and remediation steps the skeptic effort — or no effort at all, in which case the host's default stands and nothing is reported. The runner forwards that effort to the adapter, and the adapter reports for each spawn whether it applied it. When every spawn that named an effort had it applied, the summary says so:
+
+```
+effort routing: applied on 7/7 spawns
+```
+
+When at least one did not, the banner prints, followed by one line per spawn naming its label, the level it requested, and the reason:
+
+```
+EFFORT ROUTING UNAVAILABLE (<host>): the plan's per-step effort assignment is not in effect for the spawns below — each ran at the host's own default
+  — <label>: <level> requested, <reason>
+```
+
+The level is the one the plan asked for, never one the host ran at. A spawn whose effort was not applied still ran, and its result was recorded like any other. A run in which no spawn named an effort prints neither line.
+
+| Reason | Hosts | What it means |
+|---|---|---|
+| `host has no effort control` | `qwen` | Qwen Code reads its reasoning effort from settings files only, so there is no per-spawn channel to pass a level through. |
+| `effort is not routed on this host` | `codex` | Codex has an effort setting, but its levels are not Claude's. Sending it a Claude-derived level would be a cross-vendor mapping this runner does not make. |
+| `this claude CLI has no --effort flag` | `claude`, and the Workflow host | `--host claude` reads the CLI's `--help` once, when the host is created. `/interlock:ship` reads it once at `run start`. Yours does not list `--effort`. On `--host claude` no flag is passed, because a CLI that does not know the flag would reject every spawn. On the Workflow host the script still passes each step's effort to `agent()` — that option does not reject the spawn — and the receipt records `unsupported` rather than `flag`. Upgrading Claude Code clears it. |
+| `could not establish whether this claude CLI accepts --effort` | `claude`, and the Workflow host | That `--help` read failed or timed out, so the run treats the flag as absent rather than claiming it. |
+| `no effort option advertised` | `acp` | The agent offers no effort config option (by id `effort` or category `thought_level`) for this session. An agent usually offers one only for a model that supports effort. |
+| `level not among advertised values` | `acp` | It offers an effort option, but no value in its flat list equals the requested level exactly. A nearest level is never chosen, and an option that groups its values is not read. |
+| `agent rejected the effort option` | `acp` | The agent answered `session/set_config_option` with an error. The prompt ran anyway. |
+
+On a flag host, "applied" means the flag was passed: a model with no effort parameter, such as Haiku, ignores it without error, and the adapter cannot see past its own argv to tell. The receipt's host block records the host's effort capability — `flag`, `negotiated` or `unsupported` — so a past run's terms can be read back; a receipt written before the field existed reads as not recorded.
+
+`/interlock:ship` records that capability from the same `--help` probe, not from an assumption. When the probe finds the flag, the receipt says `effort: flag` and this banner is absent. When it does not, the summary carries one line and no per-spawn list, because the probe is about the install rather than about one spawn:
+
+```
+EFFORT ROUTING UNAVAILABLE (workflow): this claude CLI has no --effort flag
+```
+
 ### `VERIFICATION SKIPPED`
 
 The inter-wave checks did not run, with a reason attached. The documented reasons are: no test or typecheck commands were detectable, the failures were pre-existing before the run started, or verification would have exceeded roughly a minute (in which case it degrades to typecheck only).
 
 This does not mean the final unit suite was skipped — that one is a hard halt when red. It means the fast between-waves feedback loop was missing, so problems surfaced later than they should have. A test profile usually fixes it.
+
+### `VERIFY BUDGET CLOCKED BY ROUND TRIP`
+
+The inter-wave verification budget (`interlock limits`) is meant to count only the checks: how long typecheck, unit and lint actually ran. The verify agent runs each planned step through `interlock verify exec`, which times the command itself and records it to `.claude/ship/verify-timings.jsonl`. The judge charges those timings to the budget.
+
+This banner means at least one planned step has no such timing, usually because the agent ran the command directly instead of through the wrapper. The judge then falls back to the time between the checkpoint's dispatch and its judgement. That interval also counts the relays and the verify agent's own turns, so the budget runs out early and later checkpoints degrade to typecheck only (see [`VERIFICATION SKIPPED`](#verification-skipped)). The banner names the steps with no timing and the milliseconds it charged instead. On a run that repeats it, check whether the verify agent is following its briefing.
 
 ### `E2E FAILED (non-blocking by policy)`
 

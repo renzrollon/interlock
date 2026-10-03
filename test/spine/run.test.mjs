@@ -27,14 +27,18 @@ import {
 import { tmpdir } from 'node:os'
 import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS } from '../../lib/limits.mjs'
+import { EFFORT, LIMITS } from '../../lib/limits.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
 import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 import {
   BRIEFING_HEADER,
+  LAST_STEP_PATH,
+  RELAY_STEP_FIELDS,
+  VERIFY_TIMINGS_PATH,
   briefingHash,
   laneOutcomes,
+  relayStep,
   runClassified,
   runRecordBatch,
   runRemediated,
@@ -351,7 +355,7 @@ test('a lane spawn declares the worker agent, its tools, and its lane model and 
     const s = batch.spawns[0]
     assert.equal(s.type, 'interlock:worker')
     assert.deepEqual(s.tools, ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'Bash'])
-    assert.equal(s.model, 'opus', 'a two-task cohesion lane dispatches on opus')
+    assert.equal(s.model, 'sonnet', 'a two-task cohesion lane below the opus floor dispatches on sonnet')
     assert.equal(s.effort, 'low', 'and at its hardest task\'s tier effort')
     assert.equal(s.schema.type, 'object', 'a spawn always names the schema its result must satisfy')
   } finally {
@@ -2567,6 +2571,555 @@ test('a marker on a later section is refused by the planner and bannered by the 
     assert.match(refusal, /not the first section/, 'and say which rule it broke')
     // Readable, not a shouted sentence: only the label is capitalised.
     assert.doesNotMatch(refusal, /IS NOT THE FIRST SECTION/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the jumphour findings: relay size, spawn trajectory, verify clock -------
+//
+// A healthy run halted at wave 6 because a haiku relay retyped a 23 KB step and
+// dropped two brackets. The same run's trajectory held a spawn event for an
+// agent that never ran and none for four that did, and its inter-wave budget
+// was spent by relay and agent overhead on the first checkpoint. Each is driven
+// here through the real CLI.
+
+/** Run one `interlock` command and return its stdout exactly as printed. */
+function rawRun(root, argv) {
+  return execFileSync(process.execPath, [BIN, ...argv, '--json'], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+}
+
+/** The implementer agent-spawn events this run's trajectory holds, by anchor task. */
+function laneSpawnsLogged(root) {
+  const runId = manifestOf(root).runId
+  return readFileSync(join(root, '.claude/ship/runs', `${runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .filter(e => e.type === 'agent-spawn' && e.kind === 'implementer')
+    .map(e => e.taskId)
+}
+
+test('relayStep hands the Workflow host only the fields its interpreter reads', () => {
+  const step = {
+    schema: 'interlock.run-step/1',
+    action: 'run-batch',
+    then: { argv: ['run', 'record-batch'] },
+    wave: 3,
+    change: 'add-thing',
+    banners: ['SOMETHING DEGRADED: why'],
+    remainingBatches: [[[{ id: '6.1', description: 'x'.repeat(4000) }]]],
+    previousHandoffs: [{ taskId: '5.1', summary: 'y'.repeat(6000) }],
+    changed: ['src/a.ts'],
+    lanes: [[{ id: '6.1' }]],
+    mergeBase: null,
+    spawns: [
+      {
+        label: '6.1+1',
+        kind: 'implementer',
+        model: 'sonnet',
+        effort: null,
+        type: 'interlock:worker',
+        tools: ['Read'],
+        schema: { type: 'object' },
+        isolation: null,
+        worktree: null,
+        promptPath: '.claude/ship/briefings/6.1+1.md',
+        promptSha256: 'a'.repeat(64),
+        prompt: 'z'.repeat(9000)
+      }
+    ]
+  }
+
+  const slim = relayStep({ host: { id: 'workflow' } }, step)
+  for (const key of Object.keys(slim)) {
+    assert.ok(RELAY_STEP_FIELDS.includes(key), `${key} reached the relay`)
+  }
+  for (const gone of ['remainingBatches', 'previousHandoffs', 'changed', 'lanes', 'mergeBase']) {
+    assert.equal(gone in slim, false, `${gone} is carried state the next call reads from state.json`)
+  }
+  assert.deepEqual(slim.then, step.then)
+  assert.equal(slim.action, 'run-batch')
+  assert.equal(slim.wave, 3)
+  assert.equal(slim.change, 'add-thing')
+  assert.deepEqual(slim.banners, step.banners)
+  assert.equal('prompt' in slim.spawns[0], false, 'the worker is handed a path and a hash, never the text')
+  const { prompt, ...kept } = step.spawns[0]
+  assert.deepEqual(slim.spawns[0], kept, 'everything else a spawn names reaches the interpreter')
+  assert.equal(step.spawns[0].prompt.length, 9000, 'the step itself is not mutated')
+
+  // Every other host reads stdout as a process and sends `prompt` inline.
+  for (const manifest of [{ host: { id: 'claude' } }, { host: { id: 'acp' } }, { host: null }, null]) {
+    assert.equal(relayStep(manifest, step), step)
+  }
+})
+
+test('on the Workflow host a run step is printed slim, and its exact bytes are kept on disk', () => {
+  const { root, change } = repo()
+  try {
+    const started = JSON.parse(rawRun(root, ['run', 'start', '--change', change, '--host', 'workflow']))
+    assert.equal(started.action, 'classify')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const stdout = rawRun(root, [...started.then.argv])
+    const step = JSON.parse(stdout)
+
+    assert.equal(step.action, 'run-batch')
+    for (const gone of ['remainingBatches', 'previousHandoffs', 'changed']) {
+      assert.equal(gone in step, false, `${gone} rode the relay`)
+    }
+    assert.ok(step.spawns.length >= 1)
+    for (const s of step.spawns) {
+      assert.equal('prompt' in s, false, `${s.label}'s briefing rode the relay inline`)
+      assert.match(s.promptSha256, /^[0-9a-f]{64}$/)
+      // The briefing is still there, by reference, and still hashes to what the
+      // step names — the worker loses nothing the relay no longer carries.
+      const body = readFileSync(join(root, s.promptPath), 'utf8').split('\n').slice(1).join('\n')
+      assert.equal(briefingHash(body), s.promptSha256)
+    }
+    assert.equal(
+      readFileSync(join(root, LAST_STEP_PATH), 'utf8'),
+      stdout,
+      'the CLI keeps the exact bytes it printed, for when a relay copy does not parse'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+// Three path-disjoint tier-4 tasks at --max-parallel 2: a two-lane batch, then
+// a one-lane batch, in ONE wave — the shape that gave the jumphour trajectory a
+// spawn event for a lane the halted run never dispatched.
+const TWO_BATCHES = {
+  tasks: [
+    { id: '1.1', group: 1, description: 'auth a', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+    { id: '1.2', group: 1, description: 'auth b', tier: 4, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] },
+    { id: '1.3', group: 1, description: 'auth c', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] }
+  ]
+}
+
+test('a batch logs its own lanes when it is emitted, never a later batch of its wave', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 auth a\n- [ ] 1.2 auth b\n- [ ] 1.3 auth c\n'
+  })
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--max-parallel', '2']).step
+    file(root, '.claude/ship/classified.json', TWO_BATCHES)
+    const first = run(root, [...started.then.argv]).step
+    assert.equal(first.action, 'run-batch')
+    assert.deepEqual(first.lanes.map(l => l.map(t => t.id)), [['1.1'], ['1.2']])
+    assert.deepEqual(
+      laneSpawnsLogged(root),
+      ['1.1', '1.2'],
+      'the second batch is not dispatched yet, and a run that halts here never dispatches it'
+    )
+
+    const second = completeBatch(root, first)
+    assert.equal(second.action, 'run-batch')
+    assert.deepEqual(second.lanes.map(l => l.map(t => t.id)), [['1.3']])
+    assert.deepEqual(laneSpawnsLogged(root), ['1.1', '1.2', '1.3'], 'and it is logged once it is')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a wave entered through the inter-wave judge logs the lanes it dispatches', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const firstWave = batch.lanes.map(l => l[0].id)
+    assert.deepEqual(laneSpawnsLogged(root), firstWave)
+
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    const next = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    assert.equal(next.action, 'run-batch')
+    assert.deepEqual(
+      laneSpawnsLogged(root),
+      [...firstWave, ...next.lanes.map(l => l[0].id)],
+      'record-verify names the next wave, so it owes the trajectory its spawns'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a wave entered through a replan logs the lanes it dispatches', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    // Nothing in the run path raises a replan today, so the state is set to one
+    // directly: what is under test is what `run replan` owes the trajectory once
+    // a replan is taken, not what triggers it.
+    const statePath = join(root, '.claude/ship/state.json')
+    file(root, '.claude/ship/state.json', { ...JSON.parse(readFileSync(statePath, 'utf8')), replanPending: true })
+    const offer = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    assert.equal(offer.action, 'replan')
+    const before = laneSpawnsLogged(root)
+
+    file(root, '.claude/ship/replan.json', [
+      { group: 2, tasks: THREE_GROUPS.tasks.filter(t => t.group === 2) }
+    ])
+    const replanned = run(root, [...offer.then.argv], { results: [{ revised: true }] }).step
+    assert.equal(replanned.action, 'run-batch')
+    assert.deepEqual(laneSpawnsLogged(root), [...before, ...replanned.lanes.map(l => l[0].id)])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the inter-wave budget is charged the checks\' own time when verify exec timed them', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    // A timing left over from somewhere else is not this checkpoint's.
+    file(root, VERIFY_TIMINGS_PATH, JSON.stringify({ kind: 'unit', exitCode: 0, durationMs: 999999 }) + '\n')
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(existsSync(join(root, VERIFY_TIMINGS_PATH)), false, 'the slate is cleared where the checks are named')
+
+    // The round trip is backdated far past the budget: were it charged, the next
+    // checkpoint would drop to typecheck only.
+    const dispatched = manifestOf(root)
+    file(root, '.claude/ship/run.json', {
+      ...dispatched,
+      verifyStartedAt: new Date(Date.now() - LIMITS.interWaveVerifyBudgetMs * 2).toISOString()
+    })
+    // What `interlock verify exec` records: a unit run, a re-run after a repair,
+    // and a kind the plan never named.
+    file(
+      root,
+      VERIFY_TIMINGS_PATH,
+      [
+        { kind: 'unit', exitCode: 1, durationMs: 1200 },
+        { kind: 'unit', exitCode: 0, durationMs: 800 },
+        { kind: 'e2e', exitCode: 0, durationMs: 50000 }
+      ]
+        .map(t => JSON.stringify(t))
+        .join('\n') + '\n'
+    )
+
+    const next = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    const folded = manifestOf(root)
+    assert.equal(folded.verifyElapsedMs, 2000, 'both runs of the planned check, and nothing else')
+    assert.equal(folded.verifyStartedAt, null)
+    assert.ok(!(folded.banners || []).some(b => b.startsWith('VERIFY BUDGET CLOCKED BY ROUND TRIP')))
+    assert.equal(existsSync(join(root, VERIFY_TIMINGS_PATH)), false, 'a timing is never charged twice')
+
+    // So the next checkpoint still runs the suite.
+    const second = completeBatch(root, next)
+    assert.equal(second.action, 'verify')
+    const plan = JSON.parse(readFileSync(join(root, '.claude/ship/vplan-inter-wave.json'), 'utf8'))
+    assert.equal(plan.budgetExceeded, false)
+    assert.ok(plan.steps.some(s => s.kind === 'unit'))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a checkpoint with no verify exec timing is charged the round trip, and says so', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    const dispatched = manifestOf(root)
+    file(root, '.claude/ship/run.json', {
+      ...dispatched,
+      verifyStartedAt: new Date(Date.now() - 5000).toISOString()
+    })
+    run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    })
+    const folded = manifestOf(root)
+    assert.ok(folded.verifyElapsedMs >= 5000, `the round trip was not charged (${folded.verifyElapsedMs}ms)`)
+    const banner = (folded.banners || []).find(b => b.startsWith('VERIFY BUDGET CLOCKED BY ROUND TRIP:'))
+    assert.ok(banner, 'a degraded clock is spoken, never silent')
+    assert.match(banner, /interlock verify exec/)
+    assert.match(banner, /\bunit\b/, 'and it names the check that went untimed')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- every spawn's effort (dispatch-published-effort) ------------------------
+//
+// Every effort `interlock limits` publishes has a reader, and every spawn the
+// program can emit either reads one or inherits the host's on purpose. Each
+// value below is read from `lib/limits.mjs`, never written as a level here, so
+// a retune of the table moves these assertions with it.
+
+/** The spawn a verify step carries, asserted to exist so a skip cannot pass. */
+function verifySpawnOf(step) {
+  assert.equal(step.skipped, false, `${step.action} skipped, so it emitted no verify spawn to check`)
+  assert.equal(step.spawns.length, 1, `${step.action} emits one verify spawn`)
+  return step.spawns[0]
+}
+
+test('an inter-wave verify spawn carries the published verify effort', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(verify.context, 'inter-wave')
+    const s = verifySpawnOf(verify)
+    assert.equal(s.kind, 'verify')
+    assert.equal(s.effort, EFFORT.verify, `${s.label} must carry EFFORT.verify, not the host default`)
+    assert.equal(s.model, null, 'the verify spawn\'s model stays the session model')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an inter-wave retry after a red judge carries the same verify effort', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    const retry = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['boom'] }] }]
+    }).step
+    assert.equal(retry.action, 'verify')
+    assert.equal(retry.fixAttempt, 1)
+    const s = verifySpawnOf(retry)
+    assert.equal(s.effort, EFFORT.verify, `${s.label} (fix attempt 1) must carry EFFORT.verify`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the final verify spawn carries the published verify effort', () => {
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    assert.equal(final.context, 'final')
+    const s = verifySpawnOf(final)
+    assert.equal(s.kind, 'verify')
+    assert.equal(s.effort, EFFORT.verify, `${s.label} must carry EFFORT.verify, not the host default`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the review and both remediation spawns carry the published skeptic effort', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    assert.equal(review.action, 'review')
+    assert.equal(review.spawns[0].kind, 'review')
+    assert.equal(review.spawns[0].effort, EFFORT.skeptic, 'the review spawn')
+
+    writeReview(root, { blockers: 1 })
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    assert.equal(round1.spawns[0].kind, 'remediate')
+    assert.equal(round1.spawns[0].effort, EFFORT.skeptic, 'the fixing-round remediation spawn')
+
+    writeReview(root, {})
+    const verdict = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verdict.action, 'verdict')
+    assert.equal(verdict.spawns[0].kind, 'remediate')
+    assert.equal(verdict.spawns[0].effort, EFFORT.skeptic, 'the verdict-round remediation spawn')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the planner, handoff and commit spawns inherit the host effort', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--strict']).step
+    assert.equal(started.spawns[0].kind, 'planner')
+    assert.equal(started.spawns[0].effort, null, 'the plan-waves planner inherits')
+
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = run(root, [...started.then.argv]).step
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    writeReview(root, { dismissed: 1 })
+    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verified.action, 'verify-final')
+
+    const handoff = run(root, [...verified.then.argv]).step
+    assert.equal(handoff.action, 'handoff')
+    assert.equal(handoff.spawns[0].kind, 'handoff')
+    assert.equal(handoff.spawns[0].effort, null, 'the handoff spawn inherits')
+
+    const commit = run(root, [...handoff.then.argv], {
+      results: [{ ok: true, manualTestPlan: false, skipReason: 'backend only', scenariosChecked: 0 }]
+    }).step
+    assert.equal(commit.action, 'commit')
+    assert.equal(commit.spawns[0].kind, 'commit')
+    assert.equal(commit.spawns[0].effort, null, 'the commit spawn inherits')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the replan ping inherits the host effort', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    const statePath = join(root, '.claude/ship/state.json')
+    file(root, '.claude/ship/state.json', { ...JSON.parse(readFileSync(statePath, 'utf8')), replanPending: true })
+    const offer = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    assert.equal(offer.action, 'replan')
+    assert.equal(offer.spawns[0].kind, 'ping')
+    assert.equal(offer.spawns[0].effort, null, 'the replan ping inherits')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// The two sets the effort-routing spec names. A kind in neither is a spawn that
+// would ship at an unstated default, so it fails here naming itself.
+const PUBLISHED_EFFORT_KINDS = ['implementer', 'verify', 'review', 'remediate']
+const INHERITING_KINDS = ['ping', 'planner', 'handoff', 'commit']
+
+/** The argument text of every `spawn(` call in `source` — the definition excluded. */
+function spawnCallArgs(source) {
+  const out = []
+  const re = /\bspawn\(/g
+  let m
+  while ((m = re.exec(source))) {
+    if (/function\s+$/.test(source.slice(Math.max(0, m.index - 10), m.index))) continue
+    let depth = 0
+    let i = m.index + m[0].length - 1
+    for (; i < source.length; i++) {
+      if (source[i] === '(') depth += 1
+      else if (source[i] === ')' && --depth === 0) break
+    }
+    out.push(source.slice(m.index + m[0].length, i))
+  }
+  return out
+}
+
+test('every spawn kind the run program emits is in the published-effort or the inheriting set', () => {
+  const source = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  const calls = spawnCallArgs(source)
+  assert.ok(calls.length >= PUBLISHED_EFFORT_KINDS.length + INHERITING_KINDS.length, 'no spawn( calls were found')
+  const seen = new Set()
+  for (const args of calls) {
+    const kind = /\bkind:\s*'([^']+)'/.exec(args)
+    assert.ok(kind, `a spawn( call names no literal kind:\n${args.trim().slice(0, 200)}`)
+    assert.ok(
+      PUBLISHED_EFFORT_KINDS.includes(kind[1]) || INHERITING_KINDS.includes(kind[1]),
+      `spawn kind "${kind[1]}" is in neither the published-effort set nor the inheriting set`
+    )
+    seen.add(kind[1])
+  }
+  for (const kind of [...PUBLISHED_EFFORT_KINDS, ...INHERITING_KINDS]) {
+    assert.ok(seen.has(kind), `no spawn( call emits kind "${kind}" — the set names a spawn that no longer exists`)
+  }
+})
+
+// --- the effort capability on the manifest and the receipt -------------------
+
+test('a workflow run records the effort its claude help probe found, not an assumed flag', () => {
+  const fixture = join(ROOT, 'test', 'fixtures', 'hosts', 'fake-claude.mjs')
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--host', 'workflow'], {
+      env: { INTERLOCK_CLAUDE_COMMAND: `node ${fixture}` }
+    }).step
+    assert.equal(started.action, 'classify')
+    assert.equal(manifestOf(root).host.effort, 'flag')
+    assert.ok(
+      !(started.banners || []).some(b => String(b).startsWith('EFFORT ROUTING UNAVAILABLE')),
+      'a CLI whose help lists the flag is not bannered unavailable'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a workflow run whose claude help has no effort flag records unsupported and says so', () => {
+  const fixture = join(ROOT, 'test', 'fixtures', 'hosts', 'fake-claude.mjs')
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--host', 'workflow'], {
+      env: { INTERLOCK_CLAUDE_COMMAND: `node ${fixture} --fixture-no-effort-flag` }
+    }).step
+    assert.equal(manifestOf(root).host.effort, 'unsupported')
+    const banner = 'EFFORT ROUTING UNAVAILABLE (workflow): this claude CLI has no --effort flag'
+    assert.ok((started.banners || []).includes(banner), JSON.stringify(started.banners))
+    const closed = run(root, ['run', 'close', '--halt', 'stopped for the test'], { expectExit: 1 }).step
+    assert.match(closed.summary, /EFFORT ROUTING UNAVAILABLE \(workflow\): this claude CLI has no --effort flag/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a workflow run that already named its effort capability keeps that declaration', () => {
+  // The no-flag fixture would record unsupported if the probe ran. A caller
+  // that already declared the capability is the runner, and the probe must not
+  // overwrite it.
+  const fixture = join(ROOT, 'test', 'fixtures', 'hosts', 'fake-claude.mjs')
+  const { root, change } = repo()
+  try {
+    run(root, [
+      'run', 'start', '--change', change, '--host', 'workflow',
+      '--host-capabilities', JSON.stringify({ effort: 'flag' })
+    ], {
+      env: { INTERLOCK_CLAUDE_COMMAND: `node ${fixture} --fixture-no-effort-flag` }
+    })
+    assert.equal(manifestOf(root).host.effort, 'flag')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a declared effort capability is recorded on the manifest unchanged', () => {
+  const { root, change } = repo()
+  try {
+    startWithHost(root, change, 'codex', { worktree: 'driver', effort: 'unsupported' })
+    assert.equal(manifestOf(root).host.effort, 'unsupported')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the receipt records the effort capability the host declared', () => {
+  for (const [host, effort] of [
+    ['qwen', 'unsupported'],
+    ['claude', 'flag']
+  ]) {
+    const { root, change } = repo()
+    try {
+      startWithHost(root, change, host, { worktree: 'driver', effort })
+      const closed = run(root, ['run', 'close', '--halt', 'stopped for the test'], { expectExit: 1 }).step
+      assert.equal(closed.action, 'halt')
+      assert.equal(receiptOf(root).host.effort, effort, `${host} declared effort: ${effort}`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a manifest with no effort capability closes with a null receipt effort, never the assumed flag', () => {
+  const { root, change } = repo()
+  try {
+    startWithHost(root, change, 'claude', { worktree: 'driver' })
+    // A manifest written before the key existed.
+    const manifest = manifestOf(root)
+    delete manifest.host.effort
+    file(root, '.claude/ship/run.json', manifest)
+    run(root, ['run', 'close', '--halt', 'stopped for the test'], { expectExit: 1 })
+    const receipt = receiptOf(root)
+    assert.ok(receipt.host && 'effort' in receipt.host, 'the receipt host block carries an effort key')
+    assert.equal(receipt.host.effort, null, 'not recorded, never the assumed flag')
   } finally {
     cleanup(root)
   }

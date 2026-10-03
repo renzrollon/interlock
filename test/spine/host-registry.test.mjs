@@ -95,19 +95,30 @@ test('the ACP adapter refines hooks and billing when its command is the Claude b
   const overClaude = createHost('acp', { cwd: ROOT, env: { [ACP_COMMAND_ENV]: 'claude --acp' } })
   assert.equal(overClaude.capabilities.hooks, true)
   assert.equal(overClaude.capabilities.billing, 'claude-subscription-programmatic')
+
+  // A wrapper spends the subscription. It does not load this plugin's hooks,
+  // so claiming they fire would hide HOOKS NOT IN FORCE.
+  const wrapper = createHost('acp', { cwd: ROOT, env: { [ACP_COMMAND_ENV]: 'claude-agent-acp' } })
+  assert.equal(wrapper.capabilities.hooks, false)
+  assert.equal(wrapper.capabilities.billing, 'claude-subscription-programmatic')
 })
 
-test('drivesClaudeBinary is true for claude and for ACP over the Claude binary only', () => {
+test('drivesClaudeBinary is true for claude, the Claude binary over ACP, and a known wrapper', () => {
   assert.equal(drivesClaudeBinary('claude', {}), true)
   assert.equal(drivesClaudeBinary('codex', {}), false)
   assert.equal(drivesClaudeBinary('qwen', {}), false)
   assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'claude --acp' }), true)
   assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'gemini --acp' }), false)
+  assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'claude-agent-acp' }), true)
+  assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: '/usr/local/bin/claude-code-acp' }), true)
+  // A launcher is not Claude: its name does not say what it launches.
+  assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'npx claude-agent-acp' }), false)
   // An unusable command is not a Claude run, and asking must not throw: the
   // adapter's own creation error is what the operator sees.
   assert.equal(drivesClaudeBinary('acp', {}), false)
   // An explicit --acp-command beats the environment, both ways.
   assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'gemini' }, 'claude'), true)
+  assert.equal(drivesClaudeBinary('acp', { [ACP_COMMAND_ENV]: 'claude' }, 'claude-agent-acp'), true)
 })
 
 test('only Claude passes an unmapped slug through; the map-only hosts do not', () => {
@@ -118,4 +129,18 @@ test('only Claude passes an unmapped slug through; the map-only hosts do not', (
   assert.equal(HOSTS.acp.capabilities.modelSelect, 'negotiated')
   assert.equal(HOSTS.codex.capabilities.modelSelect, 'map-only')
   assert.equal(HOSTS.qwen.capabilities.modelSelect, 'map-only')
+})
+
+test('effort control is a declared capability with exactly three legal values', () => {
+  assert.ok(CAPABILITY_KEYS.includes('effort'), 'effort is not a declared capability key')
+  assert.deepEqual([...CAPABILITY_VALUES.effort].sort(), ['flag', 'negotiated', 'unsupported'])
+})
+
+test('each host declares how it applies an effort, from what its vendor binary accepts', () => {
+  // Claude passes `--effort`; ACP asks the agent; Codex has a knob the adapter
+  // does not route, and Qwen has no per-spawn channel at all.
+  assert.equal(HOSTS.claude.capabilities.effort, 'flag')
+  assert.equal(HOSTS.acp.capabilities.effort, 'negotiated')
+  assert.equal(HOSTS.codex.capabilities.effort, 'unsupported')
+  assert.equal(HOSTS.qwen.capabilities.effort, 'unsupported')
 })

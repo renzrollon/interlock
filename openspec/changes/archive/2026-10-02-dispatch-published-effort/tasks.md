@@ -1,0 +1,198 @@
+## 1. Failing tests first
+
+Each task separates the assertions that are **red** against the current code from the **pins** that are already green. A pin is there because nothing asserts that behaviour today; it is not expected to fail, and its task's Verify says so.
+
+Fixture flags are named here so that tasks sharing a fixture read one contract.
+
+- [x] 1.1 In `test/spine/run.test.mjs`, pin every spawn's effort, and the capability's path into the manifest and the receipt (design D10, D14, D28; spec `effort-routing`, `run-host-adapters`).
+  - **Red today:**
+    - an inter-wave verify step's spawn carries `EFFORT.verify`, imported from `lib/limits.mjs`, never a literal. Reuse the setup of an existing test that reaches an inter-wave verify spawn; a repo with no test profile emits no verify spawn at all;
+    - an inter-wave retry (the step after a red `run judge`) carries the same effort;
+    - the final verify spawn (action `verify-final`) carries `EFFORT.verify`;
+    - a run started with no declared capabilities records `host.effort` as `flag` in the manifest;
+    - with `startWithHost` and `receiptOf` (~1705-1745): a host declaring `effort: 'unsupported'` closes with `receipt.host.effort` equal to `unsupported`, and one declaring `flag` with `flag`;
+    - a manifest whose host block has no `effort` key (remove it from `.claude/ship/run.json` after `run start`) closes with `receipt.host.effort` null, never the assumed `flag`.
+  - **Pins, green today:**
+    - a run started with `--host-capabilities` declaring `effort: 'unsupported'` records it on the manifest unchanged;
+    - the review spawn and both remediation spawns (fixing round and verdict round) carry `EFFORT.skeptic`;
+    - the replan ping, the `plan-waves` planner, the handoff spawn and the commit spawn each carry a null effort;
+    - every `kind` passed to a `spawn(` call in `lib/run.mjs` belongs to the published-effort set (`implementer`, `verify`, `review`, `remediate`) or the inheriting set (`ping`, `planner`, `handoff`, `commit`). Match `kind` only inside `spawn(` arguments. A kind in neither set fails, naming it.
+  - **Verify:** `npm test` runs; the three verify assertions fail because the spawn's effort is null, the manifest and receipt assertions fail because the key does not exist, and the pins pass.
+- [x] 1.2 In `test/spine/limits.test.mjs`, make the published effort checkable (design D8, D23).
+  - **Red today:**
+    - add `EFFORT` to the cap-authority sweep's `groups`, with `byTier` counted as one cap and the token `EFFORT.<cap>`. Rewrite the comment that says `EFFORT` stays outside the check so it names only `REPORT_CAPS`. It fails on `EFFORT.verify`;
+    - rewrite the row pin at ~326 to the new label: `effort: verify step (inter-wave and final)`, value unchanged.
+  - **Pin, green today, and it must stay green after section 2:** a sweep over `lib/run.mjs`, `lib/waves.mjs`, `workflows/ship.js` and `bin/interlock-run` finds no quoted effort level (`low`, `medium`, `high`, `xhigh`, `max`) written beside an `effort` key, and names the file when it does. Match level words only: the capability value `effort: 'flag'` that 2.1 adds to `lib/run.mjs` must not be a hit.
+  - **Do not touch** the value pins at ~311-317. No value in `EFFORT` moves.
+  - **Verify:** the cap-authority sweep fails naming `EFFORT.verify`, the label assertion fails on the old label, and the level sweep passes.
+- [x] 1.3 In `test/spine/host-registry.test.mjs` and `test/spine/host.test.mjs`, declare the capability (design D1, D4, D5; spec `run-host-adapters`). All red today: the key does not exist.
+  - `CAPABILITY_KEYS` includes `effort`, and `CAPABILITY_VALUES.effort` is exactly `flag`, `negotiated`, `unsupported`.
+  - Per host, beside the `modelSelect` pins (~113-121): `claude` is `flag`, `acp` is `negotiated`, `codex` and `qwen` are `unsupported`.
+  - In `host.test.mjs`, beside the cache-accounting test (~430-448): every `HOSTS` entry declares `effort`, and `ASSUMED_CAPABILITIES.effort` is `flag`.
+  - **Verify:** each new assertion fails because the key does not exist.
+- [x] 1.4 Add `test/spine/host-effort.test.mjs` for the shared module `lib/host/effort.mjs` (design D18, D19, D21, D29, D32). All red today: the module does not exist.
+  - `resolveEffort(level, capability, reason)`:
+    - `flag` applies with `via: 'flag'` and `value` equal to the level;
+    - `unsupported` does not apply, with the reason it was given, and `host has no effort control` when given none;
+    - an unknown or missing capability resolves as `unsupported` does;
+    - an empty level applies nothing.
+  - The module exports each reason string in design "Reasons", and the Codex reason differs from the Qwen reason.
+  - `findEffortOption(configOptions)`: found by id `effort`; found by category `thought_level` under a different id; a model option is never returned; a non-array input returns null.
+  - `pickEffortValue(level, option)`:
+    - an exact value is selected;
+    - `high` against an option advertising only `xhigh` is **not** selected and gives `level not among advertised values`;
+    - a display name that contains the level does not match;
+    - an option whose values are grouped rather than flat gives `level not among advertised values`;
+    - no option gives `no effort option advertised`.
+  - The override helper returns the trimmed value of `CLAUDE_CODE_EFFORT_LEVEL`, and an empty string when it is unset or blank.
+  - **Verify:** the file fails on import.
+- [x] 1.5 In `test/spine/host-adapters.test.mjs`, with `test/fixtures/hosts/fake-claude.mjs` (design D3, D4, D11, D24, D27, D29, D30; spec `run-host-adapters`).
+  - **Fixture, `fake-claude.mjs`:**
+    - answer `--help` before the required-flag checks, printing help text that lists `--effort <level>`, and exit 0;
+    - `--fixture-no-effort-flag`: the help text omits `--effort`, and an invocation that passes `--effort` exits non-zero with an unknown-option error;
+    - `--fixture-help-fails`: `--help` exits non-zero;
+    - `--fixture-help-hangs`: `--help` never answers;
+    - add `effort` (the value it was passed, or null) to the `--fixture-echo` payload.
+  - **Red today:**
+    - `claudeArgs` pushes `--effort <level>` directly after the `--model` pair when given one;
+    - through the fixture, a Claude spawn naming `low` is received by the CLI as `low`, and emits exactly one `effort-routing` event with `applied: true`, `via: 'flag'`, `requested` and `value` both `low`;
+    - a Claude host built with `createClaudeHost` directly always reports its probe verdict in `host.capabilities.effort`: `flag` over the default fixture;
+    - over `--fixture-no-effort-flag` it reports `unsupported`, a spawn naming an effort succeeds with no `--effort` in its argv, and the event is `applied: false` with reason `this claude CLI has no --effort flag`;
+    - over `--fixture-help-fails`, and over `--fixture-help-hangs` with a short probe timeout passed to `createClaudeHost`, it reports `unsupported` with reason `could not establish whether this claude CLI accepts --effort`, and host creation does not throw;
+    - `createHost('claude', { command })` reports the same verdicts as its effective capability;
+    - Codex emits one `effort-routing` event with `applied: false` and reason `effort is not routed on this host`; Qwen emits one with reason `host has no effort control`;
+    - every adapter's event agrees with its registry declaration: `applied` is true exactly where `HOSTS[id].capabilities.effort` is `flag`.
+  - **Pins, green today:**
+    - `claudeArgs` pushes no `--effort` when given none;
+    - the Codex and Qwen argv for a spawn naming an effort equals the argv for the same spawn naming none;
+    - every adapter in `ADAPTERS`: a spawn naming no effort emits no `effort-routing` event.
+  - **Verify:** each red test fails because no adapter reads `request.effort` and no host probes its CLI; the pins pass; every existing test in the file passes unchanged with the fixture's new `--help` branch.
+- [x] 1.6 In `test/spine/acp-host.test.mjs`, with `test/fixtures/acp/agent.mjs` (design D15, D18, D19, D20, D32; spec `workflow-host`).
+  - **Fixture flags, `agent.mjs`.** The effort option must be advertised and settable whether or not the model option is; today `session/set_config_option` is refused unless the model is advertised (~176-183).
+    - `--effort-options`: advertise an effort select with id `effort`, category `thought_level`, values `default`, `low`, `medium`, `high`, `xhigh`;
+    - `--effort-values=<csv>`: advertise exactly those values instead. It advertises the option on its own, without `--effort-options`;
+    - `--effort-id=<id>`: use that option id, keeping the category;
+    - `--effort-grouped`: advertise the values in groups rather than a flat list;
+    - `--effort-reject`: answer `session/set_config_option` for the effort option with a JSON-RPC error;
+    - `--effort-after-model`: omit the effort option from `session/new` and include it in the response to the model's `session/set_config_option`;
+    - echo `appliedEffort` and `appliedEffortVia` beside `appliedModel` and `appliedVia`, and echo the `_meta` keys the prompt carried.
+  - **Red today,** one test per scenario in the `workflow-host` delta:
+    - an advertised level is set with `session/set_config_option` before the prompt, and the event is `applied: true`, `via: 'set_config_option'`;
+    - no option advertised: the prompt runs, reason `no effort option advertised`;
+    - a level absent from `--effort-values`: no call is made, no other level is selected, reason `level not among advertised values`;
+    - `--effort-grouped`: no call is made, same reason;
+    - `--effort-reject`: the prompt runs, reason `agent rejected the effort option`;
+    - `--effort-id=reasoning_effort`: the option is found by category and set under its own id;
+    - `--effort-after-model` with both a model and an effort: the model is negotiated first and the effort is then applied.
+  - **Pins, green today:**
+    - a spawn naming no effort sends no effort call and emits no `effort-routing` event;
+    - the `_meta` keys the agent saw include none for effort;
+    - with `--die`, a spawn naming an effort is reported failed and emits no `effort-routing` event.
+  - Assert what the fixture agent received, not only the event, as the model tests do.
+  - **Verify:** each red test fails because the adapter never sends an effort; the pins pass; the existing model-routing tests pass unchanged.
+- [x] 1.7 In `test/workflows.test.mjs`, with `test/helpers/ship-harness.mjs` (depends on 1.5 and 1.6 for the fixture flags named there; design D2, D7, D9, D16, D22, D26, D29, D30; all three spec deltas).
+  - **Harness:** record `effort: options.effort` and `hasEffort` (whether `options` has its own `effort` key) on every `prompts[]` entry (~472, 505, 520).
+  - **Workflow driver, red today:**
+    - through `runShip`, a verify agent is spawned with `effort` equal to `EFFORT.verify`;
+    - an `effortLevelOverride` in the `validate` probe answer produces `EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=<value>` in the summary;
+    - add that banner to the host-raised list at ~121-126: `workflows/ship.js` contains it and `lib/run.mjs` does not;
+    - `workflows/ship.js` contains the tokens `printenv CLAUDE_CODE_EFFORT_LEVEL` and `effortLevelOverride`. The harness answers the probe by label and never reads its prompt, so without this pin the instruction could be deleted with every other test still green.
+  - **Workflow driver, pins green once the harness records effort:**
+    - a tier-1 or tier-2 lane's agent is spawned with `effort: 'low'`;
+    - relay pings, the planner and the commit agent are spawned with `hasEffort` false;
+    - a `validate` answer that omits the field raises no override banner, and a `validate` probe that returns no answer at all raises none and does not halt the run.
+  - **Runner, red today.** Capture stderr as well as stdout for the `--verbose` cases. Remove `CLAUDE_CODE_EFFORT_LEVEL` from the child environment in every runner test that does not set it, so a developer's own export cannot change a result.
+    - `--host claude --verbose` on a repo with a tier-2 task: stderr carries an effort-routing line naming the lane's label and `low`, stdout carries `effort routing: applied on N/N spawns` and no `EFFORT ROUTING UNAVAILABLE`, and stderr carries no effort-routing line for the planner's label;
+    - `--host claude --verbose` on a repo with a test profile, so the run emits a verify spawn: stderr carries an effort-routing line for the verify spawn's label with the value of `EFFORT.verify`, read from the import. Extend `test/fixtures/hosts/ship-answers.mjs` only if the fixture cannot already answer a verify step;
+    - `--host claude` over `--fixture-no-effort-flag`: stdout carries `EFFORT ROUTING UNAVAILABLE (claude)` with the no-flag reason, and the lane's result is recorded;
+    - `--host qwen` on the tier-2 repo: stdout carries `EFFORT ROUTING UNAVAILABLE (qwen)` and a line naming the lane's label, `low requested` and `host has no effort control`; the lane's result is recorded and the run closes;
+    - `--host codex` on the tier-2 repo: the line's reason is `effort is not routed on this host`, and `host has no effort control` does not appear;
+    - `--host acp` with `--effort-options`: the applied line; with the default fixture: `EFFORT ROUTING UNAVAILABLE (acp)` and `no effort option advertised`;
+    - `--host acp --verbose` on a repo with a tier-2 and a tier-5 task on disjoint paths, with `--effort-values=` set to the tier-2 effort only, both read from `EFFORT.byTier`: stderr shows two effort-routing lines, the tier-2 lane's applied; stdout has exactly one line under `EFFORT ROUTING UNAVAILABLE (acp)`, naming the tier-5 lane, and no `effort routing: applied on`. If the planner packs both tasks into one lane, reshape the repo until it plans two;
+    - after a `--host claude` run the manifest at `.claude/ship/run.json` records `host.effort` as `flag`, and after a `--host codex` run as `unsupported`. Read it before the temp repo is removed;
+    - `--host claude` with `CLAUDE_CODE_EFFORT_LEVEL=medium` prints the override banner.
+  - **Runner, pins green today:**
+    - the existing tier-4 `runnerRepo` run, whose spawns all carry a null effort, prints neither effort line;
+    - `--host codex` with `CLAUDE_CODE_EFFORT_LEVEL` set, and `--host claude` with it unset, print no override banner.
+  - **Driver source pins, red today:**
+    - `bin/interlock-run` contains the same truthy-only effort spread `workflows/ship.js` has;
+    - the runner collects effort events in a list named `effortRouting` and builds the unapplied set with `effortRouting.filter(event => event.applied === false)`, matched verbatim. The model fold's own filter is already in the file, so a pin that did not name the list would pass today. The existing "computes nothing itself" test (~700-727) must still pass unchanged;
+    - add `EFFORT ROUTING UNAVAILABLE` and `EFFORT ROUTING OVERRIDDEN` to the runner list in "the docs carry every banner the runner prints, verbatim" (~549-570), and assert `docs/04-when-it-stops.md` says an ACP wrapper around Claude is not recognised;
+    - `lib/doctor.mjs`'s `printenv` allowlist reason names `CLAUDE_CODE_EFFORT_LEVEL`;
+    - every reason string exported by `lib/host/effort.mjs` appears verbatim in `docs/04-when-it-stops.md`. Load the module with a dynamic `import()` inside the test, so its absence fails this test and not the whole file.
+  - **Rewrite the effort block at ~1340-1376 to the new contract, dropping no assertion:** keep the no-mirror test; in the dispatch test add that `lib/run.mjs` reads `EFFORT.verify`, and rename it to cover verify as well as the skeptics; keep both no-`xhigh` driver assertions. Remove the unused `laneEffortSource` import at line 21.
+  - **Verify:** `npm test` runs; every red assertion above fails for the reason it names; the pins, the no-policy sweep (~3571-3627) and every existing runner test pass.
+- [x] 1.8 In `test/spine/plugin-agents.test.mjs`, pin that no plugin agent definition declares an effort (design D31; spec `effort-routing`). Pin, green today.
+  - For every file under `agents/`, the frontmatter has no `effort` key. The failure names the file.
+  - **Verify:** the test passes against the current `agents/worker.md` and `agents/ping.md`, and fails when an `effort:` line is added to either by hand.
+- [x] 1.9 In `test/spine/run-log.test.mjs`, pin how a stored receipt's effort capability is read (design D10, D33). Red today.
+  - A receipt whose host block carries `effort` is read back with that value.
+  - A receipt whose host block has no `effort` reads `null`, never `flag` or `unsupported`.
+  - **Verify:** both assertions fail: `hostBlock` drops the field, so it reads back undefined, which is neither the stored value nor `null`.
+
+## 2. Dispatch, forward and report effort (make §1 green)
+
+- [x] 2.1 In `lib/run.mjs` (make §1 green; design D5, D6, D10, D14, D28):
+  - `verifyStep` passes `effort: EFFORT.verify` on its one spawn, for both contexts. Leave `model: null`.
+  - On the replan ping, the planner, the handoff and the commit spawns, keep `effort: null` and add a one-line comment naming the `effort-routing` requirement "Control-plane and prose spawns SHALL inherit the host's effort". Cite the requirement, not a rationale.
+  - Add `effort: 'flag'` to `ASSUMED_CAPABILITIES`. Its comment says the Workflow runtime takes the option, and that a runner manifest written before the key existed also reads `flag` although that run applied nothing.
+  - In `runClose`'s receipt host block (~3058-3065), pass the manifest's own `host.effort`, null when the manifest has none. Do not read it through `hostCapability`: that falls back to the assumed `flag`, and the receipt would then claim an effort was applied on a run that recorded nothing.
+  - **Verify:** the spawn-effort and manifest tests in 1.1 pass (its receipt assertions need 2.3 as well); the `ASSUMED_CAPABILITIES` assertion in 1.3 passes; the cap-authority sweep in 1.2 no longer names `EFFORT.verify`, and 1.2's level sweep still passes; `grep -n "xhigh" lib/run.mjs` prints nothing.
+- [x] 2.2 In `lib/limits.mjs` (make §1 green; design D23):
+  - Relabel the verify row in `formatLimits` to `effort: verify step (inter-wave and final)`.
+  - In the `EFFORT` doc comment, say `verify` pins both verify checks. Change no value.
+  - **Verify:** the label test in 1.2 passes; `node bin/interlock limits --json` prints the same `effort` object as before the change.
+- [x] 2.3 In `lib/receipt.mjs` and `lib/run-log.mjs`, carry the effort capability in the receipt's host block (make §1 green; depends on 2.1, which passes the capability into the receipt; design D10, D33):
+  - `lib/receipt.mjs` (~144-158): copy `host.effort` beside `cacheAccounting`.
+  - `lib/run-log.mjs` `hostBlock` (~241-253): read `effort` as bounded text, null when absent, the way `billing` is read. Do not import the host registry.
+  - **Verify:** 1.9 passes, and the receipt assertions in 1.1 pass.
+- [x] 2.4 Add `lib/host/effort.mjs`, and declare the capability in `lib/host/registry.mjs` and `lib/host.mjs` (make §1 green; design D1, D4, D19, D21, D29):
+  - **`lib/host/effort.mjs`:** `resolveEffort`, `findEffortOption`, `pickEffortValue`, the reason strings in design "Reasons", the override variable's name and a helper that reads it from an environment object. Pure: no I/O, no import of an adapter.
+  - **`lib/host/registry.mjs`:** add `effort` to `CAPABILITY_KEYS` directly after `modelSelect`; add its three legal values to `CAPABILITY_VALUES`; declare it on all four `HOSTS` entries, each with a comment naming the evidence from design "Discovery"; update the header's list of facts and its count.
+  - **`lib/host.mjs`:** add optional `effort` to the `SpawnRequest` typedef.
+  - **Verify:** the 1.3 registry tests and all of 1.4 pass.
+- [x] 2.5 In `lib/host/claude-cli.mjs`, `lib/host/codex.mjs` and `lib/host/qwen.mjs` (make §1 green; depends on 2.4; design D3, D4, D11, D24, D27, D29, D30):
+  - **Claude:**
+    - `claudeArgs` takes the effort and pushes `--effort <level>` after `--model`;
+    - `createClaudeHost` runs the configured command with `--help` once, synchronously, and looks for `--effort`. The probe's timeout defaults to a short constant beside `DEFAULT_TIMEOUT_MS` and can be passed in, as `timeoutMs` already can. Never throw from the probe;
+    - always record the probe's verdict in the host's observed `capabilities`: `effort: 'flag'` when the flag is there, `effort: 'unsupported'` when it is absent or the probe failed, with the matching reason kept beside it;
+    - `spawn` resolves the effort through `resolveEffort` from that verdict and reason, not from `host.capabilities`, which `createHost` replaces. It passes the flag only when it applied, and emits one `effort-routing` event when the request named one;
+    - add `--effort <level>` to the header's verified contract, with the 2026-09-30 probe: the flag is accepted with `--model haiku`.
+  - **Codex and Qwen:** argv untouched. Each emits the not-applied event through `resolveEffort` with its own reason. Add a header line saying why the host declares `unsupported`.
+  - No adapter validates or translates a level.
+  - **Verify:** all of 1.5 passes.
+- [x] 2.6 In `lib/host/acp.mjs` (make §1 green; depends on 2.4; design D15, D18, D19, D20, D32):
+  - `promptOnce` accepts the effort. Model negotiation also hands back the config options its `session/set_config_option` response carried, when it carried any. Keep them beside the routing verdict, not inside the object that is spread into the `model-routing` event: that event's shape is pinned by `deepEqual`.
+  - After model negotiation and before `session/prompt`, negotiate the effort: find the option in the latest config options, pick by exact value, call `session/set_config_option` under the option's own id, and catch a rejection. Never throw; the prompt runs either way.
+  - Emit one `effort-routing` event per spawn that named an effort and reached negotiation. A turn that times out afterwards keeps the event it already emitted. Send no `_meta` key for it.
+  - Add the effort facts to the header's protocol notes.
+  - **Verify:** all of 1.6 passes, and the existing model-routing tests in `test/spine/acp-host.test.mjs` pass unchanged.
+- [x] 2.7 In `bin/interlock-run` (make §1 green; depends on 2.1, 2.4, 2.5 and 2.6; design D2, D7, D9, D16, D22, D26):
+  - `spawnOne` forwards `s.effort` with the truthy-only spread.
+  - Collect `effort-routing` events in a list named `effortRouting`, beside `routing`, in `onEvent`; under `--verbose`, write one stderr line per event naming the label, the requested level and the outcome.
+  - Add the effort banners beside `routingBanners()`, with the exact text in design "Banner text", and hand them to `closeArgs()`. Print the level from the event.
+  - Push `EFFORT ROUTING OVERRIDDEN` with the static banners when `drivesClaudeBinary` is true and the override helper returns a value. Do not alter the child environment.
+  - Name effort in the header's "the banners" paragraph (~25-26).
+  - The file must contain no effort level, no `laneEffort`, and no `applied:`.
+  - **Verify:** in 1.7, the runner forwarding, banner, override and manifest tests pass, and so do the two source pins on this file (the effort spread and the `effortRouting` filter). The no-policy sweep, 1.2's level sweep and the "computes nothing itself" test pass. The docs and doctor pins in 1.7 are not this task's: 2.9 and 2.8 make them green.
+- [x] 2.8 In `workflows/ship.js` and `lib/doctor.mjs` (make §1 green; depends on 2.1 for the verify effort its Workflow tests observe; design D16, D26):
+  - Extend the environment probe: `printenv CLAUDE_CODE_EFFORT_LEVEL`, reported as `effortLevelOverride` and left out when unset, with the field added to the probe's schema.
+  - Push `EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=<value> — …` when it is set, beside the model override banner. A probe that reports nothing raises nothing and halts nothing.
+  - Leave `spawnOne` alone: it already forwards.
+  - In `lib/doctor.mjs`, name the new variable in the `printenv` allowlist reason.
+  - **Verify:** the Workflow tests, the probe-token pin and the doctor pin in 1.7 pass.
+- [x] 2.9 Docs, changelog and the stale Purpose line (depends on 2.7 and 2.8 for the banner text; design D24, D25):
+  - **`docs/04-when-it-stops.md`:**
+    - a section for `EFFORT ROUTING OVERRIDDEN` beside `MODEL ROUTING OVERRIDDEN`, with how to check and clear the variable, and a sentence saying an ACP wrapper around Claude is not recognised, so it prints neither `SUBSCRIPTION PATH` nor this banner;
+    - a section for `EFFORT ROUTING UNAVAILABLE (<host>)` beside its model twin, with a reasons table carrying every reason string `lib/host/effort.mjs` exports, verbatim, and the hosts that give each;
+    - one sentence on what "applied" means on a flag host for a model with no effort parameter.
+  - **`docs/07-cli-and-configuration.md`:**
+    - a `CLAUDE_CODE_EFFORT_LEVEL` row beside `CLAUDE_CODE_SUBAGENT_MODEL` in the settings table (~120) and in "Environment variables, in one place" (~167);
+    - an Effort column in the host table (~138-143);
+    - effort in the runner's capability paragraph (~149), including that `--host claude` reads the CLI's help once to see whether it has the flag.
+  - **`docs/01-first-hour.md` (~11), `docs/06-why-it-works.md` (~119) and `docs/10-agentic-workflow-ship-and-spec.md` (~158, ~269, ~419):** name the effort override beside the model override, and the new variable among what the probe reads.
+  - **`docs/10-agentic-workflow-ship-and-spec.md` (~264):** the verify row of the cost table says verify runs at the published verify effort.
+  - **`CHANGELOG.md`:** an entry under `[Unreleased]` whose first sentence says verify agents now run at the published effort and that this moves spend; then the runner forward, the capability and its receipt field, the three banners, the help probe, and the removed mirror requirement.
+  - **`openspec/specs/effort-routing/spec.md`:** in the Purpose line only, replace the clause about effort being mirrored across the planner/runtime boundary with one saying it is derived once and forwarded by each driver.
+  - State no effort level anywhere in the docs; point at `interlock limits`.
+  - **Verify:** the docs assertions in 1.7 pass; `grep -rn "xhigh" docs skills` prints nothing; `npm test` passes with its output pasted; `npm run validate` passes.

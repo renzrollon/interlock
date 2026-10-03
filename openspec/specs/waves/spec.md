@@ -203,14 +203,14 @@ Finishing a wave MUST NOT unconditionally enter the verify phase. The run MUST s
 - **GIVEN** a plan whose single wave holds one lane of 4 tasks and two lanes of 1 task
 - **WHEN** `formatPlan` renders the plan
 - **THEN** the projected implementer count is 3
-- **AND** the preview names the 4-task lane as a fold with its kind and the model opus
+- **AND** the preview names the 4-task lane as a fold with its kind and the model the hardest tier selects
 
 #### Scenario: Happy path — a fused chain lowers the bill
 
 - **GIVEN** a wave planned as four consecutive single-lane batches that fuse into one chain lane
 - **WHEN** `formatPlan` renders the plan
 - **THEN** the projected implementer count for that wave is 1, not 4
-- **AND** the preview names the lane as a chain on opus
+- **AND** the preview names the lane as a chain on the model its hardest tier selects
 
 #### Scenario: Edge case — a plan in which every lane holds one task
 

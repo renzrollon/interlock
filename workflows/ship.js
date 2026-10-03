@@ -148,6 +148,10 @@ const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
 
 const WORK = '.claude/ship'
 const RESULTS = `${WORK}/results.json`
+// Where the CLI keeps the exact bytes it last printed (LAST_STEP_PATH in
+// lib/run.mjs). Named here only so a halt can point a reader at it; this script
+// cannot read a file.
+const LAST_STEP = `${WORK}/last-step.json`
 
 // The runtime caps a run at 1000 agents. This is that ceiling, named so nobody
 // mistakes it for policy: it is NOT a bound on the loop, and it is deliberately
@@ -262,6 +266,11 @@ const {
 
 let steps = 0
 let resolvedChange = changeArg || '(unresolved)'
+// Why the last relay produced no step, when it did not. A relay's copy that
+// fails to parse used to vanish into a generic halt, and the only way to learn
+// it had been a 23 KB step retyped with two brackets missing was to dig the
+// relay's transcript out by hand.
+let relayFailure = ''
 
 /** A control-plane ping: mechanical, cheap, and never asked to decide anything. */
 const ping = (name, prompt, schema) => agent(prompt, { label: name, schema, ...pingExtra })
@@ -348,14 +357,28 @@ async function cli(argv, results, extraWrites = []) {
       properties: { cliStdout: { type: 'string' }, action: { type: 'string' } }
     }
   )
-  if (relayed && typeof relayed.cliStdout === 'string') {
+  let problem
+  if (!relayed) {
+    problem = 'the relay returned nothing'
+  } else if (typeof relayed.cliStdout !== 'string') {
+    problem = 'the relay returned no cliStdout'
+  } else {
     try {
       const parsed = JSON.parse(relayed.cliStdout)
       if (parsed && typeof parsed.action === 'string') return parsed
-    } catch {
+      problem = `${relayed.cliStdout.length} relayed chars parsed but carry no "action"`
+    } catch (err) {
       // stdout was not JSON. Nothing is inferred from that: the caller stops.
+      // What is kept is WHY — V8's message carries the failing position when it
+      // has one — so the halt says what broke instead of that something did.
+      problem =
+        `${relayed.cliStdout.length} relayed chars do not parse as JSON ` +
+        `(${(err && err.message) || String(err)})`
     }
   }
+  relayFailure =
+    `${label} (interlock ${argv.slice(0, 2).join(' ')}): ${problem} — ` +
+    `the CLI's own bytes are in ${LAST_STEP}`
   return null
 }
 
@@ -392,6 +415,9 @@ const probed = await ping(
     `If it prints a value, report it as subagentModelOverride. If it is unset the command exits ` +
     `non-zero and prints nothing — that is the normal case, so leave the field out rather than ` +
     `reporting an empty string.\n\n` +
+    `Run: printenv CLAUDE_CODE_EFFORT_LEVEL\n` +
+    `If it prints a value, report it as effortLevelOverride. If it is unset, leave the field out ` +
+    `the same way.\n\n` +
     `Then run: printenv CLAUDE_CODE_USE_BEDROCK; printenv AWS_BEDROCK\n` +
     `If subagentModelOverride is set, leave haikuAvailable out — routing is already overridden.\n` +
     `If either Bedrock variable prints a non-empty value other than 0 or false, report ` +
@@ -406,6 +432,7 @@ const probed = await ping(
       graphReason: { type: 'string' },
       hasTestProfile: { type: 'boolean' },
       subagentModelOverride: { type: 'string' },
+      effortLevelOverride: { type: 'string' },
       haikuAvailable: { type: 'boolean' }
     }
   }
@@ -437,6 +464,20 @@ if (subagentModel) {
 } else if (probed && probed.haikuAvailable === true) {
   // Mutate rather than rebind — `ping` closes over the object.
   pingExtra.model = 'haiku'
+}
+// The effort twin. CLAUDE_CODE_EFFORT_LEVEL outranks both the session's effort
+// and every per-agent effort a step asks for, so while it is set the plan's
+// per-step effort is not in effect. It is the operator's environment and is
+// never stripped; it is bannered so the summary cannot claim otherwise.
+const effortLevel =
+  probed && typeof probed.effortLevelOverride === 'string'
+    ? probed.effortLevelOverride.trim()
+    : ''
+if (effortLevel) {
+  banners.push(
+    `EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=${effortLevel} — every agent runs at ` +
+      `that effort, so the per-step effort in the plan is not in effect`
+  )
 }
 
 // --- the loop ---------------------------------------------------------------
@@ -488,7 +529,9 @@ while (step && step.then) {
 }
 
 if (!step) {
-  return await stop('the run program returned no step — the CLI relay could not be read')
+  if (relayFailure) banners.push(`RELAY UNREADABLE: ${relayFailure}`)
+  return await stop('the run program returned no step — the CLI relay could not be read' +
+    (relayFailure ? `: ${relayFailure}` : ''))
 }
 
 // The last argv was `run close`, so `step` IS the close: its summary and its

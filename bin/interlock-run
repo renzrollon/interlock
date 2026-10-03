@@ -22,8 +22,10 @@
 //                  this file runs `git worktree add`; `run record-batch` folds
 //                  and removes them, and halts on a real collision (design D7).
 //   the transport  one agent process per lane, prompt inline on stdin.
-//   the banners    which host, which billing path, which guards are absent, and
-//                  which spawns could not have their model applied (design D8).
+//   the banners    which host, which billing path, which guards are absent,
+//                  which spawns could not have their model or their effort
+//                  applied, and whether an exported effort override outranks
+//                  the plan (design D8; dispatch-published-effort D2, D9, D16).
 //
 // Everything else — wave order, caps, verdicts, the review, the receipt — is
 // behind `runCli` on purpose, so a second host cannot quietly grow a second copy
@@ -38,6 +40,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.mjs'
 import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
+import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
 import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
 
 const WORK = '.claude/ship'
@@ -222,6 +225,12 @@ const hostId =
 // because the adapter is the only party that saw the wire.
 const routing = []
 
+// Every spawn that named an effort, and what the adapter managed to do with it.
+// A list of its own beside `routing`, folded the same way: on a negotiated host
+// the outcome differs per spawn, so the verdict is the adapter's event and never
+// one this file derives from the host id or the step (design D2, D27).
+const effortRouting = []
+
 // Refusal comes BEFORE anything is created or written. A run that started and
 // then discovered it had no host would already have a manifest, a briefing and a
 // trajectory describing a run that never happened.
@@ -250,6 +259,17 @@ try {
         }
         return
       }
+      if (event && event.type === 'effort-routing') {
+        effortRouting.push(event)
+        if (verbose) {
+          process.stderr.write(
+            `${hostId}: effort routing ${event.label}: ${event.requested} → ` +
+              (event.applied ? `${event.value} via ${event.via}` : `not applied (${event.reason})`) +
+              '\n'
+          )
+        }
+        return
+      }
       if (verbose) process.stderr.write(`${hostId}: ${JSON.stringify(event)}\n`)
     }
   })
@@ -268,11 +288,27 @@ const capabilities = host.capabilities || {}
 // them in one block with everything else the run degraded on (design D8).
 const banners = [`RUNNER HOST: ${hostId} (experimental)`]
 
-if (drivesClaudeBinary(hostId, process.env, typeof flags['acp-command'] === 'string' ? flags['acp-command'] : undefined)) {
+const claudeBinary = drivesClaudeBinary(
+  hostId,
+  process.env,
+  typeof flags['acp-command'] === 'string' ? flags['acp-command'] : undefined
+)
+if (claudeBinary) {
   banners.push(
     `SUBSCRIPTION PATH: programmatic (${hostId}) — claude -p, the Agent SDK and ACP are the usage ` +
       `Anthropic has flagged for separate billing; /interlock:ship on the Workflow runtime is the ` +
       `exempted path, see docs/04-when-it-stops.md`
+  )
+}
+// The Claude CLI's effort variable outranks `--effort` and every per-agent
+// effort, so while it is set the plan's effort is not in effect. It means
+// nothing to a host that is not the Claude binary (D22). It is the operator's
+// environment: bannered, never stripped from the child's (D26).
+const effortOverride = claudeBinary ? effortLevelOverride(process.env) : ''
+if (effortOverride) {
+  banners.push(
+    `EFFORT ROUTING OVERRIDDEN: ${EFFORT_LEVEL_ENV}=${effortOverride} — every agent runs at ` +
+      `that effort, so the per-step effort in the plan is not in effect`
   )
 }
 if (hostId === 'codex' && onChatGptPlan(process.env)) {
@@ -307,6 +343,27 @@ function routingBanners() {
   return [
     `MODEL ROUTING UNAVAILABLE (${hostId}): the plan's per-tier model assignment is not in effect`,
     ...unapplied.map(event => `  — ${event.label}: ${event.reason}`)
+  ]
+}
+
+/**
+ * What the run has to say about effort routing, read off the adapter's events.
+ *
+ * The model twin's shape, for the same reason: a run on which every named
+ * effort was applied says so, and a run on which none was named says nothing.
+ * Each banner line states the level as requested, taken from the event, so a
+ * host that could not apply an effort cannot be read as one that ran at it.
+ */
+function effortBanners() {
+  if (!effortRouting.length) return []
+  const unapplied = effortRouting.filter(event => event.applied === false)
+  if (!unapplied.length) {
+    return [`effort routing: applied on ${effortRouting.length}/${effortRouting.length} spawns`]
+  }
+  return [
+    `EFFORT ROUTING UNAVAILABLE (${hostId}): the plan's per-step effort assignment is not in effect ` +
+      `for the spawns below — each ran at the host's own default`,
+    ...unapplied.map(event => `  — ${event.label}: ${event.requested} requested, ${event.reason}`)
   ]
 }
 
@@ -389,6 +446,9 @@ function spawnOne(s) {
     prompt: s.prompt,
     schema: s.schema,
     ...(s.model ? { model: s.model } : {}),
+    // Forwarded exactly as the step carries it, and only when it names one: a
+    // null effort reaches the host as no key at all, so it keeps its default.
+    ...(s.effort ? { effort: s.effort } : {}),
     ...(s.worktree && s.worktree.path ? { cwd: join(root, s.worktree.path) } : {}),
     type: s.type,
     tools: s.tools
@@ -488,13 +548,13 @@ async function stop(reason) {
 /** The flags the close reads for what only this host observed. */
 function closeArgs() {
   // Routing is resolved here rather than pushed as it happened, because the
-  // question it answers — did EVERY spawn get its model — is only answerable
-  // once the last spawn has returned.
+  // question it answers — did EVERY spawn get its model, and its effort — is
+  // only answerable once the last spawn has returned.
   //
   // `--notify` is unconditional: this driver knows nothing about topics,
   // servers or notification text. It requests the push; the CLI decides
   // whether one is configured and what it says (design D1).
-  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners()]), '--notify']
+  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners(), ...effortBanners()]), '--notify']
 }
 
 /** Print the close's summary and exit on its status. */

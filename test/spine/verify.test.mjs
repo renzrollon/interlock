@@ -14,7 +14,8 @@ import {
   BANNERS,
   VERIFY_CONTEXTS,
   DEFAULT_VERIFY_CONTEXT,
-  checkResultFieldSizes
+  checkResultFieldSizes,
+  foldCheckTimings
 } from '../../lib/verify.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
@@ -777,4 +778,26 @@ test('an ordinary result passes and non-objects are skipped rather than thrown o
   ])
   assert.deepEqual(r, { ok: true, violations: [] })
   assert.throws(() => checkResultFieldSizes('not an array'), /must be an array/)
+})
+
+// --- the inter-wave budget's clock ---------------------------------------------
+
+test('foldCheckTimings sums every timed run of each planned check, and names the untimed ones', () => {
+  const steps = [{ kind: 'typecheck' }, { kind: 'unit' }, { kind: 'lint' }]
+  const timings = [
+    { kind: 'typecheck', exitCode: 0, durationMs: 400 },
+    // A re-run after a repair cost its time too.
+    { kind: 'unit', exitCode: 1, durationMs: 1500.4 },
+    { kind: 'unit', exitCode: 0, durationMs: 1000 },
+    // Not a planned check, so not this checkpoint's cost.
+    { kind: 'e2e', exitCode: 0, durationMs: 90000 },
+    // Unusable records are ignored rather than guessed at.
+    { kind: 'lint', exitCode: 0, durationMs: -5 },
+    { kind: 'lint', exitCode: 0 },
+    null
+  ]
+  assert.deepEqual(foldCheckTimings(steps, timings), { ms: 2900, missing: ['lint'] })
+  assert.deepEqual(foldCheckTimings(steps, []), { ms: 0, missing: ['typecheck', 'unit', 'lint'] })
+  assert.deepEqual(foldCheckTimings([], timings), { ms: 0, missing: [] })
+  assert.deepEqual(foldCheckTimings(undefined, undefined), { ms: 0, missing: [] })
 })

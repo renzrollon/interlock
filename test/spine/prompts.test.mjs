@@ -77,6 +77,32 @@ test('the verify briefing names every planned step and its command', () => {
   assert.match(prompt, /Run ONLY these steps/, 'and forbids inventing others')
 })
 
+test('the verify briefing runs every planned step through the timing wrapper', () => {
+  // The inter-wave budget is charged what `interlock verify exec` measured
+  // around each command. A briefing that stopped naming the wrapper would put
+  // every checkpoint back on the round-trip clock — relay and agent time — with
+  // nothing but a banner to show for it.
+  const prompt = assembleVerifyPrompt({
+    change: 'add-widget',
+    context: 'inter-wave',
+    steps: [...STEPS, { kind: 'lint', command: 'npm run lint', cwd: 'packages/app' }],
+    runId: 'run-7'
+  })
+  assert.match(prompt, /^ {2}interlock verify exec --kind typecheck --command 'npm run typecheck'$/m)
+  assert.match(prompt, /^ {2}interlock verify exec --kind unit --command 'npm test'$/m)
+  assert.match(prompt, /^ {2}interlock verify exec --kind lint --cwd packages\/app --command 'npm run lint'$/m, 'a non-root cwd is the wrapper\'s, not a cd')
+  assert.match(prompt, /exactly as written/)
+})
+
+test('a verify line the briefing says to run verbatim is a command, not a labelled entry', () => {
+  // "Run each line exactly as written" over `typecheck: interlock verify exec …`
+  // asks the agent to run `typecheck:` — which fails the check before it starts.
+  const prompt = assembleVerifyPrompt({ change: 'add-widget', context: 'inter-wave', steps: STEPS, runId: 'run-7' })
+  const execLines = prompt.split('\n').filter(l => l.includes('interlock verify exec --kind'))
+  assert.equal(execLines.length, STEPS.length)
+  for (const line of execLines) assert.match(line, /^\s*interlock verify exec /, `not a runnable line: ${line}`)
+})
+
 test('the verify briefing names the spill command with the run id it was given', () => {
   const prompt = assembleVerifyPrompt({
     change: 'add-widget',

@@ -29,6 +29,7 @@ import {
   formatSpawnPrompt,
   parseAcpCommand,
   pickModelValue,
+  isClaudeBackedCommand,
   isClaudeCodeBinary,
   spawnArgsForAgent
 } from '../../lib/host/acp.mjs'
@@ -164,6 +165,13 @@ test('spawnArgsForAgent forwards --agent only for the Claude Code CLI', () => {
   assert.equal(isClaudeCodeBinary('claude.exe'), true)
   assert.equal(isClaudeCodeBinary('npx'), false)
   assert.equal(isClaudeCodeBinary('claude-code-acp'), false)
+  assert.equal(isClaudeCodeBinary('claude-agent-acp'), false)
+
+  assert.equal(isClaudeBackedCommand('claude'), true)
+  assert.equal(isClaudeBackedCommand('claude-agent-acp'), true)
+  assert.equal(isClaudeBackedCommand('/opt/bin/claude-code-acp.exe'), true)
+  assert.equal(isClaudeBackedCommand('npx'), false)
+  assert.equal(isClaudeBackedCommand('gemini'), false)
 
   assert.deepEqual(spawnArgsForAgent({ command: 'claude', args: ['--acp'] }, 'interlock:ping'), [
     '--agent',
@@ -174,6 +182,7 @@ test('spawnArgsForAgent forwards --agent only for the Claude Code CLI', () => {
     'some-acp-agent',
     '--acp'
   ])
+  assert.deepEqual(spawnArgsForAgent({ command: 'claude-agent-acp', args: [] }, 'interlock:worker'), [])
   assert.deepEqual(
     spawnArgsForAgent({ command: 'claude', args: ['--agent', 'other', '--acp'] }, 'interlock:ping'),
     ['--agent', 'other', '--acp']
@@ -304,6 +313,139 @@ test('a map naming a value the agent does not advertise is refused, not sent', a
 test('a spawn with no model negotiates nothing and emits no routing event', async () => {
   const { routing } = await routed('--config-options', { label: '7.1' })
   assert.deepEqual(routing, [], 'the event is per spawn that CARRIED a model')
+})
+
+// Effort rides the same session as the model, and is negotiated after it
+// (dispatch-published-effort, design D15, D18, D19, D20, D32). ACP defines no
+// effort field, only an option an agent may advertise, so each assertion below
+// is on both halves: the `effort-routing` event the driver banners from, and
+// the `appliedEffort` the fixture agent actually received.
+
+/** Spawn once and return the result with its effort events and every event seen. */
+async function effortRouted(flags, req, opts = {}) {
+  const events = []
+  const host = fixtureHost(flags, { onEvent: e => events.push(e), ...opts })
+  const result = await host.spawn({ prompt: 'do it', schema: { type: 'object' }, ...req })
+  return { result, effort: events.filter(e => e.type === 'effort-routing'), events }
+}
+
+test('an advertised effort level is set with set_config_option before the prompt', async () => {
+  const { result, effort } = await effortRouted('--effort-options', { label: '1.1', effort: 'low' })
+
+  assert.deepEqual(effort, [
+    { type: 'effort-routing', label: '1.1', requested: 'low', applied: true, via: 'set_config_option', value: 'low', reason: null }
+  ])
+  // What the agent saw: the call landed before the prompt, or the echo is null.
+  assert.equal(result.appliedEffort, 'low')
+  assert.equal(result.appliedEffortVia, 'set_config_option')
+})
+
+test('an agent advertising no effort option still runs the prompt, with a reason', async () => {
+  const { result, effort } = await effortRouted('', { label: '1.2', effort: 'low' })
+
+  assert.equal(effort.length, 1)
+  assert.equal(effort[0].applied, false)
+  assert.equal(effort[0].via, null)
+  assert.equal(effort[0].value, null)
+  assert.equal(effort[0].requested, 'low')
+  assert.equal(effort[0].reason, 'no effort option advertised')
+  assert.ok(result, 'the prompt still runs')
+  assert.equal(result.appliedEffort, null)
+})
+
+test('a level absent from the advertised values is not approximated', async () => {
+  const { result, effort } = await effortRouted('--effort-values=low,medium,high', { label: '1.3', effort: 'xhigh' })
+
+  assert.equal(effort[0].applied, false)
+  assert.equal(effort[0].reason, 'level not among advertised values')
+  assert.equal(effort[0].value, null)
+  assert.ok(result, 'the prompt still runs')
+  assert.equal(result.appliedEffort, null, 'no call was made, and high was not chosen in its place')
+  assert.equal(result.appliedEffortVia, null)
+})
+
+test('--effort-values advertises the option without --effort-options', async () => {
+  const { result, effort } = await effortRouted('--effort-values=low,high', { label: '1.3b', effort: 'high' })
+
+  assert.equal(effort[0].applied, true)
+  assert.equal(result.appliedEffort, 'high')
+})
+
+test('a grouped effort option is not read, even when the level is inside a group', async () => {
+  const { result, effort } = await effortRouted('--effort-options --effort-grouped', { label: '1.4', effort: 'low' })
+
+  assert.equal(effort[0].applied, false)
+  assert.equal(effort[0].reason, 'level not among advertised values')
+  assert.ok(result, 'the prompt still runs')
+  assert.equal(result.appliedEffort, null, 'no set_config_option call reached the agent')
+})
+
+test('an agent that rejects the effort option costs the run nothing but a reason', async () => {
+  const { result, effort } = await effortRouted('--effort-options --effort-reject', { label: '1.5', effort: 'low' })
+
+  assert.equal(effort[0].applied, false)
+  assert.equal(effort[0].via, null)
+  assert.equal(effort[0].reason, 'agent rejected the effort option')
+  assert.ok(result, 'the prompt still runs')
+  assert.equal(result.ok, true)
+  assert.equal(result.appliedEffort, null)
+})
+
+test('an effort option whose id differs is found by category and set under its own id', async () => {
+  const { result, effort } = await effortRouted('--effort-options --effort-id=reasoning_effort', {
+    label: '1.6',
+    effort: 'medium'
+  })
+
+  assert.equal(effort[0].applied, true)
+  assert.equal(effort[0].value, 'medium')
+  // The fixture only accepts the call when configId equals the id it advertised.
+  assert.equal(result.appliedEffort, 'medium')
+  assert.equal(result.appliedEffortVia, 'set_config_option')
+})
+
+test('an effort option that appears only after the model is set is read after it', async () => {
+  const { result, effort, events } = await effortRouted('--config-options --effort-options --effort-after-model', {
+    label: '1.7',
+    model: 'sonnet',
+    effort: 'high'
+  })
+
+  // The fixture leaves effort out of session/new, so it can only be applied
+  // if the model was negotiated first and the effort read from its response.
+  assert.equal(result.appliedModel, 'sonnet')
+  assert.equal(effort.length, 1)
+  assert.equal(effort[0].applied, true)
+  assert.equal(result.appliedEffort, 'high')
+  const kinds = events.map(e => e.type)
+  assert.ok(kinds.indexOf('model-routing') < kinds.indexOf('effort-routing'), 'model negotiated first')
+})
+
+test('a spawn naming no effort sends no effort call and emits no effort event', async () => {
+  const { result, effort } = await effortRouted('--effort-options', { label: '1.8' })
+
+  assert.deepEqual(effort, [])
+  assert.equal(result.appliedEffort, null)
+  assert.equal(result.appliedEffortVia, null)
+})
+
+test('no _meta key is sent for effort', async () => {
+  const { result } = await effortRouted('--effort-options', { label: '1.9', model: 'sonnet', effort: 'low' })
+
+  assert.ok(Array.isArray(result.metaKeys))
+  assert.ok(result.metaKeys.includes('interlock/model'), 'the model hint keeps travelling')
+  assert.deepEqual(
+    result.metaKeys.filter(key => /effort/i.test(key)),
+    [],
+    'effort is negotiated through config options, never a _meta hint'
+  )
+})
+
+test('a dead agent fails the spawn and raises no effort event', async () => {
+  const { result, effort } = await effortRouted('--die', { label: '1.10', effort: 'low' })
+
+  assert.equal(result, null)
+  assert.deepEqual(effort, [], 'no session existed, so no effort was attempted')
 })
 
 test('a malformed model map fails createAcpHost, not a wave three deep', async () => {

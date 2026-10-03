@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -131,4 +131,21 @@ test('ship.js restates only the ping literals, and passes a step\'s through unto
   const host = readFileSync(join(ROOT, 'lib', 'host.mjs'), 'utf8')
   assert.match(host, new RegExp(`WORKER_AGENT = '${WORKER_AGENT}'`))
   assertSlim([...WORKER_TOOLS], 'lib/host.mjs WORKER_TOOLS')
+})
+
+test('no plugin agent definition declares an effort', () => {
+  // An `effort` on an agent definition outranks the level a spawn is given, so
+  // every effort-routing event would still report applied while the plan's
+  // effort was not in effect (spec: effort-routing — a driver forwards, and no
+  // other party names an effort).
+  const dir = join(ROOT, 'agents')
+  const files = readdirSync(dir).filter(name => name.endsWith('.md'))
+  assert.ok(files.length >= 2, `expected the plugin's agent definitions under agents/, found ${files.length}`)
+  for (const name of files) {
+    const frontmatter = parseFrontmatter(readFileSync(join(dir, name), 'utf8')) || {}
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(frontmatter, 'effort'),
+      `agents/${name} declares effort: ${frontmatter.effort} — a plugin agent definition must not name an effort`
+    )
+  }
 })

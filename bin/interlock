@@ -14,9 +14,10 @@
 // own — only the agents it spawns run commands. So a policy module that is not
 // wired to a subcommand here is a policy the model will improvise in prose.
 
-import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { constants as osConstants } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import {
   planWaves,
@@ -33,8 +34,11 @@ import {
 } from '../lib/waves.mjs'
 import {
   CLASSIFIED_PATH,
+  LAST_STEP_PATH,
+  VERIFY_TIMINGS_PATH,
   checkSequence,
   readManifest,
+  relayStep,
   runClassified,
   runClose,
   runCommit,
@@ -45,9 +49,11 @@ import {
   runReplan,
   runReviewed,
   runStart,
-  runVerifyFinal
+  runVerifyFinal,
+  writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { probeClaudeEffort } from '../lib/host/claude-cli.mjs'
 import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
@@ -267,6 +273,8 @@ Usage:
   interlock verify unit --result <file>     Judge a unit result on its own
   interlock verify spill --run-id <id> --kind <k> --input <f>
                                            Spill oversized stdout/stderr to disk
+  interlock verify exec --kind <k> --command <cmd>
+                                           Run one planned check and time it
   interlock verify cluster --failures <f>   Group failures by root-cause signature
   interlock verify repair --state <file>    Decide repair / halt / accept next
   interlock plan fingerprint [change]      Fingerprint a change's planning inputs
@@ -645,6 +653,17 @@ verify spill:
   head/tail slice bounded by \`interlock limits\`' verify preview budget.
   Always exits 0.
 
+verify exec:
+  --kind <k>             The planned step this runs, e.g. typecheck/unit/lint (required)
+  --command <cmd>        The planned command, verbatim; run through the shell (required)
+  --cwd <dir>            Directory to run it in (default: the current one)
+  Runs the command with its stdout, stderr and exit code passed through
+  unchanged, and appends { kind, exitCode, durationMs, command, at } to
+  .claude/ship/verify-timings.jsonl. \`run judge\` folds those durations into
+  the inter-wave verify budget, so the budget counts the checks themselves
+  rather than the relay and agent time around them. A failed append is a
+  stderr warning; the exit code is always the command's.
+
 plan:
   fingerprint [change]   Hash the inputs a plan for this change is derived from:
                          proposal.md, design.md, tasks.md (with checkbox markers
@@ -878,6 +897,36 @@ function emit(json, obj, text) {
 }
 
 /**
+ * Print a `run` step, shaped for the host that will read it, and keep a copy of
+ * the exact bytes printed.
+ *
+ * `relay: true` routes the step through `relayStep`, which slims it for the
+ * Workflow host — the one host whose stdout is retyped by a model rather than
+ * read by a process. The close does not come through here at all: its summary
+ * is what it is for, and it must not overwrite the copy a halt points at.
+ *
+ * The copy at LAST_STEP_PATH is forensic, not a corpus: when a relay's copy
+ * does not parse, the halt points here instead of at a transcript. A failed
+ * write is spoken on stderr and never touches the exit code — losing the copy
+ * must not lose the step.
+ */
+function emitRunStep(json, root, step, text, { relay = false } = {}) {
+  if (!json) {
+    process.stdout.write(text)
+    return
+  }
+  const shaped = relay ? relayStep(readManifest(root), step) : step
+  const out = JSON.stringify(shaped, null, 2) + '\n'
+  try {
+    mkdirSync(join(root, dirname(LAST_STEP_PATH)), { recursive: true })
+    writeFileSync(join(root, LAST_STEP_PATH), out)
+  } catch (err) {
+    process.stderr.write(`interlock: ${LAST_STEP_PATH} not written: ${(err && err.message) || err}\n`)
+  }
+  process.stdout.write(out)
+}
+
+/**
  * record-* / replan: default stdout is the new state. --write-state writes that
  * state to a file and stdout becomes nextStep() — the shape `wave-state next`
  * already emits — so a ship agent can record and learn the next action in one turn.
@@ -934,13 +983,18 @@ function changeFor(state, flagChange) {
   return changeOf(state) || flag
 }
 
-// `wave-state next` / `--write-state` both surface the state machine's next
-// step. A `run-batch`/`test-wave` step carries `tasks[]` (the current batch, as
-// LANES) and `remainingBatches` (rest of the wave, as batches of lanes). ship.js
-// runs remainingBatches sequentially before the next record ping, so the
-// reconstructable spawn list is remainingBatches — not only tasks[]. Mid-wave
-// record-batch --write-state is cursor catch-up and MUST NOT duplicate those
-// events.
+// The `wave-state` protocol: `wave-state next` / `--write-state` both surface
+// the state machine's next step. A `run-batch`/`test-wave` step carries
+// `tasks[]` (the current batch, as LANES) and `remainingBatches` (rest of the
+// wave, as batches of lanes). A caller of that protocol runs remainingBatches
+// sequentially before its next record call, so the reconstructable spawn list
+// is remainingBatches — not only tasks[]. Mid-wave record-batch --write-state
+// is cursor catch-up and MUST NOT duplicate those events.
+//
+// The `run` program is NOT that protocol: it emits one step per batch, so it
+// passes the batch's own `lanes` and gets exactly those logged (see
+// `logLaneSpawns` in lib/run.mjs). Logging a whole wave there wrote spawn events
+// for lanes a halted run never dispatched.
 //
 // One spawn per LANE, because a lane is one agent. Counting per task would
 // report four spawns for a wave that ran two, which is the fold this change
@@ -960,13 +1014,21 @@ function spawnLanesOf(step) {
 // Takes the run's `state` rather than a runId, so the change name is resolved
 // from it the same way `logWaveMutation` does instead of being threaded in by a
 // caller who may not have been given one.
-function logAgentSpawns(root, { state, change, step, source }) {
-  if (!step || (step.action !== 'run-batch' && step.action !== 'test-wave')) return true
-  if (source === 'record-batch' && Number(step.batchIndex) > 0) return true
+function logAgentSpawns(root, { state, change, step, source, lanes }) {
+  const explicit = Array.isArray(lanes)
+  if (!explicit) {
+    if (!step || (step.action !== 'run-batch' && step.action !== 'test-wave')) return true
+    if (source === 'record-batch' && Number(step.batchIndex) > 0) return true
+  }
   const runId = runIdOf(state)
   const changeName = changeFor(state, change)
+  const dispatched = explicit
+    ? lanes
+        .map(lane => (Array.isArray(lane) ? lane.filter(t => t && typeof t === 'object') : []))
+        .filter(lane => lane.length)
+    : spawnLanesOf(step)
   let ok = true
-  for (const lane of spawnLanesOf(step)) {
+  for (const lane of dispatched) {
     const spawn = appendRunLogEvent(root, {
       runId,
       change: changeName,
@@ -2238,6 +2300,42 @@ async function main() {
           result,
           `spilled ${result.bytes} byte(s) → ${result.locator}${result.truncated ? ' (truncated preview)' : ''}\n`
         )
+      } else if (sub === 'exec') {
+        const kind = typeof flags.kind === 'string' ? flags.kind.trim() : ''
+        if (!kind) die('--kind is required')
+        const command = typeof flags.command === 'string' ? flags.command : ''
+        if (!command.trim()) die('--command is required')
+        const cwd = typeof flags.cwd === 'string' && flags.cwd.trim() ? flags.cwd : undefined
+        // Timed here, around the command and nothing else: the inter-wave budget
+        // used to be clocked from the step's dispatch to its judgement, which
+        // charged two relays and the verify agent's own turns to "verification"
+        // and spent the whole budget on the first checkpoint of every Workflow run.
+        const started = performance.now()
+        const ran = spawnSync(command, { shell: true, stdio: 'inherit', cwd })
+        const durationMs = Math.round(performance.now() - started)
+        let exitCode
+        if (ran.error) {
+          process.stderr.write(`interlock: verify exec could not run the command: ${ran.error.message}\n`)
+          exitCode = 127
+        } else if (typeof ran.status === 'number') {
+          exitCode = ran.status
+        } else {
+          const signal = ran.signal && osConstants.signals[ran.signal]
+          exitCode = Number.isInteger(signal) ? 128 + signal : 1
+        }
+        try {
+          mkdirSync(join(root, dirname(VERIFY_TIMINGS_PATH)), { recursive: true })
+          appendFileSync(
+            join(root, VERIFY_TIMINGS_PATH),
+            JSON.stringify({ kind, exitCode, durationMs, command, at: new Date().toISOString() }) + '\n'
+          )
+        } catch (err) {
+          // A timing is a budget input, not a gate: losing it costs the budget
+          // its precision (the judge falls back to the round trip, and says
+          // so), never the check its result.
+          process.stderr.write(`interlock: verify timing not recorded: ${(err && err.message) || err}\n`)
+        }
+        process.exit(exitCode)
       } else if (sub === 'cluster') {
         const failures = readInput(flags.failures, '--failures <file|->')
         if (!Array.isArray(failures)) {
@@ -2255,7 +2353,7 @@ async function main() {
         if (action.action === 'halt') process.exit(1)
       } else {
         die(
-          `unknown verify subcommand: ${sub || '(none)'} — expected plan|judge|unit|spill|cluster|repair`
+          `unknown verify subcommand: ${sub || '(none)'} — expected plan|judge|unit|spill|cluster|repair|exec`
         )
       }
       break
@@ -2435,7 +2533,7 @@ async function main() {
                 : ''
             }`
           )
-          emit(json, step, formatRunStep(step))
+          emitRunStep(json, root, step, formatRunStep(step))
           break
         }
         const name = resolved.name
@@ -2451,9 +2549,21 @@ async function main() {
             die(`--host-capabilities must be a JSON object of the host's declared capabilities: ${err.message}`)
           }
         }
+        const hostId = typeof flags.host === 'string' ? flags.host : undefined
+        // The Workflow host used to record `effort: flag` because the runtime's
+        // `agent()` option cannot be watched from this process. The installed
+        // CLI's help can. A caller that already named the capability keeps it.
+        let workflowEffortProbe = null
+        if (
+          hostId === 'workflow' &&
+          !(hostCapabilities && Object.prototype.hasOwnProperty.call(hostCapabilities, 'effort'))
+        ) {
+          workflowEffortProbe = probeClaudeEffort(process.env)
+          hostCapabilities = { ...(hostCapabilities || {}), effort: workflowEffortProbe.capability }
+        }
         step = runStart(ctx, {
           change: name,
-          host: typeof flags.host === 'string' ? flags.host : undefined,
+          host: hostId,
           hostCapabilities,
           flags: {
             applyOnly: flags['apply-only'] === true,
@@ -2471,6 +2581,18 @@ async function main() {
             strict: flags.strict !== undefined
           }
         })
+        if (workflowEffortProbe && workflowEffortProbe.capability === 'unsupported') {
+          // Spoken where the assumption used to be silent. The script still
+          // forwards the option: `agent()` does not reject an unknown key the
+          // way the CLI rejects an unknown flag.
+          const banner = `EFFORT ROUTING UNAVAILABLE (workflow): ${workflowEffortProbe.reason}`
+          const manifest = readManifest(root)
+          if (manifest) {
+            manifest.banners = [...(manifest.banners || []), banner]
+            writeManifest(root, manifest)
+          }
+          if (step && typeof step === 'object') step.banners = [...(step.banners || []), banner]
+        }
       } else if (sub === 'classified') {
         const classified =
           typeof flags.classified === 'string' && flags.classified.trim()
@@ -2513,6 +2635,9 @@ async function main() {
           hostObserved,
           notify: flags.notify === true
         })
+        // Printed plainly, and NOT copied to LAST_STEP_PATH: a halted run closes
+        // through here, and overwriting the file would replace the very step the
+        // halt reason points a reader at with the close's own summary.
         emit(json, step, step.summary + '\n')
         if (step.exitCode !== 0) process.exit(step.exitCode)
         break
@@ -2523,7 +2648,7 @@ async function main() {
         )
       }
 
-      emit(json, step, formatRunStep(step))
+      emitRunStep(json, root, step, formatRunStep(step), { relay: true })
       // A halt step still exits 0: its `then` is the close, and a driver that
       // stopped here would leave the run with no receipt and no terminal event.
       // `run close` is the call that carries the non-zero exit.

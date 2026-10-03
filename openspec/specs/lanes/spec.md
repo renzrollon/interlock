@@ -159,7 +159,7 @@ The number of tasks one agent may execute in a lane MUST be bounded by a per-tie
   - A solo lane MUST execute in section, layer and id order.
 - **Hardest-first.** The hardest-first heuristic MUST apply only to placing lanes relative to one another, never to reordering tasks inside a lane.
 - **Tier.** A lane's briefing tier and its effort MUST be taken from the highest tier among its tasks, so a lane containing a demanding task is never briefed or run at a trivial task's tier.
-- **Model.** The model a lane dispatches on is governed by the requirement that a lane's model follows its shape. A solo lane dispatches on opus because the planner promoted its tasks and reported each promotion: handing one agent the whole change is the planner's decision, not the classifier's.
+- **Model.** The model a lane dispatches on is governed by the requirement that a lane's model follows its shape and hardest tier. A solo lane dispatches on opus because the planner promoted its tasks and reported each promotion: handing one agent the whole change is the planner's decision, not the classifier's.
 
 #### Scenario: Happy path — a lane preserves task-id order
 
@@ -294,24 +294,32 @@ Rationale: a batch holding one lane buys no parallelism. Its boundary expresses 
 - **THEN** `2.1` and `2.2` occupy one chain lane in that order
 - **AND** the chain is bounded by the lane caps the run was planned with
 
-### Requirement: A lane's model SHALL follow its shape
+### Requirement: A lane's model SHALL follow its shape and hardest tier
 
-- **Multi-task lanes.** A lane of two or more tasks — collision, cohesion or chain — MUST dispatch on opus.
+- **Multi-task lanes.** A lane of two or more tasks — collision, cohesion or chain — MUST dispatch on opus when its hardest task tier is at or above `LANE_CAPS.opusMinTier`, and on sonnet when the hardest tier is below that floor. An all-opus multi-task lane (every task's recorded model is opus after the clamp — solo promotion, or a pure tier-5 pack) MUST still dispatch on opus even when the hardest tier is below the floor.
 - **Single-task lanes.** A lane of one task MUST dispatch on that task's model as clamped by the planner: haiku or sonnet. It dispatches on opus only when the task is a tier-5 task the classifier assigned opus, or a task a solo plan promoted.
 - **One derivation everywhere.** The rule MUST be derived from the lane's tasks alone at every point that reads it: the dispatched spawn, the plan's lane report, the preview, and the trajectory's `agent-spawn` record. These MUST agree, including for a reused, narrowed or replanned plan.
 - **No task rewriting.** The rule MUST NOT rewrite any task's recorded model.
 - **Clamp first.** Every task that enters a lane, including a replanned task, MUST have been clamped first.
 - **Not disclosed.** The classifier prompt MUST NOT describe this rule.
 
-Rationale: a lane holding several tasks is the work agent the planner chose not to split. A lane holding one task exists because it runs beside others, which is what a cheaper per-task model is for. The per-task clamp still stops the classifier from escalating its own model.
+Rationale: a multi-task lane is the work agent the planner chose not to split, but routine packed work (cohesion and low-tier chains) no longer needs the flagship model by default. The published floor keeps hard cross-file and architectural lanes on opus. The per-task clamp still stops the classifier from escalating its own model.
 
-#### Scenario: Happy path — a multi-task lane runs on opus
+#### Scenario: Happy path — a multi-task lane at the opus floor runs on opus
 
 - **GIVEN** a chain lane of a tier-2 task and a tier-4 task, each clamped to sonnet
 - **WHEN** the lane is dispatched
 - **THEN** the spawn requests opus
 - **AND** each task's recorded model is still sonnet
 - **AND** the trajectory's `agent-spawn` record for that lane names opus
+
+#### Scenario: Happy path — a multi-task lane below the opus floor runs on sonnet
+
+- **GIVEN** a cohesion lane of two tier-2 tasks, each clamped to sonnet
+- **WHEN** the lane is dispatched
+- **THEN** the spawn requests sonnet
+- **AND** each task's recorded model is still sonnet
+- **AND** the trajectory's `agent-spawn` record for that lane names sonnet
 
 #### Scenario: Failure — a single-task lane is not promoted
 
@@ -335,4 +343,4 @@ Rationale: a lane holding several tasks is the work agent the planner chose not 
 
 - **GIVEN** a reused plan whose two-task lane has its first task already ticked
 - **WHEN** the plan is narrowed and the remaining lane is dispatched
-- **THEN** the remaining single-task lane requests that task's clamped model, not opus
+- **THEN** the remaining single-task lane requests that task's clamped model, not the multi-task dispatch model

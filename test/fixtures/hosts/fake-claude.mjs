@@ -18,6 +18,15 @@
 //   --fixture-echo        return the argv and cwd it saw, for argv pinning
 //   --fixture-write=PATH  the file an implementer lane writes (lane collisions)
 //   --fixture-per-lane    write a file named after the lane's own task ids instead
+//   --fixture-no-effort-flag  a CLI that predates `--effort`: its help omits the
+//                         flag and an invocation passing it is rejected
+//   --fixture-effort-in-prose  a CLI whose help names `--effort` only in another
+//                         option's description, and which rejects the flag
+//   --fixture-help-fails  `--help` exits non-zero
+//   --fixture-help-hangs  `--help` never answers
+//
+// `--help` is answered before every other check, as the real CLI does, so the
+// adapter's one-time capability probe needs no schema and no stdin.
 
 import { shipAnswer } from './ship-answers.mjs'
 
@@ -29,6 +38,37 @@ const valueOf = name => {
   if (hit) return hit.slice(prefix.length)
   const i = argv.indexOf(name)
   return i !== -1 && argv[i + 1] !== undefined ? argv[i + 1] : null
+}
+
+if (has('--help')) {
+  if (has('--fixture-help-fails')) {
+    process.stderr.write('fake-claude: help is unavailable on purpose\n')
+    process.exit(3)
+  }
+  if (has('--fixture-help-hangs')) {
+    // Never answers; the probe's timeout is what ends it.
+    setInterval(() => {}, 1 << 30)
+    await new Promise(() => {})
+  } else {
+    const lines = [
+      'Usage: claude [options] [prompt]',
+      '',
+      'Options:',
+      '  -p, --print                 Print response and exit',
+      '  --output-format <format>    Output format',
+      '  --model <model>             Model for the current session'
+    ]
+    if (has('--fixture-effort-in-prose')) {
+      lines.push('  --thinking <mode>           Thinking mode (replaces the removed --effort flag)')
+    } else if (!has('--fixture-no-effort-flag')) {
+      lines.push('  --effort <level>            Effort level for the current session')
+    }
+    process.stdout.write(`${lines.join('\n')}\n`)
+    process.exit(0)
+  }
+} else if ((has('--fixture-no-effort-flag') || has('--fixture-effort-in-prose')) && has('--effort')) {
+  process.stderr.write("error: unknown option '--effort'\n")
+  process.exit(1)
 }
 
 if (has('--fixture-fail')) {
@@ -92,6 +132,7 @@ process.stdin.on('end', () => {
           argv,
           cwd: process.cwd(),
           model: valueOf('--model'),
+          effort: valueOf('--effort'),
           agent: valueOf('--agent'),
           permissionMode: valueOf('--permission-mode'),
           allowedTools: valueOf('--allowedTools'),

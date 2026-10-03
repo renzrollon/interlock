@@ -459,6 +459,15 @@ export async function runShip(opts = {}) {
     return body
   }
 
+  // What the script handed the runtime for effort, and whether it handed the
+  // key at all. `hasEffort` is the half a value cannot carry: a null effort must
+  // reach a host as no key, so `effort: undefined` is a different spawn from one
+  // that never named it.
+  const effortOf = options => ({
+    effort: options.effort,
+    hasEffort: Object.prototype.hasOwnProperty.call(options, 'effort')
+  })
+
   const agent = async (prompt, options = {}) => {
     const label = options.label || '(unlabeled)'
     const n = (seen.get(label) || 0) + 1
@@ -469,7 +478,7 @@ export async function runShip(opts = {}) {
     // A relay: perform its writes, run its command for real, hand back stdout.
     const argv = commandIn(text)
     if (argv) {
-      prompts.push({ label, prompt: text, model: options.model, relay: true })
+      prompts.push({ label, prompt: text, model: options.model, relay: true, ...effortOf(options) })
       // A relay canned as `null` is a relay the runtime stopped mid-run: nothing
       // is written and nothing runs, and the script sees exactly what agent()
       // returns in that case. It is the only way a fixture can reach the
@@ -485,7 +494,11 @@ export async function runShip(opts = {}) {
       // `runCli` invokes bin/interlock itself — so this is the subcommand and
       // its flags, passed through whole.
       const result = await runCli(argv, { cwd: root })
-      return { cliStdout: result.stdout }
+      // A relay canned as a function is a relay that ran the command for real
+      // and then retyped its stdout badly — the failure that halted the jumphour
+      // run. The CLI's own effects have happened; only the copy is wrong.
+      const retype = Object.prototype.hasOwnProperty.call(responses, label) ? responses[label] : undefined
+      return { cliStdout: typeof retype === 'function' ? retype(result.stdout) : result.stdout }
     }
 
     // A worker: record the briefing it was pointed at, and answer with the
@@ -498,7 +511,7 @@ export async function runShip(opts = {}) {
       } catch {
         briefing = ''
       }
-      prompts.push({ label, prompt: briefing, model: options.model, isolation: options.isolation })
+      prompts.push({ label, prompt: briefing, model: options.model, isolation: options.isolation, ...effortOf(options) })
       const canned = lookup(responses, label)
       const body = materialize(typeof canned === 'function' ? canned(label, n, ctx) : canned)
       if (body === null) return null
@@ -513,7 +526,7 @@ export async function runShip(opts = {}) {
 
     // Anything else — the environment probe, and the tail's own spawns, which no
     // step names yet.
-    prompts.push({ label, prompt: text, model: options.model, isolation: options.isolation })
+    prompts.push({ label, prompt: text, model: options.model, isolation: options.isolation, ...effortOf(options) })
     const canned = lookup(responses, label)
     return typeof canned === 'function' ? canned(label, n, ctx) : canned
   }

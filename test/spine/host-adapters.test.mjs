@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { claudeArgs, createClaudeHost, readClaudeEnvelope } from '../../lib/host/claude-cli.mjs'
 import { codexArgs, createCodexHost, onChatGptPlan, readCodexUsage } from '../../lib/host/codex.mjs'
 import { createQwenHost, qwenArgs, readQwenEnvelope } from '../../lib/host/qwen.mjs'
+import { HOSTS, createHost } from '../../lib/host/registry.mjs'
 import { MODEL_MAP_ENV, parseModelMap, resolveModel } from '../../lib/host/model-map.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -359,6 +360,239 @@ test('the ChatGPT plan condition is the ABSENCE of both keys', () => {
   assert.equal(onChatGptPlan({ OPENAI_API_KEY: 'k' }), false)
   assert.equal(onChatGptPlan({ OPENAI_API_KEY: '  ' }), true, 'a blank key is not a key')
 })
+
+// --- effort (design D3, D4, D11, D24, D27, D29, D30) --------------------------
+
+const NO_FLAG_REASON = 'this claude CLI has no --effort flag'
+const PROBE_FAILED_REASON = 'could not establish whether this claude CLI accepts --effort'
+const CODEX_REASON = 'effort is not routed on this host'
+const NO_CONTROL_REASON = 'host has no effort control'
+
+/** The argv a fixture echoed, with the per-spawn temp paths blanked so two spawns compare. */
+const stableArgv = argv =>
+  argv.map((a, i) => (['--output-schema', '-o'].includes(argv[i - 1]) ? '<tmp>' : a))
+
+const effortEvents = events => events.filter(e => e.type === 'effort-routing')
+
+test('claudeArgs pushes --effort directly after the --model pair when given one', () => {
+  const args = claudeArgs(request({ model: 'haiku', effort: 'low' }), {
+    model: 'haiku',
+    effort: 'low',
+    permissionMode: 'bypassPermissions',
+    plugin: '/plugin'
+  })
+  const at = args.indexOf('--model')
+  assert.deepEqual(args.slice(at, at + 4), ['--model', 'haiku', '--effort', 'low'])
+  assert.equal(args.filter(a => a === '--effort').length, 1)
+})
+
+test('claudeArgs pushes --effort even when no model resolved, and only that flag changes', () => {
+  const base = { model: null, permissionMode: 'bypassPermissions', plugin: null }
+  const plain = claudeArgs(request(), base)
+  const withEffort = claudeArgs(request({ effort: 'medium' }), { ...base, effort: 'medium' })
+  assert.deepEqual(
+    withEffort.filter(a => a !== '--effort' && a !== 'medium'),
+    plain
+  )
+  assert.ok(withEffort.includes('--effort'))
+})
+
+test('claudeArgs pushes no --effort when given none', () => {
+  const args = claudeArgs(request({ model: 'haiku' }), {
+    model: 'haiku',
+    permissionMode: 'bypassPermissions',
+    plugin: '/plugin'
+  })
+  assert.ok(!args.includes('--effort'))
+})
+
+test('claude: a named effort reaches the CLI as the flag and is reported as applied', async () => {
+  const events = []
+  const host = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+  const result = await host.spawn(request({ model: 'haiku', effort: 'low' }))
+  assert.equal(result.effort, 'low', 'the CLI received the level unchanged')
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1, 'exactly one effort-routing event')
+  assert.equal(routed[0].type, 'effort-routing')
+  assert.equal(routed[0].label, '1.1')
+  assert.equal(routed[0].applied, true)
+  assert.equal(routed[0].via, 'flag')
+  assert.equal(routed[0].requested, 'low')
+  assert.equal(routed[0].value, 'low')
+})
+
+test('claude: a level is passed through unvalidated', async () => {
+  const host = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-echo'] })
+  const result = await host.spawn(request({ effort: 'whatever-the-table-says' }))
+  assert.equal(result.effort, 'whatever-the-table-says')
+})
+
+test('claude: the help probe verdict is the host-reported effort capability', () => {
+  const flagged = hosted(ADAPTERS[0])
+  assert.equal(flagged.capabilities.effort, 'flag')
+
+  const noFlag = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-no-effort-flag'] })
+  assert.equal(noFlag.capabilities.effort, 'unsupported')
+})
+
+test('claude: help that only mentions --effort in prose is not a CLI that accepts it', async () => {
+  // A substring match would pass the flag, and the CLI would reject every spawn.
+  const events = []
+  const host = hosted(ADAPTERS[0], {
+    fixtureFlags: ['--fixture-effort-in-prose', '--fixture-echo'],
+    onEvent: e => events.push(e)
+  })
+  assert.equal(host.capabilities.effort, 'unsupported')
+  const result = await host.spawn(request({ effort: 'low' }))
+  assert.ok(result, 'the spawn ran, without the flag the CLI would have rejected')
+  assert.ok(!result.argv.includes('--effort'))
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].applied, false)
+  assert.equal(routed[0].reason, NO_FLAG_REASON)
+})
+
+test('claude: a CLI without --effort degrades, runs the spawn, and says why', async () => {
+  const events = []
+  const host = hosted(ADAPTERS[0], {
+    fixtureFlags: ['--fixture-no-effort-flag', '--fixture-echo'],
+    onEvent: e => events.push(e)
+  })
+  const result = await host.spawn(request({ effort: 'low' }))
+  assert.ok(result, 'the CLI would have rejected --effort; the spawn must not have passed it')
+  assert.ok(!result.argv.includes('--effort'))
+  assert.equal(result.effort, null)
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].applied, false)
+  assert.equal(routed[0].requested, 'low')
+  assert.equal(routed[0].reason, NO_FLAG_REASON)
+})
+
+test('claude: a help probe that fails is unsupported, with its own reason, and creation does not throw', async () => {
+  const events = []
+  let host
+  assert.doesNotThrow(() => {
+    host = hosted(ADAPTERS[0], {
+      fixtureFlags: ['--fixture-help-fails', '--fixture-echo'],
+      onEvent: e => events.push(e)
+    })
+  })
+  assert.equal(host.capabilities.effort, 'unsupported')
+  const result = await host.spawn(request({ effort: 'low' }))
+  assert.ok(result)
+  assert.ok(!result.argv.includes('--effort'))
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].applied, false)
+  assert.equal(routed[0].reason, PROBE_FAILED_REASON)
+})
+
+test('claude: a help probe that hangs times out to unsupported without throwing', async () => {
+  const events = []
+  let host
+  assert.doesNotThrow(() => {
+    host = adaptersCreateWithProbeTimeout(300, ['--fixture-help-hangs', '--fixture-echo'], events)
+  })
+  assert.equal(host.capabilities.effort, 'unsupported')
+  const result = await host.spawn(request({ effort: 'low' }))
+  assert.ok(result, 'the spawn itself still runs')
+  assert.ok(!result.argv.includes('--effort'))
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].reason, PROBE_FAILED_REASON)
+})
+
+/** A Claude host whose help probe gives up after `ms`. */
+function adaptersCreateWithProbeTimeout(ms, fixtureFlags, events) {
+  return createClaudeHost({
+    command: [process.execPath, ADAPTERS[0].fixture, ...fixtureFlags].join(' '),
+    cwd: ROOT,
+    env: {},
+    probeTimeoutMs: ms,
+    onEvent: e => events.push(e)
+  })
+}
+
+test('createHost("claude") reports the probe verdicts as its effective capability', () => {
+  const command = fixtureFlags => [process.execPath, ADAPTERS[0].fixture, ...fixtureFlags].join(' ')
+  const make = (fixtureFlags, extra = {}) =>
+    createHost('claude', { command: command(fixtureFlags), cwd: ROOT, env: {}, ...extra })
+  assert.equal(make([]).capabilities.effort, 'flag')
+  assert.equal(make(['--fixture-no-effort-flag']).capabilities.effort, 'unsupported')
+  assert.equal(make(['--fixture-help-fails']).capabilities.effort, 'unsupported')
+  assert.equal(
+    make(['--fixture-help-hangs'], { probeTimeoutMs: 300 }).capabilities.effort,
+    'unsupported'
+  )
+})
+
+test('codex: a named effort leaves argv untouched and emits the not-routed event', async () => {
+  const events = []
+  const host = hosted(ADAPTERS[1], { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+  const named = await host.spawn(request({ effort: 'low' }))
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].type, 'effort-routing')
+  assert.equal(routed[0].label, '1.1')
+  assert.equal(routed[0].requested, 'low')
+  assert.equal(routed[0].applied, false)
+  assert.equal(routed[0].reason, CODEX_REASON)
+  assert.notEqual(routed[0].reason, NO_CONTROL_REASON)
+
+  const unnamed = await hosted(ADAPTERS[1], { fixtureFlags: ['--fixture-echo'] }).spawn(request())
+  assert.deepEqual(stableArgv(named.argv), stableArgv(unnamed.argv))
+})
+
+test('qwen: a named effort leaves argv untouched and emits the no-control event', async () => {
+  const events = []
+  const host = hosted(ADAPTERS[2], { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+  const named = await host.spawn(request({ effort: 'low' }))
+  const routed = effortEvents(events)
+  assert.equal(routed.length, 1)
+  assert.equal(routed[0].requested, 'low')
+  assert.equal(routed[0].applied, false)
+  assert.equal(routed[0].reason, NO_CONTROL_REASON)
+
+  const unnamed = await hosted(ADAPTERS[2], { fixtureFlags: ['--fixture-echo'] }).spawn(request())
+  assert.deepEqual(stableArgv(named.argv), stableArgv(unnamed.argv))
+})
+
+for (const adapter of ADAPTERS) {
+  test(`${adapter.id}: a spawn naming no effort emits no effort-routing event`, async () => {
+    const events = []
+    const host = hosted(adapter, { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+    await host.spawn(request())
+    await host.spawn(request({ effort: null }))
+    assert.deepEqual(effortEvents(events), [])
+  })
+
+  test(`${adapter.id}: a spawn that never starts is a failed spawn, not a routed effort`, async () => {
+    // A lane cwd that does not exist: the process is never created. Counting it
+    // as applied (or as unapplied) would put a spawn that did not run into the
+    // effort tally.
+    const events = []
+    const host = hosted(adapter, { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+    const missing = join(tmpdir(), `interlock-no-such-lane-${process.pid}-${adapter.id}`)
+    const result = await host.spawn(request({ effort: 'low', cwd: missing }))
+    assert.equal(result, null)
+    assert.deepEqual(effortEvents(events), [])
+    assert.equal(events.filter(e => e.type === 'spawn-failed').length, 1, 'it is reported as a failed spawn')
+  })
+
+  test(`${adapter.id}: its effort-routing event agrees with its registry declaration`, async () => {
+    const events = []
+    const host = hosted(adapter, { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+    await host.spawn(request({ effort: 'low' }))
+    const routed = effortEvents(events)
+    assert.equal(routed.length, 1)
+    assert.equal(
+      routed[0].applied,
+      HOSTS[adapter.id].capabilities.effort === 'flag',
+      `${adapter.id}: applied must be true exactly where the registry declares flag`
+    )
+  })
+}
 
 // --- opt-in: the installed CLIs ------------------------------------------------
 
