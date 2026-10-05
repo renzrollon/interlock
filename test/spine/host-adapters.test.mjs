@@ -14,19 +14,30 @@
 // they cost money and need credentials, and a suite that spent either by default
 // would be a suite nobody runs.
 
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { claudeArgs, createClaudeHost, probeClaudeVersion, readClaudeEnvelope } from '../../lib/host/claude-cli.mjs'
+import {
+  claudeArgs,
+  createClaudeHost,
+  probeClaudeEffort,
+  probeClaudeVersion,
+  probeHelpFlags,
+  readClaudeEnvelope,
+  readLaneTranscript
+} from '../../lib/host/claude-cli.mjs'
 import { codexArgs, createCodexHost, onChatGptPlan, readCodexUsage } from '../../lib/host/codex.mjs'
 import { createQwenHost, qwenArgs, readQwenEnvelope } from '../../lib/host/qwen.mjs'
 import { HOSTS, createHost } from '../../lib/host/registry.mjs'
-import { MODEL_MAP_ENV, parseModelMap, resolveModel } from '../../lib/host/model-map.mjs'
+import { MODEL_MAP_ENV, modelMatches, parseModelMap, resolveModel } from '../../lib/host/model-map.mjs'
+import { MAX_AGENT_ERRORS, MAX_TEXT } from '../../lib/run-log.mjs'
+import { modelSubstitution } from '../../lib/run.mjs'
+import { projectSlug } from '../../lib/project-slug.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const FIXTURES = join(ROOT, 'test', 'fixtures', 'hosts')
@@ -337,11 +348,15 @@ test('resolveModel never guesses a nearest model and always carries a reason', (
 // --- the envelope readers ------------------------------------------------------
 
 test('the envelope readers recover a payload and refuse a broken one', () => {
-  assert.deepEqual(readClaudeEnvelope('{"structured_output":{"ok":true},"usage":{"output_tokens":5}}'), {
-    result: { ok: true },
-    usage: { inputTokens: undefined, outputTokens: 5 }
-  })
-  assert.deepEqual(readClaudeEnvelope('not json'), { result: null, usage: null })
+  // The result and the usage halves exactly as before the host record existed
+  // (design D7): the record rides beside them, it does not reshape them.
+  const read = readClaudeEnvelope('{"structured_output":{"ok":true},"usage":{"output_tokens":5}}')
+  assert.deepEqual(read.result, { ok: true })
+  assert.deepEqual(read.usage, { inputTokens: undefined, outputTokens: 5 })
+  assert.deepEqual(Object.keys(read).sort(), ['host', 'result', 'usage'])
+  const broken = readClaudeEnvelope('not json')
+  assert.equal(broken.result, null)
+  assert.equal(broken.usage, null)
   assert.equal(readClaudeEnvelope('{"result":"prose only"}').result, null, 'prose is not a payload')
 
   assert.equal(readQwenEnvelope('{"response":{"ok":true}}').result.ok, true)
@@ -360,6 +375,596 @@ test('the ChatGPT plan condition is the ABSENCE of both keys', () => {
   assert.equal(onChatGptPlan({ CODEX_API_KEY: 'k' }), false)
   assert.equal(onChatGptPlan({ OPENAI_API_KEY: 'k' }), false)
   assert.equal(onChatGptPlan({ OPENAI_API_KEY: '  ' }), true, 'a blank key is not a key')
+})
+
+// --- the host record (design D7; spec: run-host-adapters — the whole envelope) -
+//
+// What the host observed about a spawn, read off the WHOLE envelope whatever the
+// exit code, and carried beside the result rather than inside it. Every field is
+// copied by name, and a field the envelope omits is absent — null — never a zero,
+// a false or an empty list standing in for a measurement nobody made.
+
+const ENVELOPES = join(FIXTURES, 'claude-envelopes')
+const envelopeText = name => readFileSync(join(ENVELOPES, name), 'utf8')
+const CAPTURED_SESSION = '00000000-0000-4000-8000-000000000000'
+
+/** Every key the host record carries, in D7's order. */
+const HOST_RECORD_KEYS = [
+  'parsed',
+  'subtype',
+  'isError',
+  'terminalReason',
+  'errors',
+  'permissionDenials',
+  'sessionId',
+  'numTurns',
+  'sessionModels',
+  'hostCostUsd',
+  'exitCode',
+  'timedOut',
+  'resultMissing'
+]
+
+test('readClaudeEnvelope: the captured success envelope yields every host field, and the result and usage as before', () => {
+  const read = readClaudeEnvelope(envelopeText('success.json'), { exitCode: 0 })
+  assert.deepEqual(read.result, { ok: true })
+  assert.deepEqual(read.usage, {
+    inputTokens: 2,
+    outputTokens: 345,
+    cacheReadInputTokens: 44547,
+    cacheCreationInputTokens: { ephemeral_5m: 983, ephemeral_1h: 0 }
+  })
+  assert.deepEqual(read.host, {
+    parsed: true,
+    subtype: 'success',
+    isError: false,
+    terminalReason: 'completed',
+    // The capture carries no `errors` key: absent, not an empty list.
+    errors: null,
+    // The capture carries `permission_denials: []`: a measured none.
+    permissionDenials: { count: 0, tools: [] },
+    sessionId: CAPTURED_SESSION,
+    numTurns: 1,
+    // Session-scoped: the host's internal haiku call sits beside the session's
+    // own model on a one-turn run, so these keys are not the lane's model.
+    sessionModels: ['bedrock.claude-haiku-4-5', 'bedrock.claude-sonnet-5'],
+    hostCostUsd: 0.14365309999999998,
+    exitCode: 0,
+    timedOut: false,
+    resultMissing: false
+  })
+  assert.deepEqual(Object.keys(read.host), HOST_RECORD_KEYS)
+})
+
+test('readClaudeEnvelope: success with exit 0 and no structured_output is a missing result', () => {
+  const read = readClaudeEnvelope(envelopeText('no-structured-output.json'), { exitCode: 0 })
+  assert.equal(read.result, null)
+  assert.equal(read.host.resultMissing, true)
+  assert.equal(read.host.subtype, 'success')
+  assert.deepEqual(read.host.sessionModels, ['bedrock.claude-haiku-4-5', 'bedrock.claude-sonnet-5'])
+  assert.equal(read.usage.outputTokens, 345, 'the usage half is read exactly as before')
+  // An exit the caller did not know is not a non-zero exit: still missing.
+  assert.equal(readClaudeEnvelope(envelopeText('no-structured-output.json')).host.resultMissing, true)
+  // A non-zero exit is a stopped lane, not a missing result.
+  assert.equal(readClaudeEnvelope(envelopeText('no-structured-output.json'), { exitCode: 1 }).host.resultMissing, false)
+  // And a structured result that is not an object is no result either.
+  const scalar = JSON.parse(envelopeText('no-structured-output.json'))
+  scalar.structured_output = 'ok'
+  assert.equal(readClaudeEnvelope(JSON.stringify(scalar), { exitCode: 0 }).host.resultMissing, true)
+})
+
+test('readClaudeEnvelope: an error envelope on a non-zero exit carries its subtype, errors and exit code', () => {
+  const read = readClaudeEnvelope(envelopeText('error-subtype.json'), { exitCode: 1 })
+  assert.equal(read.result, null)
+  assert.deepEqual(read.host, {
+    parsed: true,
+    subtype: 'error_max_turns',
+    isError: true,
+    terminalReason: 'max_turns',
+    errors: ['Reached maximum number of turns (1)'],
+    permissionDenials: { count: 0, tools: [] },
+    sessionId: CAPTURED_SESSION,
+    numTurns: 2,
+    sessionModels: ['bedrock.claude-sonnet-5'],
+    hostCostUsd: 0.0123,
+    exitCode: 1,
+    timedOut: false,
+    resultMissing: false
+  })
+})
+
+test('readClaudeEnvelope: a field the envelope omits is absent, never zero, false or empty', () => {
+  const bare = readClaudeEnvelope('{"type":"result"}', { exitCode: 0 })
+  assert.deepEqual(bare.host, {
+    parsed: true,
+    subtype: null,
+    isError: null,
+    terminalReason: null,
+    errors: null,
+    permissionDenials: null,
+    sessionId: null,
+    numTurns: null,
+    sessionModels: null,
+    hostCostUsd: null,
+    exitCode: 0,
+    timedOut: false,
+    resultMissing: false
+  })
+  // An omitted per-model breakdown is session models unknown, not "none ran".
+  const noBreakdown = JSON.parse(envelopeText('success.json'))
+  delete noBreakdown.modelUsage
+  assert.equal(readClaudeEnvelope(JSON.stringify(noBreakdown)).host.sessionModels, null)
+  // Wrong-typed fields are absent too, not coerced.
+  const wrong = readClaudeEnvelope(
+    JSON.stringify({ subtype: 7, is_error: 'yes', num_turns: -1, total_cost_usd: 'free', session_id: '', modelUsage: [] })
+  )
+  for (const key of ['subtype', 'isError', 'numTurns', 'hostCostUsd', 'sessionId', 'sessionModels']) {
+    assert.equal(wrong.host[key], null, `${key} must be absent when the envelope's value is unusable`)
+  }
+})
+
+test('readClaudeEnvelope: unparseable stdout is a record that says so, carrying the exit and nothing invented', () => {
+  for (const stdout of ['not json', '', '[1,2]', '42', undefined]) {
+    const read = readClaudeEnvelope(stdout, { exitCode: 2, timedOut: true })
+    assert.equal(read.result, null)
+    assert.equal(read.usage, null)
+    assert.deepEqual(
+      read.host,
+      Object.fromEntries(
+        HOST_RECORD_KEYS.map(key => [key, key === 'parsed' ? false : key === 'exitCode' ? 2 : key === 'timedOut' ? true : null])
+      ),
+      `stdout ${JSON.stringify(stdout)}`
+    )
+  }
+  assert.deepEqual(readClaudeEnvelope('not json').host.exitCode, null, 'an exit nobody reported is unknown')
+  assert.equal(readClaudeEnvelope('not json').host.timedOut, false)
+})
+
+test('readClaudeEnvelope: errors are bounded in count and length, and denials name each tool once', () => {
+  const long = 'x'.repeat(MAX_TEXT * 2)
+  const read = readClaudeEnvelope(
+    JSON.stringify({
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: Array.from({ length: MAX_AGENT_ERRORS + 5 }, () => long),
+      permission_denials: [
+        { tool_name: 'Bash', tool_use_id: 't1', tool_input: { command: 'rm -rf /' } },
+        { tool_name: 'Bash', tool_use_id: 't2', tool_input: {} },
+        { tool_name: 'Edit', tool_use_id: 't3', tool_input: {} }
+      ]
+    }),
+    { exitCode: 1 }
+  )
+  assert.equal(read.host.errors.length, MAX_AGENT_ERRORS)
+  for (const error of read.host.errors) assert.equal(error.length, MAX_TEXT)
+  // The count is every denial; the tools are the distinct names, and the
+  // tool input — a command line, a file body — never travels.
+  assert.deepEqual(read.host.permissionDenials, { count: 3, tools: ['Bash', 'Edit'] })
+  assert.ok(!JSON.stringify(read.host).includes('rm -rf'), 'a denial\'s tool input is never copied')
+})
+
+// --- the lane transcript (design D7) -------------------------------------------
+
+const WORKER_TRANSCRIPT = join(ROOT, 'test', 'fixtures', 'transcripts', 'worker-agent.jsonl')
+
+/** Plant a session transcript where the host writes one for a session run in `cwd`. */
+function plantTranscript(configDir, cwd, sessionId, text) {
+  const dir = join(configDir, 'projects', projectSlug(realpathSync(cwd)))
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, `${sessionId}.jsonl`), text)
+}
+
+/** A scratch config dir and a lane directory, removed when `fn` returns. */
+async function withScratch(fn) {
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-transcript-')))
+  const config = join(scratch, 'config')
+  const lane = join(scratch, 'lane')
+  mkdirSync(config)
+  mkdirSync(lane)
+  try {
+    return await fn({ scratch, config, lane })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
+test('readLaneTranscript finds the session transcript under CLAUDE_CONFIG_DIR and reads its turn-scoped models', () =>
+  withScratch(({ config, lane }) => {
+    plantTranscript(config, lane, 'sess-a', readFileSync(WORKER_TRANSCRIPT, 'utf8'))
+    assert.deepEqual(readLaneTranscript({ cwd: lane, sessionId: 'sess-a', env: { CLAUDE_CONFIG_DIR: config } }), {
+      servedModels: ['bedrock.claude-haiku-4-5'],
+      reason: null
+    })
+  }))
+
+test('readLaneTranscript falls back to $HOME/.claude when CLAUDE_CONFIG_DIR is unset', () =>
+  withScratch(({ scratch, lane }) => {
+    plantTranscript(join(scratch, '.claude'), lane, 'sess-h', readFileSync(WORKER_TRANSCRIPT, 'utf8'))
+    const read = readLaneTranscript({ cwd: lane, sessionId: 'sess-h', env: { HOME: scratch } })
+    assert.deepEqual(read.servedModels, ['bedrock.claude-haiku-4-5'])
+  }))
+
+test('readLaneTranscript reports absent with a reason, never throwing, when it cannot read a served model', () =>
+  withScratch(({ config, lane }) => {
+    const env = { CLAUDE_CONFIG_DIR: config }
+    const cases = [
+      ['a missing file', { cwd: lane, sessionId: 'sess-none', env }],
+      ['an unsafe session id', { cwd: lane, sessionId: '../escape', env }],
+      ['no session id', { cwd: lane, sessionId: null, env }],
+      ['a missing cwd', { cwd: join(lane, 'no-such-dir'), sessionId: 'sess-a', env }],
+      ['no arguments', undefined]
+    ]
+    plantTranscript(config, lane, 'sess-user-only', '{"type":"user","message":{"role":"user","content":"hi"}}\n')
+    cases.push(['a transcript with no assistant turn', { cwd: lane, sessionId: 'sess-user-only', env }])
+    for (const [what, args] of cases) {
+      let read
+      assert.doesNotThrow(() => {
+        read = readLaneTranscript(args)
+      }, what)
+      assert.equal(read.servedModels, null, what)
+      assert.equal(typeof read.reason, 'string', `${what}: the absence carries its reason`)
+      assert.ok(read.reason.length > 0, what)
+    }
+  }))
+
+// --- the host record through the real adapter ------------------------------------
+
+test('claude: a non-zero exit with an error envelope returns null and spawn-failed carries the host record', () =>
+  withScratch(async ({ config, lane }) => {
+    const events = []
+    const host = hosted(ADAPTERS[0], {
+      fixtureFlags: ['--fixture-error-subtype=error_max_turns'],
+      env: { CLAUDE_CONFIG_DIR: config },
+      onEvent: e => events.push(e)
+    })
+    assert.equal(await host.spawn(request({ model: 'sonnet', cwd: lane })), null, 'a stopped lane still has no result')
+    const failed = events.filter(e => e.type === 'spawn-failed')
+    assert.equal(failed.length, 1)
+    assert.equal(events.filter(e => e.type === 'spawn-done').length, 0)
+    const record = failed[0].host
+    assert.ok(record, 'spawn-failed must carry the host record')
+    assert.equal(record.parsed, true, 'the envelope on stdout was read despite the exit')
+    assert.equal(record.subtype, 'error_max_turns')
+    assert.equal(record.isError, true)
+    assert.equal(record.exitCode, 1)
+    assert.equal(record.timedOut, false)
+    assert.equal(record.resultMissing, false)
+    assert.ok(Array.isArray(record.errors) && record.errors.length > 0, 'the envelope\'s errors')
+    assert.equal(typeof record.sessionId, 'string')
+    assert.equal(record.modelRouted, 'sonnet')
+    assert.equal(typeof failed[0].error, 'string', 'and the stderr-tail diagnostic is kept')
+  }))
+
+test('claude: a lane transcript gives spawn-done turn-scoped served models beside the session-scoped ones', () =>
+  withScratch(async ({ config, lane }) => {
+    const events = []
+    const host = hosted(ADAPTERS[0], {
+      fixtureFlags: ['--fixture-echo', '--fixture-transcript=claude-opus-5-5', '--fixture-session=sess-t1'],
+      env: { CLAUDE_CONFIG_DIR: config },
+      onEvent: e => events.push(e)
+    })
+    const result = await host.spawn(request({ model: 'sonnet', cwd: lane }))
+    assert.ok(result, 'the spawn returned its result')
+    const done = events.filter(e => e.type === 'spawn-done')
+    assert.equal(done.length, 1)
+    const record = done[0].host
+    assert.deepEqual(record.servedModels, ['claude-opus-5-5'])
+    assert.equal(record.transcriptReason, null)
+    assert.equal(record.sessionId, 'sess-t1')
+    assert.deepEqual(record.sessionModels, ['sonnet'])
+    assert.equal(record.modelRouted, 'sonnet', 'the value the adapter sent, after the map')
+    assert.deepEqual(record.usage, result.usage, 'the record carries the same usage the result does')
+    assert.ok(!('host' in result), 'the result itself carries no host field')
+  }))
+
+test('claude: with no lane transcript, served models are absent with a reason and session models remain', () =>
+  withScratch(async ({ config, lane }) => {
+    const events = []
+    const host = hosted(ADAPTERS[0], {
+      fixtureFlags: [
+        '--fixture-echo',
+        '--fixture-served-model=claude-opus-5-5',
+        '--fixture-denials=Bash,Edit',
+        '--fixture-session=sess-lane-1'
+      ],
+      env: { CLAUDE_CONFIG_DIR: config, [MODEL_MAP_ENV]: '{"claude":{"sonnet":"claude-sonnet-5-5"}}' },
+      onEvent: e => events.push(e)
+    })
+    await host.spawn(request({ model: 'sonnet', cwd: lane }))
+    const record = events.find(e => e.type === 'spawn-done').host
+    assert.equal(record.servedModels, null)
+    assert.equal(typeof record.transcriptReason, 'string')
+    assert.deepEqual(record.sessionModels, ['claude-sonnet-5-5', 'claude-opus-5-5'])
+    assert.equal(record.modelRouted, 'claude-sonnet-5-5', 'the mapped value, which is what the host was sent')
+    assert.equal(record.sessionId, 'sess-lane-1')
+    assert.deepEqual(record.permissionDenials, { count: 2, tools: ['Bash', 'Edit'] })
+    assert.equal(record.numTurns > 0, true)
+    assert.equal(typeof record.hostCostUsd, 'number')
+  }))
+
+test('claude: a spawn with no model records modelRouted as absent', async () => {
+  const events = []
+  const host = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-echo'], onEvent: e => events.push(e) })
+  await host.spawn(request())
+  assert.equal(events.find(e => e.type === 'spawn-done').host.modelRouted, null)
+})
+
+test('fake-claude refuses --no-session-persistence and unknown flags, so the fixture fails an adapter that sends one', () => {
+  const fixture = ADAPTERS[0].fixture
+  const base = ['-p', '--output-format', 'json', '--json-schema', JSON.stringify(SCHEMA), '--permission-mode', 'bypassPermissions']
+  const persisted = spawnSync(process.execPath, [fixture, ...base, '--no-session-persistence'], {
+    input: 'hi',
+    encoding: 'utf8'
+  })
+  assert.equal(persisted.status, 64)
+  assert.match(persisted.stderr, /no-session-persistence/)
+  const unknown = spawnSync(process.execPath, [fixture, ...base, '--made-up-flag'], { input: 'hi', encoding: 'utf8' })
+  assert.equal(unknown.status, 64)
+  assert.match(unknown.stderr, /made-up-flag/)
+  const ok = spawnSync(process.execPath, [fixture, ...base], { input: 'hi', encoding: 'utf8' })
+  assert.equal(ok.status, 0, ok.stderr)
+})
+
+// --- the flags behind the probe, and the two pins (design D10) -----------------
+
+const fixtureCommand = flags => [ADAPTERS[0].fixture, ...flags]
+const PROMPTS_BANNER =
+  'PERMISSION PROMPTS NOT SUPPRESSED (claude): the installed CLI does not list --permission-prompts, so a lane that needs a person waits'
+
+test('probeHelpFlags answers effort and permission prompts from one --help run', () => {
+  const probe = flags => probeHelpFlags(process.execPath, fixtureCommand(flags), { cwd: ROOT, env: {}, timeoutMs: 10000 })
+  assert.deepEqual(probe([]), { effort: { capability: 'flag', reason: null }, permissionPrompts: 'flag' })
+  assert.deepEqual(probe(['--fixture-no-permission-prompts-flag']), {
+    effort: { capability: 'flag', reason: null },
+    permissionPrompts: 'unsupported'
+  })
+  assert.deepEqual(probe(['--fixture-no-effort-flag']), {
+    effort: { capability: 'unsupported', reason: NO_FLAG_REASON },
+    permissionPrompts: 'flag'
+  })
+  // A probe that cannot answer establishes neither flag.
+  assert.deepEqual(probe(['--fixture-help-fails']), {
+    effort: { capability: 'unsupported', reason: PROBE_FAILED_REASON },
+    permissionPrompts: 'unsupported'
+  })
+  // probeClaudeEffort keeps its exported answer: the effort half alone.
+  const command = flags => [process.execPath, ...fixtureCommand(flags)].join(' ')
+  assert.deepEqual(probeClaudeEffort({ INTERLOCK_CLAUDE_COMMAND: command([]) }), { capability: 'flag', reason: null })
+  assert.deepEqual(probeClaudeEffort({ INTERLOCK_CLAUDE_COMMAND: command(['--fixture-no-effort-flag']) }), {
+    capability: 'unsupported',
+    reason: NO_FLAG_REASON
+  })
+})
+
+test('claudeArgs passes --permission-prompts none only outside bypass mode on a CLI that lists it', () => {
+  const build = (permissionMode, permissionPrompts) =>
+    claudeArgs(request({ model: 'haiku' }), { model: 'haiku', permissionMode, plugin: '/plugin', permissionPrompts })
+  const accept = build('acceptEdits', 'flag')
+  const at = accept.indexOf('--permission-mode')
+  assert.deepEqual(accept.slice(at, at + 4), ['--permission-mode', 'acceptEdits', '--permission-prompts', 'none'])
+  assert.equal(accept.filter(a => a === '--permission-prompts').length, 1)
+  for (const [mode, prompts] of [
+    ['bypassPermissions', 'flag'],
+    [undefined, 'flag'],
+    ['acceptEdits', 'unsupported'],
+    ['acceptEdits', undefined],
+    ['default', null]
+  ]) {
+    assert.ok(!build(mode, prompts).includes('--permission-prompts'), `${mode} / ${prompts}`)
+  }
+  // The default mode's argv is the argv every unattended run already sends.
+  assert.deepEqual(build(undefined, 'flag'), build('bypassPermissions', 'unsupported'))
+})
+
+test('claudeArgs never passes --no-session-persistence, and names the plugin dir whenever it resolves', () => {
+  const requests = [
+    request(),
+    request({ model: 'opus', effort: 'high' }),
+    request({ type: '', tools: [] }),
+    request({ type: 'interlock:ping', tools: ['Bash'], schema: null }),
+    {},
+    null
+  ]
+  let built = 0
+  for (const req of requests) {
+    for (const permissionMode of [undefined, 'bypassPermissions', 'acceptEdits', 'default', 'plan', 'dontAsk']) {
+      for (const permissionPrompts of [undefined, 'flag', 'unsupported']) {
+        for (const plugin of [null, '/plugin', '/other plugin']) {
+          for (const [model, effort] of [[null, null], ['sonnet', 'low']]) {
+            const args = claudeArgs(req, { model, effort, permissionMode, plugin, permissionPrompts })
+            built++
+            assert.ok(!args.includes('--no-session-persistence'), JSON.stringify(args))
+            assert.ok(!args.some(a => /no-session-persistence/.test(a)), JSON.stringify(args))
+            if (plugin) {
+              const at = args.indexOf('--plugin-dir')
+              assert.ok(at !== -1, `--plugin-dir must be passed whenever the plugin resolves: ${JSON.stringify(args)}`)
+              assert.equal(args[at + 1], plugin)
+            } else {
+              assert.ok(!args.includes('--plugin-dir'))
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.ok(built > 300, `the matrix built ${built} argvs`)
+})
+
+test('the claude adapter source never names --no-session-persistence as an argument', () => {
+  // Session persistence is what makes a lane's transcript readable and its
+  // session resumable; a flag that disabled it would silently empty both.
+  const code = readFileSync(join(ROOT, 'lib', 'host', 'claude-cli.mjs'), 'utf8')
+    .split('\n')
+    .filter(line => !/^\s*(\/\/|\/?\*)/.test(line))
+    .join('\n')
+  assert.doesNotMatch(code, /no-session-persistence/)
+})
+
+test('claude: outside bypass mode, a CLI without --permission-prompts is bannered once and never sent the flag', async () => {
+  const env = { INTERLOCK_CLAUDE_PERMISSION_MODE: 'acceptEdits' }
+  const host = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-no-permission-prompts-flag', '--fixture-echo'], env })
+  assert.deepEqual(host.banners, [PROMPTS_BANNER])
+  // The fixture rejects the flag on this mode, so a result IS the assertion.
+  const first = await host.spawn(request())
+  const second = await host.spawn(request())
+  assert.ok(first && second, 'the spawns ran without the flag the CLI would have rejected')
+  assert.ok(!first.argv.includes('--permission-prompts'))
+  assert.equal(host.banners.filter(b => b === PROMPTS_BANNER).length, 1, 'once per host, not once per spawn')
+
+  // Through the registry too: the runner reads the banner off the host it created.
+  const viaRegistry = createHost('claude', {
+    command: [process.execPath, ADAPTERS[0].fixture, '--fixture-no-permission-prompts-flag'].join(' '),
+    cwd: ROOT,
+    env
+  })
+  assert.deepEqual(viaRegistry.banners, [PROMPTS_BANNER])
+})
+
+test('claude: a CLI that lists the flag gets it outside bypass mode, and the default mode is not bannered', async () => {
+  const accepting = hosted(ADAPTERS[0], {
+    fixtureFlags: ['--fixture-echo'],
+    env: { INTERLOCK_CLAUDE_PERMISSION_MODE: 'acceptEdits' }
+  })
+  assert.deepEqual(accepting.banners, [])
+  const sent = await accepting.spawn(request())
+  assert.equal(sent.permissionPrompts, 'none')
+  assert.ok(sent.argv.includes('--plugin-dir'), 'the checkout is the plugin, so it is named')
+
+  const unattended = hosted(ADAPTERS[0], { fixtureFlags: ['--fixture-no-permission-prompts-flag', '--fixture-echo'] })
+  assert.deepEqual(unattended.banners, [], 'bypass mode needs no prompt suppression, so nothing degraded')
+  const plain = await unattended.spawn(request())
+  assert.ok(!plain.argv.includes('--permission-prompts'))
+  assert.ok(!plain.argv.includes('--no-session-persistence'))
+})
+
+// --- one model matcher, one verdict (design D6; spec: ship/agent-results) -------
+
+test('modelMatches: an alias matches its full id; a prefix and a date stamp are ignored; anything else is exact', () => {
+  const table = [
+    ['sonnet', 'bedrock.claude-sonnet-5-5', true],
+    ['sonnet', 'claude-sonnet-4-5-20250929', true],
+    ['claude-sonnet-5-5', 'claude-sonnet-5-5-20261001', true],
+    ['claude-sonnet-5-5', 'bedrock.claude-sonnet-5-5', true],
+    ['claude-sonnet-5', 'claude-sonnet-5-5', false],
+    ['sonnet', 'claude-opus-5-5', false],
+    ['Sonnet', 'CLAUDE-SONNET-5-5', true],
+    ['haiku', 'bedrock.claude-haiku-4-5', true],
+    ['opus', 'claude-opus-5-5', true],
+    ['sonnet', '', null],
+    ['', 'claude-sonnet-5-5', null],
+    [null, 'claude-sonnet-5-5', null],
+    ['sonnet', undefined, null]
+  ]
+  for (const [routed, served, expected] of table) {
+    assert.equal(modelMatches(routed, served), expected, `${routed} ⇄ ${served}`)
+  }
+})
+
+test('modelSubstitution: any unmatched turn substitutes; on the session scope only none-matched does', () => {
+  // Turn scope: a fallback that served one turn is a model the plan did not choose.
+  assert.deepEqual(
+    modelSubstitution('claude-sonnet-5-5', { servedModels: ['claude-sonnet-5-5-20261001', 'claude-sonnet-5'] }),
+    { substituted: true, scope: 'turns', ran: ['claude-sonnet-5-5-20261001', 'claude-sonnet-5'] }
+  )
+  assert.equal(modelSubstitution('Sonnet', { servedModels: ['CLAUDE-SONNET-5-5'] }).substituted, false)
+  // Session scope: the host-internal haiku beside the routed model raises nothing.
+  const internal = modelSubstitution('sonnet', {
+    servedModels: null,
+    sessionModels: ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5']
+  })
+  assert.equal(internal.substituted, false)
+  assert.equal(internal.scope, 'session')
+  assert.deepEqual(internal.ran, ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5'])
+  const never = modelSubstitution('sonnet', { sessionModels: ['bedrock.claude-opus-5-5', 'bedrock.claude-haiku-4-5'] })
+  assert.equal(never.substituted, true)
+  assert.equal(never.scope, 'session')
+  // The turn scope wins when both are present, in both directions.
+  const turnsClean = modelSubstitution('sonnet', {
+    servedModels: ['claude-sonnet-5-5'],
+    sessionModels: ['bedrock.claude-opus-5-5']
+  })
+  assert.equal(turnsClean.substituted, false)
+  assert.equal(turnsClean.scope, 'turns')
+  const turnsDirty = modelSubstitution('sonnet', {
+    servedModels: ['claude-opus-5-5'],
+    sessionModels: ['bedrock.claude-sonnet-5']
+  })
+  assert.equal(turnsDirty.substituted, true)
+  assert.equal(turnsDirty.scope, 'turns')
+  // Neither observation, or no routed model: nothing is decided.
+  for (const [routed, observed] of [
+    ['sonnet', {}],
+    ['sonnet', { servedModels: null, sessionModels: null }],
+    ['sonnet', { servedModels: [], sessionModels: [] }],
+    [null, { servedModels: ['claude-opus-5-5'] }],
+    ['', { sessionModels: ['bedrock.claude-opus-5-5'] }]
+  ]) {
+    const verdict = modelSubstitution(routed, observed)
+    assert.equal(verdict.substituted, null, JSON.stringify([routed, observed]))
+    assert.equal(verdict.scope, null, JSON.stringify([routed, observed]))
+  }
+})
+
+/** Every executable source under `lib/` and `bin/`: the `.mjs` files and the extensionless `bin/*` executables. */
+function sweptSources() {
+  const out = []
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.name.endsWith('.mjs')) out.push(path)
+    }
+  }
+  walk(join(ROOT, 'lib'))
+  for (const entry of readdirSync(join(ROOT, 'bin'), { withFileTypes: true })) {
+    if (entry.isFile() && (entry.name.endsWith('.mjs') || !entry.name.includes('.'))) out.push(join(ROOT, 'bin', entry.name))
+  }
+  return out
+}
+
+/** A source with its comment lines removed: a comment that cites the matcher is not a call of it. */
+const codeOf = path =>
+  readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(line => !/^\s*(\/\/|\/?\*)/.test(line))
+    .join('\n')
+
+const countOf = (text, pattern) => (text.match(pattern) || []).length
+
+test('the sweep: modelMatches is called only from modelSubstitution, and modelSubstitution only from its two sites', () => {
+  // Design D6: one comparison, one verdict, two readers. A second comparison
+  // anywhere in lib/ or bin/ is a second copy of the rule.
+  const MATCHES = /\bmodelMatches\s*\(/g
+  const SUBSTITUTION = /\bmodelSubstitution\s*\(/g
+  const MODEL_MAP = join(ROOT, 'lib', 'host', 'model-map.mjs')
+  const RUN = join(ROOT, 'lib', 'run.mjs')
+  const sources = sweptSources()
+  assert.ok(sources.includes(join(ROOT, 'bin', 'interlock-run')), 'the sweep reads the extensionless executables')
+
+  for (const path of sources) {
+    const code = codeOf(path)
+    const where = relative(ROOT, path)
+    if (path === MODEL_MAP) {
+      assert.equal(countOf(code, MATCHES), 1, `${where}: modelMatches appears once — its definition`)
+      assert.match(code, /export function modelMatches\(/)
+    } else if (path !== RUN) {
+      assert.equal(countOf(code, MATCHES), 0, `${where} compares models outside modelSubstitution`)
+    }
+    if (path !== RUN) assert.equal(countOf(code, SUBSTITUTION), 0, `${where} calls modelSubstitution`)
+  }
+
+  const run = codeOf(RUN)
+  const start = run.indexOf('export function modelSubstitution(')
+  assert.notEqual(start, -1, 'lib/run.mjs defines modelSubstitution')
+  const end = run.indexOf('\n}\n', start)
+  const body = run.slice(start, end)
+  const inside = countOf(body, MATCHES)
+  assert.ok(inside >= 1, 'modelSubstitution calls modelMatches')
+  assert.equal(countOf(run, MATCHES), inside, 'lib/run.mjs calls modelMatches only inside modelSubstitution')
+  // The definition plus exactly two call sites: the runner's record path and
+  // the Workflow close's join.
+  const calls = countOf(run, SUBSTITUTION) - 1
+  assert.equal(calls, 2, `modelSubstitution must have exactly two call sites in lib/run.mjs (found ${calls})`)
 })
 
 // --- effort (design D3, D4, D11, D24, D27, D29, D30) --------------------------
@@ -809,5 +1414,188 @@ test('a signal before run start has answered still closes, truthfully, with no m
     assert.match(stdout, /There is no run manifest/)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- the host-record channel, end to end (design D7, D9; spec: run-host-adapters) -
+//
+// The real `bin/interlock-run` over the fake CLI. What the runner sends the CLI
+// is observed from inside each `bin/interlock` process it starts: a `--require`
+// preload records that process's argv and the two files it was handed, so the
+// assertions read the channel itself rather than a copy of the driver's logic.
+
+/** The env a runner child is started with: this process's, minus the knobs a developer may have exported. */
+function runnerEnv(extra) {
+  const env = {
+    ...process.env,
+    CLAUDE_CODE_EFFORT_LEVEL: undefined,
+    INTERLOCK_CLAUDE_PERMISSION_MODE: undefined,
+    [MODEL_MAP_ENV]: undefined,
+    ...extra
+  }
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined))
+}
+
+/**
+ * Run the runner to its close in a fresh two-lane repo, with every CLI call it
+ * makes recorded. Returns the repo, stdout, and one `{argv, hostRecords,
+ * results}` per `bin/interlock` call, in order.
+ */
+function observedRun({ fixtureFlags, env = {} }) {
+  const { root, change } = signalRepo()
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-host-records-')))
+  const preload = join(scratch, 'record-cli-argv.cjs')
+  const log = join(scratch, 'cli-calls.jsonl')
+  const config = join(scratch, 'claude-config')
+  mkdirSync(config)
+  writeFileSync(
+    preload,
+    [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "if (/[\\\\/]bin[\\\\/]interlock$/.test(process.argv[1] || '') && process.env.INTERLOCK_TEST_CLI_LOG) {",
+      '  const argv = process.argv.slice(2)',
+      '  const file = flag => {',
+      '    const at = argv.indexOf(flag)',
+      '    if (at === -1 || argv[at + 1] === undefined) return null',
+      "    try { return JSON.parse(fs.readFileSync(path.resolve(argv[at + 1]), 'utf8')) } catch { return 'unreadable' }",
+      '  }',
+      "  fs.appendFileSync(process.env.INTERLOCK_TEST_CLI_LOG, JSON.stringify({ argv, hostRecords: file('--host-records'), results: file('--results') }) + '\\n')",
+      '}',
+      ''
+    ].join('\n')
+  )
+  const ran = spawnSync(process.execPath, [RUNNER, change, '--host', 'claude', '--no-commit', '--root', '.'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 180000,
+    env: runnerEnv({
+      INTERLOCK_CLAUDE_COMMAND: shipCommand(fixtureFlags),
+      CLAUDE_CONFIG_DIR: config,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', preload].filter(Boolean).join(' '),
+      INTERLOCK_TEST_CLI_LOG: log,
+      ...env
+    })
+  })
+  const calls = existsSync(log)
+    ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+    : []
+  return {
+    root,
+    stdout: ran.stdout || '',
+    stderr: ran.stderr || '',
+    status: ran.status,
+    calls,
+    cleanup: () => {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }
+}
+
+let recordsRun = null
+/** One runner run shared by the channel tests below, made on first use. */
+function hostRecordsRun() {
+  if (!recordsRun) {
+    recordsRun = observedRun({
+      fixtureFlags: ['--fixture-served-model=claude-opus-5-5', '--fixture-denials=Bash,Edit', '--fixture-session=sess-lane-1']
+    })
+  }
+  return recordsRun
+}
+after(() => {
+  if (recordsRun) recordsRun.cleanup()
+})
+
+/** Every call that continued a step: everything but `run start` and a halt's own close. */
+const continuations = calls => calls.filter(c => c.argv[0] === 'run' && c.argv[1] !== 'start' && !c.argv.includes('--halt'))
+
+test('interlock-run writes the host records beside results.json and passes --host-records on every continuation', () => {
+  const run = hostRecordsRun()
+  const diagnostic = `\nstdout:\n${run.stdout}\nstderr:\n${run.stderr}`
+  assert.match(run.stdout, /SHIP COMPLETE|SHIP COMPLETE WITH LEFTOVERS/, `the run must reach its close:${diagnostic}`)
+  const steps = continuations(run.calls)
+  assert.ok(steps.length >= 3, `the run continued at least three steps: ${JSON.stringify(run.calls.map(c => c.argv.slice(0, 2)))}`)
+  for (const call of steps) {
+    const at = call.argv.indexOf('--host-records')
+    assert.notEqual(at, -1, `a continuation without --host-records: ${call.argv.join(' ')}`)
+    assert.equal(call.argv[at + 1], '.claude/ship/host-records.json', 'under the work dir, beside results.json')
+    assert.ok(call.argv.includes('--results'), 'beside --results, never instead of it')
+    assert.ok(Array.isArray(call.hostRecords), `the records file must be a JSON array: ${JSON.stringify(call.hostRecords)}`)
+  }
+  assert.ok(existsSync(join(run.root, '.claude', 'ship', 'host-records.json')))
+
+  // The lane batch: one record per lane, carrying the label and the host's fields.
+  const batch = steps.find(c => c.argv[1] === 'record-batch')
+  assert.ok(batch, `the run recorded a lane batch: ${JSON.stringify(steps.map(c => c.argv.slice(0, 2)))}`)
+  assert.equal(batch.hostRecords.length, batch.results.length, 'one host record per spawn')
+  assert.equal(batch.hostRecords.length, 2)
+  for (const record of batch.hostRecords) {
+    assert.match(record.label, /^1\.[12]$/)
+    assert.equal(record.parsed, true)
+    assert.equal(record.exitCode, 0)
+    assert.equal(record.sessionId, 'sess-lane-1')
+    assert.deepEqual(record.permissionDenials, { count: 2, tools: ['Bash', 'Edit'] })
+    assert.ok(record.sessionModels.includes('claude-opus-5-5'), JSON.stringify(record.sessionModels))
+    assert.equal(record.modelRouted, 'sonnet')
+    assert.equal(record.servedModels, null, 'no transcript was planted')
+    assert.equal(typeof record.transcriptReason, 'string')
+  }
+})
+
+test('interlock-run keeps the host records out of results.json', () => {
+  const run = hostRecordsRun()
+  const HOST_ONLY = ['host', 'sessionId', 'permissionDenials', 'sessionModels', 'servedModels', 'modelRouted', 'resultMissing']
+  for (const call of continuations(run.calls)) {
+    for (const result of Array.isArray(call.results) ? call.results : []) {
+      if (!result || typeof result !== 'object') continue
+      for (const key of HOST_ONLY) assert.ok(!(key in result), `results.json carries the host field ${key}`)
+    }
+  }
+  const onDisk = JSON.parse(readFileSync(join(run.root, '.claude', 'ship', 'results.json'), 'utf8'))
+  assert.ok(!JSON.stringify(onDisk).includes('"host"'))
+})
+
+test('the CLI raises the lane banners and agent-result events from the runner\'s host records', () => {
+  // The other half of the channel: `bin/interlock` reads --host-records and the
+  // record path raises the banner and appends one agent-result per lane.
+  const run = hostRecordsRun()
+  assert.match(run.stdout, /TOOLS DENIED IN LANE: 1\.[12] 2 \(Bash, Edit\)/, run.stdout)
+  const results = eventsOf(run.root).filter(e => e.type === 'agent-result' && e.sessionId === 'sess-lane-1')
+  assert.ok(results.length >= 2, `one agent-result per lane: ${JSON.stringify(results)}`)
+})
+
+test('interlock-run folds the adapter\'s permission-prompts banner into the close exactly once', () => {
+  const run = observedRun({
+    fixtureFlags: ['--fixture-no-permission-prompts-flag'],
+    env: { INTERLOCK_CLAUDE_PERMISSION_MODE: 'acceptEdits' }
+  })
+  try {
+    assert.match(run.stdout, /SHIP COMPLETE|SHIP COMPLETE WITH LEFTOVERS/, `${run.stdout}\n${run.stderr}`)
+    assert.equal(run.stdout.split(PROMPTS_BANNER).length - 1, 1, run.stdout)
+    const banners = JSON.parse(readFileSync(join(run.root, '.claude', 'ship', 'host-banners.json'), 'utf8'))
+    assert.equal(banners.filter(b => b === PROMPTS_BANNER).length, 1)
+  } finally {
+    run.cleanup()
+  }
+})
+
+// --- the driver decides nothing from a host record (spec: run-host-adapters) -----
+
+test('the runner states no lane banner and compares no model: the CLI decides both', () => {
+  // The no-policy sweep's lane-banner half (test/workflows.test.mjs holds the
+  // rest). Comment lines are not swept: citing where a rule lives is not
+  // stating it.
+  const driver = readFileSync(RUNNER, 'utf8').replace(/^\s*\/\/.*$/gm, '')
+  for (const [what, token] of [
+    ['the lane-stopped banner', /LANE STOPPED BY HOST/],
+    ['the schema-result banner', /SCHEMA RESULT MISSING/],
+    ['the tools-denied banner', /TOOLS DENIED IN LANE/],
+    ['the substitution banner', /MODEL SUBSTITUTED/],
+    ['the model matcher', /\bmodelMatches\s*\(/],
+    ['the substitution verdict', /\bmodelSubstitution\s*\(/],
+    ['a host record field read as a verdict', /servedModels|sessionModels|resultMissing|permissionDenials/]
+  ]) {
+    assert.doesNotMatch(driver, token, `bin/interlock-run states ${what} (${token}) — it belongs in lib/run.mjs`)
   }
 })

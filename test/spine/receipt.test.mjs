@@ -354,3 +354,86 @@ test('the resume card row prints only when a card was actually written', () => {
     /resume card:/
   )
 })
+
+// --- buildReceipt: what the run observed about its agents and its home -------
+
+const OBSERVATION_COUNTS = [
+  'lanesStoppedByHost',
+  'schemaResultsMissing',
+  'toolsDeniedInLanes',
+  'modelSubstitutions',
+  'permissionPrompts',
+  'autoModeDenials'
+]
+
+test('the six observation counts are absent when nothing was observed, never zero', () => {
+  // A Workflow run with no sidecar and no host record saw no agent at all, and
+  // a zero here would file it beside a run that watched every lane and found
+  // nothing wrong.
+  const blind = buildReceipt({ change: 'add-thing', summary: {} })
+  for (const key of OBSERVATION_COUNTS) assert.equal(blind[key], undefined, key)
+  assert.equal(blind.surface, undefined)
+  assert.equal(blind.stateHome, undefined)
+})
+
+test('the six observation counts are carried by name when measured, a zero included', () => {
+  const input = {
+    change: 'add-thing',
+    summary: {},
+    lanesStoppedByHost: 1,
+    schemaResultsMissing: 0,
+    toolsDeniedInLanes: 2,
+    modelSubstitutions: 0,
+    permissionPrompts: 3,
+    autoModeDenials: 0
+  }
+  const receipt = buildReceipt(input)
+  for (const key of OBSERVATION_COUNTS) assert.equal(receipt[key], input[key], key)
+})
+
+test('a malformed count is absent rather than a number nobody measured', () => {
+  const receipt = buildReceipt({ lanesStoppedByHost: 'two', permissionPrompts: Number.NaN, autoModeDenials: null })
+  assert.equal(receipt.lanesStoppedByHost, undefined)
+  assert.equal(receipt.permissionPrompts, undefined)
+  assert.equal(receipt.autoModeDenials, undefined)
+})
+
+test('the surface and the state home are carried by name', () => {
+  const receipt = buildReceipt({ change: 'add-thing', surface: 'linked-worktree', stateHome: '/r' })
+  assert.equal(receipt.surface, 'linked-worktree')
+  assert.equal(receipt.stateHome, '/r')
+  const empty = buildReceipt({ surface: '', stateHome: 42 })
+  assert.equal(empty.surface, undefined)
+  assert.equal(empty.stateHome, undefined)
+})
+
+test('the host block carries the observed hook value through', () => {
+  const receipt = buildReceipt({ host: { id: 'workflow', cacheAccounting: 'hook' } })
+  assert.equal(receipt.host.cacheAccounting, 'hook')
+})
+
+// --- formatRunSummary: the state home row ------------------------------------
+
+test('a run whose state home differs from its cwd names it on the row under cwd', () => {
+  const text = formatRunSummary({
+    change: 'add-thing',
+    runId: 'run-9',
+    projectSlug: '-r--claude-worktrees-w1',
+    root: '/r/.claude/worktrees/w1',
+    stateHome: '/r'
+  })
+  const rows = text.split('\n')
+  const cwd = rows.indexOf('  cwd: /r/.claude/worktrees/w1')
+  assert.ok(cwd > 0, 'the cwd row is printed')
+  assert.equal(rows[cwd + 1], '  state home: /r', 'directly under the cwd row')
+})
+
+test('a main-checkout run prints no state home row, so its summary is unchanged', () => {
+  const base = { change: 'add-thing', runId: 'run-9', projectSlug: '-r', root: '/r' }
+  const before = formatRunSummary(base)
+  assert.doesNotMatch(before, /state home:/)
+  assert.equal(formatRunSummary({ ...base, stateHome: '/r' }), before, 'equal paths print exactly what an absent one does')
+  assert.equal(formatRunSummary({ ...base, stateHome: '/r/' }), before, 'a trailing separator is the same directory')
+  assert.equal(formatRunSummary({ ...base, stateHome: '' }), before)
+  assert.equal(formatRunSummary({ ...base, stateHome: null }), before)
+})

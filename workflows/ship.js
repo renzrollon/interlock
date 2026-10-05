@@ -411,19 +411,18 @@ if (tddModeConflict) {
   )
 }
 
-// The environment probe. Everything it asks about is a property of THIS HOST's
-// working tree or shell — whether the graph was built, whether a test profile
-// exists, whether the effort level is overridden — so it is asked here and
-// carried to the close as a host banner. The model-routing variables are NOT
-// asked here: `run start` reads them from its own environment, together with the
-// host's version, and decides the banners and the ping model itself.
+// The environment probe. It asks only what is a property of THIS HOST's shell —
+// whether the effort level is overridden — and creates the working directory.
+// Whether the graph was built and whether a test profile exists are NOT asked:
+// `run start` locates both itself, root first and then the state home, and
+// raises their banners (ship/run-program). Two probes of one file in two places
+// is how a driver and the CLI would disagree about whether it exists. The
+// model-routing variables are not asked either: `run start` reads them from its
+// own environment, together with the host's version, and decides the banners
+// and the ping model itself.
 const probed = await ping(
   'validate',
   `Report this environment. Change nothing, and do not start any work.\n\n` +
-    `Run: test -f .claude/graph/graph.json && echo yes || echo no\n` +
-    `Report yes as hasGraph:true, no as hasGraph:false with a one-line graphReason.\n\n` +
-    `Run: test -f .claude/testing/profile.json && echo yes || echo no\n` +
-    `Report it as hasTestProfile.\n\n` +
     `Run: printenv CLAUDE_CODE_EFFORT_LEVEL\n` +
     `If it prints a value, report it as effortLevelOverride. If it is unset the command exits ` +
     `non-zero and prints nothing — that is the normal case, so leave the field out rather than ` +
@@ -432,22 +431,11 @@ const probed = await ping(
   {
     type: 'object',
     properties: {
-      hasGraph: { type: 'boolean' },
-      graphReason: { type: 'string' },
-      hasTestProfile: { type: 'boolean' },
       effortLevelOverride: { type: 'string' }
     }
   }
 )
 
-if (probed && probed.hasGraph === false) {
-  banners.push(
-    `GRAPH UNAVAILABLE: ${probed.graphReason || 'never built'} — implementer and reviewer agents fall back to grep and will be slower`
-  )
-}
-if (probed && probed.hasTestProfile === false) {
-  banners.push('NO TEST PROFILE: run /interlock:fix-tests --reconfigure once')
-}
 // The effort override. CLAUDE_CODE_EFFORT_LEVEL outranks both the session's effort
 // and every per-agent effort a step asks for, so while it is set the plan's
 // per-step effort is not in effect. It is the operator's environment and is

@@ -15,11 +15,24 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  checkClaudeBare,
+  checkStateDirs,
+  checkStateHome,
   diagnose,
   formatDoctor,
   parseRule,
@@ -37,6 +50,8 @@ import {
   PROMPT_CACHE_SUBAGENT_KEY,
   STATE_DIRS
 } from '../../lib/doctor.mjs'
+import { AGENT_USAGE_DIR } from '../../lib/agent-usage.mjs'
+import { HANDOFF_DIR } from '../../lib/resume-card.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(REPO, 'bin', 'interlock')
@@ -1086,6 +1101,10 @@ test('interlock doctor exits 1 when a check fails and emits parseable JSON eithe
     assert.equal(r.status, 1, 'a failing preflight must exit non-zero')
     assert.ok(report.failures.includes('test-profile'))
     assert.equal(report.root, resolve(dir))
+    // The SessionStart preflight reads the home from here rather than resolving it again.
+    assert.equal(typeof report.stateHome, 'string')
+    assert.ok(report.stateHome.length > 0)
+    assert.equal(typeof report.surface, 'string')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -1202,4 +1221,463 @@ test('the interrupted-run notes directory is a non-fatal state directory', () =>
   const entry = STATE_DIRS.find(d => d.path === join('.claude', 'ship', 'interrupted'))
   assert.ok(entry, 'STATE_DIRS does not name .claude/ship/interrupted')
   assert.equal(entry.fatal, false, 'the note is outcome-class: losing it never ends a run')
+})
+
+// ---------------------------------------------------------------------------
+// The state home — where each state directory lives, and which home the
+// doctor resolved (design D12, D13, D15)
+// ---------------------------------------------------------------------------
+//
+// The happy paths run against a real `git worktree add` fixture, the same way
+// `test/spine/state-home.test.mjs` does, because the property under test is
+// what real git prints. The fixture's git runs without the developer's global
+// or system config; the resolver's own git inherits this process's environment,
+// so discovery is fenced at the temporary directory for the duration of each
+// case — a temp directory that sits inside some other checkout must not turn
+// "not a repository" into a pass.
+
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+
+function gitOk(cwd, args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV })
+  assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+
+/** Run `fn` with git discovery fenced at the temp directory, restoring the caller's value after. */
+function fenced(fn) {
+  const prior = process.env.GIT_CEILING_DIRECTORIES
+  process.env.GIT_CEILING_DIRECTORIES = realpathSync(tmpdir())
+  try {
+    return fn()
+  } finally {
+    if (prior === undefined) delete process.env.GIT_CEILING_DIRECTORIES
+    else process.env.GIT_CEILING_DIRECTORIES = prior
+  }
+}
+
+/**
+ * A main checkout at `<tmp>/main` with one commit, and a linked worktree of it
+ * at `<main>/.claude/worktrees/w1` — where a Desktop worktree session lives.
+ * Every path is real from the start, so the doctor's evidence and the
+ * fixture's paths are the same strings on macOS, whose `/tmp` is a symlink.
+ */
+function worktreeFixture() {
+  const dir = realpathSync(tmp())
+  const main = join(dir, 'main')
+  mkdirSync(main)
+  gitOk(main, ['init', '-q', '-b', 'main'])
+  gitOk(main, ['config', 'user.email', 'test@example.invalid'])
+  gitOk(main, ['config', 'user.name', 'Test'])
+  writeFileSync(join(main, 'README.md'), 'fixture\n')
+  gitOk(main, ['add', '-A'])
+  gitOk(main, ['commit', '-qm', 'base'])
+  const worktree = join(main, '.claude', 'worktrees', 'w1')
+  gitOk(main, ['worktree', 'add', '-q', worktree, '-b', 'w1'])
+  return { dir, main, worktree }
+}
+
+const NOT_AS_ROOT = {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root ignores mode bits' : false
+}
+
+test('every STATE_DIRS entry names the home it lives under, and keeps its fatality', () => {
+  for (const d of STATE_DIRS) {
+    assert.ok(d.home === 'state' || d.home === 'root', `${d.path} has no home: ${d.home}`)
+    assert.equal(typeof d.fatal, 'boolean', `${d.path} has no fatality`)
+  }
+  const at = rel => {
+    const found = STATE_DIRS.find(d => d.path === rel)
+    assert.ok(found, `STATE_DIRS does not name ${rel}`)
+    return found
+  }
+  // Append-only corpora: the state home. The trajectory is the one fatal one.
+  assert.deepEqual(
+    [join('.claude', 'ship', 'runs'), join('.claude', 'learning'), join('.claude', 'metrics'), HANDOFF_DIR, join('.claude', 'ship', 'interrupted')].map(
+      rel => [rel, at(rel).home, at(rel).fatal]
+    ),
+    [
+      [join('.claude', 'ship', 'runs'), 'state', true],
+      [join('.claude', 'learning'), 'state', false],
+      [join('.claude', 'metrics'), 'state', false],
+      [HANDOFF_DIR, 'state', false],
+      [join('.claude', 'ship', 'interrupted'), 'state', false]
+    ]
+  )
+  // Per-run working state: the root. The spill is fatal and stays with the run
+  // (its locators are root-relative and `verify spill` writes under --root);
+  // the agent-usage sidecar is the recorder's, outcome-class.
+  assert.deepEqual([at(join('.claude', 'ship', 'spill')).home, at(join('.claude', 'ship', 'spill')).fatal], ['root', true])
+  assert.deepEqual([at(AGENT_USAGE_DIR).home, at(AGENT_USAGE_DIR).fatal], ['root', false])
+})
+
+test('from a linked worktree the state-home row names the main checkout and the surface, and the JSON carries it', () => {
+  fenced(() => {
+    const { dir, main, worktree } = worktreeFixture()
+    try {
+      const report = diagnose(worktree, baseOpts(dir))
+      const row = byId(report, 'state-home')
+      assert.equal(row.status, 'ok', row.detail)
+      assert.ok(row.detail.includes(main), row.detail)
+      assert.match(row.detail, /linked-worktree/)
+      assert.ok(
+        row.detail.includes(
+          `corpora of this run go to ${main}; the test profile and graph are read from there when this root has none`
+        ),
+        row.detail
+      )
+      assert.equal(report.stateHome, main)
+      assert.equal(report.surface, 'linked-worktree')
+      const json = JSON.parse(JSON.stringify(report))
+      assert.equal(json.stateHome, main)
+      assert.equal(json.surface, 'linked-worktree')
+      assert.ok(!report.failures.includes('state-home') && !report.warnings.includes('state-home'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('from a linked worktree each state directory is probed under its own home, by absolute path', () => {
+  fenced(() => {
+    const { dir, main, worktree } = worktreeFixture()
+    try {
+      const row = byId(diagnose(worktree, baseOpts(dir)), 'state-dirs')
+      assert.equal(row.status, 'ok', row.evidence.join('\n'))
+      const evidence = row.evidence.join('\n')
+      assert.ok(evidence.includes(join(main, '.claude', 'ship', 'runs')), evidence)
+      assert.ok(evidence.includes(join(worktree, '.claude', 'ship', 'agent-usage')), evidence)
+      // The corpora were probed in the main checkout, not in the worktree.
+      assert.ok(!evidence.includes(join(worktree, '.claude', 'ship', 'runs')), evidence)
+      assert.ok(!evidence.includes(join(main, '.claude', 'ship', 'agent-usage')), evidence)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('a read-only trajectory directory in the main checkout fails the worktree session\'s doctor, naming that path', NOT_AS_ROOT, () => {
+  fenced(() => {
+    const { dir, main, worktree } = worktreeFixture()
+    const runs = join(main, '.claude', 'ship', 'runs')
+    try {
+      mkdirSync(runs, { recursive: true })
+      chmodSync(runs, 0o555)
+      const report = diagnose(worktree, baseOpts(dir))
+      const row = byId(report, 'state-dirs')
+      assert.equal(row.status, 'fail')
+      assert.ok(report.failures.includes('state-dirs'))
+      assert.ok(row.evidence.some(e => e.startsWith(`${runs}:`)), row.evidence.join('\n'))
+      assert.ok(row.fix.includes(main), row.fix)
+      assert.match(row.fix, /exits 1 mid-run/)
+    } finally {
+      try {
+        chmodSync(runs, 0o755)
+      } catch {
+        // best effort; the rm below is what matters
+      }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('checkStateDirs probes state entries under the home and root entries under the root', () => {
+  const dir = realpathSync(tmp())
+  try {
+    const root = join(dir, 'root')
+    const home = join(dir, 'home')
+    mkdirSync(root)
+    mkdirSync(home)
+    const row = checkStateDirs(root, home)
+    assert.equal(row.status, 'ok')
+    for (const d of STATE_DIRS) {
+      const expected = join(d.home === 'state' ? home : root, d.path)
+      assert.ok(row.evidence.some(e => e.startsWith(`${expected}:`)), `${expected} not probed:\n${row.evidence.join('\n')}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('on a main checkout the state-home row names the root itself', () => {
+  fenced(() => {
+    const { dir, main } = worktreeFixture()
+    try {
+      const report = diagnose(main, baseOpts(dir))
+      const row = byId(report, 'state-home')
+      assert.equal(row.status, 'ok')
+      assert.ok(row.detail.includes(main), row.detail)
+      assert.match(row.detail, /\bmain\b/)
+      assert.doesNotMatch(row.detail, /corpora of this run go to/)
+      assert.equal(report.stateHome, main)
+      assert.equal(report.surface, 'main')
+      // A main checkout prints no separate state-home header line.
+      assert.doesNotMatch(formatDoctor(report), /^ {2}state home:/m)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('a root git cannot read makes the state-home row skip with the reason, and the JSON home is the root', () => {
+  fenced(() => {
+    const dir = realpathSync(tmp())
+    try {
+      const report = diagnose(dir, baseOpts(dir))
+      const row = byId(report, 'state-home')
+      assert.equal(row.status, 'skip')
+      assert.match(row.detail, /STATE HOME UNRESOLVED: /)
+      assert.match(row.detail, /git rev-parse/, 'the resolver\'s own reason is carried')
+      assert.equal(report.stateHome, dir)
+      assert.equal(report.stateHome, report.root)
+      assert.equal(report.surface, 'unknown')
+      assert.ok(!report.failures.includes('state-home') && !report.warnings.includes('state-home'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('an explicit state home wins over INTERLOCK_STATE_HOME, which wins over resolution', () => {
+  fenced(() => {
+    const dir = realpathSync(tmp())
+    try {
+      const flag = join(dir, 'from-flag')
+      const fromEnv = join(dir, 'from-env')
+      mkdirSync(flag)
+      mkdirSync(fromEnv)
+      const opts = baseOpts(dir)
+      const env = { ...opts.env, INTERLOCK_STATE_HOME: fromEnv }
+
+      const byEnv = diagnose(dir, { ...opts, env })
+      assert.equal(byEnv.stateHome, fromEnv)
+      const envRow = byId(byEnv, 'state-home')
+      assert.equal(envRow.status, 'ok')
+      assert.match(envRow.detail, /explicit/)
+      assert.ok(envRow.detail.includes(`corpora of this run go to ${fromEnv}`), envRow.detail)
+
+      const byFlag = diagnose(dir, { ...opts, env, stateHome: flag })
+      assert.equal(byFlag.stateHome, flag)
+      // The state directories follow the home the doctor resolved.
+      assert.ok(
+        byId(byFlag, 'state-dirs').evidence.some(e => e.startsWith(`${join(flag, '.claude', 'ship', 'runs')}:`)),
+        byId(byFlag, 'state-dirs').evidence.join('\n')
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('the state-home row is never fail, whatever it is handed', () => {
+  for (const resolved of [null, undefined, {}, { home: 42 }, 'nonsense']) {
+    const row = checkStateHome('/r', resolved)
+    assert.equal(row.id, 'state-home')
+    assert.equal(row.status, 'skip', JSON.stringify(resolved))
+  }
+  const fellBack = checkStateHome('/r', { home: '/r', surface: 'unknown', reason: 'git said no', resolvedFrom: 'fallback' })
+  assert.equal(fellBack.status, 'skip')
+  assert.match(fellBack.detail, /git said no/)
+  const hostile = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error('resolution unreadable')
+      }
+    }
+  )
+  assert.equal(checkStateHome('/r', hostile).status, 'skip')
+})
+
+test('a worktree report prints both rows and a state-home header in the existing format', () => {
+  fenced(() => {
+    const { dir, main, worktree } = worktreeFixture()
+    try {
+      const text = formatDoctor(diagnose(worktree, baseOpts(dir)))
+      assert.match(text, /^ {2}\[ok {2}\] state-home: /m)
+      assert.match(text, /^ {2}\[skip\] claude-bare: /m)
+      assert.ok(text.includes(`  state home: ${main}\n`), text)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// claude-bare — would a bare print-mode run have a credential? Advice only.
+// ---------------------------------------------------------------------------
+
+const SENTINEL = 'sk-test-SENTINEL'
+
+test('the claude-bare row is ok with ANTHROPIC_API_KEY set, naming it and never its value', () => {
+  const dir = tmp()
+  try {
+    const opts = baseOpts(dir)
+    const report = diagnose(dir, { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: SENTINEL } })
+    const row = byId(report, 'claude-bare')
+    assert.equal(row.status, 'ok')
+    assert.match(row.detail, /ANTHROPIC_API_KEY is set/)
+    assert.ok(!JSON.stringify(row).includes(SENTINEL), 'the row carries the value')
+    assert.ok(!JSON.stringify(report).includes(SENTINEL), 'the JSON report carries the value')
+    assert.ok(!formatDoctor(report).includes(SENTINEL), 'the human report carries the value')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the claude-bare row is ok with an apiKeyHelper in the user scope beside an unreadable project file', () => {
+  const dir = tmp()
+  try {
+    const helper = '/opt/helpers/key-helper-SENTINEL.sh'
+    const userSettings = file(dir, 'home/.claude/settings.json', { apiKeyHelper: helper })
+    const projectSettings = file(dir, '.claude/settings.json', '{ not json')
+    const sources = [
+      { scope: 'user', path: userSettings },
+      { scope: 'project', path: projectSettings }
+    ]
+    const report = diagnose(dir, baseOpts(dir, { settingsSources: sources }))
+    const row = byId(report, 'claude-bare')
+    assert.equal(row.status, 'ok', row.detail)
+    assert.match(row.detail, /apiKeyHelper is configured in user settings/)
+    // The broken sibling belongs to other rows; this one neither reports nor fails on it.
+    assert.doesNotMatch(row.detail, /not valid JSON/)
+    assert.ok(!JSON.stringify(row).includes(projectSettings), 'the unreadable file is not this row\'s to report')
+    assert.ok(!JSON.stringify(row).includes(helper), 'the helper is named by scope, never by value')
+    assert.ok(!report.failures.includes('claude-bare'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('with neither a key nor a helper the claude-bare row is skip, says why, and names the fix', () => {
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir))
+    const row = byId(report, 'claude-bare')
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /a bare print-mode run would have no credential/)
+    assert.match(row.detail, /set ANTHROPIC_API_KEY or configure apiKeyHelper/)
+    assert.match(row.fix, /ANTHROPIC_API_KEY/)
+    assert.match(row.fix, /apiKeyHelper/)
+    // The vendor fact, and the simple-mode variable, are carried either way.
+    assert.match(row.detail, /CLAUDE_CODE_SIMPLE is not set/)
+    assert.match(row.detail, /--bare/)
+    assert.match(row.detail, /default for -p/)
+    assert.match(row.detail, /OAuth and the keychain are never read/)
+    assert.match(row.detail, /--host claude/)
+    assert.match(row.detail, /--plugin-dir/)
+    assert.ok(!report.failures.includes('claude-bare'))
+    assert.ok(!report.warnings.includes('claude-bare'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the claude-bare row says when CLAUDE_CODE_SIMPLE is set', () => {
+  const row = checkClaudeBare({ CLAUDE_CODE_SIMPLE: '1', ANTHROPIC_API_KEY: SENTINEL }, { sources: [] })
+  assert.equal(row.status, 'ok')
+  assert.match(row.detail, /CLAUDE_CODE_SIMPLE is set/)
+  assert.ok(!JSON.stringify(row).includes(SENTINEL))
+})
+
+test('the claude-bare row is never fail, whatever the env or the settings hold', () => {
+  const dir = tmp()
+  try {
+    const hostile = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const direct = checkClaudeBare(hostile, { sources: [] })
+    assert.equal(direct.status, 'skip')
+    assert.match(direct.detail, /could not run: environment unreadable/)
+
+    const report = diagnose(dir, { ...baseOpts(dir), env: hostile })
+    assert.equal(byId(report, 'claude-bare').status, 'skip')
+    assert.ok(!report.failures.includes('claude-bare'))
+
+    // A settings "file" that is a directory, and a sources list that throws.
+    mkdirSync(join(dir, 'settings-dir'))
+    assert.equal(checkClaudeBare({}, { sources: [{ scope: 'user', path: join(dir, 'settings-dir') }] }).status, 'skip')
+    const throwing = new Proxy([], {
+      get() {
+        throw new Error('sources unreadable')
+      }
+    })
+    assert.equal(checkClaudeBare({}, { sources: throwing }).status, 'skip')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the claude-bare and state-home rows change no exit status: clean stays clean either way', () => {
+  const dir = tmp()
+  try {
+    assert.ok(gitInit(dir), 'this assertion needs a real work tree')
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const opts = baseOpts(dir)
+
+    const without = diagnose(dir, opts)
+    assert.equal(byId(without, 'claude-bare').status, 'skip')
+    assert.equal(byId(without, 'state-home').status, 'ok')
+    assert.equal(without.ok, true, without.failures.join(', '))
+
+    const withKey = diagnose(dir, { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: SENTINEL } })
+    assert.equal(byId(withKey, 'claude-bare').status, 'ok')
+    assert.equal(withKey.ok, true, withKey.failures.join(', '))
+    assert.deepEqual(withKey.failures, without.failures)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('from a linked worktree with no profile of its own the test-profile row reads the main checkout\'s', () => {
+  // The same read-through `run start` performs (ship/state-home): a worktree
+  // session must not be failed at its preflight for a profile its run will read.
+  fenced(() => {
+    const { dir, main, worktree } = worktreeFixture()
+    try {
+      mkdirSync(join(main, '.claude', 'testing'), { recursive: true })
+      writeFileSync(
+        join(main, '.claude', 'testing', 'profile.json'),
+        JSON.stringify({ unit: { command: 'npm test' } })
+      )
+      const row = byId(diagnose(worktree, baseOpts(dir)), 'test-profile')
+      assert.equal(row.status, 'ok', row.detail)
+      assert.match(row.detail, /unit suite: npm test/)
+      assert.match(row.detail, /read through from the state home/)
+      assert.ok(row.detail.includes(join(main, '.claude', 'testing', 'profile.json')), row.detail)
+
+      // Its own profile wins, and nothing is said about the main checkout.
+      mkdirSync(join(worktree, '.claude', 'testing'), { recursive: true })
+      writeFileSync(
+        join(worktree, '.claude', 'testing', 'profile.json'),
+        JSON.stringify({ unit: { command: 'node --test' } })
+      )
+      const own = byId(diagnose(worktree, baseOpts(dir)), 'test-profile')
+      assert.equal(own.status, 'ok', own.detail)
+      assert.match(own.detail, /unit suite: node --test/)
+      assert.doesNotMatch(own.detail, /read through/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('with no profile in the root or the home the test-profile row still fails', () => {
+  fenced(() => {
+    const { dir, worktree } = worktreeFixture()
+    try {
+      const row = byId(diagnose(worktree, baseOpts(dir)), 'test-profile')
+      assert.equal(row.status, 'fail', row.detail)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -14,6 +14,8 @@ import {
   runLogPath,
   runLogDir,
   AGENT_KINDS,
+  MAX_AGENT_ERRORS,
+  MAX_TEXT,
   RUN_LOG_SCHEMA,
   RUN_LOG_TYPES,
   RUN_LOG_DIR,
@@ -1063,4 +1065,471 @@ test('two runs of one plan match on the fingerprint and carry no plan contents',
     assert.doesNotMatch(raw, /PLAN-CONTENTS/, 'the receipt carries a plan identity, not a plan')
     assert.doesNotMatch(raw, /"plan":/)
   }
+})
+
+// --- the agent-result event (design D8) --------------------------------------
+//
+// One per observed agent: the host's envelope on the runner, the agent's own
+// transcript on the Workflow host. The source object is a whole host record or
+// a whole sidecar file, so the whitelist is what keeps a lane's stdout, its
+// result body and its tool inputs out of a file future agents read back.
+
+/** An agent-result with every field observed, as the runner's record path builds it. */
+function fullAgentResult(over = {}) {
+  return {
+    runId: RUN_ID,
+    change: 'add-widget',
+    type: 'agent-result',
+    label: '1.1',
+    kind: 'implementer',
+    agentId: 'agent-7',
+    source: 'envelope',
+    subtype: 'error_max_turns',
+    isError: true,
+    terminalReason: 'max_turns',
+    errors: ['Reached maximum number of turns (1)'],
+    permissionDenials: { count: 2, tools: ['Bash', 'Edit'] },
+    sessionId: '00000000-0000-4000-8000-000000000000',
+    numTurns: 2,
+    modelRouted: 'sonnet',
+    servedModels: ['claude-sonnet-5-5'],
+    sessionModels: ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5'],
+    modelScope: 'turns',
+    substituted: false,
+    resultMissing: false,
+    usage: {
+      inputTokens: 12,
+      outputTokens: 64,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: { ephemeral_5m: 2048, ephemeral_1h: 0 }
+    },
+    hostCostUsd: 0.0123,
+    ...over
+  }
+}
+
+const AGENT_RESULT_KEYS = [
+  'schema', 'ts', 'runId', 'change', 'seq', 'type',
+  'label', 'kind', 'agentId', 'source', 'subtype', 'isError', 'terminalReason', 'errors',
+  'permissionDenials', 'sessionId', 'numTurns', 'modelRouted', 'servedModels', 'sessionModels',
+  'modelScope', 'substituted', 'resultMissing', 'usage', 'hostCostUsd'
+].sort()
+
+test('agent-result is a trajectory type, and adding it left the schema id alone', () => {
+  assert.ok(RUN_LOG_TYPES.includes('agent-result'))
+  assert.equal(RUN_LOG_SCHEMA, 'interlock.ship-run/1', 'the type is additive: old readers skip what they do not know')
+})
+
+test('an agent-result records every named field it was handed', () => {
+  const r = appendRunLogEvent(tmp, fullAgentResult())
+  assert.equal(r.written, true, r.reason)
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(Object.keys(record).sort(), AGENT_RESULT_KEYS)
+  assert.equal(record.label, '1.1')
+  assert.equal(record.kind, 'implementer')
+  assert.equal(record.agentId, 'agent-7')
+  assert.equal(record.source, 'envelope')
+  assert.equal(record.subtype, 'error_max_turns')
+  assert.equal(record.isError, true)
+  assert.equal(record.terminalReason, 'max_turns')
+  assert.deepEqual(record.errors, ['Reached maximum number of turns (1)'])
+  assert.deepEqual(record.permissionDenials, { count: 2, tools: ['Bash', 'Edit'] })
+  assert.equal(record.sessionId, '00000000-0000-4000-8000-000000000000')
+  assert.equal(record.numTurns, 2)
+  assert.equal(record.modelRouted, 'sonnet')
+  assert.deepEqual(record.servedModels, ['claude-sonnet-5-5'])
+  assert.deepEqual(record.sessionModels, ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5'])
+  assert.equal(record.modelScope, 'turns')
+  assert.equal(record.substituted, false)
+  assert.equal(record.resultMissing, false)
+  assert.deepEqual(record.usage, {
+    inputTokens: 12,
+    outputTokens: 64,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: { ephemeral_5m: 2048, ephemeral_1h: 0 }
+  })
+  assert.equal(record.hostCostUsd, 0.0123)
+})
+
+test('an agent-result handed a whole host record keeps only the named fields', () => {
+  const r = appendRunLogEvent(tmp, {
+    ...fullAgentResult(),
+    // What a host record, an envelope or a sidecar file carries beside the
+    // fields: none of it is the trajectory's to keep.
+    stdout: 'SECRET-STDOUT',
+    diff: 'SECRET-DIFF',
+    result: 'SECRET-RESULT-BODY',
+    structured_output: { tasks: ['SECRET-STRUCTURED'] },
+    transcript: { path: '/x/SECRET-TRANSCRIPT.jsonl' },
+    permissionDenials: { count: 1, tools: ['Bash'], toolInput: { command: 'SECRET-TOOL-INPUT' } },
+    usage: { inputTokens: 1, outputTokens: 2, costUSD: 'SECRET-COST', server_tool_use: { web: 'SECRET-USE' } }
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(Object.keys(record).sort(), AGENT_RESULT_KEYS)
+  assert.deepEqual(Object.keys(record.permissionDenials).sort(), ['count', 'tools'])
+  assert.deepEqual(
+    Object.keys(record.usage).sort(),
+    ['cacheCreationInputTokens', 'cacheReadInputTokens', 'inputTokens', 'outputTokens']
+  )
+  const raw = readFileSync(r.path, 'utf8')
+  for (const secret of [
+    'SECRET-STDOUT', 'SECRET-DIFF', 'SECRET-RESULT-BODY', 'SECRET-STRUCTURED',
+    'SECRET-TRANSCRIPT', 'SECRET-TOOL-INPUT', 'SECRET-COST', 'SECRET-USE'
+  ]) {
+    assert.doesNotMatch(raw, new RegExp(secret), `${secret} reached the trajectory`)
+  }
+})
+
+test('an agent-result bounds its errors by count and by length', () => {
+  // A record-shape bound like the path sets', not a policy cap: a host that
+  // returned a thousand error strings must not write a thousand into the log.
+  const many = Array.from({ length: MAX_AGENT_ERRORS + 5 }, (_, i) => `error ${i} ${'x'.repeat(2 * MAX_TEXT)}`)
+  const r = appendRunLogEvent(tmp, fullAgentResult({ errors: [...many, 42, { message: 'SECRET-OBJECT' }] }))
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(MAX_AGENT_ERRORS, 10)
+  assert.equal(record.errors.length, MAX_AGENT_ERRORS)
+  assert.match(record.errors[0], /^error 0 /, 'a prefix, in order')
+  for (const e of record.errors) assert.ok(e.length <= MAX_TEXT, `an error of ${e.length} chars passed the text bound`)
+  assert.doesNotMatch(readFileSync(r.path, 'utf8'), /SECRET-OBJECT/)
+})
+
+test('an agent-result records an omitted field as absent and a measured zero as zero', () => {
+  // Every figure on this event is something a host may or may not have said.
+  // A field the source omits is null — never 0, never false, never [] — and a
+  // zero the host reported is kept as the measurement it is.
+  const thin = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-result', label: '1.1' })
+  assert.equal(thin.written, true, thin.reason)
+  const absent = JSON.parse(lines(thin.path)[0])
+  assert.deepEqual(Object.keys(absent).sort(), AGENT_RESULT_KEYS, 'the same field set however thin the input')
+  for (const key of [
+    'kind', 'agentId', 'source', 'subtype', 'isError', 'terminalReason', 'errors', 'permissionDenials',
+    'sessionId', 'numTurns', 'modelRouted', 'servedModels', 'sessionModels', 'modelScope',
+    'substituted', 'resultMissing', 'usage', 'hostCostUsd'
+  ]) {
+    assert.equal(absent[key], null, `${key} was not observed, so it is null`)
+  }
+
+  const zero = appendRunLogEvent(
+    tmp,
+    fullAgentResult({
+      numTurns: 0,
+      errors: [],
+      permissionDenials: { count: 0, tools: [] },
+      hostCostUsd: 0,
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: { total: 0 } }
+    })
+  )
+  const measured = JSON.parse(lines(zero.path).at(-1))
+  assert.equal(measured.numTurns, 0)
+  assert.deepEqual(measured.errors, [], 'observed and empty is not unobserved')
+  assert.deepEqual(measured.permissionDenials, { count: 0, tools: [] })
+  assert.equal(measured.hostCostUsd, 0)
+  assert.deepEqual(measured.usage, {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: { total: 0 }
+  })
+
+  // A usage block with a figure missing keeps that one figure unknown.
+  const partial = appendRunLogEvent(tmp, fullAgentResult({ usage: { outputTokens: 9 } }))
+  assert.deepEqual(JSON.parse(lines(partial.path).at(-1)).usage, {
+    inputTokens: null,
+    outputTokens: 9,
+    cacheReadInputTokens: null,
+    cacheCreationInputTokens: null
+  })
+})
+
+test('an agent-result coerces a malformed value to absent, never to a guess', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullAgentResult({
+      source: 'stdout',
+      modelScope: 'everything',
+      isError: 'yes',
+      substituted: 1,
+      resultMissing: 'false',
+      numTurns: -3,
+      hostCostUsd: '0.5',
+      permissionDenials: 'two',
+      usage: 'lots',
+      servedModels: 'claude-sonnet-5-5',
+      kind: 'wizard'
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.source, null)
+  assert.equal(record.modelScope, null)
+  assert.equal(record.isError, null)
+  assert.equal(record.substituted, null)
+  assert.equal(record.resultMissing, null)
+  assert.equal(record.numTurns, null)
+  assert.equal(record.hostCostUsd, null, 'a cost is a number or it is unknown')
+  assert.equal(record.permissionDenials, null)
+  assert.equal(record.usage, null)
+  assert.equal(record.servedModels, null, 'a bare string is not a model list')
+  // Same rule as agent-spawn: a kind given but unlisted reads as `other`.
+  assert.equal(record.kind, 'other')
+
+  for (const hostCostUsd of [-0.01, Number.NaN, Number.POSITIVE_INFINITY, true]) {
+    const bad = appendRunLogEvent(tmp, fullAgentResult({ hostCostUsd }))
+    assert.equal(JSON.parse(lines(bad.path).at(-1)).hostCostUsd, null, `hostCostUsd=${String(hostCostUsd)}`)
+  }
+  for (const source of ['envelope', 'transcript']) {
+    const ok = appendRunLogEvent(tmp, fullAgentResult({ source }))
+    assert.equal(JSON.parse(lines(ok.path).at(-1)).source, source)
+  }
+  for (const modelScope of ['turns', 'session']) {
+    const ok = appendRunLogEvent(tmp, fullAgentResult({ modelScope }))
+    assert.equal(JSON.parse(lines(ok.path).at(-1)).modelScope, modelScope)
+  }
+})
+
+test('an agent-result keeps the cache-creation tiers apart and never sums them', () => {
+  const at = over => {
+    const r = appendRunLogEvent(tmp, fullAgentResult(over))
+    return JSON.parse(lines(r.path).at(-1)).usage.cacheCreationInputTokens
+  }
+  // The split the transcript reported: both tiers, as themselves.
+  assert.deepEqual(
+    at({ usage: { cacheCreationInputTokens: { ephemeral_5m: 900, ephemeral_1h: 7, 'BAD KEY': 5 } } }),
+    { ephemeral_5m: 900, ephemeral_1h: 7 }
+  )
+  // One tier reported, the other unknown — not zero.
+  assert.deepEqual(at({ usage: { cacheCreationInputTokens: { ephemeral_5m: 900 } } }), {
+    ephemeral_5m: 900,
+    ephemeral_1h: null
+  })
+  // Only a total: the tier split stays unknown rather than being invented.
+  assert.deepEqual(at({ usage: { cacheCreationInputTokens: { total: 907 } } }), { total: 907 })
+  // Tiers and a total: the tiers win, and the total is never derived from them.
+  assert.deepEqual(
+    at({ usage: { cacheCreationInputTokens: { ephemeral_5m: 900, ephemeral_1h: 7, total: 907 } } }),
+    { ephemeral_5m: 900, ephemeral_1h: 7 }
+  )
+  // No decomposition at all is absent, not `{}` and not 0.
+  assert.equal(at({ usage: { cacheCreationInputTokens: {} } }), null)
+  assert.equal(at({ usage: { cacheCreationInputTokens: 907 } }), null)
+})
+
+test('an agent-result bounds its model and tool lists and drops what is not a string', () => {
+  const ids = Array.from({ length: 50 }, (_, i) => `claude-model-${i}`)
+  const r = appendRunLogEvent(
+    tmp,
+    fullAgentResult({
+      servedModels: [...ids, 42],
+      sessionModels: ['x'.repeat(2000)],
+      permissionDenials: { count: 50, tools: [...ids, null] }
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  assert.ok(record.servedModels.length < ids.length, 'the model list is bounded')
+  assert.ok(record.servedModels.length > 0)
+  assert.equal(record.servedModels[0], 'claude-model-0', 'a prefix, in order')
+  assert.ok(record.servedModels.every(m => typeof m === 'string'))
+  assert.ok(record.sessionModels[0].length < 2000, 'each id is bounded')
+  assert.equal(record.permissionDenials.count, 50, 'the count is the whole count even when the list is cut')
+  assert.ok(record.permissionDenials.tools.length < ids.length)
+})
+
+// --- the surface and the state home (design D14) ------------------------------
+
+test('run-start records the surface, the state home and the working directory', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-start',
+    mode: 'continue',
+    surface: 'linked-worktree',
+    stateHome: '/r',
+    cwd: '/r/.claude/worktrees/w1'
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.surface, 'linked-worktree')
+  assert.equal(record.stateHome, '/r')
+  assert.equal(record.cwd, '/r/.claude/worktrees/w1')
+
+  for (const surface of ['main', 'linked-worktree', 'lane-worktree', 'unknown']) {
+    const ok = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', surface })
+    assert.equal(JSON.parse(lines(ok.path).at(-1)).surface, surface)
+  }
+})
+
+test('run-start records an unrecognised surface and an absent path as absent', () => {
+  // A surface outside the four is not a fifth surface: a reader partitioning by
+  // surface counts it as unrecorded, with the runs that never recorded one.
+  for (const surface of ['worktree', 'MAIN', 42, undefined]) {
+    const r = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', surface })
+    assert.equal(JSON.parse(lines(r.path).at(-1)).surface, null, `surface=${String(surface)}`)
+  }
+  const bare = JSON.parse(lines(runLogPath(tmp, RUN_ID)).at(-1))
+  assert.equal(bare.stateHome, null)
+  assert.equal(bare.cwd, null)
+
+  const long = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', stateHome: `/${'d'.repeat(4000)}` })
+  assert.ok(JSON.parse(lines(long.path).at(-1)).stateHome.length <= MAX_TEXT, 'a path is bounded like every text field')
+})
+
+test('the receipt carries the six observation counts, the surface and the state home', () => {
+  const counts = {
+    lanesStoppedByHost: 1,
+    schemaResultsMissing: 0,
+    toolsDeniedInLanes: 2,
+    modelSubstitutions: 0,
+    permissionPrompts: 3,
+    autoModeDenials: 0
+  }
+  const r = appendRunLogEvent(tmp, fullReceipt({ ...counts, surface: 'linked-worktree', stateHome: '/r' }))
+  const record = JSON.parse(lines(r.path)[0])
+  for (const [key, value] of Object.entries(counts)) assert.equal(record[key], value, key)
+  assert.equal(record.surface, 'linked-worktree')
+  assert.equal(record.stateHome, '/r')
+
+  // Nothing observed: each count is absent, never a zero nobody measured.
+  const thin = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt' })
+  const absent = JSON.parse(lines(thin.path).at(-1))
+  for (const key of Object.keys(counts)) assert.equal(absent[key], null, key)
+  assert.equal(absent.surface, null)
+  assert.equal(absent.stateHome, null)
+
+  const bad = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt', surface: 'elsewhere', lanesStoppedByHost: -1 })
+  const coerced = JSON.parse(lines(bad.path).at(-1))
+  assert.equal(coerced.surface, null)
+  assert.equal(coerced.lanesStoppedByHost, null)
+})
+
+test('the receipt host block keeps true, false and the observed hook value, and nothing else', () => {
+  // `hook` is the value a complete close-time join records (design D5). An old
+  // receipt's boolean must read exactly as it did.
+  // One run id per probe, by counter: a case-insensitive filesystem would map
+  // a run id derived from `'HOOK'` onto the one derived from `'hook'`.
+  let probe = 0
+  const read = cacheAccounting => {
+    const runId = `${RUN_ID}-cache-${++probe}`
+    appendRunLogEvent(tmp, { runId, type: 'run-receipt', host: { ...HOST, cacheAccounting } })
+    return readRunLog(tmp, runId).records[0].host.cacheAccounting
+  }
+  assert.equal(read(true), true)
+  assert.equal(read(false), false)
+  assert.equal(read('hook'), 'hook')
+  for (const junk of ['yes', 1, 0, 'HOOK', 'true', undefined, null, {}]) {
+    assert.equal(read(junk), null, `cacheAccounting=${JSON.stringify(junk)}`)
+  }
+})
+
+// --- a pre-change trajectory -------------------------------------------------
+//
+// Written verbatim by the writer as it stood before `agent-result`, `surface`,
+// `stateHome`, `cwd` and the six counts existed. Literal lines rather than a
+// call to today's writer, so this fixture cannot drift with the code it guards.
+const PRE_CHANGE_LINES = [
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:00.000Z","runId":"run-pre","change":"add-widget","seq":1,"type":"run-start","mode":"continue","strict":false,"sessionId":"sess-1"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:01.000Z","runId":"run-pre","change":"add-widget","seq":2,"type":"wave-action","action":"run-batch","wave":"1","waveIndex":0,"batchIndex":0,"phase":"implement","source":"next"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:02.000Z","runId":"run-pre","change":"add-widget","seq":3,"type":"cli-exit","command":"wave-state next","exitCode":0,"durationMs":3}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:03.000Z","runId":"run-pre","change":"add-widget","seq":4,"type":"agent-spawn","label":"1.1","model":"sonnet","kind":"implementer","taskId":"1.1"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:04.000Z","runId":"run-pre","change":"add-widget","seq":5,"type":"verify-judgement","context":"final","halt":false,"reason":"green","unitStatus":"green","spill":[]}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:05.000Z","runId":"run-pre","change":"add-widget","seq":6,"type":"cli-exit","command":"verify judge","exitCode":0,"durationMs":null}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:06.000Z","runId":"run-pre","change":"add-widget","seq":7,"type":"run-receipt","host":{"id":"claude","billing":"x","hooks":true,"usage":true,"cacheAccounting":false,"effort":"flag"},"waves":[{"wave":"1","ok":1,"failed":0,"notAttempted":0}],"planReused":null,"planStatus":null,"planReason":null,"planFingerprint":null,"reviewRaised":null,"reviewSurviving":null,"reviewBlockers":null,"reviewWarnings":null,"remediationRounds":null,"skippedVerifications":null,"capExhaustedVerifications":null,"unresolvedErrors":null,"leftoverTaskIds":[],"spend":[{"wave":"1","outputTokens":10,"cacheReadInputTokens":null,"cacheCreationInputTokens":null}],"outputTokens":12,"cacheReadInputTokens":null,"cacheCreationInputTokens":null,"halted":false,"haltReason":null,"committed":true,"commit":"abc1234","touchedPaths":["a.mjs"],"touchedPathsTruncated":false,"touchedPathsReason":null,"predictedPaths":["a.mjs"],"predictedPathsTruncated":false,"predictedPathsComplete":true,"predictedPathsReason":null,"degradations":[]}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:07.000Z","runId":"run-pre","change":"add-widget","seq":8,"type":"run-complete","leftoverTaskIds":[]}'
+]
+
+// What the readers produced over that file before the change, captured from them.
+const PRE_CHANGE_RENDERED =
+  'RUN LOG — 8 event(s)\n' +
+  '  #1\trun-start\tmode="continue" strict=false sessionId="sess-1"\n' +
+  '  #2\twave-action\taction="run-batch" wave="1" waveIndex=0 batchIndex=0 phase="implement" source="next"\n' +
+  '  #3\tcli-exit\tcommand="wave-state next" exitCode=0 durationMs=3ms\n' +
+  '  #4\tagent-spawn\tlabel="1.1" model="sonnet" kind="implementer" taskId="1.1"\n' +
+  '  #5\tverify-judgement\tcontext="final" halt=false reason="green" unitStatus="green" spill=[]\n' +
+  '  #6\tcli-exit\tcommand="verify judge" exitCode=0 durationMs=unknown\n' +
+  '  #7\trun-receipt\n' +
+  '    halted: no\n' +
+  '    plan: unknown (unknown), fingerprint unknown\n' +
+  '    wave 1: 1 ok, 0 failed, 0 not attempted\n' +
+  '    review: unknown raised, unknown surviving, unknown blockers, unknown warnings\n' +
+  '    remediation rounds: unknown\n' +
+  '    verifications skipped: unknown (cap exhausted: unknown)\n' +
+  '    unresolved errors carried past a wave: unknown\n' +
+  '    output tokens (aggregate over the wave span — orchestrator turns included, not implementer cost):\n' +
+  '      wave 1: 10\n' +
+  '      run total: 12\n' +
+  '    leftover tasks: none\n' +
+  '    commit: abc1234\n' +
+  '    paths touched (read from version control): 1 path(s): a.mjs\n' +
+  '    paths predicted (from the executed plan): 1 path(s): a.mjs\n' +
+  '      prediction complete: yes — every executed task declared its paths\n' +
+  '    degradations: none recorded\n' +
+  '  #8\trun-complete\tleftoverTaskIds=[]\n' +
+  '  WAVE ELAPSED — derived from event timestamps, not a recorded field\n' +
+  '    wave 1: 4000ms across 5 event(s)\n'
+
+const PRE_CHANGE_LIST = [
+  {
+    runId: 'run-pre',
+    change: 'add-widget',
+    halted: false,
+    haltReason: null,
+    complete: true,
+    receipt: true,
+    committed: true,
+    commit: 'abc1234',
+    touchedPathCount: 1,
+    touchedPathsReason: null,
+    predictedPathCount: 1,
+    predictedPathsReason: null,
+    predictedPathsComplete: true,
+    pathsTruncated: false,
+    events: 8,
+    skipped: 0,
+    startedAt: '2026-09-01T10:00:00.000Z'
+  }
+]
+
+function plantPreChange(root) {
+  mkdirSync(runLogDir(root), { recursive: true })
+  writeFileSync(runLogPath(root, 'run-pre'), PRE_CHANGE_LINES.join('\n') + '\n')
+}
+
+test('a trajectory written before agent-result and the surface fields lists, checks and renders as before', () => {
+  plantPreChange(tmp)
+  assert.deepEqual(listRunLogs(tmp), PRE_CHANGE_LIST)
+  assert.equal(formatRunLogList(listRunLogs(tmp)), 'run-pre\tchange=add-widget\tcomplete\tcommit=abc1234\tevents=8\n')
+  assert.deepEqual(checkRunLog(tmp, 'run-pre'), { ok: true, runId: 'run-pre', problems: [], events: 8 })
+  assert.equal(formatRunLog(readRunLog(tmp, 'run-pre')), PRE_CHANGE_RENDERED)
+  // The old receipt's boolean cache-accounting value reads exactly as it was.
+  assert.equal(readRunLog(tmp, 'run-pre').records[6].host.cacheAccounting, false)
+})
+
+test('agent-result events raise no reconstructability problem and do not pad a wave', () => {
+  // On the Workflow host the close appends one agent-result per joined agent
+  // just before the receipt. Its timestamp is when the close observed the
+  // agent, not when the agent ran, so folding it into the last wave would pad
+  // that wave with everything between its last event and the close.
+  const at = s => `2026-09-01T10:${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}.000Z`
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-start', mode: 'continue', now: at(0) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'wave-action', action: 'run-batch', wave: '1', source: 'next', now: at(1) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'cli-exit', command: 'wave-state next', exitCode: 0, now: at(2) })
+  appendRunLogEvent(tmp, { ...fullAgentResult({ source: 'transcript' }), now: at(600) })
+  appendRunLogEvent(tmp, { ...fullAgentResult({ label: '1.2', source: 'transcript' }), now: at(600) })
+  appendRunLogEvent(tmp, { ...fullReceipt(), now: at(601) })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-complete', now: at(602) })
+
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.deepEqual(result.problems, [])
+  assert.equal(result.ok, true)
+
+  const [listed] = listRunLogs(tmp)
+  assert.equal(listed.events, 7)
+  assert.equal(listed.complete, true)
+  assert.equal(listed.receipt, true)
+
+  const records = readRunLog(tmp, RUN_ID).records
+  assert.deepEqual(deriveWaveElapsed(records), [
+    { wave: '1', firstTs: at(1), lastTs: at(2), events: 2, elapsedMs: 1000 }
+  ])
+
+  const rendered = formatRunLog(readRunLog(tmp, RUN_ID))
+  assert.match(rendered, /agent-result\tlabel="1\.1"/)
+  assert.match(rendered, /sessionId="00000000-0000-4000-8000-000000000000"/)
+  assert.match(rendered, /wave 1: 1000ms across 2 event\(s\)/)
 })

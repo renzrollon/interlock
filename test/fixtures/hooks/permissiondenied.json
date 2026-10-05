@@ -1,0 +1,14 @@
+{
+  "_fixture": "documented shape, not captured: PermissionDenied is an auto-mode classifier event and task 1.1 of observe-agents-and-resolve-state-home did not provoke one; the agent fields follow the captured permissionrequest.json",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/home/user/project",
+  "permission_mode": "auto",
+  "agent_id": "a0000000000000001",
+  "agent_type": "workflow-subagent",
+  "hook_event_name": "PermissionDenied",
+  "tool_name": "Bash",
+  "tool_input": { "command": "echo scrubbed" },
+  "tool_use_id": "toolu_0000",
+  "reason": "The auto mode classifier denied this action."
+}

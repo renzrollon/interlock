@@ -120,10 +120,8 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
 
   for (const banner of [
-    'GRAPH UNAVAILABLE:',
-    'NO TEST PROFILE:',
-    // The effort twin: a property of the host's environment, so only the host
-    // can raise it, and the run program must not restate it.
+    // The effort override: a property of the host's environment, so only the
+    // host can raise it, and the run program must not restate it.
     'EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=',
     // What `agent()` returned is a fact only the Workflow driver observes.
     'AGENT RETURNED NO RESULT:'
@@ -142,11 +140,55 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
     // environment, so the banner is the CLI's and the driver must not restate it.
     'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
     'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=',
-    'WAVE WIDER THAN RUNTIME SLOTS:'
+    'WAVE WIDER THAN RUNTIME SLOTS:',
+    // Moved, not dropped (observe-agents-and-resolve-state-home): `run start`
+    // locates the graph and the test profile itself, root first and then the
+    // state home, so the absence lines are the CLI's now and the driver's `test
+    // -f` probes are gone. Two probes of one file is how the two disagree.
+    'GRAPH UNAVAILABLE:',
+    'GRAPH FROM MAIN CHECKOUT:',
+    'TEST PROFILE FROM MAIN CHECKOUT:',
+    'STATE HOME UNRESOLVED:',
+    'CORPORA IN MAIN CHECKOUT:',
+    // What the host observed about each agent, decided by the CLI on both hosts.
+    'CACHE ACCOUNTING PARTIAL:',
+    'AGENT USAGE UNJOINED:',
+    'MODEL SUBSTITUTED:',
+    'PERMISSION PROMPTS DURING RUN:',
+    'AUTO MODE DENIED ',
+    'LANE STOPPED BY HOST:',
+    'SCHEMA RESULT MISSING (claude):',
+    'TOOLS DENIED IN LANE:'
   ]) {
     assert.ok(run.includes(banner), `the run program no longer emits the "${banner}" banner`)
     assert.ok(!ship.includes(banner), `ship.js restates the CLI's "${banner}" banner`)
   }
+  // NO TEST PROFILE has one definition, in the verifier, and `run start` raises
+  // that one rather than a copy.
+  const verify = readFileSync(join(ROOT, 'lib', 'verify.mjs'), 'utf8')
+  assert.ok(verify.includes("noProfile: 'NO TEST PROFILE:"), 'lib/verify.mjs no longer defines NO TEST PROFILE')
+  assert.match(run, /VERIFY_BANNERS\.noProfile/, 'run start no longer raises the verifier\'s NO TEST PROFILE')
+  assert.ok(!ship.includes('NO TEST PROFILE:'), 'ship.js restates the CLI\'s NO TEST PROFILE banner')
+})
+
+test('the Workflow driver probes neither the graph nor the test profile', () => {
+  // ship/run-program: `run start` locates both through the state home. A driver
+  // that still asked its shell would be a second answer to the same question,
+  // and a linked worktree would get the wrong one.
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  for (const token of [
+    'test -f .claude/graph/graph.json',
+    'test -f .claude/testing/profile.json',
+    'hasGraph',
+    'hasTestProfile',
+    'graphReason'
+  ]) {
+    assert.ok(!ship.includes(token), `ship.js still probes: ${token}`)
+  }
+  // The ping still asks the one thing only the host's shell knows, and still
+  // creates the working directory.
+  assert.ok(ship.includes('printenv CLAUDE_CODE_EFFORT_LEVEL'))
+  assert.match(ship, /create the working directory/)
 })
 
 test('the summary prints a banner block even when nothing degraded', () => {
@@ -199,7 +241,10 @@ test('a halt records an outcome and a receipt, on both drivers', () => {
     )
   }
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
-  assert.match(run, /appendOutcome\(root, \{/, 'the close records the outcome')
+  // Under the state home the run recorded (ship/state-home), which is the root
+  // itself for a main-checkout run.
+  assert.match(run, /appendOutcome\(home, \{/, 'the close records the outcome')
+  assert.match(run, /const home = stateHomeOf\(ctx, manifest\)/, 'into the home the run recorded')
   assert.match(run, /\.\.\.receipt,\n\s*runId: manifest\.runId/, 'and the receipt')
   assert.match(
     run,
@@ -515,7 +560,7 @@ test('the autonomy record is written by the close, so no agent supplies its coun
   // record assesses. `run close` writes it from the CLI's own last
   // adjudication (design D6), and no prompt asks for it at all.
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
-  assert.match(run, /recordAutonomy\('review-code', \{ blockers \}, \{ root \}\)/)
+  assert.match(run, /recordAutonomy\('review-code', \{ blockers \}, \{ root: home \}\)/)
   assert.match(run, /manifest\.flags\.strict === true && manifest\.review/, 'strict runs only')
   assert.match(run, /function survivingBlockers\(manifest\)/, 'and the count is the CLI\'s')
   for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), RUNNER_DRIVER]) {
@@ -1843,7 +1888,8 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
   assert.doesNotMatch(text, /node:fs/, 'ship.js must not touch the filesystem itself')
 
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
-  assert.match(run, /appendRunLogEvent\(ctx\.root, \{/, 'the CLI appends the events instead')
+  // Under the state home the run recorded (ship/state-home).
+  assert.match(run, /appendRunLogEvent\(stateHomeOf\(ctx, manifest\), \{/, 'the CLI appends the events instead')
   assert.match(run, /type: 'agent-spawn'/, 'including the spawns it asked for')
 
   const dispatched = new Set([...usage.matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1]))
@@ -3009,7 +3055,7 @@ test('relay pings, the planner and the commit agent are spawned with no effort k
 test('an effort override reported by the probe is bannered, and silence raises nothing', async () => {
   const overridden = await runShip({
     responses: {
-      validate: { hasGraph: true, hasTestProfile: true, haikuAvailable: true, effortLevelOverride: 'medium' }
+      validate: { haikuAvailable: true, effortLevelOverride: 'medium' }
     }
   })
   assert.match(overridden.output, /EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=medium/, overridden.output)
@@ -3381,7 +3427,8 @@ test('no agent is in the corpus line\'s path at all', () => {
   // by the close with `observedFromReceipt(receipt)`; there is no prompt in
   // which a value could be re-offered for correction.
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
-  assert.match(run, /appendOutcome\(root, \{[\s\S]{0,160}observed: observedFromReceipt\(receipt\)/)
+  // Under the state home the run recorded (ship/state-home).
+  assert.match(run, /appendOutcome\(home, \{[\s\S]{0,160}observed: observedFromReceipt\(receipt\)/)
   for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
     assert.doesNotMatch(
       readFileSync(driver, 'utf8'),
@@ -3410,11 +3457,15 @@ test('the printed degradation banners and the receipt are the same list', async 
   // a banner disagreeing with the record is the same class of defect one level
   // up from the one the degradation block removes.
   const { root, output } = await kept({
+    // No graph and no test profile in the fixture repository: `run start` raises
+    // both lines itself, and the close prints them from the manifest.
     responses: {
-      validate: { hasGraph: false, hasTestProfile: false, haikuAvailable: true }
+      validate: { haikuAvailable: true }
     }
   })
   try {
+    assert.equal(existsSync(join(root, '.claude', 'graph', 'graph.json')), false)
+    assert.equal(existsSync(join(root, '.claude', 'testing', 'profile.json')), false)
     const receipt = receiptFrom(root)
     assert.ok(
       receipt.degradations.length >= 2,

@@ -17,8 +17,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
-import { join, dirname, relative, sep } from 'node:path'
+import { join, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveStateHome } from '../../lib/state-home.mjs'
 
 const HERE = fileURLToPath(import.meta.url)
 const REPO = join(dirname(HERE), '..', '..')
@@ -30,7 +31,25 @@ const TEST_DIR = join(REPO, 'test')
  * test is the same defect: it lands in the developer's live `.claude/`, where a
  * later read cannot tell it from a real run's.
  */
-const CORPORA = [join('.claude', 'ship'), join('.claude', 'metrics'), join('.claude', 'handoff')]
+const CORPORA = [
+  join('.claude', 'ship'),
+  join('.claude', 'metrics'),
+  join('.claude', 'handoff'),
+  join('.claude', 'learning')
+]
+
+/**
+ * Every checkout whose corpora a stray spawn could reach: this repository, and —
+ * when it is itself a linked worktree, as a Desktop worktree session is — the
+ * main checkout its corpora now resolve to (ship/state-home). Guarding only the
+ * worktree would pass a test whose unpinned append landed in the main checkout.
+ */
+function guardedRoots() {
+  const roots = [resolve(REPO)]
+  const resolved = resolveStateHome(REPO, { env: {} })
+  if (resolved.surface === 'linked-worktree' && resolve(resolved.home) !== roots[0]) roots.push(resolve(resolved.home))
+  return roots
+}
 
 /** Set on the child so the guard does not spawn itself. */
 const CHILD_ENV = 'INTERLOCK_ROOT_ISOLATION_CHILD'
@@ -51,9 +70,13 @@ function walk(abs, base, into) {
 }
 
 /** Size and mtime of every file in the corpora — a modification shows as well as a creation. */
-function snapshot() {
+function snapshot(roots) {
   const into = []
-  for (const corpus of CORPORA) walk(join(REPO, corpus), REPO, into)
+  for (const root of roots) {
+    const files = []
+    for (const corpus of CORPORA) walk(join(root, corpus), root, files)
+    for (const line of files) into.push(roots.length > 1 ? `${root}${sep}${line}` : line)
+  }
   return into
 }
 
@@ -94,7 +117,8 @@ test('no test that spawns the binary writes into this repository\'s corpora', ()
   env.NO_COLOR = '1'
   env.FORCE_COLOR = '0'
 
-  const before = snapshot()
+  const roots = guardedRoots()
+  const before = snapshot(roots)
   const r = spawnSync(process.execPath, ['--test', ...files], {
     cwd: REPO,
     encoding: 'utf8',
@@ -107,7 +131,7 @@ test('no test that spawns the binary writes into this repository\'s corpora', ()
     /^(?:#|ℹ) pass \d+$/m,
     `the child test run produced no summary, so nothing was exercised:\n${r.stdout}\n${r.stderr}`
   )
-  const after = snapshot()
+  const after = snapshot(roots)
 
   const created = after.filter(line => !before.includes(line))
   assert.deepEqual(
@@ -115,7 +139,7 @@ test('no test that spawns the binary writes into this repository\'s corpora', ()
     [],
     'a test spawned the binary against this repository rather than a temp root, so the ' +
       'suite wrote into the corpora it measures. Pin `cwd` or pass `--root` at the spawn ' +
-      `site. Files touched under ${CORPORA.join(' and ')}:\n` +
+      `site. Files touched under ${CORPORA.join(', ')} of ${roots.join(' and ')}:\n` +
       created.map(line => `  ${line.split('\t')[0].split(sep).join('/')}`).join('\n')
   )
   assert.deepEqual(before.length, after.length, 'a corpus file was removed by the suite')

@@ -65,6 +65,7 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
 import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
 import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
 import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
@@ -191,6 +192,9 @@ Usage:
   interlock run close [--halt <reason>]      names, writes the results, calls
                       [--host-banners <f>]
                       [--host-observed <f>]
+  (record-batch, judge, reviewed, remediated, commit, replan and close also
+  take --host-records <f>: the runner's per-spawn host observations, beside
+  --results and never inside them)
                                             \`then.argv\`, and repeats until
                                             \`then\` is null. It decides nothing:
                                             every branch the loop has (apply-only,
@@ -309,6 +313,10 @@ Usage:
 Common options:
   --json                 Emit JSON instead of human-readable text
   --root <dir>           Repo root (default: cwd)
+  --state-home <dir>     Where corpora (trajectories, outcomes, metrics, resume
+                         cards, interrupted notes, autonomy ledger) are read and
+                         written; default INTERLOCK_STATE_HOME, else the main
+                         checkout when --root is a linked worktree, else --root
   Any <file> argument accepts "-" to read that input from stdin. Only one input
   per invocation may be "-", since stdin can only be drained once.
 
@@ -858,6 +866,51 @@ function readStdin() {
   } catch {
     return ''
   }
+}
+
+/**
+ * The explicit state home, if one was given: `--state-home <dir>`, else
+ * `INTERLOCK_STATE_HOME` (ship/state-home). `--root` keeps naming the working
+ * tree; this names where its corpora go.
+ */
+function explicitHome(flags) {
+  return explicitStateHome({
+    flag: typeof flags['state-home'] === 'string' ? flags['state-home'] : undefined,
+    env: process.env
+  })
+}
+
+/**
+ * The state home a run starts with: the explicit value, else the resolver. Never
+ * a manifest already at the root — that is the PREVIOUS run's.
+ */
+function startStateHome(root, flags) {
+  return resolveStateHome(root, { explicit: explicitHome(flags) || undefined, env: {} })
+}
+
+/**
+ * The state home a corpus command reads and writes (design D14): the home the
+ * live run at this root recorded, so a lane's `wave-state` append or a report
+ * run mid-run never disagrees with the run's own; else the explicit value; else
+ * the resolver. Resolved once per invocation and handed to every corpus reader
+ * and writer the command calls.
+ *
+ * @returns {{home: string, surface: string, reason: string|null, resolvedFrom: string}}
+ */
+function corpusHome(root, flags) {
+  const explicit = explicitHome(flags)
+  if (!explicit) {
+    const manifest = readManifest(root)
+    if (manifest && typeof manifest.stateHome === 'string' && manifest.stateHome) {
+      return {
+        home: manifest.stateHome,
+        surface: typeof manifest.surface === 'string' ? manifest.surface : 'unknown',
+        reason: typeof manifest.stateHomeReason === 'string' ? manifest.stateHomeReason : null,
+        resolvedFrom: typeof manifest.stateHomeFrom === 'string' ? manifest.stateHomeFrom : 'git'
+      }
+    }
+  }
+  return resolveStateHome(root, { explicit: explicit || undefined, env: {} })
 }
 
 function readInput(value, what) {
@@ -1793,7 +1846,7 @@ async function main() {
       if (flags.metrics !== undefined) {
         if (flags.metrics === true) die('--metrics requires a change name')
         const surviving = result.total + result.malformed.length
-        metrics = writeReviewMetrics(root, {
+        metrics = writeReviewMetrics(corpusHome(root, flags).home, {
           change: String(flags.metrics),
           counts: {
             raised: result.dismissedCount + result.droppedByQuality + surviving,
@@ -1846,6 +1899,7 @@ async function main() {
       // would encode. Every value here is one `if` away from a threshold; the
       // absence of that `if` is the feature. See the header of lib/report.mjs.
       const report = buildReport(root, {
+        stateHome: corpusHome(root, flags),
         since: typeof flags.since === 'string' ? flags.since : undefined,
         change: typeof flags.change === 'string' ? flags.change : undefined,
         maxRuns: num(flags, 'max-runs')
@@ -1994,7 +2048,7 @@ async function main() {
       // Read-only by construction — see the header of lib/doctor.mjs. The exit
       // code is the whole point: a preflight that only prints is a preflight a
       // zero-touch run walks straight past.
-      const report = diagnose(root, { cpuCount: cpuCount() })
+      const report = diagnose(root, { cpuCount: cpuCount(), stateHome: explicitHome(flags) || undefined })
       emit(json, report, formatDoctor(report))
       if (!report.ok) process.exit(1)
       break
@@ -2013,6 +2067,7 @@ async function main() {
         const outDir = typeof flags.out === 'string' ? flags.out : ''
         if (!outDir) die('evals capture requires --out <dir>')
         const result = captureCase(root, {
+          stateHome: corpusHome(root, flags).home,
           runId,
           taskId: typeof flags.task === 'string' ? flags.task : undefined,
           outDir
@@ -2126,7 +2181,7 @@ async function main() {
       let metrics = null
       if (flags.metrics !== undefined) {
         if (flags.metrics === true) die('--metrics requires a change name')
-        metrics = writeReviewMetrics(root, { change: String(flags.metrics), counts: result.counts })
+        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: result.counts })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
@@ -2244,10 +2299,11 @@ async function main() {
         // trusting the untrusted source exactly when the trusted one is
         // missing would defeat the partition on the runs most likely to need
         // it.
+        const home = corpusHome(root, flags).home
         const receipt = runId
-          ? queryRunLog(root, runId, { type: 'run-receipt' }).records.pop() || null
+          ? queryRunLog(home, runId, { type: 'run-receipt' }).records.pop() || null
           : null
-        const written = appendOutcome(root, { ...reportedHalf, observed: observedFromReceipt(receipt) })
+        const written = appendOutcome(home, { ...reportedHalf, observed: observedFromReceipt(receipt) })
         if (carriedObserved) {
           warn(
             'outcome record carried an "observed" group: refused. Observed values are derived ' +
@@ -2269,7 +2325,7 @@ async function main() {
           `${written.written ? `recorded → ${written.path}` : `not recorded: ${written.reason}`}\n`
         )
       } else if (sub === 'list' || sub === undefined) {
-        const result = readOutcomes(root)
+        const result = readOutcomes(corpusHome(root, flags).home)
         emit(json, result, formatOutcomes(result))
       } else {
         die(`unknown outcomes subcommand: ${sub}`)
@@ -2279,9 +2335,10 @@ async function main() {
 
     case 'run-log': {
       const sub = positional[1]
+      const logHome = corpusHome(root, flags).home
       if (sub === 'append') {
         const record = readInput(flags.event, '--event <file|->')
-        const { written, path, reason } = appendRunLogEvent(root, record)
+        const { written, path, reason } = appendRunLogEvent(logHome, record)
         if (!written) {
           // Never fatal: losing a trajectory line must not fail the run that
           // produced it. Say so on stderr and exit 0.
@@ -2290,17 +2347,17 @@ async function main() {
         emit(json, { written, path, reason }, `${written ? `recorded → ${path}` : `not recorded: ${reason}`}\n`)
       } else if (sub === 'list') {
         const change = typeof flags.change === 'string' ? flags.change : undefined
-        const runs = listRunLogs(root, { change })
+        const runs = listRunLogs(logHome, { change })
         emit(json, { runs }, formatRunLogList(runs))
       } else if (sub === 'show') {
         const runId = positional[2]
         if (!runId) die('run-log show requires a runId')
-        const result = readRunLog(root, runId)
+        const result = readRunLog(logHome, runId)
         emit(json, result, formatRunLog(result))
       } else if (sub === 'query') {
         const runId = typeof flags.run === 'string' ? flags.run : undefined
         if (!runId) die('--run is required')
-        const result = queryRunLog(root, runId, {
+        const result = queryRunLog(logHome, runId, {
           type: typeof flags.type === 'string' ? flags.type : undefined,
           halted: flags.halted === true
         })
@@ -2308,7 +2365,7 @@ async function main() {
       } else if (sub === 'check') {
         const runId = runIdFromFlags(flags)
         if (!runId) die('run-log check requires --state <file> (with a runId) or --run-id <id>')
-        const result = checkRunLog(root, runId)
+        const result = checkRunLog(logHome, runId)
         emit(json, result, formatRunLogCheck(result))
         if (!result.ok) process.exit(1)
       } else {
@@ -2420,7 +2477,7 @@ async function main() {
         }
         const opts = { context, ...verifyJudgeOpts(flags) }
         const verdict = judgeVerification(plan, results, opts)
-        const logOk = logVerifyJudgement(root, {
+        const logOk = logVerifyJudgement(corpusHome(root, flags).home, {
           runId: runIdFromFlags(flags),
           // Same precedence as every wave-state append site: the state names the
           // run, the flag is only the pre-state-name fallback.
@@ -2670,6 +2727,11 @@ async function main() {
 
       const results = flags.results ? readInput(flags.results, '--results <file|->') : []
       const resultList = Array.isArray(results) ? results : [results]
+      // The host's own observation of each spawn, beside the agents' results and
+      // never inside them: a result is the agent's report, a host record is what
+      // the host saw (design D7). Only the runner sends one; the CLI decides.
+      const records = flags['host-records'] ? readInput(flags['host-records'], '--host-records <file|->') : []
+      const hostRecords = Array.isArray(records) ? records : [records]
 
       let step
       if (sub === 'start') {
@@ -2731,6 +2793,7 @@ async function main() {
           host: hostId,
           hostCapabilities,
           hostEnv,
+          stateHome: startStateHome(root, flags),
           flags: {
             applyOnly: flags['apply-only'] === true,
             noCommit: flags['no-commit'] === true,
@@ -2766,25 +2829,25 @@ async function main() {
             : CLASSIFIED_PATH
         step = runClassified(ctx, { classifiedPath: classified })
       } else if (sub === 'record-batch') {
-        step = runRecordBatch(ctx, { results: resultList })
+        step = runRecordBatch(ctx, { results: resultList, hostRecords })
       } else if (sub === 'judge') {
         const context = flags.context === undefined ? 'final' : String(flags.context)
         if (context !== 'inter-wave' && context !== 'final') {
           die(`--context must be inter-wave|final (got "${context}")`)
         }
-        step = runJudge(ctx, { context, results: resultList })
+        step = runJudge(ctx, { context, results: resultList, hostRecords })
       } else if (sub === 'verify-final') {
         step = runVerifyFinal(ctx)
       } else if (sub === 'reviewed') {
-        step = runReviewed(ctx, { results: resultList })
+        step = runReviewed(ctx, { results: resultList, hostRecords })
       } else if (sub === 'remediated') {
         const roundNum = num(flags, 'round')
         if (!Number.isInteger(roundNum)) die('run remediated requires --round <n>')
-        step = runRemediated(ctx, { round: roundNum, results: resultList })
+        step = runRemediated(ctx, { round: roundNum, results: resultList, hostRecords })
       } else if (sub === 'commit') {
-        step = runCommit(ctx, { results: resultList })
+        step = runCommit(ctx, { results: resultList, hostRecords })
       } else if (sub === 'replan') {
-        step = runReplan(ctx, { results: resultList })
+        step = runReplan(ctx, { results: resultList, hostRecords })
       } else if (sub === 'next') {
         step = runNext(ctx)
       } else if (sub === 'close') {
@@ -2799,6 +2862,7 @@ async function main() {
           halt: typeof flags.halt === 'string' ? flags.halt : null,
           hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
           hostObserved,
+          hostRecords,
           notify: flags.notify === true
         })
         // Printed plainly, and NOT copied to LAST_STEP_PATH: a halted run closes
@@ -2824,19 +2888,22 @@ async function main() {
     case 'wave-state': {
       const sub = positional[1]
       const change = typeof flags.change === 'string' ? flags.change : undefined
+      // The trajectory this command appends to lives in the state home; the
+      // changed-path read below stays on the working tree.
+      const logRoot = corpusHome(root, flags).home
       if (sub === 'create') {
         const plan = readInput(flags.plan, '--plan <file|->')
         const maxParallel = num(flags, 'max-parallel')
         // The one place the name enters the run: from here it travels on the
         // state, and no later wave-state invocation needs the flag.
         const state = createRunState(plan, { maxParallel, change })
-        const { ok: logOk } = logWaveMutation(root, { source: 'create', change, state })
+        const { ok: logOk } = logWaveMutation(logRoot, { source: 'create', change, state })
         emit(json, state, formatRunState(state))
         if (!logOk) process.exit(1)
       } else if (sub === 'next') {
         const state = readInput(flags.state, '--state <file|->')
-        const { step, ok: logOk } = logWaveMutation(root, { source: 'next', change, state })
-        const spawnOk = logAgentSpawns(root, { state, change, step, source: 'next' })
+        const { step, ok: logOk } = logWaveMutation(logRoot, { source: 'next', change, state })
+        const spawnOk = logAgentSpawns(logRoot, { state, change, step, source: 'next' })
         emit(json, step, formatRunState(state))
         if (step.action === 'halt' || !logOk || !spawnOk) process.exit(1)
       } else if (sub === 'record-batch' || sub === 'record-verify') {
@@ -2849,11 +2916,11 @@ async function main() {
           sub === 'record-batch'
             ? recordBatchResult(state, result, { changedPaths: observedChangedPaths(root) })
             : recordVerifyResult(state, result)
-        const { ok: logOk } = logWaveMutation(root, { source: sub, change, state: next })
+        const { ok: logOk } = logWaveMutation(logRoot, { source: sub, change, state: next })
         // Derived from the two states rather than returned by the recorder, so
         // `recordBatchResult`'s signature and every other caller are untouched.
         const recorded = sub === 'record-batch' ? batchOutcomes(state, next) : undefined
-        emitRecordedState(json, flags, next, { root, change, logOk, source: sub, recorded })
+        emitRecordedState(json, flags, next, { root: logRoot, change, logOk, source: sub, recorded })
       } else if (sub === 'replan') {
         const state = readInput(flags.state, '--state <file|->')
         const groups = readInput(flags.groups, '--groups <file|->')
@@ -2861,7 +2928,7 @@ async function main() {
           die('--groups must be a JSON array of { group, tasks } revisions')
         }
         const next = applyReplan(state, groups)
-        const { ok: logOk } = logWaveMutation(root, { source: 'replan', change, state: next })
+        const { ok: logOk } = logWaveMutation(logRoot, { source: 'replan', change, state: next })
         emitRecordedState(json, flags, next, { root, change, logOk, source: 'replan' })
       } else {
         die(
@@ -2874,7 +2941,8 @@ async function main() {
 
     case 'autonomy': {
       const sub = positional[1]
-      const opts = { root: flags.root ? String(flags.root) : undefined }
+      // The autonomy ledger is a corpus: it lives in the state home (ship/state-home).
+      const opts = { root: corpusHome(root, flags).home }
       if (sub === 'level') {
         const path = positional[2]
         if (!path) die('autonomy level requires a path')

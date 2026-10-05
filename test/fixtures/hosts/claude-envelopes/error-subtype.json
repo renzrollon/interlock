@@ -1,0 +1,35 @@
+{
+  "type": "result",
+  "subtype": "error_max_turns",
+  "is_error": true,
+  "api_error_status": null,
+  "num_turns": 2,
+  "stop_reason": null,
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "total_cost_usd": 0.0123,
+  "terminal_reason": "max_turns",
+  "errors": [
+    "Reached maximum number of turns (1)"
+  ],
+  "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 2048,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 64,
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 2048
+    }
+  },
+  "modelUsage": {
+    "bedrock.claude-sonnet-5": {
+      "inputTokens": 12,
+      "outputTokens": 64,
+      "cacheReadInputTokens": 0,
+      "cacheCreationInputTokens": 2048,
+      "costUSD": 0.0121,
+      "canonicalModel": "claude-sonnet-5"
+    }
+  },
+  "permission_denials": []
+}

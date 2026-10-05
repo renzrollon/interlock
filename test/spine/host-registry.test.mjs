@@ -154,3 +154,16 @@ test('forced is a legal model selection that only run start observes and no adap
     )
   }
 })
+
+test('hook is a legal cache accounting that only run close observes and no adapter declares', () => {
+  // ship/agent-results: `hook` means the recorder's sidecar supplied the figures,
+  // which only the close can establish, after it joined every briefed spawn.
+  assert.deepEqual([...CAPABILITY_VALUES.cacheAccounting], [true, false, 'hook'])
+  for (const [id, entry] of Object.entries(HOSTS)) {
+    assert.equal(
+      typeof entry.capabilities.cacheAccounting,
+      'boolean',
+      `${id} declares cacheAccounting ${JSON.stringify(entry.capabilities.cacheAccounting)} — hook is observed, never declared`
+    )
+  }
+})

@@ -21,12 +21,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
 import { join, dirname, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EFFORT, LIMITS } from '../../lib/limits.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
 import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
@@ -3892,4 +3894,1309 @@ test('decideHostEnvironment reads every row of the version-aware table', () => {
   const teams = decide({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, '2.1.288')
   assert.deepEqual(teams.banners, [])
   assert.equal(teams.pingModel, 'haiku')
+})
+
+// ============================================================================
+// What the host observed about each agent, and where a run's records go
+// (observe-agents-and-resolve-state-home, task 1.8).
+//
+// Every case below drives the REAL binary in a temporary root, because the two
+// things under test — the close's join of the recorder's sidecar to the spawns
+// this program dispatched, and the state home `run start` records once and every
+// later subcommand reads back — both live in the hand-off between separate
+// `interlock run` processes. An in-process call would hold the manifest in
+// memory across steps and prove nothing about what the next process reads.
+// ============================================================================
+
+/** Any `interlock` command; the exit code is returned rather than asserted. */
+function cli(cwd, argv, { results, hostRecords, env = {}, json = true } = {}) {
+  const full = [...argv]
+  if (results !== undefined) {
+    file(cwd, '.claude/ship/results.json', results)
+    full.push('--results', '.claude/ship/results.json')
+  }
+  if (hostRecords !== undefined) {
+    file(cwd, '.claude/ship/host-records.json', hostRecords)
+    full.push('--host-records', '.claude/ship/host-records.json')
+  }
+  if (json) full.push('--json')
+  const r = spawnSync(process.execPath, [BIN, ...full], {
+    cwd,
+    encoding: 'utf8',
+    // A developer's own export must not move a test's corpora somewhere else.
+    env: { ...process.env, INTERLOCK_STATE_HOME: undefined, ...env }
+  })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  const stdout = r.stdout || ''
+  return { step: json && stdout.trim() ? JSON.parse(stdout) : null, code: r.status, stdout, stderr: r.stderr || '' }
+}
+
+/** `cli`, asserting a zero exit — every `run` step but a halted close exits 0. */
+function step0(cwd, argv, opts) {
+  const r = cli(cwd, argv, opts)
+  assert.equal(r.code, 0, `interlock ${argv.join(' ')} exited ${r.code}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`)
+  return r.step
+}
+
+/** One trajectory's events, read under the home it was written to. */
+function eventsAt(home, runId) {
+  return readFileSync(join(home, '.claude', 'ship', 'runs', `${runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+}
+
+const receiptAt = (home, runId) => eventsAt(home, runId).find(e => e.type === 'run-receipt')
+const anyStartsWith = (list, prefix) => (list || []).some(b => String(b).startsWith(prefix))
+const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0
+const OBSERVATION_COUNTS = [
+  'lanesStoppedByHost',
+  'schemaResultsMissing',
+  'toolsDeniedInLanes',
+  'modelSubstitutions',
+  'permissionPrompts',
+  'autoModeDenials'
+]
+
+/** The lanes of the batch the run state says is pending — what the CLI aligns `results[i]` with. */
+function pendingLanes(root) {
+  const pending = nextStep(JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8')))
+  const batches =
+    Array.isArray(pending.remainingBatches) && pending.remainingBatches.length
+      ? pending.remainingBatches
+      : [Array.isArray(pending.tasks) ? pending.tasks : []]
+  return batches[0] || []
+}
+
+/** A lane's result: the single-task shape, or per-task outcomes for a fused lane. */
+function laneResult(lane, usage) {
+  const ids = lane.map(t => t.id)
+  const extra = usage ? { usage } : {}
+  if (ids.length === 1) {
+    const [task] = laneOk(ids).tasks
+    return { ok: true, id: task.id, filesChanged: task.filesChanged, handoff: task.handoff, ...extra }
+  }
+  return { ...laneOk(ids), ...extra }
+}
+
+// --- the Workflow host's join (ship/agent-results) ---------------------------
+
+const JOIN_TASKS =
+  '# Tasks\n\n- [ ] 1.1 Edit src/a.ts\n- [ ] 1.2 Edit src/b.ts\n\n- [ ] 2.1 Edit src/c.ts\n- [ ] 2.2 Edit src/d.ts\n'
+
+// Two tier-4 lanes in wave 1 and one chain-fused lane in wave 2: three briefed
+// spawns, the shape the agent-results scenarios name. Wave 2 carries two tasks
+// because a one-task wave is folded into the wave before it.
+const JOIN_CLASSIFIED = {
+  tasks: [
+    { id: '1.1', group: 1, description: 'a', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+    { id: '1.2', group: 1, description: 'b', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/b.ts'] },
+    { id: '2.1', group: 2, description: 'c', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/c.ts'] },
+    { id: '2.2', group: 2, description: 'd', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/d.ts'] }
+  ]
+}
+
+/** What each briefed spawn's transcript summed to, by dispatch order. */
+const USAGE_BY_SPAWN = [
+  { inputTokens: 11, outputTokens: 101, cacheReadInputTokens: 1000, cacheCreationInputTokens: { ephemeral_5m: 400, ephemeral_1h: 2 } },
+  { inputTokens: 12, outputTokens: 102, cacheReadInputTokens: 500, cacheCreationInputTokens: { ephemeral_5m: 100, ephemeral_1h: 3 } },
+  { inputTokens: 13, outputTokens: 103, cacheReadInputTokens: 250, cacheCreationInputTokens: { ephemeral_5m: 50, ephemeral_1h: 1 } }
+]
+
+/**
+ * A Workflow-host run walked through both waves to the final verification, with
+ * the dispatched spawns it recorded. Each lane result carries seven output
+ * tokens, so the output figures the join must leave alone are known.
+ */
+function workflowThroughWaves() {
+  const { root, change } = repo('add-thing', { tasks: JOIN_TASKS })
+  const env = workflowEnv()
+  let step = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, [], JOIN_CLASSIFIED, { env })
+  for (let guard = 0; step.action !== 'verify-final'; guard++) {
+    assert.ok(guard < 12, 'the walk did not reach the final verification')
+    assert.notEqual(step.action, 'halt', `the walk halted: ${step.reason}`)
+    step =
+      step.action === 'run-batch'
+        ? step0(root, step.then.argv, {
+            results: pendingLanes(root).map(lane => laneResult(lane, { outputTokens: 7 })),
+            env
+          })
+        : step0(root, step.then.argv, { env })
+  }
+  const manifest = manifestOf(root)
+  const briefed = manifest.dispatched.filter(d => typeof d.sha === 'string' && d.sha)
+  assert.deepEqual(
+    briefed.map(d => [d.wave, d.kind]),
+    [[1, 'implementer'], [1, 'implementer'], [2, 'implementer']],
+    'the fixture is two briefed lanes in wave 1 and one in wave 2'
+  )
+  return { root, change, env, runId: manifest.runId, briefed }
+}
+
+/** One agent file, in the shape the SubagentStop recorder writes (lib/agent-usage.mjs). */
+function plantAgent(root, runId, agentId, { sha = null, models = ['claude-sonnet-5-5'], usage = null, turns = 3 } = {}) {
+  return file(root, `.claude/ship/agent-usage/${runId}/${agentId}.json`, {
+    schema: 'interlock.agent-usage/1',
+    agentId,
+    agentType: 'workflow-subagent',
+    startedAt: '2026-10-05T09:00:00.000Z',
+    stoppedAt: '2026-10-05T09:05:00.000Z',
+    briefingSha: sha,
+    models,
+    turns,
+    usage,
+    transcript: { path: `/home/user/.claude/projects/-home-user-repo/agent-${agentId}.jsonl`, parsed: true, reason: null }
+  })
+}
+
+/** One agent file per briefed spawn, keyed by its sha, except the dispatch indices in `skip`. */
+function plantJoined(run, { skip = [], models = () => ['claude-sonnet-5-5'], usage = i => USAGE_BY_SPAWN[i] } = {}) {
+  run.briefed.forEach((spawned, i) => {
+    if (skip.includes(i)) return
+    plantAgent(run.root, run.runId, `agent-${i}`, { sha: spawned.sha, models: models(spawned, i), usage: usage(i) })
+  })
+}
+
+/** One permission file, in the shape the permission recorder writes. */
+function plantPermission(root, runId, kind, seq, { tool = 'Bash', reason = null } = {}) {
+  const at = '2026-10-05T09:01:00.000Z'
+  return file(root, `.claude/ship/agent-usage/${runId}/permission-${kind}-${Date.parse(at)}-4242-${seq}.json`, {
+    schema: 'interlock.agent-usage/1',
+    kind,
+    at,
+    agentId: 'agent-0',
+    tool,
+    reason
+  })
+}
+
+const closeWorkflow = (run, extra = []) => cli(run.root, ['run', 'close', ...extra], { env: run.env })
+
+test('a complete join records per-wave cache figures, observes cache accounting as hook, and one agent-result per agent', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r)
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, closed.stderr)
+    assert.doesNotMatch(closed.step.summary, /CACHE ACCOUNTING NOT REPORTED/)
+    assert.doesNotMatch(closed.step.summary, /CACHE ACCOUNTING PARTIAL/)
+
+    // Observed only, never declared: the manifest and the receipt both say hook.
+    assert.equal(manifestOf(r.root).host.cacheAccounting, 'hook')
+    const receipt = receiptOf(r.root)
+    assert.equal(receipt.host.cacheAccounting, 'hook')
+
+    // Per wave and for the run, tiers kept apart. Output tokens are the results'
+    // own figures (7 per lane) — the agents' 101/102/103 never replace them.
+    assert.deepEqual(receipt.spend, [
+      { wave: '1', outputTokens: 14, cacheReadInputTokens: 1500, cacheCreationInputTokens: { ephemeral_5m: 500, ephemeral_1h: 5 } },
+      { wave: '2', outputTokens: 7, cacheReadInputTokens: 250, cacheCreationInputTokens: { ephemeral_5m: 50, ephemeral_1h: 1 } }
+    ])
+    assert.equal(receipt.outputTokens, 21, 'the join leaves output tokens as the results reported them')
+    assert.equal(receipt.cacheReadInputTokens, 1750)
+    assert.deepEqual(receipt.cacheCreationInputTokens, { ephemeral_5m: 550, ephemeral_1h: 6 })
+
+    // One agent-result per joined agent, from the transcript, before the receipt.
+    const events = eventsAt(r.root, r.runId)
+    const results = events.filter(e => e.type === 'agent-result')
+    assert.equal(results.length, 3)
+    r.briefed.forEach((spawned, i) => {
+      const event = results.find(e => e.agentId === `agent-${i}`)
+      assert.ok(event, `no agent-result for agent-${i}`)
+      assert.equal(event.source, 'transcript')
+      assert.equal(event.label, spawned.label)
+      assert.equal(event.kind, 'implementer')
+      assert.equal(event.modelRouted, spawned.model)
+      assert.deepEqual(event.servedModels, ['claude-sonnet-5-5'])
+      assert.equal(event.modelScope, 'turns')
+      assert.equal(event.substituted, false)
+      assert.equal(event.numTurns, 3)
+      assert.deepEqual(event.usage, USAGE_BY_SPAWN[i])
+    })
+    const lastResult = events.map(e => e.type).lastIndexOf('agent-result')
+    assert.ok(lastResult < events.findIndex(e => e.type === 'run-receipt'), 'agent-results precede the receipt')
+
+    // A sidecar with agent files and no permission file: no permission banner,
+    // and the counts are measured zeros, not absent.
+    assert.ok(!anyStartsWith(closed.step.banners, 'PERMISSION PROMPTS DURING RUN'))
+    assert.ok(!anyStartsWith(closed.step.banners, 'AUTO MODE DENIED'))
+    for (const key of OBSERVATION_COUNTS) assert.equal(receipt[key], 0, `${key} is a measured zero`)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('one unjoined lane leaves its wave absent, names the count, and keeps the declared false', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r, { skip: [1] })
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, 'a partial recording never moves the exit code')
+    assert.ok(
+      closed.step.banners.includes('CACHE ACCOUNTING PARTIAL: 1 of 3 agents unrecorded'),
+      JSON.stringify(closed.step.banners)
+    )
+    assert.match(closed.step.summary, /CACHE ACCOUNTING PARTIAL: 1 of 3 agents unrecorded/)
+
+    const receipt = receiptOf(r.root)
+    assert.deepEqual(receipt.spend[0], { wave: '1', outputTokens: 14, cacheReadInputTokens: null, cacheCreationInputTokens: null })
+    assert.deepEqual(receipt.spend[1], {
+      wave: '2',
+      outputTokens: 7,
+      cacheReadInputTokens: 250,
+      cacheCreationInputTokens: { ephemeral_5m: 50, ephemeral_1h: 1 }
+    })
+    assert.equal(receipt.cacheReadInputTokens, null, 'one unrecorded agent makes the run total unknown')
+    assert.equal(receipt.cacheCreationInputTokens, null)
+
+    assert.equal(manifestOf(r.root).host.cacheAccounting, false, 'a partial join keeps the declared value')
+    assert.equal(receipt.host.cacheAccounting, false)
+    assert.equal(eventsAt(r.root, r.runId).filter(e => e.type === 'agent-result').length, 2)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('a recorded agent no spawn dispatched is counted apart, split by why, and joins no wave', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r)
+    // A relay ping carries no bootstrap and so no key; a stray carries a key
+    // nothing here dispatched. Both carry figures that would show in any sum.
+    const huge = { inputTokens: 9, outputTokens: 9, cacheReadInputTokens: 900000, cacheCreationInputTokens: { ephemeral_5m: 90000, ephemeral_1h: 9000 } }
+    plantAgent(r.root, r.runId, 'ping-agent', { sha: null, usage: huge, models: ['claude-haiku-4-5'] })
+    plantAgent(r.root, r.runId, 'stray-agent', { sha: 'f'.repeat(64), usage: huge, models: ['claude-haiku-4-5'] })
+
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0)
+    const note =
+      'AGENT USAGE UNJOINED: 2 recorded agents matched no dispatched spawn ' +
+      '(1 without a briefing key, 1 with a key no spawn dispatched)'
+    assert.ok(manifestOf(r.root).notes.includes(note), JSON.stringify(manifestOf(r.root).notes))
+    assert.ok(closed.step.summary.includes(note))
+
+    const receipt = receiptOf(r.root)
+    assert.deepEqual(
+      receipt.spend.map(s => [s.wave, s.cacheReadInputTokens]),
+      [['1', 1500], ['2', 250]],
+      'the unjoined agents contribute to no wave'
+    )
+    assert.equal(receipt.cacheReadInputTokens, 1750, 'nor to the run')
+    assert.equal(manifestOf(r.root).host.cacheAccounting, 'hook', 'the briefed spawns all joined')
+    const results = eventsAt(r.root, r.runId).filter(e => e.type === 'agent-result')
+    assert.equal(results.length, 3)
+    assert.ok(!results.some(e => e.agentId === 'ping-agent' || e.agentId === 'stray-agent'))
+    assert.ok(!anyStartsWith(closed.step.banners, 'MODEL SUBSTITUTED'), 'an unjoined agent is compared against nothing')
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('a total-only cache-creation tier makes its wave\'s tiers unknown and records no zero', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r, {
+      usage: i => (i === 1 ? { ...USAGE_BY_SPAWN[1], cacheCreationInputTokens: { total: 103 } } : USAGE_BY_SPAWN[i])
+    })
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0)
+    const receipt = receiptOf(r.root)
+    // 402 from the split agent plus 103 from the total-only one: the total is
+    // known, the split is not — and no tier is filled in as zero.
+    assert.deepEqual(receipt.spend[0], { wave: '1', outputTokens: 14, cacheReadInputTokens: 1500, cacheCreationInputTokens: { total: 505 } })
+    assert.deepEqual(receipt.spend[1].cacheCreationInputTokens, { ephemeral_5m: 50, ephemeral_1h: 1 })
+    assert.deepEqual(receipt.cacheCreationInputTokens, { total: 556 })
+    assert.doesNotMatch(closed.step.summary, /CACHE ACCOUNTING PARTIAL/)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('a Workflow run with no agent-usage directory is not reported, and its six counts are absent', () => {
+  const r = workflowThroughWaves()
+  try {
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0)
+    assert.match(closed.step.summary, /CACHE ACCOUNTING NOT REPORTED/)
+    assert.doesNotMatch(closed.step.summary, /CACHE ACCOUNTING PARTIAL/)
+    assert.doesNotMatch(closed.step.summary, /AGENT USAGE UNJOINED/)
+    assert.equal(manifestOf(r.root).host.cacheAccounting, false)
+    const receipt = receiptOf(r.root)
+    assert.equal(receipt.host.cacheAccounting, false)
+    for (const key of OBSERVATION_COUNTS) assert.equal(receipt[key], null, `${key} is absent, not zero`)
+    assert.equal(eventsAt(r.root, r.runId).filter(e => e.type === 'agent-result').length, 0)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('a joined agent another model served is bannered; one its own alias served is not', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r, {
+      models: (_, i) => (i === 0 ? ['claude-opus-5-5'] : i === 1 ? ['claude-sonnet-5-5'] : ['claude-sonnet-5-5-20261001'])
+    })
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, 'a substitution is a banner, never an exit code')
+    const [first] = r.briefed
+    assert.equal(first.model, 'sonnet')
+    const expected = `MODEL SUBSTITUTED: ${first.label} routed sonnet, ran claude-opus-5-5`
+    const substituted = closed.step.banners.filter(b => b.startsWith('MODEL SUBSTITUTED'))
+    assert.deepEqual(substituted, [expected])
+    assert.ok(closed.step.summary.includes(expected))
+
+    const results = eventsAt(r.root, r.runId).filter(e => e.type === 'agent-result')
+    const byAgent = id => results.find(e => e.agentId === id)
+    assert.equal(byAgent('agent-0').substituted, true)
+    assert.equal(byAgent('agent-0').modelScope, 'turns')
+    assert.deepEqual(byAgent('agent-0').servedModels, ['claude-opus-5-5'])
+    assert.equal(byAgent('agent-1').substituted, false)
+    assert.equal(byAgent('agent-2').substituted, false, 'a date stamp is not a different model')
+    assert.equal(receiptOf(r.root).modelSubstitutions, 1)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('permission files are counted and bannered, and an unreadable one is named while the rest still count', () => {
+  const r = workflowThroughWaves()
+  try {
+    plantJoined(r)
+    plantPermission(r.root, r.runId, 'request', 1, { tool: 'Write' })
+    plantPermission(r.root, r.runId, 'denied', 2, { tool: 'Bash', reason: 'auto mode classifier' })
+    plantPermission(r.root, r.runId, 'denied', 3, { tool: 'Bash', reason: 'auto mode classifier' })
+    const bad = `.claude/ship/agent-usage/${r.runId}/permission-denied-${Date.parse('2026-10-05T09:02:00.000Z')}-4242-9.json`
+    file(r.root, bad, '{ not json')
+
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, 'the exit code is the run outcome alone')
+    assert.ok(closed.step.banners.includes('PERMISSION PROMPTS DURING RUN: 1'), JSON.stringify(closed.step.banners))
+    assert.ok(closed.step.banners.includes('AUTO MODE DENIED 2 TOOL CALLS (Bash)'), JSON.stringify(closed.step.banners))
+    const receipt = receiptOf(r.root)
+    assert.equal(receipt.permissionPrompts, 1)
+    assert.equal(receipt.autoModeDenials, 2)
+
+    const named = manifestOf(r.root).notes.filter(n => n.startsWith(`AGENT USAGE UNREADABLE: ${bad}: `))
+    assert.equal(named.length, 1, `the unreadable file is noted by name: ${JSON.stringify(manifestOf(r.root).notes)}`)
+    assert.ok(closed.step.summary.includes(`AGENT USAGE UNREADABLE: ${bad}: `))
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+test('an agent-result the close cannot append exits 1 and leaves the run unreconstructable', { skip: IS_ROOT && 'chmod does not bind root' }, () => {
+  const r = workflowThroughWaves()
+  const dir = join(r.root, '.claude', 'ship', 'runs')
+  const trajectory = join(dir, `${r.runId}.jsonl`)
+  try {
+    plantJoined(r)
+    chmodSync(trajectory, 0o444)
+    chmodSync(dir, 0o555)
+    let closed
+    try {
+      closed = closeWorkflow(r)
+    } finally {
+      chmodSync(dir, 0o755)
+      chmodSync(trajectory, 0o644)
+    }
+    assert.equal(closed.code, 1, 'the agent-result is the trajectory\'s fatal class')
+    assert.equal(closed.step.exitCode, 1)
+    assert.ok(
+      anyStartsWith(closed.step.banners, `TRAJECTORY APPEND FAILED: agent-result ${r.briefed[0].label}: `),
+      JSON.stringify(closed.step.banners)
+    )
+    assert.ok(anyStartsWith(closed.step.banners, 'RUN NOT RECONSTRUCTABLE'), JSON.stringify(closed.step.banners))
+    assert.equal(eventsAt(r.root, r.runId).filter(e => e.type === 'agent-result').length, 0)
+  } finally {
+    cleanup(r.root)
+  }
+})
+
+// --- the runner's host records (ship/agent-results) --------------------------
+
+const FOUR_TASKS =
+  '# Tasks\n\n- [ ] 1.1 Edit src/a.ts\n- [ ] 1.2 Edit src/b.ts\n- [ ] 1.3 Edit src/c.ts\n- [ ] 1.4 Edit src/d.ts\n'
+
+const FOUR_LANES = {
+  tasks: ['a', 'b', 'c', 'd'].map((x, i) => ({
+    id: `1.${i + 1}`,
+    group: 1,
+    description: x,
+    tier: 4,
+    model: 'sonnet',
+    isTestTask: false,
+    paths: [`src/${x}.ts`]
+  }))
+}
+
+/** A host record as `bin/interlock-run` forwards it: `{ label, ...host }` (design D7). */
+function hostRecord(label, over = {}) {
+  return {
+    label,
+    parsed: true,
+    subtype: 'success',
+    isError: false,
+    terminalReason: 'completed',
+    errors: [],
+    permissionDenials: { count: 0, tools: [] },
+    sessionId: `sess-lane-${label.replace(/\W/g, '-')}`,
+    numTurns: 4,
+    sessionModels: ['bedrock.claude-sonnet-5'],
+    servedModels: ['claude-sonnet-5-5'],
+    modelRouted: 'sonnet',
+    resultMissing: false,
+    usage: {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cacheReadInputTokens: 9000,
+      cacheCreationInputTokens: { ephemeral_5m: 700, ephemeral_1h: 0 }
+    },
+    hostCostUsd: 0.0421,
+    exitCode: 0,
+    timedOut: false,
+    ...over
+  }
+}
+
+const RUNNER_CAPS = { worktree: 'driver', usage: true, cacheAccounting: true }
+
+test('runner host records reach the CLI on their own channel, and the CLI names each lane', () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    assert.deepEqual(batch.spawns.map(s => s.label), ['1.1', '1.2', '1.3', '1.4'])
+    const runId = manifestOf(root).runId
+    const before = eventsAt(root, runId).length
+
+    const records = [
+      hostRecord('1.1', {
+        subtype: 'error_max_turns',
+        isError: true,
+        terminalReason: 'max_turns',
+        errors: ['Reached maximum number of turns (8)'],
+        exitCode: 1
+      }),
+      hostRecord('1.2', { resultMissing: true }),
+      // The transcript could not be read, so only the session scope is known —
+      // and the host's own haiku call beside the routed sonnet is not a
+      // substitution (design D6).
+      hostRecord('1.3', {
+        permissionDenials: { count: 2, tools: ['Bash', 'Edit'] },
+        servedModels: null,
+        sessionModels: ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5'],
+        // Whatever else a host hands over is not copied: fields go by name.
+        toolInput: { command: 'rm -rf build' }
+      }),
+      hostRecord('1.4', { servedModels: ['claude-opus-5-5'] })
+    ]
+    // The stopped lane and the schema-less one return no result to the driver.
+    const results = batch.lanes.map(lane => (['1.1', '1.2'].includes(lane[0].id) ? null : laneResult(lane)))
+    step0(root, batch.then.argv, { results, hostRecords: records })
+
+    const expected = [
+      'LANE STOPPED BY HOST: 1.1 error_max_turns',
+      'SCHEMA RESULT MISSING (claude): 1.2 — success without structured_output (anthropics/claude-code#82258)',
+      'TOOLS DENIED IN LANE: 1.3 2 (Bash, Edit)',
+      'MODEL SUBSTITUTED: 1.4 routed sonnet, ran claude-opus-5-5'
+    ]
+    const manifest = manifestOf(root)
+    for (const banner of expected) assert.ok(manifest.banners.includes(banner), `missing ${banner}: ${JSON.stringify(manifest.banners)}`)
+    assert.deepEqual(
+      manifest.banners.filter(b => b.startsWith('MODEL SUBSTITUTED')),
+      [expected[3]],
+      'a session-scope breakdown the routed model served raises nothing'
+    )
+    assert.deepEqual(
+      manifest.laneSessions.map(s => [s.label, s.sessionId]),
+      [['1.1', 'sess-lane-1-1'], ['1.2', 'sess-lane-1-2'], ['1.3', 'sess-lane-1-3'], ['1.4', 'sess-lane-1-4']]
+    )
+    assert.match(manifest.laneSessions[0].outcome, /error_max_turns/)
+
+    // The schema-less success is a failed lane; the denied and substituted ones returned.
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.match(tasks, /- \[ \] 1\.1 /)
+    assert.match(tasks, /- \[ \] 1\.2 /)
+    assert.match(tasks, /- \[x\] 1\.3 /)
+
+    // One agent-result per record, from the envelope, appended before anything
+    // else this record path wrote — the tick's own wave-action included.
+    const appended = eventsAt(root, runId).slice(before)
+    assert.deepEqual(
+      appended.slice(0, 4).map(e => [e.type, e.label, e.source]),
+      records.map(rec => ['agent-result', rec.label, 'envelope'])
+    )
+    assert.ok(appended.slice(4).some(e => e.type === 'wave-action'), 'the record path\'s own wave-action follows them')
+    assert.ok(!appended.slice(4).some(e => e.type === 'agent-result'))
+    const [stopped, missing, denied, swapped] = appended
+    assert.equal(stopped.kind, 'implementer')
+    assert.equal(stopped.subtype, 'error_max_turns')
+    assert.equal(stopped.isError, true)
+    assert.equal(stopped.terminalReason, 'max_turns')
+    assert.deepEqual(stopped.errors, ['Reached maximum number of turns (8)'])
+    assert.equal(stopped.sessionId, 'sess-lane-1-1')
+    assert.equal(stopped.numTurns, 4)
+    assert.equal(missing.resultMissing, true)
+    assert.deepEqual(denied.permissionDenials, { count: 2, tools: ['Bash', 'Edit'] })
+    assert.equal(denied.modelScope, 'session')
+    assert.equal(denied.substituted, false)
+    assert.equal(denied.servedModels, null)
+    assert.deepEqual(denied.sessionModels, ['bedrock.claude-sonnet-5', 'bedrock.claude-haiku-4-5'])
+    assert.equal('toolInput' in denied, false, 'a field not named in the event type is never copied')
+    assert.doesNotMatch(JSON.stringify(appended), /rm -rf build/)
+    assert.equal(swapped.modelRouted, 'sonnet')
+    assert.equal(swapped.modelScope, 'turns')
+    assert.equal(swapped.substituted, true)
+    assert.deepEqual(swapped.servedModels, ['claude-opus-5-5'])
+    assert.deepEqual(swapped.usage, {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cacheReadInputTokens: 9000,
+      cacheCreationInputTokens: { ephemeral_5m: 700, ephemeral_1h: 0 }
+    })
+    assert.equal(swapped.hostCostUsd, 0.0421)
+
+    // Carried to the close and printed on a halt; the receipt counts them.
+    const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'])
+    assert.equal(closed.code, 1)
+    for (const banner of expected) assert.ok(closed.step.summary.includes(banner), `the halt summary lost ${banner}`)
+    const receipt = receiptOf(root)
+    assert.deepEqual(
+      Object.fromEntries(OBSERVATION_COUNTS.map(k => [k, receipt[k]])),
+      {
+        lanesStoppedByHost: 1,
+        schemaResultsMissing: 1,
+        toolsDeniedInLanes: 1,
+        modelSubstitutions: 1,
+        permissionPrompts: 0,
+        autoModeDenials: 0
+      }
+    )
+
+    // The resume card lists each lane with a recorded session and how to fork it.
+    const card = readFileSync(join(root, '.claude', 'handoff', `ship-${change}-${runId}.md`), 'utf8')
+    assert.match(card, /claude --resume sess-lane-1-1 --fork-session/)
+    assert.match(card, /claude --resume sess-lane-1-2 --fork-session/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a runner batch with no host records raises nothing and its receipt counts stay absent', () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    step0(root, batch.then.argv, { results: batch.lanes.map(lane => laneResult(lane)) })
+    const manifest = manifestOf(root)
+    for (const prefix of ['LANE STOPPED BY HOST', 'SCHEMA RESULT MISSING', 'TOOLS DENIED IN LANE', 'MODEL SUBSTITUTED']) {
+      assert.ok(!anyStartsWith(manifest.banners, prefix), `${prefix} raised with no host record`)
+    }
+    assert.deepEqual(manifest.laneSessions, [])
+    assert.equal(eventsAt(root, manifest.runId).filter(e => e.type === 'agent-result').length, 0)
+
+    const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'])
+    assert.equal(closed.code, 1)
+    const receipt = receiptOf(root)
+    for (const key of OBSERVATION_COUNTS) assert.equal(receipt[key], null, `${key} is absent, not zero`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('on a host that declares cache accounting, a permission-only sidecar counts the prompt and joins no cache', () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    // The runner's own envelopes carried cache figures; the hooks recorded no agent.
+    const usage = { outputTokens: 10, cacheReadInputTokens: 900, cacheCreationInputTokens: { ephemeral_5m: 4, ephemeral_1h: 0 } }
+    step0(root, batch.then.argv, { results: batch.lanes.map(lane => laneResult(lane, usage)) })
+    const { runId } = manifestOf(root)
+    plantPermission(root, runId, 'request', 1, { tool: 'Write' })
+
+    const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'])
+    assert.equal(closed.code, 1)
+    assert.ok(closed.step.banners.includes('PERMISSION PROMPTS DURING RUN: 1'), JSON.stringify(closed.step.banners))
+    assert.match(closed.step.summary, /PERMISSION PROMPTS DURING RUN: 1/)
+    assert.doesNotMatch(closed.step.summary, /CACHE ACCOUNTING PARTIAL/, 'no runner spawn is "unrecorded" by a hook')
+    assert.doesNotMatch(closed.step.summary, /AGENT USAGE UNJOINED/)
+
+    const receipt = receiptOf(root)
+    assert.equal(receipt.permissionPrompts, 1)
+    assert.equal(receipt.autoModeDenials, 0)
+    assert.equal(receipt.host.cacheAccounting, true, 'the declared value stands, never hook')
+    assert.equal(manifestOf(root).host.cacheAccounting, true)
+    // The runner's own counted figures are not overwritten by an empty join.
+    assert.equal(receipt.spend[0].cacheReadInputTokens, 900 * batch.spawns.length)
+    assert.deepEqual(receipt.spend[0].cacheCreationInputTokens, { ephemeral_5m: 4 * batch.spawns.length, ephemeral_1h: 0 })
+    assert.equal(eventsAt(root, runId).filter(e => e.type === 'agent-result').length, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an agent-result the record path cannot append halts the batch before any tick', { skip: IS_ROOT && 'chmod does not bind root' }, () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    const { runId } = manifestOf(root)
+    const dir = join(root, '.claude', 'ship', 'runs')
+    const trajectory = join(dir, `${runId}.jsonl`)
+    chmodSync(trajectory, 0o444)
+    chmodSync(dir, 0o555)
+    let halted
+    try {
+      halted = step0(root, batch.then.argv, {
+        results: batch.lanes.map(lane => laneResult(lane)),
+        hostRecords: batch.spawns.map(s => hostRecord(s.label))
+      })
+    } finally {
+      chmodSync(dir, 0o755)
+      chmodSync(trajectory, 0o644)
+    }
+    assert.equal(halted.action, 'halt')
+    assert.match(halted.reason, /^trajectory append failed: agent-result: 1\.1: /)
+    assert.deepEqual(halted.then.argv, ['run', 'close', '--halt', halted.reason], 'a halt still closes')
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.doesNotMatch(tasks, /- \[x\]/, 'no task is ticked past an unrecorded agent-result')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a fallback that served one turn is bannered with every turn-scoped id, and casing is ignored', () => {
+  const { root, change } = repo('add-thing', { tasks: JOIN_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], JOIN_CLASSIFIED)
+    assert.deepEqual(batch.spawns.map(s => s.label), ['1.1', '1.2'])
+    step0(root, batch.then.argv, {
+      results: batch.lanes.map(lane => laneResult(lane)),
+      hostRecords: [
+        hostRecord('1.1', {
+          modelRouted: 'claude-sonnet-5-5',
+          servedModels: ['claude-sonnet-5-5-20261001', 'claude-sonnet-5']
+        }),
+        hostRecord('1.2', { modelRouted: 'Sonnet', servedModels: ['CLAUDE-SONNET-5-5'] })
+      ]
+    })
+    assert.deepEqual(
+      manifestOf(root).banners.filter(b => b.startsWith('MODEL SUBSTITUTED')),
+      ['MODEL SUBSTITUTED: 1.1 routed claude-sonnet-5-5, ran claude-sonnet-5-5-20261001, claude-sonnet-5']
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the model-substitution banner is byte-identical on the Workflow host and the runner', () => {
+  const wf = workflowThroughWaves()
+  let fromWorkflow
+  try {
+    plantJoined(wf, { models: (_, i) => (i === 0 ? ['claude-opus-5-5'] : ['claude-sonnet-5-5']) })
+    const closed = closeWorkflow(wf)
+    assert.equal(closed.code, 0)
+    fromWorkflow = closed.step.banners.filter(b => b.startsWith('MODEL SUBSTITUTED'))
+  } finally {
+    cleanup(wf.root)
+  }
+
+  const runner = repo('add-thing', { tasks: JOIN_TASKS })
+  let fromRunner
+  try {
+    const batch = startWithHost(runner.root, runner.change, 'claude', RUNNER_CAPS, [], JOIN_CLASSIFIED)
+    assert.deepEqual(batch.spawns.map(s => s.label), ['1.1', '1.2'])
+    step0(runner.root, batch.then.argv, {
+      results: batch.lanes.map(lane => laneResult(lane)),
+      hostRecords: [hostRecord('1.1', { servedModels: ['claude-opus-5-5'] }), hostRecord('1.2')]
+    })
+    fromRunner = manifestOf(runner.root).banners.filter(b => b.startsWith('MODEL SUBSTITUTED'))
+  } finally {
+    cleanup(runner.root)
+  }
+
+  assert.deepEqual(fromWorkflow, ['MODEL SUBSTITUTED: 1.1 routed sonnet, ran claude-opus-5-5'])
+  assert.deepEqual(fromRunner, fromWorkflow, 'one wording, whichever host observed the model')
+})
+
+// --- the state home (ship/state-home, ship/run-program) ----------------------
+
+/** git with no global or system config, and discovery fenced at the temp directory. */
+function gitFence() {
+  return { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: realpathSync(tmpdir()) }
+}
+
+function gitIn(cwd, args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...gitFence() } })
+  assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+
+/** The same ready change `repo()` writes, without the git around it. */
+function writeChange(root, name, tasks) {
+  const base = `openspec/changes/${name}`
+  file(root, `${base}/proposal.md`, '# Add thing\n\nWhy: because.\n')
+  file(root, `${base}/design.md`, '# Design\n\nD1: use the existing helper.\n')
+  file(root, `${base}/tasks.md`, tasks ?? '# Tasks\n\n- [ ] 1.1 Add the thing to docs/guide.md\n- [ ] 1.2 Note it in README.md\n')
+  file(root, 'README.md', 'hello\n')
+}
+
+/**
+ * A main checkout holding one ready change, and a real linked worktree of it
+ * where a Desktop worktree session lives (`<main>/.claude/worktrees/w1`). Both
+ * paths come back real, because that is what the resolver records. `env` is
+ * what every CLI call in these cases runs under: the fixture's git, fenced.
+ */
+function linkedWorktree(name = 'add-thing') {
+  const tmp = mkdtempSync(join(tmpdir(), 'interlock-wt-'))
+  const main = join(tmp, 'main')
+  mkdirSync(main)
+  writeChange(main, name)
+  gitIn(main, ['init', '-q', '-b', 'main'])
+  gitIn(main, ['config', 'user.email', 'test@example.com'])
+  gitIn(main, ['config', 'user.name', 'test'])
+  gitIn(main, ['add', '-A'])
+  gitIn(main, ['commit', '-qm', 'init'])
+  const worktree = join(main, '.claude', 'worktrees', 'w1')
+  gitIn(main, ['worktree', 'add', '-q', worktree, '-b', 'w1'])
+  return { tmp, main: realpathSync(main), worktree: realpathSync(worktree), change: name, env: gitFence() }
+}
+
+const PROFILE_PATH = join('.claude', 'testing', 'profile.json')
+const GRAPH_PATH = join('.claude', 'graph', 'graph.json')
+const NO_PROFILE_LINE = 'NO TEST PROFILE: run /interlock:fix-tests --reconfigure once'
+const NO_GRAPH_LINE = 'GRAPH UNAVAILABLE: never built — implementer and reviewer agents fall back to grep and will be slower'
+const INPUT_BANNERS = ['TEST PROFILE FROM MAIN CHECKOUT', 'GRAPH FROM MAIN CHECKOUT', 'NO TEST PROFILE', 'GRAPH UNAVAILABLE']
+
+/** A profile whose unit command names where it was read from. */
+const profileNaming = where => ({
+  version: 1,
+  unit: { command: `node --test test/${where}`, cwd: '.', single_file: 'node --test <path>' }
+})
+
+test('run start in a root holding a profile and a graph records both from the root and says nothing', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, profileNaming('root'))
+    file(root, GRAPH_PATH, { nodes: [], edges: [] })
+    const started = step0(root, ['run', 'start', '--change', change])
+    const real = realpathSync(root)
+    const manifest = manifestOf(root)
+    assert.equal(manifest.testProfilePath, join(real, PROFILE_PATH))
+    assert.equal(manifest.testProfileSource, 'root')
+    assert.equal(manifest.graphPath, join(real, GRAPH_PATH))
+    assert.equal(manifest.graphSource, 'root')
+    for (const prefix of INPUT_BANNERS) assert.ok(!anyStartsWith(started.banners, prefix), `${prefix} raised`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a worktree without a profile or a graph reads the main checkout\'s, says so, and verifies from it', () => {
+  const w = linkedWorktree()
+  try {
+    // Written after the worktree exists and never committed: what the
+    // gitignored `.claude/testing` and `.claude/graph` look like in a real one.
+    const profile = file(w.main, PROFILE_PATH, profileNaming('from-main-checkout'))
+    file(w.main, GRAPH_PATH, { nodes: [], edges: [] })
+    const profileBytes = readFileSync(profile, 'utf8')
+
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    assert.ok(
+      started.banners.includes(`TEST PROFILE FROM MAIN CHECKOUT: ${join(w.main, PROFILE_PATH)}`),
+      JSON.stringify(started.banners)
+    )
+    assert.ok(
+      started.banners.includes(
+        `GRAPH FROM MAIN CHECKOUT: ${join(w.main, GRAPH_PATH)} — it may be stale for this worktree; ` +
+          'a lane without a graph falls back to grep'
+      ),
+      JSON.stringify(started.banners)
+    )
+    assert.ok(!anyStartsWith(started.banners, 'NO TEST PROFILE'))
+    assert.ok(!anyStartsWith(started.banners, 'GRAPH UNAVAILABLE'))
+    const manifest = manifestOf(w.worktree)
+    assert.equal(manifest.testProfilePath, join(w.main, PROFILE_PATH))
+    assert.equal(manifest.testProfileSource, 'state-home')
+    assert.equal(manifest.graphPath, join(w.main, GRAPH_PATH))
+    assert.equal(manifest.graphSource, 'state-home')
+
+    // The verify step builds its plan from the recorded path.
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = step0(w.worktree, started.then.argv, { env: w.env })
+    const verify = step0(w.worktree, batch.then.argv, {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+      env: w.env
+    })
+    assert.equal(verify.action, 'verify-final')
+    assert.equal(verify.skipped, false, 'the main checkout\'s profile names a unit command')
+    assert.match(readFileSync(join(w.worktree, '.claude/ship/vplan-final.json'), 'utf8'), /test\/from-main-checkout/)
+
+    // Read through, never copied, never rewritten.
+    assert.equal(readFileSync(profile, 'utf8'), profileBytes)
+    assert.equal(existsSync(join(w.worktree, PROFILE_PATH)), false)
+    assert.equal(existsSync(join(w.worktree, '.claude', 'graph')), false)
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('with no profile and no graph anywhere, run start raises both missing-input lines itself', () => {
+  const w = linkedWorktree()
+  try {
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    assert.ok(started.banners.includes(NO_PROFILE_LINE), JSON.stringify(started.banners))
+    assert.ok(started.banners.includes(NO_GRAPH_LINE), JSON.stringify(started.banners))
+    assert.ok(!anyStartsWith(started.banners, 'TEST PROFILE FROM MAIN CHECKOUT'))
+    assert.ok(!anyStartsWith(started.banners, 'GRAPH FROM MAIN CHECKOUT'))
+    const manifest = manifestOf(w.worktree)
+    assert.equal(manifest.testProfilePath, null)
+    assert.equal(manifest.testProfileSource, 'none')
+    assert.equal(manifest.graphPath, null)
+    assert.equal(manifest.graphSource, 'none')
+    assert.equal(existsSync(join(w.main, '.claude', 'testing')), false, 'nothing is written into the main checkout')
+    assert.equal(existsSync(join(w.main, '.claude', 'graph')), false)
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('a worktree with its own profile and graph uses them over the main checkout\'s', () => {
+  const w = linkedWorktree()
+  try {
+    file(w.main, PROFILE_PATH, profileNaming('older-main'))
+    file(w.main, GRAPH_PATH, { nodes: [], edges: [] })
+    file(w.worktree, PROFILE_PATH, profileNaming('own'))
+    file(w.worktree, GRAPH_PATH, { nodes: [], edges: [] })
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    for (const prefix of INPUT_BANNERS) assert.ok(!anyStartsWith(started.banners, prefix), `${prefix} raised`)
+    const manifest = manifestOf(w.worktree)
+    assert.equal(manifest.testProfilePath, join(w.worktree, PROFILE_PATH))
+    assert.equal(manifest.testProfileSource, 'root')
+    assert.equal(manifest.graphPath, join(w.worktree, GRAPH_PATH))
+    assert.equal(manifest.graphSource, 'root')
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('a linked-worktree run writes its corpora to the main checkout and keeps its working state in the worktree', () => {
+  const w = linkedWorktree()
+  try {
+    const { env } = w
+    // Strict, so the run writes review metrics as well as a trajectory, an
+    // outcome line and — on the halt — a resume card.
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change, '--strict'], { env })
+    assert.ok(
+      anyStartsWith(started.banners, 'NO TEST PROFILE'),
+      'the start step is ordinary apart from where its records go'
+    )
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = step0(w.worktree, started.then.argv, { env })
+    writeFileSync(join(w.worktree, 'README.md'), 'hello\nand the thing\n')
+    const review = step0(w.worktree, batch.then.argv, {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+      env
+    })
+    assert.equal(review.action, 'review')
+    writeReview(w.worktree, {})
+    step0(w.worktree, review.then.argv, { results: [{ ok: true }], env })
+
+    // The stage marker an agent publishes from its own working directory.
+    writeStage(w.change, 'review', { root: w.worktree })
+    assert.ok(existsSync(stagePath(w.change, w.worktree)))
+
+    const manifest = manifestOf(w.worktree)
+    const { runId } = manifest
+    assert.equal(manifest.surface, 'linked-worktree')
+    assert.equal(manifest.stateHome, w.main)
+    const corporaNote = manifest.notes.find(n => n.startsWith(`CORPORA IN MAIN CHECKOUT: ${w.main}`))
+    assert.ok(corporaNote, JSON.stringify(manifest.notes))
+
+    const closed = cli(w.worktree, ['run', 'close', '--halt', 'stopped for the test'], { env })
+    assert.equal(closed.code, 1)
+
+    // Corpora: under the main checkout, and not under the worktree.
+    const at = (root, ...parts) => join(root, '.claude', ...parts)
+    assert.ok(existsSync(at(w.main, 'ship', 'runs', `${runId}.jsonl`)), 'the trajectory is in the main checkout')
+    const outcomes = readFileSync(at(w.main, 'learning', 'outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+    assert.ok(outcomes.some(line => JSON.parse(line).change === w.change), 'and the outcome line')
+    assert.ok(
+      readdirSync(at(w.main, 'metrics')).some(n => n.startsWith(`review-${w.change}-`)),
+      'and the review metrics'
+    )
+    assert.ok(existsSync(at(w.main, 'handoff', `ship-${w.change}-${runId}.md`)), 'and the resume card')
+    for (const corpus of [['ship', 'runs'], ['learning'], ['metrics'], ['handoff']]) {
+      assert.equal(existsSync(at(w.worktree, ...corpus)), false, `.claude/${corpus.join('/')} was written in the worktree`)
+    }
+
+    // Working state: in the worktree, and not in the main checkout.
+    for (const name of ['run.json', 'state.json']) {
+      assert.ok(existsSync(at(w.worktree, 'ship', name)), `${name} is not in the worktree`)
+      assert.equal(existsSync(at(w.main, 'ship', name)), false, `${name} leaked into the main checkout`)
+    }
+    assert.equal(existsSync(stagePath(w.change, w.worktree)), false, 'the close cleared the worktree\'s own marker')
+    assert.equal(existsSync(stagePath(w.change, w.main)), false)
+
+    // Recorded on the manifest, the opening event and the receipt.
+    const start = eventsAt(w.main, runId).find(e => e.type === 'run-start')
+    assert.equal(start.surface, 'linked-worktree')
+    assert.equal(start.stateHome, w.main)
+    assert.equal(start.cwd, w.worktree)
+    const receipt = receiptAt(w.main, runId)
+    assert.equal(receipt.surface, 'linked-worktree')
+    assert.equal(receipt.stateHome, w.main)
+
+    // The summary names both directories, the home directly under cwd.
+    const lines = closed.step.summary.split('\n')
+    const cwdRow = lines.indexOf(`  cwd: ${w.worktree}`)
+    assert.ok(cwdRow >= 0, closed.step.summary)
+    assert.equal(lines[cwdRow + 1], `  state home: ${w.main}`)
+    assert.ok(closed.step.summary.includes(corporaNote), 'the corpora note is among the summary\'s notes')
+    assert.match(closed.step.summary, new RegExp(`resume card: \\.claude/handoff/ship-${w.change}-${runId}\\.md`))
+
+    // The card names the home beside the directory the close ran in, and a run
+    // with no runner lanes says it has no session to resume.
+    const card = readFileSync(at(w.main, 'handoff', `ship-${w.change}-${runId}.md`), 'utf8')
+    assert.ok(card.includes(w.main), 'the card names the state home')
+    assert.ok(card.includes(w.worktree), 'and the directory the close ran in')
+    assert.match(card, /No lane recorded a host session/)
+    assert.doesNotMatch(card, /--fork-session/)
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('two worktree runs of one repository share only the main checkout\'s append-only corpora', () => {
+  const w = linkedWorktree()
+  try {
+    const second = join(w.main, '.claude', 'worktrees', 'w2')
+    gitIn(w.main, ['worktree', 'add', '-q', second, '-b', 'w2'])
+    const w2 = realpathSync(second)
+    const runIds = []
+    for (const root of [w.worktree, w2]) {
+      file(root, '.claude/ship/classified.json', CLASSIFIED)
+      const started = step0(root, ['run', 'start', '--change', w.change], { env: w.env })
+      const batch = step0(root, started.then.argv, { env: w.env })
+      step0(root, batch.then.argv, {
+        results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+        env: w.env
+      })
+      assert.equal(cli(root, ['run', 'close', '--halt', 'stopped for the test'], { env: w.env }).code, 1)
+      runIds.push(manifestOf(root).runId)
+    }
+    assert.notEqual(runIds[0], runIds[1], 'each worktree holds its own manifest')
+    for (const runId of runIds) assert.ok(eventsAt(w.main, runId).some(e => e.type === 'run-halt'))
+    const outcomes = readFileSync(join(w.main, '.claude', 'learning', 'outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+    assert.equal(outcomes.length, 2, 'one intact line per run')
+    for (const line of outcomes) assert.equal(JSON.parse(line).change, w.change)
+    assert.equal(existsSync(join(w.main, '.claude', 'ship', 'run.json')), false)
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('a main-checkout run prints no state home row and writes where it always wrote', () => {
+  const { root, change } = repo()
+  try {
+    const real = realpathSync(root)
+    const batch = toFirstBatch(root, change)
+    run(root, [...batch.then.argv], { results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))) })
+    const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'])
+    assert.equal(closed.code, 1)
+
+    const manifest = manifestOf(root)
+    assert.equal(manifest.surface, 'main')
+    assert.equal(manifest.stateHome, real)
+    assert.doesNotMatch(closed.step.summary, /state home:/)
+    for (const said of ['CORPORA IN', 'STATE HOME UNRESOLVED', 'TEST PROFILE FROM MAIN CHECKOUT', 'GRAPH FROM MAIN CHECKOUT']) {
+      assert.ok(!closed.step.summary.includes(said), `a main-checkout run said ${said}`)
+    }
+    assert.ok(existsSync(join(root, '.claude', 'ship', 'runs', `${manifest.runId}.jsonl`)))
+    assert.ok(existsSync(join(root, '.claude', 'learning', 'outcomes.jsonl')))
+    assert.ok(existsSync(join(root, '.claude', 'handoff', `ship-${change}-${manifest.runId}.md`)))
+    const start = runStartEvent(root)
+    assert.deepEqual([start.surface, start.stateHome, start.cwd], ['main', real, real])
+    const receipt = receiptOf(root)
+    assert.deepEqual([receipt.surface, receipt.stateHome], ['main', real])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an explicit state home, by flag or by environment, receives every append of the run', () => {
+  for (const via of ['flag', 'env']) {
+    const { root, change } = repo()
+    const home = mkdtempSync(join(tmpdir(), 'interlock-home-'))
+    try {
+      const realHome = realpathSync(home)
+      const started = step0(
+        root,
+        ['run', 'start', '--change', change, ...(via === 'flag' ? ['--state-home', home] : [])],
+        { env: via === 'env' ? { INTERLOCK_STATE_HOME: home } : {} }
+      )
+      const manifest = manifestOf(root)
+      assert.equal(manifest.stateHome, realHome, via)
+      assert.equal(manifest.surface, 'main', 'the surface still describes the root')
+      assert.ok(anyStartsWith(manifest.notes, `CORPORA IN STATE HOME: ${realHome}`), JSON.stringify(manifest.notes))
+
+      // Every later subcommand without the flag or the variable: the manifest decides.
+      file(root, '.claude/ship/classified.json', CLASSIFIED)
+      const batch = step0(root, started.then.argv)
+      step0(root, batch.then.argv, { results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))) })
+      const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'])
+      assert.equal(closed.code, 1)
+
+      const { runId } = manifestOf(root)
+      assert.ok(runId, 'the plan was adopted, so the run has an id')
+      const types = eventsAt(realHome, runId).map(e => e.type)
+      for (const type of ['run-start', 'wave-action', 'agent-spawn', 'run-receipt', 'run-halt']) {
+        assert.ok(types.includes(type), `${via}: ${type} did not land in the explicit home`)
+      }
+      assert.equal(existsSync(join(root, '.claude', 'ship', 'runs')), false, `${via}: an append landed in the root`)
+      assert.ok(existsSync(join(realHome, '.claude', 'learning', 'outcomes.jsonl')))
+      assert.equal(existsSync(join(root, '.claude', 'learning')), false)
+      assert.ok(existsSync(join(realHome, '.claude', 'handoff', `ship-${change}-${runId}.md`)))
+      assert.ok(closed.step.summary.includes(`  state home: ${realHome}`))
+    } finally {
+      cleanup(root)
+      cleanup(home)
+    }
+  }
+})
+
+test('a manifest without a recorded home appends under the working root, as before', () => {
+  const w = linkedWorktree()
+  try {
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    const batch = step0(w.worktree, started.then.argv, { env: w.env })
+    const { runId } = manifestOf(w.worktree)
+    const inHome = eventsAt(w.main, runId).length
+
+    // A manifest as the previous version wrote it.
+    const manifest = manifestOf(w.worktree)
+    for (const key of ['stateHome', 'surface', 'stateHomeReason', 'stateHomeFrom']) delete manifest[key]
+    file(w.worktree, '.claude/ship/run.json', manifest)
+
+    step0(w.worktree, batch.then.argv, {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+      env: w.env
+    })
+    assert.ok(eventsAt(w.worktree, runId).some(e => e.type === 'wave-action'), 'the append went under the root')
+    assert.equal(eventsAt(w.main, runId).length, inHome, 'and nothing more under the main checkout')
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('a root git cannot read banners STATE HOME UNRESOLVED and records surface unknown', () => {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-nogit-'))
+  try {
+    writeChange(root, 'add-thing')
+    const env = gitFence()
+    const real = realpathSync(root)
+    const started = step0(root, ['run', 'start', '--change', 'add-thing'], { env })
+    const unresolved = started.banners.find(b => b.startsWith('STATE HOME UNRESOLVED: '))
+    assert.ok(unresolved && unresolved.length > 'STATE HOME UNRESOLVED: '.length, JSON.stringify(started.banners))
+    const manifest = manifestOf(root)
+    assert.equal(manifest.surface, 'unknown')
+    assert.equal(manifest.stateHome, real)
+    assert.ok(manifest.stateHomeReason)
+
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    step0(root, started.then.argv, { env })
+    const start = runStartEvent(root)
+    assert.deepEqual([start.surface, start.stateHome, start.cwd], ['unknown', real, real])
+
+    const closed = cli(root, ['run', 'close', '--halt', 'stopped for the test'], { env })
+    assert.equal(closed.code, 1)
+    const receipt = receiptOf(root)
+    assert.deepEqual([receipt.surface, receipt.stateHome], ['unknown', real])
+    assert.ok(closed.step.banners.includes(unresolved), 'the fallback is among the degradations')
+    assert.doesNotMatch(closed.step.summary, /state home:/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run subcommand in a worktree with no manifest names the main checkout\'s, and only when one exists', () => {
+  const w = linkedWorktree()
+  const bare = mkdtempSync(join(tmpdir(), 'interlock-nogit-'))
+  try {
+    step0(w.main, ['run', 'start', '--change', w.change], { env: w.env })
+    const here = join(w.worktree, '.claude', 'ship', 'run.json')
+    const there = join(w.main, '.claude', 'ship', 'run.json')
+
+    const moved = step0(w.worktree, ['run', 'record-batch'], { results: [], env: w.env })
+    assert.equal(moved.action, 'halt')
+    assert.equal(
+      moved.reason,
+      `no run manifest at ${here} — one exists at ${there}; if this session moved into a worktree after ` +
+        'run start, the run continues from there'
+    )
+
+    // The close with no manifest says where a record would have gone.
+    const closed = cli(w.worktree, ['run', 'close', '--halt', 'no manifest here'], { env: w.env })
+    assert.equal(closed.code, 1)
+    const lines = closed.step.summary.split('\n')
+    const cwdRow = lines.indexOf(`  cwd: ${w.worktree}`)
+    assert.ok(cwdRow >= 0, closed.step.summary)
+    assert.equal(lines[cwdRow + 1], `  state home: ${w.main}`)
+    assert.ok(closed.step.summary.includes(there))
+
+    // No manifest anywhere: today's message, the root's path alone.
+    rmSync(there)
+    const nowhere = step0(w.worktree, ['run', 'record-batch'], { results: [], env: w.env })
+    assert.equal(nowhere.action, 'halt')
+    assert.match(nowhere.reason, /^no run manifest at \.claude\/ship\/run\.json — /)
+    assert.ok(!nowhere.reason.includes(w.main))
+
+    // A home that cannot be resolved: the same.
+    writeChange(bare, 'add-thing')
+    const unresolved = step0(bare, ['run', 'record-batch'], { results: [], env: gitFence() })
+    assert.equal(unresolved.action, 'halt')
+    assert.match(unresolved.reason, /^no run manifest at \.claude\/ship\/run\.json — /)
+  } finally {
+    cleanup(w.tmp)
+    cleanup(bare)
+  }
+})
+
+test('a read-only runs directory in the main checkout halts the worktree run\'s record path', { skip: IS_ROOT && 'chmod does not bind root' }, () => {
+  const w = linkedWorktree()
+  try {
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
+    const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    const batch = step0(w.worktree, started.then.argv, { env: w.env })
+    const { runId } = manifestOf(w.worktree)
+    const dir = join(w.main, '.claude', 'ship', 'runs')
+    const trajectory = join(dir, `${runId}.jsonl`)
+    chmodSync(trajectory, 0o444)
+    chmodSync(dir, 0o555)
+    let halted
+    try {
+      halted = step0(w.worktree, batch.then.argv, {
+        results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+        env: w.env
+      })
+    } finally {
+      chmodSync(dir, 0o755)
+      chmodSync(trajectory, 0o644)
+    }
+    assert.equal(halted.action, 'halt')
+    assert.match(halted.reason, /^trajectory append failed: /)
+    const tasks = readFileSync(join(w.worktree, `openspec/changes/${w.change}/tasks.md`), 'utf8')
+    assert.doesNotMatch(tasks, /- \[x\]/, 'nothing is ticked on a run nobody can reconstruct')
+    assert.equal(existsSync(join(w.worktree, '.claude', 'ship', 'runs')), false, 'and it did not fall back to the root')
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('a learning directory the main checkout cannot create only reports, and the close exits 0', () => {
+  const w = linkedWorktree()
+  try {
+    // A file where the directory must go: the mkdir fails whatever the uid.
+    writeFileSync(join(w.main, '.claude', 'learning'), 'not a directory\n')
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
+    let step = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    step = step0(w.worktree, step.then.argv, { env: w.env })
+    step = step0(w.worktree, step.then.argv, {
+      results: step.spawns.map((_, i) => laneOk(step.lanes[i].map(t => t.id))),
+      env: w.env
+    })
+    assert.equal(step.action, 'verify-final')
+    step = step0(w.worktree, step.then.argv, { env: w.env })
+    assert.equal(step.action, 'commit')
+    const closed = cli(w.worktree, step.then.argv, { results: [{ ok: true, sha: 'abc1234' }], env: w.env })
+    assert.equal(closed.code, 0, `losing the outcome line must not fail the run\n${closed.stderr}`)
+    assert.equal(closed.step.action, 'complete')
+    assert.match(closed.stderr, /outcome not recorded/)
+    const { runId } = manifestOf(w.worktree)
+    assert.ok(eventsAt(w.main, runId).some(e => e.type === 'run-complete'), 'the trajectory is untouched by it')
+  } finally {
+    cleanup(w.tmp)
+  }
+})
+
+test('six processes appending outcome lines into one home at once leave every line intact', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-home-'))
+  try {
+    const WORKERS = 6
+    const PER = 40
+    const url = pathToFileURL(join(ROOT, 'lib', 'outcomes.mjs')).href
+    // Every worker spins to one shared instant, so the appends overlap rather
+    // than queue behind each process's start-up.
+    const startAt = Date.now() + 750
+    const script =
+      `import { appendOutcome } from ${JSON.stringify(url)}\n` +
+      'const [home, worker, per, at] = process.argv.slice(1)\n' +
+      'while (Date.now() < Number(at)) {}\n' +
+      'let failed = 0\n' +
+      'for (let i = 0; i < Number(per); i++) {\n' +
+      "  if (!appendOutcome(home, { change: `w${worker}-${i}`, mode: 'checkpoint' }).written) failed++\n" +
+      '}\n' +
+      'process.exit(failed ? 1 : 0)\n'
+    const exits = await Promise.all(
+      Array.from({ length: WORKERS }, (_, k) =>
+        new Promise((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            ['--input-type=module', '-e', script, home, String(k), String(PER), String(startAt)],
+            { stdio: ['ignore', 'ignore', 'pipe'] }
+          )
+          let stderr = ''
+          child.stderr.on('data', chunk => (stderr += chunk))
+          child.on('error', reject)
+          child.on('exit', code => resolve({ code, stderr }))
+        })
+      )
+    )
+    for (const { code, stderr } of exits) assert.equal(code, 0, stderr)
+
+    const text = readFileSync(join(home, '.claude', 'learning', 'outcomes.jsonl'), 'utf8')
+    assert.ok(text.endsWith('\n'), 'no torn final line')
+    const lines = text.split('\n').filter(Boolean)
+    assert.equal(lines.length, WORKERS * PER)
+    const changes = new Set(lines.map(line => JSON.parse(line).change))
+    for (let k = 0; k < WORKERS; k++) {
+      for (let i = 0; i < PER; i++) assert.ok(changes.has(`w${k}-${i}`), `w${k}-${i} is missing`)
+    }
+  } finally {
+    cleanup(home)
+  }
+})
+
+// Written verbatim as the trajectory writer wrote it before `agent-result`,
+// `surface`, `stateHome`, `cwd` and the six counts existed — the fixture
+// `test/spine/run-log.test.mjs` pins in full. This is the binary's view of it.
+const PRE_CHANGE_TRAJECTORY = [
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:00.000Z","runId":"run-pre","change":"add-widget","seq":1,"type":"run-start","mode":"continue","strict":false,"sessionId":"sess-1"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:01.000Z","runId":"run-pre","change":"add-widget","seq":2,"type":"wave-action","action":"run-batch","wave":"1","waveIndex":0,"batchIndex":0,"phase":"implement","source":"next"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:02.000Z","runId":"run-pre","change":"add-widget","seq":3,"type":"cli-exit","command":"wave-state next","exitCode":0,"durationMs":3}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:03.000Z","runId":"run-pre","change":"add-widget","seq":4,"type":"agent-spawn","label":"1.1","model":"sonnet","kind":"implementer","taskId":"1.1"}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:04.000Z","runId":"run-pre","change":"add-widget","seq":5,"type":"verify-judgement","context":"final","halt":false,"reason":"green","unitStatus":"green","spill":[]}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:05.000Z","runId":"run-pre","change":"add-widget","seq":6,"type":"cli-exit","command":"verify judge","exitCode":0,"durationMs":null}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:06.000Z","runId":"run-pre","change":"add-widget","seq":7,"type":"run-receipt","host":{"id":"claude","billing":"x","hooks":true,"usage":true,"cacheAccounting":false,"effort":"flag"},"waves":[{"wave":"1","ok":1,"failed":0,"notAttempted":0}],"planReused":null,"planStatus":null,"planReason":null,"planFingerprint":null,"reviewRaised":null,"reviewSurviving":null,"reviewBlockers":null,"reviewWarnings":null,"remediationRounds":null,"skippedVerifications":null,"capExhaustedVerifications":null,"unresolvedErrors":null,"leftoverTaskIds":[],"spend":[{"wave":"1","outputTokens":10,"cacheReadInputTokens":null,"cacheCreationInputTokens":null}],"outputTokens":12,"cacheReadInputTokens":null,"cacheCreationInputTokens":null,"halted":false,"haltReason":null,"committed":true,"commit":"abc1234","touchedPaths":["a.mjs"],"touchedPathsTruncated":false,"touchedPathsReason":null,"predictedPaths":["a.mjs"],"predictedPathsTruncated":false,"predictedPathsComplete":true,"predictedPathsReason":null,"degradations":[]}',
+  '{"schema":"interlock.ship-run/1","ts":"2026-09-01T10:00:07.000Z","runId":"run-pre","change":"add-widget","seq":8,"type":"run-complete","leftoverTaskIds":[]}'
+]
+
+test('a pre-change trajectory still lists, checks and renders through the binary', () => {
+  const { root } = repo()
+  try {
+    file(root, '.claude/ship/runs/run-pre.jsonl', PRE_CHANGE_TRAJECTORY.join('\n') + '\n')
+    const check = cli(root, ['run-log', 'check', '--run-id', 'run-pre'])
+    assert.equal(check.code, 0)
+    assert.deepEqual(check.step, { ok: true, runId: 'run-pre', problems: [], events: 8 })
+
+    const list = cli(root, ['run-log', 'list'], { json: false })
+    assert.equal(list.code, 0)
+    assert.equal(list.stdout, 'run-pre\tchange=add-widget\tcomplete\tcommit=abc1234\tevents=8\n')
+
+    const show = cli(root, ['run-log', 'show', 'run-pre'], { json: false })
+    assert.equal(show.code, 0)
+    assert.match(show.stdout, /^RUN LOG — 8 event\(s\)\n/)
+    assert.match(show.stdout, /#1\trun-start\tmode="continue" strict=false sessionId="sess-1"\n/)
+    assert.doesNotMatch(show.stdout, /agent-result|surface|stateHome|cwd=/, 'no absent field is rendered as if recorded')
+  } finally {
+    cleanup(root)
+  }
 })

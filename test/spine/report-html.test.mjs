@@ -292,3 +292,67 @@ test('the HTML coverage renders runs without a terminal event, split interrupted
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- the state home, the surface partition and the unread worktrees (design D17) ---
+
+/** A computed report object, built from an empty root and then given the fields under test. */
+function reportWith(fields) {
+  return withRoot(emptyRoot, dir => {
+    const report = buildReport(dir, { env: {} })
+    return {
+      ...report,
+      ...fields.top,
+      coverage: { ...report.coverage, ...fields.coverage }
+    }
+  })
+}
+
+test('the home, the surface, the partition and the unread count render from the object', () => {
+  const doc = renderReportHtml(
+    reportWith({
+      top: { stateHome: { home: '/r/main', surface: 'linked-worktree', reason: null, resolvedFrom: 'git' } },
+      coverage: {
+        surfaces: { main: 3, linkedWorktree: 2, laneWorktree: 0, unknown: 1, unrecorded: 4 },
+        unreadInLinkedWorktrees: { worktrees: 2, runs: 7, reason: null, unscannable: [] }
+      }
+    })
+  )
+  assert.ok(doc.includes('<span class="k">STATE HOME</span><span>/r/main</span>'))
+  assert.ok(doc.includes('<span class="k">SURFACE</span><span>linked-worktree</span>'))
+  const block = doc.match(/<dl class="facets surfaces">([\s\S]*?)<\/dl>/)
+  assert.ok(block, 'the partition renders')
+  for (const [label, n] of [['main', 3], ['linked-worktree', 2], ['lane-worktree', 0], ['unknown', 1], ['unrecorded', 4]]) {
+    assert.ok(block[1].includes(`<dt>${label}</dt><dd class="num">${n}</dd>`), `${label} ${n}`)
+  }
+  assert.match(doc, /<span class="num">7<\/span> file\(s\) across <span class="num">2<\/span> worktree\(s\)/)
+  assert.doesNotMatch(doc, /STATE HOME UNRESOLVED/)
+  // Coverage still precedes the indicators.
+  assert.ok(doc.indexOf('Trajectories in other linked worktrees') < doc.indexOf('<h2>Indicators</h2>'))
+})
+
+test('an unresolved home and an uncountable scan are stated with their reasons, and paths render inert', () => {
+  const nasty = '/tmp/<b>home</b>&"\''
+  const doc = renderReportHtml(
+    reportWith({
+      top: { stateHome: { home: nasty, surface: 'unknown', reason: `git failed in ${nasty}`, resolvedFrom: 'fallback' } },
+      coverage: {
+        unreadInLinkedWorktrees: { worktrees: null, runs: null, reason: `git worktree list failed in ${nasty}` }
+      }
+    })
+  )
+  assert.ok(doc.includes('STATE HOME UNRESOLVED'))
+  assert.ok(doc.includes('every corpus was read from the root'))
+  assert.match(doc, /NOT COUNTED/)
+  assert.ok(doc.includes('could not be counted: git worktree list failed in /tmp/&lt;b&gt;home&lt;/b&gt;&amp;&quot;&#39;'))
+  assert.doesNotMatch(doc, /<b>home<\/b>/, 'a path is text, never markup')
+})
+
+test('a report object from before the state home existed still renders, and says what it lacks', () => {
+  const report = reportWith({})
+  delete report.stateHome
+  delete report.coverage.surfaces
+  delete report.coverage.unreadInLinkedWorktrees
+  const doc = renderReportHtml(report)
+  assert.ok(doc.includes('<span class="k">STATE HOME</span><span>unstated</span>'))
+  assert.match(doc, /Coverage — what the corpora can and cannot answer/)
+})

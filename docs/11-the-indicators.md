@@ -56,6 +56,46 @@ reason and never raises. A record is attributed to the change the caller named
 and to no other — a missing name writes nothing rather than guessing one from
 the findings file's path.
 
+## Where they live
+
+Every corpus above is written to, and read from, the **state home**. In a main
+checkout that is the checkout itself, and nothing in this section changes
+anything. In a linked worktree — `claude --worktree`, a Desktop worktree
+session, anything `git worktree add` made — it is the main checkout, read from
+git's common directory. A worktree is deleted with its session, so corpora
+written inside it would go with it, and this command run from the main checkout
+would never have seen them.
+
+The split is by kind. Append-only records about runs go to the state home;
+per-run working state stays with the run:
+
+| files | lives in | what it is |
+|---|---|---|
+| `.claude/ship/runs/` | state home | trajectories — fatal-class |
+| `.claude/learning/outcomes.jsonl`, `.claude/metrics/` | state home | outcome records and review metrics — outcome-class |
+| `.claude/handoff/`, `.claude/ship/interrupted/`, `.claude/autonomy.json` | state home | resume cards, interrupted-run notes, the autonomy ledger — outcome-class |
+| `.claude/ship/run.json`, the wave state, briefings, `.claude/ship/spill/`, the stage marker, the launch ledger, `.claude/ship/agent-usage/` | working root | per-run working state, read back by the same run in the same tree |
+| `.claude/testing/profile.json`, `.claude/graph/` | working root first, then the state home | inputs, read through and never copied |
+
+Each corpus keeps its loss semantics wherever it lands: a trajectory append that
+fails in the main checkout still exits 1, and an outcome or metrics write that
+fails there is still only reported. The spill a trajectory line points at stays
+with the run, in the worktree, and the `run-start` event records that worktree
+as `cwd` so a reader in the main checkout can find it.
+
+`interlock run start` resolves the home once and records it, with the run's
+**surface** — `main`, `linked-worktree`, `lane-worktree` (one of Interlock's own
+lane worktrees, which is always its own home) or `unknown` — on the run
+manifest, the `run-start` event and the receipt. Every later step of that run
+uses the recorded home. A command with no run of its own, this one included,
+takes `--state-home <dir>`, else `INTERLOCK_STATE_HOME`, else the home the run
+manifest at its root recorded, else asks git
+([07](07-cli-and-configuration.md#where-a-runs-records-go-the-state-home)). When
+git cannot answer, the home is the root and the output says
+`STATE HOME UNRESOLVED`. The outcome-eval history under `evals/history/` is the
+one exception this command makes: it is a committed file in the working tree
+rather than a corpus a run appends to, so it is read from the root.
+
 ## Whether to keep them
 
 The three corpora above are runtime state, and whether they belong in git depends
@@ -100,7 +140,12 @@ a person to read once, in this checkout, and nothing reads either back. A halt
 card also carries the absolute `cwd` the close ran in, so committing one leaks a
 local path into a shared history for no gain.
 
-Two caveats worth knowing before choosing the commit side.
+Three caveats worth knowing before choosing the commit side.
+
+**A run shipped from a linked worktree records into the main checkout.** Its
+trajectory, outcome line and metrics land in the main checkout's working tree,
+not on the worktree's branch, so on the commit side they are committed from
+there rather than riding along with the change they describe.
 
 **`outcomes.jsonl` is a single append-only file, and therefore a merge-conflict
 site.** Two branches that each ship a change both append to the same file at the
@@ -144,6 +189,35 @@ trajectories is counted on its own line rather than joined to nothing, and a
 note that cannot be read is named. The JSON carries the same fields as
 `coverage.trajectories.withoutTerminal`,
 `interruptedNotesWithoutTrajectory` and `interruptedNotesUnreadable`.
+
+Coverage also says where the runs it read came from, and what it did not read.
+The report's first lines name the [state home](#where-they-live) every corpus
+was read from and the surface of the directory the command ran in. Then each
+scanned run is counted under the surface its own `run-start` recorded — where
+the run ran, which has nothing to do with the [three renderings](#three-surfaces-one-object)
+below. A trajectory written before the field existed is `unrecorded`, never
+guessed:
+
+```
+    surfaces        main 9, linked-worktree 3, lane-worktree 0, unknown 0, unrecorded 2 — over 14 scanned, as each run-start recorded it
+```
+
+And it counts the trajectories still sitting in the repository's **other linked
+worktrees**: every run recorded in a worktree before corpora moved to the state
+home, in a worktree that still exists. `git worktree list` names the worktrees,
+and each one's run-log directory is listed by name, never opened. They are
+counted, and no figure on this page includes them:
+
+```
+    trajectories recorded in other linked worktrees and not read: 5 across 2 worktrees — counted, never opened, in no figure below
+```
+
+When git cannot list the worktrees, or the home is not a repository, the line
+says the trajectories `could not be counted` and gives the reason — never a
+zero, because a scan that was not made did not find nothing. Nothing migrates
+those files; the count is how they stay spoken about. The JSON carries
+`stateHome`, `coverage.surfaces` and `coverage.unreadInLinkedWorktrees`, and the
+HTML renders the same fields.
 
 This is not preamble. `withReceipt` is the denominator behind every
 receipt-derived indicator below, so when it reads 0 the correct finding is *the

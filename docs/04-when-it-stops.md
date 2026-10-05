@@ -20,7 +20,7 @@ None of those are judgement calls, and none of them need a run to discover:
 interlock doctor
 ```
 
-It checks the Node version against both floors that apply (Interlock's, and the OpenSpec CLI's higher one), the installed plugin's workflow and agent types, `interlock` / `interlock-graph` / `openspec` / `git` on PATH, whether this project is an OpenSpec project and a git work tree, `.claude/testing/profile.json`, the permission allowlist, and whether every run-state directory can be written.
+It checks the Node version against both floors that apply (Interlock's, and the OpenSpec CLI's higher one), the installed plugin's workflow and agent types, `interlock` / `interlock-graph` / `openspec` / `git` on PATH, whether this project is an OpenSpec project and a git work tree, `.claude/testing/profile.json`, the permission allowlist, and whether every run-state directory can be written — each one where it lives, so from a linked worktree the trajectory directory is probed in the main checkout ([`CORPORA IN MAIN CHECKOUT`](#corpora-in-main-checkout-and-corpora-in-state-home)).
 
 Two things about the allowlist check are worth knowing, because they are where a preflight normally lies to you. It derives the commands it requires rather than hardcoding them — the four the flow always shells out to, plus whatever your own test profile says this project runs — so a repo whose suite is `pnpm vitest run` is checked for `pnpm vitest run`. And a rule that exists but is *narrower* than the command it would have to permit (`Bash(interlock waves:*)` where the loop calls thirty subcommands) is reported as narrower, never counted as coverage.
 
@@ -37,7 +37,7 @@ It exits 1 when something would stop an unattended run, prints the settings snip
 | Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
 | Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
-| A trajectory line could not be written mid-run | A `run` step tried to append to `.claude/ship/runs/<runId>.jsonl` and the write did not land, so it halts **before** ticking any task and before the commit. The reason reads `trajectory append failed: <site>: <cause>`, where the site is the step that owed the line — `run-start`, `wave-state create`, `wave-state record-batch`, `wave-state record-verify`, `wave-state replan`, `agent-spawn` or `cli-exit`. | Read the cause in the halt reason; it is the filesystem's own, usually a full disk or a `.claude/ship/runs` nothing can write to. Fix that and re-run. Nothing was ticked and nothing was committed, so the re-run starts from a truthful `tasks.md`. This is new: the live run path used to warn and continue, which produced exactly the artifact the trajectory exists to prevent — a run that ticked boxes, committed, and cannot be replayed. |
+| A trajectory line could not be written mid-run | A `run` step tried to append to `.claude/ship/runs/<runId>.jsonl` and the write did not land, so it halts **before** ticking any task and before the commit. The reason reads `trajectory append failed: <site>: <cause>`, where the site is the step that owed the line — `run-start`, `wave-state create`, `wave-state record-batch`, `wave-state record-verify`, `wave-state replan`, `agent-spawn`, `agent-result` or `cli-exit`. | Read the cause in the halt reason; it is the filesystem's own, usually a full disk or a `.claude/ship/runs` nothing can write to. Fix that and re-run. Nothing was ticked and nothing was committed, so the re-run starts from a truthful `tasks.md`. This is new: the live run path used to warn and continue, which produced exactly the artifact the trajectory exists to prevent — a run that ticked boxes, committed, and cannot be replayed. |
 | Ship-run trajectory is not reconstructable | The `record-outcome` ping ran `interlock run-log check --state` and it exited non-zero — a sequence gap, a missing `run-start`, or a `wave-state`/`verify judge` invocation with no logged `cli-exit`. An otherwise-clean run still halts on this, because an unreconstructable run defeats the reason this file exists. | Read the reported problems with `interlock run-log check --run-id <id>` yourself. Usually a write to `.claude/ship/` failed mid-run (disk full, permissions) — fix that and re-run, and run `interlock doctor` first next time, which probes exactly that. This is new: until this halt existed, the writer degraded silently on a failed append. |
 
 On any halt: nothing is committed, and it will not ask you a question. `ship` is a dynamic workflow, and the workflow runtime accepts no mid-run user input at all — there is no one listening, by construction rather than by policy. The report is the whole interface.
@@ -46,13 +46,13 @@ Every one of those halts is a non-zero exit from a `interlock` subcommand rather
 
 ### Reading a `SHIP HALTED` run
 
-The final summary tells you *that* a run halted and why in one sentence. Every terminal summary also carries a `run: <runId>` row, a `project: <slug>` row and a `cwd: <absolute path>` row — the run id is the join key: it is the exact filename of the trajectory below, `<slug>` is a pure function of the directory the close ran in (every character outside `[A-Za-z0-9]` becomes `-`), which is the host's project directory under `~/.claude/projects` only when the session started there, and `cwd` is that directory itself. Use them to find the right trajectory file when more than one run is on disk, before falling back to `run-log list`. When a run halted before any plan was adopted there is no run id yet, and the row says so instead of printing an empty value: `run: none — the run halted before a plan was adopted`.
+The final summary tells you *that* a run halted and why in one sentence. Every terminal summary also carries a `run: <runId>` row, a `project: <slug>` row and a `cwd: <absolute path>` row — the run id is the join key: it is the exact filename of the trajectory below, `<slug>` is a pure function of the directory the close ran in (every character outside `[A-Za-z0-9]` becomes `-`), which is the host's project directory under `~/.claude/projects` only when the session started there, and `cwd` is that directory itself. Use them to find the right trajectory file when more than one run is on disk, before falling back to `run-log list`. When a run halted before any plan was adopted there is no run id yet, and the row says so instead of printing an empty value: `run: none — the run halted before a plan was adopted`. A run in a linked worktree adds a `state home: <path>` row directly under `cwd:`, and only then: its trajectory, outcome line and resume card are in the main checkout that row names, not in the worktree ([`CORPORA IN MAIN CHECKOUT`](#corpora-in-main-checkout-and-corpora-in-state-home)).
 
 <p align="center">
   <img src="./assets/halted.png" alt="Example SHIP HALTED summary: the halt reason, the one leftover task, a push notification sent, and a MODEL ROUTING OVERRIDDEN banner." width="800">
 </p>
 
-A halt also leaves one file behind, because the terminal that printed the summary is usually gone by the time anyone reads it. `interlock run close` writes a **halt resume card** to `.claude/handoff/ship-<change>-<runId>.md` — repo-relative, and gitignored — and names it in the summary as a `resume card:` row, immediately above the `Do not start another ship run unless the user asks.` line. It is the first thing to open; the trajectory below is still where the full walk lives. The card restates the halt reason, then says where the run stopped: change, run id, project slug, `cwd`, the trajectory path and the two `run-log` commands below. It lists the task ids still unticked alongside `interlock tasks tick <change> --ids <…>` — with a placeholder, deliberately, not those ids: a halt leaves both done-but-unmarked work and work never attempted, `tasks tick` verifies nothing, and ticking the second kind is how unimplemented work ships behind a `[x]`. It reports this run's own `PLAN REUSED` / `PLAN REBUILT` verdict and whether a plan and a fingerprint are on disk naming this change, how far the waves got, and every degradation banner raised before the halt. Every list in it is capped — the cap is published by `interlock limits` — and the card says how many rows it left out and which command prints the whole list, rather than truncating into silence. When the run halted before a plan was adopted there is no run id, and the file is `ship-<change>-no-run-id.md`. Only a halt writes one: a clean close has nothing to resume, and its summary already ends in `ARCHIVE PENDING`.
+A halt also leaves one file behind, because the terminal that printed the summary is usually gone by the time anyone reads it. `interlock run close` writes a **halt resume card** to `.claude/handoff/ship-<change>-<runId>.md` — repo-relative, and gitignored — and names it in the summary as a `resume card:` row, immediately above the `Do not start another ship run unless the user asks.` line. It is the first thing to open; the trajectory below is still where the full walk lives. The card restates the halt reason, then says where the run stopped: change, run id, project slug, `cwd`, the trajectory path and the two `run-log` commands below. It lists the task ids still unticked alongside `interlock tasks tick <change> --ids <…>` — with a placeholder, deliberately, not those ids: a halt leaves both done-but-unmarked work and work never attempted, `tasks tick` verifies nothing, and ticking the second kind is how unimplemented work ships behind a `[x]`. It reports this run's own `PLAN REUSED` / `PLAN REBUILT` verdict and whether a plan and a fingerprint are on disk naming this change, how far the waves got, every lane whose host recorded a session (on `interlock-run --host claude`, with `claude --resume <id> --fork-session` and the reasons that session may be gone), and every degradation banner raised before the halt. Every list in it is capped — the cap is published by `interlock limits` — and the card says how many rows it left out and which command prints the whole list, rather than truncating into silence. When the run halted before a plan was adopted there is no run id, and the file is `ship-<change>-no-run-id.md`. Only a halt writes one: a clean close has nothing to resume, and its summary already ends in `ARCHIVE PENDING`.
 
 **Nothing reads the card back.** It is a record, not a trigger, and it says so in its own opening lines, because a markdown file called a resume card is exactly the artifact a reader assumes is wired into something. The next `/interlock:ship` still decides whether to skip the wave classifier from the stored plan fingerprint alone, so a card that was never written — or one you edited by hand — cannot change what a later run does, and dispatch does not route off it either. That is why the plan section reports what *this* run did and then states the rule, rather than predicting the next verdict: a fingerprint recomputed at the next `run start` decides, ticking a checkbox does not break it, editing an artifact or adding, removing, reordering or rewording a task does, and so does passing a different `--solo` / `--waves` / `--tdd` shape.
 
@@ -67,7 +67,7 @@ interlock run-log query --run <runId> --halted   # only the events that explain 
 interlock run-log query --run <runId> --type verify-judgement   # e.g. just the verify verdicts
 ```
 
-The trajectory lives at `.claude/ship/runs/<runId>.jsonl` — an append-only JSON Lines file, one line per wave-state action, CLI exit, agent spawn, and verify judgement. `list` prints every run's id, so if you do not have the run id handy, start there. `run-log show`/`query` never fail on a torn or unreadable line — they skip it and say so, the same way `outcomes list` does, so a crash mid-append costs you at most that one record, not the read.
+The trajectory lives at `.claude/ship/runs/<runId>.jsonl` in the state home — an append-only JSON Lines file, one line per wave-state action, CLI exit, agent spawn, agent result (what the host reported about an agent after it returned), and verify judgement. `list` prints every run's id, so if you do not have the run id handy, start there. `run-log show`/`query` never fail on a torn or unreadable line — they skip it and say so, the same way `outcomes list` does, so a crash mid-append costs you at most that one record, not the read.
 
 A `verify-judgement` line never carries the raw suite log — a red unit suite's full stdout lives under `.claude/ship/spill/<runId>/`, and the trajectory line points at it with a locator and a short preview instead. If a judgement's preview does not tell you enough, open the locator with `offset`/`limit` rather than reading the whole file — it can be hundreds of KB.
 
@@ -126,7 +126,7 @@ Exit `0` is a terminal summary and `1` is a halt — or a run that finished and 
 
 `interlock-ship-acp <change>` still works: it prints a deprecation line on stderr and runs `interlock-run --host acp` with your arguments. It is removed in the next minor version.
 
-**The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Run `interlock doctor` before a long run — it prints the derived `requiredCommands` list and the exact allow rules to add, rather than a fixed list this page would have to keep in sync. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not.
+**The run stops halfway and waits for you.** Workflow agents inherit your own permission settings, so a command that is not allowlisted raises an approval prompt mid-run — which is exactly what a zero-touch run should never do, and the one interruption the runtime cannot prevent, since it is your setting being honoured. Run `interlock doctor` before a long run — it prints the derived `requiredCommands` list and the exact allow rules to add, rather than a fixed list this page would have to keep in sync. If you find a run sitting on a prompt, approve it and allowlist that command so the next run does not. The close counts the prompts a run met, so one you did not see happen is still named afterwards: [`PERMISSION PROMPTS DURING RUN`](#permission-prompts-during-run-and-auto-mode-denied-n-tool-calls).
 
 ### Two different caches, and only one of them is on this page
 
@@ -154,7 +154,7 @@ Both are ordinary settings keys, valid in any of the four scopes Claude Code mer
 
 **Interlock cannot set either one.** A plugin's component model is skills, agents, hooks, MCP servers, LSP servers, monitors, commands and workflows; there is no settings component and no session-env component. So `interlock doctor` carries a `prompt-cache` row that reports whether each key is configured, in which scopes, and which authentication mode was detected — advice only, `ok` or `skip`, never a failing check, because an unset lifetime costs money and never costs correctness. The row reports **configuration only**: nothing exposes to a hook or a command the lifetime a session is actually running under, so it never claims one.
 
-What a run records: cache-read and cache-creation tokens, per wave and for the run, split by lifetime tier and sourced from the host's own usage envelope. A host whose runtime cannot decompose its usage records them as **absent, never zero**, and says so in the summary as `CACHE ACCOUNTING NOT REPORTED` — the Workflow runtime is such a host, because it exposes one cumulative spend scalar and no breakdown.
+What a run records: cache-read and cache-creation tokens, per wave and for the run, split by lifetime tier. A runner host reads them off the vendor CLI's own usage envelope. The Workflow runtime exposes one cumulative spend scalar and no breakdown, so on `/interlock:ship` they come from somewhere else: the plugin's `SubagentStop` hook sums each agent's own transcript into a small file, and `run close` joins those files to the spawns it dispatched. A **complete** join — every briefed spawn matched a file with usage — records the figures, and the receipt's host block records the run's cache accounting as `hook`, observed rather than declared. A **partial** join records the waves it completed, leaves every other wave and the run total unknown, and says how many agents went unrecorded: [`CACHE ACCOUNTING PARTIAL`](#cache-accounting-partial-agent-usage-unjoined-and-agent-usage-unreadable). A run where no agent was recorded with usage at all — hooks disabled, or a host that never fired them — records the figures as **absent, never zero**, and says so in the summary as `CACHE ACCOUNTING NOT REPORTED`.
 
 **You stopped the run, and resuming re-ran more than you expected.** Resume from `/workflows` keeps completed agents' results, but two rules decide which ones survive, and the second one surprises people:
 
@@ -231,9 +231,15 @@ Archiving happens after the change merges, not before, so the run cannot do it f
 
 ## The soft continues
 
-### `GRAPH UNAVAILABLE`
+### `GRAPH UNAVAILABLE` and `GRAPH FROM MAIN CHECKOUT`
 
-The code knowledge graph is not usable: `/interlock:bootstrap` reports it when the build errors or indexes nothing, and `/interlock:ship` reports it when no graph was ever built for this repo. Either way the agents fall back to grepping — slower and more token-hungry, but correct.
+The code knowledge graph is not usable. `/interlock:bootstrap` reports it when the build errors or indexes nothing. A ship run reports it from `interlock run start`, on either host, when neither the working root nor the [state home](#corpora-in-main-checkout-and-corpora-in-state-home) has a `.claude/graph/graph.json`:
+
+```
+GRAPH UNAVAILABLE: never built — implementer and reviewer agents fall back to grep and will be slower
+```
+
+The Workflow driver used to decide this itself, from a `test -f` in its validate ping. It no longer looks: the CLI is the one party that checks, because two probes of one file in two places is how a driver and the CLI come to disagree about whether it exists. Either way the agents fall back to grepping — slower and more token-hungry, but correct.
 
 If the reason is `never built`, the fix is to run `/interlock:bootstrap` once.
 
@@ -246,6 +252,14 @@ interlock-graph build .
 interlock-graph report .
 ```
 
+`GRAPH FROM MAIN CHECKOUT` is the milder case, and only a run in a linked worktree raises it. `.claude/graph/` is gitignored, so a fresh worktree has no graph; `run start` looks in the working root first, finds the main checkout's, records that path on the run manifest and says so:
+
+```
+GRAPH FROM MAIN CHECKOUT: <path> — it may be stale for this worktree; a lane without a graph falls back to grep
+```
+
+That graph was built from the main checkout's files, before this worktree's edits, so a query can still name a symbol this branch renamed or miss one it added. Nothing is copied into the worktree. `interlock-graph`'s query commands read through the same way and print the same words on stderr ([07](./07-cli-and-configuration.md#interlock-graph--the-local-code-knowledge-graph)). If the drift matters for this change, build a graph in the worktree with `interlock-graph build .`; the next `run start` finds the worktree's own first.
+
 ### `PUSH FAILED`
 
 Only when a topic was configured and the driver passed `--notify` to the close. `interlock run close` then posts one message per terminal outcome — a halt at ntfy priority `high`, a completion at default — to `INTERLOCK_NTFY_TOPIC`, against the server named by `INTERLOCK_NTFY_URL` (defaulting to the public `https://ntfy.sh`). Treat the topic like a secret: it is the only authentication the public server has, so anyone who knows it reads every message this run — or any other run configured with it — ever sends. Point `INTERLOCK_NTFY_URL` at a server you run yourself if the public relay is not an acceptable trust boundary.
@@ -254,9 +268,9 @@ When the push fails — a non-2xx status, a network error, a timeout, or invalid
 
 ### `TRAJECTORY APPEND FAILED`
 
-The close could not write its own `run-receipt`, `run-halt` or `run-complete` line to `.claude/ship/runs/<runId>.jsonl`. The banner names which of the three and the filesystem's reason, and the close's exit code moves to `1` even on a run that otherwise completed and committed — the commit stands, the record of it does not. Mid-run the same failure is a halt rather than a banner, with the reason `trajectory append failed: <site>: <cause>` (see [the loud halts](#the-loud-halts)).
+The close could not write its own `agent-result`, `run-receipt`, `run-halt` or `run-complete` line to `.claude/ship/runs/<runId>.jsonl`. The banner names which line and the filesystem's reason, and the close's exit code moves to `1` even on a run that otherwise completed and committed — the commit stands, the record of it does not. Mid-run the same failure is a halt rather than a banner, with the reason `trajectory append failed: <site>: <cause>` (see [the loud halts](#the-loud-halts)).
 
-This is the opposite side of this repository's deliberately split corpus-loss semantics from [`RESUME CARD NOT WRITTEN`](#resume-card-not-written) below. The trajectory is the evidence; losing a line means the run cannot be replayed, so it moves the exit code. The outcome corpus, the review metrics and the resume card are all pointers to evidence written elsewhere, so losing them is reported and never fatal. `interlock doctor` marks `.claude/ship/runs` and `.claude/ship/spill` `fatal: true` and `.claude/learning` and `.claude/metrics` not, for the same reason.
+This is the opposite side of this repository's deliberately split corpus-loss semantics from [`RESUME CARD NOT WRITTEN`](#resume-card-not-written) below. The trajectory is the evidence; losing a line means the run cannot be replayed, so it moves the exit code. The outcome corpus, the review metrics and the resume card are all pointers to evidence written elsewhere, so losing them is reported and never fatal. `interlock doctor` marks `.claude/ship/runs` and `.claude/ship/spill` `fatal: true` and `.claude/learning`, `.claude/metrics` and the other outcome-class directories not, for the same reason. A run in a linked worktree keeps both sides of the split: its trajectory append in the main checkout is still fatal, and its outcome and metrics writes there still only report.
 
 ### `RESUME CARD NOT WRITTEN`
 
@@ -264,15 +278,44 @@ Only on a halt, and only when the [halt resume card](#reading-a-ship-halted-run)
 
 The exit code never moves because of it, and that is the outcome-corpus side of this repository's deliberately split loss semantics rather than the trajectory's. The card is a pointer to records that were already written — the trajectory, the plan and its fingerprint, the leftover boxes in `tasks.md` — so losing it costs a reader convenience, not evidence. A failed trajectory append is the other side of that split, and that one ends the run.
 
-### `NO TEST PROFILE`
+### `NO TEST PROFILE` and `TEST PROFILE FROM MAIN CHECKOUT`
 
-There is no `.claude/testing/profile.json`, so `ship` had to infer how to run your tests. It will not interview you about it — that is a different skill's job, and `ship` could not ask even if it wanted to.
+There is no `.claude/testing/profile.json` in the working root or in the state home, so `ship` had to infer how to run your tests. `interlock run start` raises it, on either host; the Workflow driver's validate ping used to probe for the file itself and no longer does, for the reason given under [`GRAPH UNAVAILABLE`](#graph-unavailable-and-graph-from-main-checkout). `ship` will not interview you about it — that is a different skill's job, and `ship` could not ask even if it wanted to.
 
 Fix it once, and every later run is faster and more accurate:
 
 ```bash
 /interlock:fix-tests --reconfigure
 ```
+
+`TEST PROFILE FROM MAIN CHECKOUT: <path>` is not a missing profile. The run is in a linked worktree, which has no profile of its own because `.claude/testing/` is gitignored, and `run start` found the main checkout's. It records that path on the run manifest as `testProfilePath`, and every later reader takes it from there: the verify steps build their plan from it, and the test guard takes its test roots from it ([13](./13-the-guards.md)). Nothing is copied. Usually there is nothing to do, because the main checkout's profile describes the same suite. If this branch changes how the tests run, run `/interlock:fix-tests --reconfigure` in the worktree: it writes the profile into the working root, and the next `run start` finds that one first.
+
+### `CORPORA IN MAIN CHECKOUT` and `CORPORA IN STATE HOME`
+
+Notes rather than degradations: they print in the summary body, not in the banner block. `run start` writes one whenever this run's records go somewhere other than the directory it runs in:
+
+```
+CORPORA IN MAIN CHECKOUT: <home> — the trajectory, outcome line, metrics and resume card of this run are written there, not in this worktree
+CORPORA IN STATE HOME: <home> — set by --state-home or INTERLOCK_STATE_HOME; the trajectory, outcome line, metrics and resume card of this run are written there, not in <root>
+```
+
+The first is the ordinary shape of parallel work: a run in a linked worktree — `claude --worktree`, a Desktop worktree session, anything `git worktree add` made. A worktree is deleted with its session, and `interlock report` in the main checkout would never see records written inside it. So `run start` resolves a **state home** once — the main checkout, read from git's common directory — and records it on the manifest. The append-only records go there: the trajectory, the outcome line, the review metrics, the resume card, the interrupted-run note and the autonomy ledger. The run's working state stays in the worktree: the manifest, the wave state, the briefings, the spill, the stage marker, the launch ledger and the agent-usage sidecar. Two ships in two worktrees therefore never share a cursor or a marker, and share only files they append to a line at a time. Interlock's own lane worktrees, under `.claude/ship/worktrees/`, are never resolved this way; each is its own home.
+
+What that changes for a reader: the summary prints `state home: <path>` under `cwd:`, the resume card and the trajectory are in the main checkout, and the spill a trajectory line points at is still in the worktree — the `run-start` event records the worktree's `cwd` so a reader in the main checkout can find it. Nothing about loss changes: a trajectory append that fails in the main checkout still halts the run, and a failed outcome or metrics write there is still only reported. A main checkout nothing can write to therefore halts the run at its first trajectory append; `interlock doctor`, run in the worktree, probes each directory where it now lives.
+
+The second note means you chose the home, with `--state-home <dir>` on `run start` or `INTERLOCK_STATE_HOME` ([07](./07-cli-and-configuration.md#where-a-runs-records-go-the-state-home)). `--state-home .` keeps a worktree's records in the worktree.
+
+One related halt reads like a missing run rather than a moved one. If a session moves into a worktree after `run start`, its next `run` call finds no manifest there, and when the state home holds one it halts naming both: `no run manifest at <root> — one exists at <home>; if this session moved into a worktree after run start, the run continues from there`.
+
+### `STATE HOME UNRESOLVED`
+
+```
+STATE HOME UNRESOLVED: <reason>
+```
+
+`run start` asked git where the main checkout is and got no usable answer: git is not on PATH, the directory is not a repository, the call timed out, or the common directory belongs to a bare repository with no checkout beside it. The reason is the one the resolver hit. The run falls back to writing every record in the working root — exactly where it wrote them before the state home existed — and records its surface as `unknown`.
+
+The fallback itself loses no record. But if the directory really is a linked worktree, its records go away with it, and the main checkout's `interlock report` never counts them. Fix what the reason names, or pin the home with `--state-home <dir>` or `INTERLOCK_STATE_HOME`. A pinned home puts the records where you said, and the banner still prints, because what the session is stays unknown. `interlock doctor`'s `state-home` row reports the same reason before a run, and `interlock report` opens with it when it had to read from the root.
 
 ### `MODEL ROUTING OVERRIDDEN`
 
@@ -304,6 +347,8 @@ interlock limits
 ```
 
 If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
+
+This banner is a prediction, read from your environment before anything ran. What actually ran is observed separately, after each agent returned, and named as [`MODEL SUBSTITUTED`](#model-substituted).
 
 ### `MODEL ROUTING NOTE` and `PING MODEL INHERITED`
 
@@ -342,18 +387,76 @@ unset CLAUDE_CODE_EFFORT_LEVEL
 AGENT RETURNED NO RESULT: <label> — the runtime stopped it, the API failed, or a usage limit ended it; the step is recorded as failed
 ```
 
-The Workflow runtime's `agent()` returns nothing when you stop an agent mid-run, when the API fails in a way it cannot recover from, or when a usage limit ends the agent outside an interactive subscription session. The host was the cause, not the briefing, so this is no longer reported as `BRIEFING NOT ACKNOWLEDGED`. That banner now means only that an agent returned a result whose briefing hash was missing or wrong. Either way the lane's tasks are recorded as failed rather than trusted, and their boxes stay unticked for the next run. `interlock-run` has no such banner: its adapters already name a spawn that failed with the process's own exit code and stderr.
+The Workflow runtime's `agent()` returns nothing when you stop an agent mid-run, when the API fails in a way it cannot recover from, or when a usage limit ends the agent outside an interactive subscription session. The host was the cause, not the briefing, so this is no longer reported as `BRIEFING NOT ACKNOWLEDGED`. That banner now means only that an agent returned a result whose briefing hash was missing or wrong. Either way the lane's tasks are recorded as failed rather than trusted, and their boxes stay unticked for the next run. `interlock-run` has no such banner: its adapters already name a spawn that failed with the process's own exit code and stderr, and on `--host claude` the host's own reason — see [`LANE STOPPED BY HOST`](#lane-stopped-by-host-schema-result-missing-claude-and-tools-denied-in-lane).
+
+### `MODEL SUBSTITUTED`
+
+An agent ran on a model the plan did not route it to:
+
+```
+MODEL SUBSTITUTED: <label> routed <slug>, ran <ids>
+```
+
+[`MODEL ROUTING OVERRIDDEN`](#model-routing-overridden) predicts this from your environment at `run start`. This line is the observation, made after the agent returned, and both hosts print it in the same words:
+
+- **On `/interlock:ship`**, `run close` reads the models off each agent's own transcript, as the recorder hook summed it ([`CACHE ACCOUNTING PARTIAL`](#cache-accounting-partial-agent-usage-unjoined-and-agent-usage-unreadable) explains the join). Every assistant turn names the model that served it, so any served id that is not the routed model raises the banner: a fallback that served one turn is still a model the plan did not choose.
+- **On `interlock-run --host claude`**, the adapter reads the lane session's own transcript the same way. When that transcript cannot be read, it falls back to the `claude -p` envelope's per-model breakdown, which lists every model the session called, the host's own internal calls included. That list cannot tell a fallback from housekeeping, so there the banner is raised only when the routed model appears nowhere in it.
+
+One matcher decides what counts as the same model, so an alias against the full id the host reports raises nothing: `sonnet` matches `claude-sonnet-5-5`, with or without a provider prefix such as `bedrock.` or a date stamp, while `claude-sonnet-5` does not match `claude-sonnet-5-5`. A spawn the plan routed no model to is compared against nothing.
+
+Three things outside the plan can replace a routed model: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, a fallback model chain, and an organization default model. Check those first. The work was still verified like any other; this is a cost and routing fact, not a quality verdict. Each agent's `agent-result` trajectory event records the routed model, the served and session models, and which of the two scopes the verdict stood on, and the receipt counts `modelSubstitutions`:
+
+```bash
+interlock run-log query --run <runId> --type agent-result
+```
+
+### `CACHE ACCOUNTING PARTIAL`, `AGENT USAGE UNJOINED` and `AGENT USAGE UNREADABLE`
+
+These are `/interlock:ship`'s cache accounting speaking. A Workflow script's `agent()` returns the agent's result and nothing else: no token usage, no served model. So the plugin's recorder hook ([13](./13-the-guards.md#the-six-hooks)) writes one small file per Workflow agent of a live run under `.claude/ship/agent-usage/<runId>/` in the working root. On `SubagentStop` it sums the agent's own transcript — input, output, cache-read and cache-creation tokens per assistant message, split by lifetime tier where the transcript carries the split — lists the models that served it, and reads the briefing sha256 its bootstrap text ends on. `run close` joins each file to the spawn it dispatched with that sha.
+
+A complete join records the cache figures and needs no banner. When at least one briefed spawn did not join:
+
+```
+CACHE ACCOUNTING PARTIAL: <n> of <m> agents unrecorded
+```
+
+`<m>` is every briefed spawn the run dispatched once it had a run id; `<n>` is how many of them matched no file, or matched one whose transcript yielded no usage. A wave with an unrecorded agent records its cache figures as unknown, and so does the run total; a wave whose agents all joined keeps its figures. Never a partial sum: a wave missing one agent did not spend only what the others did. Usual causes: hooks that did not run (`disableAllHooks`, a policy that admits only managed hooks), or a transcript the hook could not read. Output tokens are not part of the join — the runtime's own counter stays the wave's figure, and each agent's own count travels on its `agent-result` event.
+
+```
+AGENT USAGE UNJOINED: <k> recorded agents matched no dispatched spawn (<p> without a briefing key, <q> with a key no spawn dispatched)
+```
+
+A note, not a degradation. The hook matches the type the host reports for every Workflow agent, so it also records agents no briefing belongs to. `<p>` is expected on every run: the relay pings carry no briefing, and neither does any other workflow that ran in this root while the run was live. `<q>` is the one worth a look — an agent carrying a briefing this run never dispatched. Either way they are counted and attributed nowhere.
+
+```
+AGENT USAGE UNREADABLE: <file>: <reason>
+```
+
+One note per sidecar file the close could not parse or did not recognise as a record. It is named, never dropped, because an agent nobody can read is still an agent the run spawned.
+
+When no agent was recorded with usage at all — the directory is absent because hooks were off, say — the close says `CACHE ACCOUNTING NOT REPORTED` exactly as it did before the recorder existed ([cache accounting](#two-different-caches-and-only-one-of-them-is-on-this-page)). None of these moves an exit code: the sidecar is outcome-class, and a file the hook could not write is a line on its stderr.
+
+### `PERMISSION PROMPTS DURING RUN` and `AUTO MODE DENIED <n> TOOL CALLS`
+
+```
+PERMISSION PROMPTS DURING RUN: <n>
+AUTO MODE DENIED <n> TOOL CALLS (<tools>)
+```
+
+The interruption [the runtime cannot prevent](#when-the-run-never-starts-or-stalls), counted. While a run is live, the recorder hook writes one file per `PermissionRequest` — the host asked for permission, which in an interactive session is a prompt waiting on you — and one per `PermissionDenied`, auto mode's classifier refusing a tool call, so the agent got a denial instead of a result. `run close` counts them, and the second line lists the tools. Each file names the tool, the agent and the host's reason, never the tool's input.
+
+They are counts, not verdicts. A prompt you approved cost the run time; a denial may or may not have changed what the agent reported, and the count cannot say which. The recorder counts every such event in any Claude Code session working in this root while the run is live, not only the run's own agents. Read the files under `.claude/ship/agent-usage/<runId>/` for the tools, allowlist what should not have asked — `interlock doctor` prints the rules — and decide whether a denied call was one the run needed. The receipt records both counts, as `permissionPrompts` and `autoModeDenials`.
 
 ### `PREVIOUS RUN INTERRUPTED`, `INTERRUPTED NOTE UNREADABLE` and `INTERRUPTED NOTE NOT MARKED`
 
-A session that ends while its own ship run is live stops the run's background workflow before `run close`. You might have closed the terminal, quit the app, or run `/exit`. The run then gets no receipt, no resume card and no terminal trajectory event. The plugin's `SessionEnd` recorder (`hooks/recorder.mjs`) leaves one small note under `.claude/ship/interrupted/<runId>.json` instead, and three places print it from one text:
+A session that ends while its own ship run is live stops the run's background workflow before `run close`. You might have closed the terminal, quit the app, or run `/exit`. The run then gets no receipt, no resume card and no terminal trajectory event. The plugin's `SessionEnd` recorder (`hooks/recorder.mjs`) leaves one small note under `.claude/ship/interrupted/<runId>.json` in the state home instead — the main checkout, for a run in a linked worktree, read off the run manifest rather than from git — and three places print it from one text:
 
 ```
 PREVIOUS RUN INTERRUPTED: <change> run <id> ended at stage <stage> — no resume card was written; interlock run-log show <id>
 ```
 
 - **`interlock run start`**, for any change, carries it on its first step and in the summary, then marks the note spoken so it is said once.
-- **The SessionStart preflight** adds it to the session's opening context and marks nothing, so the next run start still says it.
+- **The SessionStart preflight** adds it to the session's opening context and marks nothing, so the next run start still says it. It reads notes from the state home `interlock doctor` resolved and from the working directory, so a note an older run left in a worktree is still found, and a run whose note is in both is said once.
 - **`interlock report`** counts the run as *interrupted* rather than *unexplained* in its coverage section ([indicators](./11-the-indicators.md)).
 
 `interlock run-log show <id>` replays what the run recorded before it stopped, and the tasks it ticked are already ticked in `tasks.md`. Run `/interlock:ship` again to finish the rest.
@@ -453,6 +556,42 @@ On a flag host, "applied" means the flag was passed: a model with no effort para
 ```
 EFFORT ROUTING UNAVAILABLE (workflow): this claude CLI has no --effort flag
 ```
+
+### `LANE STOPPED BY HOST`, `SCHEMA RESULT MISSING (claude)` and `TOOLS DENIED IN LANE`
+
+`interlock-run --host claude` only. Before these existed, a lane the host stopped, a lane whose result the host lost and a lane a guard refused all read the same way: no result. Now the adapter reads the whole `claude -p` JSON envelope whatever the process's exit code, and the runner hands what the host reported to the CLI on its own channel, `--host-records`, beside the agents' results and never inside them ([07](./07-cli-and-configuration.md#interlock-run--the-experimental-runner)). The runner reads no field of it. The CLI raises each banner at the step that received the record, and appends one `agent-result` event per lane to the trajectory before anything is ticked — an append in the trajectory's fatal class, like every other.
+
+```
+LANE STOPPED BY HOST: <label> <subtype>
+```
+
+The host ended the lane with an error, a non-zero exit or a timeout. `<subtype>` is the envelope's own, `error_max_turns` for instance, or `exit <code>` or `timed out` when the envelope named none. A lane that returned no result has its tasks recorded as failed, and they stay unticked. The envelope's errors are on the lane's `agent-result` event.
+
+```
+SCHEMA RESULT MISSING (claude): <label> — success without structured_output (anthropics/claude-code#82258)
+```
+
+The host reported success and returned no structured result. That is an open vendor bug, and this adapter's configuration — `--agent` naming a worker that declares its tools, together with `--json-schema` — is the one that triggers it. Nothing reported the lane's tasks done, so they are recorded as failed. A workaround through a generated agents file was designed and not adopted: it ships only on a probe that shows it returning a result, and that probe has not been run.
+
+```
+TOOLS DENIED IN LANE: <label> <n> (<tools>)
+```
+
+The envelope counted `<n>` refused tool calls, listed here by tool name. Under the default `bypassPermissions` mode nothing prompts, so a denial there comes from a `PreToolUse` hook — usually one of this plugin's [guards](./13-the-guards.md) doing its job, `guard-tests` refusing a test edit during repair, say — or a deny rule in your settings. A count you interpret: check which tools, and whether the lane's result still holds without those calls.
+
+The receipt counts all three, as `lanesStoppedByHost`, `schemaResultsMissing` and `toolsDeniedInLanes`, and the same host record feeds [`MODEL SUBSTITUTED`](#model-substituted). A halted run's [resume card](#reading-a-ship-halted-run) lists every lane that recorded a session, with `claude --resume <id> --fork-session`, and says the transcript may be gone after the host's retention period or because the session was deleted. To see what the host said about every lane:
+
+```bash
+interlock run-log query --run <runId> --type agent-result
+```
+
+### `PERMISSION PROMPTS NOT SUPPRESSED (claude)`
+
+```
+PERMISSION PROMPTS NOT SUPPRESSED (claude): the installed CLI does not list --permission-prompts, so a lane that needs a person waits
+```
+
+`interlock-run --host claude` with `INTERLOCK_CLAUDE_PERMISSION_MODE` set to anything other than the default, `bypassPermissions`. In such a mode a lane can ask for permission, and an unattended run has nobody to answer. So the adapter passes `--permission-prompts none` — but only when the CLI's own `--help`, read once when the host is created, lists the flag, because a CLI that does not know a flag rejects the whole invocation. This banner says it did not, so a lane that asks will wait. It is raised once, when the host is created, and the runner folds it into the close. Upgrade Claude Code, or leave the mode at its default; under the default the argv carries nothing new.
 
 ### `VERIFICATION SKIPPED`
 

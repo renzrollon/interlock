@@ -18,7 +18,7 @@ RULES:
 - Do not fix unrelated problems you notice; report them instead.
 - Run typecheck and lint on what you changed.
 - Do not commit, and do not edit tasks.md — the orchestrator owns both.
-- If .claude/graph/graph.json exists, interlock-graph query / consumers before grep.
+- Run interlock-graph query / consumers before grep; if it reports no graph, grep.
 - Locate (graph or grep) then Read spans. Do not re-read a file unless it changed.
 - Return the schema only. No narrative.
 

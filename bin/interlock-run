@@ -231,6 +231,14 @@ const routing = []
 // one this file derives from the host id or the step (design D2, D27).
 const effortRouting = []
 
+// What the host observed about each spawn of the CURRENT step, copied off the
+// adapter's `spawn-done` / `spawn-failed` events as `{ label, ...host }` and
+// handed to the CLI on its own channel, `--host-records`, beside — never inside
+// — the results (design D7). This file reads no field of a record: which lane
+// was stopped, denied or served by another model is the CLI's decision. An
+// adapter that reports no host leaves the list empty and every lane unobserved.
+let hostRecords = []
+
 // A runner killed with SIGINT or SIGTERM closes the run through `stop()` like
 // any other halt, so it leaves a receipt, a terminal trajectory event and a
 // resume card instead of a run nobody can reconstruct. Registered before the
@@ -279,6 +287,14 @@ try {
           )
         }
         return
+      }
+      if (
+        event &&
+        (event.type === 'spawn-done' || event.type === 'spawn-failed') &&
+        event.host &&
+        typeof event.host === 'object'
+      ) {
+        hostRecords.push({ label: event.label, ...event.host })
       }
       if (event && event.type === 'effort-routing') {
         effortRouting.push(event)
@@ -338,6 +354,12 @@ if (hostId === 'codex' && onChatGptPlan(process.env)) {
       `the ChatGPT plan's device-auth session — it goes stale in about a week, and OpenAI directs ` +
       `unattended volume to an API key`
   )
+}
+// Whatever the adapter itself degraded on at creation — on the claude host, a
+// mode that can prompt on a CLI that cannot be told not to (design D10). The
+// adapter wrote the words; this file only carries them to the close.
+for (const banner of Array.isArray(host.banners) ? host.banners : []) {
+  if (typeof banner === 'string' && banner) banners.push(banner)
 }
 if (capabilities.hooks === false) {
   banners.push(
@@ -527,8 +549,10 @@ while (step && step.then) {
   if (worktreeProblem) await stop(worktreeProblem)
 
   for (const s of step.spawns || []) log(`  ${step.action}: ${s.label}`)
+  hostRecords = []
   const results = await spawnAll(step)
   write(`${WORK}/results.json`, results)
+  write(`${WORK}/host-records.json`, hostRecords)
   // The close is the one continuation that needs more than the spawn results:
   // it reads the banners only this host could raise. Appended here as well as
   // at `stop()`, so a CLEAN run reports them too — the path least likely to
@@ -539,6 +563,8 @@ while (step && step.then) {
     ...(isClose ? closeArgs() : []),
     '--results',
     `${WORK}/results.json`,
+    '--host-records',
+    `${WORK}/host-records.json`,
     '--root',
     '.'
   ])

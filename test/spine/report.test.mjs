@@ -15,10 +15,20 @@
 // file — including in a temp root where a stray write would otherwise pass
 // unnoticed.
 
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,9 +43,29 @@ import {
 import { REPORT_CAPS } from '../../lib/limits.mjs'
 import { REVIEW_METRICS_SCHEMA } from '../../lib/metrics.mjs'
 import { appendRunLogEvent, listRunLogs, readRunLog, formatRunLog } from '../../lib/run-log.mjs'
+import { renderReportHtml } from '../../lib/report-html.mjs'
+import { STATE_HOME_ENV } from '../../lib/state-home.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(REPO, 'bin', 'interlock')
+
+// Every report in this file resolves a state home, and the resolver reads
+// INTERLOCK_STATE_HOME and asks git. Neither the developer's environment nor a
+// temporary directory that happens to sit inside some other checkout may answer
+// for a fixture, so both are fenced for the whole file. Children spawned through
+// the CLI inherit the same fence.
+let fencedEnv
+before(() => {
+  fencedEnv = { home: process.env[STATE_HOME_ENV], ceiling: process.env.GIT_CEILING_DIRECTORIES }
+  delete process.env[STATE_HOME_ENV]
+  process.env.GIT_CEILING_DIRECTORIES = realpathSync(tmpdir())
+})
+after(() => {
+  if (fencedEnv.home === undefined) delete process.env[STATE_HOME_ENV]
+  else process.env[STATE_HOME_ENV] = fencedEnv.home
+  if (fencedEnv.ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES
+  else process.env.GIT_CEILING_DIRECTORIES = fencedEnv.ceiling
+})
 
 function root() {
   return mkdtempSync(join(tmpdir(), 'interlock-report-'))
@@ -1043,6 +1073,345 @@ test('an unreadable note is named in coverage, never swallowed', () => {
     const report = buildReport(dir)
     assert.deepEqual(report.coverage.trajectories.withoutTerminal, { total: 1, interrupted: 0, unexplained: 1 })
     assert.match(formatReport(report), /interrupted-run note unreadable.*bad\.json/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- the state home, the surface partition and the unread worktrees ---------
+// (spec: report/corpus-reading, report/indicators; design D17)
+//
+// The report reads every corpus from the state home it was given or resolved,
+// and says which. The git fixtures are real `git init` / `git worktree add`
+// repositories, isolated the way test/spine/state-home.test.mjs isolates them:
+// no global or system config, and discovery fenced at the temporary directory
+// (the file-level `before` above).
+
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+
+function gitIn(cwd, args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV })
+  assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+
+/** A main checkout with two linked worktrees where a Desktop session puts them. Paths are real. */
+function repoFixture() {
+  const tmp = root()
+  const main = join(tmp, 'main')
+  mkdirSync(main)
+  gitIn(main, ['init', '-q', '-b', 'main'])
+  gitIn(main, ['config', 'user.email', 'test@example.invalid'])
+  gitIn(main, ['config', 'user.name', 'Test'])
+  writeFileSync(join(main, 'README.md'), 'fixture\n')
+  gitIn(main, ['add', '-A'])
+  gitIn(main, ['commit', '-qm', 'base'])
+  const w1 = join(main, '.claude', 'worktrees', 'w1')
+  const w2 = join(main, '.claude', 'worktrees', 'w2')
+  gitIn(main, ['worktree', 'add', '-q', w1, '-b', 'w1'])
+  gitIn(main, ['worktree', 'add', '-q', w2, '-b', 'w2'])
+  return { tmp, main: realpathSync(main), w1: realpathSync(w1), w2: realpathSync(w2) }
+}
+
+/** Plant a run through the repo's own writer, its `run-start` recording `surface` (or none). */
+function plantRun(dir, runId, surface) {
+  for (const event of [
+    { type: 'run-start', mode: 'checkpoint', ...(surface ? { surface } : {}) },
+    { type: 'run-complete', leftoverTaskIds: [] }
+  ]) {
+    const r = appendRunLogEvent(dir, { runId, change: 'add-widget', ...event })
+    assert.equal(r.written, true, `${runId}: ${r.reason}`)
+  }
+}
+
+/** The surface facets the HTML renders, as {label: count}. */
+function htmlSurfaces(doc) {
+  const block = doc.match(/<dl class="facets surfaces">([\s\S]*?)<\/dl>/)
+  assert.ok(block, 'the document must render the surface partition')
+  return Object.fromEntries(
+    [...block[1].matchAll(/<dt>([^<]+)<\/dt><dd class="num">(\d+)<\/dd>/g)].map(m => [m[1], Number(m[2])])
+  )
+}
+
+const OUTCOME = { schema: 'interlock.outcome/2', ts: '2026-08-20T00:00:00.000Z', change: 'add-widget', mode: 'continue' }
+const METRICS = {
+  schema: REVIEW_METRICS_SCHEMA,
+  timestamp: '2026-08-21T00:00:00.000Z',
+  change: 'add-widget',
+  counts: { raised: 4, dismissed: 1, droppedByQuality: 0, surviving: 3 }
+}
+
+test('scanned runs are partitioned by the surface their run-start recorded, on every surface', () => {
+  const dir = root()
+  try {
+    plantRun(dir, 'run-m1', 'main')
+    plantRun(dir, 'run-m2', 'main')
+    plantRun(dir, 'run-l1', 'linked-worktree')
+    plantRun(dir, 'run-old', null)
+
+    const report = buildReport(dir, { env: {} })
+    const expected = { main: 2, linkedWorktree: 1, laneWorktree: 0, unknown: 0, unrecorded: 1 }
+    assert.deepEqual(report.coverage.surfaces, expected)
+    assert.equal(report.coverage.trajectories.scanned, 4)
+
+    // Text: every bucket, the zeros included, over the stated denominator.
+    const text = formatReport(report)
+    assert.match(text, /surfaces\s+main 2, linked-worktree 1, lane-worktree 0, unknown 0, unrecorded 1 — over 4 scanned/)
+    assert.ok(text.indexOf('surfaces') < text.indexOf('INDICATORS'), 'the partition is coverage, before any indicator')
+
+    // JSON: the same object, through the same serialisation the CLI uses.
+    assert.deepEqual(JSON.parse(JSON.stringify(report)).coverage.surfaces, expected)
+
+    // HTML: the same five figures.
+    assert.deepEqual(htmlSurfaces(renderReportHtml(report)), {
+      main: 2,
+      'linked-worktree': 1,
+      'lane-worktree': 0,
+      unknown: 0,
+      unrecorded: 1
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a run with no run-start, or a surface outside the vocabulary, is unrecorded rather than guessed', () => {
+  const dir = root()
+  try {
+    // Hand-written, so the writer's own enum coercion is not what is tested.
+    trajectory(dir, 'run-nostart', [{ type: 'run-complete' }])
+    trajectory(dir, 'run-moon', [{ type: 'run-start', surface: 'moon' }, { type: 'run-complete' }])
+    trajectory(dir, 'run-lane', [{ type: 'run-start', surface: 'lane-worktree' }, { type: 'run-complete' }])
+    trajectory(dir, 'run-unk', [{ type: 'run-start', surface: 'unknown' }, { type: 'run-complete' }])
+    const report = buildReport(dir, { env: {} })
+    assert.deepEqual(report.coverage.surfaces, { main: 0, linkedWorktree: 0, laneWorktree: 1, unknown: 1, unrecorded: 2 })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('trajectories in other linked worktrees are counted from the worktree list and never opened', () => {
+  const fx = repoFixture()
+  try {
+    trajectory(fx.main, 'run-home', [{ type: 'run-start', surface: 'main' }, { ...RECEIPT, remediationRounds: 2 }, { type: 'run-complete' }])
+    const without = buildReport(fx.main, { env: {} })
+    assert.equal(without.stateHome.home, fx.main)
+    assert.equal(without.stateHome.surface, 'main')
+    assert.equal(without.coverage.unreadInLinkedWorktrees.runs, 0)
+    assert.equal(without.coverage.unreadInLinkedWorktrees.worktrees, 0)
+    assert.equal(without.coverage.unreadInLinkedWorktrees.reason, null)
+
+    // Three stranded trajectories in w1, each of which would move an indicator
+    // if it were read; w2 holds none.
+    for (const id of ['run-x', 'run-y', 'run-z']) {
+      trajectory(fx.w1, id, [
+        { type: 'run-start', surface: 'linked-worktree' },
+        { type: 'cli-exit', command: 'gate', exitCode: 1 },
+        { ...RECEIPT },
+        { type: 'run-complete' }
+      ])
+    }
+
+    const report = buildReport(fx.main, { env: {} })
+    const u = report.coverage.unreadInLinkedWorktrees
+    assert.equal(u.runs, 3)
+    assert.equal(u.worktrees, 1)
+    assert.equal(u.reason, null)
+    assert.deepEqual(report.indicators, without.indicators, 'no indicator moves on account of a file nobody opened')
+    assert.deepEqual(report.coverage.trajectories, without.coverage.trajectories)
+    assert.deepEqual(report.coverage.surfaces, without.coverage.surfaces)
+
+    const text = formatReport(report)
+    assert.match(text, /trajectories recorded in other linked worktrees and not read: 3 across 1 worktree\b/)
+    assert.ok(text.indexOf('not read: 3') < text.indexOf('INDICATORS'))
+
+    const doc = renderReportHtml(report)
+    assert.match(doc, /Trajectories in other linked worktrees/)
+    assert.match(doc, /<span class="num">3<\/span> file\(s\) across <span class="num">1<\/span> worktree\(s\)/)
+  } finally {
+    rmSync(fx.tmp, { recursive: true, force: true })
+  }
+})
+
+test(
+  'an unreadable stranded trajectory is still counted, because the count opens nothing',
+  { skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root reads a mode-000 file' : false },
+  () => {
+    const fx = repoFixture()
+    const locked = join(fx.w1, '.claude', 'ship', 'runs', 'run-locked.jsonl')
+    try {
+      trajectory(fx.w1, 'run-open', [{ type: 'run-start' }])
+      trajectory(fx.w1, 'run-locked', [{ type: 'run-start' }])
+      chmodSync(locked, 0o000)
+      const report = buildReport(fx.main, { env: {} })
+      assert.equal(report.coverage.unreadInLinkedWorktrees.runs, 2)
+      assert.equal(report.coverage.unreadInLinkedWorktrees.worktrees, 1)
+      assert.equal(report.coverage.unreadInLinkedWorktrees.reason, null)
+      assert.deepEqual(report.coverage.unreadInLinkedWorktrees.unscannable, [])
+    } finally {
+      try {
+        chmodSync(locked, 0o644)
+      } catch {
+        // already gone
+      }
+      rmSync(fx.tmp, { recursive: true, force: true })
+    }
+  }
+)
+
+test('a home that is not a repository states why the worktree scan failed, and reports everything else', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', [{ type: 'run-start', surface: 'main' }, { ...RECEIPT }, { type: 'run-complete' }])
+    trajectory(dir, 'run-b', [{ type: 'run-start' }])
+    outcomes(dir, [OUTCOME])
+    metricsFile(dir, 'review-add-widget-20260821-000000-000Z.json', METRICS)
+
+    const report = buildReport(dir, { env: {} })
+    const u = report.coverage.unreadInLinkedWorktrees
+    assert.equal(u.worktrees, null)
+    assert.equal(u.runs, null)
+    assert.ok(typeof u.reason === 'string' && u.reason.length > 0, 'the could-not-scan state carries its reason')
+
+    // Every other coverage figure is still reported.
+    const c = report.coverage
+    assert.equal(c.trajectories.scanned, 2)
+    assert.equal(c.trajectories.withRunStart, 2)
+    assert.equal(c.trajectories.withReceipt, 1)
+    assert.deepEqual(c.trajectories.withoutTerminal, { total: 1, interrupted: 0, unexplained: 1 })
+    assert.equal(c.outcomes.records, 1)
+    assert.equal(c.metrics.recognized, 1)
+    assert.deepEqual(c.surfaces, { main: 1, linkedWorktree: 0, laneWorktree: 0, unknown: 0, unrecorded: 1 })
+
+    const text = formatReport(report)
+    assert.ok(text.includes(`trajectories recorded in other linked worktrees could not be counted: ${u.reason}`))
+    const doc = renderReportHtml(report)
+    assert.match(doc, /NOT COUNTED/)
+    assert.match(doc, /could not be counted/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a git that fails is a stated reason on the worktree scan, never a throw', () => {
+  const fx = repoFixture()
+  try {
+    plantRun(fx.main, 'run-a', 'main')
+    const calls = []
+    const exec = (file, args, opts) => {
+      calls.push({ file, args, cwd: opts && opts.cwd })
+      throw Object.assign(new Error('spawnSync git ENOENT'), { code: 'ENOENT' })
+    }
+    const given = { home: fx.main, surface: 'main', reason: null, resolvedFrom: 'git' }
+    const report = buildReport(fx.main, { stateHome: given, exec })
+    assert.deepEqual(calls, [{ file: 'git', args: ['worktree', 'list', '--porcelain'], cwd: fx.main }])
+    const u = report.coverage.unreadInLinkedWorktrees
+    assert.equal(u.worktrees, null)
+    assert.equal(u.runs, null)
+    assert.match(u.reason, /git/)
+    assert.equal(report.coverage.trajectories.scanned, 1)
+    assert.match(formatReport(report), /could not be counted: /)
+  } finally {
+    rmSync(fx.tmp, { recursive: true, force: true })
+  }
+})
+
+test('from a linked worktree the report reads every corpus from the main checkout and names it', () => {
+  const fx = repoFixture()
+  try {
+    trajectory(fx.main, 'run-main', [{ type: 'run-start', surface: 'main' }, { type: 'run-complete' }])
+    trajectory(fx.main, 'run-cut', [{ type: 'run-start', surface: 'linked-worktree' }])
+    interruptedNote(fx.main, 'run-cut')
+    outcomes(fx.main, [OUTCOME])
+    metricsFile(fx.main, 'review-add-widget-20260821-000000-000Z.json', METRICS)
+
+    // The worktree itself holds no corpora at all.
+    const report = buildReport(fx.w1, { env: {} })
+    assert.deepEqual(report.stateHome, { home: fx.main, surface: 'linked-worktree', reason: null, resolvedFrom: 'git' })
+    assert.equal(report.root, fx.w1, 'the root stays the working tree the report ran in')
+
+    const c = report.coverage
+    assert.equal(c.trajectories.scanned, 2)
+    assert.deepEqual(c.trajectories.withoutTerminal, { total: 1, interrupted: 1, unexplained: 0 })
+    assert.equal(c.outcomes.records, 1)
+    assert.equal(c.outcomes.path, join(fx.main, '.claude', 'learning', 'outcomes.jsonl'))
+    assert.equal(c.metrics.recognized, 1)
+    // From the home's view the root is one of the other worktrees, and it holds nothing.
+    assert.equal(c.unreadInLinkedWorktrees.runs, 0)
+
+    const text = formatReport(report)
+    assert.ok(text.includes(`state home: ${fx.main} (linked-worktree)`), text)
+    assert.ok(text.indexOf('state home:') < text.indexOf('COVERAGE'), 'the home is named before coverage')
+    assert.doesNotMatch(text, /STATE HOME UNRESOLVED/)
+
+    const doc = renderReportHtml(report)
+    assert.ok(doc.includes(`<span class="k">STATE HOME</span><span>${fx.main}</span>`))
+    assert.ok(doc.includes('<span class="k">SURFACE</span><span>linked-worktree</span>'))
+  } finally {
+    rmSync(fx.tmp, { recursive: true, force: true })
+  }
+})
+
+test('an explicit state home is honoured and the surface still describes the root', () => {
+  const fx = repoFixture()
+  const elsewhere = root()
+  try {
+    plantRun(fx.main, 'run-main', 'main') // must not be read
+    plantRun(elsewhere, 'run-e1', 'linked-worktree')
+    plantRun(elsewhere, 'run-e2', 'linked-worktree')
+
+    // The resolution the CLI computed and passed in.
+    const given = { home: elsewhere, surface: 'linked-worktree', reason: null, resolvedFrom: 'explicit' }
+    const report = buildReport(fx.w1, { stateHome: given, env: {} })
+    assert.deepEqual(report.stateHome, given)
+    assert.equal(report.coverage.trajectories.scanned, 2)
+    assert.deepEqual(report.coverage.surfaces, { main: 0, linkedWorktree: 2, laneWorktree: 0, unknown: 0, unrecorded: 0 })
+    assert.ok(formatReport(report).includes(`state home: ${elsewhere} (linked-worktree)`))
+
+    // The environment form, resolved here when nothing is passed.
+    const fromEnv = buildReport(fx.w1, { env: { [STATE_HOME_ENV]: elsewhere } })
+    assert.equal(fromEnv.stateHome.home, realpathSync(elsewhere))
+    assert.equal(fromEnv.stateHome.surface, 'linked-worktree')
+    assert.equal(fromEnv.stateHome.resolvedFrom, 'explicit')
+    assert.equal(fromEnv.coverage.trajectories.scanned, 2)
+  } finally {
+    rmSync(fx.tmp, { recursive: true, force: true })
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test('a fallback resolution is named with its reason, read from the root, and the report still builds', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', ended())
+    const given = {
+      home: dir,
+      surface: 'unknown',
+      reason: `git rev-parse failed in ${dir} (exit 128): not a git repository, or one git refuses to read`,
+      resolvedFrom: 'fallback'
+    }
+    const report = buildReport(dir, { stateHome: given })
+    assert.deepEqual(report.stateHome, given)
+    assert.equal(report.coverage.trajectories.scanned, 1)
+
+    const text = formatReport(report)
+    assert.ok(text.includes(`state home: ${dir} (unknown)`))
+    assert.ok(text.includes(`STATE HOME UNRESOLVED: ${given.reason}`))
+    assert.match(text, /every corpus was read from the root/)
+    assert.ok(text.indexOf('STATE HOME UNRESOLVED') < text.indexOf('COVERAGE'))
+
+    const doc = renderReportHtml(report)
+    assert.ok(doc.includes('STATE HOME UNRESOLVED'))
+    assert.ok(doc.includes(given.reason))
+
+    // Resolved here rather than given: a root that is not a repository falls
+    // back the same way, with the resolver's own reason.
+    const self = buildReport(dir, { env: {} })
+    assert.equal(self.stateHome.resolvedFrom, 'fallback')
+    assert.equal(self.stateHome.surface, 'unknown')
+    assert.ok(self.stateHome.reason)
+    assert.ok(formatReport(self).includes(`STATE HOME UNRESOLVED: ${self.stateHome.reason}`))
+    assert.equal(self.coverage.trajectories.scanned, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

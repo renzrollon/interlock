@@ -318,3 +318,89 @@ test('a missing or empty root is refused by name rather than by exception', () =
   assert.equal(written.written, false)
   assert.match(written.reason, /root does not exist/)
 })
+
+// --- the lanes a reader can resume -------------------------------------------
+
+const LANES = [
+  { label: '1.1', sessionId: '11111111-1111-4111-8111-111111111111', outcome: 'failed' },
+  { label: '1.2', sessionId: '22222222-2222-4222-8222-222222222222', outcome: 'stopped by host: error_max_turns' }
+]
+
+test('every lane with a recorded host session gets its own resume command', () => {
+  const text = formatResumeCard({ ...HALTED, laneSessions: LANES })
+  assert.match(text, /^## Lanes with a host session$/m)
+  for (const lane of LANES) {
+    const row = text.split('\n').find(l => l.includes(`\`${lane.label}\``) && l.includes(lane.sessionId))
+    assert.ok(row, `a row for lane ${lane.label}`)
+    assert.ok(row.includes(lane.outcome), `the row names the lane's outcome: ${row}`)
+    assert.ok(row.includes(`\`claude --resume ${lane.sessionId} --fork-session\``), `the resume command: ${row}`)
+  }
+})
+
+test('the card says a resume command works only while the session still exists, and why it may not', () => {
+  const text = formatResumeCard({ ...HALTED, laneSessions: LANES })
+  assert.match(text, /only if the session still exists/)
+  assert.match(text, /retention period/, 'the host deletes transcripts after its retention period')
+  assert.match(text, /deleted in the desktop app/, 'and a deleted session is gone with its transcript')
+  assert.match(text, /transcript/)
+})
+
+test('a run with no lane session states the absence and prints no resume command', () => {
+  // The Workflow host always lands here: no lane has a host session id.
+  for (const laneSessions of [undefined, [], [{ label: '1.1', sessionId: null, outcome: 'failed' }]]) {
+    const text = formatResumeCard({ ...HALTED, laneSessions })
+    assert.match(text, /No lane recorded a host session, so there is no session to resume\./)
+    assert.doesNotMatch(text, /claude --resume/)
+    assert.doesNotMatch(text, /only if the session still exists/, 'no caveat about a command nobody was given')
+  }
+})
+
+test('a lane without a usable session id gets no command', () => {
+  const text = formatResumeCard({
+    ...HALTED,
+    laneSessions: [
+      LANES[0],
+      { label: '1.3', sessionId: '', outcome: 'failed' },
+      { label: '1.4', sessionId: 42, outcome: 'failed' },
+      { label: '1.5', sessionId: 'x; rm -rf ~', outcome: 'failed' }
+    ]
+  })
+  assert.equal((text.match(/claude --resume/g) || []).length, 1, 'one command, for the one usable id')
+  assert.doesNotMatch(text, /rm -rf/, 'an id that is not a safe identifier is never pasted into a command')
+  // An id that was recorded but cannot be printed as a command is said, not dropped.
+  assert.match(text, /`1\.5`[^\n]*not a safe identifier/)
+})
+
+test('the lane list is bounded by the published cap and states what it left out', () => {
+  const many = Array.from({ length: LIMITS.resumeCardListRows + 3 }, (_, i) => ({
+    label: `9.${i + 1}`,
+    sessionId: `sess-${i + 1}`,
+    outcome: 'failed'
+  }))
+  const text = formatResumeCard({ ...HALTED, laneSessions: many })
+  assert.equal((text.match(/claude --resume/g) || []).length, LIMITS.resumeCardListRows)
+  assert.match(text, /and 3 more — the full list is in `interlock run-log query --run run-20260918-abc --type agent-result`/)
+  assert.ok(text.includes(`sess-${LIMITS.resumeCardListRows} `), 'the last kept lane')
+  assert.ok(!text.includes(`sess-${LIMITS.resumeCardListRows + 1} `), 'the first dropped lane')
+})
+
+// --- the state home ----------------------------------------------------------
+
+test('a card from a linked worktree names the state home under the directory the close ran in', () => {
+  const text = formatResumeCard({ ...HALTED, cwd: '/r/.claude/worktrees/w1', stateHome: '/r' })
+  const rows = text.split('\n')
+  const cwd = rows.indexOf('- cwd: `/r/.claude/worktrees/w1`')
+  assert.ok(cwd > 0, 'the cwd line is printed')
+  assert.match(rows[cwd + 1], /^- state home: `\/r`/, 'directly under the cwd line')
+  // The trajectory is in the home, not the worktree, so it is named there.
+  assert.ok(text.includes(`\`${join('/r', '.claude', 'ship', 'runs', 'run-20260918-abc.jsonl')}\``), text)
+})
+
+test('a card whose state home is its cwd prints no state home line and is otherwise unchanged', () => {
+  const before = formatResumeCard(HALTED)
+  assert.doesNotMatch(before, /state home/)
+  assert.equal(formatResumeCard({ ...HALTED, stateHome: HALTED.cwd }), before)
+  assert.equal(formatResumeCard({ ...HALTED, stateHome: `${HALTED.cwd}/` }), before)
+  assert.equal(formatResumeCard({ ...HALTED, stateHome: null }), before)
+  assert.match(before, /- trajectory: `\.claude\/ship\/runs\/run-20260918-abc\.jsonl`/)
+})

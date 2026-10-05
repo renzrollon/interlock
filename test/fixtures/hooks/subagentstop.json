@@ -1,0 +1,22 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "00000000-0000-4000-8000-000000000001",
+  "permission_mode": "default",
+  "agent_id": "a0000000000000001",
+  "agent_type": "workflow-subagent",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000/subagents/workflows/wf_00000000-000/agent-a0000000000000001.jsonl",
+  "background_tasks": [
+    {
+      "id": "w00000000",
+      "type": "workflow",
+      "status": "running",
+      "description": "one agent for a hook payload probe",
+      "name": "hook-probe"
+    }
+  ],
+  "session_crons": []
+}

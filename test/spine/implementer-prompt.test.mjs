@@ -250,6 +250,12 @@ test('every tier is told to locate through the graph before grepping', () => {
   for (const tier of TIERS) {
     const prompt = assembleFromSource(forTier(tier))
     assert.match(prompt, /interlock-graph query \/ consumers before grep/)
+    // The gate moved into the CLI (ship/state-home): `interlock-graph` answers
+    // from the state home's graph when the lane's worktree has none, and says so,
+    // so a prompt that conditioned on a file in the working root would send a
+    // linked-worktree lane straight to grep past a graph it could have read.
+    assert.match(prompt, /Run interlock-graph query \/ consumers before grep; if it reports no graph, grep\./)
+    assert.doesNotMatch(prompt, /\.claude\/graph\/graph\.json/)
     assert.match(prompt, /Do not re-read a file unless it changed/)
     assert.match(prompt, /Return the schema only/)
     assert.match(prompt, /Do not commit, and do not edit tasks\.md/)

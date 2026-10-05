@@ -1,0 +1,57 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "api_error_status": null,
+  "duration_ms": 7992,
+  "duration_api_ms": 67913,
+  "num_turns": 1,
+  "result": "[scrubbed result text]",
+  "stop_reason": "end_turn",
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "total_cost_usd": 0.14365309999999998,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 983,
+    "cache_read_input_tokens": 44547,
+    "output_tokens": 345,
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 0,
+      "ephemeral_5m_input_tokens": 983
+    },
+    "service_tier": "standard"
+  },
+  "modelUsage": {
+    "bedrock.claude-haiku-4-5": {
+      "inputTokens": 1180,
+      "outputTokens": 501,
+      "cacheReadInputTokens": 41895,
+      "cacheCreationInputTokens": 21404,
+      "webSearchRequests": 0,
+      "costUSD": 0.034629499999999994,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "thinkingTokens": 112,
+      "canonicalModel": "claude-haiku-4-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    },
+    "bedrock.claude-sonnet-5": {
+      "inputTokens": 7231,
+      "outputTokens": 4692,
+      "cacheReadInputTokens": 116808,
+      "cacheCreationInputTokens": 9712,
+      "webSearchRequests": 0,
+      "costUSD": 0.1090236,
+      "contextWindow": 200000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 4215,
+      "canonicalModel": "claude-sonnet-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "permission_denials": [],
+  "terminal_reason": "completed",
+  "uuid": "00000000-0000-4000-8000-000000000002"
+}
