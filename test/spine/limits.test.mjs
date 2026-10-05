@@ -116,6 +116,26 @@ test('the launch ledger max age is read under lib/, where the cap-authority swee
   assert.ok(!/launchLedgerMaxAgeMs|24 \* 60 \* 60/.test(hook), 'the hook restates the cap instead of leaving it to lib/')
 })
 
+test('the ship meter\'s quiet threshold and tick are published and printed', () => {
+  // show-quiet-time-and-reset-the-meter-on-clear design D3: display thresholds
+  // with no verdict behind them, so a wrong value costs an early or a late word.
+  const text = formatLimits()
+  assert.match(text, new RegExp(`meter quiet after \\(ms\\)\\s+${LIMITS.meterQuietAfterMs}\\b`))
+  assert.match(text, new RegExp(`meter tick \\(ms\\)\\s+${LIMITS.meterTickMs}\\b`))
+})
+
+test('the ship meter\'s caps are read under lib/, and the hooks module restates neither', () => {
+  // The hooks module is outside the cap-authority sweep, like hooks/guard-relaunch.mjs
+  // above: its reader is the pure module it imports, and the module holds no number.
+  const reader = readFileSync(join(ROOT, 'lib', 'meter-quiet.mjs'), 'utf8')
+  assert.ok(reader.includes('LIMITS.meterQuietAfterMs'), 'lib/meter-quiet.mjs does not read the quiet threshold')
+  assert.ok(reader.includes('LIMITS.meterTickMs'), 'lib/meter-quiet.mjs does not read the tick')
+  const mod = readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8')
+  for (const restated of ['meterQuietAfterMs', 'meterTickMs', '5 * 60 * 1000', '15 * 1000']) {
+    assert.ok(!mod.includes(restated), `hooks/mod.mjs restates ${restated} instead of leaving it to lib/meter-quiet.mjs`)
+  }
+})
+
 test('the default fan-out sits under the runtime concurrency ceiling', () => {
   assert.ok(
     LIMITS.maxParallel <= RUNTIME.maxConcurrentAgents,

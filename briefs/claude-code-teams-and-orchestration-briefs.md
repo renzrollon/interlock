@@ -1363,6 +1363,14 @@ Two limits are stated now so the design does not discover them. `TurnUsage` carr
 - **Writing into `~/.claude/dev-mods/` from a run** (local-3, mods-26).
 - **`$.session.send` or `$.http.fetch` from the module.** The ntfy push is the CLI's one network call, and messaging another session from a guard is a new channel nobody asked for.
 
+**Note, 2026-10-05: what reading the built-in mods' source added.** After Briefs 7 and 8 landed, the source of the engine's four built-in mods (`sec-default`, `diff`, `telemetry`, `agents-md`; mods-27) was read for anything the module should copy or avoid. Three things came out of it:
+
+- **The `diff` mod resets on the session boundary; the meter did not.** `diff` hooks `command.run` on `clear` and `resume` to close its pane and forget its state. `hooks/mod.mjs` reset its run only in `session.start`, which does not fire there (mods-11), so after a `/clear` the status line named a run the conversation no longer held, while the launch ledger in `$.state` had already been emptied. Fixed by `show-quiet-time-and-reset-the-meter-on-clear`, on `classic.SessionStart` with a `clear`, `resume` or `fork` source rather than on the typed command, so a `/resume` picker the person leaves resets nothing and `/branch` is covered.
+- **The doctor's `mods` row reads the version alone.** On a managed or Team machine with `allowManagedModsOnly`, `sec-default` refuses the module at `plugin.register`, and `interlock doctor` still says `ok`. That is a silent degradation. It needs a probe of what the engine prints on that refusal first, then one doctor sentence. Not yet a change.
+- **`diff` falls back to an inline dialog below the dock width; the meter raises one toast instead.** A display option for the meter, not a priority.
+
+Brief 9's recording half is retired. It assumed Brief 4's transcript probe would fail. The probe passed, and the settings-hook recorder (275b2a3) already records what Brief 9 would have. The meter took only Brief 9's display half, and the module's pins forbid `$.fs.write` and `$.store`.
+
 ### Probes this addendum adds (unverified)
 
 - On a host below 2.1.287 (the 2.1.274 binary on this machine), what `hooks/hooks.json` with a `modules` key does to the plugin: ignored, warned, or refused; whether the settings hooks in the manifest still load; whether `claude plugin validate --strict` passes with it and with a `types` manifest key.

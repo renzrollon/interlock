@@ -42,7 +42,10 @@ export const ALLOWED_CALLS = Object.freeze([
   // and its one session-state key read and written.
   '$.clock.now',
   '$.state.get',
-  '$.state.set'
+  '$.state.set',
+  // The meter's one timer (show-quiet-time-and-reset-the-meter-on-clear design
+  // D2): the host's own interval, started for a live run and cancelled with it.
+  '$.clock.every'
 ])
 
 /** What the launch guard added to the meter's allow-list, exactly. */
@@ -51,7 +54,11 @@ const GUARD_CALLS = Object.freeze(['$.clock.now', '$.state.get', '$.state.set'])
 /** The one line in the module that may refuse a call: the rule's verdict, in the rule's words. */
 export const GUARD_REFUSAL = "if (launch && verdict.decision === 'deny') return { deny: verdict.reason }"
 
-/** The events the module hooks, exactly: the meter's, and the launch guard's two (design D3). */
+/**
+ * The events the module hooks, exactly: the meter's, the launch guard's two
+ * (design D3), and the session boundary the meter resets on
+ * (show-quiet-time-and-reset-the-meter-on-clear design D4).
+ */
 export const HOOKED_EVENTS = Object.freeze([
   'session.start',
   'tool.call',
@@ -61,7 +68,8 @@ export const HOOKED_EVENTS = Object.freeze([
   'ui.render',
   'command.run',
   'prompt.submit',
-  'session.receive'
+  'session.receive',
+  'classic.SessionStart'
 ])
 
 /** Tokens whose presence anywhere in the module means it stopped only observing (design D8). */
@@ -74,7 +82,10 @@ export const FORBIDDEN_TOKENS = Object.freeze([
   '$.http',
   '$.session.send',
   '$.fs.write',
-  '$.store'
+  '$.store',
+  // A wait charged to the hook's own budget: the meter's period is the host's
+  // interval, never a sleep loop inside a hook (show-quiet-time design D2).
+  '$.clock.sleep'
 ])
 
 const rel = abs => relative(ROOT, abs).split(sep).join('/')
@@ -256,7 +267,9 @@ test('the contract reader finds a declared key and misses an undeclared one', ()
 
 test('the hooks module hooks exactly the meter\'s events and the launch guard\'s two', () => {
   const source = readFileSync(moduleEntry(), 'utf8')
-  const hooked = [...new Set([...source.matchAll(/\bon\(\s*'([a-z.]+)'/g)].map(m => m[1]))]
+  // A classic event keeps its settings-hook name (`classic.SessionStart`), so
+  // the name is read with its capitals, or such a hook would go uncounted.
+  const hooked = [...new Set([...source.matchAll(/\bon\(\s*'([A-Za-z.]+)'/g)].map(m => m[1]))]
   assert.deepEqual([...hooked].sort(), [...HOOKED_EVENTS].sort())
 })
 

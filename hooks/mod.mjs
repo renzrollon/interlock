@@ -31,13 +31,25 @@
 // `test/mod/meter.test.ts` and `test/mod/relaunch.test.ts` under
 // `claude plugin test`.
 //
-// The meter's state is module-level (design D3): a reload starts it over, and
-// the next step that crosses the module carries the change and the wave again.
-// The guard's record is the session's (`$.state`, declared in
+// The meter's state is module-level (design D3): a reload starts it over, a run
+// launched before the reload is not drawn again, and the first of its steps to
+// cross the module is named once on the debug log. The guard's record is the session's (`$.state`, declared in
 // types/index.d.ts): it survives a reload, and /clear, /resume and /branch
-// empty it, which allows the next launch.
+// empty it, which allows the next launch. The meter's run ends on that same
+// boundary, the classic session-start event with a `clear`, `resume` or `fork`
+// source, so the two things the module keeps are reset together
+// (show-quiet-time-and-reset-the-meter-on-clear design D4).
+//
+// THE QUIET FIGURE (same change, design D1-D3, D5). While a run is live the
+// module stamps the engine's time of each thing the run does, and one interval
+// the host runs for it recomputes how long the run has been quiet. Once that
+// reaches the published threshold, `quiet <n> min` follows the position on the
+// status line, the spinner and the pane. The word names no cause, and the
+// threshold and the period are `lib/meter-quiet.mjs`'s, read from
+// `interlock limits`; this file holds neither number.
 
 import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
+import { TICK_MS, quietMs, quietWord } from '../lib/meter-quiet.mjs'
 
 const PANE = 'interlock-meter'
 const TITLE = 'Interlock'
@@ -59,9 +71,18 @@ const DRIVER_LINE = /^interlock\s/
 // The bootstrap line a lane's spawn prompt carries (as `lib/agent-usage.mjs` reads it).
 const BRIEFING_SHA = /Expected sha256: ([0-9a-f]{64})/g
 const TOKEN_FIELDS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+// The classic session-start sources that start the session over, as the person
+// typed them (design D4). `startup` and `compact` are not among them.
+const BOUNDARIES = new Map([
+  ['clear', '/clear'],
+  ['resume', '/resume'],
+  ['fork', '/branch']
+])
 
 let session = { interactive: false, surface: null }
 let run = freshRun()
+// Counts every interval this environment started, so a period can tell its own (design D2).
+let generations = 0
 
 function freshRun() {
   return {
@@ -80,7 +101,17 @@ function freshRun() {
     toasted: new Set(),
     agents: new Map(),
     summary: null,
-    exitCode: null
+    exitCode: null,
+    // The quiet figure (design D1, D2): the engine's time of the run's last
+    // activity (null until the clock answers), the word it makes, and the one
+    // interval that recomputes it, known by its handle and its generation.
+    lastActivityAt: null,
+    quietWord: null,
+    tick: null,
+    generation: 0,
+    clockFailed: false,
+    // Whether a step that crossed with no live run has been named on the debug log.
+    idleStepNamed: false
   }
 }
 
@@ -102,7 +133,9 @@ async function guardFacts($) {
     return { record: asRecord(held.value), now: await $.clock.now() }
   } catch (err) {
     $.ui.log(`${GUARD}: cannot establish this session's launches, allowing: ${messageOf(err)}`, { to: 'debug' })
-    return { record: emptyRecord(), now: 0 }
+    // No time, not a made-up one: the empty record allows before the rule reads
+    // it, and the meter stamps no launch time it does not have (design D1).
+    return { record: emptyRecord(), now: null }
   }
 }
 
@@ -136,6 +169,120 @@ function position() {
   if (run.wave !== undefined && run.wave !== null) parts.push(`wave ${run.wave}`)
   if (isInt(run.batchIndex) && isInt(run.batchCount)) parts.push(`batch ${run.batchIndex + 1}/${run.batchCount}`)
   return parts.join(' · ')
+}
+
+/** The position, then the quiet word while it is set: what the status line and the spinner say (design D5). */
+const shown = () => [position(), run.quietWord].filter(Boolean).join(' · ')
+
+function statusText() {
+  const text = shown()
+  return text ? `interlock: ${text}` : undefined
+}
+
+/**
+ * The engine's time now, or `null` when the clock cannot be read. A read that
+ * fails is named once per run on the debug log and never thrown (design D1).
+ */
+async function clockNow($) {
+  const held = run
+  try {
+    const now = await $.clock.now()
+    if (Number.isFinite(now)) return now
+    throw new Error(`the clock answered ${String(now)}`)
+  } catch (err) {
+    if (!held.clockFailed) {
+      held.clockFailed = true
+      $.ui.log(
+        `interlock meter: the clock cannot be read; the last activity time stands and no quiet figure is shown: ${messageOf(err)}`,
+        { to: 'debug' }
+      )
+    }
+    return null
+  }
+}
+
+/** Sets the quiet word; true when it changed. */
+function setWord(word) {
+  if (run.quietWord === word) return false
+  run.quietWord = word
+  return true
+}
+
+/** Draws the word where it shows: the status line while the run is live, the pane and the spinner. */
+function redrawWord($) {
+  if (run.phase === 'live') $.ui.status(statusText())
+  $.ui.invalidate('ui.render')
+}
+
+/**
+ * Activity (design D1): the run's last activity is now, and the quiet word is
+ * gone. A clock that cannot be read leaves the stamp as it was and the word
+ * absent, never a guessed time. True when the word changed, so the caller redraws.
+ */
+async function stamp($) {
+  const held = run
+  const now = await clockNow($)
+  if (held !== run) return false
+  if (now !== null) run.lastActivityAt = run.lastActivityAt === null ? now : Math.max(run.lastActivityAt, now)
+  return setWord(null)
+}
+
+/**
+ * Starts the run's one interval (design D2), the host's own timer: each period
+ * reads the clock and recomputes the word, and draws only when the word
+ * changed. A period that finds another run or another interval in its place
+ * returns at once. A host that will not start one leaves the pane, which
+ * recomputes the word whenever it is drawn.
+ */
+function startTick($) {
+  const generation = ++generations
+  run.generation = generation
+  const isMine = tick => run.generation === generation && run.tick === tick
+  try {
+    const tick = $.clock.every(TICK_MS, async () => {
+      if (!isMine(tick)) return
+      try {
+        const now = await clockNow($)
+        if (isMine(tick) && setWord(quietWord(quietMs(run.lastActivityAt, now)))) redrawWord($)
+      } catch (err) {
+        $.ui.log(`interlock meter: a quiet-figure period failed: ${messageOf(err)}`, { to: 'debug' })
+      }
+    })
+    run.tick = tick
+  } catch (err) {
+    $.ui.log(`interlock meter: no interval for the quiet figure; the pane computes it when drawn: ${messageOf(err)}`, {
+      to: 'debug'
+    })
+  }
+}
+
+/** Ends the run's interval, if it has one: a cancelled timer never fires again. */
+function stopTick() {
+  if (run.tick) run.tick.cancel()
+  run.tick = null
+  run.quietWord = null
+}
+
+/** Names, once per run record, a step that crossed with no live run (design D4). */
+function nameIdleStep($) {
+  run.idleStepNamed = true
+  $.ui.log(
+    'interlock meter: a step crossed with no live run and is not drawn ' +
+      "(a run launched before a /clear, /resume or /branch, or before this module reloaded, is no longer this session's)",
+    { to: 'debug' }
+  )
+}
+
+/** A driver-line call with no live run: passed on whole, its result read only to name the first step (design D4). */
+async function idleStep($, e, next) {
+  if (run.phase !== 'idle' || run.idleStepNamed) return next(e)
+  const r = await next(e)
+  try {
+    if (readRecord(r.text).record && run.phase === 'idle' && !run.idleStepNamed) nameIdleStep($)
+  } catch {
+    // Reading the result is all this does; the call and its result are the engine's.
+  }
+  return r
 }
 
 /** The step record in a Bash result's text, guarded as the driver guards it: an object with a string `action`. */
@@ -176,7 +323,10 @@ function addUsage(a, usage) {
   if (str(usage.model) && !a.models.includes(usage.model)) a.models.push(usage.model)
 }
 
-function applyRecord($, record) {
+async function applyRecord($, record) {
+  const held = run
+  await stamp($)
+  if (held !== run) return
   const isClose = record.then === null && typeof record.summary === 'string' && typeof record.exitCode === 'number'
   if (str(record.change)) run.change = record.change
   run.action = record.action
@@ -206,12 +356,14 @@ function applyRecord($, record) {
   if (isClose) {
     run.exitCode = record.exitCode
     run.phase = 'closed'
+    stopTick()
     $.ui.status(undefined)
   } else if (record.action === 'close' || record.action === 'halt') {
     run.phase = 'closing'
+    stopTick()
     $.ui.status(undefined)
   } else {
-    $.ui.status(`interlock: ${position()}`)
+    $.ui.status(statusText())
   }
   $.ui.invalidate('ui.render')
 }
@@ -242,6 +394,18 @@ function laneForAgent(a) {
   return null
 }
 
+/**
+ * `last activity <ISO>` or `last activity unknown`, then the quiet word while a
+ * live run is quiet. The word is recomputed from the clock at each draw, so a
+ * pane opened after the host stopped the interval still shows it (design D2, D5).
+ */
+async function lastActivityText($) {
+  if (run.lastActivityAt === null) return 'last activity unknown'
+  const at = new Date(run.lastActivityAt).toISOString()
+  const word = run.phase === 'live' ? quietWord(quietMs(run.lastActivityAt, await clockNow($))) : null
+  return `last activity ${at}${word ? ` · ${word}` : ''}`
+}
+
 async function drawPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
   const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
@@ -252,6 +416,7 @@ async function drawPane($, e) {
   const out = []
   out.push(h(Text, { bold: true }, `${run.change || 'ship run'}${run.runId ? ` · run ${run.runId}` : ''}`))
   out.push(keyed('action', `action: ${run.action || 'starting'}${run.phase === 'closed' ? ' (closed)' : ''}`))
+  out.push(keyed('last-activity', await lastActivityText($)))
   out.push(h(Text, { dimColor: true }, RECORD_LINE))
 
   out.push(h(Text, { bold: true }, 'waves'))
@@ -316,6 +481,7 @@ async function drawPane($, e) {
 export function register(on) {
   on('session.start', async ($, e, next) => {
     session = { interactive: e.isInteractive === true, surface: e.surface || null }
+    stopTick()
     run = freshRun()
     try {
       await $.command.register({
@@ -377,26 +543,34 @@ export function register(on) {
       )
     }
 
-    // The meter: an accepted ship launch makes the run live.
+    // The meter: an accepted ship launch makes the run live, its first activity
+    // at the time the guard read (design D1), and starts its interval.
     if (!session.interactive || !accepted) return r
+    stopTick()
     run = freshRun()
+    const launched = run
     run.phase = 'live'
     run.runId = str(r.result.runId)
     run.workflowName = str(r.result.workflowName)
     run.transcriptDir = str(r.result.transcriptDir)
+    run.lastActivityAt = now
     $.ui.invalidate('ui.render')
     const placed = await openPane($)
     if (!placed || placed.isPlaced !== true) $.ui.toast(UNPLACED_TOAST)
+    if (run === launched) startTick($)
     return r
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (!watching() || typeof e.command !== 'string' || !DRIVER_LINE.test(e.command)) return next(e)
+    if (!session.interactive || typeof e.command !== 'string' || !DRIVER_LINE.test(e.command)) return next(e)
+    if (!watching()) return idleStep($, e, next)
+    const held = run
     const r = await next(e)
     try {
       const { record, problem } = readRecord(r.text)
-      if (record) applyRecord($, record)
-      else $.ui.log(`interlock meter: ${e.command.slice(0, 80)}: not a step record (${problem})`, { to: 'debug' })
+      if (!record) $.ui.log(`interlock meter: ${e.command.slice(0, 80)}: not a step record (${problem})`, { to: 'debug' })
+      else if (held === run) await applyRecord($, record)
+      else if (run.phase === 'idle' && !run.idleStepNamed) nameIdleStep($)
     } catch (err) {
       $.ui.log(`interlock meter: step read failed: ${(err && err.message) || err}`, { to: 'debug' })
     }
@@ -405,7 +579,10 @@ export function register(on) {
 
   on('turn.step', async function* ($, e, next) {
     if (!session.interactive || run.phase !== 'live' || !e.agentId) return yield* next(e)
+    // A run agent's request starting, and its answer arriving, are each activity (design D1).
+    if (await stamp($)) redrawWord($)
     const result = yield* next(e)
+    if (await stamp($)) redrawWord($)
     try {
       addUsage(agentOf(e.agentId), result ? result.usage : null)
       $.ui.invalidate('ui.render')
@@ -420,6 +597,7 @@ export function register(on) {
       const a = agentOf(e.agentId)
       a.reason = str(e.reason)
       a.durationMs = typeof e.durationMs === 'number' ? e.durationMs : null
+      if (await stamp($)) redrawWord($)
       $.ui.invalidate('ui.render')
     }
     return next(e)
@@ -427,16 +605,44 @@ export function register(on) {
 
   on('agent.spawn', async ($, e, next) => {
     const r = await next(e)
-    if (session.interactive && run.phase === 'live' && r && str(r.agentId) && typeof e.prompt === 'string') {
-      const found = [...e.prompt.matchAll(BRIEFING_SHA)]
-      if (found.length) agentOf(r.agentId).sha = found[found.length - 1][1]
+    if (session.interactive && run.phase === 'live') {
+      if (r && str(r.agentId) && typeof e.prompt === 'string') {
+        const found = [...e.prompt.matchAll(BRIEFING_SHA)]
+        if (found.length) agentOf(r.agentId).sha = found[found.length - 1][1]
+      }
+      if (await stamp($)) redrawWord($)
     }
     return r
   })
 
+  // The session boundary (design D4). /clear, /resume and /branch start the
+  // session over: the engine empties `$.state`, the launch guard's record with
+  // it, and `session.start` does not fire. The meter ends the run it holds on
+  // the same event. A compaction is the same session and the same run, and a
+  // source this cannot read changes nothing. The pane is left open: it redraws
+  // to the no-run text, which is true, and the person dismisses it.
+  on('classic.SessionStart', async ($, e, next) => {
+    if (!session.interactive) return next(e)
+    try {
+      const boundary = BOUNDARIES.get(e.source)
+      if (boundary) {
+        const ended = run
+        stopTick()
+        run = freshRun()
+        $.ui.status(undefined)
+        $.ui.invalidate('ui.render')
+        const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
+        $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
+      }
+    } catch (err) {
+      $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {
     if (!session.interactive || run.phase !== 'live') return next(e)
-    const suffix = position()
+    const suffix = shown()
     return suffix ? next({ ...e, props: { ...e.props, suffix } }) : next(e)
   })
 
