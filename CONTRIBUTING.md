@@ -23,7 +23,7 @@ claude --plugin-dir .         # load it without installing
 - **A prose instruction nobody asserts silently stops running.** When you add an instruction to a skill, pin it in `test/skills.test.mjs` — and assert tokens, not sentences.
 - **Degradation is spoken, never silent.** If a path degrades, say so in the output.
 
-Changes to this repository go through its own loop: `/interlock:spec`, read the spec, `/interlock:ship`. See [CLAUDE.md](./CLAUDE.md) for the full set of things to get right.
+Changes to this repository go through its own loop: `/interlock:spec`, read the spec, `/interlock:ship`. See [.claude/CLAUDE.md](./.claude/CLAUDE.md) for the full set of things to get right.
 
 ## Model evals
 

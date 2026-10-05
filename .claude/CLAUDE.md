@@ -2,7 +2,7 @@
 
 Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec.
 
-This file is the canonical root instruction file. `AGENTS.md`, if present, is a pointer to it — do not maintain a second copy of this content there.
+This file is the canonical instruction file. It lives at `.claude/CLAUDE.md`, not the repository root, because the root is also the plugin root and `claude plugin validate --strict` rejects a `CLAUDE.md` there. `AGENTS.md`, if present, is a pointer to it — do not maintain a second copy of this content there.
 
 ## Commands
 

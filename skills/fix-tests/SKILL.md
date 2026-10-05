@@ -34,7 +34,7 @@ Resolve `typecheck.command` and `lint.command` on the same pass, the way `covera
 
 This is the only skill permitted to interview the user about tests. Every later run is zero-question.
 
-Persist the profile and mirror it into the `## Testing` block in `CLAUDE.md` (or `AGENTS.md`), between the managed markers, idempotently.
+Persist the profile and mirror it into the `## Testing` block of the first instruction file that exists — `CLAUDE.md`, then `.claude/CLAUDE.md`, then `AGENTS.md` — between the managed markers, idempotently.
 
 ---
 

@@ -225,16 +225,27 @@ test('exclusions shrink the input but leave the band unchanged for what remains'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-for (const file of ['CLAUDE.md', 'REVIEW.md']) {
-  test(`this repository has a non-empty ${file} at its root`, () => {
+// The instruction file lives at `.claude/CLAUDE.md`, which Claude Code loads as
+// project instructions exactly as it loads a root one: the repository root is
+// also the plugin root, and `claude plugin validate --strict` rejects a
+// `CLAUDE.md` there as context the plugin cannot ship.
+for (const file of ['.claude/CLAUDE.md', 'REVIEW.md']) {
+  test(`this repository has a non-empty ${file}`, () => {
     const path = join(REPO_ROOT, file)
-    assert.ok(existsSync(path), `${file} is missing from the repo root`)
+    assert.ok(existsSync(path), `${file} is missing from the repo`)
     assert.ok(
       readFileSync(path, 'utf8').trim().length > 0,
       `${file} exists but is empty, which is indistinguishable from absent to every reader`
     )
   })
 }
+
+test('this repository has no CLAUDE.md at its root, which is also the plugin root', () => {
+  assert.ok(
+    !existsSync(join(REPO_ROOT, 'CLAUDE.md')),
+    'a root CLAUDE.md fails `claude plugin validate . --strict`; the instructions live in .claude/CLAUDE.md'
+  )
+})
 
 test("this repository's REVIEW.md parses into a real policy, not the empty one", () => {
   const policy = readReviewPolicy(REPO_ROOT)

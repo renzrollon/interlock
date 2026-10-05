@@ -5,8 +5,9 @@ Durable, machine-readable record of how a project's tests run. Owned by
 re-sniff `package.json` on every run.
 
 **Path:** `.claude/testing/profile.json`  
-**Human mirror:** idempotent `## Testing` block in `CLAUDE.md` (or `AGENTS.md`
-on Cursor-only projects) between HTML comment markers (see below).
+**Human mirror:** idempotent `## Testing` block in the project's instruction
+file — `CLAUDE.md`, `.claude/CLAUDE.md`, or `AGENTS.md` on Cursor-only
+projects — between HTML comment markers (see below).
 
 Learned gotchas discovered mid-fix go to
 `.claude/memory/failure-modes/<slug>.md` (max 3 per session) — **not** into
@@ -153,9 +154,13 @@ reuse as-is.
 
 ## Human mirror (`## Testing` block)
 
-Write (or replace) content **between** these markers inside `CLAUDE.md`
-(prefer) or `AGENTS.md` (if that is the project's agent doc and `CLAUDE.md`
-is absent):
+Write (or replace) content **between** these markers inside the first of
+these that exists: `CLAUDE.md` at the root, then `.claude/CLAUDE.md`, then
+`AGENTS.md` (if that is the project's agent doc). Create a root `CLAUDE.md`
+only when none of the three exists. A repository that is also a Claude Code
+plugin keeps its instructions in `.claude/CLAUDE.md`, because
+`claude plugin validate --strict` rejects a `CLAUDE.md` at the plugin root; a
+mirror that recreated one there would turn that repository's CI red.
 
 ```markdown
 ## Testing

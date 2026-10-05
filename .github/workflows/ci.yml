@@ -34,10 +34,7 @@ jobs:
       # The hooks module's own tests (test/mod/*.test.ts), run by the engine's
       # kit; `npm test` never collects them. A host that cannot load mods
       # fails this step rather than skipping it. It runs even when the strict
-      # validate above is red: from Claude Code 2.1.289 that validate fails this
-      # checkout for a pre-existing warning (CLAUDE.md at the plugin root is not
-      # loaded as project context), unrelated to the hooks module, whose fix is
-      # a separate change. This step's own result stays visible in the same log.
+      # validate above is red, so its own result stays visible in the same log.
       - name: Hooks module tests
         if: ${{ !cancelled() }}
         run: claude plugin test .

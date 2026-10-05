@@ -452,6 +452,19 @@ test('fix-tests resolves the typecheck and lint commands, the only supplier a sh
   }
 })
 
+test('fix-tests mirrors into an existing .claude/CLAUDE.md, never recreating a root one', () => {
+  // A plugin repository keeps its instructions in `.claude/CLAUDE.md`, because
+  // `claude plugin validate --strict` rejects a `CLAUDE.md` at the plugin root.
+  // A mirror that only knew the root file would create one there and turn that
+  // repository's CI red. Tokens, not sentences.
+  const text = readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8')
+  assert.ok(text.includes('.claude/CLAUDE.md'), 'fix-tests/SKILL.md no longer names .claude/CLAUDE.md')
+  const contract = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
+  for (const token of ['.claude/CLAUDE.md', 'AGENTS.md', 'validate --strict']) {
+    assert.ok(contract.includes(token), `shared/TEST-PROFILE.md no longer names ${token}`)
+  }
+})
+
 test('both review skills request review-metrics emission on their gated command line', () => {
   // This is the assertion the defect it guards did not have. `--metrics` existed
   // on `interlock review` for a year and no skill ever passed it, so the
