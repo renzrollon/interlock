@@ -1,23 +1,43 @@
-// The ship meter: a hooks module that draws a ship run while it runs.
+// The ship meter: a hooks module that draws a ship run while it runs, and the
+// in-process form of the launch guard.
 //
-// Every hook here observes. The CLI decides; this module shows what the CLI
-// already said, the moment it says it: the step each `interlock` call printed
-// (read off the ping's Bash result), the per-agent figures each model request
-// reported, and the plan windows the session reports. It writes nothing, joins
+// Every hook here observes but one branch. The CLI decides; this module shows
+// what the CLI already said, the moment it says it: the step each `interlock`
+// call printed (read off the ping's Bash result), the per-agent figures each
+// model request reported, and the plan windows the session reports. It joins
 // nothing into any record, and recognises no banner by its wording: it shows
 // the `banners` list the CLI emitted. The close summary and the receipt are
 // the record; the pane says so.
 //
-// It runs in the engine's own environment, with no Node and `$` as its only
-// way out, so it imports nothing from the plugin that reaches `node:`. The two
-// launch handles and the briefing-hash expression are restated below rather
-// than imported, because `lib/launch-ledger.mjs` and `lib/agent-usage.mjs`
-// import `node:fs` (design D4, D5). What it may call and must never contain
-// is pinned by `test/spine/mod-pins.test.mjs` (design D8); its behaviour by
-// `test/mod/meter.test.ts` under `claude plugin test`.
+// THE ONE BRANCH THAT DECIDES (guard-ship-relaunch-in-process design D3). The
+// Workflow hook refuses a ship launch when the session recorded one newer than
+// its last human prompt: the settings hook `hooks/guard-relaunch.mjs` reads the
+// same rule over a file, and this reads it over the engine's own prompt origin
+// and session state, before the engine or the settings layer sees the call.
+// The verdict and its words are `lib/launch-rule.mjs`'s, never this file's;
+// `test/spine/mod-pins.test.mjs` pins that the refusal is that verdict, once.
+// A guard that cannot read its facts allows, says so on the debug log, and
+// leaves the settings form to decide.
 //
-// State is module-level (design D3): a reload starts it over, and the next
-// step that crosses the module carries the change and the wave again.
+// It runs in the engine's own environment, with no Node and `$` as its only
+// way out, so it imports nothing from the plugin that reaches `node:`:
+// `lib/launch-rule.mjs` is Node-free by design, and the briefing-hash
+// expression is restated below rather than imported, because
+// `lib/agent-usage.mjs` imports `node:fs` (design D4, D5). It imports nothing
+// from `claude-code` either: Claude Code 2.1.274 refuses a module that passes
+// `$` into a function imported from there, so the state is read and written
+// with `$.state` directly. What it may call and must never contain is pinned
+// by `test/spine/mod-pins.test.mjs` (design D8); its behaviour by
+// `test/mod/meter.test.ts` and `test/mod/relaunch.test.ts` under
+// `claude plugin test`.
+//
+// The meter's state is module-level (design D3): a reload starts it over, and
+// the next step that crosses the module carries the change and the wave again.
+// The guard's record is the session's (`$.state`, declared in
+// types/index.d.ts): it survives a reload, and /clear, /resume and /branch
+// empty it, which allows the next launch.
+
+import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
 
 const PANE = 'interlock-meter'
 const TITLE = 'Interlock'
@@ -25,11 +45,15 @@ const RECORD_LINE = 'live figures; the close summary and the receipt are the rec
 const NO_RUN_LINE = 'no ship run is live in this session'
 const UNPLACED_TOAST = '/interlock-meter opens the ship meter'
 
-// The plugin's ship workflow, by either handle the host passes (as
-// `lib/launch-ledger.mjs` matches them).
-const SHIP_SCRIPT = /(^|\/)workflows\/ship\.js$/
-const SHIP_NAME = /(^|[^A-Za-z0-9_])interlock:ship$/
-const LAUNCHED = new Set(['async_launched', 'remote_launched'])
+// The launch guard's record in the session's state: the one key the plugin's
+// type contract declares (types/index.d.ts; guard-ship-relaunch-in-process D2).
+const LEDGER = { plugin: 'interlock', key: 'ledger' }
+// The prompt origins a person stands behind: their own Enter, the Remote
+// Control bridge, the SDK host's turn (design D3). The completion wake, a
+// schedule, a peer, a channel, a coordinator, an observer, a plugin's own and
+// a missing origin count nothing.
+const HUMAN_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
+const GUARD = 'interlock guard'
 // The line `cli()` in workflows/ship.js hands the ping (design D2).
 const DRIVER_LINE = /^interlock\s/
 // The bootstrap line a lane's spawn prompt carries (as `lib/agent-usage.mjs` reads it).
@@ -64,10 +88,44 @@ const watching = () => session.interactive && (run.phase === 'live' || run.phase
 const isInt = v => Number.isInteger(v)
 const str = v => (typeof v === 'string' && v ? v : null)
 
-function isShipLaunch(input) {
-  if (!input || typeof input !== 'object') return false
-  const scriptPath = typeof input.scriptPath === 'string' ? input.scriptPath.replace(/\\/g, '/') : ''
-  return (scriptPath !== '' && SHIP_SCRIPT.test(scriptPath)) || (typeof input.name === 'string' && SHIP_NAME.test(input.name))
+const messageOf = err => (err && err.message) || String(err)
+const asRecord = value => (value && typeof value === 'object' && Array.isArray(value.launches) ? value : emptyRecord())
+
+/**
+ * What the launch guard decides over: the session's record and the time now. A
+ * missing or malformed record is empty; one that cannot be read at all is
+ * empty too, and named on the debug log. An empty record allows (design D5).
+ */
+async function guardFacts($) {
+  try {
+    const held = await $.state.get(LEDGER)
+    return { record: asRecord(held.value), now: await $.clock.now() }
+  } catch (err) {
+    $.ui.log(`${GUARD}: cannot establish this session's launches, allowing: ${messageOf(err)}`, { to: 'debug' })
+    return { record: emptyRecord(), now: 0 }
+  }
+}
+
+/**
+ * Change the session's record with `change(record, at)`, `at` the time now as
+ * ISO. Written only over the version it read and read again when another write
+ * landed first, as the engine's `update` does. A write that fails is named on
+ * the debug log and never thrown: it runs after the call it records did.
+ */
+async function changeRecord($, what, change) {
+  try {
+    const at = new Date(await $.clock.now()).toISOString()
+    let held = await $.state.get(LEDGER)
+    for (;;) {
+      const written = await $.state.set(LEDGER, change(asRecord(held.value), at), { ifVersion: held.version })
+      if (written.isSet) return
+      const again = await $.state.get(LEDGER)
+      if (again.version === held.version) throw new Error(`the write missed at version ${held.version} with no other write`)
+      held = again
+    }
+  } catch (err) {
+    $.ui.log(`${GUARD}: ${what} not recorded: ${messageOf(err)}`, { to: 'debug' })
+  }
 }
 
 /** `<change> · <action> · wave <w> · batch <j>/<k>`, each position omitted when the step carries none (design D6). */
@@ -281,10 +339,45 @@ export function register(on) {
     return next(e)
   })
 
+  // A human prompt re-arms the next ship launch; nothing else does (design D3).
+  // The prompt is passed on as it came: never rewritten, never dropped.
+  on('prompt.submit', async ($, e, next) => {
+    const kind = e.origin && typeof e.origin.kind === 'string' ? e.origin.kind : 'unstamped'
+    if (HUMAN_ORIGINS.has(kind)) await changeRecord($, 'human prompt', withPrompt)
+    else $.ui.log(`${GUARD}: a ${kind} prompt is not a human prompt; not counted`, { to: 'debug' })
+    return next(e)
+  })
+
+  // A relayed task notification, named and passed on, never consumed. The
+  // completion wake of a run does not come this way (it is a prompt above).
+  on('session.receive', { origin: { kind: 'task-notification' } }, async ($, e, next) => {
+    $.ui.log(`${GUARD}: a task-notification delivery is not a human prompt; passed on, not counted`, { to: 'debug' })
+    return next(e)
+  })
+
   on('tool.call', { tool: 'Workflow' }, async ($, e, next) => {
-    if (!session.interactive) return next(e)
+    // The launch guard, in every session: a ship launch with no human prompt
+    // since this session's last is refused, in the rule's words, before the
+    // engine or the settings layer sees it (design D3, D4).
+    const { record, now } = await guardFacts($)
+    const launch = isShipLaunch(e, record)
+    const verdict = decideLaunch(record, now)
+    if (launch && verdict.decision === 'deny') return { deny: verdict.reason }
     const r = await next(e)
-    if (!isShipLaunch(e) || r.isError === true || !r.result || !LAUNCHED.has(r.result.status)) return r
+    const accepted = launch && r.isError !== true && isAcceptedLaunch(r.result)
+    if (accepted) {
+      await changeRecord($, 'ship launch', (current, at) =>
+        withLaunch(current, {
+          at,
+          runId: str(r.result.runId),
+          workflowName: str(r.result.workflowName),
+          scriptPath: str(r.result.scriptPath)
+        })
+      )
+    }
+
+    // The meter: an accepted ship launch makes the run live.
+    if (!session.interactive || !accepted) return r
     run = freshRun()
     run.phase = 'live'
     run.runId = str(r.result.runId)

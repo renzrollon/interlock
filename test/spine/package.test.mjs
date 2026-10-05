@@ -169,6 +169,40 @@ test('a file the hooks module imports outside the whitelist is named; claude-cod
   }
 })
 
+/**
+ * The manifest's type contract, when it names one, as a path `files` must cover
+ * (guard-ship-relaunch-in-process; spec: distribution/npm-package). A plugin
+ * published without the file its manifest names fails the host's validation at
+ * install, and its session state is refused. No `types` key: nothing to ship.
+ *
+ * @returns {string[]} the named path when it is uncovered, else nothing
+ */
+function uncoveredContract(manifest, files) {
+  if (typeof manifest.types !== 'string') return []
+  const path = manifest.types.replace(/^\.\//, '')
+  return coveredBy(files, path) ? [] : [`${path} (named by the manifest's "types")`]
+}
+
+test('the manifest\'s type contract exists and ships in the tarball', () => {
+  const manifest = readJson(PLUGIN_PATH)
+  if (typeof manifest.types === 'string') {
+    assert.ok(
+      statSync(join(ROOT, manifest.types), { throwIfNoEntry: false })?.isFile(),
+      `.claude-plugin/plugin.json names types ${manifest.types}, which does not exist`
+    )
+  }
+  const uncovered = uncoveredContract(manifest, pkg.files)
+  assert.deepEqual(uncovered, [], `the type contract ships in no "files" entry:\n  ${uncovered.join('\n  ')}`)
+})
+
+test('a contract the whitelist does not cover is named; a manifest without types asserts nothing', () => {
+  const manifest = { name: 'p', types: './types/index.d.ts' }
+  assert.deepEqual(uncoveredContract(manifest, ['types', 'lib']), [])
+  assert.deepEqual(uncoveredContract(manifest, ['types/']), [])
+  assert.deepEqual(uncoveredContract(manifest, ['lib', 'hooks']), ['types/index.d.ts (named by the manifest\'s "types")'])
+  assert.deepEqual(uncoveredContract({ name: 'p' }, []), [], 'no types key, no contract to ship')
+})
+
 test('the files whitelist never ships the repository-only directories', () => {
   const never = ['test', 'openspec', 'docs', 'evals', '.claude']
   for (const entry of pkg.files) {

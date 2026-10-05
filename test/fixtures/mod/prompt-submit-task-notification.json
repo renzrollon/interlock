@@ -1,0 +1,13 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.289 interactive (tmux), scratch logger mod hooking prompt.submit; the completion wake of a Workflow launched by that prompt",
+    "date": "2026-10-05",
+    "change": "guard-ship-relaunch-in-process task 1.1"
+  },
+  "text": "<task-notification>\n<task-id>w00000001</task-id>\n<tool-use-id>toolu_00000000000000000000000001</tool-use-id>\n<output-file>/tmp/claude-1000/-home-user-project/00000000-0000-4000-8000-000000000000/tasks/w00000001.output</output-file>\n<status>completed</status>\n<summary>Dynamic workflow \"Task 1.1 probe: completes at once so the session is woken\" completed</summary>\n<result>{\"done\":true}</result>\n<diagnostics>Per-agent results: /home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000/subagents/workflows/wf_00000000-001/journal.jsonl \u2014 one {\"type\":\"result\",...} line per completed agent with its full return value.\nIf the result above is empty or unexpected, Read this file BEFORE diagnosing \u2014 do not assume agents returned non-empty results.\nTo re-run with edited post-processing: Workflow({scriptPath: '/home/user/project/probe/origin-probe.js', resumeFromRunId: 'wf_00000000-001'}) \u2014 agents whose (prompt, opts) are unchanged replay from cache.</diagnostics>\n<usage><agent_count>0</agent_count><agents_done>0</agents_done><agents_error>0</agents_error><agents_skipped>0</agents_skipped><agents_empty_result>0</agents_empty_result><subagent_tokens>0</subagent_tokens><tool_uses>0</tool_uses><duration_ms>2</duration_ms></usage>\n</task-notification>",
+  "wait": false,
+  "origin": {
+    "kind": "task-notification"
+  },
+  "turnId": "00000000-0000-4000-8000-0000000000t1"
+}

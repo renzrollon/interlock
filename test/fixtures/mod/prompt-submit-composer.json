@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.289 interactive (tmux), scratch logger mod hooking prompt.submit; the prompt typed at the composer",
+    "date": "2026-10-05",
+    "change": "guard-ship-relaunch-in-process task 1.1"
+  },
+  "text": "Call the Workflow tool exactly once with scriptPath /home/user/project/probe/origin-probe.js and no other arguments, then end your turn. When it completes, reply with the single word DONE.",
+  "wait": false,
+  "origin": {
+    "kind": "composer"
+  }
+}

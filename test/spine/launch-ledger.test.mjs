@@ -11,6 +11,12 @@
 // `isShipLaunch` is pinned against the payloads captured from the host
 // (test/fixtures/hooks/), not only against shapes invented here: a field the
 // host renames fails these cases rather than silently stopping the guard.
+//
+// The rule itself lives in `lib/launch-rule.mjs`, which the hooks module
+// imports too (guard-ship-relaunch-in-process design D1). The first block below
+// pins that there is one rule: the ledger module's rule names are the rule
+// module's own objects, and the rule module stays importable where there is
+// no Node.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,11 +25,14 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS } from '../../lib/limits.mjs'
+import * as rule from '../../lib/launch-rule.mjs'
+import * as ledgerModule from '../../lib/launch-ledger.mjs'
 import {
   LEDGER_DIR,
   LEDGER_SCHEMA,
   SKILL_QUOTE,
   decideLaunch,
+  emptyRecord,
   isAcceptedLaunch,
   isHumanPrompt,
   isShipLaunch,
@@ -31,7 +40,9 @@ import {
   readLedger,
   recordLaunch,
   recordPrompt,
-  sweepStale
+  sweepStale,
+  withLaunch,
+  withPrompt
 } from '../../lib/launch-ledger.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -62,6 +73,124 @@ const ledgerOf = (launches, lastHumanPromptAt = null, sessionId = 's-1') => ({
   sessionId,
   launches: launches.map(at => ({ at: iso(at), taskId: 't', runId: 'wf_1', workflowName: 'ship', scriptPath: '/x/ship-wf_1.js' })),
   lastHumanPromptAt: lastHumanPromptAt === null ? null : iso(lastHumanPromptAt)
+})
+
+// ---------------------------------------------------------------------------
+// One rule, two transports (guard-ship-relaunch-in-process design D1)
+// ---------------------------------------------------------------------------
+
+const RULE_SOURCE = readFileSync(join(ROOT, 'lib', 'launch-rule.mjs'), 'utf8')
+
+/** Every module specifier a source names: static imports, re-exports, side-effect and dynamic imports. */
+const specifiersOf = source => [
+  ...new Set(
+    [/\bfrom\s*['"]([^'"]+)['"]/g, /\bimport\s*['"]([^'"]+)['"]/g, /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g].flatMap(re =>
+      [...source.matchAll(re)].map(m => m[1])
+    )
+  )
+]
+
+test('the rule module names no node: import and imports only ./limits.mjs', () => {
+  const specs = specifiersOf(RULE_SOURCE)
+  const nodeImports = specs.filter(s => s.startsWith('node:'))
+  assert.deepEqual(nodeImports, [], `lib/launch-rule.mjs imports ${nodeImports.join(', ')}; the hooks module cannot load it`)
+  assert.deepEqual(specs, ['./limits.mjs'], `lib/launch-rule.mjs imports: ${specs.join(', ')}`)
+})
+
+test('every rule name the ledger module exports is the rule module\'s own object', () => {
+  const names = Object.keys(rule)
+  for (const name of ['decideLaunch', 'denyReason', 'isShipLaunch', 'isAcceptedLaunch', 'isHumanPrompt', 'emptyRecord', 'withLaunch', 'withPrompt', 'SKILL_QUOTE', 'WAKE_MARKER', 'LEDGER_SCHEMA']) {
+    assert.ok(names.includes(name), `lib/launch-rule.mjs does not export ${name}`)
+  }
+  for (const name of names) {
+    assert.ok(name in ledgerModule, `lib/launch-ledger.mjs does not re-export ${name}`)
+    assert.equal(ledgerModule[name], rule[name], `lib/launch-ledger.mjs's ${name} is not lib/launch-rule.mjs's`)
+  }
+})
+
+test('emptyRecord is the ledger schema with no launch and no prompt, fresh on every call', () => {
+  const record = emptyRecord()
+  assert.deepEqual(record, { schema: LEDGER_SCHEMA, launches: [], lastHumanPromptAt: null })
+  record.launches.push({ at: iso(T0) })
+  assert.deepEqual(emptyRecord().launches, [], 'a caller that mutates one record leaves the next untouched')
+})
+
+test('withLaunch appends a launch without touching its input, and drops launches past the published age', () => {
+  const launch = at => ({ at: iso(at), runId: `wf_${at}`, workflowName: 'interlock:ship', scriptPath: `/p/${at}.js` })
+  const before = { ...emptyRecord(), launches: [launch(T0)], lastHumanPromptAt: iso(T0 + 10) }
+  const after = withLaunch(before, launch(T0 + 1000))
+  assert.deepEqual(after.launches, [launch(T0), launch(T0 + 1000)])
+  assert.equal(after.lastHumanPromptAt, iso(T0 + 10), 'the recorded prompt is kept')
+  assert.equal(before.launches.length, 1, 'the record it was given is not mutated')
+
+  const aged = withLaunch({ ...emptyRecord(), launches: [launch(T0), launch(T0 + 5000), { at: 'yesterday' }] }, launch(T0 + MAX + 1000))
+  assert.deepEqual(
+    aged.launches.map(l => l.at),
+    [iso(T0 + 5000), iso(T0 + MAX + 1000)],
+    `launches older than LIMITS.launchLedgerMaxAgeMs, and an unreadable time, are dropped`
+  )
+  assert.equal(withLaunch(emptyRecord(), launch(T0 + MAX), MAX).launches.length, 1)
+})
+
+test('withLaunch over anything that is not a record starts from emptyRecord', () => {
+  for (const junk of [null, undefined, 'x', [], { launches: 'nope' }]) {
+    const record = withLaunch(junk, { at: iso(T0), runId: 'wf_1', workflowName: null, scriptPath: null })
+    assert.equal(record.schema, LEDGER_SCHEMA, String(junk))
+    assert.equal(record.launches.length, 1, String(junk))
+    assert.equal(record.lastHumanPromptAt, null, String(junk))
+  }
+})
+
+test('withPrompt sets the ISO prompt time and never moves it back', () => {
+  const base = withLaunch(emptyRecord(), { at: iso(T0), runId: 'wf_1', workflowName: 'ship', scriptPath: null })
+  const prompted = withPrompt(base, iso(T0 + 2000))
+  assert.equal(prompted.lastHumanPromptAt, iso(T0 + 2000))
+  assert.equal(base.lastHumanPromptAt, null, 'the record it was given is not mutated')
+  assert.equal(withPrompt(prompted, iso(T0 + 1000)).lastHumanPromptAt, iso(T0 + 2000), 'an earlier time is not recorded')
+  assert.equal(withPrompt(prompted, iso(T0 + 3000)).lastHumanPromptAt, iso(T0 + 3000))
+  assert.equal(withPrompt(null, iso(T0)).lastHumanPromptAt, iso(T0), 'over no record it starts from emptyRecord')
+})
+
+test('recordLaunch writes the record withLaunch makes of the read file, and recordPrompt the one withPrompt makes', () => {
+  const root = tmpRoot()
+  try {
+    plant(root, 's-1', ledgerOf([T0], T0 + 500))
+    const read = readLedger(root, 's-1', { now: T0 + 1000 })
+    const entry = {
+      at: iso(T0 + 1000),
+      taskId: POST.tool_response.taskId,
+      runId: POST.tool_response.runId,
+      workflowName: POST.tool_response.workflowName,
+      scriptPath: POST.tool_response.scriptPath
+    }
+    recordLaunch(root, 's-1', POST.tool_response, { now: T0 + 1000 })
+    const afterLaunch = JSON.parse(readFileSync(join(root, LEDGER_DIR, 's-1.json'), 'utf8'))
+    assert.deepEqual(afterLaunch, withLaunch(read, entry))
+
+    recordPrompt(root, 's-1', { now: T0 + 2000 })
+    const afterPrompt = JSON.parse(readFileSync(join(root, LEDGER_DIR, 's-1.json'), 'utf8'))
+    assert.deepEqual(afterPrompt, withPrompt(afterLaunch, iso(T0 + 2000)))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('decideLaunch over a plain record and over the same facts read from a file returns the same verdict', () => {
+  const root = tmpRoot()
+  try {
+    const plain = { launches: [{ at: iso(T0), runId: 'wf_1', workflowName: 'ship', scriptPath: '/x/ship-wf_1.js' }], lastHumanPromptAt: null }
+    plant(root, 's-1', { schema: LEDGER_SCHEMA, sessionId: 's-1', ...plain })
+    for (const now of [T0 + 1000, T0 + MAX - 1, T0 + MAX + 1]) {
+      const fromFile = decideLaunch(readLedger(root, 's-1', { now, maxAgeMs: MAX }), now, MAX)
+      const fromMemory = decideLaunch(plain, now, MAX)
+      assert.equal(fromMemory.decision, fromFile.decision, `at +${now - T0} ms`)
+      assert.equal(fromMemory.reason, fromFile.reason, `at +${now - T0} ms`)
+    }
+    assert.equal(decideLaunch(plain, T0 + 1000, MAX).decision, 'deny', 'inside the age both deny')
+    assert.equal(decideLaunch(plain, T0 + MAX + 1, MAX).decision, 'allow', 'past the age both allow')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -127,6 +256,19 @@ test('isAcceptedLaunch accepts the captured response and refuses an error or a n
   assert.equal(isAcceptedLaunch({ status: 'failed' }), false)
   assert.equal(isAcceptedLaunch('Error: Workflow "interlock:x" not found.'), false, 'the engine\'s refusal is a string')
   for (const junk of [null, undefined, 42, []]) assert.equal(isAcceptedLaunch(junk), false, String(junk))
+})
+
+test('the wake the hooks module sees carries the marker the settings form reads, and the typed prompt does not', () => {
+  // Two captures of one fact (guard-ship-relaunch-in-process task 1.1): the
+  // engine stamps `origin.kind`, and the same wake's text is what
+  // UserPromptSubmit hands the settings hook. The two forms classify alike.
+  const mod = name => JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'mod', name), 'utf8'))
+  const wake = mod('prompt-submit-task-notification.json')
+  const typed = mod('prompt-submit-composer.json')
+  assert.equal(wake.origin.kind, 'task-notification')
+  assert.equal(isHumanPrompt(wake.text), false)
+  assert.equal(typed.origin.kind, 'composer')
+  assert.equal(isHumanPrompt(typed.text), true)
 })
 
 test('isHumanPrompt refuses the captured completion wake and accepts a typed prompt', () => {

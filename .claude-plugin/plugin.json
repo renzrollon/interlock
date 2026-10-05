@@ -19,6 +19,7 @@
     "knowledge-graph"
   ],
   "workflows": "./workflows",
+  "types": "./types/index.d.ts",
   "hooks": {
     "SessionStart": [
       {

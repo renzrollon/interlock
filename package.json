@@ -18,6 +18,7 @@
     "workflows",
     "skills",
     "hooks",
+    "types",
     "agents",
     "shared",
     ".claude-plugin",
