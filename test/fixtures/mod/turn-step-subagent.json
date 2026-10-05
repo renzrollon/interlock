@@ -1,0 +1,24 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.289 -p, scratch logger mod, Workflow agent() typed interlock:ping",
+    "date": "2026-10-05",
+    "change": "draw-the-ship-run-live task 1.2"
+  },
+  "input": {
+    "turnId": "t1",
+    "index": 0,
+    "model": "claude-opus-5-5",
+    "messageCount": 12,
+    "agentId": "a1",
+    "effort": "medium"
+  },
+  "result": {
+    "usage": {
+      "input_tokens": 13470,
+      "output_tokens": 84,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 21190,
+      "model": "claude-opus-5-5"
+    }
+  }
+}

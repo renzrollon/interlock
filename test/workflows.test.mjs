@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, readFileSync, readdirSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { join, dirname } from 'node:path'
+import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
 
@@ -956,6 +956,35 @@ function runRunnerCaptured(host, { fixture, fixtureFlags = [], flags = [], env =
 function runRunner(host, opts) {
   return runRunnerCaptured(host, opts).stdout
 }
+
+test('a runner lane resolves interlock with bin/ first, ahead of a decoy', () => {
+  const { root, change } = runnerRepo()
+  const decoy = mkdtempSync(join(tmpdir(), 'interlock-decoy-'))
+  const log = join(decoy, 'lane-path.txt')
+  try {
+    writeFileSync(join(decoy, 'interlock'), '#!/bin/sh\nexit 1\n')
+    chmodSync(join(decoy, 'interlock'), 0o755)
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship', `--fixture-record-path=${log}`],
+      env: { PATH: [decoy, process.env.PATH].filter(Boolean).join(delimiter) },
+      root,
+      change
+    })
+    assert.match(stdout, /SHIP COMPLETE/, `a summary must be printed:\n${stdout}`)
+    const lines = readFileSync(log, 'utf8').split('\n').filter(line => line !== '')
+    assert.ok(lines.length >= 2, `expected at least 2 lane PATH lines, got ${lines.length}`)
+    const binDir = join(ROOT, 'bin')
+    for (const line of lines) {
+      const entries = line.split(delimiter)
+      assert.equal(entries[0], binDir, `bin/ must lead the lane PATH:\n${line}`)
+      assert.ok(entries.indexOf(decoy) > 0, `the decoy must remain after bin/:\n${line}`)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(decoy, { recursive: true, force: true })
+  }
+})
 
 test('the runner forks a worktree per lane, folds both, and removes them', () => {
   const { root, change } = runnerRepo()

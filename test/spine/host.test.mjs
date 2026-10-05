@@ -14,12 +14,13 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import {
   INTERLOCK_BIN,
   HOST_PORTS,
   assertWorkflowHost,
   createFakeHost,
+  laneEnv,
   mapPipeline,
   parseAgentJson,
   runCli
@@ -455,6 +456,63 @@ test('effort control is declared by every host, and an unprobed manifest still m
   // The merge default when a caller omits the key. `run start --host workflow`
   // replaces it with the help probe before the manifest is written.
   assert.equal(ASSUMED_CAPABILITIES.effort, 'flag')
+})
+
+const BIN_DIR = dirname(INTERLOCK_BIN)
+
+test('laneEnv puts the bin directory first and keeps the rest in order', () => {
+  const env = { PATH: ['/usr/bin', '/bin', '/opt/bin'].join(delimiter), HOME: '/home/me' }
+  const out = laneEnv(env)
+  assert.deepEqual(out.PATH.split(delimiter), [BIN_DIR, '/usr/bin', '/bin', '/opt/bin'])
+})
+
+test('laneEnv lists an existing copy of the bin directory once, first', () => {
+  const env = { PATH: ['/usr/bin', BIN_DIR, '/bin', BIN_DIR].join(delimiter) }
+  assert.deepEqual(laneEnv(env).PATH.split(delimiter), [BIN_DIR, '/usr/bin', '/bin'])
+})
+
+test('laneEnv with no PATH is just the bin directory', () => {
+  const out = laneEnv({ HOME: '/tmp' })
+  assert.equal(out.PATH, BIN_DIR)
+  assert.deepEqual(
+    Object.keys(out).filter(key => key.toLowerCase() === 'path'),
+    ['PATH']
+  )
+})
+
+test('laneEnv does not mutate its input', () => {
+  const env = { PATH: '/usr/bin', HOME: '/tmp' }
+  const before = { ...env }
+  const out = laneEnv(env)
+  assert.deepEqual(env, before)
+  assert.notEqual(out, env)
+})
+
+test('laneEnv keeps a Path key and does not add a second one', () => {
+  // Entries must not contain the platform delimiter: a drive-letter path would
+  // split on `:` here and say nothing about the key's spelling.
+  const env = { Path: ['/opt/windows', '/opt/tools'].join(delimiter), HOME: '/home/me' }
+  const out = laneEnv(env)
+  assert.deepEqual(
+    Object.keys(out).filter(key => key.toLowerCase() === 'path'),
+    ['Path']
+  )
+  assert.equal('PATH' in out, false)
+  assert.deepEqual(out.Path.split(delimiter), [BIN_DIR, '/opt/windows', '/opt/tools'])
+})
+
+test('laneEnv passes other variables through, including CLAUDE_CODE_EFFORT_LEVEL', () => {
+  const env = {
+    PATH: '/usr/bin',
+    CLAUDE_CODE_EFFORT_LEVEL: 'high',
+    HOME: '/home/me',
+    INTERLOCK_RUN_HOST: 'claude'
+  }
+  const out = laneEnv(env)
+  assert.equal(out.CLAUDE_CODE_EFFORT_LEVEL, 'high')
+  assert.equal(out.HOME, '/home/me')
+  assert.equal(out.INTERLOCK_RUN_HOST, 'claude')
+  assert.equal(out.PATH.split(delimiter)[0], BIN_DIR)
 })
 
 test('parseAgentJson recovers a result from prose, a fence, or neither', () => {

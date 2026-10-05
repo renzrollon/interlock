@@ -88,7 +88,7 @@ Every deny decision SHALL emit the reason in the structure Claude Code's hook pr
 
 ### Requirement: The test-edit guard SHALL read the test profile the run recorded when the working root has none
 
-When the test-edit guard finds a live stage marker and the working root holds no test profile, it SHALL read the profile path the run manifest in the working root recorded at start and derive its test roots from that file, so a run in a linked worktree keeps the profile-derived roots of its main checkout. A manifest without a recorded path, a path that cannot be read, or no manifest at all SHALL leave the guard with the suffix rule alone, allowing as it does today. The guard SHALL NOT run version control to find the profile.
+When the test-edit guard finds a live stage marker and the working root holds no test profile, it SHALL read the profile path the run manifest in the working root recorded at start and derive its test roots from that file, so a run in a linked worktree keeps the profile-derived roots of its main checkout. A recorded path that cannot be read SHALL leave the guard with no test roots and the suffix rule alone, said on stderr (the run had a profile, so test files exist, and the suffix needs no roots); a manifest without a recorded path, or no manifest at all, SHALL allow the edit, as the guard does when no profile names where tests live. The guard SHALL NOT run version control to find the profile.
 
 #### Scenario: Happy path — a worktree run keeps its test roots
 

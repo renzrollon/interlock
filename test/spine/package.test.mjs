@@ -9,7 +9,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -119,6 +120,55 @@ test('the files whitelist is closed over every binary\'s import graph', () => {
   )
 })
 
+/**
+ * The hooks modules `hooks/hooks.json` names under `modules`, resolved against
+ * that file (design D11). A bare specifier such as `claude-code` is the
+ * engine's, so `relativeSpecifiers` never walks it.
+ */
+function hooksModuleRoots(root) {
+  const path = join(root, 'hooks', 'hooks.json')
+  const parsed = JSON.parse(readFileSync(path, 'utf8'))
+  return (Array.isArray(parsed.modules) ? parsed.modules : []).map(m => resolve(dirname(path), m))
+}
+
+/** Every file reachable from `entries` that `files` does not cover, named with its root. */
+function uncoveredFrom(root, files, entries, label) {
+  const out = []
+  for (const entry of entries) {
+    for (const abs of importClosure(entry)) {
+      const path = relative(root, abs).split(sep).join('/')
+      if (!coveredBy(files, path)) out.push(`${path} (reachable from ${label})`)
+    }
+  }
+  return out
+}
+
+test('the files whitelist is closed over the hooks module\'s import graph', () => {
+  const entries = hooksModuleRoots(ROOT)
+  assert.equal(entries.length, 1, 'hooks/hooks.json names no hooks module')
+  const uncovered = uncoveredFrom(ROOT, pkg.files, entries, 'the hooks module')
+  assert.deepEqual(uncovered, [], `these files ship in no "files" entry:\n  ${uncovered.join('\n  ')}`)
+})
+
+test('a file the hooks module imports outside the whitelist is named; claude-code is not walked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-hooks-closure-'))
+  try {
+    mkdirSync(join(dir, 'hooks'))
+    mkdirSync(join(dir, 'lib'))
+    writeFileSync(join(dir, 'hooks', 'hooks.json'), JSON.stringify({ hooks: {}, modules: ['./mod.mjs'] }))
+    writeFileSync(
+      join(dir, 'hooks', 'mod.mjs'),
+      "import { h } from 'claude-code'\nimport { pure } from '../lib/pure-thing.mjs'\nexport function register() { return [h, pure] }\n"
+    )
+    writeFileSync(join(dir, 'lib', 'pure-thing.mjs'), 'export const pure = 1\n')
+    assert.deepEqual(uncoveredFrom(dir, ['hooks'], hooksModuleRoots(dir), 'the hooks module'), [
+      'lib/pure-thing.mjs (reachable from the hooks module)'
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the files whitelist never ships the repository-only directories', () => {
   const never = ['test', 'openspec', 'docs', 'evals', '.claude']
   for (const entry of pkg.files) {
@@ -151,5 +201,33 @@ test('package.json, plugin.json and marketplace.json carry one version', () => {
     distinct.size,
     1,
     `the version-bearing manifests disagree:\n  ${versions.map(([f, v]) => `${f}: ${v}`).join('\n  ')}`
+  )
+})
+
+// A `String.replace` whose replacement contained `$`` spliced this file's
+// preamble in twice, mid-line. A line-anchored check of the opening heading
+// still passes on that file, because the copies do not start a line; the
+// substring count is what fails. Unique `## ` headings catch the `$&` and `$'`
+// variants of the same mistake.
+test('CHANGELOG.md names itself once and its section headings do not repeat', () => {
+  const text = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')
+  assert.equal(text.startsWith('# Changelog\n'), true, 'CHANGELOG.md must open with "# Changelog"')
+  const nameCount = text.split('# Changelog').length - 1
+  assert.equal(
+    nameCount,
+    1,
+    `"# Changelog" occurs ${nameCount} times; a replacement splice lands it mid-line, where a line-anchored check would still pass`
+  )
+  const headings = [...text.matchAll(/^## .+$/gm)].map(match => match[0])
+  const seen = new Set()
+  const repeated = []
+  for (const heading of headings) {
+    if (seen.has(heading)) repeated.push(heading)
+    else seen.add(heading)
+  }
+  assert.deepEqual(
+    [...new Set(repeated)],
+    [],
+    `a ## heading repeats:\n  ${[...new Set(repeated)].join('\n  ')}`
   )
 })

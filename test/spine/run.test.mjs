@@ -5200,3 +5200,112 @@ test('a pre-change trajectory still lists, checks and renders through the binary
     cleanup(root)
   }
 })
+
+// ============================================================================
+// The banners a second reader displays (draw-the-ship-run-live, ship/run-program)
+//
+// The ship meter reads every step off the ping's Bash result and toasts the
+// `banners` it carries; it recognises no banner by its wording. So a banner the
+// CLI raised must reach a step as a field, never only the close summary's prose,
+// and the close's JSON record must carry its banners beside its summary.
+// ============================================================================
+
+test('run start in a root with no graph carries the GRAPH UNAVAILABLE text on the step', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, profileNaming('root'))
+    const started = step0(root, ['run', 'start', '--change', change])
+    assert.ok(Array.isArray(started.banners) && started.banners.includes(NO_GRAPH_LINE), JSON.stringify(started.banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a banner raised from host records at record-batch rides the step that call returns', () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    const records = [
+      hostRecord('1.1', { subtype: 'error_max_turns', isError: true, terminalReason: 'max_turns', exitCode: 1 }),
+      hostRecord('1.2'),
+      hostRecord('1.3'),
+      hostRecord('1.4')
+    ]
+    const results = batch.lanes.map(lane => (lane[0].id === '1.1' ? null : laneResult(lane)))
+    const recorded = step0(root, batch.then.argv, { results, hostRecords: records })
+    assert.ok(manifestOf(root).banners.includes('LANE STOPPED BY HOST: 1.1 error_max_turns'))
+    assert.ok(
+      (recorded.banners || []).includes('LANE STOPPED BY HOST: 1.1 error_max_turns'),
+      `the banner reached the summary only: step banners ${JSON.stringify(recorded.banners)}`
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a step that raised nothing carries no banner it did not raise', () => {
+  const { root, change } = repo('add-thing', { tasks: FOUR_TASKS })
+  try {
+    const batch = startWithHost(root, change, 'claude', RUNNER_CAPS, [], FOUR_LANES)
+    const records = batch.spawns.map(s => hostRecord(s.label))
+    const recorded = step0(root, batch.then.argv, { results: batch.lanes.map(laneResult), hostRecords: records })
+    assert.ok(!anyStartsWith(recorded.banners, 'GRAPH UNAVAILABLE'), 'the start step\'s banner is not raised again')
+    assert.ok(!anyStartsWith(recorded.banners, 'LANE STOPPED'), JSON.stringify(recorded.banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+/** The per-run identity rows of a close summary (run id, slug, cwd, state home), which differ between two runs and nothing else does. */
+const IDENTITY_ROW = /^\s*(run|project|cwd|state home): .*$/gm
+const withoutIdentity = text => text.replace(IDENTITY_ROW, '<identity>')
+
+test('run close --json carries every banner the summary lists, in its order, and the same summary bytes', () => {
+  // Two independent, identical lean runs: one closes with --json, one without.
+  // A copied root would share the first run's state home and trajectory.
+  const a = repo()
+  const b = repo()
+  try {
+    toTail(a.root, a.change, [])
+    toTail(b.root, b.change, [])
+    const closed = run(a.root, ['run', 'close']).step
+    const plain = cli(b.root, ['run', 'close'], { json: false })
+    assert.equal(plain.code, 0, `${plain.stdout}\n${plain.stderr}`)
+    assert.ok(Array.isArray(closed.banners), 'the close record has no banners array')
+    assert.ok(closed.banners.includes(NO_GRAPH_LINE), JSON.stringify(closed.banners))
+    const at = closed.banners.map(banner => closed.summary.indexOf(banner))
+    assert.ok(at.every(i => i >= 0), `a banner the record carries is not in the summary: ${JSON.stringify(closed.banners)}`)
+    assert.deepEqual(at, [...at].sort((x, y) => x - y), 'the record\'s banners are not in the summary\'s order')
+    assert.equal(withoutIdentity(closed.summary + '\n'), withoutIdentity(plain.stdout), 'the --json summary differs from the bytes run close prints')
+  } finally {
+    cleanup(a.root)
+    cleanup(b.root)
+  }
+})
+
+test('run close --halt --json carries action halt, exit 1 and its banners', () => {
+  const { root, change } = repo()
+  try {
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close', '--halt', 'unresolved blockers'], { expectExit: 1 }).step
+    assert.equal(closed.action, 'halt')
+    assert.equal(closed.exitCode, 1)
+    assert.ok(Array.isArray(closed.banners) && closed.banners.includes(NO_GRAPH_LINE), JSON.stringify(closed.banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a clean close carries an empty banners array, present and not absent', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, profileNaming('root'))
+    file(root, GRAPH_PATH, { nodes: [], edges: [] })
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close']).step
+    assert.ok(Array.isArray(closed.banners), 'banners is absent')
+    assert.deepEqual(closed.banners, [], `a clean run raised: ${JSON.stringify(closed.banners)}`)
+  } finally {
+    cleanup(root)
+  }
+})

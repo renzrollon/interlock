@@ -29,6 +29,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import * as claudeEnv from '../../lib/host/claude-env.mjs'
 import {
   checkClaudeBare,
   checkStateDirs,
@@ -1212,6 +1213,92 @@ test('the claude-env row is never fail, whatever the env holds', () => {
     const report = diagnose(dir, { ...baseOpts(dir), env: hostile })
     assert.equal(byId(report, 'claude-env').status, 'skip')
     assert.ok(!report.failures.includes('claude-env'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The mods row: whether the host can load the plugin's hooks module — advice
+// ---------------------------------------------------------------------------
+
+/** The `mods` row of a report whose `claude --version` probe answers `version`. */
+function modsRow(dir, version, env = {}) {
+  file(dir, '.claude/testing/profile.json', PROFILE)
+  file(dir, '.claude/settings.json', ALL_ALLOWED)
+  const opts = baseOpts(dir)
+  const report = diagnose(dir, { ...opts, env: { ...opts.env, ...env }, probeVersion: () => version, cpuCount: 8 })
+  return { row: byId(report, 'mods'), report }
+}
+
+test('the mods row is ok at the floor, naming the version and the binary it probed', () => {
+  const dir = tmp()
+  try {
+    const { row, report } = modsRow(dir, '2.1.289 (Claude Code)', { INTERLOCK_CLAUDE_COMMAND: '/opt/bin/claude-wrapper' })
+    assert.ok(row, 'doctor carries no mods row')
+    assert.equal(row.status, 'ok')
+    assert.match(row.detail, /2\.1\.289/)
+    assert.match(row.detail, /\/opt\/bin\/claude-wrapper/)
+    assert.ok(!report.failures.includes('mods'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the mods row is skip below the floor, naming the version, the floor, and that the run is unchanged', () => {
+  const dir = tmp()
+  try {
+    const { row, report } = modsRow(dir, '2.1.274 (Claude Code)')
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /2\.1\.274/)
+    assert.match(row.detail, new RegExp(String(claudeEnv.MODS_MIN_HOST_VERSION).replace(/\./g, '\\.')))
+    assert.match(row.detail, /draws nothing here/)
+    assert.match(row.detail, /every banner/)
+    assert.ok(!report.failures.includes('mods'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unreadable version is skip, named unknown, with the Desktop sentence', () => {
+  const dir = tmp()
+  try {
+    const { row } = modsRow(dir, null)
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /unknown/)
+    assert.match(row.detail, /Desktop/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the mods row is never fail, whatever the env holds', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const hostile = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const report = diagnose(dir, { ...baseOpts(dir), env: hostile })
+    assert.equal(byId(report, 'mods').status, 'skip')
+    assert.ok(!report.failures.includes('mods'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the mods row rides doctor --json', () => {
+  const dir = tmp()
+  try {
+    const { report } = modsRow(dir, '2.1.289 (Claude Code)')
+    assert.ok(JSON.parse(JSON.stringify(report)).checks.some(c => c.id === 'mods'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

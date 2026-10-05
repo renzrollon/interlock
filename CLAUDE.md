@@ -13,7 +13,8 @@ This file is the canonical root instruction file. `AGENTS.md`, if present, is a 
 ## Conventions
 
 - **Zero runtime dependencies.** `package.json` has no `dependencies` key and CI installs nothing — the whole toolchain is stdlib Node. Adding a dependency is a design decision, not an implementation detail; it belongs in a change's `design.md` with a pinned exact version.
-- Node >= 18, `"type": "module"`, `.mjs` throughout.
+- Node >= 18, `"type": "module"`, `.mjs` throughout. The one exception is the hooks module's tests, `test/mod/*.test.ts`: `claude plugin test` runs only `*.test.ts`/`*.test.tsx` files against the engine itself, and `npm test` collects `*.test.mjs` only, so they never reach the Node runner.
+- `hooks/mod.mjs` (named by `hooks/hooks.json`) runs inside the engine with no Node: it and everything it imports must stay free of `node:` modules and bare specifiers other than `claude-code`. `test/spine/mod-pins.test.mjs` pins that, and its observe-only allow-list.
 - `openspec/` belongs to the OpenSpec CLI. Write into it through `openspec new change` / `openspec instructions`, not by hand-scaffolding directories.
 
 ## Architecture
@@ -21,7 +22,7 @@ This file is the canonical root instruction file. `AGENTS.md`, if present, is a 
 - `bin/` — the executables that land on a user's PATH (`interlock`, `interlock-graph`, `interlock-run`, plus the `interlock-ship-acp` deprecation shim). Exit codes are the contract; a gate blocks by exiting non-zero.
 - `lib/` — pure decision modules, one concern each. No I/O beyond what a module's name implies. `lib/run.mjs` is the ship loop itself: it emits the whole program as versioned steps (agents to spawn, briefings, the exact CLI argv to call next); `lib/prompts/` assembles every briefing those steps carry.
 - `skills/` — model-facing prose. This is a shipped surface: a reworded instruction is a behaviour change.
-- `hooks/` — `PreToolUse` and `SessionStart` guards, registered in `.claude-plugin/plugin.json`.
+- `hooks/` — `PreToolUse` and `SessionStart` guards, registered in `.claude-plugin/plugin.json`; and `mod.mjs`, the ship meter, a hooks module `hooks/hooks.json` names, which observes a ship run and decides nothing.
 - `workflows/ship.js` — the drivers are interpreters, not orchestrators: this script (and `bin/interlock-run`) spawn what a step from `interlock run` names, create the lane worktree it names, and call what it names next. Neither holds loop logic; `lib/run.mjs` does.
 - `lib/host/` — one adapter per vendor coding CLI (`claude-cli`, `acp`, `codex`, `qwen`), plus the registry that declares what each host cannot do and the one model map they all read. A capability is declared so the run program can branch on it and the runner can banner it; a host that could not be bannered is a run that degraded silently.
 - `docs/` — numbered, human-facing. `.claude/graph/` holds the agent-facing digests instead.

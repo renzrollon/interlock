@@ -27,6 +27,9 @@
 //   --fixture-fail        exit non-zero, so the spawn is null
 //   --fixture-no-output   exit 0 with an envelope carrying no structured_output
 //   --fixture-echo        return the argv and cwd it saw, for argv pinning
+//   --fixture-record-path=FILE  append process.env.PATH, one line, on a lane
+//                         invocation (`-p`). A `--help` or `--version` probe
+//                         writes nothing
 //   --fixture-write=PATH  the file an implementer lane writes (lane collisions)
 //   --fixture-per-lane    write a file named after the lane's own task ids instead
 //   --fixture-no-effort-flag  a CLI that predates `--effort`: its help omits the
@@ -62,7 +65,7 @@
 // version mode is NOT answered: it falls through to the contract checks below
 // and is refused, so a probe that forgot to name a version reads as unknown.
 
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, constants, mkdirSync, openSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { projectSlug } from '../../../lib/project-slug.mjs'
 import { shipAnswer } from './ship-answers.mjs'
@@ -148,6 +151,40 @@ for (const required of ['-p', '--output-format']) {
 if (valueOf('--output-format') !== 'json') {
   process.stderr.write('fake-claude: --output-format must be json\n')
   process.exit(64)
+}
+
+// A lane invocation, not the adapter's `--help` / `--version` probe: those
+// exit above. Parallel lanes share the file, so the append takes a lock.
+const pathLog = valueOf('--fixture-record-path')
+if (pathLog) {
+  const line = `${process.env.PATH ?? ''}\n`
+  const lock = `${pathLog}.lock`
+  const deadline = Date.now() + 5000
+  for (;;) {
+    let fd
+    try {
+      fd = openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY)
+    } catch (err) {
+      if (err && err.code === 'EEXIST' && Date.now() < deadline) {
+        const until = Date.now() + 5
+        while (Date.now() < until) {}
+        continue
+      }
+      throw err
+    }
+    try {
+      appendFileSync(pathLog, line)
+    } finally {
+      closeSync(fd)
+      try {
+        unlinkSync(lock)
+      } catch {
+        // The line is already written. A lost cleanup race leaves the lock
+        // for the deadline above, which is a test failure rather than a torn line.
+      }
+    }
+    break
+  }
 }
 if (!has('--json-schema')) {
   process.stderr.write('fake-claude: the adapter must enforce a result schema\n')

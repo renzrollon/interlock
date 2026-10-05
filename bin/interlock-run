@@ -38,6 +38,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { laneEnv } from '../lib/host.mjs'
 import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.mjs'
 import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
 import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
@@ -272,6 +273,7 @@ try {
     ...(hostId === 'acp' && typeof flags['acp-command'] === 'string'
       ? { command: flags['acp-command'] }
       : {}),
+    env: laneEnv(process.env),
     cwd: root,
     timeoutMs: Number.isInteger(Number.parseInt(String(flags['timeout-ms'] ?? ''), 10))
       ? Number.parseInt(String(flags['timeout-ms']), 10)

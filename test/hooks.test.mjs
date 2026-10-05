@@ -1578,3 +1578,37 @@ test('recorder: the manifest registers one recorder file on all five events, the
   second.hooks.SubagentStop.push({ matcher: WORKFLOW_MATCHER, hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/agent-recorder.mjs"' }] })
   assert.notDeepEqual(recorderRegistrationProblems(second), [], 'a second recorder file went unnoticed')
 })
+
+// ---------------------------------------------------------------------------
+// The hooks module beside the settings hooks (draw-the-ship-run-live, D13)
+// ---------------------------------------------------------------------------
+
+test('with hooks/hooks.json present, the manifest still holds every settings hook and the file adds none', () => {
+  // The file exists for the engine's hooks module. A host below the mods floor
+  // reads the same path as its settings-hooks file, so the record it carries
+  // must stay empty and every guard, the preflight and the recorder stay where
+  // the registration pins above read them: in the manifest.
+  const hooksJson = JSON.parse(readFileSync(join(ROOT, 'hooks', 'hooks.json'), 'utf8'))
+  assert.deepEqual(hooksJson.hooks, {}, 'hooks/hooks.json registers settings hooks of its own')
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+  const registered = Object.entries(manifest.hooks).flatMap(([event, groups]) =>
+    groups.flatMap(g =>
+      (g.hooks || []).map(h => `${event} ${g.matcher || '-'} ${((h.args || []).join(' ') + ' ' + (h.command || '')).match(/hooks\/[\w-]+\.mjs/)?.[0]}`)
+    )
+  )
+  assert.deepEqual(registered.sort(), [
+    'PermissionDenied - hooks/recorder.mjs',
+    'PermissionRequest - hooks/recorder.mjs',
+    'PostToolUse Workflow hooks/guard-relaunch.mjs',
+    'PreToolUse Bash hooks/guard-commit.mjs',
+    'PreToolUse Edit|Write hooks/guard-tasks.mjs',
+    'PreToolUse Edit|Write hooks/guard-tests.mjs',
+    'PreToolUse Workflow hooks/guard-relaunch.mjs',
+    'SessionEnd - hooks/recorder.mjs',
+    'SessionStart - hooks/preflight.mjs',
+    'SubagentStart ^workflow-subagent$ hooks/recorder.mjs',
+    'SubagentStop ^workflow-subagent$ hooks/recorder.mjs',
+    'UserPromptExpansion - hooks/guard-relaunch.mjs',
+    'UserPromptSubmit - hooks/guard-relaunch.mjs'
+  ])
+})

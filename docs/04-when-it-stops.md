@@ -231,6 +231,8 @@ Archiving happens after the change merges, not before, so the run cannot do it f
 
 ## The soft continues
 
+Every soft continue below is printed in the summary of `interlock run close`, as it always was, and that summary is the record. On a host that loads the plugin's hooks module (Claude Code 2.1.287+, an interactive terminal or the Desktop Code tab), each banner also appears **live** as a toast the moment the step that raised it is printed, and the [ship meter](./07-cli-and-configuration.md#the-ship-meter-interlock-meter) (`/interlock-meter`) lists every banner so far. The meter shows what the CLI named; it adds no banner of its own and changes nothing about the close.
+
 ### `GRAPH UNAVAILABLE` and `GRAPH FROM MAIN CHECKOUT`
 
 The code knowledge graph is not usable. `/interlock:bootstrap` reports it when the build errors or indexes nothing. A ship run reports it from `interlock run start`, on either host, when neither the working root nor the [state home](#corpora-in-main-checkout-and-corpora-in-state-home) has a `.claude/graph/graph.json`:
