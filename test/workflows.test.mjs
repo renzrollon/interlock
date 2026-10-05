@@ -122,10 +122,11 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
   for (const banner of [
     'GRAPH UNAVAILABLE:',
     'NO TEST PROFILE:',
-    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
     // The effort twin: a property of the host's environment, so only the host
     // can raise it, and the run program must not restate it.
-    'EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL='
+    'EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=',
+    // What `agent()` returned is a fact only the Workflow driver observes.
+    'AGENT RETURNED NO RESULT:'
   ]) {
     assert.ok(ship.includes(banner), `the host no longer emits the "${banner}" banner`)
     assert.ok(!run.includes(banner), `lib/run.mjs restates the host's "${banner}" banner`)
@@ -135,7 +136,13 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
     'E2E FAILED (non-blocking by policy):',
     // The push is the CLI's alone: the drivers pass `--notify` and know nothing
     // about topics, servers or what a failed push is called.
-    'PUSH FAILED: '
+    'PUSH FAILED: ',
+    // Moved, not dropped (name-workflow-spawn-overrides-and-stops): the model
+    // override is read version-aware by `run start` from the CLI's own
+    // environment, so the banner is the CLI's and the driver must not restate it.
+    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=',
+    'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=',
+    'WAVE WIDER THAN RUNTIME SLOTS:'
   ]) {
     assert.ok(run.includes(banner), `the run program no longer emits the "${banner}" banner`)
     assert.ok(!ship.includes(banner), `ship.js restates the CLI's "${banner}" banner`)
@@ -620,6 +627,16 @@ test('every effort reason the adapters can give is explained in docs/04, verbati
   for (const reason of reasons) {
     assert.ok(docs.includes(reason), `docs/04 does not explain the effort reason "${reason}"`)
   }
+})
+
+test('the doctor names only the effort variable in the reason it allowlists printenv', async () => {
+  // The validate ping still reads CLAUDE_CODE_EFFORT_LEVEL; the model variables
+  // moved to `run start`, which reads its own environment and needs no shell.
+  const { REQUIRED_COMMANDS } = await import('../lib/doctor.mjs')
+  const entry = REQUIRED_COMMANDS.find(c => c.tokens.join(' ') === 'printenv')
+  assert.ok(entry, 'the doctor no longer allowlists printenv')
+  assert.match(entry.why, /CLAUDE_CODE_EFFORT_LEVEL/)
+  assert.doesNotMatch(entry.why, /CLAUDE_CODE_SUBAGENT_MODEL|BEDROCK/)
 })
 
 test('the doctor names the effort variable in the reason it reads the environment', () => {
@@ -1699,7 +1716,12 @@ test('ship.js uses haiku for its mechanical control-plane relays', () => {
   // command and copies stdout. There is exactly one such wrapper now instead of
   // four call sites, so the model pin is one statement rather than four.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /pingExtra\.model = 'haiku'/, 'control-plane relays must pin haiku')
+  // Repointed, not weakened: the pin used to be `pingExtra.model = 'haiku'`,
+  // the driver's own decision. The decision moved to `run start`, which reads
+  // the host's version and environment and publishes `pingModel` on the step;
+  // the driver forwards it. That the forwarded model IS haiku on a clean host
+  // is asserted end to end below, through the real CLI.
+  assert.match(text, /pingExtra\.model = step\.pingModel/, 'control-plane relays must take the decided model')
   assert.match(text, /async function cli\(argv, results, extraWrites = \[\]\)/)
   assert.match(text, /const relayed = await ping\(/, 'and every one goes through the ping wrapper')
   // The relay is mechanical by contract, not by convention.
@@ -4034,6 +4056,17 @@ test('the shared builder records a close that could read neither set as unobserv
 // own tokens are in the list below precisely so the deletion cannot be undone
 // by accident.
 
+/**
+ * Host-observed plumbing a driver DOES carry, pinned so the sweep below can
+ * never come to read it as policy. Each is a fact only the driver sees — what
+ * `agent()` returned, what a relay copied — with no threshold and no verdict.
+ */
+const DRIVER_PLUMBING = [
+  'AGENT RETURNED NO RESULT:',
+  'BRIEFING NOT ACKNOWLEDGED:',
+  'RELAY UNREADABLE:'
+]
+
 /** The policy a driver may not restate. Each entry names what the token is a piece of. */
 const NO_POLICY_TOKENS = [
   ['the tier ladder', /Tier [1-5] [a-z]/],
@@ -4091,6 +4124,18 @@ test('neither driver states any policy the run program emits', t => {
     }
   }
   t.diagnostic(`swept ${NO_POLICY_TOKENS.length} policy tokens over ${drivers.length} drivers`)
+})
+
+test('the driver\'s plumbing banners are present and no policy token reads them as policy', () => {
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  for (const prefix of DRIVER_PLUMBING) {
+    assert.ok(ship.includes(prefix), `ship.js no longer raises "${prefix}"`)
+    // The whole banner sentence, not only its prefix, is what the sweep reads.
+    const line = ship.slice(ship.indexOf(prefix), ship.indexOf('\n', ship.indexOf(prefix) + prefix.length + 200))
+    for (const [what, token] of NO_POLICY_TOKENS) {
+      assert.doesNotMatch(line, token, `"${prefix}" reads as ${what} to the sweep`)
+    }
+  }
 })
 
 test('the runner takes the merge base from the step and never computes one', () => {
@@ -4385,4 +4430,56 @@ test('both drivers carry the task-shape flags, refuse the contradiction, and for
       `${flag} must appear in interlock-run's USAGE or KNOWN_FLAGS will reject it`
     )
   }
+})
+
+// --- the driver forwards the ping model and holds no probe (spec: ship/run-program) ---
+
+test('the validate ping no longer reads the model variables, and still reads the effort one', () => {
+  const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
+  for (const gone of ['printenv CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_BEDROCK', 'haikuAvailable', 'subagentModelOverride']) {
+    assert.ok(!ship.includes(gone), `ship.js still carries "${gone}" — run start reads that now`)
+  }
+  assert.ok(ship.includes('printenv CLAUDE_CODE_EFFORT_LEVEL'), 'the effort probe stays where it was')
+  assert.ok(ship.includes('effortLevelOverride'))
+})
+
+/** Every routing variable unset, so a developer's own export cannot change a result. */
+const ROUTING_UNSET = {
+  CLAUDE_CODE_SUBAGENT_MODEL: undefined,
+  CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined,
+  CLAUDE_CODE_USE_BEDROCK: undefined,
+  AWS_BEDROCK: undefined
+}
+
+test('every relay after run start carries the decided haiku, and the run start relay carries none', async () => {
+  const { prompts } = await runShip({ env: ROUTING_UNSET })
+  const relays = prompts.filter(p => p.relay)
+  assert.ok(relays.length > 2, 'a run makes more than one relay')
+  assert.equal(relays[0].model, undefined, 'run start runs before the decision exists')
+  for (const relay of relays.slice(1)) {
+    assert.equal(relay.model, 'haiku', `${relay.label} did not carry the decided ping model`)
+  }
+})
+
+test('a start step whose ping model is null leaves every later relay without a model', async () => {
+  const { prompts } = await runShip({ env: { ...ROUTING_UNSET, CLAUDE_CODE_USE_BEDROCK: '1' } })
+  const relays = prompts.filter(p => p.relay)
+  assert.ok(relays.length > 2)
+  for (const relay of relays) assert.equal(relay.model, undefined, `${relay.label} carried a model`)
+})
+
+test('a null agent result is named as such, and a wrong hash keeps its own banner', async () => {
+  const stopped = await runShip({ responses: { '1.1': null } })
+  assert.match(
+    stopped.output,
+    /AGENT RETURNED NO RESULT: 1\.1 — the runtime stopped it, the API failed, or a usage limit ended it; the step is recorded as failed/,
+    stopped.output
+  )
+  assert.doesNotMatch(stopped.output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/, 'the host was the cause, not the briefing')
+
+  const unread = await runShip({
+    responses: { '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), filesChanged: ['lib/a.mjs'], briefing: 'not-the-hash' } }
+  })
+  assert.match(unread.output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/, unread.output)
+  assert.doesNotMatch(unread.output, /AGENT RETURNED NO RESULT: 1\.1/)
 })

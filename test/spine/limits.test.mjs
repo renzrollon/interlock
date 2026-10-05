@@ -94,6 +94,28 @@ test('the notify push timeout is pinned at 5000ms', () => {
   assert.match(formatLimits(), new RegExp(String(LIMITS.notifyTimeoutMs)))
 })
 
+test('the launch ledger max age is published and printed', () => {
+  // guard-ship-relaunch design D5: longer than any run the step cap and the
+  // runaway backstop allow, shorter than the host's transcript retention, and it
+  // widens only the allow direction. Changing it is a decision about how long a
+  // session's launch can deny its next one.
+  assert.equal(LIMITS.launchLedgerMaxAgeMs, 24 * 60 * 60 * 1000)
+  const text = formatLimits()
+  assert.match(text, /launch ledger max age \(ms\)/)
+  assert.match(text, new RegExp(`launch ledger max age \\(ms\\)\\s+${LIMITS.launchLedgerMaxAgeMs}\\b`))
+})
+
+test('the launch ledger max age is read under lib/, where the cap-authority sweep looks', () => {
+  // The sweep below walks lib/, bin/, workflows/ and CI — not hooks/. A cap read
+  // only by hooks/guard-relaunch.mjs would be a printed cap the sweep reports as
+  // unread; this names the reader the design put it in, so a failure here says
+  // where the read went rather than only that it is missing.
+  const reader = readFileSync(join(ROOT, 'lib', 'launch-ledger.mjs'), 'utf8')
+  assert.ok(reader.includes('LIMITS.launchLedgerMaxAgeMs'), 'lib/launch-ledger.mjs does not read the cap')
+  const hook = readFileSync(join(ROOT, 'hooks', 'guard-relaunch.mjs'), 'utf8')
+  assert.ok(!/launchLedgerMaxAgeMs|24 \* 60 \* 60/.test(hook), 'the hook restates the cap instead of leaving it to lib/')
+})
+
 test('the default fan-out sits under the runtime concurrency ceiling', () => {
   assert.ok(
     LIMITS.maxParallel <= RUNTIME.maxConcurrentAgents,
@@ -553,4 +575,37 @@ test('a removed cap is gone from the object and from the printed surface togethe
     'reportingThreshold governs no triage path; it must not be advertised'
   )
   assert.doesNotMatch(formatLimits(), /reporting threshold/)
+})
+
+test('formatLimits prints the observed runtime slots beside the vendor default, when given them', () => {
+  const plain = formatLimits()
+  assert.ok(
+    plain.endsWith(`runtime ceilings: ${RUNTIME.maxConcurrentAgents} concurrent, ${RUNTIME.maxAgentsPerRun} agents per run\n`),
+    'the plain call is unchanged'
+  )
+  const fromEnv = formatLimits({ runtimeObserved: { observed: 4, source: 'env', cpuCount: 8 } })
+  assert.match(fromEnv, /runtime ceilings: 16 concurrent, 1000 agents per run — observed on this machine: CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=4/)
+  const vendor = formatLimits({ runtimeObserved: { observed: null, source: 'vendor-default', cpuCount: 8 } })
+  assert.match(vendor, /observed on this machine: vendor default, possibly reduced on this 8-CPU machine/)
+  const invalid = formatLimits({ runtimeObserved: { observed: null, source: 'vendor-default', cpuCount: 8, invalid: 'lots' } })
+  assert.match(invalid, /CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=lots is not a valid count and is ignored/)
+})
+
+test('interlock limits --json carries the observed runtime slots', () => {
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '4' }
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.runtime.maxConcurrentAgents, RUNTIME.maxConcurrentAgents, 'the vendor fact is unchanged')
+  assert.equal(payload.runtime.observed.observed, 4)
+  assert.equal(payload.runtime.observed.source, 'env')
+  const text = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: undefined }
+  })
+  assert.match(text.stdout, /observed on this machine: vendor default, possibly reduced on this \d+-CPU machine/)
 })

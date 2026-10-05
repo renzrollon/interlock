@@ -296,13 +296,25 @@ async function spawnOne(s) {
       properties: { ...(s.schema.properties || {}), briefing: { type: 'string' } }
     }
   })
+  // No result at all is what `agent()` resolves to when the runtime stopped the
+  // agent, the API failed unrecoverably, or a usage limit ended it outside an
+  // interactive session. The host was the cause, so it is named as the host —
+  // reporting it as an unacknowledged briefing would send the reader to the
+  // briefing. Still a null result, which the recorder treats as a failed task.
+  if (result === null || result === undefined) {
+    banners.push(
+      `AGENT RETURNED NO RESULT: ${s.label} — the runtime stopped it, the API failed, or a usage limit ` +
+        `ended it; the step is recorded as failed`
+    )
+    return null
+  }
   // Fail closed on an unacknowledged briefing. An agent that did not read its
   // instructions did not do this task, whatever it reports about it — and a
   // silently under-instructed worker is exactly the failure prompt integrity
   // exists to catch. So it is a null result with a named reason, which the
   // recorder already treats as a failed task, rather than a warning beside a
   // result that gets counted.
-  const ack = result && typeof result.briefing === 'string' ? result.briefing.trim() : ''
+  const ack = typeof result.briefing === 'string' ? result.briefing.trim() : ''
   if (ack !== s.promptSha256) {
     banners.push(
       `BRIEFING NOT ACKNOWLEDGED: ${s.label} reported ${ack || '(nothing)'} for a briefing whose ` +
@@ -399,11 +411,12 @@ if (tddModeConflict) {
   )
 }
 
-// The environment probe. Everything it asks about is a property of THIS HOST —
-// whether haiku is reachable, whether the graph was built, whether a test
-// profile exists, whether model routing is overridden — so it is asked here and
-// carried to the close as a host banner, rather than being something the CLI
-// could have found out for itself.
+// The environment probe. Everything it asks about is a property of THIS HOST's
+// working tree or shell — whether the graph was built, whether a test profile
+// exists, whether the effort level is overridden — so it is asked here and
+// carried to the close as a host banner. The model-routing variables are NOT
+// asked here: `run start` reads them from its own environment, together with the
+// host's version, and decides the banners and the ping model itself.
 const probed = await ping(
   'validate',
   `Report this environment. Change nothing, and do not start any work.\n\n` +
@@ -411,19 +424,10 @@ const probed = await ping(
     `Report yes as hasGraph:true, no as hasGraph:false with a one-line graphReason.\n\n` +
     `Run: test -f .claude/testing/profile.json && echo yes || echo no\n` +
     `Report it as hasTestProfile.\n\n` +
-    `Run: printenv CLAUDE_CODE_SUBAGENT_MODEL\n` +
-    `If it prints a value, report it as subagentModelOverride. If it is unset the command exits ` +
+    `Run: printenv CLAUDE_CODE_EFFORT_LEVEL\n` +
+    `If it prints a value, report it as effortLevelOverride. If it is unset the command exits ` +
     `non-zero and prints nothing — that is the normal case, so leave the field out rather than ` +
     `reporting an empty string.\n\n` +
-    `Run: printenv CLAUDE_CODE_EFFORT_LEVEL\n` +
-    `If it prints a value, report it as effortLevelOverride. If it is unset, leave the field out ` +
-    `the same way.\n\n` +
-    `Then run: printenv CLAUDE_CODE_USE_BEDROCK; printenv AWS_BEDROCK\n` +
-    `If subagentModelOverride is set, leave haikuAvailable out — routing is already overridden.\n` +
-    `If either Bedrock variable prints a non-empty value other than 0 or false, report ` +
-    `haikuAvailable:false. Bedrock accounts often cannot reach haiku and a failed ping halts the loop.\n` +
-    `Otherwise report haikuAvailable:true. When unsure, haikuAvailable:false so pings inherit ` +
-    `the session model rather than hard-failing.\n\n` +
     `Then create the working directory ${WORK}/.`,
   {
     type: 'object',
@@ -431,9 +435,7 @@ const probed = await ping(
       hasGraph: { type: 'boolean' },
       graphReason: { type: 'string' },
       hasTestProfile: { type: 'boolean' },
-      subagentModelOverride: { type: 'string' },
-      effortLevelOverride: { type: 'string' },
-      haikuAvailable: { type: 'boolean' }
+      effortLevelOverride: { type: 'string' }
     }
   }
 )
@@ -446,26 +448,7 @@ if (probed && probed.hasGraph === false) {
 if (probed && probed.hasTestProfile === false) {
   banners.push('NO TEST PROFILE: run /interlock:fix-tests --reconfigure once')
 }
-// CLAUDE_CODE_SUBAGENT_MODEL overrides both the session model and the per-agent
-// model a step asks for, so when it is set the planner's tier ladder — the opus
-// clamp, the haiku pings — is not in effect and the run costs whatever that
-// model costs. Nothing here can prevent that; it is the user's environment. But
-// a summary claiming no degradation while the entire model ladder was bypassed
-// is exactly the silence the banner block exists to remove.
-const subagentModel =
-  probed && typeof probed.subagentModelOverride === 'string'
-    ? probed.subagentModelOverride.trim()
-    : ''
-if (subagentModel) {
-  banners.push(
-    `MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=${subagentModel} — every agent runs on ` +
-      `that model, so the per-tier assignment in the plan is not in effect`
-  )
-} else if (probed && probed.haikuAvailable === true) {
-  // Mutate rather than rebind — `ping` closes over the object.
-  pingExtra.model = 'haiku'
-}
-// The effort twin. CLAUDE_CODE_EFFORT_LEVEL outranks both the session's effort
+// The effort override. CLAUDE_CODE_EFFORT_LEVEL outranks both the session's effort
 // and every per-agent effort a step asks for, so while it is set the plan's
 // per-step effort is not in effect. It is the operator's environment and is
 // never stripped; it is bannered so the summary cannot claim otherwise.
@@ -502,6 +485,13 @@ let step = await cli([
   '--host',
   'workflow'
 ])
+
+// The control-plane ping model `run start` decided from the host's version and
+// environment. Forwarded, never decided here: when the step names none — an
+// override is in force, or a Bedrock account may not reach haiku — every later
+// relay inherits the session model. Mutate rather than rebind: `ping` closes
+// over the object.
+if (step && typeof step.pingModel === 'string' && step.pingModel) pingExtra.model = step.pingModel
 
 while (step && step.then) {
   if (steps > RUNAWAY_BACKSTOP) {

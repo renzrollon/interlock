@@ -14,11 +14,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeStage } from '../lib/ship-stage.mjs'
+import { REASON_MAX } from '../lib/interrupted.mjs'
+import { MAX_TEXT } from '../lib/run-log.mjs'
+import { LIMITS } from '../lib/limits.mjs'
+import { LEDGER_DIR, LEDGER_SCHEMA, SKILL_QUOTE } from '../lib/launch-ledger.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const HOOKS = join(ROOT, 'hooks')
@@ -381,6 +385,11 @@ function detachedHook(root) {
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'preflight.mjs')
   copyFileSync(join(HOOKS, 'preflight.mjs'), path)
+  // The modules the hook reads interrupted-run notes through travel with it,
+  // as they do in an installed plugin; only `bin/interlock` is left behind.
+  const lib = join(root, 'plugin-copy', 'lib')
+  mkdirSync(lib, { recursive: true })
+  for (const name of ['interrupted.mjs', 'ship-stage.mjs']) copyFileSync(join(ROOT, 'lib', name), join(lib, name))
   return path
 }
 
@@ -483,4 +492,548 @@ test('preflight: an internal throw is caught and the process still exits 0', () 
     source.trimEnd().endsWith('process.exit(0)'),
     'the last statement must be an unconditional exit 0, whatever ran before it'
   )
+})
+
+// ---------------------------------------------------------------------------
+// preflight — interrupted-run notes (spec: hooks/session-preflight)
+// ---------------------------------------------------------------------------
+
+/** One interrupted-run note on disk, the shape the recorder writes. */
+function plantNote(root, name, fields) {
+  const dir = join(root, '.claude', 'ship', 'interrupted')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, name)
+  writeFileSync(
+    path,
+    typeof fields === 'string'
+      ? fields
+      : JSON.stringify({
+          schema: 'interlock.interrupted/1',
+          sessionId: 'sess-9',
+          reason: 'other',
+          at: '2026-10-05T00:00:00.000Z',
+          spokenAt: null,
+          ...fields
+        })
+  )
+  return path
+}
+
+const cleanDoctor = root => stubBin(root, { stdout: JSON.stringify({ ok: true, checks: [], counts: { warn: 0 } }) })
+
+test('preflight: an unspoken interrupted-run note is surfaced, and left unspoken', () => {
+  const root = tmpRoot()
+  try {
+    const note = plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'verify' })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    assert.match(r.context, /interlock preflight OK/)
+    assert.ok(
+      r.context.includes(
+        'PREVIOUS RUN INTERRUPTED: add-foo run r-1 ended at stage verify — no resume card was written; ' +
+          'interlock run-log show r-1'
+      ),
+      r.context
+    )
+    assert.equal(JSON.parse(readFileSync(note, 'utf8')).spokenAt, null, 'the next run start marks it, not the preflight')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: an unreadable note is named and the session starts', () => {
+  const root = tmpRoot()
+  try {
+    plantNote(root, 'bad.json', '{ not json')
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    assert.match(r.context, /could not be read/)
+    assert.match(r.context, /bad\.json/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a root with no notes produces exactly the existing output and creates nothing', () => {
+  const root = tmpRoot()
+  try {
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.context, 'interlock preflight OK.')
+    assert.ok(!existsSync(join(root, '.claude', 'ship', 'interrupted')))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// recorder (SessionEnd) — reports, never decides (spec: hooks/session-recorder)
+// ---------------------------------------------------------------------------
+//
+// The payload is the fixture in test/fixtures/hooks/sessionend.json with this
+// test's own session and root written over it, so the recorder is fed the
+// shape the host sends rather than one the test invented.
+
+const SESSION_END = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'hooks', 'sessionend.json'), 'utf8'))
+
+/** A live run: a marker whose pid is this test process, and a manifest naming the session. */
+function plantRun(root, { change = 'add-foo', stage = 'implement', pid = process.pid, manifest = {} } = {}) {
+  if (pid !== null) writeStage(change, stage, { root, pid })
+  mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'ship', 'run.json'),
+    JSON.stringify({ schema: 'interlock.run/1', change, runId: 'r-1', sessionId: 'sess-9', ...manifest })
+  )
+}
+
+const endOf = (root, sessionId = 'sess-9', extra = {}) => ({ ...SESSION_END, session_id: sessionId, cwd: root, ...extra })
+const interruptedDir = root => join(root, '.claude', 'ship', 'interrupted')
+
+test('recorder: a session that ends mid-run leaves one note naming the run, unspoken', () => {
+  const root = tmpRoot()
+  try {
+    plantRun(root)
+    const r = runGuard('recorder.mjs', endOf(root), root)
+    assert.equal(r.code, 0)
+    assert.equal(r.stdout, '', 'a recorder prints no decision')
+    const note = JSON.parse(readFileSync(join(interruptedDir(root), 'r-1.json'), 'utf8'))
+    assert.equal(note.schema, 'interlock.interrupted/1')
+    assert.equal(note.runId, 'r-1')
+    assert.equal(note.change, 'add-foo')
+    assert.equal(note.sessionId, 'sess-9')
+    assert.equal(note.reason, SESSION_END.reason, 'the host reason, verbatim')
+    assert.equal(note.stage, 'implement')
+    assert.ok(!Number.isNaN(Date.parse(note.at)), `not a timestamp: ${note.at}`)
+    assert.equal(note.spokenAt, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recorder: a session that does not own the run writes nothing and creates no directory', () => {
+  const root = tmpRoot()
+  try {
+    plantRun(root)
+    const r = runGuard('recorder.mjs', endOf(root, 'sess-other'), root)
+    assert.equal(r.code, 0)
+    assert.ok(!existsSync(interruptedDir(root)))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recorder: no marker, an orphaned marker, or a manifest without a run id writes nothing', () => {
+  const cases = [
+    ['no marker', { pid: null }],
+    ['an orphaned marker', { pid: 999999 }],
+    ['a manifest without a run id', { manifest: { runId: null } }],
+    ['a manifest without a session', { manifest: { sessionId: undefined } }],
+    ['a manifest for another change', { manifest: { change: 'add-bar' } }]
+  ]
+  for (const [what, opts] of cases) {
+    const root = tmpRoot()
+    try {
+      plantRun(root, opts)
+      const r = runGuard('recorder.mjs', endOf(root), root)
+      assert.equal(r.code, 0, what)
+      assert.ok(!existsSync(interruptedDir(root)), `${what}: a note or directory was created`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('recorder: a note that cannot be written is said on stderr, exits 0, and leaves the trajectory alone', () => {
+  const root = tmpRoot()
+  try {
+    plantRun(root)
+    // A file where the directory should be: the write cannot land.
+    writeFileSync(interruptedDir(root), 'in the way\n')
+    const r = runGuard('recorder.mjs', endOf(root), root)
+    assert.equal(r.code, 0)
+    assert.equal(r.stdout, '')
+    assert.match(r.stderr, /interrupted-run note/)
+    assert.ok(!existsSync(join(root, '.claude', 'ship', 'runs')), 'a hook never writes the trajectory')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recorder: malformed stdin and an event it has no branch for exit 0 and create nothing', () => {
+  const root = tmpRoot()
+  try {
+    plantRun(root)
+    const malformed = spawnSync('node', [join(HOOKS, 'recorder.mjs')], { cwd: root, input: 'not json', encoding: 'utf8' })
+    assert.equal(malformed.status, 0)
+    assert.equal((malformed.stdout || '').trim(), '')
+    const other = runGuard('recorder.mjs', endOf(root, 'sess-9', { hook_event_name: 'Notification' }), root)
+    assert.equal(other.code, 0)
+    assert.equal(other.stdout, '')
+    assert.ok(!existsSync(interruptedDir(root)))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recorder: an internal throw is caught, spoken on stderr, and the process still exits 0', () => {
+  // As with the preflight, the production `catch` is pinned by its tokens: a
+  // throw-on-demand flag would be a seam in production that exists for a test.
+  const source = readFileSync(join(HOOKS, 'recorder.mjs'), 'utf8')
+  assert.match(source, /catch \(err\) \{/)
+  assert.match(source, /recorder hook error \(ignored\)/)
+  assert.ok(source.trimEnd().endsWith('process.exit(0)'), 'the last statement must be an unconditional exit 0')
+  // One recorder file for every reporting branch, dispatching on the event name.
+  assert.match(source, /hook_event_name/)
+  // It shares nothing with the guards beyond the two readers it names.
+  assert.doesNotMatch(source, /\bdeny\(|\ballow\(/, 'a recorder returns no decision')
+})
+
+test('recorder: the manifest registers it on SessionEnd', () => {
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+  const sessionEnd = manifest.hooks && manifest.hooks.SessionEnd
+  assert.ok(Array.isArray(sessionEnd) && sessionEnd.length, 'no SessionEnd hook is registered')
+  const commands = sessionEnd.flatMap(entry => (entry.hooks || []).map(h => h.command))
+  assert.ok(
+    commands.some(c => typeof c === 'string' && c.includes('hooks/recorder.mjs')),
+    `SessionEnd does not name the recorder: ${JSON.stringify(commands)}`
+  )
+})
+
+test('recorder: the reason is bounded to the trajectory\'s own text bound', () => {
+  assert.equal(REASON_MAX, MAX_TEXT, 'lib/interrupted.mjs restates the trajectory bound; the two must not drift')
+  const root = tmpRoot()
+  try {
+    plantRun(root)
+    const r = runGuard('recorder.mjs', endOf(root, 'sess-9', { reason: 'x'.repeat(REASON_MAX * 2) }), root)
+    assert.equal(r.code, 0)
+    const note = JSON.parse(readFileSync(join(interruptedDir(root), 'r-1.json'), 'utf8'))
+    assert.equal(note.reason.length, REASON_MAX)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// guard-relaunch — a second ship launch with no human prompt since (spec: hooks/launch-guard)
+// ---------------------------------------------------------------------------
+//
+// Every event is a payload captured from the host (test/fixtures/hooks/) with
+// this test's own session and root written over it, so the guard is fed the
+// shapes the host sends: the launch is `{ name: 'interlock:ship', args }`, the
+// accepted response carries `status: 'async_launched'`, and the completion wake
+// is a `UserPromptSubmit` whose prompt is a task notification. A field the host
+// renames fails here rather than silently stopping the guard.
+
+const HOOK_FIXTURE = name => JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'hooks', name), 'utf8'))
+const WF_PRE = HOOK_FIXTURE('workflow-pretooluse.json')
+const WF_POST = HOOK_FIXTURE('workflow-posttooluse.json')
+const PROMPT_SUBMIT = HOOK_FIXTURE('userpromptsubmit.json')
+const PROMPT_EXPANSION = HOOK_FIXTURE('userpromptexpansion.json')
+const COMPLETION_WAKE = HOOK_FIXTURE('completion-wake.json')
+
+const SESSION = 'sess-relaunch'
+const as = (fixture, root, sessionId = SESSION, extra = {}) => ({ ...fixture, session_id: sessionId, cwd: root, ...extra })
+const relaunch = (event, root) => runGuard('guard-relaunch.mjs', event, root)
+const ledgerFile = (root, sessionId = SESSION) => join(root, LEDGER_DIR, `${sessionId}.json`)
+const readLedgerFile = (root, sessionId = SESSION) => JSON.parse(readFileSync(ledgerFile(root, sessionId), 'utf8'))
+
+/** One accepted ship launch, as the host reports it: PreToolUse, then PostToolUse. */
+function launch(root, sessionId = SESSION) {
+  const pre = relaunch(as(WF_PRE, root, sessionId), root)
+  if (isAllow(pre)) relaunch(as(WF_POST, root, sessionId), root)
+  return pre
+}
+
+/** A recorder branch says nothing on stdout and exits 0, whatever it did. */
+function assertSilent(r, what) {
+  assert.equal(r.code, 0, `${what}: exit code`)
+  assert.equal(r.stdout, '', `${what}: a recorder branch prints no decision`)
+}
+
+test('guard-relaunch: the first ship launch is allowed and its PostToolUse records the identity the response carried', () => {
+  const root = tmpRoot()
+  try {
+    const pre = relaunch(as(WF_PRE, root), root)
+    assert.equal(pre.code, 0)
+    assert.ok(isAllow(pre), `first launch denied: ${pre.stdout}`)
+    assert.ok(!existsSync(ledgerFile(root)), 'PreToolUse writes nothing; only an accepted launch does')
+
+    assertSilent(relaunch(as(WF_POST, root), root), 'PostToolUse')
+    const ledger = readLedgerFile(root)
+    assert.equal(ledger.schema, LEDGER_SCHEMA)
+    assert.equal(ledger.sessionId, SESSION)
+    assert.equal(ledger.lastHumanPromptAt, null)
+    assert.equal(ledger.launches.length, 1)
+    const [entry] = ledger.launches
+    assert.equal(entry.taskId, WF_POST.tool_response.taskId)
+    assert.equal(entry.runId, WF_POST.tool_response.runId)
+    assert.equal(entry.workflowName, WF_POST.tool_response.workflowName)
+    assert.equal(entry.scriptPath, WF_POST.tool_response.scriptPath)
+    assert.ok(!Number.isNaN(Date.parse(entry.at)), `not a timestamp: ${entry.at}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a second launch with no human prompt between is denied, quoting the skill', () => {
+  const root = tmpRoot()
+  try {
+    launch(root)
+    const r = relaunch(as(WF_PRE, root), root)
+    assert.equal(r.code, 0)
+    assert.ok(isDeny(r), `expected a deny, got: ${r.stdout}`)
+    const reason = r.decision.hookSpecificOutput.permissionDecisionReason
+    for (const token of ['Leftover', 'not authorization', 'new message']) assert.ok(reason.includes(token), `reason lacks ${token}: ${reason}`)
+    assert.equal(r.decision.interlockGuard.guard, 'guard-relaunch')
+    assert.equal(r.decision.interlockGuard.sessionId, SESSION)
+    assert.equal(r.decision.interlockGuard.lastLaunchAt, readLedgerFile(root).launches[0].at)
+    assert.equal(r.decision.interlockGuard.lastHumanPromptAt, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a second launch after a typed prompt is allowed — UserPromptSubmit and UserPromptExpansion each count', () => {
+  for (const prompt of [PROMPT_SUBMIT, PROMPT_EXPANSION]) {
+    const root = tmpRoot()
+    try {
+      launch(root)
+      assertSilent(relaunch(as(prompt, root), root), prompt.hook_event_name)
+      assert.ok(readLedgerFile(root).lastHumanPromptAt, `${prompt.hook_event_name} recorded no prompt`)
+      const r = relaunch(as(WF_PRE, root), root)
+      assert.ok(isAllow(r), `${prompt.hook_event_name}: launch after a prompt denied: ${r.stdout}`)
+      // And that launch is the newest again: the next one with no prompt is denied.
+      relaunch(as(WF_POST, root), root)
+      assert.ok(isDeny(relaunch(as(WF_PRE, root), root)), `${prompt.hook_event_name}: the third launch was not denied`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('guard-relaunch: the completion wake is not a human prompt — the relaunch in its turn is still denied', () => {
+  const root = tmpRoot()
+  try {
+    launch(root)
+    assertSilent(relaunch(as(COMPLETION_WAKE, root), root), 'completion wake')
+    assert.equal(readLedgerFile(root).lastHumanPromptAt, null, 'the wake moved the human-prompt clock')
+    assert.ok(isDeny(relaunch(as(WF_PRE, root), root)), 'a relaunch right after the wake was allowed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: the resume the completion wake suggests is a second launch and is denied', () => {
+  const root = tmpRoot()
+  try {
+    launch(root)
+    // The wake's diagnostics name exactly this call: the persisted script and the run id.
+    const resume = as(WF_PRE, root, SESSION, {
+      tool_input: { scriptPath: WF_POST.tool_response.scriptPath, resumeFromRunId: WF_POST.tool_response.runId, args: 'no-such-change' }
+    })
+    assert.ok(COMPLETION_WAKE.prompt.includes(WF_POST.tool_response.runId), 'the fixture wake names the run it suggests resuming')
+    const r = relaunch(resume, root)
+    assert.ok(isDeny(r), `the suggested resume was allowed: ${r.stdout}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: the /interlock:spec --continue shape — one prompt, then one launch — is allowed', () => {
+  const root = tmpRoot()
+  try {
+    assertSilent(relaunch(as(PROMPT_SUBMIT, root), root), 'prompt')
+    const r = launch(root)
+    assert.ok(isAllow(r), `a single launch inside one prompt was denied: ${r.stdout}`)
+    assert.equal(readLedgerFile(root).launches.length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a launch in a different session is allowed', () => {
+  const root = tmpRoot()
+  try {
+    launch(root, 'sess-a')
+    const r = relaunch(as(WF_PRE, root, 'sess-b'), root)
+    assert.ok(isAllow(r), `session b was denied by session a's ledger: ${r.stdout}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a Workflow call on another script is allowed and recorded nowhere', () => {
+  const root = tmpRoot()
+  try {
+    const other = { tool_input: { name: 'deep-research', args: 'x' } }
+    const otherPost = { ...other, tool_response: { ...WF_POST.tool_response, workflowName: 'deep-research' } }
+    assert.ok(isAllow(relaunch(as(WF_PRE, root, SESSION, other), root)))
+    assertSilent(relaunch(as(WF_POST, root, SESSION, otherPost), root), 'PostToolUse on another workflow')
+    assert.ok(!existsSync(join(root, '.claude', 'ship')), 'a non-ship workflow created ledger state')
+    // And with a ship ledger present, another workflow is still neither denied nor recorded.
+    launch(root)
+    assert.ok(isAllow(relaunch(as(WF_PRE, root, SESSION, other), root)))
+    relaunch(as(WF_POST, root, SESSION, otherPost), root)
+    assert.equal(readLedgerFile(root).launches.length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a PostToolUse whose response reports an error records nothing, and the next launch is allowed', () => {
+  const root = tmpRoot()
+  try {
+    for (const tool_response of [
+      'Error: Workflow "interlock:ship" could not start',
+      { ...WF_POST.tool_response, is_error: true },
+      { status: 'failed', error: 'refused' }
+    ]) {
+      assertSilent(relaunch(as(WF_POST, root, SESSION, { tool_response }), root), JSON.stringify(tool_response))
+      assert.ok(!existsSync(join(root, '.claude', 'ship')), `a refused launch was recorded: ${JSON.stringify(tool_response)}`)
+    }
+    assert.ok(isAllow(relaunch(as(WF_PRE, root), root)))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a missing session id allows and records nothing', () => {
+  const root = tmpRoot()
+  try {
+    const noSession = fixture => {
+      const event = as(fixture, root)
+      delete event.session_id
+      return event
+    }
+    launch(root) // a ledger exists for another session; it must not be consulted
+    assert.ok(isAllow(relaunch(noSession(WF_PRE), root)))
+    assertSilent(relaunch(noSession(WF_POST), root), 'PostToolUse without a session')
+    assertSilent(relaunch(noSession(PROMPT_SUBMIT), root), 'prompt without a session')
+    assert.ok(isAllow(relaunch(as(WF_PRE, root, '../escape'), root)), 'an unsafe session id allows')
+    assert.ok(!existsSync(join(root, '.claude', 'escape.json')))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a malformed ledger allows with a note on stderr', () => {
+  const root = tmpRoot()
+  try {
+    mkdirSync(join(root, LEDGER_DIR), { recursive: true })
+    writeFileSync(ledgerFile(root), '{"schema": "interlock.launch-ledger/1", "launches": [')
+    const r = relaunch(as(WF_PRE, root), root)
+    assert.equal(r.code, 0)
+    assert.ok(isAllow(r), `a malformed ledger denied: ${r.stdout}`)
+    assert.match(r.stderr, /guard-relaunch/)
+    assert.match(r.stderr, new RegExp(`${SESSION}\\.json`))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a crash allows, exits 0 and names the error on stderr', () => {
+  const root = tmpRoot()
+  try {
+    // `null` parses as JSON, so the guard reaches its body with no event object
+    // and throws there: the real catch, reached from input alone — no test-only
+    // throw flag in production.
+    const res = spawnSync('node', [join(HOOKS, 'guard-relaunch.mjs')], { cwd: root, input: 'null', encoding: 'utf8' })
+    assert.equal(res.status, 0)
+    assert.equal((res.stdout || '').trim(), '', 'a crash returns no decision')
+    assert.match(res.stderr, /guard-relaunch: internal error, allowing by default/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  const source = readFileSync(join(HOOKS, 'guard-relaunch.mjs'), 'utf8')
+  assert.match(source, /catch \(err\) \{/)
+  assert.ok(source.trimEnd().endsWith('process.exit(0)'), 'the last statement must be an unconditional exit 0')
+  assert.match(source, /hook_event_name/, 'one script, dispatching on the event name')
+  // It reads the helpers _shared.mjs already exports, and nothing else from it.
+  const shared = source.match(/import \{([^}]*)\} from '\.\/_shared\.mjs'/)
+  assert.ok(shared, 'the guard imports from hooks/_shared.mjs')
+  const names = shared[1].split(',').map(s => s.trim()).filter(Boolean)
+  const allowed = new Set(['readEvent', 'allow', 'deny', 'toolName', 'toolInput', 'projectRoot'])
+  assert.deepEqual(names.filter(n => !allowed.has(n)), [], `unexpected _shared imports: ${names}`)
+})
+
+test('guard-relaunch: a prompt with no ledger, in a root with no .claude/ship, creates no file and no directory', () => {
+  const root = tmpRoot()
+  try {
+    assert.ok(!existsSync(join(root, '.claude', 'ship')))
+    for (const prompt of [PROMPT_SUBMIT, PROMPT_EXPANSION, COMPLETION_WAKE]) {
+      assertSilent(relaunch(as(prompt, root), root), prompt.hook_event_name)
+    }
+    assert.ok(!existsSync(join(root, '.claude', 'ship')), 'a prompt alone created ship state')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a ledger older than the published age allows, and the next write removes it', () => {
+  const root = tmpRoot()
+  try {
+    const longAgo = Date.now() - LIMITS.launchLedgerMaxAgeMs - 60_000
+    const stale = (sessionId, at) => {
+      mkdirSync(join(root, LEDGER_DIR), { recursive: true })
+      const path = ledgerFile(root, sessionId)
+      writeFileSync(
+        path,
+        JSON.stringify({
+          schema: LEDGER_SCHEMA,
+          sessionId,
+          launches: [{ at: new Date(at).toISOString(), taskId: 'old', runId: 'wf_old', workflowName: 'ship', scriptPath: '/x/ship-wf_old.js' }],
+          lastHumanPromptAt: null
+        })
+      )
+      utimesSync(path, at / 1000, at / 1000)
+      return path
+    }
+    stale(SESSION, longAgo)
+    const sibling = stale('sess-gone', longAgo)
+
+    const r = relaunch(as(WF_PRE, root), root)
+    assert.ok(isAllow(r), `a stale ledger denied: ${r.stdout}`)
+    relaunch(as(WF_POST, root), root)
+    assert.ok(!existsSync(sibling), 'the write did not sweep a stale sibling ledger')
+    const fresh = readLedgerFile(root)
+    assert.equal(fresh.launches.length, 1, 'the stale launch survived the write')
+    assert.notEqual(fresh.launches[0].taskId, 'old')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: a tool that is not Workflow, and an event it has no branch for, allow silently', () => {
+  const root = tmpRoot()
+  try {
+    launch(root)
+    assert.ok(isAllow(relaunch(as(WF_PRE, root, SESSION, { tool_name: 'Bash', tool_input: { command: 'ls' } }), root)))
+    assertSilent(relaunch(as(WF_PRE, root, SESSION, { hook_event_name: 'Notification' }), root), 'Notification')
+    assert.equal(readLedgerFile(root).launches.length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-relaunch: the manifest registers it on PreToolUse and PostToolUse for Workflow, and on both prompt events', () => {
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+  const names = entry => (entry.hooks || []).map(h => h.command).filter(c => typeof c === 'string' && c.includes('hooks/guard-relaunch.mjs'))
+  for (const event of ['PreToolUse', 'PostToolUse']) {
+    const entries = (manifest.hooks && manifest.hooks[event]) || []
+    assert.ok(
+      entries.some(entry => entry.matcher === 'Workflow' && names(entry).length),
+      `${event} has no Workflow matcher naming hooks/guard-relaunch.mjs`
+    )
+  }
+  for (const event of ['UserPromptSubmit', 'UserPromptExpansion']) {
+    const entries = (manifest.hooks && manifest.hooks[event]) || []
+    assert.ok(entries.some(entry => names(entry).length), `${event} does not name hooks/guard-relaunch.mjs`)
+  }
+})
+
+test('guard-relaunch: the skill sentence the deny quotes is still in skills/ship/SKILL.md', () => {
+  // test/skills.test.mjs pins the sentence by tokens; this pins that the deny
+  // reason quotes it verbatim, so a reword of the skill fails here too.
+  const skill = readFileSync(join(ROOT, 'skills', 'ship', 'SKILL.md'), 'utf8')
+  assert.ok(skill.includes(SKILL_QUOTE), `skills/ship/SKILL.md no longer contains: ${SKILL_QUOTE}`)
+  assert.match(SKILL_QUOTE, /Leftover.*not authorization/)
 })

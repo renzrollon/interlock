@@ -128,6 +128,23 @@ How many trajectories exist, how many carry a `run-start`, a terminal event, and
 a **receipt**; how many outcome records exist by mode; how many metrics files
 were recognized.
 
+Runs with no terminal event are split in two, each over the scanned runs.
+**Interrupted** runs are named by an interrupted-run note: the `SessionEnd`
+recorder wrote one because the session that owned the run ended mid-run. Every
+other run without a terminal event is **unexplained**:
+
+```
+    with terminal   12   (run-complete or run-halt)
+    without terminal 2 — interrupted 1 (a SessionEnd note names the run), unexplained 1
+```
+
+An unexplained run is the one worth opening with `interlock run-log show`.
+Nothing recorded why it stopped. A note whose run is not among the scanned
+trajectories is counted on its own line rather than joined to nothing, and a
+note that cannot be read is named. The JSON carries the same fields as
+`coverage.trajectories.withoutTerminal`,
+`interruptedNotesWithoutTrajectory` and `interruptedNotesUnreadable`.
+
 This is not preamble. `withReceipt` is the denominator behind every
 receipt-derived indicator below, so when it reads 0 the correct finding is *the
 receipt path has not fired* — not *the runs were clean*. `lib/outcomes.mjs` puts

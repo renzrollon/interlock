@@ -155,7 +155,7 @@ Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli`
 
 ### Step by step (lean)
 
-1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. Also probes `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL` and Bedrock/haiku reachability (banners, not quality gates).
+1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. The validate ping probes the graph, the test profile and `CLAUDE_CODE_EFFORT_LEVEL`. `run start` reads `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` and the Bedrock variables itself, against the version `claude --version` reports, and decides the control-plane ping model. The driver only forwards it. All of these raise banners, not quality gates.
 2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. The classifying agent never runs the CLI itself: `interlock run classified --classified <file>` does coverage (`interlock tasks coverage` — omitted checkboxes halt) → `interlock waves` → `.claude/ship/plan.json` → `interlock wave-state create` → `.claude/ship/state.json` → the first step, as one call (design D7).
 3. **Wave loop** until the action is `done` or `halt`. Neither the script nor the CLI's caller decides next; the driver spawns what a step's `spawns` name and calls the exact `interlock` argv its `then.argv` names, repeating until `then` is `null`. Underneath, `run` obeys one of six wave-level actions from the pure `wave-state next` — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step. An invented `action` is retried once (`next-retry-*`), then halt.
 4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), a chain fused from consecutive single-lane batches of one wave, or — in solo mode — the whole change. Lane length, including a chain, is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. A multi-task lane dispatches on opus when its hardest tier is at or above `LANE_CAPS.opusMinTier`, otherwise sonnet; a lane of one keeps its clamped model. Each agent's briefing (`assembleImplementerPrompt`, tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets — schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000) is written to `.claude/ship/briefings/<label>.md` with its own sha256 on line one; the ACP driver reads it straight off the step, the Workflow script hands the worker the path and requires the hash back rather than pasting the text through a ping. Invalid/missing handoff packet, or an unacknowledged/wrong briefing hash, fails the task closed.
@@ -261,12 +261,12 @@ Inference, not a measurement from this session:
 | `plan-waves` | One frontier-ish call + full artifact read | Most expensive *single* context; leash is deliberate |
 | Each implementer | Lane + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps, and a lane of N is one spawn prefix rather than N. Multi-task lanes at or above the opus floor dispatch on opus; below it, sonnet |
 | A solo run | One opus agent, full artifacts, whole change | Fewest spawns and no re-reads; the cost is serial wall-clock |
-| Record/next pings | Haiku, structured JSON | Cheap if `CLAUDE_CODE_SUBAGENT_MODEL` is unset |
+| Record/next pings | Haiku, structured JSON | Cheap unless a model override is in force (`MODEL ROUTING OVERRIDDEN`) or a Bedrock variable is set |
 | Verify (inter-wave and final) | Capped; spill above 8 KB | Runs at the published verify effort (`interlock limits`), so it costs more per call than a session-default agent. Fused into record-batch when possible |
 | `--strict` review | 4–6 dimensions + 2 skeptics per finding + fixers | Easy to trip Claude Code's "Large workflow" warning (>25 agents / 1.5M tokens). Advisory, does not halt |
 | Lean commit | One call | |
 
-Kill switches that silently inflate cost: `CLAUDE_CODE_SUBAGENT_MODEL` (every agent on that model — banner `MODEL ROUTING OVERRIDDEN`); `CLAUDE_CODE_EFFORT_LEVEL` (every agent at that effort — banner `EFFORT ROUTING OVERRIDDEN`); permission prompts mid-run (allowlist `interlock`, `interlock-graph`, `openspec`, `git`, your test runner *before* a long ship); missing graph (grep fallback).
+Kill switches that silently inflate cost: `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` (every agent on one model — banner `MODEL ROUTING OVERRIDDEN`); `CLAUDE_CODE_SUBAGENT_MODEL` on a Claude Code older than 2.1.251, where it still replaces every agent's model (same banner; from 2.1.251 it sets only the default and is a note); `CLAUDE_CODE_EFFORT_LEVEL` (every agent at that effort — banner `EFFORT ROUTING OVERRIDDEN`); permission prompts mid-run (allowlist `interlock`, `interlock-graph`, `openspec`, `git`, your test runner *before* a long ship); missing graph (grep fallback).
 
 `.gitignore` now covers every `.claude/` runtime path this page names, `.claude/ship/`, `.claude/handoff/` and `.claude/memory/` included. That is the right posture *for this repository*, whose ship runs are development exhaust rather than a record of shipping a product — a repository that runs `/interlock:ship` against its own product wants the opposite. The rule, both `.gitignore` blocks, and the two caveats that matter when committing are in [11 — the indicators](./11-the-indicators.md#whether-to-keep-them).
 
@@ -330,7 +330,7 @@ Context rot is the reason. Cost is the side effect.
 - **Chain lanes**: consecutive batches of one wave that each hold a single lane are fused into one agent, in that batch order, under the same per-tier cap — opus when the hardest tier clears the published floor, otherwise sonnet. A batch that still has two lanes stays parallel, and a chain never crosses a wave. A lane of one task keeps its clamped model.
 - **Solo mode** for a small change: `--solo`, or the classifier's own recommendation inside the envelope `interlock limits` publishes. One opus agent implements the whole change in order, briefed on design and specs in full, inside the same verify-and-commit loop. It trades wall-clock for spawns and re-reads; `--waves` refuses it.
 - **Fused record-batch + verify** so a wave boundary is not automatically two agent turns.
-- **Haiku pings** when Bedrock/haiku is reachable and `CLAUDE_CODE_SUBAGENT_MODEL` is unset.
+- **Haiku pings** whenever `run start` finds no model override in force and no Bedrock variable set. It decides that once and puts it on the step, and the driver forwards it.
 - **`session-retro`** (from [shippable-skills](https://github.com/renzrollon/shippable-skills)) while the transcript is still in context: flags waste in relative magnitude, writes wire-ins. Target `workflows/ship.js` for ship, not the trampoline skill.
 
 ### Gaps you can close without new architecture
@@ -416,7 +416,7 @@ Assume Claude Code with the plugin, dynamic workflows on, `openspec` installed. 
 | Mid-run permission prompt | Command not allowlisted | Approve, allowlist, expect that wave to be messy |
 | Three task failures halt | Underspecified `tasks.md` in that area | Re-spec that slice; do not third-round ship |
 | Unit still red after repair cap | Real bug or bad tests | `/interlock:fix-tests` or fix by hand; do not `--skip` unit |
-| `MODEL ROUTING OVERRIDDEN` | Env var set | `unset CLAUDE_CODE_SUBAGENT_MODEL` unless you meant it |
+| `MODEL ROUTING OVERRIDDEN` | Env var set | `unset CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (or `CLAUDE_CODE_SUBAGENT_MODEL` on an older host) unless you meant it |
 | `EFFORT ROUTING OVERRIDDEN` | Env var set | `unset CLAUDE_CODE_EFFORT_LEVEL` unless you meant it |
 | Second `Workflow()` in one chat | Leftover boxes or `/goal` misfire | Report leftovers; only a new user message ships again |
 | `/opsx:apply` after `/interlock:spec` by habit | Two loops, same files | Legal, but you left the zero-touch / isolation contract |

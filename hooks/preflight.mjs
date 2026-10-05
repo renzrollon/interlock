@@ -12,6 +12,11 @@
 // It NEVER blocks. `interlock doctor` is non-mutating, and a preflight that
 // aborted the session because its own binary was missing would be worse than no
 // preflight. Every path here exits 0.
+//
+// It also surfaces any interrupted-run note a previous session left — a run
+// that ended with its session and never reached its close (lib/interrupted.mjs).
+// It marks nothing: the next `interlock run start`, where the reader is about to
+// spend agents, is the moment that marks a note spoken.
 
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -27,6 +32,7 @@ function interlockBin() {
   return 'interlock' // let PATH resolution decide; a miss throws ENOENT below
 }
 
+/** The preflight's own report, as one message. */
 function run() {
   let raw
   try {
@@ -43,13 +49,12 @@ function run() {
     if (err && typeof err.stdout === 'string' && err.stdout.trim()) {
       raw = err.stdout
     } else {
-      report(
+      return (
         `interlock preflight could not run: ${(err && err.message) || String(err)}\n` +
-          `The \`interlock\` binary is not resolvable from this session. Inside Claude Code the ` +
-          `plugin's bin/ is normally injected; if you see this, reinstall the plugin. The session ` +
-          `continues — this preflight is advisory.`
+        `The \`interlock\` binary is not resolvable from this session. Inside Claude Code the ` +
+        `plugin's bin/ is normally injected; if you see this, reinstall the plugin. The session ` +
+        `continues — this preflight is advisory.`
       )
-      return
     }
   }
 
@@ -57,8 +62,7 @@ function run() {
   try {
     doctor = JSON.parse(raw)
   } catch {
-    report('interlock preflight ran but its output could not be parsed; skipping. The session continues.')
-    return
+    return 'interlock preflight ran but its output could not be parsed; skipping. The session continues.'
   }
 
   const checks = Array.isArray(doctor.checks) ? doctor.checks : []
@@ -66,8 +70,7 @@ function run() {
   if (!failures.length) {
     const warns = (doctor.counts && doctor.counts.warn) || 0
     // A clean preflight is quiet, not a wall of output — one confirming line.
-    report(`interlock preflight OK${warns ? ` (${warns} warning${warns === 1 ? '' : 's'})` : ''}.`)
-    return
+    return `interlock preflight OK${warns ? ` (${warns} warning${warns === 1 ? '' : 's'})` : ''}.`
   }
 
   const lines = ['interlock preflight found issues that can stall an unattended ship run:']
@@ -80,7 +83,26 @@ function run() {
     }
   }
   lines.push('The session still starts — apply the fixes above before /interlock:ship.')
-  report(lines.join('\n'))
+  return lines.join('\n')
+}
+
+/**
+ * One line per interrupted-run note not yet spoken, and one per note that
+ * could not be read. Loaded on demand rather than imported, so a hook that finds
+ * its library missing still exits 0 — and says so instead of falling silent.
+ */
+async function interruptedLines(root) {
+  let lib
+  try {
+    lib = await import(new URL('../lib/interrupted.mjs', import.meta.url).href)
+  } catch (err) {
+    return [`interrupted-run notes could not be read: ${(err && err.message) || String(err)}`]
+  }
+  const { notes, unreadable } = lib.readInterruptedNotes(root)
+  return [
+    ...notes.filter(lib.isUnspoken).map(lib.formatInterruptedBanner),
+    ...unreadable.map(u => `An interrupted-run note could not be read: ${u.file}: ${u.reason}`)
+  ]
 }
 
 /**
@@ -99,7 +121,8 @@ function report(message) {
 }
 
 try {
-  run()
+  const lines = [run(), ...(await interruptedLines(process.cwd()))].filter(Boolean)
+  if (lines.length) report(lines.join('\n'))
 } catch (err) {
   // Belt and suspenders: nothing this hook does may abort the session.
   process.stderr.write(`interlock preflight hook error (ignored): ${(err && err.message) || String(err)}\n`)

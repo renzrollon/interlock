@@ -144,3 +144,13 @@ test('each host declares how it applies an effort, from what its vendor binary a
   assert.equal(HOSTS.codex.capabilities.effort, 'unsupported')
   assert.equal(HOSTS.qwen.capabilities.effort, 'unsupported')
 })
+
+test('forced is a legal model selection that only run start observes and no adapter declares', () => {
+  assert.ok(CAPABILITY_VALUES.modelSelect.includes('forced'))
+  for (const [id, entry] of Object.entries(HOSTS)) {
+    assert.ok(
+      ['flag', 'negotiated', 'map-only'].includes(entry.capabilities.modelSelect),
+      `${id} declares modelSelect "${entry.capabilities.modelSelect}" — forced is observed, never declared`
+    )
+  }
+})

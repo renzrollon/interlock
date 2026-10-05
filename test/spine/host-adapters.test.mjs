@@ -16,12 +16,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { claudeArgs, createClaudeHost, readClaudeEnvelope } from '../../lib/host/claude-cli.mjs'
+import { claudeArgs, createClaudeHost, probeClaudeVersion, readClaudeEnvelope } from '../../lib/host/claude-cli.mjs'
 import { codexArgs, createCodexHost, onChatGptPlan, readCodexUsage } from '../../lib/host/codex.mjs'
 import { createQwenHost, qwenArgs, readQwenEnvelope } from '../../lib/host/qwen.mjs'
 import { HOSTS, createHost } from '../../lib/host/registry.mjs'
@@ -624,3 +625,189 @@ for (const adapter of ADAPTERS) {
     }
   )
 }
+
+// --- the version probe run start reads (spec: ship/run-program) -------------
+
+test('probeClaudeVersion reads the installed CLI\'s version, and a failed or hung probe is null with a reason', () => {
+  const command = flags => [process.execPath, ADAPTERS[0].fixture, ...flags].join(' ')
+  const read = probeClaudeVersion({ INTERLOCK_CLAUDE_COMMAND: command(['--fixture-version=2.1.288']) })
+  assert.deepEqual(read, { version: '2.1.288', reason: null })
+
+  const failed = probeClaudeVersion({ INTERLOCK_CLAUDE_COMMAND: command(['--fixture-version-fails']) })
+  assert.equal(failed.version, null)
+  assert.match(failed.reason, /exited|failed/)
+
+  // A CLI that never answers: the probe's own timeout ends it, and it never throws.
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-version-hang-'))
+  try {
+    const hang = join(dir, 'hang.mjs')
+    writeFileSync(hang, 'setInterval(() => {}, 1 << 30)\n')
+    const hung = probeClaudeVersion({ INTERLOCK_CLAUDE_COMMAND: `${process.execPath} ${hang}` }, { probeTimeoutMs: 300 })
+    assert.equal(hung.version, null)
+    assert.ok(hung.reason)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  const missing = probeClaudeVersion({ INTERLOCK_CLAUDE_COMMAND: join(ROOT, 'no-such-claude-binary') })
+  assert.equal(missing.version, null)
+  assert.ok(missing.reason)
+})
+
+// --- the runner closes on SIGINT and SIGTERM (spec: run-host-adapters) -------
+//
+// The real `bin/interlock-run` against the fake CLI, which holds every envelope
+// for `--fixture-delay` so a lane is in flight when the signal lands. What is
+// read back is what a killed run must leave behind: a `run-halt` that names the
+// signal, a resume card, and a non-zero exit.
+
+const RUNNER = join(ROOT, 'bin', 'interlock-run')
+
+/** A temp repo with two path-disjoint tier-4 tasks: one batch of two lanes. */
+function signalRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-signal-'))
+  const change = 'add-thing'
+  const put = (rel, body) => {
+    const dest = join(root, rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, typeof body === 'string' ? body : JSON.stringify(body, null, 2) + '\n')
+  }
+  put(`openspec/changes/${change}/proposal.md`, '# Add thing\n\nWhy: because.\n')
+  put(`openspec/changes/${change}/design.md`, '# Design\n\nD1: keep it small.\n')
+  put(`openspec/changes/${change}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Write docs/a.md\n- [ ] 1.2 Write docs/b.md\n')
+  put('README.md', 'hello\n')
+  put('.claude/ship/classified.json', {
+    tasks: ['a', 'b'].map((name, i) => ({
+      id: `1.${i + 1}`,
+      group: 1,
+      description: `Write docs/${name}.md`,
+      tier: 4,
+      model: 'sonnet',
+      isTestTask: false,
+      paths: [`docs/${name}.md`]
+    }))
+  })
+  for (const args of [['init', '-q', '.'], ['config', 'user.email', 't@example.com'], ['config', 'user.name', 't'], ['add', '-A'], ['commit', '-qm', 'init']]) {
+    execFileSync('git', args, { cwd: root })
+  }
+  return { root, change }
+}
+
+/** Start the runner in the background; resolve `exited` with its code and everything it printed. */
+function startRunner(root, change, command) {
+  const child = spawn(process.execPath, [RUNNER, change, '--host', 'claude', '--no-commit', '--root', '.'], {
+    cwd: root,
+    env: { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: undefined, INTERLOCK_CLAUDE_COMMAND: command },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  let stdout = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', chunk => {
+    stdout += chunk
+  })
+  child.stderr.resume()
+  const exited = new Promise(resolve => child.on('close', (code, signal) => resolve({ code, signal, stdout })))
+  /** Resolve once stdout matches, or reject after `ms`. */
+  const waitFor = (pattern, ms = 60000) =>
+    new Promise((resolve, reject) => {
+      const started = Date.now()
+      const timer = setInterval(() => {
+        if (pattern.test(stdout)) {
+          clearInterval(timer)
+          resolve()
+        } else if (Date.now() - started > ms) {
+          clearInterval(timer)
+          reject(new Error(`runner never printed ${pattern}:\n${stdout}`))
+        }
+      }, 20)
+    })
+  return { child, exited, waitFor }
+}
+
+/** Every trajectory event the run wrote. */
+function eventsOf(root) {
+  const dir = join(root, '.claude', 'ship', 'runs')
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.jsonl'))
+    .flatMap(f => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)))
+}
+
+const shipCommand = flags => [process.execPath, ADAPTERS[0].fixture, '--fixture-ship', ...flags].join(' ')
+
+test('SIGTERM while a lane is in flight closes the run: a run-halt naming it, a resume card, non-zero', async () => {
+  const { root, change } = signalRepo()
+  try {
+    const runner = startRunner(root, change, shipCommand(['--fixture-delay=4000']))
+    await runner.waitFor(/run-batch: 1\.\d/)
+    runner.child.kill('SIGTERM')
+    const { code, stdout } = await runner.exited
+    assert.notEqual(code, 0, `a killed run is not a clean one:\n${stdout}`)
+    const halts = eventsOf(root).filter(e => e.type === 'run-halt')
+    assert.equal(halts.length, 1, JSON.stringify(halts))
+    assert.match(halts[0].reason, /interlock-run received SIGTERM/)
+    const cards = existsSync(join(root, '.claude', 'handoff')) ? readdirSync(join(root, '.claude', 'handoff')) : []
+    assert.ok(cards.length, `no resume card was written:\n${stdout}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a second signal during the close starts no second close', async () => {
+  const { root, change } = signalRepo()
+  try {
+    const runner = startRunner(root, change, shipCommand(['--fixture-delay=4000']))
+    await runner.waitFor(/run-batch: 1\.\d/)
+    runner.child.kill('SIGINT')
+    runner.child.kill('SIGTERM')
+    const { code, stdout } = await runner.exited
+    assert.notEqual(code, 0)
+    const halts = eventsOf(root).filter(e => e.type === 'run-halt')
+    assert.equal(halts.length, 1, `exactly one close:\n${JSON.stringify(halts)}\n${stdout}`)
+    assert.match(halts[0].reason, /interlock-run received SIGINT/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a signal before run start has answered still closes, truthfully, with no manifest', async () => {
+  // The window is the adapter's one-time `--help` probe, which runs before
+  // `run start` is called: a CLI whose help is slow holds the runner there, and
+  // the signal it receives meanwhile is handled at the runner's first await —
+  // which is the wait on `run start`. The change resolves to nothing, so `run
+  // start` writes no manifest whichever process finishes first.
+  const { root } = signalRepo()
+  try {
+    const ready = join(root, 'help-probed')
+    const slowHelp = join(root, 'slow-help.mjs')
+    writeFileSync(
+      slowHelp,
+      `import { writeFileSync } from 'node:fs'\n` +
+        `if (process.argv.includes('--help')) {\n` +
+        `  writeFileSync(${JSON.stringify(ready)}, 'x')\n` +
+        `  setTimeout(() => { process.stdout.write('Usage: claude [options]\\n'); process.exit(0) }, 1500)\n` +
+        `} else process.exit(64)\n`
+    )
+    const runner = startRunner(root, 'no-such-change', `${process.execPath} ${slowHelp}`)
+    await new Promise((resolve, reject) => {
+      const started = Date.now()
+      const timer = setInterval(() => {
+        if (existsSync(ready)) {
+          clearInterval(timer)
+          resolve()
+        } else if (Date.now() - started > 30000) {
+          clearInterval(timer)
+          reject(new Error('the help probe never ran'))
+        }
+      }, 10)
+    })
+    runner.child.kill('SIGTERM')
+    const { code, signal, stdout } = await runner.exited
+    assert.equal(signal, null, 'the runner handled the signal rather than dying of it')
+    assert.notEqual(code, 0)
+    assert.match(stdout, /SHIP HALTED — interlock-run received SIGTERM/)
+    assert.match(stdout, /There is no run manifest/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

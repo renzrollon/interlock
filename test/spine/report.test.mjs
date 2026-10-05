@@ -955,3 +955,95 @@ test('the unobserved-versus-empty distinction survives writer, reader and report
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- runs without a terminal event: interrupted or unexplained (spec: report/indicators) ---
+
+/** One interrupted-run note, the shape the SessionEnd recorder writes. */
+function interruptedNote(dir, runId, fields = {}) {
+  const notes = join(dir, '.claude', 'ship', 'interrupted')
+  mkdirSync(notes, { recursive: true })
+  writeFileSync(
+    join(notes, `${runId}.json`),
+    JSON.stringify({
+      schema: 'interlock.interrupted/1',
+      runId,
+      change: 'add-widget',
+      sessionId: 'sess-9',
+      reason: 'other',
+      stage: 'implement',
+      at: '2026-08-21T00:00:09.000Z',
+      spokenAt: null,
+      ...fields
+    })
+  )
+}
+
+const ended = () => [{ type: 'run-start' }, { type: 'run-complete' }]
+const cutOff = () => [{ type: 'run-start' }, { type: 'wave-action', action: 'run-batch' }]
+
+test('a run without a terminal event and a note naming it is counted interrupted', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', ended())
+    trajectory(dir, 'run-b', ended())
+    trajectory(dir, 'run-c', cutOff())
+    interruptedNote(dir, 'run-c')
+    const report = buildReport(dir)
+    const t = report.coverage.trajectories
+    assert.equal(t.scanned, 3)
+    assert.deepEqual(t.withoutTerminal, { total: 1, interrupted: 1, unexplained: 0 })
+    assert.equal(t.interruptedNotesWithoutTrajectory, 0)
+    assert.match(
+      formatReport(report),
+      /without terminal 1 — interrupted 1 \(a SessionEnd note names the run\), unexplained 0/
+    )
+    // The coverage line sits under the terminal line, before any indicator.
+    const text = formatReport(report)
+    assert.ok(text.indexOf('without terminal') > text.indexOf('with terminal'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a run without a terminal event and no note is unexplained, and the report exits zero', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', ended())
+    trajectory(dir, 'run-c', cutOff())
+    const t = buildReport(dir).coverage.trajectories
+    assert.deepEqual(t.withoutTerminal, { total: 1, interrupted: 0, unexplained: 1 })
+    const cli = spawnSync(process.execPath, [BIN, 'report', '--json'], { cwd: dir, encoding: 'utf8' })
+    assert.equal(cli.status, 0, cli.stderr)
+    assert.deepEqual(JSON.parse(cli.stdout).coverage.trajectories.withoutTerminal, { total: 1, interrupted: 0, unexplained: 1 })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a note naming no scanned trajectory is counted apart, and moves neither count', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-a', ended())
+    interruptedNote(dir, 'run-gone')
+    const t = buildReport(dir).coverage.trajectories
+    assert.deepEqual(t.withoutTerminal, { total: 0, interrupted: 0, unexplained: 0 })
+    assert.equal(t.interruptedNotesWithoutTrajectory, 1)
+    assert.match(formatReport(buildReport(dir)), /1 interrupted-run note names no scanned trajectory/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unreadable note is named in coverage, never swallowed', () => {
+  const dir = root()
+  try {
+    trajectory(dir, 'run-c', cutOff())
+    mkdirSync(join(dir, '.claude', 'ship', 'interrupted'), { recursive: true })
+    writeFileSync(join(dir, '.claude', 'ship', 'interrupted', 'bad.json'), '{ not json')
+    const report = buildReport(dir)
+    assert.deepEqual(report.coverage.trajectories.withoutTerminal, { total: 1, interrupted: 0, unexplained: 1 })
+    assert.match(formatReport(report), /interrupted-run note unreadable.*bad\.json/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

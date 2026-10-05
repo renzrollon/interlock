@@ -266,3 +266,29 @@ test('no threshold, target, trend or health colour is rendered', () => {
     assert.doesNotMatch(doc, /<rect[^>]*\bfill="/, 'no mark carries a literal colour')
   })
 })
+
+test('the HTML coverage renders runs without a terminal event, split interrupted and unexplained', () => {
+  const dir = populatedRoot()
+  try {
+    const runs = join(dir, '.claude', 'ship', 'runs')
+    writeFileSync(join(runs, 'run-b.jsonl'), JSON.stringify({ type: 'run-start', runId: 'run-b', change: 'add-widget' }) + '\n')
+    writeFileSync(join(runs, 'run-c.jsonl'), JSON.stringify({ type: 'run-start', runId: 'run-c', change: 'add-widget' }) + '\n')
+    const notes = join(dir, '.claude', 'ship', 'interrupted')
+    mkdirSync(notes, { recursive: true })
+    writeFileSync(
+      join(notes, 'run-c.json'),
+      JSON.stringify({ schema: 'interlock.interrupted/1', runId: 'run-c', change: 'add-widget', stage: 'verify', spokenAt: null })
+    )
+    writeFileSync(
+      join(notes, 'run-gone.json'),
+      JSON.stringify({ schema: 'interlock.interrupted/1', runId: 'run-gone', change: 'add-widget', stage: 'verify', spokenAt: null })
+    )
+    const page = renderReportHtml(buildReport(dir))
+    assert.match(page, /without terminal/)
+    assert.match(page, /<dt>interrupted<\/dt><dd class="num">1<\/dd>/)
+    assert.match(page, /<dt>unexplained<\/dt><dd class="num">1<\/dd>/)
+    assert.match(page, /1 interrupted-run note names no scanned trajectory/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

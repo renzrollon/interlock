@@ -231,6 +231,27 @@ const routing = []
 // one this file derives from the host id or the step (design D2, D27).
 const effortRouting = []
 
+// A runner killed with SIGINT or SIGTERM closes the run through `stop()` like
+// any other halt, so it leaves a receipt, a terminal trajectory event and a
+// resume card instead of a run nobody can reconstruct. Registered before the
+// host is created: a signal that lands during the adapter's synchronous probe is
+// held until the first await — the wait on `run start` — and handled there,
+// rather than killing the process by default. `stopping` makes it one close: a
+// second signal, or a signal during a close already under way, starts nothing.
+// In-flight lane processes are not killed here; each adapter's spawn timeout
+// bounds them.
+let stopping = false
+function onSignal(signal) {
+  if (stopping) return
+  stopping = true
+  stop(`interlock-run received ${signal}`).catch(err => {
+    process.stderr.write(`interlock-run: the close after ${signal} failed: ${(err && err.message) || err}\n`)
+    process.exit(1)
+  })
+}
+process.once('SIGINT', () => onSignal('SIGINT'))
+process.once('SIGTERM', () => onSignal('SIGTERM'))
+
 // Refusal comes BEFORE anything is created or written. A run that started and
 // then discovered it had no host would already have a manifest, a briefing and a
 // trajectory describing a run that never happened.
@@ -380,6 +401,9 @@ function write(rel, data) {
 
 /** Run the CLI through the host port and parse `--json` stdout when present. */
 async function cli(argv) {
+  // From the first close on, a signal starts no second one — whichever path
+  // reached the close: the loop's own continuation, or `stop()`.
+  if (argv[0] === 'run' && argv[1] === 'close') stopping = true
   const result = await host.runCli([...argv, '--json'])
   if (!result.stdout.trim()) return null
   try {

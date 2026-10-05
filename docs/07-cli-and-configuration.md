@@ -55,7 +55,7 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 | `interlock run-log` | Whether a finished run's trajectory can actually be replayed (`check`), and what it recorded (`list`, `show`, `query`) |
 | `interlock run` | The whole ship loop, as steps: every briefing and every branch a driver obeys next. `run close` is the only step that exits non-zero — on a halt, or on a run that cannot be reconstructed |
 | `interlock doctor` | Whether the host can carry an unattended run: the permission allowlist against the commands the flow shells out to (including the one your own `.claude/testing/profile.json` names), the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI, git, and whether the run-state directories can be written. Exits 1 when a check would stop a zero-touch run, prints the settings snippet that fixes it, and changes nothing itself |
-| `interlock limits` | Every cap the loop obeys, so nothing restates one |
+| `interlock limits` | Every cap the loop obeys, so nothing restates one. Its last line adds the concurrency observed on this machine beside the vendor default: `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=<n>` when set, otherwise the vendor default and the CPU count that may reduce it. `--json` carries it as `runtime.observed` |
 | `interlock notify` | The one outbound request this CLI makes — see below |
 | `interlock evals` | Whether an eval results file shows a regression (`triage`), whether a case may move from advisory to blocking (`promote`), how often judged graders agreed with human labels (`calibrate`), and a draft case from a recorded run (`capture`). See [14](./14-evals.md) |
 | `interlock report` | Indicators over the three recorded corpora, every value with its denominator. Gates nothing, always exits 0. See [11](./11-the-indicators.md) |
@@ -113,11 +113,13 @@ interlock-graph context "<query>" --budget 2000
 
 ## Model routing
 
-The planner assigns a slug — `haiku`, `sonnet` or `opus` — to every spawn. A lane of two or more tasks is `opus` when its hardest tier is at or above the published multi-task opus floor (`LANE_CAPS.opusMinTier`, printed by `interlock limits`); below that floor it is `sonnet`. A lane of one task is that task's clamped model. On Claude Code those pass through unmapped. Three environment variables change what actually runs:
+The planner assigns a slug — `haiku`, `sonnet` or `opus` — to every spawn. A lane of two or more tasks is `opus` when its hardest tier is at or above the published multi-task opus floor (`LANE_CAPS.opusMinTier`, printed by `interlock limits`); below that floor it is `sonnet`. A lane of one task is that task's clamped model. On Claude Code those pass through unmapped. These environment variables change what actually runs. `interlock run start --host workflow` reads the first three from its own environment, against the version `claude --version` reports, and `interlock doctor`'s `claude-env` row prints the same reading before a run:
 
 | Variable | Meaning |
 |---|---|
-| `CLAUDE_CODE_SUBAGENT_MODEL` | **Leave it unset.** If set, Claude Code applies it to every subagent, overriding every per-tier model the planner assigned, so `ship` runs entirely on that model. The run banners this as `MODEL ROUTING OVERRIDDEN` rather than hiding it — see [04](./04-when-it-stops.md#model-routing-overridden). |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | **Leave it unset.** From Claude Code 2.1.251 it sets only the *default* subagent model, and the model each spawn names wins. The run notes it (`MODEL ROUTING NOTE`) and the plan's tiers apply. On an older host, or when the version cannot be read, it overrides every per-tier model the planner assigned, so `ship` runs entirely on that model. The run banners this as `MODEL ROUTING OVERRIDDEN` rather than hiding it — see [04](./04-when-it-stops.md#model-routing-overridden). |
+| `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` | **Leave it unset.** Set to `1` on Claude Code 2.1.257 or later, it forces one model onto every agent, whatever the plan or the spawn asked for. The run banners `MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1` and records the Workflow host's model selection as `forced`. |
+| `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS` | The Workflow runtime's concurrency (vendor default 16, which the runtime may reduce on a small machine). Interlock never resizes a plan to it. A batch wider than an override is bannered `WAVE WIDER THAN RUNTIME SLOTS`, and the extra lanes queue. `interlock limits` prints what it observed. |
 | `CLAUDE_CODE_EFFORT_LEVEL` | **Leave it unset.** If set, the Claude CLI applies it to every agent, above its own `--effort` flag and above every per-step effort the plan assigned from `interlock limits`. Both drivers banner it as `EFFORT ROUTING OVERRIDDEN`, and neither strips it — see [04](./04-when-it-stops.md#effort-routing-overridden). The runner banners it on `--host claude` and on `--host acp` when the command is the Claude binary or a known wrapper (`claude-agent-acp`, `claude-code-acp`). |
 | `INTERLOCK_MODEL_MAP` | Runner only. A JSON object keyed by host id, each entry mapping the planner's slugs to that host's model ids. Codex and Qwen have no idea what the slugs mean, so an unmapped spawn there gets **no model flag** and is named in a `MODEL ROUTING UNAVAILABLE (<host>)` banner with its reason — never quietly run on your default. Map `opus` as well as `sonnet`: a multi-task lane whose hardest tier clears the opus floor (and every solo lane) still asks for `opus`. `INTERLOCK_ACP_MODEL_MAP` is an alias of the `acp` entry. |
 
@@ -166,7 +168,9 @@ Every banner the runner prints, with what to do about it, is in [04 — When it 
 | `INTERLOCK_ACP_MODEL_MAP` | `interlock-run --host acp` | Alias of the `acp` entry above |
 | `INTERLOCK_ACP_COMMAND` | `interlock-run --host acp` | The ACP agent command to drive |
 | `INTERLOCK_RUN_HOST` | `interlock-run` | Default for `--host` |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code | **Must be unset**, or every tier runs on that model (bannered) |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code; `run start --host workflow` | **Leave unset.** Below 2.1.251, or with the version unknown, every tier runs on that model (bannered); from 2.1.251 it is only the default (noted) |
+| `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` | Claude Code; `run start --host workflow` | **Leave unset**, or every agent runs on one model (bannered, model selection recorded `forced`) |
+| `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS` | Claude Code; `run start --host workflow`, `interlock limits` | Workflow runtime slots. Observed and printed, never used to resize a plan |
 | `CLAUDE_CODE_EFFORT_LEVEL` | Claude Code | **Leave unset**, or every agent runs at that effort, whatever the plan assigned (bannered as `EFFORT ROUTING OVERRIDDEN`, never stripped) |
 | `CLAUDE_CODE_DISABLE_WORKFLOWS` | Claude Code | **Must be unset**, or `/interlock:ship` cannot start |
 | `CLAUDE_CODE_WALNUT_SPIRE` | `claude plugin eval` | Maintainers only: enables the early-access eval harness. Environment only, never committed — see [14](./14-evals.md#running-the-model-evals) |

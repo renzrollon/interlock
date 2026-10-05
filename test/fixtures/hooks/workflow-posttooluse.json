@@ -1,0 +1,29 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a2",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "xhigh"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Workflow",
+  "tool_input": {
+    "name": "interlock:ship",
+    "args": "no-such-change",
+    "script": "export const meta = {\n  name: 'ship',\n  description:\n    'Take a reviewed OpenSpec change from tasks to commit in one uninterrupted run — dependency-ordered waves of parallel implementers, unit verification, and a commit. Asks nothing. Pass --strict for the previous default (adversarial review, handoff, conformance).'\n}\n// … workflows/ship.js source, shortened for the fixture\n"
+  },
+  "tool_response": {
+    "status": "async_launched",
+    "taskId": "w00000001",
+    "taskType": "local_workflow",
+    "workflowName": "ship",
+    "runId": "wf_00000000-001",
+    "summary": "Take a reviewed OpenSpec change from tasks to commit in one uninterrupted run — dependency-ordered waves of parallel implementers, unit verification, and a commit. Asks nothing. Pass --strict for the previous default (adversarial review, handoff, conformance).",
+    "transcriptDir": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000/subagents/workflows/wf_00000000-001",
+    "scriptPath": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000/workflows/scripts/ship-wf_00000000-001.js"
+  },
+  "tool_use_id": "toolu_00000000000000000000000001",
+  "duration_ms": 6
+}

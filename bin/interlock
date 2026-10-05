@@ -29,7 +29,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
-import { constants as osConstants, tmpdir } from 'node:os'
+import { constants as osConstants, cpus, tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import {
   planWaves,
@@ -65,7 +65,8 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
-import { probeClaudeEffort } from '../lib/host/claude-cli.mjs'
+import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
+import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
 import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
@@ -922,6 +923,21 @@ function emit(json, obj, text) {
  * write is spoken on stderr and never touches the exit code — losing the copy
  * must not lose the step.
  */
+/**
+ * The machine's CPU count, or null when the platform will not say. The vendor
+ * reduces the Workflow runtime's concurrency on small machines by an amount it
+ * does not publish, so this is recorded beside the default and never turned
+ * into a number of its own.
+ */
+function cpuCount() {
+  try {
+    const n = cpus().length
+    return Number.isInteger(n) && n > 0 ? n : null
+  } catch {
+    return null
+  }
+}
+
 function emitRunStep(json, root, step, text, { relay = false } = {}) {
   if (!json) {
     process.stdout.write(text)
@@ -1893,11 +1909,14 @@ async function main() {
       // `limits`: LIMITS holds positive-integer loop counts (its invariant test
       // asserts it), whereas the lane-cap table is a tier→cap map and the solo
       // envelope is a separate object — the same reason `effort` is emitted apart.
+      // The slot count this machine's runtime will honour, as far as this
+      // process can see it — beside the vendor fact, never instead of it.
+      const runtimeObserved = runtimeSlotsOf(observeClaudeEnv(process.env, { cpuCount: cpuCount() }))
       emit(
         json,
         {
           limits: LIMITS,
-          runtime: RUNTIME,
+          runtime: { ...RUNTIME, observed: runtimeObserved },
           evals: EVAL_CAPS,
           // Its own group, beside `evals` rather than inside it: the eval caps
           // are scalars a reader compares a running total against, and this is
@@ -1910,7 +1929,7 @@ async function main() {
           laneCaps: LANE_CAPS,
           solo: SOLO
         },
-        formatLimits()
+        formatLimits({ runtimeObserved })
       )
       break
     }
@@ -1975,7 +1994,7 @@ async function main() {
       // Read-only by construction — see the header of lib/doctor.mjs. The exit
       // code is the whole point: a preflight that only prints is a preflight a
       // zero-touch run walks straight past.
-      const report = diagnose(root)
+      const report = diagnose(root, { cpuCount: cpuCount() })
       emit(json, report, formatDoctor(report))
       if (!report.ok) process.exit(1)
       break
@@ -2696,10 +2715,22 @@ async function main() {
           workflowEffortProbe = probeClaudeEffort(process.env)
           hostCapabilities = { ...(hostCapabilities || {}), effort: workflowEffortProbe.capability }
         }
+        // The model-routing variables, the slot override and the host version,
+        // read from THIS process's environment — the Workflow driver forwards
+        // what `runStart` decides from them and reads none of them itself.
+        let hostEnv
+        if (hostId === 'workflow') {
+          const probed = probeClaudeVersion(process.env)
+          hostEnv = {
+            ...observeClaudeEnv(process.env, { version: probed.version, cpuCount: cpuCount() }),
+            ...(probed.reason ? { versionReason: probed.reason } : {})
+          }
+        }
         step = runStart(ctx, {
           change: name,
           host: hostId,
           hostCapabilities,
+          hostEnv,
           flags: {
             applyOnly: flags['apply-only'] === true,
             noCommit: flags['no-commit'] === true,

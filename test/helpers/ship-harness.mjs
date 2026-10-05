@@ -366,7 +366,7 @@ function lookup(responses, label) {
  */
 export function defaultResponses() {
   return {
-    validate: { hasGraph: true, hasTestProfile: true, haikuAvailable: true },
+    validate: { hasGraph: true, hasTestProfile: true },
     'plan-waves': { ok: true, taskCount: 1 },
     '1.1': { id: '1.1', ok: true, handoff: handoffFor('1.1'), filesChanged: ['lib/a.mjs'] },
     verify: { results: [{ kind: 'unit', exitCode: 0, total: 1, passed: 1, failed: 0 }] },
@@ -399,7 +399,8 @@ export function defaultResponses() {
  *   responses?: object,
  *   budget?: {total: number|null, spent: () => number},
  *   repo?: object,
- *   keepRepo?: boolean
+ *   keepRepo?: boolean,
+ *   env?: object
  * }} [opts]
  *   `responses` is merged over `defaultResponses()`. A value may be a function
  *   `(label, callIndex) => result` so a label answered twice can answer
@@ -493,7 +494,9 @@ export async function runShip(opts = {}) {
       // `commandIn` already captured everything AFTER the binary name, and
       // `runCli` invokes bin/interlock itself — so this is the subcommand and
       // its flags, passed through whole.
-      const result = await runCli(argv, { cwd: root })
+      // `env` reaches the CLI the way a session's environment reaches the
+      // relay's shell: `run start` reads the host's routing variables itself.
+      const result = await runCli(argv, { cwd: root, ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}) })
       // A relay canned as a function is a relay that ran the command for real
       // and then retyped its stdout badly — the failure that halted the jumphour
       // run. The CLI's own effects have happened; only the copy is wrong.

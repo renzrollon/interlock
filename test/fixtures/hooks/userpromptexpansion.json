@@ -1,0 +1,13 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/home/user/project",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptExpansion",
+  "expansion_type": "slash_command",
+  "command_name": "interlock:ship",
+  "command_args": "no-such-change",
+  "command_source": "plugin",
+  "prompt": "/interlock:ship no-such-change"
+}

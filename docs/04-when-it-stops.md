@@ -276,18 +276,28 @@ Fix it once, and every later run is faster and more accurate:
 
 ### `MODEL ROUTING OVERRIDDEN`
 
-You have `CLAUDE_CODE_SUBAGENT_MODEL` set in your environment, and it wins over everything the plan decided. Per the [workflow docs](https://code.claude.com/docs/en/workflows), that variable overrides both your session model *and* a per-agent model a script asks for — so every agent in the run used it, whatever tier the planner assigned.
+Something in your environment replaced the model every agent runs on, so whatever tier the planner assigned did not apply. `interlock run start --host workflow` reads the variables from its own environment and asks the installed CLI for its version (`claude --version`), because what one of them means changed between releases. It raises this banner in two cases, and the Workflow driver only forwards it:
 
-That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`, clamps over-eager `opus` down to `sonnet` on a task's recorded model below tier 5, and dispatches opus for a multi-task lane whose hardest tier clears the published floor (or for a tier-5 / solo lane). Routine multi-task work below that floor runs on sonnet. A single-task lane keeps its clamped model. With the override set, none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported.
+```
+MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=<value> — every agent runs on that model, so the per-tier assignment in the plan is not in effect
+MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 — every agent runs on one model (<value>, or the host's default), so the per-tier assignment in the plan is not in effect
+```
+
+- **`CLAUDE_CODE_SUBAGENT_MODEL` on an older host.** Below Claude Code 2.1.251 the variable replaced every agent's model, including the model a spawn named. From 2.1.251 it sets only the *default*, and a model named at spawn time wins, so a current host gets the [`MODEL ROUTING NOTE`](#model-routing-note-and-ping-model-inherited) below instead of this banner. When the version cannot be read at all, the run takes the older reading and appends ` (host version unknown)`. That costs a sentence that may be false, never a run.
+- **`CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, on any host from 2.1.257 or of unknown version.** That variable really does force one model onto every agent: the plain variable's value if set, the host's default otherwise. The run records the Workflow host's model selection as `forced` on the manifest. On a host older than 2.1.257 the variable does nothing; a note says so, and the plain variable is read as above.
+
+Both version floors are named constants in `lib/host/claude-env.mjs`, the module that reads them.
+
+That matters because the tier ladder is most of Interlock's cost story. Normally the planner pins trivial one-file edits and the mechanical CLI pings to `haiku`. It clamps over-eager `opus` down to `sonnet` on a task's recorded model below tier 5, and dispatches opus for a multi-task lane whose hardest tier clears the published floor (or for a tier-5 / solo lane). Routine multi-task work below that floor runs on sonnet, and a single-task lane keeps its clamped model. With an override in force none of that applies: a run of forty tier-1 tasks costs forty `opus` calls if that is what you exported. While it is in force, the control-plane pings carry no model of their own either.
 
 The work is still correct — this is a cost and latency degradation, not a quality one. To check and clear it:
 
 ```bash
-printenv CLAUDE_CODE_SUBAGENT_MODEL
-unset CLAUDE_CODE_SUBAGENT_MODEL
+printenv CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+unset CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_MODEL_FORCE
 ```
 
-Then confirm what the planner *would* have assigned:
+`interlock doctor`'s `claude-env` row prints the same version-aware reading before a run starts. To confirm what the planner *would* have assigned:
 
 ```bash
 interlock limits
@@ -295,9 +305,17 @@ interlock limits
 
 If the override was deliberate — pinning a whole run to `haiku` to sanity-check a change cheaply, say — this banner is just the receipt, and there is nothing to fix.
 
+### `MODEL ROUTING NOTE` and `PING MODEL INHERITED`
+
+Notes on the manifest and in the summary, not degradations. `run start` writes them when it read something in your environment that a reader should know about but that did not take the plan's routing away:
+
+- `MODEL ROUTING NOTE: CLAUDE_CODE_SUBAGENT_MODEL=<value> sets only the default subagent model on Claude Code <version>; the model each spawn names takes precedence`. This is the current-host reading of the variable above. The plan's tiers apply, and the control-plane pings keep `haiku`.
+- `MODEL ROUTING NOTE: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=<value> has no effect on Claude Code <version>, which predates it`. FORCE is set on a host older than 2.1.257.
+- `PING MODEL INHERITED: a Bedrock variable is set (<names>), so control-plane pings run on the session model`. `CLAUDE_CODE_USE_BEDROCK` or `AWS_BEDROCK` is set to something other than `0` or `false`. Bedrock accounts often cannot reach `haiku`, and a failed ping halts the loop, so the pings carry no model rather than risk it. The driver used to withhold the model here silently.
+
 ### `EFFORT ROUTING OVERRIDDEN`
 
-The effort twin of the banner above. You have `CLAUDE_CODE_EFFORT_LEVEL` set, and the Claude CLI ranks it above its own `--effort` flag, above `/effort` and settings, and above the effort a single agent is given. So every agent in the run used that effort, whatever the plan assigned:
+The effort twin of [`MODEL ROUTING OVERRIDDEN`](#model-routing-overridden). You have `CLAUDE_CODE_EFFORT_LEVEL` set, and the Claude CLI ranks it above its own `--effort` flag, above `/effort` and settings, and above the effort a single agent is given. So every agent in the run used that effort, whatever the plan assigned:
 
 ```
 EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=<value> — every agent runs at that effort, so the per-step effort in the plan is not in effect
@@ -315,6 +333,47 @@ unset CLAUDE_CODE_EFFORT_LEVEL
 ```
 
 `interlock limits` prints the effort the plan would have assigned to each tier and to the verify and skeptic steps.
+
+### `AGENT RETURNED NO RESULT`
+
+`/interlock:ship` only. An agent the step named came back with no result at all:
+
+```
+AGENT RETURNED NO RESULT: <label> — the runtime stopped it, the API failed, or a usage limit ended it; the step is recorded as failed
+```
+
+The Workflow runtime's `agent()` returns nothing when you stop an agent mid-run, when the API fails in a way it cannot recover from, or when a usage limit ends the agent outside an interactive subscription session. The host was the cause, not the briefing, so this is no longer reported as `BRIEFING NOT ACKNOWLEDGED`. That banner now means only that an agent returned a result whose briefing hash was missing or wrong. Either way the lane's tasks are recorded as failed rather than trusted, and their boxes stay unticked for the next run. `interlock-run` has no such banner: its adapters already name a spawn that failed with the process's own exit code and stderr.
+
+### `PREVIOUS RUN INTERRUPTED`, `INTERRUPTED NOTE UNREADABLE` and `INTERRUPTED NOTE NOT MARKED`
+
+A session that ends while its own ship run is live stops the run's background workflow before `run close`. You might have closed the terminal, quit the app, or run `/exit`. The run then gets no receipt, no resume card and no terminal trajectory event. The plugin's `SessionEnd` recorder (`hooks/recorder.mjs`) leaves one small note under `.claude/ship/interrupted/<runId>.json` instead, and three places print it from one text:
+
+```
+PREVIOUS RUN INTERRUPTED: <change> run <id> ended at stage <stage> — no resume card was written; interlock run-log show <id>
+```
+
+- **`interlock run start`**, for any change, carries it on its first step and in the summary, then marks the note spoken so it is said once.
+- **The SessionStart preflight** adds it to the session's opening context and marks nothing, so the next run start still says it.
+- **`interlock report`** counts the run as *interrupted* rather than *unexplained* in its coverage section ([indicators](./11-the-indicators.md)).
+
+`interlock run-log show <id>` replays what the run recorded before it stopped, and the tasks it ticked are already ticked in `tasks.md`. Run `/interlock:ship` again to finish the rest.
+
+The recorder writes only when a live stage marker exists and the run manifest names the session that is ending. It writes nothing in any other session or repository, for a runner run (whose own signal trap closes it), or when the host does not deliver `SessionEnd` at all. In those cases the report counts the run as unexplained. Two related lines can appear on the manifest, and neither moves an exit code:
+
+- `INTERRUPTED NOTE UNREADABLE: <file>: <reason>`. A note under `.claude/ship/interrupted/` could not be parsed.
+- `INTERRUPTED NOTE NOT MARKED: <file>: <reason>`. A note was spoken but could not be marked spoken, so the next run start says it again.
+
+The note is outcome-class, like the resume card. The trajectory's own rule is the opposite, and [the guards page](./13-the-guards.md) says why the two differ.
+
+### `WAVE WIDER THAN RUNTIME SLOTS` and `RUNTIME SLOTS OVERRIDE IGNORED`
+
+You lowered the Workflow runtime's concurrency with `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS`, and the adopted plan has a batch with more lanes than that:
+
+```
+WAVE WIDER THAN RUNTIME SLOTS: the widest batch has <w> lanes and CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=<n> — <w − n> lanes queue for a slot; the plan is not resized
+```
+
+The plan is published policy, so the run does not resize it to fit. The runtime queues the extra lanes, and the batch takes longer. The banner exists so they do not wait without a word. Without the variable, nothing is bannered: the vendor default may be reduced on a small machine by an amount the vendor does not publish, and Interlock does not invent one. `interlock limits` prints what it observed next to the vendor default either way. A value that is not an integer from 1 to 256 is recorded on the manifest as `RUNTIME SLOTS OVERRIDE IGNORED: …` and the run reads it as unset.
 
 ### `RUNNER HOST: <id> (experimental)` and the rest of the runner's banners
 

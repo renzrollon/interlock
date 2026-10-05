@@ -1097,3 +1097,109 @@ test('interlock doctor is listed in the usage text, with its exit code', () => {
   assert.match(r.stdout, /interlock doctor\s+Preflight the host/)
   assert.match(r.stdout, /doctor\s+a preflight check would stop a zero-touch run/)
 })
+
+// ---------------------------------------------------------------------------
+// The Claude Code environment a run's routing reads — advice, never a gate
+// ---------------------------------------------------------------------------
+
+/** A report whose `claude --version` probe answers `version` (null for a failed probe). */
+function claudeEnvRow(dir, env = {}, version = '2.1.288 (Claude Code)', extra = {}) {
+  file(dir, '.claude/testing/profile.json', PROFILE)
+  file(dir, '.claude/settings.json', ALL_ALLOWED)
+  const opts = baseOpts(dir)
+  return byId(
+    diagnose(dir, { ...opts, env: { ...opts.env, ...env }, probeVersion: () => version, cpuCount: 8, ...extra }),
+    'claude-env'
+  )
+}
+
+test('the claude-env row is ok with nothing set on a readable host, and leaves the verdict alone', () => {
+  const dir = tmp()
+  try {
+    const row = claudeEnvRow(dir)
+    assert.equal(row.status, 'ok')
+    assert.match(row.detail, /2\.1\.288/)
+    assert.match(row.detail, /8 CPUs/)
+    assert.match(row.detail, /16/, 'the vendor default concurrency, beside the CPU count')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the claude-env row names each forcing or overriding variable, and is skip, never fail', () => {
+  const cases = [
+    [{ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' }, [/CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1/, /every agent runs on one model/]],
+    [{ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, [/CLAUDE_CODE_SUBAGENT_MODEL=opus/, /sets only the default subagent model/]],
+    [{ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, [/CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1/, /does not affect Workflow agents/]],
+    [{ CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '4' }, [/CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=4/]],
+    [{ CLAUDE_CODE_USE_BEDROCK: '1' }, [/Bedrock/]]
+  ]
+  for (const [env, patterns] of cases) {
+    const dir = tmp()
+    try {
+      const row = claudeEnvRow(dir, env)
+      const four = !('CLAUDE_CODE_USE_BEDROCK' in env)
+      assert.equal(row.status, four ? 'skip' : 'ok', JSON.stringify(env))
+      for (const pattern of patterns) assert.match(row.detail, pattern, JSON.stringify(env))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('the claude-env row reads the plain variable by version: overriding on an older host', () => {
+  const dir = tmp()
+  try {
+    const row = claudeEnvRow(dir, { CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, '2.1.250 (Claude Code)')
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /replaces every agent's model/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unreadable host version is named unknown, and the row is skip', () => {
+  const dir = tmp()
+  try {
+    const row = claudeEnvRow(dir, { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, null)
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /unknown/)
+    assert.match(row.detail, /does not affect Workflow agents/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  const clean = tmp()
+  try {
+    assert.equal(claudeEnvRow(clean, {}, null).status, 'skip', 'an unknown version is not a clean reading')
+  } finally {
+    rmSync(clean, { recursive: true, force: true })
+  }
+})
+
+test('the claude-env row is never fail, whatever the env holds', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const hostile = new Proxy(
+      {},
+      {
+        get(_t, prop) {
+          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
+          throw new Error('environment unreadable')
+        }
+      }
+    )
+    const report = diagnose(dir, { ...baseOpts(dir), env: hostile })
+    assert.equal(byId(report, 'claude-env').status, 'skip')
+    assert.ok(!report.failures.includes('claude-env'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the interrupted-run notes directory is a non-fatal state directory', () => {
+  const entry = STATE_DIRS.find(d => d.path === join('.claude', 'ship', 'interrupted'))
+  assert.ok(entry, 'STATE_DIRS does not name .claude/ship/interrupted')
+  assert.equal(entry.fatal, false, 'the note is outcome-class: losing it never ends a run')
+})

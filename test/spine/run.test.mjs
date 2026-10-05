@@ -24,7 +24,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpus, tmpdir } from 'node:os'
 import { join, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT, LIMITS } from '../../lib/limits.mjs'
@@ -35,6 +35,7 @@ import {
   BRIEFING_HEADER,
   LAST_STEP_PATH,
   RELAY_STEP_FIELDS,
+  decideHostEnvironment,
   VERIFY_TIMINGS_PATH,
   briefingHash,
   laneOutcomes,
@@ -45,6 +46,11 @@ import {
   runReviewed
 } from '../../lib/run.mjs'
 import { stagePath, writeStage } from '../../lib/ship-stage.mjs'
+import {
+  SUBAGENT_MODEL_DEFAULT_ONLY_MIN_VERSION,
+  SUBAGENT_MODEL_FORCE_MIN_VERSION,
+  observeClaudeEnv
+} from '../../lib/host/claude-env.mjs'
 import { nextStep } from '../../lib/waves.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -1457,7 +1463,7 @@ test('an unisolated batch is byte-for-byte what it was before isolation existed'
 // exists to prevent.
 
 /** Start a run declaring a host's capabilities, the way `interlock-run` does. */
-function startWithHost(root, change, host, capabilities, flags = [], classified = CLASSIFIED) {
+function startWithHost(root, change, host, capabilities, flags = [], classified = CLASSIFIED, { env } = {}) {
   const started = run(root, [
     'run',
     'start',
@@ -1468,10 +1474,10 @@ function startWithHost(root, change, host, capabilities, flags = [], classified 
     host,
     '--host-capabilities',
     JSON.stringify(capabilities)
-  ]).step
+  ], { env }).step
   assert.equal(started.action, 'classify')
   file(root, '.claude/ship/classified.json', classified)
-  return run(root, [...started.then.argv]).step
+  return run(root, [...started.then.argv], { env }).step
 }
 
 function manifestOf(root) {
@@ -3524,4 +3530,366 @@ test('a manifest with no effort capability closes with a null receipt effort, ne
   } finally {
     cleanup(root)
   }
+})
+
+// --- the Workflow host's environment, read by the CLI (spec: ship/run-program) ---
+//
+// The model-override policy used to live in `workflows/ship.js`: its validate
+// ping ran `printenv CLAUDE_CODE_SUBAGENT_MODEL` and the driver decided the
+// banner and the ping model. Since Claude Code 2.1.251 the plain variable sets
+// only the DEFAULT subagent model, so on a current host that banner was false.
+// `run start --host workflow` now reads the variables from its own environment
+// and the host version from `claude --version`, and decides once.
+
+const FAKE_CLAUDE = join(ROOT, 'test', 'fixtures', 'hosts', 'fake-claude.mjs')
+
+/** Every routing variable, unset, so a developer's own export cannot change a result. */
+const ROUTING_UNSET = Object.freeze({
+  CLAUDE_CODE_SUBAGENT_MODEL: undefined,
+  CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined,
+  CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: undefined,
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: undefined,
+  CLAUDE_CODE_USE_BEDROCK: undefined,
+  AWS_BEDROCK: undefined
+})
+
+/** The child env for a workflow run against the fixture CLI at one version. */
+function workflowEnv({ version = '2.1.288', fails = false, env = {} } = {}) {
+  const mode = fails ? '--fixture-version-fails' : `--fixture-version=${version}`
+  return { ...ROUTING_UNSET, INTERLOCK_CLAUDE_COMMAND: `node ${FAKE_CLAUDE} ${mode}`, ...env }
+}
+
+/** `run start --host workflow`, the way the Workflow driver calls it, and its relayed step. */
+function startWorkflow(root, change, opts = {}) {
+  return run(root, ['run', 'start', '--change', change, '--host', 'workflow'], { env: workflowEnv(opts) }).step
+}
+
+const overridden = banners => (banners || []).filter(b => String(b).startsWith('MODEL ROUTING OVERRIDDEN'))
+
+test('a current host keeps haiku pings and raises no override banner for the plain subagent variable', () => {
+  const { root, change } = repo()
+  try {
+    const step = startWorkflow(root, change, { env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus' } })
+    assert.equal(step.action, 'classify')
+    const manifest = manifestOf(root)
+    assert.deepEqual(overridden(step.banners), [], 'the variable sets only the default on this host')
+    assert.deepEqual(overridden(manifest.banners), [])
+    assert.equal(step.pingModel, 'haiku')
+    assert.equal(manifest.pingModel, 'haiku')
+    assert.ok(
+      manifest.notes.some(n =>
+        /CLAUDE_CODE_SUBAGENT_MODEL=opus sets only the default subagent model on Claude Code 2\.1\.288/.test(n)
+      ),
+      `no default-only note: ${JSON.stringify(manifest.notes)}`
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an older host is bannered for the plain subagent variable and its pings carry no model', () => {
+  const { root, change } = repo()
+  try {
+    const step = startWorkflow(root, change, { version: '2.1.250', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus' } })
+    const banner =
+      'MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=opus — every agent runs on that model, ' +
+      'so the per-tier assignment in the plan is not in effect'
+    assert.ok((step.banners || []).includes(banner), JSON.stringify(step.banners))
+    assert.ok(manifestOf(root).banners.includes(banner), JSON.stringify(manifestOf(root).banners))
+    assert.equal(step.pingModel ?? null, null, 'no ping model on an overridden host')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('FORCE is bannered by name and refines the observed model selection to forced', () => {
+  const { root, change } = repo()
+  try {
+    const step = startWorkflow(root, change, { env: { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' } })
+    assert.ok(
+      (step.banners || []).some(b =>
+        b.startsWith('MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 — every agent runs on one model')
+      ),
+      JSON.stringify(step.banners)
+    )
+    assert.equal(manifestOf(root).host.modelSelect, 'forced')
+    assert.equal(step.pingModel ?? null, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an unreadable host version falls back to the override banner, says so, and does not halt', () => {
+  const { root, change } = repo()
+  try {
+    const step = startWorkflow(root, change, { fails: true, env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus' } })
+    assert.equal(step.action, 'classify', 'an ordinary first step, not a halt')
+    const banner = overridden(step.banners)
+    assert.equal(banner.length, 1, JSON.stringify(step.banners))
+    assert.match(banner[0], /^MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=opus/)
+    assert.match(banner[0], /\(host version unknown\)/)
+    assert.equal(manifestOf(root).hostEnv.version, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a Bedrock variable withholds the ping model, says so, and raises no override banner', () => {
+  const { root, change } = repo()
+  try {
+    const step = startWorkflow(root, change, { env: { CLAUDE_CODE_USE_BEDROCK: '1' } })
+    assert.equal(step.pingModel ?? null, null)
+    assert.deepEqual(overridden(step.banners), [])
+    assert.ok(
+      manifestOf(root).notes.some(n => n.startsWith('PING MODEL INHERITED')),
+      JSON.stringify(manifestOf(root).notes)
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the ping model rides the relay to the Workflow driver, and nowhere else is it decided', () => {
+  assert.ok(RELAY_STEP_FIELDS.includes('pingModel'), 'the relay would drop the decided ping model')
+  const { root, change } = repo()
+  try {
+    // `run` prints the relayed shape on the Workflow host; last-step.json holds the same bytes.
+    const step = startWorkflow(root, change)
+    assert.equal(step.pingModel, 'haiku')
+    const onDisk = JSON.parse(readFileSync(join(root, LAST_STEP_PATH), 'utf8'))
+    assert.equal(onDisk.pingModel, 'haiku')
+    // A runner host gets the whole step and has no ping to set a model on.
+    const runner = repo()
+    try {
+      const started = run(runner.root, [
+        'run', 'start', '--change', runner.change, '--host', 'claude',
+        '--host-capabilities', JSON.stringify({ worktree: 'driver' })
+      ], { env: workflowEnv() }).step
+      assert.equal(started.pingModel, undefined, 'the observation is the Workflow host\'s alone')
+      assert.equal(manifestOf(runner.root).hostEnv, undefined)
+    } finally {
+      cleanup(runner.root)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the runtime slot count is observed: the env override, the vendor default with CPUs, or invalid', () => {
+  const cases = [
+    [{ CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '4' }, { observed: 4, source: 'env' }],
+    [{}, { observed: null, source: 'vendor-default', cpuCount: cpus().length }],
+    [{ CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: 'lots' }, { observed: null, source: 'vendor-default', invalid: 'lots' }]
+  ]
+  for (const [env, expected] of cases) {
+    const { root, change } = repo()
+    try {
+      const step = startWorkflow(root, change, { env })
+      assert.equal(step.action, 'classify', 'an invalid override is ignored, never a halt')
+      const slots = manifestOf(root).runtimeSlots
+      for (const [key, value] of Object.entries(expected)) {
+        assert.deepEqual(slots[key], value, `${JSON.stringify(env)}: runtimeSlots.${key} in ${JSON.stringify(slots)}`)
+      }
+      assert.equal(slots.vendorDefault, 16)
+      if (expected.invalid) {
+        assert.ok(
+          manifestOf(root).notes.some(n => n.includes('CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=lots')),
+          'an ignored value is said out loud'
+        )
+      }
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a batch wider than an observed slot override is bannered and never resized', () => {
+  const THREE_LANES = {
+    tasks: [isolatedTask('1.1', 1, 'lib/a.mjs'), isolatedTask('1.2', 1, 'lib/b.mjs'), isolatedTask('1.3', 1, 'lib/c.mjs')]
+  }
+  const banner =
+    'WAVE WIDER THAN RUNTIME SLOTS: the widest batch has 3 lanes and ' +
+    'CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=2 — 1 lane queues for a slot; the plan is not resized'
+  const narrow = isolatedRepo(THREE_LANES)
+  try {
+    const batch = startWithHost(narrow.root, narrow.change, 'workflow', { worktree: 'runtime' }, [], THREE_LANES, {
+      env: workflowEnv({ env: { CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '2' } })
+    })
+    assert.ok((batch.banners || []).includes(banner), JSON.stringify(batch.banners))
+    assert.ok(manifestOf(narrow.root).banners.includes(banner))
+    assert.equal(batch.spawns.length, 3, 'every lane is still dispatched')
+    const state = JSON.parse(readFileSync(join(narrow.root, '.claude/ship/state.json'), 'utf8'))
+    const widest = Math.max(...state.waves.flatMap(w => w.batches.map(b => b.length)))
+    assert.equal(widest, 3, 'the plan is not resized to the observed slots')
+  } finally {
+    cleanup(narrow.root)
+  }
+  const wide = isolatedRepo(THREE_LANES)
+  try {
+    const batch = startWithHost(wide.root, wide.change, 'workflow', { worktree: 'runtime' }, [], THREE_LANES, {
+      env: workflowEnv({ env: { CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '4' } })
+    })
+    assert.ok(!(batch.banners || []).some(b => b.startsWith('WAVE WIDER THAN RUNTIME SLOTS')))
+    assert.ok(!manifestOf(wide.root).banners.some(b => b.startsWith('WAVE WIDER THAN RUNTIME SLOTS')))
+  } finally {
+    cleanup(wide.root)
+  }
+})
+
+test('the manifest records the session the run started under, on the Workflow host only', () => {
+  const workflow = repo()
+  try {
+    startWithHost(workflow.root, workflow.change, 'workflow', { worktree: 'runtime' }, [], CLASSIFIED, {
+      env: workflowEnv({ env: { CLAUDE_CODE_SESSION_ID: 'sess-abc-123' } })
+    })
+    assert.equal(manifestOf(workflow.root).sessionId, 'sess-abc-123')
+    assert.equal(runStartEvent(workflow.root).sessionId, 'sess-abc-123', 'the same value the trajectory holds')
+  } finally {
+    cleanup(workflow.root)
+  }
+  const runner = repo()
+  try {
+    startWithHost(runner.root, runner.change, 'claude', { worktree: 'driver' }, [], CLASSIFIED, {
+      env: { CLAUDE_CODE_SESSION_ID: 'the-shell-that-launched-the-runner' }
+    })
+    assert.equal(manifestOf(runner.root).sessionId, undefined)
+  } finally {
+    cleanup(runner.root)
+  }
+})
+
+// --- interrupted-run notes (spec: ship/run-program — run start speaks them) ---
+
+function plantNote(root, name, fields) {
+  return file(root, `.claude/ship/interrupted/${name}`, {
+    schema: 'interlock.interrupted/1',
+    sessionId: 'sess-9',
+    reason: 'other',
+    at: '2026-10-05T00:00:00.000Z',
+    spokenAt: null,
+    ...fields
+  })
+}
+
+const noteBanner = (change, runId, stage) =>
+  `PREVIOUS RUN INTERRUPTED: ${change} run ${runId} ended at stage ${stage} — ` +
+  `no resume card was written; interlock run-log show ${runId}`
+
+test('run start speaks an unspoken interrupted-run note once and marks it spoken', () => {
+  const { root, change } = repo()
+  try {
+    const path = plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'remediation' })
+    const step = run(root, ['run', 'start', '--change', change]).step
+    const banner = noteBanner('add-foo', 'r-1', 'remediation')
+    assert.ok((step.banners || []).includes(banner), JSON.stringify(step.banners))
+    assert.ok(manifestOf(root).banners.includes(banner))
+    assert.equal(typeof JSON.parse(readFileSync(path, 'utf8')).spokenAt, 'string', 'the note is marked spoken')
+
+    // Spoken once: the next start is silent about it.
+    const again = run(root, ['run', 'start', '--change', change]).step
+    assert.ok(!(again.banners || []).some(b => b.startsWith('PREVIOUS RUN INTERRUPTED')))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a spoken note is silent and two unspoken notes are two banners', () => {
+  const { root, change } = repo()
+  try {
+    plantNote(root, 'r-0.json', { runId: 'r-0', change: 'add-foo', stage: 'verify', spokenAt: '2026-10-04T00:00:00.000Z' })
+    plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'implement' })
+    plantNote(root, 'r-2.json', { runId: 'r-2', change: 'add-bar', stage: 'review' })
+    const step = run(root, ['run', 'start', '--change', change]).step
+    const spoken = (step.banners || []).filter(b => b.startsWith('PREVIOUS RUN INTERRUPTED'))
+    assert.deepEqual(spoken.sort(), [noteBanner('add-bar', 'r-2', 'review'), noteBanner('add-foo', 'r-1', 'implement')].sort())
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an unreadable note becomes a manifest note and the run proceeds', () => {
+  const { root, change } = repo()
+  try {
+    file(root, '.claude/ship/interrupted/bad.json', '{ not json')
+    const step = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(step.action, 'classify', 'an ordinary first step, not a halt')
+    assert.ok(
+      manifestOf(root).notes.some(n => /^INTERRUPTED NOTE UNREADABLE: .*bad\.json: /.test(n)),
+      JSON.stringify(manifestOf(root).notes)
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- D1's table, asserted on the pure decision ---------------------------------
+
+test('decideHostEnvironment reads every row of the version-aware table', () => {
+  const decide = (env, version) => decideHostEnvironment(observeClaudeEnv(env, { version, cpuCount: 8 }))
+  const forceBanner = d => d.banners.find(b => b.startsWith('MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE='))
+  const plainBanner = d => d.banners.find(b => b.startsWith('MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL='))
+
+  // The floors are named constants, and the table turns on them.
+  assert.equal(SUBAGENT_MODEL_DEFAULT_ONLY_MIN_VERSION, '2.1.251')
+  assert.equal(SUBAGENT_MODEL_FORCE_MIN_VERSION, '2.1.257')
+
+  // Row 1: plain set, at or above the default-only floor — no banner, haiku, a note.
+  for (const version of ['2.1.251', '2.1.288']) {
+    const d = decide({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, version)
+    assert.deepEqual(d.banners, [], version)
+    assert.equal(d.pingModel, 'haiku')
+    assert.ok(d.notes.some(n => n.startsWith('MODEL ROUTING NOTE: CLAUDE_CODE_SUBAGENT_MODEL=opus sets only the default')))
+    assert.notEqual(d.modelSelect, 'forced')
+  }
+
+  // Row 2: plain set, below the floor or unreadable — today's banner, no ping model.
+  const older = decide({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, '2.1.250')
+  assert.ok(plainBanner(older))
+  assert.doesNotMatch(plainBanner(older), /host version unknown/)
+  assert.equal(older.pingModel, null)
+  const unknown = decide({ CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, null)
+  assert.match(plainBanner(unknown), /\(host version unknown\)/)
+  assert.equal(unknown.pingModel, null)
+
+  // Row 3: FORCE set, at or above its floor or unreadable — the FORCE banner, forced.
+  for (const version of ['2.1.257', '2.1.288', null]) {
+    const d = decide({ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' }, version)
+    assert.match(forceBanner(d), /every agent runs on one model \(the host's default\)/)
+    assert.equal(d.modelSelect, 'forced', String(version))
+    assert.equal(d.pingModel, null)
+    assert.equal(plainBanner(d), undefined)
+  }
+  assert.match(forceBanner(decide({ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' }, null)), /host version unknown/)
+  const forcedOpus = decide({ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, '2.1.288')
+  assert.match(forceBanner(forcedOpus), /every agent runs on one model \(opus\)/)
+  assert.equal(forcedOpus.banners.length, 1, 'one banner for one override')
+
+  // Row 4: FORCE below its floor is inert, and the plain-variable row applies.
+  const inertNew = decide({ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, '2.1.255')
+  assert.equal(forceBanner(inertNew), undefined)
+  assert.notEqual(inertNew.modelSelect, 'forced')
+  assert.equal(inertNew.pingModel, 'haiku', '2.1.255 is above the default-only floor')
+  assert.ok(inertNew.notes.some(n => /CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 has no effect on Claude Code 2\.1\.255/.test(n)))
+  const inertOld = decide({ CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'opus' }, '2.1.250')
+  assert.ok(plainBanner(inertOld))
+  assert.equal(inertOld.pingModel, null)
+
+  // Row 5: nothing set — nothing said, haiku.
+  const clean = decide({}, '2.1.288')
+  assert.deepEqual(clean.banners, [])
+  assert.deepEqual(clean.notes, [])
+  assert.equal(clean.pingModel, 'haiku')
+
+  // Bedrock: the ping inherits, said as a note; the teams variable raises nothing.
+  for (const value of ['1', 'true']) {
+    const bedrock = decide({ CLAUDE_CODE_USE_BEDROCK: value }, '2.1.288')
+    assert.equal(bedrock.pingModel, null)
+    assert.ok(bedrock.notes.some(n => n.startsWith('PING MODEL INHERITED')))
+  }
+  for (const value of ['0', 'false', '']) {
+    assert.equal(decide({ AWS_BEDROCK: value }, '2.1.288').pingModel, 'haiku', `AWS_BEDROCK=${value}`)
+  }
+  const teams = decide({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, '2.1.288')
+  assert.deepEqual(teams.banners, [])
+  assert.equal(teams.pingModel, 'haiku')
 })

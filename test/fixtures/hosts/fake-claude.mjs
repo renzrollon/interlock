@@ -24,9 +24,16 @@
 //                         option's description, and which rejects the flag
 //   --fixture-help-fails  `--help` exits non-zero
 //   --fixture-help-hangs  `--help` never answers
+//   --fixture-version=V   `--version` prints `V (Claude Code)`, the real CLI's shape
+//   --fixture-version-fails  `--version` exits non-zero
+//   --fixture-delay=MS    hold the envelope MS milliseconds before printing it, so
+//                         a runner test can signal the runner while a lane is in flight
 //
-// `--help` is answered before every other check, as the real CLI does, so the
-// adapter's one-time capability probe needs no schema and no stdin.
+// `--version` and `--help` are answered before every other check, as the real
+// CLI does, so the run program's version probe and the adapter's one-time
+// capability probe need no schema and no stdin. `--version` without either
+// version mode is NOT answered: it falls through to the contract checks below
+// and is refused, so a probe that forgot to name a version reads as unknown.
 
 import { shipAnswer } from './ship-answers.mjs'
 
@@ -38,6 +45,15 @@ const valueOf = name => {
   if (hit) return hit.slice(prefix.length)
   const i = argv.indexOf(name)
   return i !== -1 && argv[i + 1] !== undefined ? argv[i + 1] : null
+}
+
+if (has('--version') && (valueOf('--fixture-version') || has('--fixture-version-fails'))) {
+  if (has('--fixture-version-fails')) {
+    process.stderr.write('fake-claude: version is unavailable on purpose\n')
+    process.exit(3)
+  }
+  process.stdout.write(`${valueOf('--fixture-version')} (Claude Code)\n`)
+  process.exit(0)
 }
 
 if (has('--help')) {
@@ -148,5 +164,8 @@ process.stdin.on('end', () => {
         : { ok: true, pid: process.pid }
   }
 
-  process.stdout.write(`${JSON.stringify(envelope)}\n`)
+  const print = () => process.stdout.write(`${JSON.stringify(envelope)}\n`)
+  const delay = Number.parseInt(valueOf('--fixture-delay') || '', 10)
+  if (Number.isInteger(delay) && delay > 0) setTimeout(print, delay)
+  else print()
 })
