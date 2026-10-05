@@ -1,6 +1,6 @@
 # Claude Code teams and orchestration briefs
 
-Six change briefs and seven app ideas for keeping Interlock current with what Claude Code shipped up to 2026-10-03. Claude Code 2.1.288 is installed on the machine they were written on. They were produced in five passes. Three research angles collected claims: agent teams and background sessions; the Workflow runtime and hooks; and headless `-p` flags and cost. Every claim then went through three adversarial lenses: primary source, currency, and whether it holds in the contexts Interlock actually runs in. Two claims were killed and several were corrected. A gap-fill round covered what the angles missed. Three ideators read the verified claims against this repository: one on the ship loop, drivers and host adapters; one on new apps and surfaces; one on guards, evals, observability and cost. A judge ranked their ideas after checking the load-bearing code paths. On the question that started this, agent teams turned out not to be the lever. Teams are experimental and off by default (teams-1). They never spawn from `-p` or the Agent SDK (teams-3). `/resume` does not restore them (teams-7), and they give no worktree isolation (teams-8) (all https://code.claude.com/docs/en/agent-teams). The features that matter to Interlock are the ones around teams: subagent and permission hooks, the `-p` result envelope, worktree bases, background sessions, and the environment variables that rewrite a spawn's model. Each brief is the source for one OpenSpec change, in the order given. Create it with `openspec new change`; do not hand-scaffold `openspec/changes/`.
+Six change briefs and seven app ideas for keeping Interlock current with what Claude Code shipped up to 2026-10-03. Claude Code 2.1.288 is installed on the machine they were written on. They were produced in five passes. Three research angles collected claims: agent teams and background sessions; the Workflow runtime and hooks; and headless `-p` flags and cost. Every claim then went through three adversarial lenses: primary source, currency, and whether it holds in the contexts Interlock actually runs in. Two claims were killed and several were corrected. A gap-fill round covered what the angles missed. Three ideators read the verified claims against this repository: one on the ship loop, drivers and host adapters; one on new apps and surfaces; one on guards, evals, observability and cost. A judge ranked their ideas after checking the load-bearing code paths. On the question that started this, agent teams turned out not to be the lever. Teams are experimental and off by default (teams-1). They never spawn from `-p` or the Agent SDK (teams-3). `/resume` does not restore them (teams-7), and they give no worktree isolation (teams-8) (all https://code.claude.com/docs/en/agent-teams). The features that matter to Interlock are the ones around teams: subagent and permission hooks, the `-p` result envelope, worktree bases, background sessions, and the environment variables that rewrite a spawn's model. Each brief is the source for one OpenSpec change, in the order given. Create it with `openspec new change`; do not hand-scaffold `openspec/changes/`. An addendum dated 2026-10-05 at the end of this file adds the Claude Desktop app changelog of 2026-09-10 to 2026-10-01 and the mods API, three further briefs (7 to 9), and revised app ideas. It was written in one pass by one session and is not verified the way the six briefs above were.
 
 ## Sources to re-read on the day a change is proposed
 
@@ -175,6 +175,7 @@ The second kind is design-day probes. These are assumptions a brief depends on t
 - Brief 2 lands before Brief 4. Brief 2 moves model-override policy into `run start` and refines the observed `modelSelect` when FORCE is set. Brief 4's model-substitution banner and observed `cacheAccounting` reuse that path.
 - Briefs 2, 3 and 4 all add `plugin.json` hook registrations, `hooks/_shared.mjs` helpers, `docs/13-the-guards.md` rows and `test/hooks.test.mjs` cases. Land them in the order 2, 3, 4. Settle one recorder file for the non-deciding hooks (SessionEnd from Brief 2; SubagentStart, SubagentStop and the permission events from Brief 4). Keep the deciding guard (Brief 3) separate.
 - Brief 6 must not treat Interlock's own lane worktrees as session worktrees. It touches `runStart` beside Briefs 2 and 4.
+- Briefs 7, 8 and 9 (addendum, 2026-10-05) land after Brief 2, in the order 7, 8, 9. Brief 8 replaces Brief 3's mechanism and Brief 9 replaces Brief 4's. Ship one of each pair, decided by the probes those briefs name. See [Landing order, extended](#landing-order-extended).
 
 ---
 
@@ -804,7 +805,7 @@ None of the six briefs is an app. These are the judge's "later" app ideas. Each 
 
 **Away-from-desk ship over Remote Control.** The user is a solo developer with an always-on workstation. The moment is reading the checkpoint on a phone and wanting the run started now. The recipe is `claude remote-control --spawn worktree` on the workstation (gap3-15, https://code.claude.com/docs/en/remote-control, medium), then `/interlock:ship <change>` from the Claude app. Remote Control mirrors workflow progress and can push open permission prompts to the phone (B-remote-control-1, unverified). `interlock doctor` would gain a row that reports ok when `CLAUDE_CODE_BRIDGE_SESSION_ID` is set (B-env-1, unverified) and skip otherwise, never fail. When that row skips, no ntfy topic is set and the permissions row is not ok, doctor says a mid-run prompt will wait for someone at this terminal. Prerequisites: Brief 6, because spawned sessions are linked worktrees. Confirm that `/interlock:ship` is accepted from the mobile client and that `worktree.baseRef` governs `--spawn worktree`. gap3-4 does not list it.
 
-**ship-meter, a mod that shows the run live.** The user is an operator watching a run. The moment is mid-run, when every banner is still held back until close. Mods (2.1.287) run in every session that loads the plugin, and draw panes only in the terminal and the Desktop Code tab (gap2-8, https://code.claude.com/docs/en/plugins/mods/overview). A mod could observe each model request's usage and the model that answered per agent, and show wave progress, routed against served models, and banners so far. Its FORCE probe is already absorbed into Brief 2. Prerequisites: Brief 4's probe must fail first, because the meter is the fallback route to the same measurements. The mods API is days old. An older host that rejects the `modules` key could stop the plugin loading for every user, which would be a fail-closed install. It would also bring a `.test.ts` file into an `.mjs`-only repository.
+**ship-meter, a mod that shows the run live.** Superseded by Brief 7 in the addendum of 2026-10-05, which has the API in hand; the paragraph is kept as the idea's record. The user is an operator watching a run. The moment is mid-run, when every banner is still held back until close. Mods (2.1.287) run in every session that loads the plugin, and draw panes only in the terminal and the Desktop Code tab (gap2-8, https://code.claude.com/docs/en/plugins/mods/overview). A mod could observe each model request's usage and the model that answered per agent, and show wave progress, routed against served models, and banners so far. Its FORCE probe is already absorbed into Brief 2. Prerequisites: Brief 4's probe must fail first, because the meter is the fallback route to the same measurements. The mods API is days old. An older host that rejects the `modules` key could stop the plugin loading for every user, which would be a fail-closed install. It would also bring a `.test.ts` file into an `.mjs`-only repository.
 
 **Checkpoint = merge: a cloud Routine ships a change when its spec PR merges.** The user is a team that reviews specs as pull requests. The moment is a reviewer merging a labelled spec PR. A merged, approved PR is a stronger and auditable checkpoint than a private read. A routine with a GitHub trigger (B-routines-1, unverified, https://code.claude.com/docs/en/routines) would run `/interlock:ship <change>` once and open a PR whose body is a new `interlock run receipt --markdown`. Routines have hourly limits with no overage (headless-18), and API fires are for claude.ai users only (headless-17). Cloud sessions start from a fresh clone (gap3-14, https://code.claude.com/docs/en/cloud-environments), and usage limits fail agents rather than pause them there (orchestration-7). Prerequisite, load-bearing and low-evidence: prove with a real routine that the Interlock plugin loads in a routine's cloud session. cloud-environments says repository `enabledPlugins` are not installed (gap3-14). It also waits on Brief 6.
 
@@ -902,3 +903,480 @@ None of the six briefs is an app. These are the judge's "later" app ideas. Each 
 ## Provenance
 
 Produced on 2026-10-03 by a 21-agent Workflow run with a hard cap of three agents in flight per round, all on Opus: three search-and-extract chains, three verifier lenses over every claim, three gap-fill agents and a second verifier round, three ideators, a judge and a completeness critic in parallel, and one writer. 105 claims were extracted, 95 kept, 2 killed, 8 folded as duplicates. 30 ideas were proposed and 6 selected. The lead spot-checked the result against the repository (`lib/run.mjs` merge-base capture and fold, `workflows/ship.js` model probe, `lib/host/claude-cli.mjs` envelope reader, the ship skill pin, `.gitignore`) and against direct reads of the agent-teams and worktrees pages.
+
+---
+
+## Addendum, 2026-10-05: the Desktop app changelog and the mods API
+
+Three more briefs and a revised set of app ideas, from two sources the six briefs above did not have. The first is the Claude Desktop app's "What's new" for 2026-09-10 (1.52386.0) to 2026-10-01 (2.19675.0), pasted into the session that wrote this. The second is the mods API, which the six briefs knew only as gap2-8 and held as the "ship-meter" idea: a plugin's own JavaScript running inside Claude Code, with panes, a status line, toasts, and hooks on tool calls, prompts, turns and sessions. Nine documentation pages, the bundled `plugin-authoring` skill and the engine's own 16,548-line type declaration were read for it.
+
+Two conclusions. The Desktop changelog changes no brief's shape; it sharpens facts in Briefs 1 to 6 and adds probes, listed per brief below. The mods API is a real lever. It answers three of Brief 3's four open decisions by construction, replaces Brief 4's transcript parse with the host's own per-request usage, and makes the ship-meter buildable. Briefs 7, 8 and 9 are the result. Each is still one OpenSpec change, created with `openspec new change`.
+
+This addendum was written in one pass by one session, against the documentation and the type declaration, and spot-checked against the repository. It did not go through the three verifier lenses the six briefs did. The confidence column says so: `high` here means "read directly in the primary source today", not "survived adversarial review".
+
+### Sources read for this addendum
+
+- Claude Desktop changelog, https://claude.com/docs/cowork/changelog, versions 1.52386.0 (2026-09-10) through 2.19675.0 (2026-10-01), as pasted into the session on 2026-10-05. The page itself was not fetched; the paste is the source.
+- https://code.claude.com/docs/en/plugins/mods/overview (2026-10-05)
+- https://code.claude.com/docs/en/plugins/mods/reference (2026-10-05; the page says "as of v2.1.289")
+- https://code.claude.com/docs/en/plugins/mods/events, /api, /interface, /create, /test, /admin, /troubleshoot (all 2026-10-05)
+- https://code.claude.com/docs/en/plugins/manifest-reference (2026-10-05)
+- Local, no URL: the bundled `plugin-authoring` skill of the engine running the session (`bundled-skills/2.1.286/.../plugin-authoring/`: `SKILL.md`, `reference.md`, `examples/`, `types/claude-code.d.ts`, whose first line reads "Written by Claude Code 2.1.286"). The declaration file is the authority where it and a page disagree; the pages say so themselves.
+- Not re-read: the Claude Code CLI `CHANGELOG.md` past 2.1.288. Every fetch of it failed on the day. Re-read it before proposing any of Briefs 7 to 9; `ui.fault` (2.1.289) shows the API moved after the six briefs were written.
+
+### Versions on this machine, 2026-10-05
+
+| Where | Version | How known |
+|---|---|---|
+| The engine running the Desktop Code tab session that wrote this | 2.1.286 | `claude-code.d.ts` header; the bundled-skills path. Matches the Desktop changelog's statement that 2.19675.0 bundles 2.1.286 (desk-15). |
+| `claude` on `PATH` (`~/.local/lib/node_modules/@anthropic-ai/claude-code`, also a Homebrew copy) | 2.1.274 | `claude --version`. Below the mods floor (mods-1). This is the older-host probe target Brief 7 needs. |
+| The machine the six briefs were written on, 2026-10-03 | 2.1.288 | the briefs' own statement |
+| The mods reference page | "as of v2.1.289" | the page, 2026-10-05 |
+| Mods floor | 2.1.287 | mods-1 |
+
+### Facts from the Desktop changelog
+
+Source for every row: the Desktop changelog as pasted, https://claude.com/docs/cowork/changelog. Version and date are the release the item appeared under.
+
+| Id | Claim | Version (date) | Confidence |
+|---|---|---|---|
+| desk-1 | Comments on lines of an open file in the Files pane (the `+` beside a line, or select text and "Add comment") are sent with the user's next message. | 2.19675.0 (2026-10-01) | high |
+| desk-2 | Worktree cleanup changed: a session's worktree is kept until the session is archived, however long it sits idle, and worktrees the user or the CLI create under `.claude/worktrees` are never removed by the app. | 2.16120.0 (2026-09-29) | high |
+| desk-3 | Max effort applies to the current session only, as in the CLI, so new sessions no longer start at Max; changing the effort in an open session no longer changes which model new sessions start on. | 2.16120.0 | high |
+| desk-4 | Worktree sessions on Claude Code 2.1.275 or later read project settings, hooks and MCP servers from the project folder the user opened, not from the worktree's checked-out branch. That folder's `.claude` config and `.mcp.json` are read-only where the session runs outside it. Also on Windows SSH hosts. | 2.16120.0 | high |
+| desk-5 | Archiving a session deleted uncommitted work in a worktree created before the worktree location was changed (fixed, macOS and Linux). Read with desk-2: archive is when a session worktree goes. | 2.16120.0 | medium (inferred from a fix) |
+| desk-6 | Deleting a session also removes the session's Claude Code transcript and related files, so `claude --resume` can no longer reopen it. | 2.9939.2 (2026-09-24) | high |
+| desk-7 | Auto mode sometimes denied a request the user had just typed, as if they had not asked for it (fixed). | 2.9939.2 | high |
+| desk-8 | With Remote Control on, approval before every terminal command was asked even at the keyboard (fixed). It now asks only when the work was started or steered from another device, and that card can turn Remote Control off for the session. | 2.7032.0 (2026-09-22) | high |
+| desk-9 | Opus 5.5 support (2.2553.13, 2026-09-21); Sonnet 5.5 support (2.9939.4, 2026-09-27). | as given | high |
+| desk-10 | `AGENTS.md` support: in a folder with no `CLAUDE.md`, Claude reads `AGENTS.md` for project instructions ("not yet in third-party deployments"). The mods overview names the mechanism: the built-in mod `cc-plugin-agents-md`, with a `userConfig` option (mods-27). | 2.2553.13 (2026-09-21) | high |
+| desk-11 | A `.worktreeinclude` file exists (named in a fix about slow session starts), and worktrees occasionally started without their local settings files (fixed). Corroborates the first sentence of B-worktrees-1 only. | 2.2553.0 (2026-09-17) | high (existence) |
+| desk-12 | A running session could silently switch to the organization's default model, and a user could be told an accessible model was restricted (fixed). The bundled CLI was 2.1.270. | 1.52386.6 (2026-09-13) | high |
+| desk-13 | A message sent while Claude is replying waits in the conversation as a sent message. The first waiting message offers "Send now", which stops the current reply and sends it next. Cmd/Ctrl+Enter sends at once, interrupting the current turn. | 1.52386.0 (2026-09-10) | high |
+| desk-14 | A default transcript view setting (Normal, Thinking, Verbose) syncs between the Desktop app and claude.ai. | 1.52386.0 | high (low relevance) |
+| desk-15 | 2.19675.0 bundles Claude Code 2.1.286. | 2.19675.0 | medium: read in a web-search excerpt of the changelog page on 2026-10-05, not on the page itself; consistent with the local engine (table above) |
+| desk-16 | Cloud sessions gained file viewing and a Background tasks panel that shows background command output. | 2.2553.0 | high (low relevance) |
+| desk-17 | `!` commands and a code block's Run button use the selected terminal tab when it is idle and show as terminal rows when sent while Claude works. | 2.2553.0 | high (low relevance) |
+| desk-18 | Plan mode could skip permission prompts when the Bypass permissions option was on and the session had fallen back to an older bundled CLI during an update (fixed). | 2.2553.0 | high (low relevance) |
+
+### Facts about mods
+
+Source abbreviations: `overview`, `reference`, `events`, `api`, `interface`, `create`, `test`, `admin`, `troubleshoot` are the pages under https://code.claude.com/docs/en/plugins/mods/; `d.ts` is the local `claude-code.d.ts` written by 2.1.286.
+
+| Id | Claim | Version or date | Confidence | Source |
+|---|---|---|---|---|
+| mods-1 | Mods require Claude Code 2.1.287 or later and are on by default. `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is ignored from 2.1.287, so a `0` there does not keep mods off. | 2.1.287 | high | overview |
+| mods-2 | A mod is a plugin whose `hooks/hooks.json` holds `modules`, an array with one path, relative to that file, to the hooks module. The same file can also hold settings hooks under `hooks`. The manifest's `hooks` key is merged with `hooks/hooks.json` when both exist. | 2026-10-05 | high | reference; manifest-reference |
+| mods-3 | A mod's hooks run in every session that loads the plugin: terminal, Desktop Code tab (not WSL), the VS Code chat panel, `claude -p` and the Agent SDK, Remote Control (on the machine), and cloud sessions where the plugin reaches them. Drawing appears only in the terminal and the Desktop Code tab; the Desktop skips elements the elements table marks terminal-only. | 2026-10-05 | high | overview |
+| mods-4 | The hooks module exports `register(on, options)`. `on(event, matcher?, hook)` adds a hook `($, e, next)`: `$` is the API, `e` the frozen input, `next(e)` runs the chain beneath and resolves to the result. Return `next(e)` to observe, `next({ ...e, field })` to rewrite, an object without `next` to answer. `on` returns a registration with `.catch(handler)`. | 2026-10-05 | high | events; reference |
+| mods-5 | `tool.call` fires when a tool is about to run, including calls a subagent makes and MCP tools. `e.tool` names it, the arguments are fields of `e` (`e.command` for Bash), `e.agentId` is set inside a subagent's loop. A hook returns `next(e)`, `{ deny: reason }` or `{ result }`. From core the resolved result is `{ ref, result, text, isError?, isReadOnly? }`, `text` being the result as the model reads it. Plugins' `PreToolUse` settings hooks run after the last mod calls `next`; a mod that answers without `next` keeps them from running. | 2026-10-05 | high | events; d.ts `ToolCallInput`, `ToolCallResult` |
+| mods-6 | `tool.check` fires after the permission rules and the settings hooks decided; `next(e)` resolves to `allow`, `ask` or `deny`, and a hook may return another. A mod can thereby approve a call a non-managed `PreToolUse` hook blocked, or one an `ask` rule would prompt for. In auto mode a call a mod approves runs without a classifier check. Where the built-in guard loads, a `deny` rule and a managed `PreToolUse` block still win unless `allowModsToOverrideDenyRules` is set. | 2026-10-05 | high | events; admin |
+| mods-7 | `turn.step` fires once per model request, as an async generator hook: `const result = yield* next(e)`. `e` carries `turnId`, `index`, `model` (as resolved for this step, "the session's, a fallback's"), `effort?` (`low`, `medium`, `high`, `xhigh`, `max` or a number), `messageCount`, and `agentId` inside a subagent's loop. A hook may rewrite `model` or `effort`. `result.usage` is `TurnUsage`: `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, and `model`, the id the API reports for the model that answered; null when no response arrived. Cache creation is one flat number here, not split by lifetime tier. | 2.1.286 (d.ts) | high | events; d.ts `TurnStepInput`, `TurnStepResult`, `TurnUsage`, `ModelUsage` |
+| mods-8 | `turn.complete` fires when a turn ends, for the main loop and for each subagent's turn (`e.agentId` set). `e` carries `answer`, `durationMs`, `isAborted`, `turnId`, `usage?` (a `TurnUsage`, summed over the turn's requests, "the model of the last that counted"), and `reason`: `answer`, `aborted`, `refusal` (with `refusal.category` and `explanation`) or `error` ("retries exhausted, the context limit"). A hook may return `{ text }` to show a line under the answer. | 2.1.286 (d.ts) | high | events; d.ts `TurnCompleteInput`, `TurnCompleteReason` |
+| mods-9 | `agent.spawn` fires when the Agent tool is about to start a subagent or teammate. `e` carries `tool_use_id`, `prompt`, `description`, `subagentType`, `provider`, `model?` (the alias or id the call gave), `parentModel`, `parentAgentId?`, `permissionMode?`, `background`, `fork`, `name?`, `cwd?`. The result is `{ model, agentId }` ("from core the resolved id") or `{ deny }`. A hook may rewrite `model` to pick the subagent's model. Whether the Workflow runtime's `agent()` raises this event is not documented: the d.ts says only that "a workflow's agents and the engine's own forks carry ids no list names". | 2.1.286 (d.ts) | high (event); unknown (Workflow agents) | reference; d.ts `AgentSpawnInput`, `AgentSpawnResult`, `AgentLoop` |
+| mods-10 | `session.measure` fires after each turn and when a plan limit's percent used changes. `e` carries `context` (window and fill), `rateLimits` (each `{ kind, percentUsed, resetsAt? }`, with `kind` one of `five_hour`, `seven_day` or a gateway's `spend_limit`; empty off a subscription), `cost?` and `changed`. `$.session.usage()` returns the same `{ startedAt, context, rateLimits, cost }`; the plain call costs nothing. | 2.1.286 (d.ts) | high | reference; d.ts `SessionMeasureInput`, `SessionUsage`, `SessionRateLimit` |
+| mods-11 | `session.start` fires once per loaded mod before the first prompt and again after that mod reloads, with `e.cwd`, `e.surface` (`terminal`, `desktop`, `vscode`, `mobile`, or null for `-p` and the SDK) and `e.isInteractive`. It does not fire after `/clear`, `/resume` or `/branch`; `classic.SessionStart` does, with `source` `clear`, `resume` or `fork`. `session.end` carries `reason` (`clear`, `resume`, `logout`, `prompt_input_exit`, or `other`, which covers a finished `-p` run and SIGINT, SIGTERM and SIGHUP), `sessionId` and `resume`. All `session.end` hooks together get the SessionEnd hook budget, 1.5 seconds unless changed. | 2.1.286 (d.ts) | high | reference; d.ts `SessionStartInput`, `SessionEndInput`, `SessionEndReason` |
+| mods-12 | A hook that throws, exceeds its time limit, or returns the wrong shape is skipped; if it had not yet called `next`, the next handler runs in its place, so the default is fail-open. One line names the mod, the event and the reason. A `.catch` handler can answer instead, which is how a mod fails closed. Limits: 10 seconds of a hook's own time per event (50 ms for `prompt.edit`), 1 second for a `.catch` handler; time inside `next` or an API call other than `$.clock.sleep` does not count. | 2026-10-05 | high | events; reference (Limits) |
+| mods-13 | Drawing: `$.ui.open({ id, title, focus?, closeOnEscape?, holdToasts?, rows?, columns? })` opens a pane drawn by a `ui.render` hook on `{ component: 'Pane', requestId: id }`. Opened by something the user did it places at any width; opened by the mod on its own it places from 144 terminal columns (110 once the user has opened it), else resolves `{ isPlaced: false, reason }`; "a -p run places all". `AbovePrompt` is one shared band. `$.ui.status(text)` pins one line per plugin under the prompt (`undefined` clears). `$.ui.toast(text, { timeoutMs })` shows for 4 seconds by default. `$.ui.log(text, { to })` adds a dim transcript line the model does not read, or a debug-log line. `Spinner` takes a `suffix` prop. Redraws are throttled to 10 a second (30 in the terminal for the shown pane and band). Elements `Box`, `Text`, `Button`, `Link`, `Code`, `Markdown`, `Input`, `Select`, `Client` draw on both surfaces; `Raster` and `Image` terminal only; `Svg` Desktop only. | 2026-10-05 | high | interface; reference; d.ts `ui` |
+| mods-14 | State: `$.state` holds per-session values that survive a reload and are reset by `/clear`, `/resume` and `/branch`; a `ui.render` hook that reads one is redrawn on write; writes are refused inside `ui.render`; each value must be declared under the plugin's name in a `types/index.d.ts` named by the manifest's `types` key, and `claude plugin validate` fails an undeclared key. `$.store` is one JSON key-value store per plugin shared by every session on the machine, 4 MiB in all, non-atomic between `get` and `set`, kept until nothing touches it for `cleanupPeriodDays`. Module-level variables reset on every reload. | 2026-10-05 | high | interface; reference |
+| mods-15 | `$.fs.read` and `$.fs.write` cap at 4 MiB per file; `write` replaces the whole content in place and is not atomic; there is no append. `$.fs.list`, `exists`, `stat`, `ancestors`. `$.process.run(argv, { cwd, env, stdin, timeoutMs })` uses no shell, resolves `{ exitCode, stdout, stderr }` whatever the exit code, times out at 30 seconds by default and 10 minutes at most, and is declared "CLI only" in the d.ts. `$.http.fetch`. `$.env.get` and `set` take literal names. `$.settings.read()` returns the merged settings or one source's. | 2.1.286 (d.ts) | high | api; reference; d.ts `fs`, `process`, `settings` |
+| mods-16 | `claude plugin validate <dir>` statically lists what a module hooks (`hooks:` with matchers in braces) and calls (`calls:`, each `$.<namespace>.<method>`, plus `env reads:`, `env writes:`, `state reads:`, `state writes:`). Rules so it can: write every API call in full as `$.ns.method` (or pass `$` to a top-level function of the same file), event names as string literals, imports only from inside the plugin by relative path plus the bare `claude-code`, no dynamic `import()`, ES modules only. `--json` prints a machine-readable report; `--strict` turns warnings into failures. A module it cannot read is refused at load. | 2026-10-05 | high | create; reference; admin |
+| mods-17 | `claude plugin test [dir]` runs every file under the directory whose name ends in `.test.ts` or `.test.tsx`, in an environment like a hook's (no fs, network or process), with no session, sign-in or network. Tests import `test`, `expect`, `mock`, `tier` from `claude-code/testing`; the test's `$` fires events through the mod's hooks, `on` registers stubs that answer in Claude Code's place, `$.ui.mount` draws a site on a named surface and presses or finds elements by key. Exit 1 on a failing test; a line starting `claude plugin test: hooks modules are turned off` with exit 1 when mods cannot load. One test is limited to 5 seconds unless it sets `timeoutMs`. | 2026-10-05 | high | test; reference |
+| mods-18 | The hooks module and every file it imports are named `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` or `.tsx`, and are ES modules whatever the suffix; a file named otherwise is not loaded. The module runs in an environment of its own with no DOM and no Node: `$` is its only way out. Installed mods share one worker thread; a mod that crashes it is unloaded, and three crashes nobody can attribute unload every non-built-in mod until `/reload-plugins`. | 2026-10-05 | high | reference; d.ts header; troubleshoot |
+| mods-19 | Order on one event: managed-settings `PreToolUse` hooks first (a block is final); then the built-in guard `sec-default@builtin` where it loads, `prependPlugins`, other organization mods; then user-installed mods (a mod before the mods it lists under `dependencies`; within a module, `on` order); then `appendPlugins`; then built-in mods; then Claude Code's own behaviour, which is where plugins' and users' settings hooks run. | 2026-10-05 | high | events; admin |
+| mods-20 | Mods are not sandboxed and run with the user's permissions. They can read and write files, start processes, make network requests, read environment variables and settings, rewrite prompts and tool calls, approve tool calls, submit prompts as the user, and message other sessions. A mod cannot change the permission prompt. `disableAllHooks`, `--safe-mode`, `--bare`, `allowManagedModsOnly` and `allowManagedHooksOnly` stop installed mods; the first three stop plugins' settings hooks too, `allowManagedModsOnly` does not. | 2026-10-05 | high | overview; admin |
+| mods-21 | `claude plugin test` from a directory with no mod reports the machine's state: `no hooks module to load` (mods can load), `hooks modules are turned off here` (a setting blocks them), `hooks modules are turned off in this process` (Anthropic turned installed mods off remotely). | 2026-10-05 | high | troubleshoot |
+| mods-22 | `prompt.submit` fires for every submission with `e.text`, `e.context?`, `e.turnId?` (set when typed over or delivered into a running turn), `e.wait`, and `e.origin.kind`, a closed set: `composer` (the user's own Enter, typed or queued, or a transcript link click), `bridge` (Remote Control), `sdk` (`claude -p` or the Agent SDK), `task-notification` (a background task's notification, dequeued when idle or delivered into a running turn), `scheduled-trigger`, `peer`, `peer-send-message`, and a plugin's own. A hook may return `next({ ...e, text })`, `next({ ...e, context })` or `{ drop: reason }`; no hook may set an origin. | 2.1.286 (d.ts) | high | reference; d.ts `PromptSubmitInput`, `PromptOrigin` |
+| mods-23 | `session.receive` fires for an inbound delivery before it is queued, with `e.origin.kind` in `bridge`, `task-notification`, `scheduled-trigger`, `peer-send-message`, `projects-relay`, `slack-ping`, `unclassified`, or `peer` / `coordinator` with an unverifiable `plugin?` claim; `e.text`; `e.event?` for a server-rendered wake; `e.agentId?` when it is for one of the session's agents. `{ consumed: reason }` keeps it from Claude. | 2.1.286 (d.ts) | high | api; d.ts `SessionReceiveInput`, `SessionReceiveOrigin` |
+| mods-24 | The Workflow tool is a built-in tool: its `tool.call` input carries `script?`, `name?`, `args?`, `scriptPath?`, `resumeFromRunId?`; its result carries `status` (`async_launched` or `remote_launched`), `taskId`, `taskType?` (`local_workflow` or `remote_agent`), `workflowName?` (the script's `meta.name`), `runId?` (for `resumeFromRunId`), `summary?`, `transcriptDir?` ("Directory where subagent transcripts are written during execution"), `scriptPath?`, `sessionUrl?`, `warning?`, `error?`. The Agent tool's result carries `agentId`, `agentType?`, `resolvedModel?`, `modelsUsed?`, `totalDurationMs`, `totalToolUseCount`, `totalTokens` and a `usage` whose `cache_creation` is split into `ephemeral_1h_input_tokens` and `ephemeral_5m_input_tokens` (or null). | 2.1.286 (d.ts) | high | d.ts `BuiltinToolInputs.Workflow`, `BuiltinToolResults.Workflow`, `BuiltinToolResults.Agent` |
+| mods-25 | `$.command.register({ name, description, argumentHint?, immediate? })` in `session.start` adds a slash command answered by a `command.run` hook returning `{ text }` or `{}`; `immediate: true` lets it run while Claude works; a built-in's name is refused and the throw skips the rest of the `session.start` hook. `$.session.version()` returns `{ version, base, builtAt }`. `$.session.id()`, `cwd()`, `root()`, `model()`, `turns()`, `repo()`, `surfaces()`. | 2.1.286 (d.ts) | high | api; d.ts `command`, `session` |
+| mods-26 | A mod Claude writes in a session lives under `~/.claude/dev-mods/<session-id>/<mod>/`, loads only after the user answers a hot-reload question, and is deleted after `cleanupPeriodDays`. Loading the `plugin-authoring` skill starts a watch on that folder, and the first file written there raises the question. `--plugin-dir <dir>` loads a plugin for one session and reloads its module on save; `CLAUDE_CODE_PLUGIN_DIRS` does the same where no flag can be given; an installed plugin is cached by version and edits do not reach it. | 2026-10-05 | high | create; local SKILL.md; reference |
+| mods-27 | Built-in mods: `cc-plugin-agents-md` (loads `AGENTS.md`), `cc-plugin-diff` (`/diff`), `cc-plugin-plugin-authoring` (the skill, no mod code), `cc-plugin-sec-default` (the guard), `cc-plugin-telemetry`, `cc-plugin-you-should-know` (off by default). `disableAllHooks`, `--bare` and `--safe-mode` do not stop built-in mods. Their source is public under `mods/` in the Claude Code repository. | 2026-10-05 | high | overview |
+| mods-28 | `plugin.register` fires as another hooks module is about to load, with `e.tier` and `e.uses` (its events, calls, env and state, as `claude plugin validate` prints them); a `prependPlugins` mod may return `{ refuse: reason }`. Every API method is also an event (`fs.write`, `model.complete`), so an earlier mod can observe, rewrite or refuse a later mod's calls. | 2026-10-05 | high | reference; admin |
+| mods-29 | Text a `prompt.section`, `prompt.context` or `skill.prompt` hook changes between requests invalidates the prompt cache. `session.append` fires for each row the conversation keeps and a hook may rewrite the row's content. `prompt.compose` returns the system prompt's sections. | 2026-10-05 | high | events; reference |
+| mods-30 | Manifest: an unrecognized top-level key is stripped with a `claude plugin validate` warning, which `--strict` turns into a failure; `types` is a recognized key on current versions. `userConfig` values reach a mod as `register`'s `options` and are stored under `pluginConfigs`; a `string` field with `options` cannot load on versions before 2.1.271. A plugin whose `name` starts with `claude-`, `anthropic-` or `cc-plugin-` fails validation. | 2026-10-05 | high | manifest-reference; reference |
+
+### Local observations, 2026-10-05 (no URL)
+
+- local-1: `which -a claude` on this machine resolves to an npm install reporting 2.1.274 and a Homebrew copy; the engine behind the Desktop Code tab is 2.1.286. The older-host probe Brief 7 needs can run here without installing anything.
+- local-2: the Desktop Code tab session exposes, beside the standard tools, MCP tools named `mcp__ccd_*`: among them `mcp__ccd_session_mgmt__get_usage` (the account's plan limits and this session's context fill), `mcp__ccd_view__show_pane` (open the diff, a file, the terminal, PR, plan or artifact pane), `mcp__ccd_session__spawn_task`, `mcp__ccd_pr__get_status`, and `mcp__terminal__run_in_terminal`; and the `Artifact` tool with `publish`, `read` and `list`. The checkpoint and halt page ideas' prerequisite, "confirm the Artifact tool is offered inside a skill invocation", is half answered: it is offered to the main conversation in the Desktop, and a skill invocation runs in that conversation. Over Remote Control it stays unverified. These tools are host-specific and undocumented here; a skill may say "if this tool is available", never depend on it.
+- local-3: the `plugin-authoring` skill's `SKILL.md` says loading it starts the engine's watch on `~/.claude/dev-mods/<session-id>/` and that the first file written there raises the hot-reload question. A ship run must never write there (see the rejected mechanisms below).
+- local-4: the Workflow tool's description in this session says a workflow "runs in the background, this tool returns immediately with a task ID, and a `<task-notification>` arrives when the workflow completes"; the d.ts result confirms `status: 'async_launched'` (mods-24). So the trampoline's turn ends at launch, and the completion arrives as a `task-notification` prompt (mods-22).
+- local-5: `lib/limits.mjs` imports nothing, so a mod module may import it (mods-16 allows relative imports inside the plugin). `lib/ship-stage.mjs`, `lib/run-log.mjs` and `hooks/_shared.mjs` import `node:fs` and cannot be imported by a module that has no Node (mods-18).
+
+### What the Desktop changelog changes in Briefs 1 to 6
+
+- **Brief 1.** desk-2: the follow-up that moves lane worktrees under `.claude/worktrees/` cannot rely on the app to sweep them; the app never removes worktrees created there. Interlock removes its own lanes at `run close`, and the resume card names any it could not. desk-11 confirms `.worktreeinclude` exists, so Brief 6's doctor suggestion for `.claude/testing/` and `.claude/graph/` can be written once the semantics are read on the worktrees page.
+- **Brief 2.** desk-13: "Send now" stops the current reply, and Cmd/Ctrl+Enter interrupts the current turn. The trampoline's turn ends at launch (local-4), so an interrupt of a later turn should not reach the background run; whether it does is a new probe, beside the SessionEnd capture. In a mod, `turn.complete.isAborted` (mods-8) and `session.end.reason: 'other'` for SIGINT, SIGTERM and SIGHUP (mods-11) are the in-process view of the same events, so Brief 2's `interrupted.json` recorder may be a `session.end` hook instead of a SessionEnd settings hook; decision 3 gains that option, under the same 1.5-second budget. desk-3: control-plane spawns (ping, planner, handoff, commit) inherit the session's effort by design; a Desktop session at Max now stays Max for that session only, and new sessions do not start there. desk-12: a session silently switching to the organization's default model is a real incident class, which is the case `MODEL SUBSTITUTED` (Briefs 4, 5 and 9) exists to name.
+- **Brief 3.** desk-13: a prompt typed during the run is queued and runs after the trampoline's turn; it is a human prompt and resets the ledger, so a relaunch after the completion wake would then pass. Brief 8 names this hole and does not solve it. The completion wake itself is answered: see Brief 8.
+- **Brief 4.** desk-7: an auto-mode denial can be a host defect, so `AUTO MODE DENIED <n> TOOL CALLS` is a count the reader interprets, never a verdict about the run. desk-8: a run started at the keyboard with Remote Control on no longer prompts for every terminal command, so `PERMISSION PROMPTS DURING RUN` should fall on the Desktop; the counter stays. The permission-event half of Brief 4 is unchanged by Brief 9, which replaces only its usage half.
+- **Brief 5.** desk-6: the resume card's `claude --resume <session-id> --fork-session` line must say the transcript may be gone for a second reason beside retention (gap2-5): the user deleted the Desktop session. Phrase it as "if the session still exists".
+- **Brief 6.** desk-4: on Claude Code 2.1.275 or later a Desktop worktree session reads settings, hooks and MCP servers from the opened project folder, and that folder's `.claude` config and `.mcp.json` are read-only from the worktree. That is the host doing for settings what Brief 6 proposes for corpora, and it adds two probes: where `.claude/ship/` and `.claude/handoff/` writes land in a Desktop worktree session, and whether the project folder's `.claude/testing/profile.json` is readable (read-through) and writable (`/interlock:fix-tests`) from there. The resolver must never write a settings-class file in the main checkout. desk-2 and desk-5: a session worktree now outlives idleness and goes at archive, so corpora stranded in it survive longer and are lost at a moment the user chooses; decision 5 (stranded runs) is more valuable, not less.
+- **No brief.** desk-10: `AGENTS.md` is read only where there is no `CLAUDE.md`, through the built-in mod `cc-plugin-agents-md` (mods-27). This repository's rule that `AGENTS.md` is a pointer to `CLAUDE.md` stays right for Claude Code and is the file the `codex` and `qwen` hosts read. A doctor note that names which instruction file each configured host will read is a cheap later add.
+
+### Repository constraints the mod briefs add
+
+Everything under "Repository constraints every brief inherits" holds. These are the mod-specific ones.
+
+- **The mod observes; the CLI decides.** No hook in Briefs 7 or 9 returns anything but `next(e)` or `yield* next(e)`. Brief 8's one deny is a binary rule read off recorded facts, with no number and no judgement. No hook rewrites a `model`, an `effort`, a prompt, a system-prompt section, a skill's text or a transcript row (mods-7, mods-9, mods-22, mods-29).
+- **Fail-open stays fail-open.** No `.catch` handler answers an event. A hook that throws is skipped and the chain runs (mods-12), which is the right direction. `tool.check` is never hooked: a mod there can approve a call the user's own `PreToolUse` hook blocked, and in auto mode its approval skips the classifier (mods-6).
+- **Inert outside a live ship run.** Every hook returns at its first line unless this session has observed a `/interlock:ship` launch (`tool.call` on `Workflow` with `scriptPath` ending in `workflows/ship.js`) that has not closed, or a fresh stage marker exists. In a `-p` lane (`session.start.isInteractive === false`, mods-11) the module registers its hooks and does nothing. The plugin loads in every session in every repository, so this rule is what keeps a `turn.step` hook from costing anything in ordinary work.
+- **No model calls, no prompts, no messages, no network.** `$.model.*` would make a model's verdict a gate and spend the user's plan. `$.prompt.submit` from the plugin is the plugin relaunching itself, the exact thing Brief 8 guards. `$.session.send` and `$.http.fetch` are not used; the ntfy push stays the CLI's one network call.
+- **No `$.process` in Brief 7.** The module imports the pure modules it needs (`lib/limits.mjs`, local-5) and reads the CLI's output where it already crosses a tool boundary. Where a value exists only in an impure module, the design gives it a pure home rather than shelling out.
+- **Writes are set-shaped and outcome-class.** `$.fs.write` replaces a file and is not atomic (mods-15), so a mod never appends to a JSONL corpus and never touches the trajectory or the spill. It writes one small file per key (Brief 9), and a failed write is a toast and a log line, never an exit code.
+- **Thresholds still live in the CLI.** The meter displays figures and the CLI's own banners; it computes no verdict. A refresh interval, a staleness age or a plan-window ceiling, if ever wanted, is a `lib/limits.mjs` key printed by `interlock limits` and imported by the module, never a literal in `hooks/`.
+- **One convention changes, and `CLAUDE.md` says so.** The hooks module itself is `.mjs` (mods-18). Its tests must be `.test.ts` or `.test.tsx`, run by `claude plugin test` (mods-17), because that command runs nothing else. That is the one exception to ".mjs throughout", stated in `design.md` and in `CLAUDE.md`'s Conventions, with the reason. `npm test` is unchanged and collects only `*.test.mjs`; `claude plugin test .` joins the CI `validate-plugin` job, which already installs the CLI.
+- **The module's reach is pinned twice.** A `node --test` case greps the module for its `$.` calls against an allow-list, and the CI validate job's `claude plugin validate . --strict` prints the `calls:` line the design records (mods-16). A new `$.model`, `$.prompt.submit`, `$.session.send`, `$.process` or `$.http` call fails the first before anyone runs the second.
+- **Older hosts are proved, not assumed.** A `hooks/hooks.json` with `modules` on a host below 2.1.287 is undocumented behaviour. Brief 7's task 1 runs it on the 2.1.274 binary on this machine (local-1). Until that passes, nothing in Briefs 7 to 9 ships.
+- **Nothing is written to `~/.claude/dev-mods/`.** The mod is part of the plugin and loads with it. A ship run that wrote there would raise a hot-reload question in the user's session (local-3, mods-26).
+- **`$.store` is not a session ledger.** It is machine-wide (mods-14). Per-session facts go in `$.state`; cross-session facts, if ever wanted, go in `$.store` under a key that names the session, with an age rule from `lib/limits.mjs`.
+
+### Landing order, extended
+
+- Brief 7 lands first of the three. It introduces `hooks/hooks.json`, `hooks/mod.mjs`, `test/mod/*.test.ts`, the CI `claude plugin test` step, the static allow-list pin and the `CLAUDE.md` sentence. Briefs 8 and 9 add hooks to the same module and cases to the same test files.
+- Brief 8 replaces Brief 3's mechanism. Ship one: Brief 8 unless the older-host probe fails or an organization policy (`allowManagedModsOnly`, mods-20) matters to the user, in which case Brief 3 as written. Both would double-deny harmlessly, but two ledgers for one rule is a maintenance mistake.
+- Brief 9 replaces Brief 4's usage half and depends on Brief 2 (the FORCE observation and `AGENT RETURNED NO RESULT`). Brief 4's permission-event half is unaffected by it and may still land as its own small change. Ship Brief 4's usage half only if Brief 9's probe (task 1) fails.
+- Briefs 7, 8 and 9 touch `hooks/mod.mjs`, `types/index.d.ts` (from Brief 8), `test/mod/`, `docs/13-the-guards.md` and `docs/04-when-it-stops.md`. Serialize them.
+- Brief 9 and Brief 4 both widen `cacheAccounting` in `lib/host/registry.mjs` to the observed `'hook'` value. Whichever lands makes that edit once; the registry edit is serialized across every change that touches `CAPABILITY_VALUES`.
+
+---
+
+## Brief 7 — The plugin becomes a mod: the ship run drawn live, and banners spoken as they happen
+
+**Suggested change name:** `draw-the-ship-run-live`
+
+**Depends on:** nothing in code. Lands before Briefs 8 and 9, which add hooks to its module. Task 1, the older-host probe, gates the change.
+
+### Why
+
+A ship run speaks at close. Every soft continue in `docs/04-when-it-stops.md` (`GRAPH UNAVAILABLE`, `MODEL ROUTING OVERRIDDEN`, `CACHE ACCOUNTING NOT REPORTED`, the rest) is printed in the summary of `interlock run close`, which an agent reads and the trampoline relays. For the twenty minutes before that, the operator watching the Desktop Code tab sees a spinner. The halt resume card exists because nobody was watching; this brief exists because somebody was, and could see nothing.
+
+A settings hook cannot draw (overview, comparison table). A status-line setting is the user's, not a plugin's (orchestration-19). A mod draws a pane, a band, a status line and toasts in the terminal and in the Desktop Code tab, where `/interlock:ship` is typed (mods-3, mods-13).
+
+The facts the meter needs already cross a mod's hooks, host-observed and without a file read.
+
+- Every `interlock` CLI call a ship run makes is a Bash tool call inside a ping subagent (`interlock:ping`), because the Workflow script has no shell (orchestration-3). `tool.call` fires for a subagent's calls, and the resolved result's `text` is the command's stdout as the model reads it (mods-5). The step the CLI emitted, the wave it belongs to and the banners it printed cross the mod at the moment they are produced.
+- The Workflow tool's own result names the run: `runId`, `workflowName`, `transcriptDir`, `status: 'async_launched'` (mods-24).
+- Each model request inside the run carries the model that answered and its usage, with the agent's id (mods-7). Each agent's turn ends with a reason and a duration (mods-8).
+- The account's plan windows are one call away (mods-10).
+
+The earlier objections to the ship-meter idea are answered or moved. The module may be `.mjs` (mods-18); only its tests must be `.test.ts` (mods-17), which is one named exception rather than a convention change by accident. The older-host risk is real and is task 1, on the 2.1.274 binary this machine already has (local-1). The API is early access and moves between releases (the d.ts says so in its header); the type file written by the running engine is the contract, so the module is written against it and `claude plugin validate` is run before every commit.
+
+### What changes
+
+- **`hooks/hooks.json` is created with `{ "modules": ["./mod.mjs"] }`.** The inline `hooks` in `.claude-plugin/plugin.json` stay exactly as they are; the manifest's hooks merge with the file (mods-2). The three guards and the preflight are untouched.
+- **`hooks/mod.mjs` is the hooks module**, an ES module that imports only pure modules from the plugin (`lib/limits.mjs`, local-5). It exports `register(on)` and registers:
+  - `session.start`: registers the `/interlock-meter` command (`immediate: true`, so it opens mid-run; mods-25), records `e.isInteractive` and `e.surface`, and does nothing else. In a non-interactive session the module stays inert for its life.
+  - `tool.call` with matcher `{ tool: 'Workflow' }`: `const r = await next(e)`. If `e.scriptPath` ends in `workflows/ship.js` and `r` is not a deny or an error, the run is live: `runId`, `workflowName` and `transcriptDir` are kept from `r.result`. Returns `r` unchanged.
+  - `tool.call` with matcher `{ tool: 'Bash' }`: while a run is live and `e.command` begins with `interlock `, `const r = await next(e)` and the CLI's stdout (`r.text`) is read for the step it emitted and the banners it printed, then `r` is returned unchanged. Every other Bash call is `next(e)` at the first line.
+  - `turn.step` (generator): while a run is live and `e.agentId` is set, `const result = yield* next(e)` and `result.usage` (model that answered, tokens) is tallied per agent. Otherwise `return yield* next(e)` at the first line.
+  - `turn.complete`: while a run is live and `e.agentId` is set, the agent's `reason` and `durationMs` are kept. `next(e)`.
+  - `ui.render` on `{ component: 'Spinner' }`: while a run is live, `next({ ...e, props: { ...e.props, suffix: ' · interlock: <stage> · wave i/n' } })`; otherwise `next(e)`.
+  - `ui.render` on `{ component: 'Pane' }` for `requestId: 'interlock-meter'`: draws the meter from the tallies. Other panes get `next(e)`.
+  - `command.run` on `{ command: 'interlock-meter' }`: `$.ui.open({ id: 'interlock-meter', title: 'Interlock', closeOnEscape: true })` and `{}`.
+- **The status line.** `$.ui.status('interlock: <change> · <stage> · wave i/n · lane k/m')` is set from the steps the CLI emits and cleared (`undefined`) when the close or halt step is seen (mods-13).
+- **Banners become toasts the moment they exist.** When an `interlock` command's stdout carries a degradation banner, `$.ui.toast` shows it and the pane lists it. The source is the CLI's machine-readable output, not a regular expression over prose: where a step or the close summary prints a banner only as text, the CLI gains a `degradations` field beside it, derived from the same list it prints. The mod displays the field; it recognises nothing itself.
+- **The pane.** Opened by the user's `/interlock-meter` it places at any width. Opened by the mod at run start it places only from 144 terminal columns (110 once the user has opened it) and otherwise resolves `isPlaced: false` (mods-13); then one toast says the meter is available, and nothing else is drawn. The pane is `Box` and `Text` only, so it draws on both surfaces; it shows the change and run id, the stage, a wave table (lane label, routed model as the step named it, served model as `turn.step` reported it, effort, state), per-agent tokens (input, output, cache read, cache write as one number), the plan windows from `$.session.usage()` (kind, percent used, reset time) with no threshold and no colour, the banners so far, and at a halt the resume card's path.
+- **Observe only.** Every hook returns `next(e)`, `yield* next(e)`, a drawing, or `{}` for the command. There is no `{ deny }`, no `{ result }`, no `.catch`, no `$.model`, no `$.prompt`, no `$.session.send`, no `$.process`, no `$.http`, no `$.fs.write`, no `tool.check`.
+- **Nothing is read from files in this brief.** The step stream and the Workflow result carry everything the meter shows. If the design finds a value only the stage marker has, it is read with `$.fs.read` and `$.fs.exists`, nothing more.
+- **Doctor gains a `mods` row.** `ok` when the host version the Brief 2 probe reads is 2.1.287 or later (mods-1), `skip` with the version otherwise; the floor is a named constant in `lib/doctor.mjs`, beside `PROMPT_CACHE_MIN_HOST_VERSION`. Never `fail`: a run without the meter is the run as it is today.
+- **`claude plugin test .` joins CI.** The `validate-plugin` job already installs the CLI; it runs `claude plugin test .` after `claude plugin validate . --strict`. The tests live in `test/mod/`, named `*.test.ts` (mods-17). `npm test` is unchanged.
+- **`CLAUDE.md` gains two sentences** under Conventions: the mod's tests are the one `.test.ts` exception and why; the hooks module imports only pure modules.
+- **`docs/13-the-guards.md` gains a fifth row and a section**: the mod, what it hooks, that it decides nothing, and where the engine reports a skipped hook (troubleshoot). `docs/04-when-it-stops.md` says banners now also appear live as toasts in the terminal and the Desktop, and that the summary at close is unchanged and remains the record.
+
+### Capabilities
+
+- **Events hooked:** `session.start`, `tool.call` (`Workflow`, `Bash`), `turn.step`, `turn.complete`, `ui.render` (`Spinner`, `Pane`), `command.run`.
+- **API called:** `$.ui.status`, `$.ui.toast`, `$.ui.log`, `$.ui.open`, `$.ui.invalidate`, `$.ui.resolve`, `$.command.register`, `$.session.usage`. The allow-list pin (below) is exactly this list plus `$.fs.read` and `$.fs.exists`, which the design may or may not use.
+- **Registry:** no new key. Whether anything draws is a fact about the session's surface, not the host; `session.start` records it and the mod logs once, `interlock meter: drawing on <surface>` or `interlock meter: nothing draws here` (VS Code, `-p`; mods-3).
+- **When absent:** with mods off (`disableAllHooks`, `--safe-mode`, `--bare`, `allowManagedModsOnly`, a crashed hooks worker; mods-20, mods-18), the run is exactly today's run. The summary at close still prints every banner. The meter is never a dependency of the run, and `run close` does not know whether it drew.
+
+### Impact
+
+**Code**
+
+- `hooks/hooks.json` (new), `hooks/mod.mjs` (new).
+- `lib/run.mjs` or `bin/interlock`: a `degradations` field on the step envelope and the close summary where only text carries it today, derived from the existing list.
+- `lib/doctor.mjs`: the `mods` row and its version constant.
+- `.github/workflows/ci.yml`: `claude plugin test .` in `validate-plugin`.
+- `package.json`: `files` unchanged (`hooks` and `lib` are already listed); `test/spine/package.test.mjs` gains the module as a closure root, so a `lib/` file it imports must be in `files`.
+- `CLAUDE.md`: the two convention sentences.
+
+**Tests**
+
+- `test/mod/meter.test.ts` (new, `claude plugin test`): `session.start` interactive and not; a `Workflow` call with a stubbed result carrying `runId` makes the run live and a non-ship `scriptPath` does not; a Bash call whose stubbed `text` carries a step with a banner produces the status text and one toast; `turn.step` stubs with usage for two agent ids tally per agent; `turn.complete` keeps the reason; the Pane mounts on `terminal` and `desktop` and `find` returns the wave rows and the banner; nothing is tallied in a non-interactive session.
+- `test/spine/mod-pins.test.mjs` (new, `node --test`): `hooks/hooks.json` names exactly one module and it exists; the module's `$.` calls are a subset of the allow-list; the module contains none of the tokens `.catch(`, `deny`, `tool.check`, `$.model`, `$.prompt`, `$.process`, `$.http`, `$.session.send`, `$.fs.write`; every import of the module resolves inside the plugin and imports no `node:` module.
+- `test/hooks.test.mjs`: the manifest's inline `hooks` still register the three guards and the preflight (the existing pin), now with `hooks/hooks.json` present.
+- `test/spine/doctor.test.mjs`: the `mods` row.
+
+**Docs**
+
+- `docs/13-the-guards.md`, `docs/04-when-it-stops.md`, `docs/07-cli-and-configuration.md` (the `/interlock-meter` command), `CHANGELOG.md`.
+
+### Out of scope
+
+- Any deny or rewrite (Brief 8), any file write (Brief 9).
+- Redrawing `ToolUse` rows, `AskUserQuestion`, or any site Claude Code draws, other than the spinner's suffix.
+- A `Client` element, `Raster`, `Image`, `Svg`.
+- The runner host. Its lanes are `-p` processes where nothing draws (mods-3); Brief 5 reads their envelopes.
+- `interlock board` across sessions (app ideas, below).
+- A plan-window ceiling (app ideas, below).
+
+### Decisions the design has to settle
+
+1. **The banner source.** A `degradations` field on every step and on the close summary (recommended: the mod never parses prose), or the mod reading the banner lines by the exact strings `docs/04` documents. The first may need a small CLI change; the second couples the mod to wording.
+2. **Where the live flag lives.** Module-level variables (reset on a hot reload; the next observed `interlock` call re-derives the state) or `$.state` with a `types/index.d.ts` and the manifest's `types` key (mods-14). `$.state` is cleaner and Brief 8 needs it anyway; but `types` is a manifest key an older host strips with a warning that `--strict` turns into a failure (mods-30). Recommended: variables in Brief 7, `$.state` and `types` arriving with Brief 8 after task 1 has shown what the older host does with the manifest.
+3. **Pane policy at run start.** Open unasked (placed only in a wide terminal; a toast otherwise) or only on `/interlock-meter`. Recommended: open unasked; `isPlaced: false` costs one toast.
+4. **Module layout.** `hooks/mod.mjs` beside the settings-hook scripts, or a `mod/` directory with `hooks/hooks.json` pointing into it. The `modules` path is relative to `hooks.json`; whether it may contain `..` is unverified. Recommended: `hooks/mod.mjs`.
+5. **The doctor row's version source.** Brief 2's `claude --version` probe (recommended), or `claude plugin test` from an empty directory (mods-21), which is slower and spawns a second process.
+6. **Which steps carry wave and lane position.** Read off `interlock run next`'s step envelope; the design names the fields.
+
+### Task outline
+
+1. Probe the older host. With the 2.1.274 binary on this machine (local-1): `claude plugin validate . --strict` with `hooks/hooks.json` present; a `--plugin-dir` session in which the three guards still deny and the preflight still runs; and the same two on 2.1.286 or later. Record the results in `design.md`. If the older host refuses the file or drops the settings hooks, stop, and record what the plugin's version floor would have to become.
+2. Failing `claude plugin test` cases for the live flag, the status text, the toast and the per-agent tally; the `node --test` pins.
+3. `hooks/hooks.json`, the module's observe path, the status line and the toasts; the `degradations` field if decision 1 chooses it.
+4. The pane, the command, the spinner suffix; mount tests on both surfaces.
+5. The doctor row, the CI step, `CLAUDE.md`, the docs, `CHANGELOG.md`. `npm test`, `npm run validate`, `claude plugin test .`.
+
+### Acceptance
+
+- `claude plugin validate . --strict` passes and its `hooks:` and `calls:` lines match the lists recorded in `design.md`.
+- On the 2.1.274 binary, `claude plugin validate . --strict` passes and all three guards still deny in a `--plugin-dir` session (or the change did not ship).
+- In a `claude plugin test` run, a `Workflow` call whose `scriptPath` ends in `workflows/ship.js` makes the run live and a `tool.call` on any other script does not.
+- A Bash call whose result text carries a step with one banner sets the status line to the step's stage and wave and raises exactly one toast with the banner's text.
+- `turn.step` results for two agent ids produce two per-agent tallies with the model each reported.
+- The Pane mounts on `terminal` and on `desktop` and `find` returns the wave row and the banner on both.
+- With `session.start` reporting `isInteractive: false`, no tally, status or toast is produced for the same events.
+- `node --test test/spine/mod-pins.test.mjs` fails when any forbidden token is added to the module.
+- `npm test` collects no `.test.ts` file; `claude plugin test .` runs them and exits 0 in CI.
+- The doctor `mods` row never reports `fail`.
+- Tests: `test/mod/meter.test.ts`, `test/spine/mod-pins.test.mjs`, `test/hooks.test.mjs`, `test/spine/doctor.test.mjs`, `test/spine/package.test.mjs`.
+
+---
+
+## Brief 8 — guard-ship-relaunch in process: the ledger is session state, and a completion wake is not a prompt
+
+**Suggested change name:** `guard-ship-relaunch-in-process`
+
+**Depends on:** Brief 7 (the module, its tests, the CI step). Replaces Brief 3's mechanism; Brief 3 as written is the fallback where a user's mods cannot load. Ship one.
+
+### Why
+
+Brief 3 enforces the single most expensive recorded mistake, a model relaunching `/interlock:ship` over leftover checkboxes, with four settings hooks and a file ledger under `.claude/ship/launch-ledger/`. It left four decisions open and one decisive probe: whether a background workflow's completion wake fires the same prompt event a typed prompt does, which would make the guard useless. The mods API answers all of it by construction.
+
+1. **What identifies a launch.** The Workflow tool is a built-in tool whose `tool.call` input carries `scriptPath`, `name` and `args`, and whose result carries `runId`, `workflowName`, `taskId` and `status: 'async_launched'` (mods-24). No payload capture is needed to learn the field names.
+2. **The completion wake.** `prompt.submit` fires for every submission, and `e.origin.kind` is a closed set the engine stamps: `composer` for the user's own Enter, `bridge` for Remote Control, `sdk` for `-p`, `task-notification` for a background task's notification, `scheduled-trigger`, `peer`, `peer-send-message`, and a plugin's own (mods-22). The d.ts says in so many words that a module reads `e.origin.kind` "to tell the user's own Enter from a notification, a peer session, a schedule or another plugin". The wake that precedes the dangerous relaunch is `task-notification`; a typed prompt is `composer`.
+3. **One event, not two.** There is no UserPromptSubmit versus UserPromptExpansion question. `prompt.submit` is the event, with `e.wait` and `e.turnId` saying whether the prompt was queued or typed into a running turn.
+4. **Ledger lifetime.** `$.state` is per session, survives a hot reload, and is reset by `/clear`, `/resume` and `/branch` (mods-14). There is no file in `.claude/ship/` in every repository with the plugin installed, no ledger to sweep, and no `session_id` to match.
+
+The hook runs in process (mods-18): no node process per tool call. It fails open by construction: a hook that throws is skipped and the chain runs (mods-12), and this brief adds no `.catch`. A deny goes to the model as the tool's error text, which the model reads as an instruction (events, "Guard or change a tool call").
+
+### What changes
+
+- **`types/index.d.ts` (new)** declares, under `interlock`, `lastHumanPromptAt: number | null` and `launches: Array<{ at: number, runId: string | null, workflowName: string | null }>`. `.claude-plugin/plugin.json` gains `"types": "./types/index.d.ts"` and `package.json`'s `files` gains `types`.
+- **`prompt.submit`** in `hooks/mod.mjs`: when `e.origin.kind` is `composer` or `bridge` (and `sdk`; decision 1), `update($, lastHumanPromptAt, () => now)`. `task-notification`, `scheduled-trigger`, `peer`, `peer-send-message` and a plugin's own never count. Returns `next(e)`; the text is never rewritten and nothing is dropped.
+- **`tool.call` on `{ tool: 'Workflow' }`** (the hook Brief 7 added gains a branch before its `next`): a ship launch is `e.scriptPath` ending in `/workflows/ship.js`, or `e.name === 'interlock:ship'` (orchestration-8). If a recorded launch in this session is newer than `lastHumanPromptAt`, or there is a launch and no human prompt recorded at all, return `{ deny }` without calling `next`. The reason quotes `skills/ship/SKILL.md`'s sentence ("Leftover `- [ ]` boxes after a run are a report, not authorization to call Workflow again") and the remedy: a new user message that asks to ship the leftovers, or `/interlock:ship` typed again. Otherwise `const r = await next(e)`; if `r` is not a deny and not `isError`, record `{ at: now, runId: r.result?.runId ?? null, workflowName: r.result?.workflowName ?? null }`. Return `r` unchanged.
+- **`session.receive` on `{ origin: { kind: 'task-notification' } }`**: observed with one `$.ui.log(..., { to: 'debug' })` line and `next(e)`. Never consumed. It is there so the debug log shows the wake that the guard then did not count as a prompt.
+- **A `-p` run is covered the same way.** Hooks run in `-p` (mods-3). `claude -p "/interlock:ship x"` has one `sdk` prompt and then a launch; a second launch in the same run is denied by the same rule.
+- **The named hole.** A prompt typed during the run (queued, desk-13) is a human prompt and resets the clock, so a relaunch after the completion wake would then pass. The guard cannot judge whether a prompt "explicitly asks to ship leftover tasks"; that is prose, and `evals/trampoline-launch` keeps measuring whether the model obeys it. The hook bounds the case that cost twenty agents: no human message at all between a run and its relaunch.
+- **After `/clear`, `/resume` or `/branch`** the state resets and the next launch is allowed. That is the fail-open direction. The ledger is not reloaded from `$.store`, which is machine-wide and would leak one session's launches into another (mods-14; rejected below).
+- **The prose stays.** The skill sentence at `skills/ship/SKILL.md:53`, its pin in `test/skills.test.mjs:655`, and the eval are unchanged.
+- **Where user mods cannot load**, this hook does not run and enforcement falls back to the prose and the eval, exactly as Brief 3 said of disabled hooks. `docs/13` says so.
+
+### Capabilities
+
+- **Events:** `prompt.submit`, `tool.call` (`Workflow`), `session.receive` (observe). State: two `$.state` values declared in the contract (mods-14, mods-16).
+- **Registry:** no new key. `bin/interlock-run` refuses the Workflow host, so only the `/interlock:ship` trampoline can reach this hook.
+- **When absent:** mods off (mods-20), or an older host (mods-1): the prose and the eval stand, as today. A hook that throws is skipped and the launch proceeds (mods-12).
+
+### Impact
+
+**Code**
+
+- `hooks/mod.mjs`: three hooks (one a branch in Brief 7's `Workflow` hook).
+- `types/index.d.ts` (new); `.claude-plugin/plugin.json` (`types`); `package.json` (`files`).
+
+**Tests**
+
+- `test/mod/relaunch.test.ts` (new, `claude plugin test`): first launch allowed and recorded with the stubbed `runId`; a second launch with no prompt between: denied, with the reason quoting the rule; a `prompt.submit` with origin `composer` between two launches: allowed; a `prompt.submit` with origin `task-notification` between: denied; a `Workflow` call on another script: allowed and not recorded; a launch whose stubbed result is a deny: not recorded; `session.receive` with origin `task-notification`: passed on, nothing consumed; a hook that is made to throw (a stub that rejects `state.get`): the launch proceeds (the kit's default when a hook is skipped).
+- `test/spine/mod-pins.test.mjs`: the module's `$.state` keys match the contract; the deny reason contains the skill's sentence tokens, pinned as tokens, the same way `test/skills.test.mjs` pins the sentence.
+- `test/skills.test.mjs`: unchanged.
+
+**Docs**
+
+- `docs/13-the-guards.md`: the row, the fail-open table entry, the hole named in words. `CHANGELOG.md`.
+
+### Out of scope
+
+- The commit briefing's three nevers as a mod hook. Brief 3 held it as later; it is still later, and would be one more `tool.call` on `Bash` in the same module.
+- Launches across sessions. `$.state` is one session by design.
+- A queue of launches (the ship-queue idea) registering as one launch: it waits on that idea.
+- Judging the text of a prompt.
+
+### Decisions the design has to settle
+
+1. **Whether `sdk` counts as a human prompt.** It is the `-p` caller's instruction. Recommended: yes.
+2. **Whether `bridge` counts.** It is the user on a phone. Recommended: yes.
+3. **Both identifiers or one.** `scriptPath` ending in `/workflows/ship.js` and `name === 'interlock:ship'`; a marketplace install may namespace the name differently (orchestration-8). Recommended: either matches.
+4. **Reason wording.** Quote the skill sentence exactly, so one pin covers both. If the skill sentence is reworded later, the token pin is what fails.
+5. **Brief 3 or Brief 8.** Decided by Brief 7's task 1 and by whether the user's organization sets `allowManagedModsOnly`.
+
+### Task outline
+
+1. Failing tests for every case above.
+2. The contract, the manifest key, the three hooks.
+3. Pins, docs, `CHANGELOG.md`. `npm test`, `npm run validate`, `claude plugin test .`.
+
+### Acceptance
+
+- Every case in the test list holds.
+- The deny reason quotes the skill rule and names the remedy; the model receives it as the Workflow tool's error text and no run starts.
+- No `.catch` handler exists in the module; a hook made to throw lets the launch through.
+- `claude plugin validate . --strict` lists the two `state reads:` and `state writes:` keys and no others.
+- The skill sentence and its existing pin are unchanged.
+- Tests: `test/mod/relaunch.test.ts`, `test/spine/mod-pins.test.mjs`.
+
+---
+
+## Brief 9 — Workflow-host usage and served model, recorded in process
+
+**Suggested change name:** `record-workflow-agent-usage-in-process`
+
+**Depends on:** Brief 7 (the module) and Brief 2 (the observed-capability path, the FORCE observation, `AGENT RETURNED NO RESULT`). Replaces the usage half of Brief 4; Brief 4's permission-event half is untouched. Task 1 decides scope, as Brief 4's did.
+
+### Why
+
+The default host still measures the least. `ASSUMED_CAPABILITIES` in `lib/run.mjs` declares `cacheAccounting: false` for the Workflow host, every `/interlock:ship` prints `CACHE ACCOUNTING NOT REPORTED`, and no receipt records which model served a lane. Brief 4 proposed a SubagentStop settings hook that reads each agent's transcript: one node process per agent, parsing a file whose per-turn usage shape no claim established (Brief 4, decision 5; the critic's note).
+
+The mod sees the same facts as the host reports them, in process, as they happen.
+
+- `turn.step` resolves, per model request, to `usage: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, model }`, with `e.agentId` set inside a subagent's loop (mods-7). The `model` is "the id the API reports", so a fallback mid-lane (gap1-3, gap1-4) shows as a second model across one agent's steps.
+- `turn.complete` carries, per agent, `reason` (`answer`, `aborted`, `refusal`, `error`), `durationMs` and the summed `usage` (mods-8). That is the attribution Brief 2's `AGENT RETURNED NO RESULT` banner lacks: it can now say whether the runtime stopped the agent, the API failed, or the model refused.
+- `agent.spawn`, when it fires, carries the spawn's `prompt` (which holds the briefing sha, the join key), the routed `model` alias and, in its result, the resolved model id and the `agentId` (mods-9).
+- `session.measure` carries the account's plan windows with their percent used (mods-10), which no receipt records today.
+
+Two limits are stated now so the design does not discover them. `TurnUsage` carries cache creation as one flat number (mods-7); the lifetime-tier split that `readClaudeEnvelope` keeps for the runner is not on this path, so the Workflow host records a total and leaves the tiers unknown, never zero. And whether the Workflow runtime's `agent()` raises `agent.spawn` at all is undocumented: the d.ts says only that a workflow's agents "carry ids no list names" (mods-9). The Agent tool's result does carry the tier split and `modelsUsed` (mods-24), but only if the runtime's spawns are Agent tool calls a `tool.call` hook sees. Task 1 settles both.
+
+### What changes
+
+- **Four hooks in `hooks/mod.mjs`**, each inert unless Brief 7's live flag is set and the session is interactive:
+  - `turn.step` (the generator Brief 7 added): per `e.agentId`, tally input, output, cache read and cache creation (one number), the set of `usage.model` values seen, and the step count.
+  - `turn.complete`: per `e.agentId`, keep `reason`, `durationMs` and the summed `usage`, then write the agent's record.
+  - `agent.spawn`: per resolved `agentId`, keep the briefing sha extracted from `e.prompt` (the `sha256` the BOOTSTRAP text already carries, Brief 4's join key), the routed `e.model` and the resolved `result.model`. If task 1 finds the event does not fire for runtime agents, the join key comes from the trajectory instead (decision 2).
+  - `session.measure`: keep the latest `rateLimits` snapshot while a run is live.
+- **One file per agent, set semantics.** On each agent's `turn.complete` the mod writes `.claude/ship/<change>/usage/<agentId>.json` with `$.fs.write`: `{ agentId, briefingSha, modelRouted, modelsObserved, steps, input, output, cacheRead, cacheCreationTotal, cacheCreationTiers: null, reason, durationMs, at }`. A whole-file write of a small record is idempotent and needs no append (mods-15). The directory is created by the write. The files are outcome-class: a failed write is `$.ui.toast('USAGE RECORD NOT WRITTEN: <reason>')` and a log line, never an exit code, never the trajectory.
+- **`run close` joins.** It lists the directory and matches each record to a spawn by briefing sha. A wave where every spawn has a record gets recorded usage and cache figures and the manifest's observed `cacheAccounting` becomes `'hook'`, the value Brief 4 defined; the registry's `cacheAccounting` values widen once, by whichever of Briefs 4 and 9 lands. One missing record makes the wave unknown under the unknown-not-zero rule, bannered `CACHE ACCOUNTING PARTIAL: <n> of <m> agents unrecorded`. The tier split is recorded as unknown, and the summary says `cache writes: total only (tiers not reported on this host)`.
+- **Observed model.** The receipt and the `agent-spawn` record gain `modelObserved` (the set, usually one). A mismatch against the routed slug, compared through `lib/host/model-map.mjs`, banners `MODEL SUBSTITUTED: <label> routed <slug>, ran <ids>`, Brief 4's and Brief 5's wording. Two distinct models in one agent's steps raise the same banner naming both, which is what a fallback switch looks like.
+- **`AGENT RETURNED NO RESULT` gains its reason.** When a null result's agent has a record, Brief 2's banner appends the `reason` word: `the runtime stopped it (aborted)`, `the API failed (error)`, `the model refused (refusal)`.
+- **Plan windows on the receipt.** `run start` and `run close` record the latest `rateLimits` snapshot the mod observed, if any, as observed facts: kind, percent used, reset time. No threshold, no banner. The meter shows them (Brief 7).
+- **The runner host is not touched.** Its lanes are `-p` processes (mods-3) and Brief 5 reads their envelopes, which do carry the tier split.
+- **Lifetime.** `run start` clears `.claude/ship/<change>/usage/` for its change; `run close` reads and leaves it, so a reader after the fact can see what the join saw.
+
+### Capabilities
+
+- **Events:** `turn.step`, `turn.complete`, `agent.spawn`, `session.measure`. API: `$.fs.write`, `$.ui.toast`, `$.ui.log`, plus Brief 7's list. The allow-list pin grows by exactly `$.fs.write`.
+- **Registry:** `cacheAccounting` widens to include the observed `'hook'` value (shared with Brief 4; one edit). The Workflow host's assumed value stays `false`; `run close` raises the observed value only on complete coverage.
+- **When absent:** mods off, or the probe failing: today's `CACHE ACCOUNTING NOT REPORTED` stands. Partial coverage banners `CACHE ACCOUNTING PARTIAL`.
+- **Corpus class:** the usage records are outcome-class; `docs/13` says so beside the trajectory's fatal class, so nobody "makes it consistent".
+
+### Impact
+
+**Code**
+
+- `hooks/mod.mjs`: the four hooks and the writer.
+- `lib/run.mjs`: `recordUsage`, `summarizeUsage`, `runClose` (the join, the banners, the `reason` suffix), `runStart` (clear the directory, record the windows).
+- `lib/run-log.mjs`, `lib/receipt.mjs`: `modelObserved`, the windows, the tier-unknown shape.
+- `lib/host/registry.mjs`: the `cacheAccounting` value, once.
+
+**Tests**
+
+- `test/mod/usage.test.ts` (new, `claude plugin test`): `turn.step` stubs for two agent ids tally separately; a second model in one agent's steps is kept as a set; `turn.complete` writes one file per agent through a `fs.write` stub that captures path and content; a rejected `fs.write` stub produces one toast and nothing else; `agent.spawn` with a prompt carrying a sha maps the resolved `agentId` to it; `session.measure` keeps the latest snapshot; nothing is written outside a live run.
+- `test/spine/run.test.mjs`: the join on a complete fixture, on a partial one, on an unparseable file; the tier-unknown summary line; the `reason` suffix; the windows on the receipt.
+- `test/spine/run-log.test.mjs`, `test/spine/receipt.test.mjs`, `test/spine/host-registry.test.mjs`.
+- `test/fixtures/`: captured `turn.step`, `turn.complete` and, if it fires, `agent.spawn` payloads from task 1.
+
+**Docs**
+
+- `docs/13-the-guards.md` (the recorder row, the corpus class), `docs/04-when-it-stops.md` (the banners, the tier sentence), `CHANGELOG.md`.
+
+### Out of scope
+
+- The worker cache-lifetime choice (later; it needs these figures).
+- Brief 4's permission events (`PermissionDenied`, `PermissionRequest`); they stay settings hooks or become `tool.check` observations in a later change, never approvals.
+- Writing the lifetime-tier split for the Workflow host. It is not on `TurnUsage`; if task 1 finds the Agent tool's result on a `tool.call` the mod can see, a follow-up records the split from there.
+- A plan-window threshold (app ideas, below).
+
+### Decisions the design has to settle
+
+1. **Scope after the probe.** If `turn.step` does not fire with an `agentId` for the runtime's agents, stop. If it fires but `agent.spawn` does not, record without the sha and join by decision 2. If both fire, the full change.
+2. **The join key without `agent.spawn`.** The trajectory's `agent-spawn` event has the label and the routed model but no `agentId`; the Workflow driver gets `agent()`'s result and may or may not see an id. Options: the driver reports the id into `record-batch` (an agent-reported field, the weaker kind), or the mod reads the first user message of the agent's transcript through `$.session.messages({ agentId })`, which the d.ts says a session may be unable to read for some agents. Recommended: probe both, prefer the first.
+3. **The `cacheAccounting` enum.** Shared with Brief 4; whichever lands first chooses the shape old manifests (`true`, `false`) stay readable under.
+4. **Who clears the directory.** `run start` (recommended) or `run close`.
+5. **The windows' place on the receipt.** A `plan` block with the snapshot and its time, or nothing when the host reported none (off a subscription the list is empty; mods-10). Never zero.
+
+### Task outline
+
+1. Probe with the plugin loaded by `--plugin-dir` and a logging branch in the module: launch a one-task ship; capture whether `agent.spawn` fires for the runtime's agents, whether `turn.step` and `turn.complete` carry their `agentId`, whether `$.session.messages({ agentId })` is readable for one, and whether any `tool.call` on `Agent` appears. Pin the payloads as fixtures. Decide scope.
+2. Failing `claude plugin test` cases for the tallies and the writes; failing `node --test` cases for the join.
+3. The hooks and the writer.
+4. The join, the banners, the `reason` suffix, the receipt fields, the registry value.
+5. Docs, `CHANGELOG.md`. `npm test`, `npm run validate`, `claude plugin test .`.
+
+### Acceptance
+
+- `turn.step` results for two agent ids produce two records with the models each reported; a second model in one agent's steps appears in that agent's `modelsObserved`.
+- Each `turn.complete` with an `agentId` writes exactly one file named by that id, and writing it twice leaves one file with the later content.
+- A rejected write raises one `USAGE RECORD NOT WRITTEN` toast and changes nothing else; no hook throws.
+- A close where every spawn has a record sets observed `cacheAccounting` to `'hook'`, records wave cache figures with the tier split unknown, and raises no `NOT REPORTED` banner.
+- A close with one missing record marks the wave unknown and banners `CACHE ACCOUNTING PARTIAL` with both counts.
+- A record whose observed model differs from the routed slug after the model map banners `MODEL SUBSTITUTED`; an alias against its full id raises nothing.
+- A null result whose agent has a record banners `AGENT RETURNED NO RESULT` with the record's `reason` word.
+- Nothing is written in a non-interactive session or outside a live run.
+- Tests: `test/mod/usage.test.ts`, `test/spine/run.test.mjs`, `test/spine/run-log.test.mjs`, `test/spine/receipt.test.mjs`, `test/spine/host-registry.test.mjs`, `test/spine/mod-pins.test.mjs`.
+
+---
+
+### App ideas, revised
+
+- **ship-meter** is Brief 7.
+- **`interlock board`** gains a mechanism it lacked. `$.store` is one JSON store per plugin shared by every session on the machine (mods-14). Brief 7's module could publish, under a key naming the session id, `{ change, runId, stage, wave, lane, updatedAt }` on every step it observes, and a `/interlock-board` command could list every live run on the machine from the store, without `claude agents --json` and without reading `~/.claude/jobs`. Prerequisites: Brief 7; a staleness age for entries whose session died without a close, as a `lib/limits.mjs` key printed by `interlock limits` and imported by the module; a reader for the store's size, since the vendor cap is 4 MiB in all. It still waits on Brief 6 and on a background launcher making several ships a real pattern.
+- **Checkpoint page and halt triage page.** local-2 half-answers their shared prerequisite: the `Artifact` tool is offered to the main conversation in the Desktop Code tab, where a skill runs. Over Remote Control and in the terminal it stays unverified, and the pages still need the publish convention the earlier text describes.
+- **Plan-window-aware launch (new, later).** `$.session.usage().rateLimits` reports `five_hour` and `seven_day` percent used with a reset time (mods-10). Brief 8's `Workflow` hook could also refuse a launch when a window is above a ceiling, with the reason naming the window, the percent and the reset time. The ceiling would be a `lib/limits.mjs` key printed by `interlock limits`, never a literal in the module. It is later because orchestration-7 says an interactive subscription session pauses a workflow at the limit rather than failing it, so the cost today is wall-clock, not a failed run; the meter should first show how often a run meets a window.
+- **Line comments as checkpoint answers (new, prose only).** desk-1: in the Desktop, comments on lines of `proposal.md` or `tasks.md` in the Files pane arrive with the user's next message. `/interlock:spec`'s checkpoint text could say so for Desktop users. It is a skill sentence pinned by tokens, not a change of behaviour, and it needs a check that a line comment arrives in a shape the spec skill's answer parser accepts.
+- **Interrupt-aware halt note (fold into Brief 2).** `turn.complete.isAborted` and `session.end.reason: 'other'` for SIGINT, SIGTERM and SIGHUP (mods-8, mods-11) let Brief 2's `interrupted.json` be written by a `session.end` hook in the module, under the same budget as a SessionEnd settings hook. Brief 2's decision 3 gains the option; it does not need a brief of its own.
+- **Which instruction file each host reads (new, doctor note).** desk-10 and mods-27: Claude Code reads `AGENTS.md` only with no `CLAUDE.md`, through a built-in mod a user can disable; the `codex` and `qwen` hosts read `AGENTS.md`. A doctor note naming the file each configured host will read, and whether the repository's `AGENTS.md` is the pointer `CLAUDE.md` says it is, is cheap and never fails.
+- **Unchanged:** the ship queue, the Remote Control recipe, the checkpoint-equals-merge routine, with their prerequisites as written. Brief 8 is the "recognise the queue as one launch" prerequisite the queue idea named.
+
+### Rejected mechanisms (mods), so nobody re-proposes them
+
+- **`tool.check` approvals.** A mod there can approve a call the user's own `PreToolUse` hook blocked or an `ask` rule would prompt for, and in auto mode its approval skips the classifier (mods-6). Interlock never approves anything. Observing `tool.check` for the permission-event half of Brief 4 is a separate question.
+- **`$.model.complete`, `fork` or `classify` anywhere in the module.** A model's verdict as a gate, on the user's plan (mods-20).
+- **`$.prompt.submit` from the module.** The plugin starting a turn is the plugin relaunching itself, which Brief 8 exists to stop.
+- **A `.catch` handler that answers.** It is how a mod fails closed (mods-12). Every hook here is skipped on failure.
+- **Rewriting `model` or `effort` on `turn.step` or `agent.spawn`** as a FORCE workaround or a routing fix. The run program decides routing and the driver forwards it; a third party rewriting it in flight is the silent degradation Brief 2 exists to name.
+- **`prompt.section`, `prompt.compose`, `prompt.attachment`, `skill.prompt` or `session.append` rewrites.** They change what the model reads or what the record keeps, and text that changes between requests invalidates the prompt cache (mods-29).
+- **`$.store` as the relaunch ledger.** It is machine-wide; one session's launches would deny another's (mods-14).
+- **Appending to a JSONL corpus with `$.fs.write`.** It replaces the file and is not atomic (mods-15). The trajectory and the spill are the CLI's alone.
+- **Reading the trajectory with `$.fs.read` as the meter's main source.** It is a 4 MiB whole-file read with no tail (mods-15); the step stream crossing `tool.call` is cheaper and already parsed.
+- **`$.process.run` in the module.** The d.ts marks it "CLI only" and the module can import the pure module it would have shelled out to read (local-5).
+- **Writing into `~/.claude/dev-mods/` from a run** (local-3, mods-26).
+- **`$.session.send` or `$.http.fetch` from the module.** The ntfy push is the CLI's one network call, and messaging another session from a guard is a new channel nobody asked for.
+
+### Probes this addendum adds (unverified)
+
+- On a host below 2.1.287 (the 2.1.274 binary on this machine), what `hooks/hooks.json` with a `modules` key does to the plugin: ignored, warned, or refused; whether the settings hooks in the manifest still load; whether `claude plugin validate --strict` passes with it and with a `types` manifest key.
+- Whether the Workflow runtime's `agent()` spawns raise `agent.spawn`; whether their `turn.step` and `turn.complete` events carry an `agentId`; whether `$.session.messages({ agentId })` is readable for one; whether any `tool.call` on `Agent` appears for them (mods-9, mods-24).
+- Whether `tool.call` fires for the Bash calls inside the `interlock:ping` subagent and `r.text` carries the CLI's stdout whole (mods-5).
+- What "CLI only" on `$.process` means in the Desktop Code tab (mods-15).
+- Whether a `modules` path in `hooks/hooks.json` may contain `..`.
+- Desktop: whether "Send now" or Cmd/Ctrl+Enter (desk-13) stops a background workflow task, and what `turn.complete` and `session.end` report when it does.
+- Desktop worktree session (desk-4): where `.claude/ship/`, `.claude/handoff/` and `.claude/testing/profile.json` writes land, and what "read-only" covers in the opened project folder's `.claude`.
+- `claude plugin test .` at the repository root: that it runs only `test/mod/*.test.ts`, how long it takes in CI, and that it needs no sign-in there (mods-17 says none).
+- The Desktop's equivalent of the 144-column rule for an unasked pane (mods-13 is stated in terminal columns).
+- desk-15 directly on the changelog page, and the CLI `CHANGELOG.md` from 2.1.289 on, for any mods API change after the pages were read.
+- Whether the `claude-code` runtime imports (`atom`, `read`, `update`) count as a dependency for `test/spine/package.test.mjs`'s closure walk, which today treats a bare specifier as external.
+
+### Provenance of the addendum
+
+Written on 2026-10-05 by one Claude session in the Desktop Code tab (engine 2.1.286), in one pass: the Desktop changelog as pasted by the user; nine mods documentation pages and the plugin manifest reference, fetched that day; the bundled `plugin-authoring` skill and its `claude-code.d.ts` read locally; and the repository (`.claude-plugin/plugin.json`, `hooks/`, `lib/limits.mjs`, `lib/ship-stage.mjs`, `lib/run-log.mjs`, `lib/host/registry.mjs`, `lib/doctor.mjs`, `skills/ship/SKILL.md`, `test/hooks.test.mjs`, `test/spine/package.test.mjs`, `.github/workflows/ci.yml`, `.gitignore`, one trajectory file). The CLI changelog past 2.1.288 and the Desktop changelog page could not be fetched that day and are named as re-reads. No claim here went through the verifier lenses the six briefs did; the three briefs each start with the probe that would kill them.
