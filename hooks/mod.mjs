@@ -187,6 +187,7 @@ function applyRecord($, record) {
     if (!s || typeof s !== 'object' || !str(s.label)) continue
     run.rows.set(s.label, {
       label: s.label,
+      title: str(s.title) || s.label,
       kind: str(s.kind),
       model: str(s.model),
       effort: str(s.effort),
@@ -262,7 +263,7 @@ async function drawPane($, e) {
     out.push(
       keyed(
         `wave-row-${r.label}`,
-        `${r.label} · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${state}`
+        `${r.title} · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${state}`
       )
     )
   }

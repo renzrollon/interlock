@@ -550,7 +550,7 @@ while (step && step.then) {
   const worktreeProblem = createWorktrees(step)
   if (worktreeProblem) await stop(worktreeProblem)
 
-  for (const s of step.spawns || []) log(`  ${step.action}: ${s.label}`)
+  for (const s of step.spawns || []) log(`  ${step.action}: ${s.title || s.label}`)
   hostRecords = []
   const results = await spawnAll(step)
   write(`${WORK}/results.json`, results)

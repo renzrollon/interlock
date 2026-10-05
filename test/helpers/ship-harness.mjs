@@ -470,7 +470,10 @@ export async function runShip(opts = {}) {
   })
 
   const agent = async (prompt, options = {}) => {
-    const label = options.label || '(unlabeled)'
+    // The runtime shows an agent under its title (`1.1+2 · Add the guard`);
+    // fixtures answer, and assertions find, it by the label that title opens with.
+    const title = options.label || '(unlabeled)'
+    const label = title.split(' · ')[0]
     const n = (seen.get(label) || 0) + 1
     seen.set(label, n)
     calls.push(label)
@@ -479,7 +482,7 @@ export async function runShip(opts = {}) {
     // A relay: perform its writes, run its command for real, hand back stdout.
     const argv = commandIn(text)
     if (argv) {
-      prompts.push({ label, prompt: text, model: options.model, relay: true, ...effortOf(options) })
+      prompts.push({ label, title, prompt: text, model: options.model, relay: true, ...effortOf(options) })
       // A relay canned as `null` is a relay the runtime stopped mid-run: nothing
       // is written and nothing runs, and the script sees exactly what agent()
       // returns in that case. It is the only way a fixture can reach the
@@ -514,7 +517,7 @@ export async function runShip(opts = {}) {
       } catch {
         briefing = ''
       }
-      prompts.push({ label, prompt: briefing, model: options.model, isolation: options.isolation, ...effortOf(options) })
+      prompts.push({ label, title, prompt: briefing, model: options.model, isolation: options.isolation, ...effortOf(options) })
       const canned = lookup(responses, label)
       const body = materialize(typeof canned === 'function' ? canned(label, n, ctx) : canned)
       if (body === null) return null
@@ -529,7 +532,7 @@ export async function runShip(opts = {}) {
 
     // Anything else — the environment probe, and the tail's own spawns, which no
     // step names yet.
-    prompts.push({ label, prompt: text, model: options.model, isolation: options.isolation, ...effortOf(options) })
+    prompts.push({ label, title, prompt: text, model: options.model, isolation: options.isolation, ...effortOf(options) })
     const canned = lookup(responses, label)
     return typeof canned === 'function' ? canned(label, n, ctx) : canned
   }

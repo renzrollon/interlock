@@ -17,6 +17,14 @@ Makes the CLI the single author of a ship run: every step, every agent briefing 
 - **THEN** the step carries exactly two spawns, each with the lane's label, the planner's model and effort, the worker agent type and tools, the lane's result schema and a briefing path and hash
 - **AND** `then.argv` names `run record-batch`
 
+#### Scenario: Happy path — a lane spawn is shown under a title and keyed by its label
+
+- **GIVEN** a batch step with a lane `1.1+2` whose first task reads `Add the relaunch guard`
+- **WHEN** the driver spawns it
+- **THEN** the spawn's `title` is `1.1+2 · Add the relaunch guard`, a deterministic function of the lane, and the host displays the agent under it
+- **AND** the briefing file, the worktree, the trajectory and `run record-batch` still name it `1.1+2`
+- **AND** a spawn that is not a lane carries a `title` equal to its label
+
 #### Scenario: Failure — a continuation names a subcommand the CLI does not dispatch
 
 - **GIVEN** a step whose `then.argv` names `run frobnicate`

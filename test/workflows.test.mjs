@@ -3070,6 +3070,16 @@ test('a lane is spawned at its tier\'s published effort', async () => {
   }
 })
 
+test('the Workflow host shows agents by title while fixtures and records key on the label', async () => {
+  const { prompts } = await runShip()
+  const lane = prompts.find(p => p.label === '1.1')
+  assert.ok(lane, 'the default run spawns lane 1.1')
+  assert.ok(lane.title.startsWith('1.1 · '), `a lane is shown with its task's words: ${lane.title}`)
+  const relay = prompts.find(p => p.relay && p.label.startsWith('cli-'))
+  assert.match(relay.title, /^cli-\d+ · run /, 'a relay is shown with the subcommand it runs')
+  assert.equal(prompts.find(p => p.label === 'plan-waves').title, 'plan-waves')
+})
+
 test('relay pings, the planner and the commit agent are spawned with no effort key at all', async () => {
   const { prompts } = await runShip()
   for (const label of ['validate', 'cli-', 'plan-waves', 'commit']) {

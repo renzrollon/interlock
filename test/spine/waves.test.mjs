@@ -24,6 +24,8 @@ import {
   isDocsOnlyWave,
   batchOutcomes,
   laneModel,
+  laneLabel,
+  laneTitle,
   OUTCOME_OK,
   OUTCOME_FAILED,
   OUTCOME_NOT_ATTEMPTED
@@ -3756,4 +3758,32 @@ test('a red-wave task may not depend on the work it pins', () => {
   ])
   assert.equal(deferred.redWave, null)
   assert.ok(deferred.testWave, 'the test task defers, so its edge points backwards in time')
+})
+
+// --- lane titles: what a lane is shown as, never what it is keyed by ---
+
+test('laneTitle opens with the lane label and adds the first task\'s words', () => {
+  const one = [{ id: '1.1', description: 'Add `laneTitle(lane)` next to laneLabel.' }]
+  assert.equal(laneTitle(one), '1.1 · Add laneTitle(lane) next to laneLabel')
+  const three = [
+    { id: '2.1', description: 'Guard   the\nrelaunch' },
+    { id: '2.2', description: 'b' },
+    { id: '2.3', description: 'c' }
+  ]
+  assert.equal(laneTitle(three), '2.1+2 · Guard the relaunch')
+  assert.ok(laneTitle(three).startsWith(laneLabel(three)))
+})
+
+test('laneTitle truncates a long description and is a pure function of the lane', () => {
+  const lane = [{ id: '3.10', description: 'Rewrite the extraordinarily comprehensive dependency-ordered wave scheduler today' }]
+  const title = laneTitle(lane)
+  assert.ok(title.length <= 48, title)
+  assert.ok(title.endsWith('…'), title)
+  assert.ok(title.startsWith('3.10 · Rewrite'), title)
+  assert.equal(laneTitle(lane), title, 'a replay must display — and cache-hit — the same agent')
+})
+
+test('laneTitle falls back to the label when the description says nothing', () => {
+  assert.equal(laneTitle([{ id: '4.1', description: '  ' }]), '4.1')
+  assert.equal(laneTitle([{ id: '4.2' }]), '4.2')
 })

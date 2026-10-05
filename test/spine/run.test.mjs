@@ -392,6 +392,29 @@ test('a single-task lane still requests its clamped model', () => {
   }
 })
 
+test('a lane spawn is shown under a title but keyed, briefed and recorded by its label', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 A\n- [ ] 1.2 B\n'
+  })
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    file(root, '.claude/ship/classified.json', {
+      tasks: [
+        { id: '1.1', group: 1, description: 'Add the relaunch guard', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/a.ts'] },
+        { id: '1.2', group: 1, description: 'B', tier: 1, model: 'haiku', isTestTask: false, paths: ['src/b.ts'] }
+      ]
+    })
+    const batch = run(root, [...started.then.argv]).step
+    const lane = batch.spawns.find(s => s.label === '1.1')
+    assert.equal(lane.title, '1.1 · Add the relaunch guard')
+    assert.ok(lane.promptPath.endsWith('/1.1.md'), `the briefing file is named by the label, not the title: ${lane.promptPath}`)
+    const header = readFileSync(join(root, lane.promptPath), 'utf8').split('\n')[0]
+    assert.equal(header, BRIEFING_HEADER('1.1', lane.promptSha256))
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('a four-task lane with no result costs one failure and ticks nothing', () => {
   const ids = ['1.1', '1.2', '1.3', '1.4']
   const lane = ids.map(id => ({

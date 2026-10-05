@@ -284,7 +284,8 @@ const ping = (name, prompt, schema) => agent(prompt, { label: name, schema, ...p
  */
 async function spawnOne(s) {
   const result = await agent(BOOTSTRAP(s.label, s.promptPath, s.promptSha256), {
-    label: s.label,
+    // Shown as its title; every record below still names it by its label.
+    label: s.title || s.label,
     type: s.type,
     tools: s.tools,
     ...(s.model ? { model: s.model } : {}),
@@ -354,8 +355,10 @@ async function cli(argv, results, extraWrites = []) {
   const quote = a => (/[^\w@%+=:,./-]/.test(String(a)) ? `'${String(a).replace(/'/g, `'\\''`)}'` : String(a))
   const command =
     `interlock ${argv.map(quote).join(' ')}${results === undefined ? '' : ` --results ${RESULTS}`} --json`
+  // Shown with the subcommand it relays (`cli-12 · run next`), so a stalled
+  // relay can be read off the progress view; `label` stays what errors name.
   const relayed = await ping(
-    label,
+    `${label} · ${argv.slice(0, 2).join(' ')}`,
     `You are a mechanical relay for one command. Do not interpret it, and do not do the work it ` +
       `describes.\n\n` +
       (writeLines ? `${writeLines}\n\n` : '') +
