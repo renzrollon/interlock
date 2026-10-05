@@ -2520,14 +2520,25 @@ test('an isolated batch captures the shared tree\'s base commit before its lanes
   // Read before, not after, so nothing else lands on the shared tree between
   // the reading and the fold — and read by the CLI itself rather than by a
   // ping, which is one fewer agent turn and one fewer place to lose it.
+  //
+  // This pin named `ctx.deps.headCommit(root)` until
+  // `fork-isolated-lanes-from-snapshot-base`. It was repointed because the
+  // mechanism it named was replaced, not weakened: HEAD never moves during a
+  // run, so a base read off it lacked every earlier fold and a later batch's
+  // whole-file fold silently reverted it. The base is now a snapshot of the
+  // shared tree, built through a temporary index.
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
-  assert.match(run, /mergeBase = ctx\.deps\.headCommit\(root\)/)
+  assert.match(run, /mergeBase = ctx\.deps\.snapshotTree\(root, change\)/)
   assert.match(
     run,
     /could not capture the shared-tree base commit before an isolated batch/,
     'and an unreadable base halts rather than being guessed'
   )
   const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.match(cli, /'write-tree'/, 'the snapshot is a tree written from a temporary index')
+  assert.match(cli, /'commit-tree'/, 'committed without moving a ref')
+  assert.match(cli, /':\(exclude\)\.claude\/ship'/, 'with the run state left out of it')
+  // `headCommit` stays: it is the MERGE BASE RE-READ fallback at the fold.
   assert.match(cli, /'rev-parse', 'HEAD'/)
 })
 
@@ -4096,6 +4107,11 @@ test('the runner takes the merge base from the step and never computes one', () 
   // so a folded worktree and an auto-removed empty one end the same way.
   assert.match(driver, /'worktree',\s*'add'/, 'it creates the lane worktree')
   assert.doesNotMatch(driver, /'worktree',\s*'remove'/, 'and does not remove it')
+  // The Workflow driver never sees the base — its relayed step omits the field
+  // and the runtime forks the lane — so it has nothing to read and must not
+  // substitute a base of its own either.
+  const workflow = policySurface(join(WORKFLOWS_DIR, 'ship.js'))
+  assert.doesNotMatch(workflow, /mergeBase\s*=\s*(?!=)/, 'the Workflow driver never assigns a base')
 })
 
 test('no driver carries a tail seam, and the sweep has no allowance to skip', () => {

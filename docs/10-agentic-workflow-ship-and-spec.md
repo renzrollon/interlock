@@ -220,7 +220,7 @@ The host-specific part shrank to two things: an interpreter (spawn what a step n
 
 | Layer | Where it lives | What it decides |
 |---|---|---|
-| Policy | `bin/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path and merge base |
+| Policy | `bin/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path, its merge base (a snapshot of the shared tree holding every earlier fold, never HEAD) and the `LANE BASE MISMATCH` check that every lane forked from it |
 | Interpreter | `workflows/ship.js`, `bin/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
 | Transport | the Workflow runtime; `lib/host/{claude-cli,acp,codex,qwen}.mjs` | How a prompt reaches a model, and what that host cannot do — declared, and bannered by the runner |
 

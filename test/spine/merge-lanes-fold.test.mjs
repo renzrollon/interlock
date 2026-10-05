@@ -178,3 +178,42 @@ test('an edit of a file another lane copied does not halt the batch', () => {
   assert.equal(readFileSync(join(repo.root, 'lib', 'a.mjs'), 'utf8'), editedA, "lane B's edit of the copy source survives")
   assert.equal(existsSync(join(repo.root, 'lib', 'b.mjs')), true, 'and the copy destination lands beside it')
 })
+
+test('a lane forked from a dangling snapshot is diffed against it, not against HEAD', () => {
+  const repo = baseRepo('snapshot-base')
+  // The shared tree differs from HEAD — an earlier batch's fold, still uncommitted.
+  const folded = `${C_BODY}export const folded = "by an earlier batch"\n`
+  writeFileSync(join(repo.root, 'lib', 'c.mjs'), folded)
+
+  // The snapshot `interlock run` builds: a temporary index seeded from HEAD, the
+  // working tree staged into it, and a commit no ref names.
+  const index = join(dir, 'snapshot-base.index')
+  const indexEnv = { ...GIT_ENV, GIT_INDEX_FILE: index }
+  const plumb = args => {
+    const r = spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: indexEnv })
+    assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`)
+    return r.stdout.trim()
+  }
+  plumb(['read-tree', 'HEAD'])
+  plumb(['add', '-A'])
+  const tree = plumb(['write-tree'])
+  const snapshot = plumb(['commit-tree', tree, '-p', 'HEAD', '-m', 'snapshot'])
+  assert.notEqual(snapshot, repo.base)
+  assert.equal(git(repo.root, ['status', '--porcelain']), 'M lib/c.mjs', 'the real index is untouched')
+
+  const path = join(dir, 'snapshot-base-lane-A')
+  git(repo.root, ['worktree', 'add', '-q', '--detach', path, snapshot])
+  const editedA = `${A_BODY}export const five = 5\n`
+  writeFileSync(join(path, 'lib', 'a.mjs'), editedA)
+
+  const result = mergeLanes({ ...repo, base: snapshot }, [{ label: 'A', worktreePath: path }])
+
+  assert.equal(result.code, 0, `expected a clean fold, got ${JSON.stringify(result.json)}`)
+  assert.deepEqual(
+    result.json.folds,
+    [{ lane: 'A', files: ['lib/a.mjs'] }],
+    'the earlier fold is in the snapshot, so it is not reported as this lane\'s write'
+  )
+  assert.equal(readFileSync(join(repo.root, 'lib', 'a.mjs'), 'utf8'), editedA, "the lane's own edit lands")
+  assert.equal(readFileSync(join(repo.root, 'lib', 'c.mjs'), 'utf8'), folded, 'and the earlier fold is kept')
+})

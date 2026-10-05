@@ -15,9 +15,21 @@
 // wired to a subcommand here is a policy the model will improvise in prose.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { constants as osConstants } from 'node:os'
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { constants as osConstants, tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import {
   planWaves,
@@ -1267,6 +1279,127 @@ function observedChangedPaths(root) {
   return paths
 }
 
+// The identity a shared-tree snapshot is committed under. It is nobody's: it is
+// set in the environment of the one `commit-tree` call and never in any config,
+// because `commit-tree` refuses to write without an identity, a CI checkout
+// often has none, and the user's name does not belong on an object they did not
+// author.
+const SNAPSHOT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'Interlock',
+  GIT_AUTHOR_EMAIL: 'interlock@localhost',
+  GIT_COMMITTER_NAME: 'Interlock',
+  GIT_COMMITTER_EMAIL: 'interlock@localhost'
+}
+
+/**
+ * Every linked worktree of the repository that lies inside `root`, as a
+ * root-relative path with forward slashes. Read from git at capture time rather
+ * than kept as a list, so a host that moves where it puts its worktrees is
+ * still covered. Both sides are resolved through `realpathSync` because git
+ * reports real paths and `root` may arrive through a symlink (macOS's `/tmp`).
+ */
+function linkedWorktreesInside(root, porcelain) {
+  const top = realpathSync(root)
+  const inside = []
+  for (const line of porcelain.split('\n')) {
+    if (!line.startsWith('worktree ')) continue
+    let path = line.slice('worktree '.length)
+    try {
+      path = realpathSync(path)
+    } catch {
+      // A worktree whose directory is gone is compared as git listed it.
+    }
+    const rel = relative(top, path)
+    if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue
+    inside.push(rel.split(sep).join('/'))
+  }
+  return inside
+}
+
+/**
+ * The commit an isolated batch's lanes fork from: the shared tree as it stands,
+ * with every tracked edit, every deletion and every untracked file the ignore
+ * rules let through — so it holds every earlier fold of the run, which HEAD
+ * never does (the ship commit is the run's last step).
+ *
+ * Built through a temporary index and plumbing only. No ref moves, the
+ * repository's own index is never opened for writing, and no working-tree file
+ * changes. The commit is pinned by nothing: the lane worktrees forked from it
+ * keep it reachable until the fold, and git's own expiry takes it after.
+ *
+ * - The index is seeded from HEAD, so a tracked-but-ignored file keeps its
+ *   committed content instead of dropping out of the tree.
+ * - Interlock's run state and every linked worktree inside the root are left
+ *   out. Staged, a worktree becomes an embedded-repository entry; a lane's
+ *   checkout holds an empty directory there; and the fold reads that as a
+ *   deletion of a sibling lane's worktree.
+ * - A tree identical to HEAD's returns HEAD itself and creates no object.
+ *
+ * @param {string} root
+ * @param {string} [change] named in the snapshot's message, for whoever finds it
+ * @returns {string|null} null on any failure — `decorate` halts on it rather
+ *   than forking lanes from a base nobody captured
+ */
+function snapshotTree(root, change) {
+  let dir = null
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'interlock-snapshot-'))
+    const env = { ...process.env, GIT_INDEX_FILE: join(dir, 'index') }
+    const git = (args, extraEnv = {}) =>
+      execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...env, ...extraEnv },
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim()
+
+    git(['read-tree', 'HEAD'])
+    const worktrees = linkedWorktreesInside(root, git(['worktree', 'list', '--porcelain']))
+    git([
+      'add',
+      '-A',
+      '--',
+      '.',
+      ':(exclude).claude/ship',
+      ...worktrees.map(rel => `:(exclude,literal)${rel}`)
+    ])
+    const tree = git(['write-tree'])
+    const head = git(['rev-parse', 'HEAD'])
+    if (tree === git(['rev-parse', 'HEAD^{tree}'])) return head || null
+    // --no-gpg-sign: `commit.gpgSign` would otherwise ask a signing agent to
+    // sign an object nobody will ever push.
+    const message = `interlock: shared-tree snapshot (${change || 'unknown change'})`
+    return git(['commit-tree', '--no-gpg-sign', tree, '-p', head, '-m', message], SNAPSHOT_IDENTITY) || null
+  } catch {
+    return null
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * The commit a lane worktree is checked out at, as git reports it from inside
+ * the worktree — never the base the lane's agent says it forked from, because
+ * that report is the thing being audited. `null` when git cannot answer,
+ * including when the directory is gone.
+ *
+ * @param {string} worktreePath
+ * @returns {string|null}
+ */
+function worktreeHead(worktreePath) {
+  if (typeof worktreePath !== 'string' || !worktreePath || !existsSync(worktreePath)) return null
+  try {
+    return (
+      execFileSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim() || null
+    )
+  } catch {
+    return null
+  }
+}
+
 /**
  * A lane worktree's actual writes relative to the shared base commit, as git
  * sees them — never a prediction. `null` means git could not answer (bad
@@ -2480,11 +2613,13 @@ async function main() {
                 stdio: ['ignore', 'pipe', 'ignore']
               }).trim() || null
             } catch {
-              // An unreadable base is null, never a guess: `decorate` halts on
-              // it rather than folding a batch against a commit nobody read.
+              // An unreadable base is null, never a guess: `record-batch` halts
+              // on it rather than folding a batch against a commit nobody read.
               return null
             }
           },
+          snapshotTree,
+          worktreeHead,
           logWaveMutation,
           logAgentSpawns,
           observedChangedPaths,

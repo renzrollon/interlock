@@ -1424,7 +1424,7 @@ test('an isolated batch declares worktree isolation and captures a merge base', 
   try {
     const batch = toFirstBatch(root, change, ['--isolate-waves'])
     assert.equal(batch.spawns[0].isolation, 'worktree')
-    assert.match(batch.mergeBase, /^[0-9a-f]{7,40}$/, 'the shared tree\'s HEAD, read before the fork')
+    assert.match(batch.mergeBase, /^[0-9a-f]{7,40}$/, 'a snapshot of the shared tree, captured before the fork')
     assert.match(
       batch.spawns[0].prompt,
       /ISOLATION — you are running in your own git worktree/,
@@ -1457,7 +1457,7 @@ test('an unisolated batch is byte-for-byte what it was before isolation existed'
 // exists to prevent.
 
 /** Start a run declaring a host's capabilities, the way `interlock-run` does. */
-function startWithHost(root, change, host, capabilities, flags = []) {
+function startWithHost(root, change, host, capabilities, flags = [], classified = CLASSIFIED) {
   const started = run(root, [
     'run',
     'start',
@@ -1470,7 +1470,7 @@ function startWithHost(root, change, host, capabilities, flags = []) {
     JSON.stringify(capabilities)
   ]).step
   assert.equal(started.action, 'classify')
-  file(root, '.claude/ship/classified.json', CLASSIFIED)
+  file(root, '.claude/ship/classified.json', classified)
   return run(root, [...started.then.argv]).step
 }
 
@@ -2193,6 +2193,9 @@ test('the fold uses the base captured at dispatch, never the post-batch HEAD', (
       warn: () => {},
       deps: {
         headCommit: () => 'ffffffffffffffffffffffffffffffffffffffff',
+        // Every lane forked from the captured base, as the runner forks them —
+        // so the lane-base check passes and the fold's own input is what is read.
+        worktreeHead: () => captured,
         observedChangedPaths: () => ['README.md'],
         runMergeLanes: (_root, _candidates, base) => {
           foldedAgainst = base
@@ -2205,6 +2208,404 @@ test('the fold uses the base captured at dispatch, never the post-batch HEAD', (
     runRecordBatch(ctx, { results })
     assert.equal(foldedAgainst, captured, 'the fold read the post-batch HEAD instead of the captured base')
     assert.equal(manifestOf(root).mergeBase, null, 'a spent base must not carry into the next batch')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the isolated base is a snapshot of the shared tree (spec: lanes, waves) --
+//
+// HEAD does not move during a run — the ship commit is its last step — so a
+// lane forked from HEAD after an earlier batch folded edits a copy that lacks
+// the fold, and the whole-file fold then overwrites the earlier edit with exit
+// 0. These fixtures play the runner exactly as `createWorktrees` does (`git
+// worktree add --detach --force <spawn.worktree.path> <step.mergeBase>`)
+// through the real binary and real git, because the defect lived between them.
+
+function git(root, args, opts = {}) {
+  return execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...opts
+  }).trim()
+}
+
+/** A tier-4 task on one path: tier 4 is above the cohesion ceiling, so each is its own lane. */
+function isolatedTask(id, group, path) {
+  return { id, group, description: `Edit ${path}`, tier: 4, model: 'sonnet', isTestTask: false, paths: [path] }
+}
+
+const A_BODY = 'export const a = 1\nexport const two = 2\n'
+const A_APPENDED = A_BODY + 'export const appended = true\n'
+
+// Batch 0 holds lanes 1.1 and 1.2; 2.1 is a one-task group, so it folds into the
+// same wave as batch 1 — the later batch that edits the file batch 0 changed.
+// Two lanes in batch 0 is what keeps chain fusion from joining 1.1 and 2.1.
+const DEFERRED_BATCH = {
+  tasks: [isolatedTask('1.1', 1, 'lib/a.mjs'), isolatedTask('1.2', 1, 'lib/b.mjs'), isolatedTask('2.1', 2, 'lib/a.mjs')]
+}
+
+// Two sections of two tasks each: two waves, with an inter-wave checkpoint between.
+const TWO_ISOLATED_WAVES = {
+  tasks: [
+    isolatedTask('1.1', 1, 'lib/new.mjs'),
+    isolatedTask('1.2', 1, 'lib/b.mjs'),
+    isolatedTask('2.1', 2, 'lib/c.mjs'),
+    isolatedTask('2.2', 2, 'lib/d.mjs')
+  ]
+}
+
+// One batch of two lanes.
+const TWO_ISOLATED_LANES = { tasks: [isolatedTask('1.1', 1, 'lib/a.mjs'), isolatedTask('1.2', 1, 'lib/b.mjs')] }
+
+/** A repo whose tasks.md lists `classified`, with `lib/` committed. */
+function isolatedRepo(classified) {
+  const { root, change } = repo('add-thing', {
+    tasks: `# Tasks\n\n${classified.tasks.map(t => `- [ ] ${t.id} ${t.description}`).join('\n')}\n`
+  })
+  file(root, 'lib/a.mjs', A_BODY)
+  for (const name of ['b', 'c', 'd']) file(root, `lib/${name}.mjs`, `export const ${name} = 1\n`)
+  git(root, ['add', '-A'])
+  git(root, ['commit', '-qm', 'lib'])
+  return { root, change, head: git(root, ['rev-parse', 'HEAD']) }
+}
+
+/** Play the runner: fork every lane the step names, from the step's base unless told otherwise. */
+function forkLanes(root, step, bases = {}) {
+  for (const s of step.spawns) {
+    git(root, ['worktree', 'add', '--detach', '--force', s.worktree.path, bases[s.label] ?? step.mergeBase])
+  }
+}
+
+/** A single-task lane's result (`SINGLE_TASK_SCHEMA`), reporting `files` as its writes. */
+function taskWrote(id, files, extra = {}) {
+  return {
+    ...extra,
+    id,
+    ok: true,
+    filesChanged: files,
+    handoff: {
+      schema: 'interlock.wave-handoff/1',
+      taskId: id,
+      status: 'ok',
+      summary: 'done',
+      evidence: files.length ? files.map(f => `${f}:1`) : ['nothing to change'],
+      next: 'nothing',
+      blocker: null
+    }
+  }
+}
+
+const read = (root, path) => readFileSync(join(root, path), 'utf8')
+
+/** Start an isolated qwen run and stop before `run classified`, so the capture can be observed. */
+function startUnclassified(root, change, classified, env) {
+  const started = run(
+    root,
+    ['run', 'start', '--change', change, '--isolate-waves', '--host', 'qwen', '--host-capabilities', '{"worktree":"driver"}'],
+    { env }
+  ).step
+  assert.equal(started.action, 'classify')
+  file(root, '.claude/ship/classified.json', classified)
+  return started
+}
+
+test('a dirty tree forks its lanes from a snapshot that holds the edit and the untracked file', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    file(root, 'lib/a.mjs', 'export const a = "uncommitted"\n')
+    file(root, 'lib/new.mjs', 'export const fresh = true\n')
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], TWO_ISOLATED_LANES)
+    assert.equal(batch.action, 'run-batch')
+    assert.notEqual(batch.mergeBase, head, 'HEAD lacks both changes, so it cannot be the base')
+    const listed = git(root, ['ls-tree', '-r', '--name-only', batch.mergeBase]).split('\n')
+    assert.ok(listed.includes('lib/new.mjs'), 'the untracked, non-ignored file is in the snapshot')
+    assert.equal(git(root, ['show', `${batch.mergeBase}:lib/a.mjs`]), 'export const a = "uncommitted"')
+    forkLanes(root, batch)
+    for (const s of batch.spawns) {
+      assert.equal(read(root, `${s.worktree.path}/lib/a.mjs`), 'export const a = "uncommitted"\n')
+      assert.ok(existsSync(join(root, s.worktree.path, 'lib/new.mjs')), `${s.label} sees the untracked file`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a clean tree resolves the base to HEAD and writes no object', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    const started = startUnclassified(root, change, TWO_ISOLATED_LANES)
+    const objects = git(root, ['count-objects', '-v'])
+    const batch = run(root, [...started.then.argv]).step
+    assert.equal(batch.mergeBase, head, 'nothing to snapshot — the run state under .claude/ship is excluded')
+    assert.equal(git(root, ['count-objects', '-v']), objects, 'a clean capture creates no commit')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('capturing the snapshot leaves HEAD, refs, the index and the working tree as it found them', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    git(root, ['tag', 'v0'])
+    git(root, ['branch', 'side'])
+    file(root, 'lib/a.mjs', 'export const a = "unstaged"\n')
+    file(root, 'lib/b.mjs', 'export const b = "staged"\n')
+    git(root, ['add', 'lib/b.mjs'])
+    file(root, 'lib/new.mjs', 'export const fresh = true\n')
+    const started = startUnclassified(root, change, TWO_ISOLATED_LANES)
+
+    const readings = () => ({
+      head: git(root, ['rev-parse', 'HEAD']),
+      refs: git(root, ['for-each-ref']),
+      reflog: git(root, ['reflog']),
+      staged: git(root, ['diff', '--cached']),
+      status: git(root, ['status', '--porcelain'])
+    })
+    const before = readings()
+    const batch = run(root, [...started.then.argv]).step
+    assert.deepEqual(readings(), before, 'the capture moved a ref, the index or the working tree')
+
+    assert.notEqual(batch.mergeBase, head, 'a dirty tree is snapshotted, not read as HEAD')
+    assert.equal(git(root, ['show', `${batch.mergeBase}:lib/b.mjs`]), 'export const b = "staged"')
+    assert.equal(git(root, ['for-each-ref', '--points-at', batch.mergeBase]), '', 'no ref names the snapshot')
+    forkLanes(root, batch)
+    for (const s of batch.spawns) {
+      assert.equal(
+        git(join(root, s.worktree.path), ['rev-parse', 'HEAD']),
+        batch.mergeBase,
+        `the snapshot is reachable from ${s.label}'s worktree HEAD`
+      )
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a repository with no git identity still snapshots, and none is written to its config', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    git(root, ['config', '--unset', 'user.name'])
+    git(root, ['config', '--unset', 'user.email'])
+    // Refuse git's own hostname guess, so the capture cannot pass on one.
+    git(root, ['config', 'user.useConfigOnly', 'true'])
+    file(root, 'lib/new.mjs', 'export const fresh = true\n')
+    const env = {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: undefined,
+      GIT_AUTHOR_EMAIL: undefined,
+      GIT_COMMITTER_NAME: undefined,
+      GIT_COMMITTER_EMAIL: undefined,
+      EMAIL: undefined
+    }
+    const started = startUnclassified(root, change, TWO_ISOLATED_LANES, env)
+    const batch = run(root, [...started.then.argv], { env }).step
+    assert.equal(batch.action, 'run-batch', `the capture halted: ${batch.reason}`)
+    assert.notEqual(batch.mergeBase, head)
+    const config = readFileSync(join(root, '.git', 'config'), 'utf8')
+    assert.doesNotMatch(config, /^\s*(name|email)\s*=/m, 'an identity was written to the repository config')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the run state and a linked worktree inside the root stay out of the snapshot', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    // A preserved lane from a failed batch, and a worktree the Workflow runtime
+    // put under .claude/worktrees/ — neither directory is ignored here.
+    git(root, ['worktree', 'add', '--detach', '.claude/ship/worktrees/wave-0/old', 'HEAD'])
+    git(root, ['worktree', 'add', '--detach', '.claude/worktrees/planted', 'HEAD'])
+    file(root, 'lib/new.mjs', 'export const fresh = true\n')
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], TWO_ISOLATED_LANES)
+    assert.notEqual(batch.mergeBase, head, 'the untracked file makes a snapshot')
+    const dirs = git(root, ['ls-tree', '-r', '-d', '--name-only', batch.mergeBase]).split('\n')
+    assert.ok(!dirs.some(d => d.startsWith('.claude/ship')), `run state leaked into the snapshot: ${dirs}`)
+    assert.ok(!dirs.some(d => d.startsWith('.claude/worktrees')), `a linked worktree leaked: ${dirs}`)
+    assert.doesNotMatch(
+      git(root, ['ls-tree', '-r', batch.mergeBase]),
+      /^160000 /m,
+      'an embedded-repository entry would check out as an empty directory the fold reads as a deletion'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+/** Drive the two-batch fixture through batch 0's fold and return batch 1's step. */
+function foldBatchZero(root, change) {
+  const batch0 = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], DEFERRED_BATCH)
+  assert.deepEqual(batch0.lanes, [[{ id: '1.1' }], [{ id: '1.2' }]], 'batch 0 holds two lanes')
+  forkLanes(root, batch0)
+  const lane = label => batch0.spawns.find(s => s.label === label).worktree.path
+  file(root, `${lane('1.1')}/lib/a.mjs`, A_APPENDED)
+  file(root, `${lane('1.2')}/lib/b.mjs`, 'export const b = 2\n')
+  const batch1 = run(root, [...batch0.then.argv], {
+    results: [taskWrote('1.1', ['lib/a.mjs']), taskWrote('1.2', ['lib/b.mjs'])]
+  }).step
+  assert.equal(batch1.action, 'run-batch', `batch 0 did not fold: ${batch1.reason}`)
+  assert.deepEqual(batch1.lanes, [[{ id: '2.1' }]], 'batch 1 is the deferred lane on lib/a.mjs')
+  assert.equal(read(root, 'lib/a.mjs'), A_APPENDED, "batch 0's edit is in the shared tree")
+  return batch1
+}
+
+test('a deferred batch forks from the folded tree, so both edits survive', () => {
+  const { root, change, head } = isolatedRepo(DEFERRED_BATCH)
+  try {
+    const batch1 = foldBatchZero(root, change)
+    assert.notEqual(batch1.mergeBase, head, 'HEAD has not moved, and it lacks the fold')
+    forkLanes(root, batch1)
+    const wt = batch1.spawns[0].worktree.path
+    assert.equal(read(root, `${wt}/lib/a.mjs`), A_APPENDED, 'the lane starts from the folded file')
+    file(root, `${wt}/lib/a.mjs`, read(root, `${wt}/lib/a.mjs`).replace('export const a = 1', 'export const a = 2'))
+    const next = run(root, [...batch1.then.argv], { results: [taskWrote('2.1', ['lib/a.mjs'])] }).step
+    assert.notEqual(next.action, 'halt', next.reason)
+    assert.equal(
+      read(root, 'lib/a.mjs'),
+      'export const a = 2\nexport const two = 2\nexport const appended = true\n',
+      "the whole-file fold carries batch 1's edit and batch 0's appended line"
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a wave-2 lane finds the file a wave-1 lane created', () => {
+  const { root, change } = isolatedRepo(TWO_ISOLATED_WAVES)
+  try {
+    const wave1 = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], TWO_ISOLATED_WAVES)
+    forkLanes(root, wave1)
+    const lane = label => wave1.spawns.find(s => s.label === label).worktree.path
+    file(root, `${lane('1.1')}/lib/new.mjs`, 'export const created = 1\n')
+    file(root, `${lane('1.2')}/lib/b.mjs`, 'export const b = 2\n')
+    let step = run(root, [...wave1.then.argv], {
+      results: [taskWrote('1.1', ['lib/new.mjs']), taskWrote('1.2', ['lib/b.mjs'])]
+    }).step
+    // The inter-wave checkpoint: no test profile here, so it is skipped and judged empty.
+    for (let guard = 0; step.action !== 'run-batch' && guard < 3; guard++) {
+      assert.notEqual(step.action, 'halt', step.reason)
+      step = run(root, [...step.then.argv], { results: [] }).step
+    }
+    assert.equal(step.action, 'run-batch')
+    assert.equal(step.wave, wave1.wave + 1, 'this is the second wave')
+    const listed = git(root, ['ls-tree', '-r', '--name-only', step.mergeBase]).split('\n')
+    assert.ok(listed.includes('lib/new.mjs'), "the wave-2 base lists wave 1's new file")
+    forkLanes(root, step)
+    for (const s of step.spawns) {
+      assert.equal(read(root, `${s.worktree.path}/lib/new.mjs`), 'export const created = 1\n')
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a deferred lane forked from HEAD halts with LANE BASE MISMATCH and folds nothing', () => {
+  const { root, change, head } = isolatedRepo(DEFERRED_BATCH)
+  try {
+    const batch1 = foldBatchZero(root, change)
+    forkLanes(root, batch1, { '2.1': head })
+    const wt = batch1.spawns[0].worktree.path
+    file(root, `${wt}/lib/a.mjs`, read(root, `${wt}/lib/a.mjs`).replace('export const a = 1', 'export const a = 2'))
+    const step = run(root, [...batch1.then.argv], { results: [taskWrote('2.1', ['lib/a.mjs'])] }).step
+    assert.equal(step.action, 'halt')
+    assert.ok(
+      step.reason.includes(`LANE BASE MISMATCH: 2.1 forked from ${head}, expected ${batch1.mergeBase}`),
+      step.reason
+    )
+    assert.equal(read(root, 'lib/a.mjs'), A_APPENDED, "batch 0's edit survives, untouched by batch 1")
+    assert.ok(existsSync(join(root, wt)), 'the lane worktree stays on disk')
+    assert.ok(step.reason.includes(wt), 'and is named in the halt')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('one lane off the wrong base halts the whole batch, and every worktree is named', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    file(root, 'lib/pending.mjs', 'export const pending = true\n')
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], TWO_ISOLATED_LANES)
+    forkLanes(root, batch, { '1.2': head })
+    const lane = label => batch.spawns.find(s => s.label === label).worktree.path
+    file(root, `${lane('1.1')}/lib/a.mjs`, 'export const a = "lane"\n')
+    file(root, `${lane('1.2')}/lib/b.mjs`, 'export const b = "lane"\n')
+    const step = run(root, [...batch.then.argv], {
+      results: [taskWrote('1.1', ['lib/a.mjs']), taskWrote('1.2', ['lib/b.mjs'])]
+    }).step
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, new RegExp(`LANE BASE MISMATCH: 1\\.2 forked from ${head}, expected ${batch.mergeBase}`))
+    assert.doesNotMatch(step.reason, /1\.1 forked from/, 'the lane on the right base is not accused')
+    assert.equal(read(root, 'lib/a.mjs'), A_BODY, 'the lane on the right base is not folded either')
+    assert.equal(read(root, 'lib/b.mjs'), 'export const b = 1\n')
+    for (const label of ['1.1', '1.2']) {
+      assert.ok(existsSync(join(root, lane(label))), `${label}'s worktree stays on disk`)
+      assert.ok(step.reason.includes(lane(label)), `${label}'s worktree is named in the halt`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an empty-write lane whose worktree is gone is not a base mismatch', () => {
+  const { root, change } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    file(root, 'lib/pending.mjs', 'export const pending = true\n')
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'], TWO_ISOLATED_LANES)
+    const only11 = { ...batch, spawns: batch.spawns.filter(s => s.label === '1.1') }
+    forkLanes(root, only11)
+    file(root, `${only11.spawns[0].worktree.path}/lib/a.mjs`, 'export const a = "lane"\n')
+    const step = run(root, [...batch.then.argv], {
+      results: [taskWrote('1.1', ['lib/a.mjs']), taskWrote('1.2', [])]
+    }).step
+    assert.notEqual(step.action, 'halt', step.reason)
+    assert.equal(read(root, 'lib/a.mjs'), 'export const a = "lane"\n', 'the other lane folds normally')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('--isolate-waves on a runtime-worktree host is bannered, and its mismatch names worktree.baseRef', () => {
+  const { root, change, head } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    file(root, 'lib/pending.mjs', 'export const pending = true\n')
+    const batch = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, ['--isolate-waves'], TWO_ISOLATED_LANES)
+    assert.ok(
+      manifestOf(root).banners.some(b => /^ISOLATION BASE NOT CONTROLLED \(workflow\)/.test(b)),
+      `no isolation-base banner: ${JSON.stringify(manifestOf(root).banners)}`
+    )
+    const base = manifestOf(root).mergeBase
+    assert.notEqual(base, head)
+    // The runtime forks from worktree.baseRef, which here resolved to HEAD.
+    const results = batch.spawns.map(s => {
+      const wt = join(root, '.claude', 'worktrees', `agent-${s.label}`)
+      git(root, ['worktree', 'add', '--detach', wt, head])
+      const path = s.label === '1.1' ? 'lib/a.mjs' : 'lib/b.mjs'
+      file(wt, path, 'export const lane = true\n')
+      return taskWrote(s.label, [path], { worktreePath: wt })
+    })
+    const step = run(root, [...batch.then.argv], { results }).step
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, new RegExp(`LANE BASE MISMATCH: 1\\.1 forked from ${head}, expected ${base}`))
+    assert.match(step.reason, /worktree\.baseRef/, 'the halt names the setting that chose the base')
+    assert.match(step.reason, /follow-up change/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a driver-host batch without --isolate-waves carries no base, no worktree and no isolation banner', () => {
+  const { root, change } = isolatedRepo(TWO_ISOLATED_LANES)
+  try {
+    file(root, 'lib/pending.mjs', 'export const pending = true\n')
+    const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, [], TWO_ISOLATED_LANES)
+    assert.equal(batch.mergeBase, null)
+    for (const s of batch.spawns) {
+      assert.equal(s.worktree, null)
+      assert.doesNotMatch(s.prompt, /ISOLATION —/)
+    }
+    assert.ok(!manifestOf(root).banners.some(b => /ISOLATION BASE/.test(b)))
   } finally {
     cleanup(root)
   }
