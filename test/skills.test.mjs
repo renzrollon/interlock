@@ -435,6 +435,13 @@ test('the spec skill states how ship treats the red wave, including the check it
   )
 })
 
+test('fix-tests does not pre-approve an unrestricted shell', () => {
+  const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8'))
+  const allowed = fm.values['allowed-tools'] || ''
+  assert.doesNotMatch(allowed, /(^|\s)Bash(\s|$)/, 'a bare Bash grant pre-approves every command')
+  assert.doesNotMatch(allowed, /Bash\(\*\)/)
+})
+
 test('fix-tests resolves the typecheck and lint commands, the only supplier a ship run has', () => {
   // The same class as the `--metrics` defect below. `planVerification` reads
   // `profile.typecheck.command` and `profile.lint.command`; nothing else in the

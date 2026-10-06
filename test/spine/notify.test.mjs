@@ -10,6 +10,8 @@ import assert from 'node:assert/strict'
 import {
   NOTIFY_TOPIC_ENV,
   NOTIFY_URL_ENV,
+  NOTIFY_TOPIC_OPTION,
+  NOTIFY_URL_OPTION,
   DEFAULT_NTFY_URL,
   readNotifyConfig,
   composeCloseMessage,
@@ -23,6 +25,26 @@ import { LIMITS } from '../../lib/limits.mjs'
 // ---------------------------------------------------------------------------
 // readNotifyConfig
 // ---------------------------------------------------------------------------
+
+test('readNotifyConfig prefers a plugin option over the shell variable, and names the one that is invalid', () => {
+  assert.deepEqual(
+    readNotifyConfig({
+      [NOTIFY_TOPIC_OPTION]: 'from-plugin',
+      [NOTIFY_TOPIC_ENV]: 'from-shell',
+      [NOTIFY_URL_OPTION]: 'https://plugin.example',
+      [NOTIFY_URL_ENV]: 'https://shell.example'
+    }),
+    { topic: 'from-plugin', url: 'https://plugin.example' }
+  )
+  assert.deepEqual(
+    readNotifyConfig({ [NOTIFY_TOPIC_OPTION]: 'has space', [NOTIFY_TOPIC_ENV]: 'from-shell' }),
+    { invalid: NOTIFY_TOPIC_OPTION }
+  )
+  assert.deepEqual(
+    readNotifyConfig({ [NOTIFY_TOPIC_ENV]: 'from-shell', [NOTIFY_URL_OPTION]: 'not a url' }),
+    { invalid: NOTIFY_URL_OPTION }
+  )
+})
 
 test('readNotifyConfig reports unset as { topic: null }, never as invalid', () => {
   assert.deepEqual(readNotifyConfig({}), { topic: null })

@@ -4,7 +4,7 @@ description: Discover and persist how a project's tests run, then run the suite 
 license: MIT
 compatibility: Requires the project's own test tooling. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[--e2e] [--dry-run] [--baseline <ref>] [--from-log <path>] [--reconfigure]"
-allowed-tools: Bash Read Write Edit Glob Grep
+allowed-tools: Read Write Edit Glob Grep
 metadata:
   type: execution
   outputs:
@@ -40,7 +40,7 @@ Persist the profile and mirror it into the `## Testing` block of the first instr
 
 ## 2. Run and baseline
 
-Run the unit command. Record `total`, `passed`, `failed`, `skipped` — this is the baseline that step 6 asserts against.
+Run the unit command under the permissions already granted to this project. This skill does not pre-approve a shell. Record `total`, `passed`, `failed`, `skipped` — this is the baseline that step 6 asserts against.
 
 Split failures into:
 

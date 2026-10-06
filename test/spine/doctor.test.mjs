@@ -798,6 +798,30 @@ test('the notify row honours a self-hosted server URL, still never the topic', (
   }
 })
 
+test('the notify row treats a plugin topic as configured, and prefers its server', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', PROFILE)
+    file(dir, '.claude/settings.json', ALL_ALLOWED)
+    const opts = baseOpts(dir)
+    const report = diagnose(dir, {
+      ...opts,
+      env: {
+        ...opts.env,
+        CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'from-plugin',
+        CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example',
+        INTERLOCK_NTFY_URL: 'https://shell.example'
+      }
+    })
+    const notify = byId(report, 'notify')
+    assert.equal(notify.status, 'ok')
+    assert.match(notify.detail, /https:\/\/plugin\.example/)
+    assert.doesNotMatch(notify.detail, /from-plugin/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the notify row is skip when no topic is configured, naming the variable, and is never a failure', () => {
   const dir = tmp()
   try {

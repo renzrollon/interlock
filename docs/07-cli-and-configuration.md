@@ -112,7 +112,7 @@ The two inputs a fresh worktree lacks are read through, never copied. `run start
 
 ## The one network call: push notifications
 
-A ship run that halts or completes while nobody is watching can push you a message. It is off by default and reads only from the environment — nothing is read from or written to the repo tree for this:
+A ship run that halts or completes while nobody is watching can push you a message. It is off by default. Nothing is read from or written to the repo tree for this. Inside Claude Code the same two values can be set as plugin options (`ntfy topic`, which is masked, and `ntfy server`). Session start copies a set option into the session when the matching variable below is not already set. A variable you already provided wins.
 
 | Variable | Meaning |
 |---|---|

@@ -128,12 +128,7 @@ Parse `applyRequires` (artifacts needed before implementation), `artifacts` (eac
 Then loop, in dependency order, over every artifact that is `ready`:
 
 ```bash
-openspec instructions <artifact-id> --change "<name>" --json | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-keep=("instruction","template","resolvedOutputPath","context","rules")
-print(json.dumps({k:d[k] for k in keep if d.get(k)}, separators=(",",":")))
-'
+openspec instructions <artifact-id> --change "<name>" --json | node "${CLAUDE_PLUGIN_ROOT}/skills/spec/scripts/compact-instructions.mjs"
 ```
 
 Filter each ready artifact independently; do not dump the full instructions response or prefetch every artifact. The compact response carries `instruction` (schema guidance), `template` (the structure to fill), `resolvedOutputPath`, and non-empty `context` / `rules`.

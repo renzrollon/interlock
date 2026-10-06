@@ -452,6 +452,11 @@ test('guard-commit: ignores a non-Bash tool', () => {
 /** Spawn the hook the way the host does: empty stdin, cwd at a project root. */
 function runPreflight({ cwd, hook = join(HOOKS, 'preflight.mjs'), path }) {
   const env = { ...process.env }
+  // A developer running the suite inside Claude Code has a live session env
+  // file. The hook publishes notify options into it; these cases must not.
+  delete env.CLAUDE_ENV_FILE
+  delete env.CLAUDE_PLUGIN_OPTION_NTFY_TOPIC
+  delete env.CLAUDE_PLUGIN_OPTION_NTFY_URL
   if (path !== undefined) env.PATH = path
   // `process.execPath` rather than `node`: these cases hand the child a PATH
   // with nothing on it, and the interpreter must still be findable.
@@ -575,6 +580,47 @@ test('preflight: the manifest still registers this hook on SessionStart', () => 
     commands.some(c => typeof c === 'string' && c.includes('hooks/preflight.mjs')),
     `SessionStart does not name the preflight hook: ${JSON.stringify(commands)}`
   )
+})
+
+test('preflight: a plugin ntfy topic is copied into the session, and an existing shell value wins', () => {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-preflight-notify-'))
+  try {
+    const envFile = join(root, 'session-env')
+    writeFileSync(envFile, '')
+    const published = spawnSync(process.execPath, [join(HOOKS, 'preflight.mjs')], {
+      cwd: root,
+      input: '',
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_ENV_FILE: envFile,
+        CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: "topic'name",
+        CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://example.invalid'
+      }
+    })
+    assert.equal(published.status, 0)
+    const written = readFileSync(envFile, 'utf8')
+    assert.match(written, /export INTERLOCK_NTFY_TOPIC='topic'\\''name'/)
+    assert.match(written, /export INTERLOCK_NTFY_URL='https:\/\/example\.invalid'/)
+    assert.doesNotMatch(published.stdout || '', /topic'name/)
+
+    writeFileSync(envFile, '')
+    const kept = spawnSync(process.execPath, [join(HOOKS, 'preflight.mjs')], {
+      cwd: root,
+      input: '',
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_ENV_FILE: envFile,
+        CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'from-the-plugin',
+        INTERLOCK_NTFY_TOPIC: 'already'
+      }
+    })
+    assert.equal(kept.status, 0)
+    assert.equal(readFileSync(envFile, 'utf8'), '', 'a shell topic the operator already provided is left alone')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('preflight: an internal throw is caught and the process still exits 0', () => {
