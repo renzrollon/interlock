@@ -21,7 +21,7 @@
     "types",
     "agents",
     "shared",
-    ".claude-plugin",
+    ".claude-plugin/plugin.json",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

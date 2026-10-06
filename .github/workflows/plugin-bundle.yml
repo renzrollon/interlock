@@ -1,0 +1,133 @@
+# Mirror each published npm tarball onto the `release` branch, unchanged.
+#
+# Plugin installs read that branch: the marketplace entry in
+# `.claude-plugin/marketplace.json` names it as its `ref`, and Anthropic's
+# directory tracks it. So a plugin user receives exactly the files npm users
+# receive, at exactly the version npm carries — never an untagged commit on
+# main, and never the repository-only directories (openspec, docs, test, site).
+#
+# The tarball is fetched back FROM THE REGISTRY rather than packed again here,
+# so the branch is what was published, not a second build that could differ.
+# A version that never becomes fetchable is a failed job, not a skipped one.
+#
+# Separate from release.yml on purpose: the release workflow triggers on a
+# version tag only (spec: distribution/npm-package). This one follows a
+# successful Release run, and can be dispatched by hand with a version that is
+# already on npm — which is how the branch is first created, and how plugin
+# users are rolled back to an earlier release.
+#
+# `.github/workflows/` is gitignored: this file is tracked only because it was
+# force-added, and `test/spine/package.test.mjs` fails if that stops being true.
+
+name: Plugin bundle
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: A version already published to npm (MAJOR.MINOR.PATCH) to mirror onto the release branch
+        required: true
+        type: string
+
+concurrency:
+  group: plugin-bundle
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PACKAGE: '@renzrollon/interlock'
+      BRANCH: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # A Release run's head_branch is the tag that triggered it (v1.2.0).
+      - name: Resolve the version
+        id: version
+        env:
+          DISPATCHED: ${{ inputs.version }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then v="$DISPATCHED"; else v="${TAG#v}"; fi
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$v' is not a MAJOR.MINOR.PATCH version; there is nothing to mirror"
+            exit 1
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the published tarball from the registry
+        id: tarball
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          spec="$PACKAGE@$VERSION"
+          # The registry can lag a publish that just finished by a little.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if npm pack "$spec" --pack-destination "$RUNNER_TEMP" --json > "$RUNNER_TEMP/pack.json"; then break; fi
+            if [ "$attempt" = 10 ]; then
+              echo "::error::$spec is not fetchable from the registry; the release branch is unchanged"
+              exit 1
+            fi
+            sleep 15
+          done
+          file=$(node -p 'require(process.argv[1])[0].filename' "$RUNNER_TEMP/pack.json")
+          integrity=$(node -p 'require(process.argv[1])[0].integrity' "$RUNNER_TEMP/pack.json")
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP/$file" -C "$RUNNER_TEMP/unpacked"
+          root="$RUNNER_TEMP/unpacked/package"
+          declared=$(node -p 'require(process.argv[1]).version' "$root/.claude-plugin/plugin.json")
+          if [ "$declared" != "$VERSION" ]; then
+            echo "::error::$spec carries plugin.json version $declared; the bundle would install as the wrong version"
+            exit 1
+          fi
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+
+      # What the directory scans is the bundle, not the repository, so the
+      # bundle is what gets validated.
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the bundle as a plugin
+        env:
+          ROOT: ${{ steps.tarball.outputs.root }}
+        run: claude plugin validate "$ROOT" --strict
+
+      - name: Commit the bundle to the release branch
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          ROOT: ${{ steps.tarball.outputs.root }}
+          INTEGRITY: ${{ steps.tarball.outputs.integrity }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          bundle="$RUNNER_TEMP/bundle"
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            git fetch --depth 1 origin "$BRANCH"
+            git worktree add -B "$BRANCH" "$bundle" FETCH_HEAD
+          else
+            git worktree add --detach "$bundle"
+            git -C "$bundle" checkout --orphan "$BRANCH"
+          fi
+          # The branch holds the tarball and nothing else: clear it, then unpack.
+          find "$bundle" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R "$ROOT/." "$bundle/"
+          git -C "$bundle" add -A
+          if git -C "$bundle" diff --cached --quiet; then
+            echo "$BRANCH already holds $PACKAGE@$VERSION; nothing to commit"
+          else
+            git -C "$bundle" commit -q \
+              -m "release: interlock $VERSION" \
+              -m "The published npm tarball $PACKAGE@$VERSION, unpacked unchanged. Integrity: $INTEGRITY"
+          fi
+          git -C "$bundle" push origin "HEAD:refs/heads/$BRANCH"
+          echo "Plugin bundle: \`$BRANCH\` now holds $PACKAGE@$VERSION ($INTEGRITY)." >> "$GITHUB_STEP_SUMMARY"

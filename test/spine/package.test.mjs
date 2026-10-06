@@ -9,7 +9,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -264,4 +265,178 @@ test('CHANGELOG.md names itself once and its section headings do not repeat', ()
     [],
     `a ## heading repeats:\n  ${[...new Set(repeated)].join('\n  ')}`
   )
+})
+
+// --- the npm tarball is the plugin bundle ----------------------------------
+//
+// Plugin installs do not read this checkout. The marketplace entry names the
+// `release` branch, and .github/workflows/plugin-bundle.yml fills that branch
+// with the published tarball, unpacked unchanged; Anthropic's directory tracks
+// the same branch. So `files` is no longer only what a global install needs: it
+// is the whole plugin every marketplace and directory user receives. A path the
+// plugin reaches that no entry covers loads under `claude --plugin-dir .` and
+// is missing for every user.
+
+const BUNDLE_WORKFLOW = '.github/workflows/plugin-bundle.yml'
+const RELEASE_WORKFLOW = '.github/workflows/release.yml'
+const BUNDLE_BRANCH = 'release'
+const PLUGIN_ROOT_PATH = /\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9_./-]+)/g
+
+/** `owner/repo` from package.json's `repository`, in its string or object form. */
+function githubRepo(repository) {
+  const url = typeof repository === 'string' ? repository : repository?.url
+  const m = /github\.com[/:]([^/]+\/[^/.]+?)(?:\.git)?$/.exec(String(url ?? ''))
+  return m ? m[1] : null
+}
+
+/** Every file under `dir`, recursively; a missing directory has none. */
+function walk(dir) {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries.flatMap(e => {
+    const abs = join(dir, e.name)
+    if (e.isDirectory()) return walk(abs)
+    return e.isFile() ? [abs] : []
+  })
+}
+
+/**
+ * Every repo-relative path the installed plugin reaches at runtime: the
+ * component locations the host scans, the manifest's own `workflows` and
+ * `types`, each `${CLAUDE_PLUGIN_ROOT}/…` that the manifest's hook commands, a
+ * skill, an agent, a shared contract, a workflow or a briefing names, and the
+ * import closure of every script among those.
+ */
+function pluginRuntimePaths(root) {
+  const manifestPath = join(root, '.claude-plugin', 'plugin.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const strip = p => p.replace(/^\.\//, '').replace(/[./]+$/, '')
+  const named = new Set(['.claude-plugin/plugin.json', 'hooks/hooks.json', 'skills', 'agents'])
+  for (const key of ['workflows', 'types']) {
+    if (typeof manifest[key] === 'string') named.add(strip(manifest[key]))
+  }
+  const sources = [
+    manifestPath,
+    ...['skills', 'agents', 'shared', 'workflows', 'hooks', 'lib', 'bin'].flatMap(d => walk(join(root, d)))
+  ]
+  for (const file of sources) {
+    for (const m of readFileSync(file, 'utf8').matchAll(PLUGIN_ROOT_PATH)) {
+      const path = strip(m[1])
+      if (path) named.add(path)
+    }
+  }
+  const paths = new Set(named)
+  for (const path of named) {
+    if (/\.(m?js)$/.test(path) && statSync(join(root, path), { throwIfNoEntry: false })?.isFile()) {
+      for (const abs of importClosure(join(root, path))) paths.add(relative(root, abs).split(sep).join('/'))
+    }
+  }
+  return [...paths].sort()
+}
+
+test('the files whitelist is the whole plugin: every path the plugin reaches ships', () => {
+  const uncovered = pluginRuntimePaths(ROOT).filter(path => !coveredBy(pkg.files, path))
+  assert.deepEqual(
+    uncovered,
+    [],
+    `the plugin reaches these, and no "files" entry ships them to the release branch plugin users install:\n  ${uncovered.join('\n  ')}`
+  )
+})
+
+test('every path the plugin names under its root exists', () => {
+  const missing = pluginRuntimePaths(ROOT).filter(path => !statSync(join(ROOT, path), { throwIfNoEntry: false }))
+  assert.deepEqual(missing, [], `the plugin names these under \${CLAUDE_PLUGIN_ROOT}, and they do not exist:\n  ${missing.join('\n  ')}`)
+})
+
+test('a path a skill names under the plugin root, or a hook script imports, outside the whitelist is named', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-bundle-paths-'))
+  try {
+    mkdirSync(join(dir, '.claude-plugin'))
+    mkdirSync(join(dir, 'skills', 'x'), { recursive: true })
+    mkdirSync(join(dir, 'hooks'))
+    mkdirSync(join(dir, 'lib'))
+    writeFileSync(
+      join(dir, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'p',
+        hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/start.mjs"' }] }] }
+      })
+    )
+    writeFileSync(join(dir, 'hooks', 'start.mjs'), "import { a } from '../lib/a.mjs'\nexport default a\n")
+    writeFileSync(join(dir, 'lib', 'a.mjs'), 'export const a = 1\n')
+    writeFileSync(join(dir, 'skills', 'x', 'SKILL.md'), 'Read `${CLAUDE_PLUGIN_ROOT}/extras/GUIDE.md`.\n')
+    const files = ['.claude-plugin/plugin.json', 'skills', 'agents', 'hooks']
+    assert.deepEqual(
+      pluginRuntimePaths(dir).filter(path => !coveredBy(files, path)),
+      ['extras/GUIDE.md', 'lib/a.mjs']
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the plugin bundle carries plugin.json and no marketplace manifest', () => {
+  assert.ok(coveredBy(pkg.files, '.claude-plugin/plugin.json'), '"files" does not ship .claude-plugin/plugin.json')
+  assert.ok(
+    !coveredBy(pkg.files, '.claude-plugin/marketplace.json'),
+    '"files" ships .claude-plugin/marketplace.json: the bundle is one plugin, and a marketplace manifest inside it ' +
+      'names a source of its own — list .claude-plugin/plugin.json alone'
+  )
+})
+
+test('the marketplace entry installs the release branch of this repository', () => {
+  const source = readJson(MARKETPLACE_PATH).plugins?.[0]?.source
+  assert.deepEqual(
+    source,
+    { source: 'github', repo: githubRepo(pkg.repository), ref: BUNDLE_BRANCH },
+    'a relative source ships the whole checkout from the default branch, and a pinned sha freezes plugin users on ' +
+      `one release; the entry names the "${BUNDLE_BRANCH}" branch, which holds the published tarball and moves only on a release`
+  )
+})
+
+test('the bundle workflow mirrors the published tarball onto the branch the marketplace names', () => {
+  const text = readFileSync(join(ROOT, BUNDLE_WORKFLOW), 'utf8')
+  for (const token of [
+    'workflows: [Release]',
+    'workflow_dispatch:',
+    'contents: write',
+    `PACKAGE: '${pkg.name}'`,
+    `BRANCH: ${BUNDLE_BRANCH}`,
+    'npm pack',
+    'claude plugin validate',
+    'refs/heads/$BRANCH'
+  ]) {
+    assert.ok(text.includes(token), `${BUNDLE_WORKFLOW} no longer contains ${JSON.stringify(token)}`)
+  }
+  assert.match(
+    readFileSync(join(ROOT, RELEASE_WORKFLOW), 'utf8'),
+    /^name: Release$/m,
+    `${BUNDLE_WORKFLOW} follows the workflow named "Release"; renaming ${RELEASE_WORKFLOW} stops the release branch moving`
+  )
+})
+
+// `.github/workflows/` is gitignored, so both definitions stay tracked only
+// because they were force-added. An untracked workflow never runs on the
+// remote, and plugin users would silently stop receiving releases. Where
+// version-control status cannot be determined, this skips with its reason.
+const inCheckout = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: ROOT, encoding: 'utf8' })
+const NOT_A_CHECKOUT =
+  inCheckout.error || inCheckout.status !== 0
+    ? 'not a git checkout (or git unavailable) — tracking status cannot be determined'
+    : false
+
+test('the release and bundle workflow definitions are tracked in version control', { skip: NOT_A_CHECKOUT }, () => {
+  for (const workflow of [RELEASE_WORKFLOW, BUNDLE_WORKFLOW]) {
+    const listed = spawnSync('git', ['ls-files', '--', workflow], { cwd: ROOT, encoding: 'utf8' })
+    assert.ok(!listed.error, `git ls-files failed to run: ${listed.error && listed.error.message}`)
+    assert.ok(
+      listed.stdout.trim().length > 0,
+      `${workflow} is not tracked. .gitignore ignores .github/workflows/, so it stays tracked only when ` +
+        `force-added — restore it with \`git add -f ${workflow}\`.`
+    )
+  }
 })

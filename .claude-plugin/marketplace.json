@@ -8,7 +8,11 @@
   "plugins": [
     {
       "name": "interlock",
-      "source": "./",
+      "source": {
+        "source": "github",
+        "repo": "renzrollon/interlock",
+        "ref": "release"
+      },
       "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec.",
       "version": "1.2.0",
       "author": {

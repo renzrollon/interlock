@@ -32,3 +32,8 @@ The deterministic spine is unit-tested; the model-facing surface (prompts, skill
 ## Releasing
 
 Push a `v<MAJOR.MINOR.PATCH>` tag matching the version `package.json` carries, and `.github/workflows/release.yml` runs the suite and publishes to npm with provenance. It uses trusted publishing, which has to be configured once on the registry for this repository and that workflow file name — until it is, the publish step fails with the registry's authentication error rather than skipping.
+
+When that run succeeds, `.github/workflows/plugin-bundle.yml` fetches the tarball that was just published from the registry. It validates it as a plugin and commits it, unpacked and unchanged, to the `release` branch. Plugin installs read that branch: the marketplace entry names it, and Anthropic's plugin directory tracks it. A plugin user therefore gets the same files and the same version as an npm user, and nothing from main until it is released. Two consequences:
+
+- **The npm `files` whitelist is the whole plugin.** A file the plugin reaches at runtime that no entry ships is missing for every plugin user, even though `claude --plugin-dir .` still loads it. `test/spine/package.test.mjs` names any such file.
+- **The branch moves only through the workflow.** To seed it, or to roll plugin users back, run *Plugin bundle* from the Actions tab with a version that is already on npm. Do not push to `release` by hand.
