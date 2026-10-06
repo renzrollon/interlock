@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 -p (headless), scratch logger mod, scratch repository with openspec init",
+    "date": "2026-10-07",
+    "change": "observe-the-spec-run-live task 1.1",
+    "note": "the scratch path is scrubbed to /repo; the result's engine ref is dropped; exit 1: the name does not resolve"
+  },
+  "command": "interlock validate \"no-such-change\" --json",
+  "result": "Error: Exit code 1\n{\n  \"error\": \"change \\\"no-such-change\\\" not found under openspec/changes/\",\n  \"candidates\": [\n    \"add-a-hello-file\"\n  ]\n}",
+  "text": "Exit code 1\n{\n  \"error\": \"change \\\"no-such-change\\\" not found under openspec/changes/\",\n  \"candidates\": [\n    \"add-a-hello-file\"\n  ]\n}",
+  "isError": true
+}

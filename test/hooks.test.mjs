@@ -22,7 +22,9 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
+  statSync,
   utimesSync,
   writeFileSync
 } from 'node:fs'
@@ -450,7 +452,7 @@ test('guard-commit: ignores a non-Bash tool', () => {
 // can install.
 
 /** Spawn the hook the way the host does: empty stdin, cwd at a project root. */
-function runPreflight({ cwd, hook = join(HOOKS, 'preflight.mjs'), path }) {
+function runPreflight({ cwd, hook = join(HOOKS, 'preflight.mjs'), path, input = '' }) {
   const env = { ...process.env }
   // A developer running the suite inside Claude Code has a live session env
   // file. The hook publishes notify options into it; these cases must not.
@@ -460,7 +462,7 @@ function runPreflight({ cwd, hook = join(HOOKS, 'preflight.mjs'), path }) {
   if (path !== undefined) env.PATH = path
   // `process.execPath` rather than `node`: these cases hand the child a PATH
   // with nothing on it, and the interpreter must still be findable.
-  const res = spawnSync(process.execPath, [hook], { cwd, input: '', encoding: 'utf8', env })
+  const res = spawnSync(process.execPath, [hook], { cwd, input, encoding: 'utf8', env })
   let context = null
   const out = (res.stdout || '').trim()
   if (out) {
@@ -492,7 +494,9 @@ function detachedHook(root) {
   // as they do in an installed plugin; only `bin/interlock` is left behind.
   const lib = join(root, 'plugin-copy', 'lib')
   mkdirSync(lib, { recursive: true })
-  for (const name of ['interrupted.mjs', 'ship-stage.mjs']) copyFileSync(join(ROOT, 'lib', name), join(lib, name))
+  for (const name of ['interrupted.mjs', 'ship-stage.mjs', 'preflight-file.mjs', 'resume-card.mjs', 'limits.mjs']) {
+    copyFileSync(join(ROOT, 'lib', name), join(lib, name))
+  }
   return path
 }
 
@@ -632,6 +636,7 @@ test('preflight: an internal throw is caught and the process still exits 0', () 
   const source = readFileSync(join(HOOKS, 'preflight.mjs'), 'utf8')
   assert.match(source, /catch \(err\) \{/, 'the hook body must be wrapped in a catch')
   assert.match(source, /preflight hook error \(ignored\)/, 'and an ignored error is still spoken')
+  assert.match(source, /report not written/, 'and a report file that could not be written is said, not swallowed')
   assert.ok(
     source.trimEnd().endsWith('process.exit(0)'),
     'the last statement must be an unconditional exit 0, whatever ran before it'
@@ -665,7 +670,7 @@ function plantNote(root, name, fields) {
 
 const cleanDoctor = root => stubBin(root, { stdout: JSON.stringify({ ok: true, checks: [], counts: { warn: 0 } }) })
 
-test('preflight: an unspoken interrupted-run note is surfaced, and left unspoken', () => {
+test('preflight: an unspoken interrupted-run note is surfaced, and marked spoken', () => {
   const root = tmpRoot()
   try {
     const note = plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'verify' })
@@ -679,7 +684,7 @@ test('preflight: an unspoken interrupted-run note is surfaced, and left unspoken
       ),
       r.context
     )
-    assert.equal(JSON.parse(readFileSync(note, 'utf8')).spokenAt, null, 'the next run start marks it, not the preflight')
+    assert.ok(!Number.isNaN(Date.parse(JSON.parse(readFileSync(note, 'utf8')).spokenAt)), 'the preflight marks what it speaks')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -720,7 +725,7 @@ const bannerFor = runId =>
   `PREVIOUS RUN INTERRUPTED: add-foo run ${runId} ended at stage verify — no resume card was written; ` +
   `interlock run-log show ${runId}`
 
-test('preflight: a note under the state home the doctor resolved is surfaced, and left unspoken', () => {
+test('preflight: a note under the state home the doctor resolved is surfaced, and marked there', () => {
   const root = tmpRoot()
   const home = mkdtempSync(join(tmpdir(), 'interlock-preflight-home-'))
   try {
@@ -729,7 +734,7 @@ test('preflight: a note under the state home the doctor resolved is surfaced, an
     assert.equal(r.code, 0)
     assert.match(r.context, /interlock preflight OK/)
     assert.ok(r.context.includes(bannerFor('r-home')), r.context)
-    assert.equal(JSON.parse(readFileSync(note, 'utf8')).spokenAt, null, 'the preflight marks nothing')
+    assert.ok(!Number.isNaN(Date.parse(JSON.parse(readFileSync(note, 'utf8')).spokenAt)), 'the preflight marks what it speaks')
     assert.ok(!existsSync(join(root, '.claude', 'ship', 'interrupted')), 'reading the home created nothing in the working directory')
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -750,7 +755,11 @@ test('preflight: notes under the working directory are read too, and one run is 
     assert.equal(r.code, 0)
     for (const runId of ['r-home', 'r-own', 'r-both']) assert.ok(r.context.includes(bannerFor(runId)), `${runId}: ${r.context}`)
     assert.equal(r.context.split(bannerFor('r-both')).length - 1, 1, `r-both spoken more than once: ${r.context}`)
-    assert.equal(JSON.parse(readFileSync(own, 'utf8')).spokenAt, null)
+    assert.ok(!Number.isNaN(Date.parse(JSON.parse(readFileSync(own, 'utf8')).spokenAt)), 'the preflight marks what it speaks')
+    for (const where of [home, root]) {
+      const both = JSON.parse(readFileSync(join(where, '.claude', 'ship', 'interrupted', 'r-both.json'), 'utf8'))
+      assert.ok(!Number.isNaN(Date.parse(both.spokenAt)), `r-both is spoken once and marked in both places: ${where}`)
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
     rmSync(home, { recursive: true, force: true })
@@ -783,6 +792,262 @@ test('preflight: with no readable doctor output it reads the working directory a
     assert.ok(r.context.includes(bannerFor('r-own')), r.context)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// preflight — the report file (spec: hooks/session-preflight)
+// ---------------------------------------------------------------------------
+//
+// In a project where a ship run can start, the hook leaves what it computed in
+// `.claude/ship/preflight.json` for the hooks module to draw. Every other root
+// gets exactly today's behaviour. `process.cwd()` in the child is the root's
+// real path (on macOS `/var` is `/private/var`), so paths are compared there.
+
+const REPORT = join('.claude', 'ship', 'preflight.json')
+const statOf = path => statSync(path)
+const reportOf = root => JSON.parse(readFileSync(join(root, REPORT), 'utf8'))
+
+function openspecRoot() {
+  const root = tmpRoot()
+  mkdirSync(join(root, 'openspec'))
+  return root
+}
+
+const WARN_CHECK = {
+  id: 'openspec',
+  status: 'warn',
+  detail: 'openspec 0.9 is older than the tested version',
+  fix: 'npm i -g @fission-ai/openspec',
+  evidence: ['0.9']
+}
+
+const warnDoctor = (root, extra = {}) =>
+  stubBin(root, {
+    stdout: JSON.stringify({
+      ok: true,
+      surface: 'main',
+      counts: { ok: 1, warn: 1, fail: 0, skip: 0 },
+      checks: [{ id: 'node', status: 'ok', detail: 'node 22', evidence: ['v22'] }, WARN_CHECK],
+      ...extra
+    })
+  })
+
+test('preflight: a one-warning doctor in an OpenSpec project leaves this session\'s report file', () => {
+  const root = openspecRoot()
+  try {
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: warnDoctor(root, { stateHome: root }) })
+    assert.equal(r.code, 0)
+    assert.equal(r.context, 'interlock preflight OK (1 warning).', 'the advisory output is unchanged by the file')
+    const report = reportOf(root)
+    assert.equal(report.schema, 'interlock.preflight/1')
+    assert.equal(report.message, 'interlock preflight OK (1 warning).')
+    assert.ok(!Number.isNaN(Date.parse(report.writtenAt)), report.writtenAt)
+    assert.equal(report.root, realpathSync(root))
+    assert.equal(report.stateHome, root)
+    assert.equal(report.surface, 'main')
+    assert.equal(report.source, null, 'no event on stdin, no source')
+    assert.equal(report.doctor.ran, true)
+    assert.equal(report.doctor.parsed, true)
+    assert.equal(report.doctor.ok, true)
+    assert.deepEqual(report.doctor.counts, { ok: 1, warn: 1, fail: 0, skip: 0 })
+    const { evidence, ...warn } = WARN_CHECK
+    assert.deepEqual(report.doctor.checks[1], warn, 'the check travels with its fix and without its evidence')
+    assert.ok(!JSON.stringify(report).includes('evidence'))
+    assert.deepEqual(report.notes, { spoken: [], unreadable: [] })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: the report records the session-start source the host named', () => {
+  const root = openspecRoot()
+  try {
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root), input: JSON.stringify({ source: 'clear' }) })
+    assert.equal(r.code, 0)
+    assert.equal(reportOf(root).source, 'clear')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a report that cannot be written is one stderr line, and the session starts as before', () => {
+  const root = openspecRoot()
+  try {
+    // `.claude/ship` as a file: nothing can be created beneath it.
+    writeFileSync(join(root, '.claude', 'ship'), 'not a directory')
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    assert.match(r.stderr, /report not written/)
+    assert.match(r.stderr, /preflight\.json/)
+    assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr)
+    assert.match(r.context, /interlock preflight OK/)
+    assert.ok(!existsSync(join(root, REPORT)))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a failed write leaves no earlier session\'s report in place', () => {
+  const root = openspecRoot()
+  try {
+    runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.ok(existsSync(join(root, REPORT)))
+    // A report the next write cannot replace: the path is now a directory with
+    // something in it, so the remove before the write fails, and is said.
+    rmSync(join(root, REPORT))
+    mkdirSync(join(root, REPORT, 'held'), { recursive: true })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    assert.match(r.stderr, /report not written/)
+    assert.ok(!existsSync(join(root, REPORT)) || !statOf(join(root, REPORT)).isFile(), 'no report file reads as this session\'s')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a root with no openspec/ writes nothing and its output is exactly today\'s', () => {
+  const root = tmpRoot()
+  try {
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    assert.equal(r.context, 'interlock preflight OK.')
+    assert.equal(r.stderr, '')
+    assert.ok(!existsSync(join(root, '.claude', 'ship')), 'no directory was created')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a doctor that could not run is still reported in the file', () => {
+  const root = openspecRoot()
+  try {
+    const empty = join(root, 'empty-bin')
+    mkdirSync(empty, { recursive: true })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: empty })
+    assert.equal(r.code, 0)
+    const report = reportOf(root)
+    assert.equal(report.doctor.ran, false)
+    assert.equal(report.doctor.parsed, false)
+    assert.deepEqual(report.doctor.checks, [])
+    assert.equal(report.stateHome, null)
+    assert.match(report.message, /interlock preflight could not run/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a spoken note is recorded with its banner and its mark, and a second start records none', () => {
+  const root = openspecRoot()
+  try {
+    plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'verify' })
+    const first = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.ok(first.context.includes(bannerFor('r-1')), first.context)
+    const [note] = reportOf(root).notes.spoken
+    assert.equal(note.runId, 'r-1')
+    assert.equal(note.change, 'add-foo')
+    assert.equal(note.stage, 'verify')
+    assert.equal(note.banner, bannerFor('r-1'))
+    assert.equal(note.marked, true)
+    assert.deepEqual(note.marks, [{ root: realpathSync(root), marked: true, reason: null }])
+
+    const second = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(second.context, 'interlock preflight OK.', 'a note marked spoken is not said again')
+    assert.deepEqual(reportOf(root).notes.spoken, [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a note that cannot be marked is spoken again, and the report says the mark did not land', { skip: process.getuid && process.getuid() === 0 }, () => {
+  const root = openspecRoot()
+  const dir = join(root, '.claude', 'ship', 'interrupted')
+  try {
+    const note = plantNote(root, 'r-1.json', { runId: 'r-1', change: 'add-foo', stage: 'verify' })
+    // The note and its directory both read-only: a rewrite in place is refused.
+    chmodSync(note, 0o444)
+    chmodSync(dir, 0o555)
+    for (const run of [1, 2]) {
+      const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+      assert.equal(r.code, 0)
+      assert.ok(r.context.includes(bannerFor('r-1')), `run ${run}: ${r.context}`)
+      const [spoken] = reportOf(root).notes.spoken
+      assert.equal(spoken.marked, false)
+      assert.equal(spoken.marks[0].marked, false)
+      assert.ok(spoken.marks[0].reason, 'the reason the mark did not land')
+    }
+  } finally {
+    chmodSync(dir, 0o755)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/** A card file under `root`'s handoff directory, by hand: the stamp line, then a body. */
+function plantCardFile(root, name, firstLine) {
+  const dir = join(root, '.claude', 'handoff')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, name)
+  writeFileSync(path, `${firstLine}\n# Ship halted — x\n\nThis file is a record, not a trigger.\n`)
+  return path
+}
+
+test('preflight: a halt resume card of an open change is listed from its stamp, and left as it was', () => {
+  const root = openspecRoot()
+  const home = mkdtempSync(join(tmpdir(), 'interlock-preflight-home-'))
+  try {
+    mkdirSync(join(root, 'openspec', 'changes', 'add-foo'), { recursive: true })
+    const card = plantCardFile(home, 'ship-add-foo-r-1.md', '<!-- interlock.resume-card/1 change=add-foo run=r-1 -->')
+    const before = readFileSync(card, 'utf8')
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: homeDoctor(root, home) })
+    assert.equal(r.code, 0)
+    const { cards } = reportOf(root)
+    assert.equal(cards.listed.length, 1)
+    assert.equal(cards.listed[0].path, card)
+    assert.equal(cards.listed[0].change, 'add-foo')
+    assert.equal(cards.listed[0].runId, 'r-1')
+    assert.match(cards.listed[0].writtenAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+    assert.equal(readFileSync(card, 'utf8'), before, 'the card is unchanged')
+    assert.doesNotMatch(r.context, /ship-add-foo|resume card/, 'the advisory output does not mention a card')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a file in the handoff directory without a card stamp is named as unreadable', () => {
+  const root = openspecRoot()
+  try {
+    plantCardFile(root, 'ship-x-y.md', '# not a card')
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0)
+    const { cards } = reportOf(root)
+    assert.equal(cards.unreadable.length, 1)
+    assert.equal(cards.unreadable[0].path, join(realpathSync(root), '.claude', 'handoff', 'ship-x-y.md'))
+    assert.ok(cards.unreadable[0].reason)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: an archived change\'s card is counted, not listed, and no handoff directory lists nothing', () => {
+  const root = openspecRoot()
+  const bare = openspecRoot()
+  try {
+    plantCardFile(root, 'ship-old-thing-r-0.md', '<!-- interlock.resume-card/1 change=old-thing run=r-0 -->')
+    runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    const { cards } = reportOf(root)
+    assert.deepEqual(cards.listed, [])
+    assert.equal(cards.archived, 1)
+
+    runPreflight({ cwd: bare, hook: detachedHook(bare), path: cleanDoctor(bare) })
+    const none = reportOf(bare).cards
+    assert.deepEqual(none.listed, [])
+    assert.equal(none.archived, 0)
+    assert.deepEqual(none.lookedIn, [join(realpathSync(bare), '.claude', 'handoff')])
+    assert.ok(!existsSync(join(bare, '.claude', 'handoff')), 'the listing created nothing')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(bare, { recursive: true, force: true })
   }
 })
 

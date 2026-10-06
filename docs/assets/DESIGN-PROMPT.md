@@ -283,7 +283,7 @@ Every frame's text was checked line by line against Appendix B; nothing was inve
 | `strict-complete.png` | `docs/06-why-it-works.md` §7 (reviews) |
 | `limits.png` | `docs/07-cli-and-configuration.md` |
 
-`interlock-flow-wide.png` is the README hero and the `docs/09` flow image. Its ship strip is stale; the revision prompt is below.
+`interlock-flow-wide.png` is the README hero and the `docs/09` flow image. Its ship strip is stale; the revision prompt is below. For the current wave structure, read the generated block under `### The plan, drawn` in `docs/10-agentic-workflow-ship-and-spec.md`: it regenerates with `interlock waves --plan <file> --format mermaid` and a test pins it to its fixture, while the poster is drawn by hand and pinned by nothing.
 
 ## Appendix E — poster revision prompt (`interlock-flow-wide.png`)
 

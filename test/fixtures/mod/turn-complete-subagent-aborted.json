@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 tty, scratch logger mod, Workflow agent() mid-Bash `sleep 240`, stopped by the session's TaskStop on the workflow task (an Escape typed into the idle composer did not reach it)",
+    "date": "2026-10-06",
+    "change": "speak-lane-turn-ends-and-session-cost task 1.1(a)"
+  },
+  "input": {
+    "agentId": "a1",
+    "reason": "aborted",
+    "isAborted": true,
+    "durationMs": 74366,
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 592,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 37836,
+      "model": "claude-haiku-4-5-20251001"
+    }
+  }
+}

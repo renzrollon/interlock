@@ -670,6 +670,99 @@ test('the spec checkpoint pushes before it prints GOAL MET, so a waiting human i
   assert.match(text, /no-op|exits 0|unconditionally/i)
 })
 
+test("the spec flow's gate lines ask for JSON and say which field is the verdict", () => {
+  // The `--metrics` precedent again: a flag on a skill line that nothing
+  // asserts is a flag the first reword drops, and nothing fails when it goes.
+  // Each gate line asks the CLI for JSON, and the sentence beside it names the
+  // field the exit code is computed from. The exit code stays the verdict.
+  //
+  // Command lines are anchored (`^…$`, `m`) so a prose mention of the command
+  // cannot satisfy the pin. Field tokens, never sentences.
+  const pins = {
+    spec: {
+      lines: {
+        'interlock ledger … --json': /^interlock ledger [^\n]*--json$/m,
+        'interlock validate … --json': /^interlock validate [^\n]*--json$/m
+      },
+      tokens: ['`blocking`', '`invalidRows`', '`ready`', '`problems`', 'autonomyOutcome.blockers']
+    },
+    'review-artifacts': {
+      lines: {
+        'interlock validate … --json': /^interlock validate [^\n]*--json$/m,
+        'interlock gate … --json': /^interlock gate [^\n]*--json$/m
+      },
+      tokens: ['`passed`', '`malformed`', '`problems`', 'autonomyOutcome.blockers']
+    }
+  }
+
+  for (const [skill, { lines, tokens }] of Object.entries(pins)) {
+    const where = `skills/${skill}/SKILL.md`
+    const text = readFileSync(join(SKILLS_DIR, skill, 'SKILL.md'), 'utf8')
+    for (const [name, pattern] of Object.entries(lines)) {
+      assert.match(text, pattern, `${where} no longer runs \`${name}\` on a command line of its own`)
+    }
+    for (const token of tokens) {
+      assert.ok(text.includes(token), `${where} no longer names ${token} in its reading sentence`)
+    }
+  }
+
+  // The autonomy record's count comes from the gate's field, and the skill
+  // says so in a prohibition rather than merely mentioning prose.
+  const spec = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  assert.match(
+    spec,
+    /(?:never|do not|must not)[^.]{0,60}count[^.]{0,60}prose/i,
+    'skills/spec/SKILL.md must forbid taking the autonomy blocker count from prose'
+  )
+
+  const review = readFileSync(join(SKILLS_DIR, 'review-artifacts', 'SKILL.md'), 'utf8')
+  assert.match(
+    review,
+    /exit (?:status|code)[^.]{0,40}verdict/i,
+    'skills/review-artifacts/SKILL.md must keep saying the exit status is the verdict'
+  )
+  assert.match(
+    review,
+    /(?:do not|never|must not)[^.]{0,60}re-derive the verdict/i,
+    'skills/review-artifacts/SKILL.md must keep forbidding a verdict re-derived in prose'
+  )
+})
+
+test('the lines an observer of the spec flow keys on are pinned, in the flow\'s order', () => {
+  // An observer of the spec flow reads these lines off the Bash tool results,
+  // so a reword that drops one blinds it without failing anything — the
+  // `--metrics` shape once more. Each is matched on its command line, never on
+  // a prose mention (`interlock ledger` and `openspec status … --json` are
+  // both mentioned in prose too), and the order is asserted because
+  // reordering the gates is a behaviour change that should fail by name.
+  const where = 'skills/spec/SKILL.md'
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  const chain = [
+    ['interlock drift --json', /^interlock drift --json$/m],
+    ['openspec new change', /^openspec new change /m],
+    ['openspec status --change … --json', /^openspec status --change [^\n]*--json$/m],
+    ['interlock ledger … --json', /^interlock ledger [^\n]*--json$/m],
+    ['interlock validate … --json', /^interlock validate [^\n]*--json$/m],
+    ['/interlock:review-artifacts', /\/interlock:review-artifacts/],
+    ['interlock autonomy record review-artifacts --blockers', /^interlock autonomy record review-artifacts --blockers/m],
+    ['interlock autonomy clean review-artifacts explore spec', /^interlock autonomy clean review-artifacts explore spec$/m],
+    ['interlock notify checkpoint', /^interlock notify checkpoint /m],
+    ['GOAL MET', /GOAL MET: interlock spec stopped at the checkpoint/]
+  ]
+
+  const positions = chain.map(([name, pattern]) => {
+    const at = text.search(pattern)
+    assert.ok(at !== -1, `${where} no longer carries \`${name}\``)
+    return at
+  })
+  for (let i = 1; i < chain.length; i++) {
+    assert.ok(
+      positions[i - 1] < positions[i],
+      `${where}: \`${chain[i - 1][0]}\` must come before \`${chain[i][0]}\``
+    )
+  }
+})
+
 test('ship trampoline forbids a second Workflow call after the first returns', () => {
   const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
   assert.match(text, /Do not call Workflow again/i)
@@ -772,6 +865,14 @@ test('the continuity procedure passes --findings and forbids a transcribed block
     text,
     /(?:do not|never|must not)[^.]{0,80}blocker count/i,
     'and it is named in a prohibition, not merely mentioned'
+  )
+  // The readiness verdict crosses the Bash tool as JSON on the one path where
+  // the spec flow hands over to ship. Anchored on the fenced line, so a
+  // `--json` on some other line of the procedure does not satisfy it.
+  assert.match(
+    text,
+    /^interlock ready [^\n]*--findings[^\n]*--json$/m,
+    'skills/spec/continuity.md: the readiness line must keep --json beside --findings'
   )
 })
 

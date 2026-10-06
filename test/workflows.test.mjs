@@ -4216,6 +4216,22 @@ test('neither driver states any policy the run program emits', t => {
   t.diagnostic(`swept ${NO_POLICY_TOKENS.length} policy tokens over ${drivers.length} drivers`)
 })
 
+test('neither driver reads the fields the relay carries for the ship meter', () => {
+  // draw-the-wave-board-in-the-meter-pane (spec ship/run-program): the six
+  // fields are whitelisted for a second reader, so the relay-read scan above no
+  // longer proves the drivers ignore them. This does.
+  const fields = ['plan', 'recorded', 'skipped', 'waveIndex', 'batchIndex', 'batchCount']
+  for (const [name, path] of [
+    ['workflows/ship.js', join(WORKFLOWS_DIR, 'ship.js')],
+    ['bin/interlock-run', RUNNER_DRIVER]
+  ]) {
+    const surface = policySurface(path)
+    for (const field of fields) {
+      assert.doesNotMatch(surface, new RegExp(`\\bstep\\.${field}\\b`), `${name} reads step.${field}`)
+    }
+  }
+})
+
 test('the driver\'s plumbing banners are present and no policy token reads them as policy', () => {
   const ship = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   for (const prefix of DRIVER_PLUMBING) {

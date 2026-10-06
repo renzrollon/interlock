@@ -136,6 +136,30 @@ test('the ship meter\'s caps are read under lib/, and the hooks module restates 
   }
 })
 
+test('the wave board\'s two widths are published and printed', () => {
+  // draw-wave-plan-and-handoff-graph-from-the-cli design D8: the board's floor
+  // and its width when nothing else says, both display numbers with no verdict.
+  const text = formatLimits()
+  assert.match(text, new RegExp(`wave board min width \\(columns\\)\\s+${LIMITS.waveBoardMinColumns}\\b`))
+  assert.match(text, new RegExp(`wave board default width \\(columns\\)\\s+${LIMITS.waveBoardDefaultColumns}\\b`))
+})
+
+test('the wave board\'s widths are read by both renderers and the CLI, and the docs restate neither', () => {
+  for (const name of ['draw-plan.mjs', 'draw-run.mjs']) {
+    const reader = readFileSync(join(ROOT, 'lib', name), 'utf8')
+    assert.ok(reader.includes('LIMITS.waveBoardMinColumns'), `lib/${name} does not read the minimum width`)
+    assert.ok(reader.includes('LIMITS.waveBoardDefaultColumns'), `lib/${name} does not read the default width`)
+  }
+  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.ok(cli.includes('LIMITS.waveBoardDefaultColumns'), 'bin/interlock does not read the default width')
+  const doc = readFileSync(join(ROOT, 'docs', '07-cli-and-configuration.md'), 'utf8')
+  assert.ok(doc.includes('interlock limits'), 'docs/07 does not point at interlock limits')
+  for (const label of ['wave board min width (columns)', 'wave board default width (columns)']) {
+    const escaped = label.replace(/[()]/g, '\\$&')
+    assert.ok(!new RegExp(`${escaped}\\W*\\d`).test(doc), `docs/07 restates ${label}`)
+  }
+})
+
 test('the default fan-out sits under the runtime concurrency ceiling', () => {
   assert.ok(
     LIMITS.maxParallel <= RUNTIME.maxConcurrentAgents,
@@ -628,4 +652,16 @@ test('interlock limits --json carries the observed runtime slots', () => {
     env: { ...process.env, CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: undefined }
   })
   assert.match(text.stdout, /observed on this machine: vendor default, possibly reduced on this \d+-CPU machine/)
+})
+
+test('the handoff pane\'s cap is published, read under lib/, and restated nowhere in the hooks module', () => {
+  // show-preflight-and-interrupted-runs-at-session-start design D7: the
+  // Markdown element's own bound, so a card is cut visibly, never refused.
+  assert.match(formatLimits(), new RegExp(`handoff pane chars\\s+${LIMITS.handoffPaneChars}\\b`))
+  const reader = readFileSync(join(ROOT, 'lib', 'preflight-file.mjs'), 'utf8')
+  assert.ok(reader.includes('LIMITS.handoffPaneChars'), 'lib/preflight-file.mjs does not read the cap')
+  const mod = readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8')
+  for (const restated of ['handoffPaneChars', '10_000', '10000']) {
+    assert.ok(!mod.includes(restated), `hooks/mod.mjs restates ${restated} instead of leaving it to lib/preflight-file.mjs`)
+  }
 })

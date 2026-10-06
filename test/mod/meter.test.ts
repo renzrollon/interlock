@@ -13,7 +13,10 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { denyReason } from '../../lib/launch-rule.mjs'
+import { drawPlanBoard } from '../../lib/draw-plan.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
+import { denyText } from '../fixtures/mod/refusals.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 
 const PLUGIN = 'interlock'
@@ -40,7 +43,33 @@ type World = {
   bash: Map<string, string>
   bashCalls: string[]
   usage: Map<string, Usage | null>
+  // What the one `session.usage` stub answers; `null` refuses the read.
+  sessionUsage: Record<string, unknown> | null
+  usageArgs: unknown[]
+  // The settings layer beneath: `<tool>:<file_path or command>` → the deny text it answers.
+  denies: Map<string, string>
+  // Bash commands whose run the engine reports as an error.
+  bashErrors: Set<string>
+  // Whether the settings layer refuses a Workflow launch (guard-relaunch's settings form).
+  denyLaunch: boolean
 }
+
+const FIVE_HOUR = { kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-05T23:00:00Z' }
+const FIVE_HOUR_LINE = 'five_hour 42% used · resets 2026-10-05T23:00:00Z'
+const USAGE_REFUSED = 'the usage cannot be read'
+
+// The guards' own sentences, as hooks/guard-tests.mjs, hooks/guard-commit.mjs
+// and lib/launch-rule.mjs build them for these calls.
+const TESTS_REASON =
+  'guard-tests: editing the test file lib/x.test.mjs is blocked during the remediation stage — ' +
+  'a run making a failing check pass must fix the code under test, not weaken the check. ' +
+  'If the test itself is wrong, stop the run and correct it outside remediation.'
+const COMMIT_REASON =
+  'guard-commit: `git commit` is blocked during the remediation stage of a ship run — commits are made ' +
+  'only in the commit stage, by the commit step, as one feature-level commit. This is the ' +
+  'deterministic form of the disable-model-invocation flag on skills/commit.'
+const RELAUNCH_REASON = denyReason('2026-10-05T06:00:00.000Z')
+const GUARD_NAMED = /guard-(tests|tasks|commit|relaunch)/
 
 const count = (text: string | undefined, part: string) => (text ?? '').split(part).length - 1
 
@@ -63,7 +92,15 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
     commands: [],
     bash: new Map(),
     bashCalls: [],
-    usage: new Map()
+    usage: new Map(),
+    sessionUsage: { startedAt: 0, context: {}, rateLimits: [FIVE_HOUR] },
+    usageArgs: [],
+    denies: new Map([
+      ['Edit:lib/x.test.mjs', denyText(TESTS_REASON, 'Edit')],
+      ['Bash:git commit -m x', denyText(COMMIT_REASON)]
+    ]),
+    bashErrors: new Set(),
+    denyLaunch: false
   }
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('classic.SessionStart', () => BENEATH)
@@ -73,9 +110,11 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
     return h(Text, null, `${e.props.word}${e.props.suffix}`)
   })
   on('session.version', () => ({ value: { version: '2.1.289', base: '2.1.289', builtAt: '2026-10-03T19:21:39Z' } }))
-  on('session.usage', () => ({
-    value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 42, resetsAt: '2026-10-05T23:00:00Z' }] }
-  }))
+  // A `{ deny }` rejects the plugin's read, as the clock's does (design D7, probe 3).
+  on('session.usage', (_$: any, e: any) => {
+    w.usageArgs.push(e)
+    return w.sessionUsage === null ? { deny: USAGE_REFUSED } : { value: w.sessionUsage }
+  })
   on('command.register', (_$: any, e: any) => {
     w.commands.push(e.name)
     return { value: { command: e.name } }
@@ -107,7 +146,17 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
   on('tool.call', { tool: 'Bash' }, (_$: any, e: any) => {
     w.bashCalls.push(e.command)
     const text = w.bash.get(e.command) ?? ''
+    if (w.bashErrors.has(e.command)) return { result: `Error: ${text}`, text, isError: true }
     return { result: { stdout: text, stderr: '', interrupted: false }, text }
+  })
+  on('tool.call', { tool: 'Edit' }, () => ({ result: {}, text: 'ok' }))
+  on('tool.call', { tool: 'Write' }, () => ({ result: {}, text: 'ok' }))
+  // The settings layer, where the four guards run: a deny ends the call with
+  // the errored result the module's `tool.call` hooks see (probe 2's text).
+  on('classic.PreToolUse', (_$: any, e: any) => {
+    if (e.tool === 'Workflow') return w.denyLaunch ? { deny: denyText(RELAUNCH_REASON, 'Workflow') } : {}
+    const denied = w.denies.get(`${e.tool}:${e.file_path ?? e.command}`)
+    return denied ? { deny: denied } : {}
   })
   on('turn.step', async function* (_$: any, e: any) {
     const key = `${e.agentId}:${e.index}`
@@ -165,32 +214,35 @@ async function spinner($: any, surface: (typeof SURFACES)[number]) {
   await ui.unmount()
   return text
 }
-const mount = ($: any, surface: (typeof SURFACES)[number]) =>
+// The body width is the board's published default unless a case names
+// another; both are `interlock limits`'s, never restated here.
+const mount = ($: any, surface: (typeof SURFACES)[number], bodyColumns: number = LIMITS.waveBoardDefaultColumns) =>
   $.ui.mount({
     plugin: PLUGIN,
     surface,
     component: 'Pane',
     requestId: PANE,
-    props: { title: 'Interlock', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } }
+    props: { title: 'Interlock', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } }
   })
 
-test('session.start registers /interlock-meter and logs the engine it loaded in', async ($: any, on: any) => {
+test('session.start registers /interlock-meter beside the preflight\'s two and the spec meter\'s, and logs the engine it loaded in', async ($: any, on: any) => {
   const w = world(on)
   await start($)
-  expect(w.commands).toEqual([PANE])
+  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec'])
   expect(w.logs.some(l => /2\.1\.289/.test(l.text) && /terminal/.test(l.text) && l.to === 'transcript')).toBe(true)
 })
 
 test('a non-interactive session registers the command and draws nothing for its life', async ($: any, on: any) => {
   const w = world(on)
   await start($, false)
-  expect(w.commands).toEqual([PANE])
+  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec'])
   expect(w.logs.every(l => l.to === 'debug')).toBe(true)
   await launch($)
   await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
   w.usage.set('a1:0', usage('claude-sonnet-5-5', 10))
   await step($, 'a1', 0, 'claude-sonnet-5-5')
   await complete($, 'a1')
+  await complete($, 'a2', 'error')
   expect(w.status).toEqual([])
   expect(w.toasts).toEqual([])
   expect(w.opens).toEqual([])
@@ -378,7 +430,7 @@ test('a halt then the close clear the status line and leave the summary on the p
   expect(w.status.at(-1)).toBeUndefined()
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(await ui.find({ text: /resume card: \.claude\/ship\/resume/ })).toBeDefined()
+    expect(await ui.find({ text: /resume card: \.claude\/handoff\/ship-add-the-thing-wf_6b71ef8e-ba7\.md/ })).toBeDefined()
     expect(count((await ui.find({ key: 'banners' }))?.text, F.SECOND_BANNER)).toBe(1)
     await ui.unmount()
   }
@@ -484,7 +536,7 @@ test('a halt ends the interval: no word after the cap, and the close summary sho
   for (const surface of SURFACES) {
     expect(await spinner($, surface)).toBe('Sauteing…')
     const ui = await mount($, surface)
-    expect(await ui.find({ text: /resume card: \.claude\/ship\/resume/ })).toBeDefined()
+    expect(await ui.find({ text: /resume card: \.claude\/handoff\/ship-add-the-thing-wf_6b71ef8e-ba7\.md/ })).toBeDefined()
     expect(await ui.find({ text: /quiet/ })).toBeUndefined()
     await ui.unmount()
   }
@@ -603,4 +655,501 @@ test('a non-interactive session starts no interval', async ($: any, on: any) => 
   await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
   expect(c.periods).toEqual([])
   expect(w.status).toEqual([])
+})
+
+// The turn-end toast (speak-lane-turn-ends-and-session-cost design D1-D3): the
+// host's reason word, once per run agent, naming the lane's title or `lane unknown`.
+const TITLE_A = '1.1+5 · Add the turn-end toast'
+const TITLED_BATCH = {
+  ...F.RUN_BATCH,
+  spawns: F.RUN_BATCH.spawns.map((s: any) => (s.label === 'lane-a' ? { ...s, title: TITLE_A } : s))
+}
+const turnEnds = (w: World) => w.toasts.filter(t => t.includes('turn ended'))
+const spawnA = ($: any) =>
+  $.agent.spawn({
+    tool_use_id: 'u1',
+    prompt: F.bootstrapPrompt(F.SHA_A),
+    description: 'lane-a',
+    subagentType: 'interlock:worker',
+    provider: { plugin: 'engine', tier: 'core' }
+  })
+
+test('a run agent whose turn ends with error is named once, by its lane\'s title', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(TITLED_BATCH))
+  await spawnA($)
+  const before = w.toasts.length
+
+  expect(await complete($, 'a1', 'error')).toEqual({ turnId: 't-a1', text: '', reason: 'error' })
+  expect(w.toasts.slice(before)).toEqual([`${TITLE_A} · agent a1 · turn ended: error`])
+
+  await complete($, 'a1', 'error')
+  await complete($, 'a2', 'answer')
+  expect(w.toasts).toHaveLength(before + 1)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const row = (await ui.find({ key: 'agent-a1' }))?.text ?? ''
+    expect(row).toMatch(/error/)
+    expect(row).toMatch(/4\.2s/)
+    await ui.unmount()
+  }
+})
+
+test('a turn the host stops for an agent nobody joined reads lane unknown, with no cause beside it', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  await complete($, 'a1', 'aborted')
+  expect(turnEnds(w)).toEqual(['lane unknown · agent a1 · turn ended: aborted'])
+})
+
+test('each word the host sends is repeated verbatim; no reason, and no live run, raise nothing', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await complete($, 'a6', 'error')
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const [id, reason] of [['a1', 'refusal'], ['a2', 'aborted'], ['a3', 'error'], ['a4', 'cancelled']]) {
+    await complete($, id, reason)
+  }
+  await $.turn.complete({ answer: '', durationMs: 4200, isAborted: false, turnId: 't-a5', agentId: 'a5' })
+  expect(turnEnds(w)).toEqual([
+    'lane unknown · agent a1 · turn ended: refusal',
+    'lane unknown · agent a2 · turn ended: aborted',
+    'lane unknown · agent a3 · turn ended: error',
+    'lane unknown · agent a4 · turn ended: cancelled'
+  ])
+
+  await bash($, w, NEXT, F.stdout(F.HALT))
+  await bash($, w, CLOSE_CMD, F.stdout(F.CLOSE))
+  await complete($, 'a6', 'error')
+  expect(turnEnds(w)).toHaveLength(4)
+  expect(w.toasts.filter(t => t.includes('a5') || t.includes('a6'))).toEqual([])
+  expect(turnEnds(w).filter(t => /warn|failed|stuck/i.test(t))).toEqual([])
+})
+
+// The session lines (design D4, D6): the engine's own figures, as answered.
+const SESSION = { startedAt: 0, context: { tokens: 48210, window: 200000, percent: 24 }, rateLimits: [FIVE_HOUR], cost: { usd: 0.4321 } }
+const sessionLine = async (ui: any, key: string) => (await ui.find({ key }))?.text ?? ''
+const noBreakdown = (w: World) => {
+  expect(w.usageArgs.length).toBeGreaterThan(0)
+  expect(w.usageArgs.filter((a: any) => a && typeof a === 'object' && 'breakdown' in a)).toEqual([])
+}
+
+test('the pane shows the session\'s context and cost as the engine reports them, with no threshold', async ($: any, on: any) => {
+  const w = world(on)
+  w.sessionUsage = SESSION
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const context = await ui.find({ key: 'session-context' })
+    const cost = await ui.find({ key: 'session-cost' })
+    expect(context?.text).toMatch(/48210/)
+    expect(context?.text).toMatch(/200000/)
+    expect(context?.text).toMatch(/24%/)
+    expect(cost?.text).toMatch(/\$0\.4321/)
+    expect(cost?.text).toMatch(/this session, not the run's/)
+    for (const line of [context, cost]) {
+      expect(line?.text).not.toMatch(/warn|limit|over|high/i)
+      expect(line?.props.color).toBeUndefined()
+    }
+    expect((await ui.find({ key: 'plan-window-five_hour' }))?.text).toBe(FIVE_HOUR_LINE)
+    expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(/lane-a/)
+    await ui.unmount()
+  }
+  noBreakdown(w)
+})
+
+test('a figure the host did not answer is said to be unreported, and no percent is computed', async ($: any, on: any) => {
+  const w = world(on)
+  w.sessionUsage = { startedAt: 0, context: { window: 200000 }, rateLimits: [FIVE_HOUR] }
+  await start($)
+  await launch($)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const context = await sessionLine(ui, 'session-context')
+    expect(context).toMatch(/200000/)
+    expect(context).toMatch(/fill not yet reported/)
+    expect(context).not.toMatch(/%/)
+    expect(await sessionLine(ui, 'session-cost')).toMatch(/not reported by this host/)
+    await ui.unmount()
+  }
+  noBreakdown(w)
+})
+
+test('a usage read that fails is named with its reason on every line it feeds, and the rest is drawn', async ($: any, on: any) => {
+  const w = world(on)
+  w.sessionUsage = null
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const context = await sessionLine(ui, 'session-context')
+    const cost = await sessionLine(ui, 'session-cost')
+    expect(context).toMatch(/context unavailable/)
+    expect(context).toMatch(new RegExp(USAGE_REFUSED))
+    expect(cost).toMatch(/session cost unavailable/)
+    expect(cost).toMatch(new RegExp(USAGE_REFUSED))
+    expect((await ui.find({ text: /plan windows unavailable/ }))?.text).toMatch(new RegExp(USAGE_REFUSED))
+    expect(await ui.find({ text: /off a subscription/ })).toBeUndefined()
+    expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(/lane-a/)
+    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0).toISOString()}`)
+    expect(count((await ui.find({ key: 'banners' }))?.text, F.BANNER)).toBe(1)
+    await ui.unmount()
+  }
+  noBreakdown(w)
+})
+
+test('after a halt and its close the session lines still read the engine\'s figures', async ($: any, on: any) => {
+  const w = world(on)
+  w.sessionUsage = SESSION
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  await bash($, w, NEXT, F.stdout(F.HALT))
+  await bash($, w, CLOSE_CMD, F.stdout(F.CLOSE))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await ui.find({ text: /resume card: \.claude\/handoff\/ship-add-the-thing-wf_6b71ef8e-ba7\.md/ })).toBeDefined()
+    expect(await sessionLine(ui, 'session-context')).toMatch(/48210 of 200000 tokens · 24% used/)
+    expect(await sessionLine(ui, 'session-cost')).toMatch(/\$0\.4321/)
+    await ui.unmount()
+  }
+  noBreakdown(w)
+})
+
+// The guards' refusals (speak-permission-prompts-and-guard-denials design D4,
+// D5): read off the errored result, toasted from the guard's name on, counted
+// by guard, and every result returned as it resolved.
+const editTest = ($: any) => $.tool.call({ tool: 'Edit', file_path: 'lib/x.test.mjs', old_string: 'a', new_string: 'b' })
+const guardLine = async ($: any, surface: (typeof SURFACES)[number]) => {
+  const ui = await mount($, surface)
+  const text = (await ui.find({ key: 'guard-denials' }))?.text
+  await ui.unmount()
+  return text
+}
+
+test('a guard\'s denial is toasted once from its name on and counted by guard, and the result is the one that resolved', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  const before = w.toasts.length
+
+  const edit = await editTest($)
+  expect(edit.isError).toBe(true)
+  expect(edit.text).toBe(denyText(TESTS_REASON, 'Edit'))
+  const commit = await bash($, w, 'git commit -m x', '')
+  expect(commit.isError).toBe(true)
+  expect(commit.text).toBe(denyText(COMMIT_REASON))
+  expect(w.bashCalls).not.toContain('git commit -m x')
+  expect(w.toasts.slice(before)).toEqual([TESTS_REASON, COMMIT_REASON])
+  for (const surface of SURFACES) {
+    expect(await guardLine($, surface)).toBe('guard denials: 2 (guard-tests 1, guard-commit 1)')
+  }
+
+  // A driver line between two denials is still a step; the same text again is counted, not toasted.
+  await bash($, w, NEXT, F.stdout(F.RELAYED_TEST_WAVE))
+  expect(w.status.at(-1)).toBe(`interlock: ${F.CHANGE} · test-wave · wave 2`)
+  const again = await editTest($)
+  expect(again.text).toBe(denyText(TESTS_REASON, 'Edit'))
+  expect(w.toasts.slice(before)).toEqual([TESTS_REASON, COMMIT_REASON])
+  for (const surface of SURFACES) {
+    expect(await guardLine($, surface)).toBe('guard denials: 3 (guard-tests 2, guard-commit 1)')
+  }
+})
+
+test('an errored result naming no guard, a failed command and a clean write speak nothing', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  const before = { toasts: w.toasts.length, logs: w.logs.length }
+
+  w.denies.set('Edit:lib/other.mjs', 'another plugin said no')
+  const other = await $.tool.call({ tool: 'Edit', file_path: 'lib/other.mjs', old_string: 'a', new_string: 'b' })
+  expect(other.isError).toBe(true)
+  expect(other.text).toBe('another plugin said no')
+  w.bashErrors.add('false')
+  const failed = await bash($, w, 'false', 'Exit code 1')
+  expect(failed.isError).toBe(true)
+  expect(failed.text).toBe('Exit code 1')
+  const wrote = await $.tool.call({ tool: 'Write', file_path: 'lib/new.mjs', content: 'x' })
+  expect(wrote.isError === true).toBe(false)
+  expect(wrote.text).toBe('ok')
+
+  expect(w.toasts.length).toBe(before.toasts)
+  expect(w.logs.slice(before.logs).filter(l => GUARD_NAMED.test(l.text))).toEqual([])
+  for (const surface of SURFACES) expect(await guardLine($, surface)).toBeUndefined()
+})
+
+for (const isInteractive of [false, true]) {
+  const where = isInteractive ? 'an interactive session with no live run' : 'a non-interactive session'
+  test(`in ${where} a guard's denial is returned as it resolved and spoken nowhere`, async ($: any, on: any) => {
+    const w = world(on)
+    await start($, isInteractive)
+    if (!isInteractive) await launch($)
+    const edit = await editTest($)
+    expect(edit.isError).toBe(true)
+    expect(edit.text).toBe(denyText(TESTS_REASON, 'Edit'))
+    expect(w.toasts).toEqual([])
+    expect(w.status).toEqual([])
+    if (isInteractive) for (const surface of SURFACES) expect(await guardLine($, surface)).toBeUndefined()
+  })
+}
+
+test('the settings form\'s relaunch refusal is toasted from guard-relaunch: on, and no run goes live', async ($: any, on: any) => {
+  const w = world(on)
+  w.denyLaunch = true
+  await start($)
+  const r = await launch($)
+  expect(r.isError).toBe(true)
+  expect(r.text).toBe(denyText(RELAUNCH_REASON, 'Workflow'))
+  expect(w.toasts).toEqual([RELAUNCH_REASON])
+  expect(w.opens).toEqual([])
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  expect(w.status).toEqual([])
+})
+
+
+// --- the wave board (draw-the-wave-board-in-the-meter-pane) ----------------
+//
+// The board is the renderer's, drawn from the relayed summary and an overlay
+// the module builds from the steps alone (design D6, D7). Each case states the
+// overlay the steps imply and draws the expected lines through the same
+// renderer, so the pane can add no word of its own without failing here.
+
+const UNRELAYED = 'plan structure not relayed by this CLI'
+const BOX_DRAWING = /[┌│└─]/
+const NARROW = LIMITS.waveBoardMinColumns - 1
+const ADOPTED_LANES = ['1.7', '1.4', '1.2', '1.3', '1.6']
+const RECORDED_OK = ['1.7', '1.4', '1.2', '1.3']
+
+type Overlay = Record<string, unknown>
+const positions = (plan: any) => [...plan.waves, ...(plan.testWave ? [plan.testWave] : [])]
+/** The overlay a run's steps imply, in the wave state's shape (design D6). */
+const overlay = (plan: any, over: Overlay = {}) => ({
+  waves: positions(plan),
+  cursor: null,
+  completed: [],
+  failures: [],
+  skippedVerifications: [],
+  unresolved: [],
+  halt: null,
+  ...over
+})
+/** No agent joined in the kit, so each spawned lane's note reads its served model as unknown. */
+const notesFor = (labels: string[]) => Object.fromEntries(labels.map(label => [label, 'served ?']))
+const board = (plan: any, state: Overlay, labels: string[], columns: number = LIMITS.waveBoardDefaultColumns) =>
+  drawPlanBoard(plan, { columns, state, notes: notesFor(labels) })
+/** A flat row, as the section drew every spawn before the board. */
+const flatRow = (s: any) =>
+  `${s.title || s.label} · ${s.kind || 'agent'} · routed ${s.model || '?'} · served ? · effort ${s.effort || '?'} · waiting`
+
+/** Every keyed box of the wave section, in the order drawn. */
+async function waveSection(ui: any) {
+  const boxes = await ui.findAll({ type: 'Box' })
+  return boxes.filter((b: any) => typeof b.key === 'string' && b.key.startsWith('wave-'))
+}
+const texts = (section: any[]) => section.map((b: any) => b.text)
+
+const FAILED_16 = { id: '1.6', wave: 1, waveKind: 'impl', error: null }
+const AT_FIRST_BATCH = { waveIndex: 0, batchIndex: 0, phase: 'batch' }
+const AT_FIRST_VERIFY = { waveIndex: 0, batchIndex: null, phase: 'verify' }
+
+async function adopted($: any, on: any) {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.ADOPTION_BATCH))
+  return w
+}
+
+test('a relayed plan draws as the board on both surfaces, one truncating Text per line and no colour', async ($: any, on: any) => {
+  await adopted($, on)
+  const plan = F.ADOPTION_BATCH.plan
+  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_BATCH }), ADOPTED_LANES)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const section = await waveSection(ui)
+    expect(texts(section)).toEqual(expected)
+    for (const b of section) {
+      expect(b.children).toHaveLength(1)
+      expect(b.children[0].type).toBe('Text')
+      expect(b.children[0].props).toEqual({ wrap: 'truncate-end' })
+      expect([...b.text].length <= LIMITS.waveBoardDefaultColumns).toBe(true)
+    }
+    for (const id of ADOPTED_LANES) expect((await ui.find({ key: `wave-row-${id}` }))?.text).toMatch(/ current /)
+    expect(await ui.find({ text: UNRELAYED })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the recorded ids colour nothing and say ok and failed; a verify spawn is a flat row beneath the board', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  const plan = F.ADOPTION_BATCH.plan
+  const expected = board(
+    plan,
+    overlay(plan, { cursor: AT_FIRST_VERIFY, completed: RECORDED_OK, failures: [FAILED_16] }),
+    ADOPTED_LANES
+  )
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
+    expect((await ui.find({ key: 'wave-row-1.7' }))?.text).toMatch(/ ok /)
+    expect((await ui.find({ key: 'wave-row-1.6' }))?.text).toMatch(/ failed /)
+    expect((await ui.find({ key: `wave-row-${F.VERIFY_LABEL}` }))?.text).toBe(flatRow(F.RECORD_BATCH.spawns[0]))
+    await ui.unmount()
+  }
+})
+
+test('a skipped verification is placed on its own boundary with the step\'s reason', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.VERIFY_SKIPPED))
+  const plan = F.ADOPTION_BATCH.plan
+  const skip = { wave: F.VERIFY_SKIPPED.wave, waveIndex: 0, reason: F.SKIP_REASON }
+  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_VERIFY, skippedVerifications: [skip] }), ADOPTED_LANES)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))).toEqual(expected)
+    expect((await ui.find({ key: 'wave-verify-0' }))?.text).toMatch(new RegExp(`skipped: ${F.SKIP_REASON}`))
+    await ui.unmount()
+  }
+})
+
+test('a replan\'s summary replaces the adopted one, and the recorded ids stand', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  await bash($, w, NEXT, F.stdout(F.REPLAN_BATCH))
+  const plan = F.REPLAN_BATCH.plan
+  const expected = board(
+    plan,
+    overlay(plan, { cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' }, completed: RECORDED_OK, failures: [FAILED_16] }),
+    [...ADOPTED_LANES, '1.5', '1.1']
+  )
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
+    expect((await ui.find({ key: 'wave-row-2.1+2' }))?.text).toMatch(/ pending /)
+    expect((await ui.find({ key: 'wave-row-1.7' }))?.text).toMatch(/ ok /)
+    await ui.unmount()
+  }
+})
+
+test('a CLI that relays no plan is named above the flat rows, which read as before', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await ui.find({ text: /no lanes dispatched yet/ })).toBeDefined()
+    expect(await ui.find({ text: UNRELAYED })).toBeUndefined()
+    await ui.unmount()
+  }
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))).toEqual([
+      UNRELAYED,
+      'lane-a · implement · routed sonnet · served ? · effort low · waiting',
+      'lane-b · implement · routed opus · served ? · effort high · waiting'
+    ])
+    expect(await ui.find({ text: /no lanes dispatched yet/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('one column below the published minimum the section is the spoken line, then the flat rows', async ($: any, on: any) => {
+  await adopted($, on)
+  const spoken = drawPlanBoard(F.ADOPTION_BATCH.plan, { columns: NARROW })
+  expect(spoken).toHaveLength(1)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface, NARROW)
+    const section = texts(await waveSection(ui))
+    expect(section).toEqual([spoken[0], ...F.ADOPTION_BATCH.spawns.map(flatRow)])
+    for (const line of section) expect(BOX_DRAWING.test(line)).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('a malformed plan or recorded is named once and ignored, and the rest of the step applies', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  const bad = {
+    ...F.REPLAN_BATCH,
+    spawns: [],
+    banners: [F.SECOND_BANNER],
+    plan: 'the plan',
+    recorded: ['1.5']
+  }
+  await bash($, w, NEXT, F.stdout(bad))
+  await bash($, w, NEXT, F.stdout({ ...bad, plan: { waves: 'none' }, recorded: { ok: '1.5' } }))
+  expect(w.status.at(-1)).toBe(`interlock: ${F.CHANGE} · run-batch · wave 1 · batch 1/2`)
+  expect(w.toasts.filter(t => t === F.SECOND_BANNER)).toHaveLength(1)
+  const debug = w.logs.filter(l => l.to === 'debug').map(l => l.text)
+  expect(debug.filter(t => /\bplan\b/.test(t) && /ignored/.test(t))).toHaveLength(1)
+  expect(debug.filter(t => /\brecorded\b/.test(t) && /ignored/.test(t))).toHaveLength(1)
+
+  const plan = F.ADOPTION_BATCH.plan
+  const expected = board(
+    plan,
+    overlay(plan, { cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' }, completed: RECORDED_OK, failures: [FAILED_16] }),
+    ADOPTED_LANES
+  )
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
+    expect(count((await ui.find({ key: 'banners' }))?.text, F.SECOND_BANNER)).toBe(1)
+    await ui.unmount()
+  }
+})
+
+test('the session boundary drops the summary, the recorded ids and the skips', async ($: any, on: any) => {
+  // A person's prompt re-arms the launch guard after the boundary, so the next run may start.
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text, origin: e.origin }))
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  await bash($, w, NEXT, F.stdout(F.VERIFY_SKIPPED))
+  await $.classic.SessionStart({ source: 'clear' })
+  await $.prompt.submit({ text: 'ship it again', wait: false, origin: { kind: 'composer' } })
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(texts(await waveSection(ui))[0]).toBe(UNRELAYED)
+    await ui.unmount()
+  }
+  await bash($, w, NEXT, F.stdout(F.ADOPTION_BATCH))
+  const plan = F.ADOPTION_BATCH.plan
+  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_BATCH }), ADOPTED_LANES)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const section = texts(await waveSection(ui))
+    expect(section.slice(0, expected.length)).toEqual(expected)
+    expect(section.some(line => line.includes(F.SKIP_REASON))).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('a spec skill load during a live ship run leaves the ship position on the line until the close', async ($: any, on: any) => {
+  // observe-the-spec-run-live design D7: one composer, the ship position first.
+  const w = world(on)
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  await $.prompt.submit({ text: '/interlock:spec add the thing', origin: { kind: 'composer' } })
+  expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION}`)
+  await bash($, w, 'openspec new change "add-the-thing"', 'Created change')
+  expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION}`)
+  await bash($, w, NEXT, F.stdout(F.HALT))
+  await bash($, w, CLOSE_CMD, F.stdout(F.CLOSE))
+  expect(w.status.at(-1)).toBe('interlock spec: add-the-thing · new change')
 })

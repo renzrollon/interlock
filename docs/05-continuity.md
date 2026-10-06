@@ -15,7 +15,7 @@ Normally `/interlock:spec` writes artifacts, reviews them, and stops — [the ch
 With `--continue`, after the artifact review, `spec` asks one machine one question:
 
 ```bash
-interlock ready <change-name> --review <review-result> --paths <planned paths>
+interlock ready <change-name> --findings <the artifact review's findings JSON> --paths <planned paths> --json
 ```
 
 Exit 0 and it invokes `/interlock:ship` for you. Exit 1 and it stops and shows you what is in the way — not the spec, just the blocking rows.

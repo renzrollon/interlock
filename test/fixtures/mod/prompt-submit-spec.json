@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 -p (headless), scratch logger mod, scratch repository with openspec init",
+    "date": "2026-10-07",
+    "change": "observe-the-spec-run-live task 1.1",
+    "note": "skill.prompt did not fire for this load; the logger kept origin and text only"
+  },
+  "origin": {
+    "kind": "sdk"
+  },
+  "text": "/interlock:spec add a hello file --no-explore"
+}

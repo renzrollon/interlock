@@ -12,7 +12,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -477,6 +477,27 @@ test('gate without --metrics writes nothing and never infers a change name', () 
     false,
     'no change name means no record, never a record under a guessed name'
   )
+})
+
+test('gate --json carries the blocker count the spec skill feeds to the autonomy record', () => {
+  // The review-artifacts and spec skills read these keys by name: `passed` as
+  // the verdict, `blockers` and `malformed` as what to report, and
+  // `autonomyOutcome.blockers` as the `<n>` for `interlock autonomy record`.
+  // A rename here is a skill reading a field that is no longer printed.
+  const root = join(dir, 'gate-autonomy-outcome')
+  mkdirSync(root, { recursive: true })
+
+  const out = runJson(['gate', '--findings', paths.findings, '--root', root], 1)
+  for (const key of ['passed', 'blockers', 'malformed', 'autonomyOutcome']) {
+    assert.ok(key in out, `gate --json no longer prints ${key}, which a skill reads by name`)
+  }
+  assert.equal(out.passed, false)
+  assert.equal(out.autonomyOutcome.blockers, out.blockers.length)
+  assert.equal(out.autonomyOutcome.blockers, out.counts.blocker)
+
+  const clean = runJson(['gate', '--findings', paths.cleanFindings, '--root', root], 0)
+  assert.equal(clean.passed, true)
+  assert.equal(clean.autonomyOutcome.blockers, 0)
 })
 
 // --- verify ---------------------------------------------------------------
@@ -1631,6 +1652,27 @@ test('validate --change selects one change when several are active', () => {
   assert.equal(flagged.tasks.done, 0, '0/N checkboxes is ready — that is what ship implements')
 })
 
+test('validate --json on a change with no checkbox tasks exits 1, not ready, and says why', () => {
+  // The spec and review-artifacts skills read `ready` as the verdict and
+  // `problems` as the list to fix, by name. The exit code stays the verdict.
+  const root = join(dir, 'validate-no-checkbox')
+  const change = join(root, 'openspec', 'changes', 'gamma')
+  mkdirSync(change, { recursive: true })
+  writeFileSync(join(change, 'proposal.md'), '# gamma\n\nwhy\n')
+  writeFileSync(join(change, 'design.md'), '# Design\nhow\n')
+  writeFileSync(join(change, 'tasks.md'), '# Tasks\n\nNothing to tick yet.\n')
+
+  const out = runJson(['validate', '--change', 'gamma', '--root', root], 1)
+  for (const key of ['ready', 'problems']) {
+    assert.ok(key in out, `validate --json no longer prints ${key}, which a skill reads by name`)
+  }
+  assert.equal(out.ready, false)
+  assert.ok(
+    out.problems.some(p => /no checkbox task lines/.test(p)),
+    `problems must name the missing checkboxes: ${JSON.stringify(out.problems)}`
+  )
+})
+
 // --- ready: the gate that can skip a human --------------------------------
 //
 // Every assertion here is about failing closed. This is the one command whose
@@ -2638,4 +2680,132 @@ test('verify exec refuses to run without a kind or a command', () => {
   const noCommand = run(['verify', 'exec', '--kind', 'unit'])
   assert.notEqual(noCommand.code, 0)
   assert.match(noCommand.stderr, /--command is required/)
+})
+
+// --- drawing a plan and a run: --format board|mermaid -----------------------
+//
+// draw-wave-plan-and-handoff-graph-from-the-cli design D9. The fixture is a
+// byte copy of one real halted run (see test/spine/draw-plan.test.mjs for its
+// provenance), copied into scratch dirs here so the CLI reads it the way it
+// reads a live run. Every drawing exits 0; only a usage error moves the code.
+
+const DRAW_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'ship', 'halted-run-6e9d0b02')
+const DRAW_RUN_ID = '6e9d0b02-c70b-4d7a-9865-fa892722cecb'
+const drawFixture = name => readFileSync(join(DRAW_FIXTURE, name), 'utf8')
+
+test('waves --format draws a stored plan and its overlay at a chosen width', () => {
+  const plan = file('draw/plan.json', drawFixture('plan.json'))
+  const state = file('draw/state.json', drawFixture('state.json'))
+
+  const board = run(['waves', '--plan', plan, '--state', state, '--format', 'board', '--columns', '80'])
+  assert.equal(board.code, 0, board.stderr)
+  const lines = board.stdout.trimEnd().split('\n')
+  for (const line of lines) assert.ok([...line].length <= 80, line)
+  assert.ok(lines[0].includes('cursor idx 1'), lines[0])
+  assert.ok(lines.some(line => line.startsWith('│') && / ok /.test(line)), board.stdout)
+  assert.ok(lines.some(line => line.startsWith('│') && / failed /.test(line)), board.stdout)
+
+  const mermaid = run(['waves', '--plan', plan, '--state', state, '--format', 'mermaid'])
+  assert.equal(mermaid.code, 0, mermaid.stderr)
+  assert.equal(mermaid.stdout.split('\n')[0], 'flowchart LR')
+})
+
+test('waves refuses the flags that contradict each other, naming them', () => {
+  const plan = file('draw/plan.json', drawFixture('plan.json'))
+  const state = file('draw/state.json', drawFixture('state.json'))
+
+  const json = run(['waves', '--plan', plan, '--format', 'board', '--json'])
+  assert.notEqual(json.code, 0)
+  assert.match(json.stderr, /--format/)
+  assert.match(json.stderr, /--json/)
+
+  const wat = run(['waves', '--plan', plan, '--format', 'wat'])
+  assert.notEqual(wat.code, 0)
+  assert.match(wat.stderr, /board/)
+  assert.match(wat.stderr, /mermaid/)
+
+  for (const args of [['--columns', '80'], ['--state', state]]) {
+    const r = run(['waves', '--plan', plan, ...args])
+    assert.notEqual(r.code, 0, args.join(' '))
+    assert.match(r.stderr, /--format/)
+  }
+
+  const both = run(['waves', '--plan', plan, '--classified', paths.classified, '--format', 'board'])
+  assert.notEqual(both.code, 0)
+  assert.match(both.stderr, /--plan/)
+  assert.match(both.stderr, /--classified/)
+})
+
+test('waves speaks a missing plan or state and exits 0', () => {
+  const missingPlan = run(['waves', '--plan', 'missing.json', '--format', 'board'])
+  assert.equal(missingPlan.code, 0, missingPlan.stderr)
+  assert.equal(missingPlan.stdout, 'no plan at missing.json\n')
+
+  const plan = file('draw/plan.json', drawFixture('plan.json'))
+  const missingState = run(['waves', '--plan', plan, '--state', 'missing.json', '--format', 'board'])
+  assert.equal(missingState.code, 0, missingState.stderr)
+  const header = missingState.stdout.split('\n')[0]
+  assert.ok(header.includes('plan only') && header.includes('no state at missing.json'), header)
+})
+
+test('waves without --format prints what it printed before', async () => {
+  const { formatPlan, planWaves } = await import('../../lib/waves.mjs')
+  const plan = file('draw/plan.json', drawFixture('plan.json'))
+  const stored = run(['waves', '--plan', plan])
+  assert.equal(stored.code, 0, stored.stderr)
+  assert.equal(stored.stdout, formatPlan(JSON.parse(drawFixture('plan.json'))))
+
+  const planned = run(['waves', '--classified', paths.classified])
+  assert.equal(planned.code, 0, planned.stderr)
+  assert.equal(planned.stdout, formatPlan(planWaves(CLASSIFIED)))
+})
+
+test('run-log show --format draws the run and keeps every exit code', async () => {
+  const { formatRunLog, readRunLog } = await import('../../lib/run-log.mjs')
+  const home = mkdtempSync(join(tmpdir(), 'interlock-cli-draw-run-'))
+  try {
+    mkdirSync(join(home, '.claude', 'ship', 'runs'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'ship', 'runs', `${DRAW_RUN_ID}.jsonl`), drawFixture('trajectory.jsonl'))
+    writeFileSync(join(home, '.claude', 'ship', 'state.json'), drawFixture('state.json'))
+    const at = ['--root', home, '--state-home', home]
+
+    const board = run(['run-log', 'show', DRAW_RUN_ID, '--format', 'board', ...at])
+    assert.equal(board.code, 0, board.stderr)
+    const header = board.stdout.split('\n')[0]
+    assert.ok(header.includes('state.json: this run') && header.includes('run.json: absent'), header)
+
+    const mermaid = run(['run-log', 'show', DRAW_RUN_ID, '--format', 'mermaid', ...at])
+    assert.equal(mermaid.code, 0, mermaid.stderr)
+    assert.equal(mermaid.stdout.split('\n')[0], 'flowchart TD')
+
+    const never = run(['run-log', 'show', 'never-recorded', '--format', 'board', ...at])
+    assert.equal(never.code, 0, never.stderr)
+    assert.equal(never.stdout, run(['run-log', 'show', 'never-recorded', ...at]).stdout)
+
+    const plain = run(['run-log', 'show', DRAW_RUN_ID, ...at])
+    assert.equal(plain.code, 0, plain.stderr)
+    assert.equal(plain.stdout, formatRunLog(readRunLog(realpathSync(home), DRAW_RUN_ID)))
+
+    const json = run(['run-log', 'show', DRAW_RUN_ID, '--format', 'board', '--json', ...at])
+    assert.notEqual(json.code, 0)
+    assert.match(json.stderr, /--format/)
+    assert.match(json.stderr, /--json/)
+    const wat = run(['run-log', 'show', DRAW_RUN_ID, '--format', 'wat', ...at])
+    assert.notEqual(wat.code, 0)
+    assert.match(wat.stderr, /board/)
+    assert.match(wat.stderr, /mermaid/)
+    const query = run(['run-log', 'query', '--run', DRAW_RUN_ID, '--format', 'board', ...at])
+    assert.notEqual(query.code, 0)
+    assert.match(query.stderr, /show/)
+
+    const other = JSON.parse(drawFixture('state.json'))
+    other.runId = 'ffffffff-0000-0000-0000-000000000000'
+    writeFileSync(join(home, '.claude', 'ship', 'state.json'), JSON.stringify(other))
+    const another = run(['run-log', 'show', DRAW_RUN_ID, '--format', 'board', ...at])
+    assert.equal(another.code, 0, another.stderr)
+    assert.ok(another.stdout.split('\n')[0].includes('state.json: another run'), another.stdout)
+    assert.ok(!another.stdout.includes('↳'), another.stdout)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })

@@ -1,0 +1,46 @@
+## 1. Probes and failing tests first (TDD, red)
+
+- [x] 1.1 Probe the three facts design D1, D4 and D7 lean on, with scratch mods and workflows under `$TMPDIR` (never under `~/.claude/dev-mods/`) through `node scripts/host-probe.mjs` on the 2.1.289 binary, one probe per Bash call: (a) whether a Workflow-spawned run agent whose turn ends abnormally raises `turn.complete` with `agentId`, `reason` and `durationMs`, provoked twice with the scratch logger mod the earlier captures used (`--mode tty`, a workflow whose one `agent()` runs a long Bash sleep, interrupted from outside the session with `tmux send-keys Escape` and, failing that, by killing the Bash child, expecting `aborted`; `--mode headless`, a workflow whose one `agent()` names a model id the API rejects, expecting `error` or the runtime's own refusal before any turn), the captured input scrubbed and pinned as `test/fixtures/mod/turn-complete-subagent-<reason>.json` beside the `answer` one; (b) the exact `$.session.usage()` answer at runtime, written by a scratch logger mod from `session.start`, a `turn.complete` and a `command.run` typed after a response, in a headless and a tty session: whether `cost` is present in each mode, whether `context.tokens` and `context.percent` appear after the first response, and whether `cost.usd` moves while a Workflow agent works; (c) under `claude plugin test <scratch>`, whether a test's `on('session.usage', () => ({ deny }))` rejects the plugin's `$.session.usage()` as it does for `clock.now`, or is skipped. Record (a) in design D1, (b) in D4 and the open questions, (c) in D7; if (a) produces no non-`answer` reason for a Workflow agent, say so in D1 and keep the kit cases on the declared enum. Remove any `tsconfig.json`, `.claude-plugin/types/` or launch-ledger file a `--plugin-dir <repo>` session leaves in the repository. (spec: hooks/ship-meter — the turn-end toast; the pane)
+- [x] 1.2 RED kit cases in `test/mod/meter.test.ts`, under the existing `world()` harness: give `world()` a per-world `w.sessionUsage` that its one `session.usage` stub answers from (`{ value: w.sessionUsage }`, today's default so every existing case is unchanged; `null` answers `{ deny: 'the usage cannot be read' }` in the form 1.1(c) found) and have the stub record the args it received; then the cases, each mounting on both surfaces where a pane is read: after `agent.spawn` joined `a1` to `lane-a`, a `turn.complete` for `a1` with reason `error` raises exactly one toast carrying the `lane-a` row's title, `agent a1` and `turn ended: error`, the hook's result is the stub's, the `agent-a1` row reads `error` and `4.2s`, and a second `error` for `a1` and an `answer` for `a2` add no toast; with no spawn event, an `aborted` end reads `lane unknown · agent a1 · turn ended: aborted`; three agents ending `refusal`, `aborted` and `error` each raise one toast with that word verbatim, a fourth with an undeclared word is repeated verbatim, a fifth with no reason raises nothing, and no toast matches `/warn|failed|stuck/i`; an `error` end before the launch and one after the close record raise nothing; the non-interactive case extended with an `error` end and still no toast; the session lines with `context: { tokens: 48210, window: 200000, percent: 24 }` and `cost: { usd: 0.4321 }` (keys `session-context` and `session-cost` carry `48210`, `200000`, `24%`, `$0.4321` and `this session, not the run's`, no `color` prop, nothing matching `/warn|limit|over|high/i`, and the `plan-window-five_hour` line beside them unchanged); `cost` absent and `context: { window: 200000 }` (`not reported by this host`, `fill not yet reported`, no `%`); `w.sessionUsage = null` (`context unavailable`, `session cost unavailable` and `plan windows unavailable` each carrying the reason, with the wave row, the `last-activity` line and the banners still found); after a halt and its close the two session lines still read the stubbed figures; and the stub received no `breakdown` on any read. Assert `claude plugin test .` is RED before §2. (spec: hooks/ship-meter — the turn-end toast; the pane)
+- [x] 1.3 Node pins in `test/spine/mod-pins.test.mjs`, with `ALLOWED_CALLS`, `HOOKED_EVENTS`, `FORBIDDEN_TOKENS`, `GUARD_CALLS` and `GUARD_REFUSAL` left exactly as they are: the module's source names none of `MODEL_PRICES`, `perMillionTokens` and `cacheMultipliers`; every `$.session.usage(` occurrence is the bare `$.session.usage()`; and the source between `on('turn.complete'` and the next `on(` calls `$.ui.toast` inside a `try`. The first two are green on today's module and stay as regression pins; the third is RED until §2. Assert `node --test test/spine/mod-pins.test.mjs` fails on exactly that case before §2. (spec: hooks/ship-meter — observe-only)
+
+## 2. The hooks module (make §1 green; needs §1)
+
+- [x] 2.1 In `hooks/mod.mjs`: add `endToasted: false` to the agent record in `agentOf`; add `rowForAgent(a)` beside `laneForAgent`, returning the joined wave row or `null`, and leave `laneForAgent` and the agent row's text as they are; in the `turn.complete` hook, after the record is updated as today, when `str(e.reason)` is a word other than `answer` and `a.endToasted` is false, set the flag and call `$.ui.toast(\`${row ? row.title : 'lane unknown'} · agent ${a.id} · turn ended: ${reason}\`)` inside a `try` whose failure is one debug line (`interlock meter: the turn-end toast for <id> was refused: <message>`), the hook still returning `next(e)` and its gate unchanged (design D1, D2); in `drawPane`, move the one `$.session.usage()` read ahead of a new bold `session` section, keep its `try` holding either the answer or the failure's message, and add the keyed `session-context` and `session-cost` lines with design D6's texts, reading `context.tokens`, `context.window`, `context.percent` and `cost.usd` only where each is a finite number and computing no percent, then draw the plan windows from the same answer with `plan windows unavailable: <message>` on a failed read and today's text on an empty list (design D4, D6). No new engine call, no new hooked event, no argument to `$.session.usage`, no import from `lib/limits.mjs`. `claude plugin test .` and `npm test` go green. (spec: hooks/ship-meter — the turn-end toast; the pane)
+- [x] 2.2 Run `claude plugin validate . --strict` and paste its `hooks:`, `calls:`, `state reads:` and `state writes:` lines into design.md D8; confirm they are identical to the baseline there, or differ in attribution alone (`$.ui.toast` without a `via`, `$.session.usage` with a different `via`), and treat any other difference as a defect in 2.1. (spec: hooks/ship-meter — observe-only)
+
+## 3. Docs, changelog and the brief (needs §2)
+
+- [x] 3.1 `docs/07-cli-and-configuration.md`, in the ship meter section: beside the banner toast, the turn-end toast (one per run agent whose turn the host reports as ending with a word other than `answer`, the host's word verbatim, the lane's title or `lane unknown`, the agent id; the close summary's `AGENT RETURNED NO RESULT` stays the record and reaches the meter only at the close), and in the pane's list the session's context fill and cost as the engine reports them, labelled as the session's total and not the run's, with a sentence that the meter prices nothing and that an absent figure is said to be absent. `docs/13-the-guards.md`: the `turn.complete` bullet gains the toast and that it reads the reason word alone; the pane bullet gains the two session lines; the observe-only paragraph is unchanged because the calls are. `CHANGELOG.md` Unreleased: one entry for the toast and one for the session lines, in the file's voice, naming that no pin moved and that the module makes no dollar figure of its own (the archived reservation stands). `briefs/claude-code-teams-and-orchestration-briefs.md`: a short dated note after the 2026-10-05 note recording that candidate 7 of the 2026-10-06 mods report was taken up as this change, that the driver's `AGENT RETURNED NO RESULT` reaches the meter only at the close through `--host-banners`, and what probe 1.1(a) found. (spec: hooks/ship-meter — the turn-end toast; the pane)
+- [x] 3.2 Final verification: `npm test` (outside the sandbox, as the notify-relay cases bind a port), `claude plugin test .`, and `claude plugin validate . --strict` (the root `CLAUDE.md` warning is the known pre-existing failure and the only one allowed); paste the three commands' tails into the change's closing note, and confirm no file from a `--plugin-dir <repo>` probe session remains in the repository. (spec: hooks/ship-meter — the mod's tests)
+
+## Closing note (2026-10-07, Claude Code 2.1.291)
+
+`npm test` (outside the sandbox):
+
+```
+ℹ tests 2625
+ℹ suites 14
+ℹ pass 2621
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 4
+```
+
+`claude plugin test .`:
+
+```
+ 46 pass
+ 0 fail
+Ran 46 tests across 2 files.
+```
+
+`claude plugin validate . --strict`:
+
+```
+  ❯ ./mod.mjs state reads: interlock.ledger
+
+✔ Validation passed
+```
+
+The root `CLAUDE.md` warning no longer appears (the file moved to `.claude/CLAUDE.md` in `c72cac2`). 2.1.291's six `gating hook without .catch` notices print for the pre-change module too (design D8). No probe used `--plugin-dir <repo>`, so no `tsconfig.json`, `.claude-plugin/types/` or launch-ledger file was left. The tty probe's SessionStart hooks touched only directory mtimes under `.claude/`.

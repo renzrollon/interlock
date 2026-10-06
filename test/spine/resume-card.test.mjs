@@ -18,6 +18,8 @@ import {
   NO_RUN_ID,
   RESUME_CARD_SCHEMA,
   formatResumeCard,
+  listResumeCards,
+  parseResumeCardStamp,
   resumeCardPath,
   writeResumeCard
 } from '../../lib/resume-card.mjs'
@@ -150,11 +152,21 @@ test('nothing reads the card back, so a hand-edited one cannot change a later ru
     /import \{ writeResumeCard \} from '\.\/resume-card\.mjs'/,
     'and it imports the WRITER only, never a reader'
   )
-  assert.doesNotMatch(
-    readFileSync(join(ROOT, 'lib', 'resume-card.mjs'), 'utf8'),
-    /readFileSync|readdirSync/,
-    'the module itself must not grow a read path'
+  // Two readers show the card and decide nothing (show-preflight-and-interrupted-
+  // runs-at-session-start design D4): the SessionStart preflight lists cards by
+  // their first-line stamp, and the hooks module renders one on request. The
+  // module's only read path is that listing: a directory read and one bounded
+  // read of each card's first line, never a whole-file read.
+  const writer = readFileSync(join(ROOT, 'lib', 'resume-card.mjs'), 'utf8')
+  assert.doesNotMatch(writer, /readFileSync/, 'the module must not grow a whole-card read path')
+  assert.match(writer, /readSync\(fd, buffer, 0, STAMP_BYTES, 0\)/, 'the listing reads one bounded first line per card')
+  const preflight = readFileSync(join(ROOT, 'hooks', 'preflight.mjs'), 'utf8')
+  assert.deepEqual(
+    [...new Set([...preflight.matchAll(/\b(?:lib|cards)\.(\w+)\(/g)].map(m => m[1]))].filter(n => /Resume|Card/.test(n)),
+    ['listResumeCards'],
+    'the preflight lists cards and calls nothing else of the card module'
   )
+  assert.doesNotMatch(readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8'), /resume-card/, 'the hooks module never imports the card module')
 
   // The prose half: any handoff pointer that would match `ship-*` would hand a
   // model a halt card as session context. `skills/` and `shared/` are swept by
@@ -403,4 +415,99 @@ test('a card whose state home is its cwd prints no state home line and is otherw
   assert.equal(formatResumeCard({ ...HALTED, stateHome: `${HALTED.cwd}/` }), before)
   assert.equal(formatResumeCard({ ...HALTED, stateHome: null }), before)
   assert.match(before, /- trajectory: `\.claude\/ship\/runs\/run-20260918-abc\.jsonl`/)
+})
+
+// ---------------------------------------------------------------------------
+// The stamp, parsed where it is written, and the listing the SessionStart
+// preflight takes (spec: ship/halt-resume-card, hooks/session-preflight;
+// show-preflight-and-interrupted-runs-at-session-start design D4).
+// ---------------------------------------------------------------------------
+
+test('parseResumeCardStamp round-trips the writer\'s first line, for a run and for no run id', () => {
+  assert.deepEqual(parseResumeCardStamp(formatResumeCard({ change: 'add-foo', runId: 'r-1' }).split('\n')[0]), {
+    change: 'add-foo',
+    runId: 'r-1'
+  })
+  assert.deepEqual(parseResumeCardStamp(formatResumeCard({ change: 'add-foo' }).split('\n')[0]), {
+    change: 'add-foo',
+    runId: NO_RUN_ID
+  })
+  assert.deepEqual(parseResumeCardStamp(`<!-- ${RESUME_CARD_SCHEMA} change=add-foo run=r-1 -->\r`), { change: 'add-foo', runId: 'r-1' })
+})
+
+test('parseResumeCardStamp returns null for a heading, an empty line, another schema and a non-string', () => {
+  assert.equal(parseResumeCardStamp('# Ship halted — x'), null)
+  assert.equal(parseResumeCardStamp(''), null)
+  assert.equal(parseResumeCardStamp('<!-- other/1 change=a run=b -->'), null)
+  assert.equal(parseResumeCardStamp(`<!-- ${RESUME_CARD_SCHEMA} change=../x run=b -->`), null, 'a change with a separator is no change')
+  assert.equal(parseResumeCardStamp(undefined), null)
+})
+
+/** A card on disk under `root`, as the close writes it; returns its absolute path. */
+function plantCard(root, change, runId, extra = '') {
+  const written = writeResumeCard(root, { change, runId, halted: 'stopped' })
+  assert.ok(written.written, written.reason)
+  const path = join(root, written.path)
+  if (extra) writeFileSync(path, readFileSync(path, 'utf8') + extra)
+  return path
+}
+
+test('listResumeCards lists an open change\'s card and counts an archived one, reading only the stamp', () => {
+  const changesDir = join(tmp, 'openspec', 'changes')
+  mkdirSync(join(changesDir, 'add-foo'), { recursive: true })
+  const open = plantCard(tmp, 'add-foo', 'r-1')
+  plantCard(tmp, 'old-thing', 'r-0')
+  const before = readFileSync(open, 'utf8')
+  const r = listResumeCards({ roots: [tmp], changesDir })
+  assert.equal(r.listed.length, 1)
+  assert.equal(r.listed[0].path, open)
+  assert.equal(r.listed[0].change, 'add-foo')
+  assert.equal(r.listed[0].runId, 'r-1')
+  assert.ok(!Number.isNaN(Date.parse(r.listed[0].writtenAt)), r.listed[0].writtenAt)
+  assert.equal(r.archived, 1)
+  assert.deepEqual(r.unreadable, [])
+  assert.deepEqual(r.lookedIn, [join(tmp, HANDOFF_DIR)])
+  assert.equal(readFileSync(open, 'utf8'), before, 'listing leaves the card as it was')
+  assert.ok(existsSync(open))
+})
+
+test('listResumeCards names a stampless file, and leaves a non-card file alone', () => {
+  const dir = join(tmp, HANDOFF_DIR)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'ship-x-y.md'), '# not a card\n')
+  writeFileSync(join(dir, 'explore-brief.md'), '# a brief, not a card\n')
+  const r = listResumeCards({ roots: [tmp], changesDir: join(tmp, 'openspec', 'changes') })
+  assert.deepEqual(r.listed, [])
+  assert.equal(r.unreadable.length, 1)
+  assert.equal(r.unreadable[0].path, join(dir, 'ship-x-y.md'))
+  assert.match(r.unreadable[0].reason, /stamp/)
+})
+
+test('listResumeCards records a missing directory under lookedIn and creates nothing', () => {
+  const r = listResumeCards({ roots: [tmp], changesDir: join(tmp, 'openspec', 'changes') })
+  assert.deepEqual(r, { listed: [], archived: 0, unreadable: [], lookedIn: [join(tmp, HANDOFF_DIR)] })
+  assert.ok(!existsSync(join(tmp, HANDOFF_DIR)))
+})
+
+test('listResumeCards reads two roots naming one real directory once', () => {
+  const changesDir = join(tmp, 'openspec', 'changes')
+  mkdirSync(join(changesDir, 'add-foo'), { recursive: true })
+  plantCard(tmp, 'add-foo', 'r-1')
+  const r = listResumeCards({ roots: [tmp, join(tmp, '.')], changesDir })
+  assert.equal(r.listed.length, 1)
+  assert.equal(r.lookedIn.length, 1)
+})
+
+test('listResumeCards parses a card whose first line is followed by more than 512 bytes', () => {
+  const changesDir = join(tmp, 'openspec', 'changes')
+  mkdirSync(join(changesDir, 'add-foo'), { recursive: true })
+  plantCard(tmp, 'add-foo', 'r-1', 'y'.repeat(4096))
+  const r = listResumeCards({ roots: [tmp], changesDir })
+  assert.equal(r.listed.length, 1)
+  assert.equal(r.listed[0].runId, 'r-1')
+})
+
+test('listResumeCards never throws, whatever it is handed', () => {
+  assert.deepEqual(listResumeCards(), { listed: [], archived: 0, unreadable: [], lookedIn: [] })
+  assert.deepEqual(listResumeCards({ roots: 'nope' }), { listed: [], archived: 0, unreadable: [], lookedIn: [] })
 })

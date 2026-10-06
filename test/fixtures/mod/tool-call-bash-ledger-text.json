@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 -p (headless), scratch logger mod, scratch repository with openspec init",
+    "date": "2026-10-07",
+    "change": "observe-the-spec-run-live task 1.1",
+    "note": "the scratch path is scrubbed to /repo; the result's engine ref is dropped; the previous skill text: no --json"
+  },
+  "command": "interlock ledger \"add-a-hello-file\"",
+  "result": "Error: Exit code 1\nDECISIONS BLOCKING — 2 row(s): 2 needs_human, 0 agent_resolved, 0 invalid\n  [needs_human] D1: Which greeting?\n  [needs_human] D2: Which file name?",
+  "text": "Exit code 1\nDECISIONS BLOCKING — 2 row(s): 2 needs_human, 0 agent_resolved, 0 invalid\n  [needs_human] D1: Which greeting?\n  [needs_human] D2: Which file name?",
+  "isError": true
+}

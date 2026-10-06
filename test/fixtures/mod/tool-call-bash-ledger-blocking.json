@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 -p (headless), scratch logger mod, scratch repository with openspec init",
+    "date": "2026-10-07",
+    "change": "observe-the-spec-run-live task 1.1",
+    "note": "the scratch path is scrubbed to /repo; the result's engine ref is dropped; exit 1: decisions.md holds two needs_human rows"
+  },
+  "command": "interlock ledger \"add-a-hello-file\" --json",
+  "result": "Error: Exit code 1\n{\n  \"change\": \"add-a-hello-file\",\n  \"path\": \"openspec/changes/add-a-hello-file/decisions.md\",\n  \"total\": 2,\n  \"needsHuman\": 2,\n  \"agentResolved\": 0,\n  \"invalidCount\": 0,\n  \"invalid\": 0,\n  \"exists\": true,\n  \"missing\": false,\n  \"unparseable\": false,\n  \"changeExists\": true,\n  \"blocking\": true,\n  \"rows\": [\n    {\n      \"id\": \"D1\",\n      \"question\": \"Which greeting?\",\n      \"class\": \"needs_human\",\n      \"resolution\": \"\",\n      \"evidence\": \"\",\n      \"line\": 5,\n      \"raw\": \"| D1 | Which greeting? | needs_human | — | — |\",\n      \"valid\": true,\n      \"problems\": []\n    },\n    {\n      \"id\": \"D2\",\n      \"question\": \"Which file name?\",\n      \"class\": \"needs_human\",\n      \"resolution\": \"\",\n      \"evidence\": \"\",\n      \"line\": 6,\n      \"raw\": \"| D2 | Which file name? | needs_human | — | — |\",\n      \"valid\": true,\n      \"problems\": []\n    }\n  ],\n  \"invalidRows\": []\n}",
+  "text": "Exit code 1\n{\n  \"change\": \"add-a-hello-file\",\n  \"path\": \"openspec/changes/add-a-hello-file/decisions.md\",\n  \"total\": 2,\n  \"needsHuman\": 2,\n  \"agentResolved\": 0,\n  \"invalidCount\": 0,\n  \"invalid\": 0,\n  \"exists\": true,\n  \"missing\": false,\n  \"unparseable\": false,\n  \"changeExists\": true,\n  \"blocking\": true,\n  \"rows\": [\n    {\n      \"id\": \"D1\",\n      \"question\": \"Which greeting?\",\n      \"class\": \"needs_human\",\n      \"resolution\": \"\",\n      \"evidence\": \"\",\n      \"line\": 5,\n      \"raw\": \"| D1 | Which greeting? | needs_human | — | — |\",\n      \"valid\": true,\n      \"problems\": []\n    },\n    {\n      \"id\": \"D2\",\n      \"question\": \"Which file name?\",\n      \"class\": \"needs_human\",\n      \"resolution\": \"\",\n      \"evidence\": \"\",\n      \"line\": 6,\n      \"raw\": \"| D2 | Which file name? | needs_human | — | — |\",\n      \"valid\": true,\n      \"problems\": []\n    }\n  ],\n  \"invalidRows\": []\n}",
+  "isError": true
+}

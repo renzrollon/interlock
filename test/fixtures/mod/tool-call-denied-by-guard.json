@@ -1,0 +1,11 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.291 -p, scratch logger mod hooking tool.call on Bash, scratch plugin whose manifest PreToolUse hook on Bash denies",
+    "date": "2026-10-07",
+    "change": "speak-permission-prompts-and-guard-denials task 1.1 (probe 2)"
+  },
+  "command": "echo hi",
+  "isError": true,
+  "text": "PreToolUse:Bash hook error: guard-probe: PROBE-DENY-REACHED — the probe blocks every Bash call.",
+  "result": "Error: PreToolUse:Bash hook error: guard-probe: PROBE-DENY-REACHED — the probe blocks every Bash call."
+}

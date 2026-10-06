@@ -111,10 +111,12 @@ Source of truth for the Interlock path: `skills/spec/SKILL.md` (plugin copy also
    - write to `resolvedOutputPath` using `template`; never copy `<context>` / `<rules>` into the file
    - loop until every `applyRequires` artifact is done
 6. **Invariant sweep** if a shared/derived value is in play (`shared/INVARIANT-SWEEP.md`): every consumer gets a task. Structural pass via `interlock-graph consumers`, then grep for string-keyed readers.
-7. **Decision ledger.** `openspec/changes/<name>/decisions.md` (`shared/DECISION-LEDGER.md`). Two classes only: `needs_human` | `agent_resolved`. Empty resolution/evidence on `agent_resolved` is invalid. `interlock ledger "<name>"` exits non-zero while blocked.
-8. **Validate.** `openspec validate` (schema) then `interlock validate "<name>"` (three artifacts present, real checkboxes).
-9. **Artifact review.** `/interlock:review-artifacts` — architecture completeness + QA/testability + invariant check (`skills/review-artifacts/SKILL.md`). Findings go to `.claude/metrics/review-artifacts-*.json`; `interlock gate` decides blockers. **Blockers → halt and show you.** No silent fix-and-continue.
+7. **Decision ledger.** `openspec/changes/<name>/decisions.md` (`shared/DECISION-LEDGER.md`). Two classes only: `needs_human` | `agent_resolved`. Empty resolution/evidence on `agent_resolved` is invalid. `interlock ledger "<name>" --json` exits non-zero while blocked; the exit code is still the verdict, and `blocking` carries it in the JSON.
+8. **Validate.** `openspec validate` (schema) then `interlock validate "<name>" --json` (three artifacts present, real checkboxes). The exit code is still the verdict; `ready` carries it in the JSON.
+9. **Artifact review.** `/interlock:review-artifacts` — architecture completeness + QA/testability + invariant check (`skills/review-artifacts/SKILL.md`). Findings go to `.claude/metrics/review-artifacts-*.json`; `interlock gate --findings … --metrics <change> --json` decides blockers. The exit code is still the verdict; `passed` carries it in the JSON. Which list each skill reports is in the skills themselves. **Blockers → halt and show you.** No silent fix-and-continue.
 10. **Hand off to you.** Change path, assumptions, task count, non-blocker warnings. Greppable line: `GOAL MET: interlock spec stopped at the checkpoint.`
+
+On a mods host the flow is drawn live, in the status line and in `/interlock-spec`, from the lines these steps already run: the change, the artifact ladder, the ledger, validate, gate and readiness results in the CLI's words, and `checkpoint` once step 10 is reached. The meter decides nothing; [07](./07-cli-and-configuration.md#the-spec-meter-interlock-spec) has what it shows.
 
 ### Artifacts on disk
 
@@ -157,13 +159,58 @@ Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli`
 
 1. **Validate.** `interlock validate --change <name>`. Missing/empty artifacts or no real checkboxes → `SHIP HALTED`. The validate ping probes the graph, the test profile and `CLAUDE_CODE_EFFORT_LEVEL`. `run start` reads `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` and the Bedrock variables itself, against the version `claude --version` reports, and decides the control-plane ping model. The driver only forwards it. All of these raise banners, not quality gates.
 2. **Classify (one model step, `plan-waves`).** Reads proposal/design/tasks/specs **in full** (the "artifact leash"). Writes `.claude/ship/classified.json`. The classifying agent never runs the CLI itself: `interlock run classified --classified <file>` does coverage (`interlock tasks coverage` — omitted checkboxes halt) → `interlock waves` → `.claude/ship/plan.json` → `interlock wave-state create` → `.claude/ship/state.json` → the first step, as one call (design D7).
-3. **Wave loop** until the action is `done` or `halt`. Neither the script nor the CLI's caller decides next; the driver spawns what a step's `spawns` name and calls the exact `interlock` argv its `then.argv` names, repeating until `then` is `null`. Underneath, `run` obeys one of six wave-level actions from the pure `wave-state next` — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step. An invented `action` is retried once (`next-retry-*`), then halt.
+3. **Wave loop** until the action is `done` or `halt`. Neither the script nor the CLI's caller decides next; the driver spawns what a step's `spawns` name and calls the exact `interlock` argv its `then.argv` names, repeating until `then` is `null`. Underneath, `run` obeys one of six wave-level actions from the pure `wave-state next` — `run-batch`, `test-wave`, `verify`, `replan`, `done`, `halt` — wrapped into a run-level step. An invented `action` is retried once (`next-retry-*`), then halt. On the Workflow host a step reaches the driver through a relay that keeps only the fields the driver reads. It also carries six fields for the ship meter's wave board, which neither driver reads (`test/workflows.test.mjs` pins that): `waveIndex`, `batchIndex` and `batchCount`; a verify step's `skipped`; `recorded`, the ids a batch recorded as ok, failed and not attempted, on the step `run record-batch` returns; and `plan`, a summary of the waves that will run (`lib/plan-summary.mjs`: per task only its id, tier, model and title words), on the adoption step and on the step after a replan. The schema stays `interlock.run-step/1`.
 4. **A batch** is up to `LIMITS.maxParallel` (8) implementers in `pipeline()`, one agent per **lane**, in **one working tree**. A lane is an ordered task list one agent runs start to finish: a path-collision component, a cohesion pack of disjoint low-tier siblings (tier ≤ `LANE_CAPS.cohesionMaxTier`), a chain fused from consecutive single-lane batches of one wave, or — in solo mode — the whole change. Lane length, including a chain, is capped per tier (`LANE_CAPS.byTier`); a `maxTasksPerAgent` override of 1 restores one agent per task. A multi-task lane dispatches on opus when its hardest tier is at or above `LANE_CAPS.opusMinTier`, otherwise sonnet; a lane of one keeps its clamped model. Each agent's briefing (`assembleImplementerPrompt`, tiered artifact reads, stop-on-green for tiers 1–2, previous-wave handoff packets — schema `interlock.wave-handoff/1`, cap `maxHandoffChars` 2000) is written to `.claude/ship/briefings/<label>.md` with its own sha256 on line one; the ACP driver reads it straight off the step, the Workflow script hands the worker the path and requires the hash back rather than pasting the text through a ping. Invalid/missing handoff packet, or an unacknowledged/wrong briefing hash, fails the task closed.
 5. **Record.** `interlock run record-batch` folds three things into one call: the lane merge under `--isolate-waves` (`lib/merge-lanes.mjs`), `wave-state record-batch --write-state`, and `interlock tasks tick` for succeeded ids. Its stdout *is* the next step — one ping either way, whether or not that step is `verify`.
 6. **Inter-wave verify.** Typecheck + unit can halt the *next* wave. Docs-only waves skip. Cap: `interWaveVerifications` (3). Output over 8 KB is spilled (`interlock verify spill`); judge rejects oversized result fields. Each planned step runs through `interlock verify exec`, which times the command itself; the inter-wave budget is charged those timings, not the relay and agent time around them (a step without one falls back to the round trip, bannered `VERIFY BUDGET CLOCKED BY ROUND TRIP`).
 7. **`--apply-only` exits here.** Otherwise **final verify** (`run verify-final`): unit red → root-cause repair (cluster, fix once, `verify repair`, max 5 iterations). Weakening tests is checked, not merely forbidden in prose. E2E red is a banner, not a halt. Coverage is advisory.
 8. **Commit** (`run` emits a `commit` step) — one feature-level commit. Never `git add -A`, never amend, never push. `--no-commit` leaves this to you.
 9. **Record outcome** (`interlock outcomes append`) and close the trajectory (`interlock run-log`) — both via `run close`, which also builds the receipt and the summary text every driver prints verbatim. On a halt it additionally writes the resume card (below) and names it in that summary. Unreconstructable trajectory → halt even on an otherwise clean run.
+
+### The plan, drawn
+
+The block below is generated from the fixture plan of a real halted run, whose two implementation waves both carry group 1, by the command in the comment above it. A test re-renders the fixture and compares the block line by line, so regenerate it with that command rather than edit it by hand.
+
+<!-- generated: interlock waves --plan test/fixtures/ship/halted-run-6e9d0b02/plan.json --format mermaid -->
+```mermaid
+flowchart LR
+  %% source: test/fixtures/ship/halted-run-6e9d0b02/plan.json · plan only
+  subgraph W0["wave 1 · idx 0 · group 1 · impl · 1 batch"]
+    L1_7["1.7 · Docs (design D2, D4, D5, D7 · sonnet T4 inherit"]
+    L1_4["1.4 · In lib/receipt.mjs (design D4, D5, D7 · sonnet T3 inherit"]
+    L1_2["1.2 · Create lib/project-slug.mjs exporting pro… · sonnet T2 low"]
+    L1_3["1.3 · In lib/limits.mjs add notifyTimeoutMs: 50… · sonnet T2 low"]
+    L1_6["1.6 · Verify — do not edit · haiku T1 low"]
+  end
+  subgraph W1["wave 2 · idx 1 · group 1 · impl · 5 batches"]
+    subgraph W1B0["b0"]
+      L1_5["1.5 · In lib/doctor.mjs (design D5, D12): append · sonnet T4 inherit"]
+      L1_1["1.1 · Create lib/notify.mjs (design D1, D2, D4 · sonnet T3 inherit"]
+    end
+    subgraph W1B1["b1"]
+      L2_1["2.1 · In lib/run.mjs (design D1, D5, D7 · sonnet T4 inherit"]
+    end
+    subgraph W1B2["b2"]
+      L2_2["2.2 · In bin/interlock (design D1, D14): add · sonnet T3 inherit"]
+    end
+    subgraph W1B3["b3"]
+      L2_3["2.3 · In workflows/ship.js and bin/interlock-ru… · sonnet T2 low"]
+    end
+    subgraph W1B4["b4"]
+      L3_2["3.2 · In skills/spec/SKILL.md §6 (design D6 · sonnet T2 low"]
+    end
+    W1B0 --> W1B1 --> W1B2 --> W1B3 --> W1B4
+  end
+  subgraph W2["test wave · idx 2 · test · 1 batch"]
+    L3_1["3.1 · In test/workflows.test.mjs (design D1, D5… · sonnet T3 inherit"]
+    L3_3["3.3 · Run 'openspec validate harden-unattended-… · sonnet T2 low"]
+  end
+  W0 --> V0{{"verify after idx 0"}} --> W1 --> V1{{"verify after idx 1"}} --> W2 --> VF[["verify-final"]] --> C[["commit"]] --> X[["close"]]
+  L1_3 -. dependsOn .-> L1_1
+  L1_6 -. dependsOn .-> L1_5
+  L2_1 -. dependsOn .-> L2_2
+  L2_2 -. dependsOn .-> L2_3
+```
 
 ### The `--strict` sequence
 
@@ -188,11 +235,13 @@ After merge, archive is stock OpenSpec: `openspec archive <name>` or `/opsx:arch
 |---|---|
 | `openspec/changes/<name>/*` | ship classifier + implementers |
 | `decisions.md` | `interlock ready` / `interlock ledger` |
-| `.claude/ready/<name>-review.json` | continuity only |
+| `.claude/metrics/review-artifacts-<change>-<ts>.json` | `interlock gate` (the verdict and the metrics record); `interlock ready --findings` (continuity only) |
 | `.claude/testing/profile.json` | verify plan; absence banners `NO TEST PROFILE` and blocks continuity |
 | `.claude/graph/` | implementers (optional; grep fallback) |
 | `.claude/ship/{classified,plan,state,batch-*,runs/*.jsonl,spill/}` | the run itself |
 | `.claude/handoff/ship-<change>-<runId>.md` | you — the halt resume card is written for a reader and read back by nothing |
+
+Nothing writes a `ready/` directory under `.claude/`: continuity reads the artifact review's own findings file, never a hand-written review result.
 
 A change proposed by `/opsx:propose` can still be shipped by `/interlock:ship` if `interlock validate` passes. Ship does not care who wrote the markdown.
 

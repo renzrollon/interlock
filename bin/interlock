@@ -47,6 +47,8 @@ import {
 import {
   CLASSIFIED_PATH,
   LAST_STEP_PATH,
+  MANIFEST_PATH,
+  STATE_PATH,
   VERIFY_TIMINGS_PATH,
   checkSequence,
   readManifest,
@@ -65,6 +67,8 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { drawPlanBoard, drawPlanMermaid } from '../lib/draw-plan.mjs'
+import { drawRunBoard, drawRunMermaid } from '../lib/draw-run.mjs'
 import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
 import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
 import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
@@ -150,6 +154,7 @@ const USAGE = `interlock — deterministic decisions for the spec-driven flow
 
 Usage:
   interlock waves --classified <file>       Plan execution waves from classified tasks
+  interlock waves --plan <f> --format <f>   Draw a stored plan: board | mermaid
                   [--mode solo|waves]       (--mode forces the plan shape;
                   [--red-wave <n>]           --red-wave/--tdd run a leading
                   [--tdd|--no-tdd]           failing-test wave first)
@@ -286,6 +291,7 @@ Usage:
   interlock run-log append --event <f>      Append one ship-run trajectory event
   interlock run-log list [--change <name>]  List recorded ship runs
   interlock run-log show <runId>            Print one run's events in order
+                                            (--format board|mermaid: draw them)
   interlock run-log query --run <id>        Filter one run's events
   interlock run-log check --state <file>    Reconstructability gate: exit 1 on
                                             a gap, a missing start, or a
@@ -421,6 +427,19 @@ waves:
                          section whose tasks are ALL test tasks. A run resolves it
                          from the tasks.md section heading instead.
   --no-tdd               Never treat any section as a red wave.
+  --plan <file|->        Render a stored plan (what "interlock waves --json"
+                         printed) instead of planning from --classified; the
+                         two are mutually exclusive. A path that names no file
+                         prints "no plan at <path>" and exits 0.
+  --format board|mermaid Draw the plan instead of listing it: a wave board, one
+                         block per wave position, or a Mermaid flowchart LR.
+                         Mutually exclusive with --json. Mermaid is never cut.
+  --state <file|->       With --format: lay a wave state over the plan — task
+                         words, the cursor, verify skips — as recorded. A path
+                         that names no file draws a plan-only board saying so.
+  --columns <n>          With --format board: the width. Else the terminal's,
+                         else the published default; the minimum and the
+                         default are in "interlock limits". No effect on mermaid.
 
 surface:
   --changed <files...>   Repo-relative paths. Use "-" to read newline-separated stdin.
@@ -579,6 +598,12 @@ run-log:
                          --change. Tolerates a torn or garbage line the same
                          way "outcomes list" does — skips it, reports it.
   show <runId>           Print one run's events in sequence order.
+  show <runId> --format board|mermaid [--columns <n>]
+                         Draw the run as a handoff graph from the same records,
+                         joined to the state home's state.json and run.json only
+                         when each names this run; the header names any source
+                         that is absent, unreadable or another run's. Mutually
+                         exclusive with --json; widths as for "waves --format".
   query --run <id> [--type <t>] [--halted]
                          Filter one run's events. --type keeps only that event
                          type. --halted keeps only the events that explain a
@@ -1688,6 +1713,45 @@ function num(flags, key) {
   return n
 }
 
+// The drawn surfaces (draw-wave-plan-and-handoff-graph-from-the-cli design D9).
+// `--format` is a third surface beside text and --json, refused beside --json as
+// `report --html` is; `--state` and `--columns` mean nothing without it.
+
+/** The format asked for, `null` for none; dies on an unknown one or beside --json. */
+function drawFormat(flags, json) {
+  if (flags.format === undefined) return null
+  if (flags.format !== 'board' && flags.format !== 'mermaid') die('--format must be board or mermaid')
+  if (json) die('--format and --json are mutually exclusive: choose one surface')
+  return flags.format
+}
+
+/**
+ * The width a board is drawn at: `--columns`, else the terminal's when stdout is
+ * one, else the published default. The renderers never read the terminal.
+ */
+function boardColumns(flags) {
+  if (flags.columns !== undefined) {
+    const n = num(flags, 'columns')
+    if (!Number.isInteger(n) || n <= 0) die('--columns requires a positive integer')
+    return n
+  }
+  if (process.stdout.isTTY && Number.isInteger(process.stdout.columns)) return process.stdout.columns
+  return LIMITS.waveBoardDefaultColumns
+}
+
+/** A JSON file a drawing joins, read as the renderer expects it: never a throw. */
+function readSource(path) {
+  if (!existsSync(path)) return { value: null, read: 'absent' }
+  try {
+    return { value: JSON.parse(readFileSync(path, 'utf8')), read: 'ok' }
+  } catch {
+    return { value: null, read: 'unreadable' }
+  }
+}
+
+/** A path argument that names no file. `-` is stdin, never missing. */
+const missingFile = value => typeof value === 'string' && value !== '-' && !existsSync(value)
+
 // The plan mode override, resolved for the planner. Absent → undefined (the
 // classifier's recommendation decides inside the envelope). A single value is
 // passed through as a string so `decideMode` can accept or reject it; two
@@ -1795,19 +1859,58 @@ async function main() {
 
   switch (cmd) {
     case 'waves': {
-      const input = readInput(flags.classified, '--classified')
-      const maxParallel = flags['max-parallel'] ? Number(flags['max-parallel']) : undefined
-      // This subcommand sees only the classified input — it has no change name
-      // and therefore no tasks.md to read the section marker from. So the red
-      // wave is either named outright (`--red-wave`) or derived from the
-      // classification's own structure (`--tdd`). A run resolves it from the
-      // marker instead; see `resolveRedWave` in lib/run.mjs.
-      const plan = planWaves(input, {
-        maxParallel,
-        mode: modeFlag(flags),
-        redWave: redWaveFlag(flags, input)
-      })
-      emit(json, plan, formatPlan(plan))
+      const format = drawFormat(flags, json)
+      if (!format) {
+        if (flags.state !== undefined) die('--state needs --format board|mermaid')
+        if (flags.columns !== undefined) die('--columns needs --format board|mermaid')
+      }
+      if (flags.plan !== undefined && flags.classified !== undefined) {
+        die('--plan and --classified are mutually exclusive')
+      }
+      let plan
+      let source
+      if (flags.plan !== undefined) {
+        // A stored plan, rendered as it was planned. A path that names no file
+        // is spoken and exits 0: reading a plan is never itself a gate.
+        if (missingFile(flags.plan)) {
+          const reason = `no plan at ${flags.plan}`
+          emit(json, { plan: null, reason }, `${reason}\n`)
+          break
+        }
+        plan = readInput(flags.plan, '--plan')
+        source = flags.plan
+      } else {
+        const input = readInput(flags.classified, '--classified')
+        const maxParallel = flags['max-parallel'] ? Number(flags['max-parallel']) : undefined
+        // This subcommand sees only the classified input — it has no change name
+        // and therefore no tasks.md to read the section marker from. So the red
+        // wave is either named outright (`--red-wave`) or derived from the
+        // classification's own structure (`--tdd`). A run resolves it from the
+        // marker instead; see `resolveRedWave` in lib/run.mjs.
+        plan = planWaves(input, {
+          maxParallel,
+          mode: modeFlag(flags),
+          redWave: redWaveFlag(flags, input)
+        })
+        source = `interlock waves --classified ${flags.classified}`
+      }
+      if (!format) {
+        emit(json, plan, formatPlan(plan))
+        break
+      }
+      let state = null
+      let stateNote
+      if (flags.state !== undefined) {
+        if (missingFile(flags.state)) stateNote = `no state at ${flags.state}`
+        else state = readInput(flags.state, '--state')
+      }
+      // Validated for both forms; Mermaid is never cut, so it ignores the width.
+      const columns = boardColumns(flags)
+      const lines =
+        format === 'board'
+          ? drawPlanBoard(plan, { columns, state, stateNote })
+          : drawPlanMermaid(plan, { state, stateNote, source })
+      process.stdout.write(lines.join('\n') + '\n')
       break
     }
 
@@ -2344,6 +2447,7 @@ async function main() {
     case 'run-log': {
       const sub = positional[1]
       const logHome = corpusHome(root, flags).home
+      if (flags.format !== undefined && sub !== 'show') die('--format is read by run-log show only')
       if (sub === 'append') {
         const record = readInput(flags.event, '--event <file|->')
         const { written, path, reason } = appendRunLogEvent(logHome, record)
@@ -2360,8 +2464,32 @@ async function main() {
       } else if (sub === 'show') {
         const runId = positional[2]
         if (!runId) die('run-log show requires a runId')
+        const format = drawFormat(flags, json)
+        if (!format && flags.columns !== undefined) die('--columns needs --format board|mermaid')
         const result = readRunLog(logHome, runId)
-        emit(json, result, formatRunLog(result))
+        if (!format || !result.exists) {
+          // A run never recorded reads the same with and without --format.
+          emit(json, result, formatRunLog(result))
+        } else {
+          // The run's own state and manifest, from the state home beside the
+          // trajectory. The renderer joins each only when it names this run.
+          const manifest = readSource(join(logHome, MANIFEST_PATH))
+          if (manifest.read === 'ok' && !(manifest.value && manifest.value.schema === 'interlock.run/1')) {
+            manifest.value = null
+            manifest.read = 'unreadable'
+          }
+          const drawn = {
+            runId,
+            path: result.path,
+            records: result.records,
+            skipped: result.skipped,
+            state: readSource(join(logHome, STATE_PATH)),
+            manifest
+          }
+          const columns = boardColumns(flags)
+          const lines = format === 'board' ? drawRunBoard(drawn, { columns }) : drawRunMermaid(drawn)
+          process.stdout.write(lines.join('\n') + '\n')
+        }
       } else if (sub === 'query') {
         const runId = typeof flags.run === 'string' ? flags.run : undefined
         if (!runId) die('--run is required')

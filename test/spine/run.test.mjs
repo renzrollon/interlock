@@ -3049,6 +3049,14 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     changed: ['src/a.ts'],
     lanes: [[{ id: '6.1' }]],
     mergeBase: null,
+    // The six fields the relay carries for the ship meter's board
+    // (draw-the-wave-board-in-the-meter-pane design D1).
+    waveIndex: 4,
+    batchIndex: 1,
+    batchCount: 2,
+    skipped: false,
+    recorded: { ok: ['5.1'], failed: ['5.2'], notAttempted: ['5.3'] },
+    plan: { waves: [], testWave: null, deferred: [] },
     spawns: [
       {
         label: '6.1+1',
@@ -3079,6 +3087,26 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
   assert.equal(slim.wave, 3)
   assert.equal(slim.change, 'add-thing')
   assert.deepEqual(slim.banners, step.banners)
+  for (const kept of ['waveIndex', 'batchIndex', 'batchCount', 'skipped', 'recorded', 'plan']) {
+    assert.deepEqual(slim[kept], step[kept], `${kept} is a stated relay field for the meter`)
+  }
+  assert.deepEqual(RELAY_STEP_FIELDS, [
+    'schema',
+    'action',
+    'then',
+    'spawns',
+    'banners',
+    'change',
+    'wave',
+    'reason',
+    'pingModel',
+    'waveIndex',
+    'batchIndex',
+    'batchCount',
+    'skipped',
+    'recorded',
+    'plan'
+  ])
   assert.equal('prompt' in slim.spawns[0], false, 'the worker is handed a path and a hash, never the text')
   const { prompt, ...kept } = step.spawns[0]
   assert.deepEqual(slim.spawns[0], kept, 'everything else a spawn names reaches the interpreter')
@@ -3119,6 +3147,206 @@ test('on the Workflow host a run step is printed slim, and its exact bytes are k
     )
   } finally {
     cleanup(root)
+  }
+})
+
+// --- the step stream is the meter's board source (spec: ship/run-program) ----
+//
+// draw-the-wave-board-in-the-meter-pane: the adoption and replan steps carry a
+// summary of the waves that will run, the step `run record-batch` returns
+// carries the ids it recorded, and every other step grows by the three integer
+// positions alone. The summary module is loaded lazily so a missing module fails
+// these cases and nothing else in this file.
+
+const RUN_STEP_SCHEMA = 'interlock.run-step/1'
+const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel']
+const summaryModule = () => import('../../lib/plan-summary.mjs')
+const stateOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+const planOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
+
+// 1.2 depends on 1.1, so the planner defers it and the plan keeps a record.
+const DEPENDENT = {
+  tasks: [
+    { id: '1.1', group: 1, description: 'Edit src/mod11.ts', tier: 2, model: 'sonnet', isTestTask: false, paths: ['src/mod11.ts'] },
+    {
+      id: '1.2',
+      group: 1,
+      description: 'Edit src/mod12.ts',
+      tier: 3,
+      model: 'sonnet',
+      isTestTask: false,
+      paths: ['src/mod12.ts'],
+      dependsOn: ['1.1']
+    },
+    { id: '2.1', group: 2, description: 'Edit src/mod21.ts', tier: 2, model: 'haiku', isTestTask: false, paths: ['src/mod21.ts'] }
+  ]
+}
+
+test('the adoption step carries the summary of the state that will run, and no task paths', async () => {
+  const { summarizePlan } = await summaryModule()
+  const { root, batch: first } = verifiableRepo(DEPENDENT)
+  try {
+    assert.equal(first.schema, RUN_STEP_SCHEMA)
+    assert.equal(first.action, 'run-batch')
+    const plan = planOf(root)
+    assert.ok(plan.deferred.length > 0, 'the fixture must defer a task, or the edges prove nothing')
+    assert.deepEqual(first.plan, summarizePlan(stateOf(root), { deferred: plan.deferred }))
+    assert.ok(!JSON.stringify(first.plan).includes('"paths"'), 'a task path rode the summary')
+    assert.deepEqual(first.plan.deferred.find(r => r.id === '1.2').after, ['1.1'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the relayed adoption step places itself and carries the plan; a re-read batch carries only the positions', () => {
+  const { root, change } = repo()
+  try {
+    const started = JSON.parse(rawRun(root, ['run', 'start', '--change', change, '--host', 'workflow']))
+    assert.equal(started.schema, RUN_STEP_SCHEMA)
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const first = JSON.parse(rawRun(root, [...started.then.argv]))
+    assert.equal(first.schema, RUN_STEP_SCHEMA)
+    assert.equal(first.waveIndex, 0)
+    assert.equal(first.batchIndex, 0)
+    assert.ok(Number.isInteger(first.batchCount) && first.batchCount >= 1, `batchCount ${first.batchCount}`)
+    assert.ok(first.plan && Array.isArray(first.plan.waves), 'the adoption step relayed no plan')
+    for (const gone of ['remainingBatches', 'previousHandoffs', 'changed', 'lanes', 'mergeBase']) {
+      assert.equal(gone in first, false, `${gone} rode the relay`)
+    }
+    for (const s of first.spawns) assert.equal('prompt' in s, false)
+
+    // A resumed driver re-reads the step with `run next`, which the sequence
+    // guard admits once the manifest names no continuation.
+    const manifestPath = join(root, '.claude/ship/run.json')
+    writeFileSync(manifestPath, JSON.stringify({ ...manifestOf(root), lastThen: null }, null, 2) + '\n')
+    const again = JSON.parse(rawRun(root, ['run', 'next']))
+    assert.equal(again.schema, RUN_STEP_SCHEMA)
+    assert.equal(again.action, 'run-batch')
+    assert.equal('plan' in again, false, 'run next re-reads a batch; it does not re-send the summary')
+    assert.deepEqual(
+      Object.keys(again).filter(k => !RELAYED_TODAY.includes(k)).sort(),
+      ['batchCount', 'batchIndex', 'waveIndex'],
+      'a batch step that is not the adoption step grows by the three positions and nothing else'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('record-batch carries the ids it recorded, and no plan', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 First\n- [ ] 1.2 Second\n'
+  })
+  try {
+    const batch = toFirstBatch(root, change)
+    assert.ok(batch.plan, 'the adoption step carries the summary')
+    const lanes = batch.lanes.map(lane => lane.map(t => t.id))
+    // The first lane fails its first task and never attempts the rest; any other
+    // lane goes fine.
+    const results = lanes.map((ids, i) =>
+      i === 0
+        ? { tasks: [{ id: ids[0], outcome: 'failed', error: 'could not build' }, ...ids.slice(1).map(id => ({ id, outcome: 'not-attempted' }))] }
+        : laneOk(ids)
+    )
+    const recorded = run(root, [...batch.then.argv], { results }).step
+    assert.equal(recorded.schema, RUN_STEP_SCHEMA)
+    assert.equal('plan' in recorded, false, 'the summary rides only on the adoption and replan steps')
+    assert.deepEqual(recorded.recorded, {
+      ok: lanes.slice(1).flat(),
+      failed: [lanes[0][0]],
+      notAttempted: lanes[0].slice(1)
+    })
+    const tally = manifestOf(root).waves.at(-1)
+    assert.deepEqual(tally.notAttempted, recorded.recorded.notAttempted, 'the tally and the field are one expression')
+    assert.deepEqual(tally.failedIds, recorded.recorded.failed)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a record-batch that halts before its verdict carries no recorded ids', () => {
+  // The trajectory halt.
+  {
+    const { root, change } = repo()
+    try {
+      const batch = toFirstBatch(root, change)
+      const results = batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+      const ctx = {
+        root,
+        warn: () => {},
+        deps: {
+          headCommit: () => null,
+          observedChangedPaths: () => ['README.md'],
+          runMergeLanes: () => ({ status: 'clean', cleanupWarnings: [] }),
+          logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: false }),
+          logAgentSpawns: () => {}
+        }
+      }
+      const step = runRecordBatch(ctx, { results })
+      assert.equal(step.action, 'halt')
+      assert.equal('recorded' in step, false, 'a trajectory halt recorded nothing a reader may count')
+      assert.equal('plan' in step, false)
+    } finally {
+      cleanup(root)
+    }
+  }
+  // The merge halt.
+  {
+    const { root, change } = repo()
+    try {
+      const batch = startWithHost(root, change, 'qwen', { worktree: 'driver' }, ['--isolate-waves'])
+      const captured = batch.mergeBase
+      const results = batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+      const ctx = {
+        root,
+        warn: () => {},
+        deps: {
+          headCommit: () => captured,
+          worktreeHead: () => captured,
+          observedChangedPaths: () => ['README.md'],
+          runMergeLanes: () => ({ status: 'collision', collisions: ['README.md'], cleanupWarnings: [] }),
+          logWaveMutation: (_r, { state }) => ({ step: nextStep(state), ok: true }),
+          logAgentSpawns: () => {}
+        }
+      }
+      const step = runRecordBatch(ctx, { results })
+      assert.equal(step.action, 'halt')
+      assert.match(step.reason, /merge-lanes halted/)
+      assert.equal('recorded' in step, false, 'a merge halt recorded nothing a reader may count')
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a revised replan re-sends the summary from the revised state; a declined one sends none', async () => {
+  const { summarizePlan } = await summaryModule()
+  for (const revised of [true, false]) {
+    const { root, batch } = verifiableRepo()
+    try {
+      const verify = completeBatch(root, batch)
+      assert.equal(verify.action, 'verify')
+      assert.equal('plan' in verify, false)
+      const statePath = join(root, '.claude/ship/state.json')
+      file(root, '.claude/ship/state.json', { ...JSON.parse(readFileSync(statePath, 'utf8')), replanPending: true })
+      const offer = run(root, [...verify.then.argv], {
+        results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+      }).step
+      assert.equal(offer.action, 'replan')
+      assert.equal('plan' in offer, false)
+
+      file(root, '.claude/ship/replan.json', [
+        { group: 2, tasks: THREE_GROUPS.tasks.filter(t => t.group === 2) }
+      ])
+      const after = run(root, [...offer.then.argv], { results: [{ revised }] }).step
+      assert.equal(after.schema, RUN_STEP_SCHEMA)
+      if (revised) {
+        assert.equal(after.action, 'run-batch')
+        assert.deepEqual(after.plan, summarizePlan(stateOf(root)))
+      } else assert.equal('plan' in after, false, 'a declined replan rewrote no waves')
+    } finally {
+      cleanup(root)
+    }
   }
 })
 

@@ -21,8 +21,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, statSync } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { specifiers, walkModule } from '../helpers/module-walk.mjs'
+import { GUARD_NAMES } from '../../lib/meter-refusals.mjs'
+import { SPEC_PANE } from '../../lib/spec-meter.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOKS_JSON = join(ROOT, 'hooks', 'hooks.json')
@@ -45,7 +49,10 @@ export const ALLOWED_CALLS = Object.freeze([
   '$.state.set',
   // The meter's one timer (show-quiet-time-and-reset-the-meter-on-clear design
   // D2): the host's own interval, started for a live run and cancelled with it.
-  '$.clock.every'
+  '$.clock.every',
+  // The one file read (show-preflight-and-interrupted-runs-at-session-start
+  // design D5, D6): the preflight's report file and a card that file names.
+  '$.fs.read'
 ])
 
 /** What the launch guard added to the meter's allow-list, exactly. */
@@ -57,7 +64,9 @@ export const GUARD_REFUSAL = "if (launch && verdict.decision === 'deny') return 
 /**
  * The events the module hooks, exactly: the meter's, the launch guard's two
  * (design D3), and the session boundary the meter resets on
- * (show-quiet-time-and-reset-the-meter-on-clear design D4).
+ * (show-quiet-time-and-reset-the-meter-on-clear design D4). The spec meter
+ * (observe-the-spec-run-live design D1) adds none: its two observers are
+ * `prompt.submit` and a `tool.call` matcher.
  */
 export const HOOKED_EVENTS = Object.freeze([
   'session.start',
@@ -85,10 +94,14 @@ export const FORBIDDEN_TOKENS = Object.freeze([
   '$.store',
   // A wait charged to the hook's own budget: the meter's period is the host's
   // interval, never a sleep loop inside a hook (show-quiet-time design D2).
-  '$.clock.sleep'
+  '$.clock.sleep',
+  // The hook lists the cards and states the directories, in Node; the module
+  // reads the one file it is pointed at (show-preflight-and-interrupted-runs-
+  // at-session-start design D4).
+  '$.fs.list',
+  '$.fs.exists'
 ])
 
-const rel = abs => relative(ROOT, abs).split(sep).join('/')
 const CONTRACT_KEY = 'types'
 
 /** Every `$.<noun>.<method>` a source spells, in order of first appearance. */
@@ -96,53 +109,8 @@ export function engineCalls(source) {
   return [...new Set([...source.matchAll(/\$\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g)].map(m => `$.${m[1]}.${m[2]}`))]
 }
 
-/** Every module specifier a source names: static imports, re-exports, side-effect and dynamic imports. */
-export function specifiers(source) {
-  const found = new Set()
-  for (const re of [
-    /\bfrom\s*['"]([^'"]+)['"]/g,
-    /\bimport\s*['"]([^'"]+)['"]/g,
-    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g
-  ]) {
-    for (const m of source.matchAll(re)) found.add(m[1])
-  }
-  return [...found]
-}
-
-/**
- * The module's import closure, with what each file names that the engine
- * environment cannot load: a `node:` module, or a bare specifier other than
- * `claude-code`. Relative specifiers are walked; each must resolve to a file
- * inside the plugin.
- *
- * @returns {{files: string[], problems: string[]}}
- */
-export function walkModule(entry, root = ROOT) {
-  const seen = new Set()
-  const problems = []
-  const queue = [entry]
-  while (queue.length) {
-    const file = queue.shift()
-    if (seen.has(file)) continue
-    seen.add(file)
-    const source = readFileSync(file, 'utf8')
-    for (const spec of specifiers(source)) {
-      if (spec.startsWith('node:')) {
-        problems.push(`${rel(file)} imports '${spec}', a node: module the engine environment does not have`)
-      } else if (spec.startsWith('.')) {
-        const target = resolve(dirname(file), spec)
-        const inside = !relative(root, target).startsWith('..')
-        if (!inside) problems.push(`${rel(file)} imports '${spec}', which resolves outside the plugin`)
-        else if (!statSync(target, { throwIfNoEntry: false })?.isFile()) {
-          problems.push(`${rel(file)} imports '${spec}', which does not resolve to a file`)
-        } else queue.push(target)
-      } else if (spec !== 'claude-code') {
-        problems.push(`${rel(file)} imports '${spec}', a bare specifier other than claude-code`)
-      }
-    }
-  }
-  return { files: [...seen], problems }
-}
+// The walker is shared with the renderers' purity pin, so the two cannot drift.
+export { specifiers, walkModule }
 
 function readHooksJson() {
   return JSON.parse(readFileSync(HOOKS_JSON, 'utf8'))
@@ -220,11 +188,93 @@ test('the only refusal in the hooks module is the launch rule\'s verdict, once',
   assert.ok(!source.includes('Leftover'), 'the module restates the skill sentence instead of carrying the rule\'s reason')
 })
 
+test('the hooks module reads two files at most, and never the trajectory, a manifest, a wave state or the spill', () => {
+  // The preflight's report file and a card it names (design D5, D6), each from
+  // one helper; the brief's rejection of a whole-trajectory read stands.
+  const source = readFileSync(moduleEntry(), 'utf8')
+  const reads = occurrences(source, '$.fs.read(').length
+  assert.ok(reads >= 1 && reads <= 2, `the module spells $.fs.read( ${reads} times`)
+  const reached = ['ship/runs', 'run.json', 'state.json', 'spill'].filter(t => source.includes(t))
+  assert.deepEqual(reached, [], `the module names ${reached.join(', ')}`)
+})
+
+/** The text of `function <name>(` up to its closing brace at the start of a line, or null. */
+function functionSource(source, name) {
+  const at = source.search(new RegExp(`(?:async )?function ${name}\\(`))
+  if (at === -1) return null
+  const end = source.indexOf('\n}\n', at)
+  return source.slice(at, end === -1 ? source.length : end + 2)
+}
+
+test('the wave board is the renderer\'s rows, drawn from the steps and never from a file', () => {
+  // draw-the-wave-board-in-the-meter-pane design D6, D7: the board is
+  // `lib/draw-plan.mjs`'s, the plan is the relayed summary, and the section
+  // that draws it reads nothing from disk.
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.match(
+    source,
+    /import \{[^}]*\bdrawPlanBoardRows\b[^}]*\} from '\.\.\/lib\/draw-plan\.mjs'/,
+    'the module does not take the board from lib/draw-plan.mjs'
+  )
+  const named = ['plan.json', 'state.json', 'ship/runs'].filter(t => source.includes(t))
+  assert.deepEqual(named, [], `the module names ${named.join(', ')}`)
+  const section = functionSource(source, 'drawWaves')
+  assert.ok(section, 'no drawWaves function draws the wave section')
+  assert.ok(section.includes('drawPlanBoardRows('), 'drawWaves does not draw the board')
+  assert.ok(!section.includes('$.fs.'), 'the wave section reads a file')
+})
+
 test('the refusal pin names a second deny, and one fed by anything but the verdict', () => {
   const ok = `const verdict = decideLaunch(record, now)\n${GUARD_REFUSAL}\n`
   assert.deepEqual(strayRefusals(ok), [])
   assert.deepEqual(strayRefusals(`${ok}  if (x) return { deny: 'no' }\n`), ["line 3: if (x) return { deny: 'no' }"])
   assert.deepEqual(strayRefusals("  if (launch) return { deny: 'Leftover boxes' }\n"), ["line 1: if (launch) return { deny: 'Leftover boxes' }"])
+})
+
+/**
+ * The tokens that would mean the module priced something itself. The archived
+ * reservation (surface-prompt-cache-cost design, Non-Goals) left a dollar figure
+ * to a later decision; the meter shows the engine's `cost.usd` and makes none
+ * (speak-lane-turn-ends-and-session-cost design D5).
+ */
+const PRICE_TOKENS = Object.freeze(['MODEL_PRICES', 'perMillionTokens', 'cacheMultipliers'])
+
+test('the hooks module names no price table: the only dollar figure it shows is the engine\'s', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  const present = PRICE_TOKENS.filter(t => source.includes(t))
+  assert.deepEqual(present, [], `the hooks module names ${present.join(', ')}: a figure of its own needs its own decision`)
+})
+
+test('the hooks module reads the session usage only as the plain call, never with a breakdown', () => {
+  // The declaration: the plain call costs nothing; a breakdown counts each
+  // category with the token-count API, and the pane is drawn often (design D4).
+  const source = readFileSync(moduleEntry(), 'utf8')
+  const reads = [...source.matchAll(/\$\.session\.usage\(([^)]*)\)/g)].map(m => m[0])
+  assert.ok(source.includes('$.session.usage('), 'the hooks module no longer reads the session usage')
+  assert.equal(reads.length, occurrences(source, '$.session.usage(').length, 'a usage read this pin cannot parse')
+  assert.deepEqual(
+    reads.filter(r => r !== '$.session.usage()'),
+    [],
+    'a usage read with an argument'
+  )
+})
+
+/** The source of the hook registered for `event`: from its `on(` to the next `on(`. */
+export function hookBody(source, event) {
+  const start = source.indexOf(`on('${event}'`)
+  if (start === -1) return null
+  const end = source.indexOf('on(', start + 3)
+  return source.slice(start, end === -1 ? undefined : end)
+}
+
+test('the turn-end toast is raised inside a try, so a refused toast is never thrown', () => {
+  const body = hookBody(readFileSync(moduleEntry(), 'utf8'), 'turn.complete')
+  assert.ok(body, 'the hooks module hooks no turn.complete')
+  const toast = body.indexOf('$.ui.toast(')
+  assert.ok(toast !== -1, 'the turn.complete hook raises no toast')
+  const opened = body.lastIndexOf('try {', toast)
+  assert.ok(opened !== -1, 'the turn-end toast is not inside a try')
+  assert.ok(body.indexOf('catch', opened) > toast, 'the try before the turn-end toast closes before it')
 })
 
 /** The `{ plugin, key }` state references a source spells, as `plugin.key`. */
@@ -274,14 +324,14 @@ test('the hooks module hooks exactly the meter\'s events and the launch guard\'s
 })
 
 test('every file the hooks module reaches is inside the plugin and Node-free', () => {
-  const { problems } = walkModule(moduleEntry())
+  const { problems } = walkModule(moduleEntry(), ROOT)
   assert.deepEqual(problems, [], problems.join('\n'))
 })
 
 test('the walker names a node: import reached through a relative one', () => {
   // The spec's own failure case: a module that imports lib/ship-stage.mjs,
   // which imports node:fs, fails naming both.
-  const { problems } = walkModule(join(ROOT, 'lib', 'ship-stage.mjs'))
+  const { problems } = walkModule(join(ROOT, 'lib', 'ship-stage.mjs'), ROOT)
   assert.ok(problems.some(p => p.includes("'node:fs'")), problems.join('\n'))
 })
 
@@ -296,6 +346,100 @@ test('the kit\'s prompt fixtures are the payloads captured from the host', async
   assert.deepEqual(mirror.TASK_NOTIFICATION, captured('prompt-submit-task-notification.json'))
   assert.equal(mirror.COMPOSER.origin.kind, 'composer')
   assert.equal(mirror.TASK_NOTIFICATION.origin.kind, 'task-notification')
+})
+
+/** The four settings guards whose denials the module repeats (speak-permission-prompts-and-guard-denials design D6). */
+const GUARD_FILES = Object.freeze(['guard-tests.mjs', 'guard-tasks.mjs', 'guard-commit.mjs', 'guard-relaunch.mjs'])
+
+test('the guard names the module reads denials by are exactly the names the four guards print', () => {
+  const printed = GUARD_FILES.map(file => {
+    const m = readFileSync(join(ROOT, 'hooks', file), 'utf8').match(/^const GUARD = '([^']+)'$/m)
+    assert.ok(m, `hooks/${file} declares no \`const GUARD = '…'\``)
+    return m[1]
+  })
+  assert.deepEqual([...GUARD_NAMES].sort(), [...printed].sort(), 'a guard was renamed, added or dropped without lib/meter-refusals.mjs')
+})
+
+test('the kit\'s guard-deny fixture is the result captured from the host, and denyText rebuilds its text', async () => {
+  const mirror = await import('../fixtures/mod/refusals.mjs')
+  const { _provenance, ...captured } = JSON.parse(
+    readFileSync(join(ROOT, 'test', 'fixtures', 'mod', 'tool-call-denied-by-guard.json'), 'utf8')
+  )
+  assert.ok(_provenance, 'tool-call-denied-by-guard.json carries no _provenance')
+  assert.deepEqual(mirror.DENIED_BY_GUARD, captured)
+  const reason = captured.text.slice(captured.text.indexOf('guard-probe: '))
+  assert.equal(mirror.denyText(reason, 'Bash'), captured.text)
+  assert.equal(captured.isError, true)
+})
+
+// The spec meter (observe-the-spec-run-live design D1, D7, D10). It hooks no
+// new event: the engine raised no `skill.prompt` for a plugin skill on Claude
+// Code 2.1.291 (probe 1), so the load is read off `prompt.submit`, already
+// hooked, and a `tool.call` on `Skill`, a new matcher on a hooked event.
+
+/** The source of the hook whose registration begins `head`: from it to the next hook registered at the same indent. */
+function hookAt(source, head) {
+  const start = source.indexOf(head)
+  if (start === -1) return null
+  const end = source.indexOf('\n  on(', start + head.length)
+  return source.slice(start, end === -1 ? undefined : end)
+}
+
+test('neither the hooks module nor the spec meter\'s rules spell `complete` or read OpenSpec\'s roll-up', () => {
+  // Two spellings are not the meter's words and are stripped first: the
+  // engine's event name, which the meter must keep hooking, and the wave
+  // board's overlay key, the field `lib/draw-plan.mjs` reads for the recorded
+  // ids (draw-the-wave-board-in-the-meter-pane design D6).
+  const strip = source => source.split('turn.complete').join('').split('completed: run.recorded.ok').join('')
+  for (const file of [moduleEntry(), join(ROOT, 'lib', 'spec-meter.mjs')]) {
+    const left = strip(readFileSync(file, 'utf8'))
+    const at = left.search(/complete/i)
+    assert.equal(at, -1, `${file} spells ${left.slice(Math.max(0, at - 30), at + 30)}`)
+  }
+})
+
+test('the module writes its one status line from one composer', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.equal(occurrences(source, '$.ui.status(').length, 1, 'more than one $.ui.status( call: two writers can overwrite each other')
+  const composer = functionSource(source, 'setStatus')
+  assert.ok(composer && composer.includes('$.ui.status('), 'the one $.ui.status( call is not inside setStatus')
+})
+
+test('the spec pane\'s id is spelled in the module as the pure module names it', () => {
+  // The validator records a matcher only from a constant the module declares.
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.ok(source.includes(`const SPEC_PANE = '${SPEC_PANE}'`), `hooks/mod.mjs does not declare SPEC_PANE as '${SPEC_PANE}'`)
+})
+
+test('the spec skill\'s two observers pass the prompt and the Skill call on as they came', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.ok(!source.includes("on('skill.prompt'"), 'the module hooks skill.prompt, which no probed engine raises for a plugin skill')
+  for (const head of ["on('prompt.submit'", "on('tool.call', { tool: 'Skill' }"]) {
+    const body = hookAt(source, head)
+    assert.ok(body, `the module has no ${head} hook`)
+    const built = ['text:', 'next({', 'return {'].filter(t => body.includes(t))
+    assert.deepEqual(built, [], `${head} builds ${built.join(', ')} of its own`)
+  }
+})
+
+test('the kit\'s spec-run fixtures are the payloads captured from the host', async () => {
+  const mirror = await import('../fixtures/mod/spec-run.mjs')
+  const captured = name => {
+    const { _provenance, ...payload } = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'mod', name), 'utf8'))
+    assert.ok(_provenance, `${name} carries no _provenance`)
+    assert.match(_provenance.change, /observe-the-spec-run-live task 1\.1/)
+    return payload
+  }
+  assert.deepEqual(mirror.PROMPT_SPEC, captured('prompt-submit-spec.json'))
+  assert.deepEqual(mirror.SKILL_EXPLORE, captured('tool-call-skill-explore.json'))
+  assert.deepEqual(mirror.SPAWN_EXPLORE, captured('agent-spawn-explore.json'))
+  assert.deepEqual(mirror.BASH_STATUS, captured('tool-call-bash-openspec-status.json'))
+  assert.deepEqual(mirror.BASH_LEDGER_BLOCKING, captured('tool-call-bash-ledger-blocking.json'))
+  assert.deepEqual(mirror.BASH_GATE_BLOCKED, captured('tool-call-bash-gate-blocked.json'))
+  assert.deepEqual(mirror.BASH_VALIDATE_UNRESOLVED, captured('tool-call-bash-validate-unresolved.json'))
+  assert.deepEqual(mirror.BASH_LEDGER_TEXT, captured('tool-call-bash-ledger-text.json'))
+  assert.equal(mirror.BASH_LEDGER_BLOCKING.isError, true)
+  assert.equal(mirror.SPAWN_EXPLORE.input.subagentType, 'Explore')
 })
 
 test('npm test collects *.test.mjs only, so the mod\'s .test.ts never reaches Node', () => {
