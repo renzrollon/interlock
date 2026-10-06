@@ -1,6 +1,6 @@
 {
   "name": "@renzrollon/interlock",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
   "type": "module",
   "engines": {
