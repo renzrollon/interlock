@@ -2,8 +2,8 @@
 name: evals
 description: Author an Interlock eval case from an observed model-behaviour failure, and read a completed eval results run. Use when you have a reproduced failure — an archived proposal, a changelog entry, a run artifact, or a transcript — worth regression-testing against a real model, or when an eval run has finished and you need to know whether it is a regression, run-to-run variance, or no signal. Authoring needs cited evidence; the verdict comes from `interlock evals triage`, never from your own reading.
 license: MIT
-compatibility: Requires the early-access eval harness (`claude plugin eval`, enabled with CLAUDE_CODE_WALNUT_SPIRE=1) to RUN a suite. Authoring a case and triaging an existing results file need only Node.js >= 18 and the bundled interlock CLI.
-allowed-tools: Bash(interlock *) Bash(claude plugin eval *) Read Grep Glob Write
+compatibility: Requires the early-access harness (claude plugin eval, enabled with CLAUDE_CODE_WALNUT_SPIRE=1) to RUN a suite. Authoring a case and triaging an existing results file need only Node.js >= 18 and the bundled interlock CLI.
+allowed-tools: Bash(interlock *) Bash(claude plugin eval:*) Read Grep Glob Write
 metadata:
   type: authoring
   outputs:
@@ -148,7 +148,7 @@ test until it passes" failure the suite exists to prevent, one layer up.
 
 ## 5. When the harness is gated
 
-`claude plugin eval` prints `` `plugin eval` is currently in early access `` and
+The host command claude plugin eval prints that it is currently in early access and
 does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set in the environment — never
 in committed `.claude/settings.json`, which would produce a suite that looks
 configured and does not run.

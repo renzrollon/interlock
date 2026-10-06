@@ -68,7 +68,13 @@ import { haltStep } from '../lib/run.mjs'
 import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
 import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
 import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
-import { composeCheckpointMessage, postNtfy, readNotifyConfig, NOTIFY_TOPIC_ENV } from '../lib/notify.mjs'
+import {
+  composeCheckpointMessage,
+  postNtfy,
+  readNotifyConfig,
+  NOTIFY_TOPIC_ENV,
+  DEFAULT_NTFY_URL
+} from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import { evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
 import { inspectChange, resolveChange, listChanges, formatInspection, tickTasks, planCoverage } from '../lib/artifacts.mjs'
@@ -171,9 +177,11 @@ Usage:
                  [--priority high|default]   checkpoint reached while nobody was
   interlock notify checkpoint <change>       watching still reaches someone. The
                                              only outbound request this CLI makes.
-                                             Topic from INTERLOCK_NTFY_TOPIC,
-                                             server from INTERLOCK_NTFY_URL
-                                             (default https://ntfy.sh). Unset
+                                             Topic from the plugin option or
+                                             INTERLOCK_NTFY_TOPIC, server from
+                                             the plugin option or
+                                             INTERLOCK_NTFY_URL
+                                             (default ${DEFAULT_NTFY_URL}). Unset
                                              topic prints "not configured" and
                                              exits 0; a failed push exits 1.
                                              --json emits { sent, reason }

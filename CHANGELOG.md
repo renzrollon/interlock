@@ -2,12 +2,14 @@
 
 All notable changes to this project are documented here.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
-this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows Keep a Changelog 1.1.0, and
+this project adheres to Semantic Versioning 2.0.0.
 
-## [Unreleased]
+## 1.2.1 — 2026-10-06
 
 ### Added
+
+- **A listing icon, and a push topic the operator chooses to share.** `.claude-plugin/icon.png` is the listing image. A Claude Code user can set an ntfy topic and an optional server in the plugin's options; the topic is sensitive. Session start copies a set option into the session for `interlock notify` when the operator has not already provided one. `INTERLOCK_NTFY_TOPIC` and `INTERLOCK_NTFY_URL` still work, and a value already provided that way wins. `/interlock:fix-tests` no longer pre-approves every shell command. `/interlock:spec` filters `openspec instructions` through a bundled Node script.
 
 - **The ship meter says how long a run has been quiet.** A subscription run that reaches a plan window pauses instead of failing, and from the status line that pause looked exactly like a hang. While a run is live, `hooks/mod.mjs` now stamps the engine's time of each thing the run does: the launch, each step the CLI prints, each request a run agent starts and each answer it gets, each agent's turn end, each spawn. Once nothing has moved for `meter quiet after (ms)`, ` · quiet <n> min` follows the position on the status line and the spinner, and the pane gains a `last activity <time>` line with the word beside it. The next activity clears it. A lane thinking through one long request is not called quiet, because the request's start and its answer both count. The word names no cause: the plan windows stay beside it on the pane as the session reports them, with no threshold and no colour.
   - **Two caps, published, not restated.** `interlock limits` prints `meter quiet after (ms)` and `meter tick (ms)`. Both are keys in `lib/limits.mjs`, read by a new pure, Node-free `lib/meter-quiet.mjs` that the hooks module imports, and `test/spine/limits.test.mjs` fails if the module restates either.
@@ -105,6 +107,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Plugin installs now receive exactly what npm publishes, at the version npm carries.** The marketplace entry used `"source": "./"`, so `/plugin install interlock@interlock` copied the whole checkout from the default branch: 847 files, including `openspec/`, `docs/`, `test/` and `site/`, and any untagged commit on main. It now names the `release` branch of this repository. A new workflow, `.github/workflows/plugin-bundle.yml`, fills that branch after every successful Release run: it fetches the published tarball back from the registry, checks that its `plugin.json` carries the released version, validates it with `claude plugin validate --strict`, and commits it unpacked and unchanged. Plugin users move only when a release does. The same branch is what Anthropic's plugin directory tracks, and the bundle fits the directory's limits (138 files, none over 256 KiB) where the checkout raised two review holds.
+  - **The tarball is the whole plugin now, so a test says so.** `test/spine/package.test.mjs` walks every path the plugin reaches at runtime: the component directories, the manifest's `workflows` and `types`, each CLAUDE_PLUGIN_ROOT path that a hook command, skill, agent, shared contract, workflow or briefing names, and the import closure of every script among them. It fails on any path that no `files` entry ships or that does not exist. It also pins the marketplace entry's source, the bundle workflow's trigger, package and branch, and that both release workflows stay tracked past `.gitignore`.
+  - **`files` ships `.claude-plugin/plugin.json` alone.** The bundle is one plugin, so it carries no marketplace manifest naming a source of its own.
+  - **The branch is seeded, and rolled back, by hand.** Dispatch the workflow with a version already on npm. Re-running it for a version the branch already holds commits nothing.
+
 - **The launch rule moved into one Node-free module that both forms of the guard import.** `lib/launch-rule.mjs` holds what a ship launch is, what a human prompt is, the decision and its words, and three record transforms, `emptyRecord`, `withLaunch` and `withPrompt`. It imports only `./limits.mjs`. `lib/launch-ledger.mjs` keeps the file and re-exports every rule name unchanged, so `hooks/guard-relaunch.mjs` and `test/hooks.test.mjs` import what they imported before. `recordLaunch` and `recordPrompt` now apply `withLaunch` and `withPrompt`, so the file and the session record change by the same functions. One visible effect: a launch written to a ledger now drops earlier launches past the published age, which never changed a verdict. `test/spine/launch-ledger.test.mjs` pins that each re-exported name is the rule module's own object, that the rule names no `node:` import, and that `decideLaunch` over a plain record and over the same facts read from a file returns the same verdict and reason.
 
 - **The hooks module's observe-only pin now allows exactly one refusal instead of none.** `test/spine/mod-pins.test.mjs` no longer forbids the token `deny` outright. It allows one line, `if (launch && verdict.decision === 'deny') return { deny: verdict.reason }`, with `verdict` assigned once from `decideLaunch` imported from `lib/launch-rule.mjs`, and fails naming any other. The allow-list grows by exactly `$.clock.now`, `$.state.get` and `$.state.set`. The module's session-state keys must equal the contract's, and its hooked events are pinned, `prompt.submit` and `session.receive` included.
@@ -196,14 +203,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **An unattended ship run that stops can now reach you.** Four independent "quick win" gaps closed at the one seam both hosts already pass through — `interlock run close`:
 
-  - **Push on halt or completion.** With `INTERLOCK_NTFY_TOPIC` set, `run close --notify` — which both `workflows/ship.js` and `bin/interlock-run` now pass on every close — posts one [ntfy](https://ntfy.sh) message per terminal outcome: `high` priority on `SHIP HALTED`, default otherwise. The message carries the summary's first line, the change and the run id, and nothing that identifies the machine — never the topic, the cwd or the project slug. `INTERLOCK_NTFY_URL` selects a self-hosted server (default `https://ntfy.sh`); leaving the topic unset makes the default path, and the test suite, open no connection at all. A failed push prints `push: failed — <reason>` and a `PUSH FAILED: <reason>` degradation banner and never moves the exit code. `interlock notify` and the `interlock notify checkpoint <change>` sugar (used by `/interlock:spec`'s checkpoint) are also callable standalone.
+  - **Push on halt or completion.** With `INTERLOCK_NTFY_TOPIC` set, `run close --notify` — which both `workflows/ship.js` and `bin/interlock-run` now pass on every close — posts one ntfy message per terminal outcome: `high` priority on `SHIP HALTED`, default otherwise. The message carries the summary's first line, the change and the run id, and nothing that identifies the machine — never the topic, the cwd or the project slug. `INTERLOCK_NTFY_URL` selects a self-hosted server (default the public server); leaving the topic unset makes the default path, and the test suite, open no connection at all. A failed push prints `push: failed — <reason>` and a `PUSH FAILED: <reason>` degradation banner and never moves the exit code. `interlock notify` and the `interlock notify checkpoint <change>` sugar (used by `/interlock:spec`'s checkpoint) are also callable standalone.
   - **The summary names the run and where it closed.** Every terminal summary now carries `run: <runId>` (or `run: none — the run halted before a plan was adopted`), `project: <slug>` and `cwd: <absolute path>` rows, so a reader who was not watching can find the trajectory file and the checkout afterwards. `<slug>` is a pure function of the closing directory (`lib/project-slug.mjs`), matching the directory name Claude Code uses under `~/.claude/projects`.
   - **A clean completion reminds you to archive.** When every task is ticked and the run did not halt, the summary prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — plus `also unarchived: <n> completed change(s) — run interlock drift` when other changes are also sitting there — right before the closing "do not start another run" line. It is a reminder, never a gate: the exit code never moves, because the shipped change satisfies the unarchived check by construction at every clean close.
   - **`interlock doctor` stops reporting green for a run whose first ping prompts.** `REQUIRED_COMMANDS` gains `test`, `printenv` and `mkdir` — the commands the environment probe actually shells out to — each with a `why`, and a new `notify` row (`ok` naming the server, `skip` naming `INTERLOCK_NTFY_TOPIC`, never the value). A repo-fact test now checks this repository's own `.claude/settings.json` against the derived list, and a drift test extracts every instructed command out of `workflows/ship.js` and `lib/prompts/*.mjs` and fails, naming the file and the command, the moment one falls outside `REQUIRED_COMMANDS`, the runner commands, or the documented host read-only set (`HOST_READ_ONLY`).
 
   All four are additive: unset `INTERLOCK_NTFY_TOPIC` and a run behaves exactly as before, plus the three new identity rows and, on a clean ship, the archive line. See [when it stops](docs/04-when-it-stops.md) for `ARCHIVE PENDING` and `PUSH FAILED`, and [push notifications](docs/07-cli-and-configuration.md#the-one-network-call-push-notifications) for the two environment variables.
 
-- **The CLIs install without Claude Code.** `package.json` was `private: true`, so the only way onto a PATH was a git checkout or the plugin install — even though the policy engine, the graph and the runner are stdlib Node with no dependencies and each is useful outside a Claude Code session. The package publishes as **`@renzrollon/interlock`** (`npm i -g @renzrollon/interlock`, or `npx -p @renzrollon/interlock interlock ...`), and the plugin install path is untouched.
+- **The CLIs install without Claude Code.** `package.json` was `private: true`, so the only way onto a PATH was a git checkout or the plugin install — even though the policy engine, the graph and the runner are stdlib Node with no dependencies and each is useful outside a Claude Code session. The package publishes as **`@renzrollon/interlock`** (install that package globally), and the plugin install path is untouched.
 
   What ships is a **whitelist**, not an ignore list: `files` names `bin`, `lib`, `workflows`, `skills`, `hooks`, `agents`, `shared`, `.claude-plugin` and the three root documents, so a new directory cannot ship by accident. The failure that whitelist invites is the opposite one — a reachable `lib/` file left out packs cleanly, installs cleanly, and dies at the user's first command — so `test/spine/package.test.mjs` walks the transitive relative-import closure of **every declared `bin` entry** (including the bare side-effect `import` that is how `bin/interlock-graph` reaches the whole graph CLI) and fails naming any reached file no `files` entry covers. It also asserts each `bin` entry exists, is executable and carries the node shebang, and that `package.json`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` carry **one** `MAJOR.MINOR.PATCH` version — the `bump-release` skill keeps bumping them together, and a partial bump is now a red build rather than a habit that held.
 
@@ -283,7 +290,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Removed
 
-- **`/interlock:session-retro`** moved to [renzrollon/shippable-skills](https://github.com/renzrollon/shippable-skills). It is no longer part of this plugin. Install it with `npx skills add renzrollon/shippable-skills` (or the Claude Code plugin on that repo). The live-session retro was never Interlock-specific; shipping it here blocked Cursor, Copilot, and Codex.
+- **`/interlock:session-retro`** moved to renzrollon/shippable-skills. It is no longer part of this plugin. Install it from that repository (or the Claude Code plugin on that repo). The live-session retro was never Interlock-specific; shipping it here blocked Cursor, Copilot, and Codex.
 
 ### Changed
 
@@ -299,7 +306,7 @@ The second **made them true** — the ship loop moved out of prose and into a
 dynamic-workflow script backed by a policy CLI, and the opt-in continuity path
 gained the fail-closed readiness gate it needs.
 
-> **Breaking:** `/interlock:ship` is now a [dynamic workflow](https://code.claude.com/docs/en/workflows)
+> **Breaking:** `/interlock:ship` is now a dynamic workflow
 > rather than a skill. Interlock requires **Claude Code v2.1.154+ with dynamic
 > workflows enabled**. Where workflows are disabled — `disableWorkflows`, org
 > policy, `CLAUDE_CODE_DISABLE_WORKFLOWS`, or a Pro plan that has not enabled
@@ -482,7 +489,7 @@ that on should be a decision made against real data rather than an intuition.
 And earned autonomy stays storage-only (§4.2 D) for the same reason: a feature
 that gates a workflow should earn its own trust first.
 
-## [0.1.0] — 2026-08-12
+## 0.1.0 — 2026-08-12
 
 Initial release. Interlock is a Claude Code plugin that layers autonomous
 spec-driven orchestration on top of the OpenSpec CLI.
@@ -540,5 +547,3 @@ spec-driven orchestration on top of the OpenSpec CLI.
   languages get docs and spec indexing plus the full workflow, but no
   import/symbol edges — the skills state this rather than implying completeness.
 - The autonomy ladder ships opt-in until it has accumulated real run data.
-
-[0.1.0]: https://github.com/renzrollon/interlock/releases/tag/v0.1.0
