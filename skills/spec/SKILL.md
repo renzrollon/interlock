@@ -189,10 +189,10 @@ What this skill owes the ledger:
 Check the file rather than trusting that you wrote it well:
 
 ```bash
-interlock ledger "<name>"
+interlock ledger "<name>" --json
 ```
 
-It exits non-zero when the ledger blocks — a `needs_human` row remains, a row is invalid, or **the ledger is missing entirely**. An absent `decisions.md` is a failure of the audit, not an empty result: "no rows" reads as "nothing needs a human", which is the one conclusion a file that was never written cannot support. The output distinguishes *missing* from *present and empty* from *unparseable*.
+It exits non-zero when the ledger blocks — a `needs_human` row remains, a row is invalid, or **the ledger is missing entirely**. An absent `decisions.md` is a failure of the audit, not an empty result: "no rows" reads as "nothing needs a human", which is the one conclusion a file that was never written cannot support. The output distinguishes *missing* from *present and empty* from *unparseable*. In the JSON, `blocking` is the verdict; report the `needs_human` entries of `rows` by `id` and `question` and the entries of `invalidRows` by `reason`, and read `missing` or `unparseable` as why a ledger with no rows still blocks.
 
 A blocking ledger with rows in it is not a failure of this skill: an honest blocking ledger is the correct output for a change that hit a real product question. It is only a failure if the questions never got written down.
 
@@ -202,10 +202,10 @@ A blocking ledger with rows in it is not a failure of this skill: an honest bloc
 
 ```bash
 openspec validate
-interlock validate "<name>"
+interlock validate "<name>" --json
 ```
 
-`openspec validate` checks schema conformance. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing.
+`openspec validate` checks schema conformance. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
 
 ---
 
@@ -225,7 +225,7 @@ interlock autonomy clean review-artifacts explore spec
 
 A clean gate credits `explore` and `spec` too; a blocker resets them. That is what stops this skill earning autonomy by emitting shallow specs — the downstream gate blames whoever produced the bad artifact.
 
-**Keep the blocker and warning counts.** Continuity needs them, and it will not accept a review it cannot see.
+**`<n>` is `autonomyOutcome.blockers` from the gate's JSON**, carried over from the review — never a count made in prose, including the review's own `SUMMARY:` line. Continuity takes the findings file itself, so keep its path.
 
 ---
 

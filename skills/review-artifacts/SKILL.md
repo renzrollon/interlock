@@ -19,7 +19,7 @@ Resolve the change:
 interlock validate [change-name] --json
 ```
 
-If it reports ambiguity, pick the change the user named. If they named none and several are active, review the most recently modified and **say which one you picked** — this skill runs inside automated chains where a question would stall the flow.
+An output carrying `error` and `candidates` instead of `ready` means the name did not resolve; `problems` is the list the change must clear. If the name did not resolve, pick the change the user named. If they named none and several are active, review the most recently modified and **say which one you picked** — this skill runs inside automated chains where a question would stall the flow.
 
 Read all of `proposal.md`, `specs/**/*.md`, `design.md`, `tasks.md`.
 
@@ -119,9 +119,9 @@ Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` in this
 Then let the deterministic gate decide, rather than deciding in prose:
 
 ```bash
-interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json --metrics <change>
+interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json --metrics <change> --json
 ```
 
-The gate blocks if and only if at least one finding is a `blocker`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose.
+The gate blocks if and only if at least one finding is a `blocker`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose. In the JSON, `passed` is that same verdict; report the entries of `blockers` and `malformed`, read `metrics.written` and `metrics.reason` for whether the record landed, and hand `autonomyOutcome.blockers` on as the blocker count the spec skill passes to `interlock autonomy record`.
 
 `--metrics <change>` is not optional decoration. It writes the four counts this gate produced — raised, dismissed, dropped by the quality band, surviving — to `.claude/metrics/` in the schema `interlock report` recognizes. Drop it and this review path becomes invisible to the report forever: the review-finding indicators read `unobserved` no matter how many gates ran. It is bookkeeping only and cannot change the verdict or the exit status.
