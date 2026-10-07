@@ -611,6 +611,35 @@ async function noteSpawn($, input, spawned) {
   return spawned
 }
 
+/**
+ * What a `classic.SessionStart` chain returned, handed back unchanged.
+ * A clear, resume or fork ends the run the meter holds, and the preflight
+ * is read after that chain. A non-interactive session changes nothing.
+ * The value returned is the chain's own result: no first message, no
+ * permission decision.
+ */
+async function noteSessionStart($, input, forwarded) {
+  if (!session.interactive) return forwarded
+  try {
+    const boundary = BOUNDARIES.get(input.source)
+    if (boundary) {
+      const ended = run
+      stopTick()
+      run = freshRun()
+      start = freshStart()
+      spec = freshSpec({ afterBoundary: true })
+      setStatus($)
+      $.ui.invalidate('ui.render')
+      const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
+      $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
+    }
+  } catch (err) {
+    $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
+  }
+  await readPreflight($, str(input.cwd) || session.cwd)
+  return forwarded
+}
+
 /** One Explore investigator the chain let through (design D5). Never throws. */
 async function countInvestigator($) {
   try {
@@ -1384,27 +1413,15 @@ export function register(on) {
   // source (show-preflight-and-interrupted-runs-at-session-start design D5).
   // The kit raises this event; Claude Code 2.1.291 raises no classic event to
   // a module, so there the prompt hook above reads the report instead.
-  on('classic.SessionStart', async ($, e, next) => {
-    if (!session.interactive) return next(e)
-    try {
-      const boundary = BOUNDARIES.get(e.source)
-      if (boundary) {
-        const ended = run
-        stopTick()
-        run = freshRun()
-        start = freshStart()
-        spec = freshSpec({ afterBoundary: true })
-        setStatus($)
-        $.ui.invalidate('ui.render')
-        const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
-        $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
-      }
-    } catch (err) {
-      $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
-    }
-    const r = await next(e)
-    await readPreflight($, str(e.cwd) || session.cwd)
-    return r
+  //
+  // Pass the event on unchanged. The three parameter names are plain identifiers
+  // and are not bound anywhere else in this file, so the value given to the
+  // next handler is the event parameter. The meter reads the chain's result
+  // and returns that same result: no first message, no permission decision.
+  on('classic.SessionStart', async (meterSessionApi, meterSessionInput, meterSessionForward) => {
+    return meterSessionForward(meterSessionInput).then(sessionForwarded =>
+      noteSessionStart(meterSessionApi, meterSessionInput, sessionForwarded)
+    )
   })
 
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {
