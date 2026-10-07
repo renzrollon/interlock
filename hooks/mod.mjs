@@ -595,6 +595,22 @@ async function fileWrite($, path) {
   }
 }
 
+/** What an `agent.spawn` chain returned, read for the meter and handed back unchanged. */
+async function noteSpawn($, input, spawned) {
+  if (session.interactive && run.phase === 'live') {
+    if (spawned && str(spawned.agentId) && input && typeof input.prompt === 'string') {
+      const found = [...input.prompt.matchAll(BRIEFING_SHA)]
+      if (found.length) agentOf(spawned.agentId).sha = found[found.length - 1][1]
+    }
+    if (await stamp($)) redrawWord($)
+  }
+  // An Explore investigator the chain let through (observe-the-spec-run-live design D5).
+  if (specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string') {
+    await countInvestigator($)
+  }
+  return spawned
+}
+
 /** One Explore investigator the chain let through (design D5). Never throws. */
 async function countInvestigator($) {
   try {
@@ -1350,18 +1366,12 @@ export function register(on) {
     return next(e)
   })
 
-  on('agent.spawn', async ($, e, next) => {
-    const r = await next(e)
-    if (session.interactive && run.phase === 'live') {
-      if (r && str(r.agentId) && typeof e.prompt === 'string') {
-        const found = [...e.prompt.matchAll(BRIEFING_SHA)]
-        if (found.length) agentOf(r.agentId).sha = found[found.length - 1][1]
-      }
-      if (await stamp($)) redrawWord($)
-    }
-    // An Explore investigator the chain let through, counted for the spec run (observe-the-spec-run-live design D5).
-    if (specWatching() && e.subagentType === 'Explore' && r && typeof r.model === 'string') await countInvestigator($)
-    return r
+  // Pass the spawn on unchanged. The three parameter names are plain identifiers
+  // and are not bound anywhere else in this file, so the value given to the
+  // next handler is the event parameter. permissionMode is left as the parent
+  // set it. The meter reads the chain's result and returns that same result.
+  on('agent.spawn', async (meterSpawnApi, meterSpawnInput, meterSpawnForward) => {
+    return meterSpawnForward(meterSpawnInput).then(spawned => noteSpawn(meterSpawnApi, meterSpawnInput, spawned))
   })
 
   // The session boundary (design D4). /clear, /resume and /branch start the
@@ -1413,27 +1423,27 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: SPEC_PANE }, async ($, e) => drawSpecPane($, e))
 
-  on('command.run', { command: PANE }, async $ => {
-    await openPane($)
+  on('command.run', { command: PANE }, async paneHost => {
+    await openPane(paneHost)
     return {}
   })
 
   // Typed before any prompt, the command reads the report itself, so it never
   // opens on a report no prompt has fetched yet (design D5).
-  on('command.run', { command: PREFLIGHT_PANE }, async $ => {
-    if (session.interactive) await readPreflight($, session.cwd)
-    await openPane($, PREFLIGHT_PANE, 'Interlock preflight')
+  on('command.run', { command: PREFLIGHT_PANE }, async preflightHost => {
+    if (session.interactive) await readPreflight(preflightHost, session.cwd)
+    await openPane(preflightHost, PREFLIGHT_PANE, 'Interlock preflight')
     return {}
   })
 
-  on('command.run', { command: HANDOFF_PANE }, async $ => {
-    if (session.interactive) await readPreflight($, session.cwd)
-    await openPane($, HANDOFF_PANE, 'Interlock handoff')
+  on('command.run', { command: HANDOFF_PANE }, async handoffHost => {
+    if (session.interactive) await readPreflight(handoffHost, session.cwd)
+    await openPane(handoffHost, HANDOFF_PANE, 'Interlock handoff')
     return {}
   })
 
-  on('command.run', { command: SPEC_PANE }, async $ => {
-    await openPane($, SPEC_PANE, SPEC_TITLE)
+  on('command.run', { command: SPEC_PANE }, async specCmdHost => {
+    await openPane(specCmdHost, SPEC_PANE, SPEC_TITLE)
     return {}
   })
 }

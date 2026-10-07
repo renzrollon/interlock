@@ -390,7 +390,7 @@ report:
   .claude/metrics/*.json. Coverage first — how many trajectories carry a
   receipt at all — because every receipt-derived indicator rests on it and a
   thin corpus must read as thin rather than as clean. Metrics files are
-  classified by their "schema" key, never by filename: a skill also writes
+  classified by their "schema" field, never by filename: a skill also writes
   review-artifacts-*.json into that directory, and it carries finding bodies
   rather than counts. "Does the merged diff match the plan" is computed from the
   two path sets the receipt records — touched paths that the plan predicted,
@@ -520,7 +520,7 @@ review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
   --json                 Emit { prose, excludePaths, owner, problems }.
   The prose is advice a reviewer reads; it can never lower survival. The band and
-  nit cap are NOT policy fields — a threshold-shaped key is reported, not adopted.
+  nit cap are NOT policy fields — a threshold-shaped field is reported, not adopted.
   Always exits 0; an absent REVIEW.md is the empty policy, not an error.
 
 risk:
@@ -629,7 +629,7 @@ run-log:
                          "query", not for the mutating commands the gate covers.
 
 tasks:
-  tick --ids <ids>       Comma-separated task ids (the leading token of a
+  tick --ids <ids>       Comma-separated task ids (the id at the start of a
                          checkbox, e.g. 1.1). Flips matching - [ ] to - [x].
                          Already-checked matches are reported, not rewritten.
                          Exits 1 and names every id it could not mark: a
@@ -853,21 +853,21 @@ function parseArgs(argv) {
       out._.push(a)
       continue
     }
-    const key = a.slice(2)
+    const flag = a.slice(2)
     const next = argv[i + 1]
     // Boolean flags take no value.
-    if (BOOLEAN_FLAGS.has(key)) {
-      out.flags[key] = true
+    if (BOOLEAN_FLAGS.has(flag)) {
+      out.flags[flag] = true
       continue
     }
-    if (key === 'changed') {
+    if (flag === 'changed') {
       // Variadic: consume until the next --flag.
       const vals = []
       while (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) vals.push(argv[++i])
       out.flags.changed = vals
       continue
     }
-    if (key === 'mode') {
+    if (flag === 'mode') {
       // Accumulated rather than last-wins: `--mode solo --mode waves` must reach
       // `decideMode` as an array so it is rejected as contradictory, not silently
       // resolved to the last flag. A single `--mode solo` stays a scalar string.
@@ -876,10 +876,10 @@ function parseArgs(argv) {
       continue
     }
     if (next === undefined || next.startsWith('--')) {
-      out.flags[key] = true
+      out.flags[flag] = true
       continue
     }
-    out.flags[key] = next
+    out.flags[flag] = next
     i++
   }
   return out
@@ -1706,10 +1706,10 @@ function parseBand(flags) {
   return { ...TOLERANCE_BAND, minQualityToReport: min }
 }
 
-function num(flags, key) {
-  if (flags[key] === undefined) return undefined
-  const n = flags[key] === true ? NaN : Number(flags[key])
-  if (!Number.isFinite(n)) die(`--${key} requires a number`)
+function num(flags, flag) {
+  if (flags[flag] === undefined) return undefined
+  const n = flags[flag] === true ? NaN : Number(flags[flag])
+  if (!Number.isFinite(n)) die(`--${flag} requires a number`)
   return n
 }
 
@@ -2106,7 +2106,7 @@ async function main() {
       // topic gets a line saying so and exit 0, never a halted loop.
       const config = readNotifyConfig(process.env)
       // Order matters: a malformed topic yields `{invalid}` with no `topic`
-      // key at all, and reporting that as "not configured" would tell an
+      // field at all, and reporting that as "not configured" would tell an
       // operator who DID configure it that they had not.
       if (!config.invalid && !config.topic) {
         const notConfigured = { sent: false, reason: `not configured — set ${NOTIFY_TOPIC_ENV}` }
@@ -2277,7 +2277,7 @@ async function main() {
 
       // The repo-root REVIEW.md, if any. Its do-not-report paths are enforced
       // here as a survival filter — never handed to a model as a request. Its
-      // problems (a malformed file, a band-like key) are reported alongside the
+      // problems (a malformed file, a band-like field) are reported alongside the
       // review, so a broken policy is diagnosable rather than silent.
       const policy = readReviewPolicy(root)
 
@@ -2346,7 +2346,7 @@ async function main() {
       const name = requireChange(root, requestedName(positional, flags), json)
       const parsed = readLedger(root, name)
       const summary = summarizeLedger(parsed)
-      // `summary.invalid` is a count, so the rows behind it get their own key
+      // `summary.invalid` is a count, so the rows behind it get their own field
       // rather than shadowing it.
       emit(
         json,
@@ -2948,7 +2948,7 @@ async function main() {
         })
         if (workflowEffortProbe && workflowEffortProbe.capability === 'unsupported') {
           // Spoken where the assumption used to be silent. The script still
-          // forwards the option: `agent()` does not reject an unknown key the
+          // forwards the option: `agent()` does not reject an unknown field the
           // way the CLI rejects an unknown flag.
           const banner = `EFFORT ROUTING UNAVAILABLE (workflow): ${workflowEffortProbe.reason}`
           const manifest = readManifest(root)
