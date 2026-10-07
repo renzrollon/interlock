@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+// interlock-ship-acp — the previous name of `interlock-run --host acp`.
+//
+// The ACP driver became a runner with pluggable host adapters, and ACP became
+// one of them (`promote-interlock-run-with-host-adapters`, design D11). This
+// shim keeps every existing invocation working for one release: it says the new
+// name on stderr — never on stdout, which carries the run summary a caller may
+// be parsing — and runs `interlock-run --host acp` with the same arguments and
+// the same environment.
+//
+// Removed in the next minor version. `CHANGELOG.md` names the release.
+
+import { spawn } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+process.stderr.write(
+  'interlock-ship-acp is now interlock-run --host acp — this shim is removed in the next minor version\n'
+)
+
+const runner = join(dirname(fileURLToPath(import.meta.url)), 'interlock-run')
+
+// Executed as `node <runner>` rather than as an executable so it works
+// regardless of the file mode on the checkout and of what is on PATH — the same
+// reason `lib/host.mjs` invokes the policy CLI that way.
+const child = spawn(process.execPath, [runner, '--host', 'acp', ...process.argv.slice(2)], {
+  stdio: 'inherit'
+})
+
+child.on('error', err => {
+  process.stderr.write(`interlock-ship-acp: could not start interlock-run: ${err.message}\n`)
+  process.exit(2)
+})
+
+// The runner's exit status is the contract; a shim that flattened it would turn
+// a halt into a clean run for anyone still using the old name.
+child.on('close', (code, signal) => {
+  process.exit(signal ? 1 : typeof code === 'number' ? code : 1)
+})

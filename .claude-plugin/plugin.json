@@ -1,0 +1,165 @@
+{
+  "name": "interlock",
+  "displayName": "Interlock",
+  "version": "1.2.1",
+  "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec. Onboard a repo, produce a reviewed spec, then ship it start-to-commit with parallel agents and a deterministic gate spine.",
+  "author": {
+    "name": "Carl Rollon",
+    "url": "https://github.com/renzrollon"
+  },
+  "homepage": "https://github.com/renzrollon/interlock",
+  "repository": "https://github.com/renzrollon/interlock",
+  "license": "MIT",
+  "keywords": [
+    "openspec",
+    "spec-driven-development",
+    "orchestration",
+    "multi-agent",
+    "code-review",
+    "knowledge-graph"
+  ],
+  "userConfig": {
+    "ntfy_topic": {
+      "type": "string",
+      "title": "ntfy topic",
+      "description": "Optional. A topic for one push when a ship run stops or finishes. Leave empty to send nothing. Anyone who knows the topic can read the messages.",
+      "sensitive": true
+    },
+    "ntfy_url": {
+      "type": "string",
+      "title": "ntfy server",
+      "description": "Optional. Server to post to. Leave empty to use the public server.",
+      "sensitive": false
+    }
+  },
+  "workflows": "./workflows",
+  "types": "./types/index.d.ts",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs\""
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "^workflow-subagent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs\""
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^workflow-subagent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs\""
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs\""
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-tests.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-tasks.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-commit.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-relaunch.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-relaunch.mjs\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-relaunch.mjs\""
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-relaunch.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

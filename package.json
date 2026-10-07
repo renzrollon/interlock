@@ -1,0 +1,42 @@
+{
+  "name": "@renzrollon/interlock",
+  "version": "1.2.1",
+  "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "interlock": "bin/interlock",
+    "interlock-graph": "bin/interlock-graph",
+    "interlock-run": "bin/interlock-run",
+    "interlock-ship-acp": "bin/interlock-ship-acp"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "workflows",
+    "skills",
+    "hooks",
+    "types",
+    "agents",
+    "shared",
+    ".claude-plugin/plugin.json",
+    "assets",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test $(find test -name '*.test.mjs' | sort)",
+    "validate": "claude plugin validate . --strict"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renzrollon/interlock.git"
+  }
+}
