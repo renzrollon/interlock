@@ -382,6 +382,31 @@ test('a note that overflows is cut with its row, the fixed cells and state word 
   assert.ok(!row.includes('In lib/doctor.mjs'), 'the title gives way first')
 })
 
+test("a lane row's parts.state is the state word in its text", () => {
+  const rows = boardRows(PLAN, { columns: LIMITS.waveBoardDefaultColumns, state: STATE })
+  const lanes = rows.filter(r => r.key.startsWith('lane:'))
+  assert.ok(lanes.length > 0)
+  for (const row of lanes) {
+    assert.ok(row.parts, row.key)
+    assert.equal(row.parts.label, row.key.slice('lane:'.length), row.key)
+    const word = row.parts.state
+    if (!word) continue
+    const cells = fixed(row.text)
+    const found = word === 'per task'
+      ? cells.includes('per task')
+      : new RegExp(`(^| )${word}( |$)`).test(cells)
+    assert.ok(found, `${row.key} text ${cells} does not carry parts.state ${word}`)
+  }
+  const header = rows.find(r => r.key === 'header')
+  const verify = rows.find(r => r.key === 'verify:0')
+  const tail = rows.find(r => r.key === 'tail')
+  assert.equal(header && 'parts' in header, false)
+  assert.equal(verify && 'parts' in verify, false)
+  assert.equal(tail && 'parts' in tail, false)
+  const wave = rows.find(r => r.key === 'wave:0')
+  assert.ok(wave.parts.title.includes('wave 1'), wave.parts.title)
+})
+
 test('a skip carrying its wave position is placed by it, with no ambiguity', () => {
   const columns = 400
   const state = {

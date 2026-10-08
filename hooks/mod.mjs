@@ -64,10 +64,10 @@
 // drawn from one source: the plan summary the adoption and replan steps carry,
 // with an overlay built from the steps alone (the cursor, the ids each recorded
 // batch names, the skipped verifications, the halt). No file is read for it.
-// The layout, the state words and the cut are the renderer's; the module keys
-// its rows, appends what the host observed of a lane, and speaks every
-// fallback: a CLI that relays no plan, a pane narrower than the board, a
-// renderer that throws.
+// The module lays those rows as one bordered card per wave, wraps the gist,
+// and colours only the state word the renderer chose. It keys the lanes,
+// appends what the host observed of a lane, and speaks every fallback: a CLI
+// that relays no plan, a pane narrower than the board, a renderer that throws.
 //
 // THE SESSION START (show-preflight-and-interrupted-runs-at-session-start
 // design D5-D8). Outside a run the module draws two things, both from the
@@ -595,6 +595,51 @@ async function fileWrite($, path) {
   }
 }
 
+/** What an `agent.spawn` chain returned, read for the meter and handed back unchanged. */
+async function noteSpawn($, input, spawned) {
+  if (session.interactive && run.phase === 'live') {
+    if (spawned && str(spawned.agentId) && input && typeof input.prompt === 'string') {
+      const found = [...input.prompt.matchAll(BRIEFING_SHA)]
+      if (found.length) agentOf(spawned.agentId).sha = found[found.length - 1][1]
+    }
+    if (await stamp($)) redrawWord($)
+  }
+  // An Explore investigator the chain let through (observe-the-spec-run-live design D5).
+  if (specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string') {
+    await countInvestigator($)
+  }
+  return spawned
+}
+
+/**
+ * What a `classic.SessionStart` chain returned, handed back unchanged.
+ * A clear, resume or fork ends the run the meter holds, and the preflight
+ * is read after that chain. A non-interactive session changes nothing.
+ * The value returned is the chain's own result: no first message, no
+ * permission decision.
+ */
+async function noteSessionStart($, input, forwarded) {
+  if (!session.interactive) return forwarded
+  try {
+    const boundary = BOUNDARIES.get(input.source)
+    if (boundary) {
+      const ended = run
+      stopTick()
+      run = freshRun()
+      start = freshStart()
+      spec = freshSpec({ afterBoundary: true })
+      setStatus($)
+      $.ui.invalidate('ui.render')
+      const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
+      $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
+    }
+  } catch (err) {
+    $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
+  }
+  await readPreflight($, str(input.cwd) || session.cwd)
+  return forwarded
+}
+
 /** One Explore investigator the chain let through (design D5). Never throws. */
 async function countInvestigator($) {
   try {
@@ -1019,6 +1064,118 @@ function boardKey(key) {
   return `${kind === 'wave' ? 'wave-block' : `wave-${kind}`}-${rest.join('-')}`
 }
 
+/** Colour only a state word the board printed: hue for ok/failed/current, dim for the rest. */
+function stateProps(word) {
+  if (word === 'ok') return { color: 'green' }
+  if (word === 'failed') return { color: 'red' }
+  if (word === 'current') return { color: 'yellow' }
+  if (word === 'pending' || word === 'not reached' || word === 'not recorded' || word === 'per task') {
+    return { dimColor: true }
+  }
+  return null
+}
+
+/** The width a card and the renderer share: the body, capped at the published default. */
+function boardColumns(e) {
+  const body = e.props && isInt(e.props.bodyColumns) && e.props.bodyColumns > 0
+    ? e.props.bodyColumns
+    : LIMITS.waveBoardDefaultColumns
+  return body < LIMITS.waveBoardMinColumns ? body : Math.min(body, LIMITS.waveBoardDefaultColumns)
+}
+
+function waveTitleOf(row) {
+  if (row.parts && typeof row.parts.title === 'string' && row.parts.title) return row.parts.title
+  const text = row.text || ''
+  if (!text.startsWith('┌─ ')) return text
+  const rest = text.slice(3)
+  const cut = rest.search(/ ─/)
+  return (cut === -1 ? rest : rest.slice(0, cut)).trimEnd()
+}
+
+function idNodes(Box, Text, key, parts) {
+  if (parts.state === 'per task' && Array.isArray(parts.tasks) && parts.tasks.length) {
+    const nodes = [h(Text, null, ' [')]
+    parts.tasks.forEach((task, i) => {
+      if (i) nodes.push(h(Text, null, ', '))
+      nodes.push(h(Text, null, task.word ? `${task.id} ` : task.id))
+      if (task.word) {
+        nodes.push(h(Box, { key: `${key}-task-${task.id}` }, h(Text, stateProps(task.word), task.word)))
+      }
+    })
+    nodes.push(h(Text, null, ']'))
+    return nodes
+  }
+  return parts.ids ? [h(Text, null, ` [${parts.ids}]`)] : []
+}
+
+function drawLane($, e, row) {
+  const { Box, Text } = $.ui.resolve(e)
+  const key = boardKey(row.key)
+  const parts = row.parts
+  if (!parts) return h(Box, { key }, h(Text, { wrap: 'truncate-end' }, row.text))
+  const head = [parts.batch, parts.label, parts.model, parts.tier, parts.effort].filter(Boolean).join(' ')
+  const cells = [
+    h(Text, null, parts.state ? `${head} ` : head),
+    parts.state ? h(Box, { key: `${key}-state` }, h(Text, stateProps(parts.state), parts.state)) : null,
+    ...idNodes(Box, Text, key, parts),
+    Array.isArray(parts.after) && parts.after.length ? h(Text, null, ` ←${parts.after.join(',')}`) : null
+  ].filter(Boolean)
+  const kids = [
+    h(Box, { flexDirection: 'row' }, ...cells),
+    parts.gist ? h(Box, { key: `${key}-gist` }, h(Text, { wrap: 'wrap' }, parts.gist)) : null,
+    parts.note ? h(Box, { key: `${key}-note` }, h(Text, { dimColor: true }, parts.note)) : null
+  ].filter(Boolean)
+  return h(Box, { key, flexDirection: 'column' }, ...kids)
+}
+
+function drawBoardCards($, e, board, width) {
+  const { Box, Text } = $.ui.resolve(e)
+  const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
+  const out = []
+  let index = null
+  let kids = null
+  const flush = () => {
+    if (index === null) return
+    out.push(
+      h(
+        Box,
+        {
+          key: `wave-card-${index}`,
+          flexDirection: 'column',
+          borderStyle: 'single',
+          borderDimColor: true,
+          width,
+          paddingLeft: 1,
+          paddingRight: 1,
+          marginBottom: 1
+        },
+        ...kids
+      )
+    )
+    index = null
+    kids = null
+  }
+  for (const row of board) {
+    if (row.key.startsWith('wave:') && row.key.endsWith(':end')) continue
+    if (row.key.startsWith('wave:')) {
+      flush()
+      index = row.key.slice('wave:'.length)
+      kids = [h(Box, { key: boardKey(row.key) }, h(Text, { bold: true }, waveTitleOf(row)))]
+      continue
+    }
+    if (row.key.startsWith('lane:')) {
+      const lane = drawLane($, e, row)
+      if (kids) kids.push(lane)
+      else out.push(lane)
+      continue
+    }
+    flush()
+    out.push(keyed(boardKey(row.key), row.text, row.key === 'header' || row.key === 'tail' ? null : { wrap: 'truncate-end' }))
+  }
+  flush()
+  return out
+}
+
 /**
  * The waves section (design D7, D8): the board once a plan summary has
  * crossed, at the pane's own width, one truncating text per row; then a flat
@@ -1037,8 +1194,7 @@ function drawWaves($, e) {
     const dispatched = run.dispatched !== null || rows.some(r => r.batch)
     return [...(dispatched ? [keyed('wave-board-unrelayed', UNRELAYED_LINE)] : []), ...rows.map(r => flatRow(keyed, r))]
   }
-  const props = e.props || {}
-  const width = isInt(props.bodyColumns) && props.bodyColumns > 0 ? props.bodyColumns : LIMITS.waveBoardDefaultColumns
+  const width = boardColumns(e)
   let board
   try {
     board = drawPlanBoardRows(run.plan, { columns: width, state: boardOverlay(run.plan), notes: laneNotes() })
@@ -1050,15 +1206,14 @@ function drawWaves($, e) {
   // is one row without one, and the lanes are then drawn flat beneath it.
   const drawn = board.length > 0 && board[board.length - 1].key === 'tail'
   const planned = new Set(drawn ? board.filter(row => row.key.startsWith('lane:')).map(row => row.key.slice('lane:'.length)) : [])
-  return [
-    ...board.map(row => line(boardKey(row.key), row.text)),
-    ...rows.filter(r => !planned.has(r.label)).map(r => flatRow(keyed, r))
-  ]
+  const body = drawn ? drawBoardCards($, e, board, width) : board.map(row => line(boardKey(row.key), row.text))
+  return [...body, ...rows.filter(r => !planned.has(r.label)).map(r => flatRow(keyed, r))]
 }
 
 async function drawPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
   const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
+  const heading = text => h(Box, { marginTop: 1 }, h(Text, { bold: true }, text))
   if (run.phase === 'idle' && !run.summary) {
     // The guard runs in every session, so its line stands here too (design D5).
     return h(Box, { flexDirection: 'column' }, h(Text, { dimColor: true }, NO_RUN_LINE), keyed('launch-guard', await launchGuardText($)))
@@ -1070,19 +1225,21 @@ async function drawPane($, e) {
   out.push(keyed('last-activity', await lastActivityText($)))
   out.push(h(Text, { dimColor: true }, RECORD_LINE))
 
-  out.push(h(Text, { bold: true }, 'waves'))
+  out.push(heading('waves'))
   out.push(...drawWaves($, e))
 
-  out.push(h(Text, { bold: true }, 'agents'))
+  out.push(heading('agents'))
   if (!run.agents.size) out.push(h(Text, { dimColor: true }, 'no agent has reported a request yet'))
   for (const a of run.agents.values()) {
     const lane = laneForAgent(a)
     const n = a.requests === 1 ? '1 request' : `${a.requests} requests`
     const done = a.reason ? `${a.reason}${a.durationMs !== null ? ` ${(a.durationMs / 1000).toFixed(1)}s` : ''}` : 'running'
     out.push(
-      keyed(
-        `agent-${a.id}`,
-        `${lane || 'lane unknown'} · ${a.id} · ${a.models.join(', ') || 'model not reported'} · ${n} · ${tokensText(a)} · ${done}`
+      h(
+        Box,
+        { key: `agent-${a.id}`, flexDirection: 'column' },
+        h(Box, null, h(Text, null, `${lane || 'lane unknown'} · ${a.id} · ${a.models.join(', ') || 'model not reported'} · ${done}`)),
+        h(Box, null, h(Text, { dimColor: true }, `${n} · ${tokensText(a)}`))
       )
     )
   }
@@ -1098,11 +1255,11 @@ async function drawPane($, e) {
     failure = messageOf(err)
   }
   const [contextLine, costLine] = sessionLines(usage, failure)
-  out.push(h(Text, { bold: true }, 'session'))
+  out.push(heading('session'))
   out.push(keyed('session-context', contextLine))
   out.push(keyed('session-cost', costLine))
 
-  out.push(h(Text, { bold: true }, 'plan windows'))
+  out.push(heading('plan windows'))
   const windows = usage && Array.isArray(usage.rateLimits) ? usage.rateLimits : []
   if (failure !== null) out.push(h(Text, { dimColor: true }, `plan windows unavailable: ${failure}`))
   else if (!windows.length) out.push(h(Text, { dimColor: true }, 'none reported (off a subscription the session has none)'))
@@ -1112,7 +1269,7 @@ async function drawPane($, e) {
     out.push(keyed(`plan-window-${kind}`, `${kind} ${w.percentUsed}% used${w.resetsAt ? ` · resets ${w.resetsAt}` : ''}`))
   }
 
-  out.push(h(Text, { bold: true }, 'banners'))
+  out.push(heading('banners'))
   out.push(
     h(
       Box,
@@ -1121,13 +1278,13 @@ async function drawPane($, e) {
     )
   )
 
-  out.push(h(Text, { bold: true }, 'refusals'))
+  out.push(heading('refusals'))
   const denials = guardDenialLine(run.guardDenials)
   if (denials) out.push(keyed('guard-denials', denials))
   out.push(keyed('launch-guard', await launchGuardText($)))
 
   if (run.summary) {
-    out.push(h(Text, { bold: true }, 'close summary'))
+    out.push(heading('close summary'))
     out.push(h(Box, { key: 'summary', flexDirection: 'column' }, h(Text, null, run.summary)))
   }
   return h(Box, { flexDirection: 'column' }, ...out)
@@ -1350,18 +1507,12 @@ export function register(on) {
     return next(e)
   })
 
-  on('agent.spawn', async ($, e, next) => {
-    const r = await next(e)
-    if (session.interactive && run.phase === 'live') {
-      if (r && str(r.agentId) && typeof e.prompt === 'string') {
-        const found = [...e.prompt.matchAll(BRIEFING_SHA)]
-        if (found.length) agentOf(r.agentId).sha = found[found.length - 1][1]
-      }
-      if (await stamp($)) redrawWord($)
-    }
-    // An Explore investigator the chain let through, counted for the spec run (observe-the-spec-run-live design D5).
-    if (specWatching() && e.subagentType === 'Explore' && r && typeof r.model === 'string') await countInvestigator($)
-    return r
+  // Pass the spawn on unchanged. The three parameter names are plain identifiers
+  // and are not bound anywhere else in this file, so the value given to the
+  // next handler is the event parameter. permissionMode is left as the parent
+  // set it. The meter reads the chain's result and returns that same result.
+  on('agent.spawn', async (meterSpawnApi, meterSpawnInput, meterSpawnForward) => {
+    return meterSpawnForward(meterSpawnInput).then(spawned => noteSpawn(meterSpawnApi, meterSpawnInput, spawned))
   })
 
   // The session boundary (design D4). /clear, /resume and /branch start the
@@ -1374,27 +1525,16 @@ export function register(on) {
   // source (show-preflight-and-interrupted-runs-at-session-start design D5).
   // The kit raises this event; Claude Code 2.1.291 raises no classic event to
   // a module, so there the prompt hook above reads the report instead.
-  on('classic.SessionStart', async ($, e, next) => {
-    if (!session.interactive) return next(e)
-    try {
-      const boundary = BOUNDARIES.get(e.source)
-      if (boundary) {
-        const ended = run
-        stopTick()
-        run = freshRun()
-        start = freshStart()
-        spec = freshSpec({ afterBoundary: true })
-        setStatus($)
-        $.ui.invalidate('ui.render')
-        const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
-        $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
-      }
-    } catch (err) {
-      $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
-    }
-    const r = await next(e)
-    await readPreflight($, str(e.cwd) || session.cwd)
-    return r
+  //
+  // Pass the event on unchanged. The value this hook returns is the forward
+  // itself: no first message, no permission decision. The meter reset and
+  // preflight read run after that chain, and do not become the return.
+  on('classic.SessionStart', async (meterSessionApi, meterSessionInput, meterSessionForward) => {
+    const sessionForwarded = meterSessionForward(meterSessionInput)
+    await sessionForwarded.then(sessionStarted =>
+      noteSessionStart(meterSessionApi, meterSessionInput, sessionStarted)
+    )
+    return sessionForwarded
   })
 
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {
@@ -1413,27 +1553,27 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: SPEC_PANE }, async ($, e) => drawSpecPane($, e))
 
-  on('command.run', { command: PANE }, async $ => {
-    await openPane($)
+  on('command.run', { command: PANE }, async paneHost => {
+    await openPane(paneHost)
     return {}
   })
 
   // Typed before any prompt, the command reads the report itself, so it never
   // opens on a report no prompt has fetched yet (design D5).
-  on('command.run', { command: PREFLIGHT_PANE }, async $ => {
-    if (session.interactive) await readPreflight($, session.cwd)
-    await openPane($, PREFLIGHT_PANE, 'Interlock preflight')
+  on('command.run', { command: PREFLIGHT_PANE }, async preflightHost => {
+    if (session.interactive) await readPreflight(preflightHost, session.cwd)
+    await openPane(preflightHost, PREFLIGHT_PANE, 'Interlock preflight')
     return {}
   })
 
-  on('command.run', { command: HANDOFF_PANE }, async $ => {
-    if (session.interactive) await readPreflight($, session.cwd)
-    await openPane($, HANDOFF_PANE, 'Interlock handoff')
+  on('command.run', { command: HANDOFF_PANE }, async handoffHost => {
+    if (session.interactive) await readPreflight(handoffHost, session.cwd)
+    await openPane(handoffHost, HANDOFF_PANE, 'Interlock handoff')
     return {}
   })
 
-  on('command.run', { command: SPEC_PANE }, async $ => {
-    await openPane($, SPEC_PANE, SPEC_TITLE)
+  on('command.run', { command: SPEC_PANE }, async specCmdHost => {
+    await openPane(specCmdHost, SPEC_PANE, SPEC_TITLE)
     return {}
   })
 }

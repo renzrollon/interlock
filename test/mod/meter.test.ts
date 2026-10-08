@@ -14,7 +14,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { denyReason } from '../../lib/launch-rule.mjs'
-import { drawPlanBoard } from '../../lib/draw-plan.mjs'
+import { drawPlanBoard, drawPlanBoardRows } from '../../lib/draw-plan.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import { denyText } from '../fixtures/mod/refusals.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
@@ -225,6 +225,12 @@ const mount = ($: any, surface: (typeof SURFACES)[number], bodyColumns: number =
     props: { title: 'Interlock', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } }
   })
 
+function tree(el: any): any[] {
+  if (!el) return []
+  const kids = Array.isArray(el.children) ? el.children : []
+  return [el, ...kids.flatMap(tree)]
+}
+
 test('session.start registers /interlock-meter beside the preflight\'s two and the spec meter\'s, and logs the engine it loaded in', async ($: any, on: any) => {
   const w = world(on)
   await start($)
@@ -398,6 +404,7 @@ test('the pane lists plan windows with no threshold text', async ($: any, on: an
     expect(windows?.text).toMatch(/42%/)
     expect(windows?.text).not.toMatch(/warn|limit|over|high/i)
     expect(windows?.props.color).toBeUndefined()
+    for (const n of tree(windows)) expect(n.props?.color).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -485,6 +492,7 @@ test('the quiet word comes at the cap on the status line, the spinner and the pa
     const windows = await ui.find({ key: 'plan-window-five_hour' })
     expect(windows?.text).not.toMatch(/quiet|warn|limit|over|high/i)
     expect(windows?.props.color).toBeUndefined()
+    for (const n of tree(windows)) expect(n.props?.color).toBeUndefined()
     await ui.unmount()
   }
 
@@ -946,8 +954,8 @@ const overlay = (plan: any, over: Overlay = {}) => ({
 })
 /** No agent joined in the kit, so each spawned lane's note reads its served model as unknown. */
 const notesFor = (labels: string[]) => Object.fromEntries(labels.map(label => [label, 'served ?']))
-const board = (plan: any, state: Overlay, labels: string[], columns: number = LIMITS.waveBoardDefaultColumns) =>
-  drawPlanBoard(plan, { columns, state, notes: notesFor(labels) })
+const boardRows = (plan: any, state: Overlay, labels: string[], columns: number = LIMITS.waveBoardDefaultColumns) =>
+  drawPlanBoardRows(plan, { columns, state, notes: notesFor(labels) })
 /** A flat row, as the section drew every spawn before the board. */
 const flatRow = (s: any) =>
   `${s.title || s.label} · ${s.kind || 'agent'} · routed ${s.model || '?'} · served ? · effort ${s.effort || '?'} · waiting`
@@ -958,6 +966,77 @@ async function waveSection(ui: any) {
   return boxes.filter((b: any) => typeof b.key === 'string' && b.key.startsWith('wave-'))
 }
 const texts = (section: any[]) => section.map((b: any) => b.text)
+
+const STATE_COLOR: Record<string, string> = { ok: 'green', failed: 'red', current: 'yellow' }
+const STATE_DIM = new Set(['pending', 'not reached', 'not recorded', 'per task'])
+
+function paintOf(el: any) {
+  const text = tree(el).find((n: any) => n.type === 'Text')
+  return text?.props || el?.props || {}
+}
+
+function expectStatePaint(el: any, word: string | null | undefined) {
+  if (!word) return
+  expect(el?.text).toContain(word)
+  const props = paintOf(el)
+  if (STATE_COLOR[word]) {
+    expect(props.color).toBe(STATE_COLOR[word])
+    expect(props.dimColor).toBeUndefined()
+  } else if (STATE_DIM.has(word)) {
+    expect(props.dimColor).toBe(true)
+    expect(props.color).toBeUndefined()
+  }
+}
+
+async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[], extra: any[] = []) {
+  const width = LIMITS.waveBoardDefaultColumns
+  const rows = boardRows(plan, state, labels, width)
+  expect((await ui.find({ key: 'wave-board-header' }))?.text).toBe(rows.find(r => r.key === 'header')?.text)
+  expect((await ui.find({ key: 'wave-board-tail' }))?.text).toBe(rows.find(r => r.key === 'tail')?.text)
+  for (const row of rows) {
+    if (row.key.startsWith('verify:')) {
+      expect((await ui.find({ key: `wave-verify-${row.key.slice('verify:'.length)}` }))?.text).toBe(row.text)
+    }
+    if (row.key.startsWith('wave:') && !row.key.endsWith(':end')) {
+      const i = row.key.slice('wave:'.length)
+      const card = await ui.find({ key: `wave-card-${i}` })
+      expect(card).toBeDefined()
+      expect(card.props.borderStyle).toBe('single')
+      expect(card.props.borderDimColor).toBe(true)
+      expect(card.props.borderColor).toBeUndefined()
+      expect(card.props.width).toBe(width)
+      const title = await ui.find({ key: `wave-block-${i}` })
+      expect(title?.text).toBe(row.parts.title)
+      for (const n of tree(title)) expect(n.props?.color).toBeUndefined()
+      expect(await ui.find({ key: `wave-block-${i}-end` })).toBeUndefined()
+    }
+    if (!row.key.startsWith('lane:')) continue
+    const p = row.parts
+    const el = await ui.find({ key: `wave-row-${p.label}` })
+    expect(el).toBeDefined()
+    expect(el.text).toContain(p.label)
+    expect(el.text).toContain(p.model)
+    expect(el.text).toContain(p.tier)
+    expect(el.text).toContain(p.effort)
+    if (p.state) expect(el.text).toContain(p.state)
+    if (p.gist) {
+      const gist = await ui.find({ key: `wave-row-${p.label}-gist` })
+      expect(gist?.text).toBe(p.gist)
+      expect(paintOf(gist).wrap).not.toBe('truncate-end')
+    }
+    if (p.note) expect(el.text).toContain(p.note)
+    expect(BOX_DRAWING.test(el.text)).toBe(false)
+    if (p.state) expectStatePaint(await ui.find({ key: `wave-row-${p.label}-state` }), p.state)
+    if (p.state === 'per task' && Array.isArray(p.tasks)) {
+      for (const t of p.tasks) {
+        expectStatePaint(await ui.find({ key: `wave-row-${p.label}-task-${t.id}` }), t.word)
+      }
+    }
+  }
+  for (const spawn of extra) {
+    expect((await ui.find({ key: `wave-row-${spawn.label}` }))?.text).toBe(flatRow(spawn))
+  }
+}
 
 const FAILED_16 = { id: '1.6', wave: 1, waveKind: 'impl', error: null }
 const AT_FIRST_BATCH = { waveIndex: 0, batchIndex: 0, phase: 'batch' }
@@ -971,41 +1050,53 @@ async function adopted($: any, on: any) {
   return w
 }
 
-test('a relayed plan draws as the board on both surfaces, one truncating Text per line and no colour', async ($: any, on: any) => {
+test('a relayed plan draws as cards on both surfaces, wrapping the gist and colouring current', async ($: any, on: any) => {
   await adopted($, on)
   const plan = F.ADOPTION_BATCH.plan
-  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_BATCH }), ADOPTED_LANES)
+  const state = overlay(plan, { cursor: AT_FIRST_BATCH })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    const section = await waveSection(ui)
-    expect(texts(section)).toEqual(expected)
-    for (const b of section) {
-      expect(b.children).toHaveLength(1)
-      expect(b.children[0].type).toBe('Text')
-      expect(b.children[0].props).toEqual({ wrap: 'truncate-end' })
-      expect([...b.text].length <= LIMITS.waveBoardDefaultColumns).toBe(true)
-    }
-    for (const id of ADOPTED_LANES) expect((await ui.find({ key: `wave-row-${id}` }))?.text).toMatch(/ current /)
+    await expectBoard(ui, plan, state, ADOPTED_LANES)
+    for (const id of ADOPTED_LANES) expect((await ui.find({ key: `wave-row-${id}-state` }))?.text).toBe('current')
     expect(await ui.find({ text: UNRELAYED })).toBeUndefined()
+    const windows = await ui.find({ key: 'plan-window-five_hour' })
+    for (const n of tree(windows)) expect(n.props?.color).toBeUndefined()
     await ui.unmount()
   }
 })
 
-test('the recorded ids colour nothing and say ok and failed; a verify spawn is a flat row beneath the board', async ($: any, on: any) => {
+test('the recorded ids colour ok green and failed red; a verify spawn is a flat row beneath the board', async ($: any, on: any) => {
   const w = await adopted($, on)
   await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
   const plan = F.ADOPTION_BATCH.plan
-  const expected = board(
-    plan,
-    overlay(plan, { cursor: AT_FIRST_VERIFY, completed: RECORDED_OK, failures: [FAILED_16] }),
-    ADOPTED_LANES
-  )
+  const state = overlay(plan, { cursor: AT_FIRST_VERIFY, completed: RECORDED_OK, failures: [FAILED_16] })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
-    expect((await ui.find({ key: 'wave-row-1.7' }))?.text).toMatch(/ ok /)
-    expect((await ui.find({ key: 'wave-row-1.6' }))?.text).toMatch(/ failed /)
+    await expectBoard(ui, plan, state, ADOPTED_LANES, F.RECORD_BATCH.spawns)
+    expect((await ui.find({ key: 'wave-row-1.7-state' }))?.text).toBe('ok')
+    expect((await ui.find({ key: 'wave-row-1.6-state' }))?.text).toBe('failed')
     expect((await ui.find({ key: `wave-row-${F.VERIFY_LABEL}` }))?.text).toBe(flatRow(F.RECORD_BATCH.spawns[0]))
+    await ui.unmount()
+  }
+})
+
+test('a RED wave title carries no colour', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  const plan = {
+    ...F.ADOPTION_BATCH.plan,
+    waves: F.ADOPTION_BATCH.plan.waves.map((wave: any, i: number) => (i === 0 ? { ...wave, red: true } : wave))
+  }
+  await bash($, w, NEXT, F.stdout({ ...F.ADOPTION_BATCH, plan }))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const title = await ui.find({ key: 'wave-block-0' })
+    expect(title?.text).toMatch(/RED/)
+    for (const n of tree(title)) expect(n.props?.color).toBeUndefined()
+    const card = await ui.find({ key: 'wave-card-0' })
+    expect(card?.props.borderColor).toBeUndefined()
+    expect(card?.props.borderDimColor).toBe(true)
     await ui.unmount()
   }
 })
@@ -1015,10 +1106,10 @@ test('a skipped verification is placed on its own boundary with the step\'s reas
   await bash($, w, NEXT, F.stdout(F.VERIFY_SKIPPED))
   const plan = F.ADOPTION_BATCH.plan
   const skip = { wave: F.VERIFY_SKIPPED.wave, waveIndex: 0, reason: F.SKIP_REASON }
-  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_VERIFY, skippedVerifications: [skip] }), ADOPTED_LANES)
+  const state = overlay(plan, { cursor: AT_FIRST_VERIFY, skippedVerifications: [skip] })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(texts(await waveSection(ui))).toEqual(expected)
+    await expectBoard(ui, plan, state, ADOPTED_LANES)
     expect((await ui.find({ key: 'wave-verify-0' }))?.text).toMatch(new RegExp(`skipped: ${F.SKIP_REASON}`))
     await ui.unmount()
   }
@@ -1029,16 +1120,16 @@ test('a replan\'s summary replaces the adopted one, and the recorded ids stand',
   await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
   await bash($, w, NEXT, F.stdout(F.REPLAN_BATCH))
   const plan = F.REPLAN_BATCH.plan
-  const expected = board(
-    plan,
-    overlay(plan, { cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' }, completed: RECORDED_OK, failures: [FAILED_16] }),
-    [...ADOPTED_LANES, '1.5', '1.1']
-  )
+  const state = overlay(plan, {
+    cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' },
+    completed: RECORDED_OK,
+    failures: [FAILED_16]
+  })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
-    expect((await ui.find({ key: 'wave-row-2.1+2' }))?.text).toMatch(/ pending /)
-    expect((await ui.find({ key: 'wave-row-1.7' }))?.text).toMatch(/ ok /)
+    await expectBoard(ui, plan, state, [...ADOPTED_LANES, '1.5', '1.1'], F.RECORD_BATCH.spawns)
+    expect((await ui.find({ key: 'wave-row-2.1+2-state' }))?.text).toBe('pending')
+    expect((await ui.find({ key: 'wave-row-1.7-state' }))?.text).toBe('ok')
     await ui.unmount()
   }
 })
@@ -1098,14 +1189,14 @@ test('a malformed plan or recorded is named once and ignored, and the rest of th
   expect(debug.filter(t => /\brecorded\b/.test(t) && /ignored/.test(t))).toHaveLength(1)
 
   const plan = F.ADOPTION_BATCH.plan
-  const expected = board(
-    plan,
-    overlay(plan, { cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' }, completed: RECORDED_OK, failures: [FAILED_16] }),
-    ADOPTED_LANES
-  )
+  const state = overlay(plan, {
+    cursor: { waveIndex: 1, batchIndex: 0, phase: 'batch' },
+    completed: RECORDED_OK,
+    failures: [FAILED_16]
+  })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect(texts(await waveSection(ui))).toEqual([...expected, flatRow(F.RECORD_BATCH.spawns[0])])
+    await expectBoard(ui, plan, state, ADOPTED_LANES, F.RECORD_BATCH.spawns)
     expect(count((await ui.find({ key: 'banners' }))?.text, F.SECOND_BANNER)).toBe(1)
     await ui.unmount()
   }
@@ -1128,12 +1219,11 @@ test('the session boundary drops the summary, the recorded ids and the skips', a
   }
   await bash($, w, NEXT, F.stdout(F.ADOPTION_BATCH))
   const plan = F.ADOPTION_BATCH.plan
-  const expected = board(plan, overlay(plan, { cursor: AT_FIRST_BATCH }), ADOPTED_LANES)
+  const state = overlay(plan, { cursor: AT_FIRST_BATCH })
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    const section = texts(await waveSection(ui))
-    expect(section.slice(0, expected.length)).toEqual(expected)
-    expect(section.some(line => line.includes(F.SKIP_REASON))).toBe(false)
+    await expectBoard(ui, plan, state, ADOPTED_LANES)
+    expect((await ui.find({ key: 'wave-verify-0' }))?.text || '').not.toMatch(new RegExp(F.SKIP_REASON))
     await ui.unmount()
   }
 })
