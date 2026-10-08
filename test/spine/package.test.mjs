@@ -239,6 +239,22 @@ test('package.json, plugin.json and marketplace.json carry one version', () => {
   )
 })
 
+test('the listing image is a square png on the path the directory discovers, and no shipped text names that file', () => {
+  const icon = join(ROOT, 'assets', 'icon.png')
+  const buf = readFileSync(icon)
+  assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'assets/icon.png is not a png')
+  const width = buf.readUInt32BE(16)
+  const height = buf.readUInt32BE(20)
+  assert.equal(width, height, 'the listing image must be square')
+  assert.ok(width >= 512 && width <= 2048, `listing image is ${width}px; the directory wants 512 to 2048`)
+  assert.ok(pkg.files.includes('assets'), '"files" does not ship assets/')
+  assert.equal(readJson(PLUGIN_PATH).icon, undefined, 'plugin.json must not name the image; the directory finds assets/icon.png itself')
+  const shippedText = ['CHANGELOG.md', 'package.json', '.claude-plugin/plugin.json', 'shared/TEST-PROFILE.md']
+  for (const rel of shippedText) {
+    assert.equal(readFileSync(join(ROOT, rel), 'utf8').includes('icon.png'), false, `${rel} names the listing image`)
+  }
+})
+
 // A `String.replace` whose replacement contained `$`` spliced this file's
 // preamble in twice, mid-line. A line-anchored check of the opening heading
 // still passes on that file, because the copies do not start a line; the

@@ -22,7 +22,7 @@
     "agents",
     "shared",
     ".claude-plugin/plugin.json",
-    ".claude-plugin/icon.png",
+    "assets",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

@@ -9,7 +9,6 @@
   },
   "homepage": "https://github.com/renzrollon/interlock",
   "repository": "https://github.com/renzrollon/interlock",
-  "icon": ".claude-plugin/icon.png",
   "license": "MIT",
   "keywords": [
     "openspec",
