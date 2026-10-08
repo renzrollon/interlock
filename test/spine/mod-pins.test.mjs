@@ -147,6 +147,66 @@ test('the hooks module contains none of the forbidden tokens', () => {
   assert.deepEqual(present, [], `forbidden tokens in the hooks module: ${present.join(', ')}`)
 })
 
+/**
+ * What a hook does with a parameter it renamed away from `$`, `e` and `next`.
+ *
+ * The allow-list and the forbidden tokens read `$.`, so an engine call spelled
+ * through any other name goes unseen. A hook may still name its parameters for
+ * a reader, provided the engine handle is only passed on, never read through,
+ * and the forward is only called with the hook's own input, so the event goes
+ * on unchanged. Each problem names the hook's event and the offending spelling.
+ */
+export function renamedHookReach(source) {
+  const matcher = String.raw`\{(?:[^{}]|\{[^{}]*\})*\}`
+  const name = String.raw`[A-Za-z_][\w]*`
+  const head = new RegExp(
+    String.raw`\bon\(\s*'([A-Za-z.]+)'\s*,\s*(?:${matcher}\s*,\s*)?(?:async\s+)?(?:function\*?\s*)?` +
+      String.raw`(?:\(\s*(${name})(?:\s*,\s*(${name}))?(?:\s*,\s*(${name}))?\s*\)|(${name}))\s*(?:=>|\{)`,
+    'g'
+  )
+  const problems = []
+  for (const m of source.matchAll(head)) {
+    const [, event, api = m[5], input, forward] = m
+    const rest = source.slice(m.index + m[0].length)
+    if (api !== '$') {
+      for (const read of rest.matchAll(new RegExp(String.raw`\b${api}\s*(?:\?\.|\.|\[)`, 'g'))) {
+        problems.push(`${event}: ${api} is read through (${read[0].trim()})`)
+      }
+    }
+    if (forward && forward !== 'next') {
+      for (const use of rest.matchAll(new RegExp(String.raw`\b${forward}\b(\s*\(\s*([^)]*?)\s*\))?`, 'g'))) {
+        if (use[2] !== input) problems.push(`${event}: ${forward} is not called with ${input} alone (${use[0].trim()})`)
+      }
+    }
+  }
+  return [...new Set(problems)]
+}
+
+test('a hook parameter renamed from `$` is only passed on, and a renamed forward only carries the input', () => {
+  const problems = renamedHookReach(readFileSync(moduleEntry(), 'utf8'))
+  assert.deepEqual(problems, [], problems.join('\n'))
+})
+
+test('the renamed-parameter pin names a read through the handle and a forward fed anything but the input', () => {
+  const ok = "on('agent.spawn', async (api, input, forward) => {\n  return forward(input).then(r => note(api, input, r))\n})\n"
+  assert.deepEqual(renamedHookReach(ok), [])
+  assert.deepEqual(renamedHookReach("on('command.run', { command: PANE }, async host => {\n  host.process.run(['x'])\n})\n"), [
+    'command.run: host is read through (host.)'
+  ])
+  assert.deepEqual(
+    renamedHookReach("on('agent.spawn', async (api, input, forward) => {\n  return forward({ ...input, permissionMode: 'x' })\n})\n"),
+    ["agent.spawn: forward is not called with input alone (forward({ ...input, permissionMode: 'x' }))"]
+  )
+  // The module's own hook shapes parse: a read slipped into the real source is named.
+  const source = readFileSync(moduleEntry(), 'utf8')
+  const spawn = source.replace('noteSpawn(meterSpawnApi,', 'noteSpawn(meterSpawnApi.process,')
+  assert.notEqual(spawn, source, 'the agent.spawn hook no longer passes meterSpawnApi on; update this probe')
+  assert.deepEqual(renamedHookReach(spawn), ['agent.spawn: meterSpawnApi is read through (meterSpawnApi.)'])
+  const pane = source.replace('await openPane(paneHost)', 'await openPane(paneHost[0])')
+  assert.notEqual(pane, source, 'the pane command no longer passes paneHost on; update this probe')
+  assert.deepEqual(renamedHookReach(pane), ['command.run: paneHost is read through (paneHost[)'])
+})
+
 test('the launch guard\'s calls are the clock and its state read and write, and nothing more', () => {
   const meter = ALLOWED_CALLS.filter(c => !GUARD_CALLS.includes(c))
   assert.equal(meter.length + GUARD_CALLS.length, ALLOWED_CALLS.length, 'the allow-list repeats an entry')

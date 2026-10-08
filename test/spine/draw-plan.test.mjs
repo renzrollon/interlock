@@ -397,6 +397,18 @@ test("a lane row's parts.state is the state word in its text", () => {
       : new RegExp(`(^| )${word}( |$)`).test(cells)
     assert.ok(found, `${row.key} text ${cells} does not carry parts.state ${word}`)
   }
+  const lanePlan = new Map(lanesOf(PLAN).map(lane => [lane[0].id, lane]))
+  for (const row of lanes) {
+    const { ids, after, tasks } = row.parts
+    const cells = fixed(row.text)
+    assert.equal(typeof ids, 'string', `${row.key} parts.ids is not a string`)
+    if (ids) assert.ok(cells.includes(`[${ids}]`), `${row.key} text ${cells} does not carry parts.ids ${ids}`)
+    assert.ok(Array.isArray(after), `${row.key} parts.after is not a list`)
+    if (after.length) assert.ok(cells.includes(`←${after.join(',')}`), `${row.key} text ${cells} does not carry parts.after`)
+    const lane = lanePlan.get(row.parts.label.split('+')[0])
+    assert.ok(lane, `${row.key} names no planned lane`)
+    assert.deepEqual(tasks.map(t => t.id), lane.map(t => t.id), `${row.key} parts.tasks are not the lane's tasks`)
+  }
   const header = rows.find(r => r.key === 'header')
   const verify = rows.find(r => r.key === 'verify:0')
   const tail = rows.find(r => r.key === 'tail')

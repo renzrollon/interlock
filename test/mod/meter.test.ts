@@ -687,7 +687,7 @@ test('a run agent whose turn ends with error is named once, by its lane\'s title
   await start($)
   await launch($)
   await bash($, w, NEXT, F.stdout(TITLED_BATCH))
-  await spawnA($)
+  expect(await spawnA($)).toEqual({ model: 'claude-sonnet-5-5', agentId: 'a1' })
   const before = w.toasts.length
 
   expect(await complete($, 'a1', 'error')).toEqual({ turnId: 't-a1', text: '', reason: 'error' })
@@ -977,7 +977,7 @@ function paintOf(el: any) {
 
 function expectStatePaint(el: any, word: string | null | undefined) {
   if (!word) return
-  expect(el?.text).toContain(word)
+  expect(el?.text ?? textOf(el)).toContain(word)
   const props = paintOf(el)
   if (STATE_COLOR[word]) {
     expect(props.color).toBe(STATE_COLOR[word])
@@ -988,8 +988,22 @@ function expectStatePaint(el: any, word: string | null | undefined) {
   }
 }
 
-async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[], extra: any[] = []) {
-  const width = LIMITS.waveBoardDefaultColumns
+/** A lane's first line: one Text, never a row of elements, its coloured words nested spans. */
+function laneLine(el: any) {
+  const line = Array.isArray(el?.children) ? el.children[0] : undefined
+  expect(line?.type).toBe('Text')
+  return line
+}
+const spansOf = (line: any) => (Array.isArray(line?.children) ? line.children : []).filter((n: any) => n?.type === 'Text')
+/** A nested node's text: the kit sets `text` on a found element, not on what it holds. */
+const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n?.children) ? n.children.map(textOf).join('') : '')
+
+/** The state word a lane's line prints, read off its first span. */
+async function stateWord(ui: any, label: string) {
+  return textOf(spansOf(laneLine(await ui.find({ key: `wave-row-${label}` })))[0])
+}
+
+async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[], extra: any[] = [], width: number = LIMITS.waveBoardDefaultColumns) {
   const rows = boardRows(plan, state, labels, width)
   expect((await ui.find({ key: 'wave-board-header' }))?.text).toBe(rows.find(r => r.key === 'header')?.text)
   expect((await ui.find({ key: 'wave-board-tail' }))?.text).toBe(rows.find(r => r.key === 'tail')?.text)
@@ -1022,15 +1036,29 @@ async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[],
     if (p.gist) {
       const gist = await ui.find({ key: `wave-row-${p.label}-gist` })
       expect(gist?.text).toBe(p.gist)
-      expect(paintOf(gist).wrap).not.toBe('truncate-end')
+      expect(paintOf(gist).wrap).toBe('wrap')
     }
-    if (p.note) expect(el.text).toContain(p.note)
+    if (p.note) {
+      expect(el.text).toContain(p.note)
+      expect(paintOf(await ui.find({ key: `wave-row-${p.label}-note` })).dimColor).toBe(true)
+    }
     expect(BOX_DRAWING.test(el.text)).toBe(false)
-    if (p.state) expectStatePaint(await ui.find({ key: `wave-row-${p.label}-state` }), p.state)
+    const line = laneLine(el)
+    expect(line.props?.wrap).toBe('wrap')
+    for (const n of tree(line)) if (n !== line && typeof n !== 'string') expect(n.type).toBe('Text')
+    const spans = spansOf(line)
+    if (p.state) {
+      expect(textOf(spans[0])).toBe(p.state)
+      expectStatePaint(spans[0], p.state)
+    }
     if (p.state === 'per task' && Array.isArray(p.tasks)) {
-      for (const t of p.tasks) {
-        expectStatePaint(await ui.find({ key: `wave-row-${p.label}-task-${t.id}` }), t.word)
-      }
+      const words = p.tasks.filter((t: any) => t.word)
+      expect(spans.slice(1).map(textOf)).toEqual(words.map((t: any) => t.word))
+      words.forEach((t: any, i: number) => expectStatePaint(spans[i + 1], t.word))
+    }
+    // Colour sits on a state word only: no other text in the lane carries a hue.
+    for (const n of tree(el)) {
+      if (n?.props?.color !== undefined) expect(Object.keys(STATE_COLOR)).toContain(textOf(n))
     }
   }
   for (const spawn of extra) {
@@ -1057,7 +1085,7 @@ test('a relayed plan draws as cards on both surfaces, wrapping the gist and colo
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     await expectBoard(ui, plan, state, ADOPTED_LANES)
-    for (const id of ADOPTED_LANES) expect((await ui.find({ key: `wave-row-${id}-state` }))?.text).toBe('current')
+    for (const id of ADOPTED_LANES) expect(await stateWord(ui, id)).toBe('current')
     expect(await ui.find({ text: UNRELAYED })).toBeUndefined()
     const windows = await ui.find({ key: 'plan-window-five_hour' })
     for (const n of tree(windows)) expect(n.props?.color).toBeUndefined()
@@ -1073,8 +1101,8 @@ test('the recorded ids colour ok green and failed red; a verify spawn is a flat 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     await expectBoard(ui, plan, state, ADOPTED_LANES, F.RECORD_BATCH.spawns)
-    expect((await ui.find({ key: 'wave-row-1.7-state' }))?.text).toBe('ok')
-    expect((await ui.find({ key: 'wave-row-1.6-state' }))?.text).toBe('failed')
+    expect(await stateWord(ui, '1.7')).toBe('ok')
+    expect(await stateWord(ui, '1.6')).toBe('failed')
     expect((await ui.find({ key: `wave-row-${F.VERIFY_LABEL}` }))?.text).toBe(flatRow(F.RECORD_BATCH.spawns[0]))
     await ui.unmount()
   }
@@ -1128,9 +1156,44 @@ test('a replan\'s summary replaces the adopted one, and the recorded ids stand',
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     await expectBoard(ui, plan, state, [...ADOPTED_LANES, '1.5', '1.1'], F.RECORD_BATCH.spawns)
-    expect((await ui.find({ key: 'wave-row-2.1+2-state' }))?.text).toBe('pending')
-    expect((await ui.find({ key: 'wave-row-1.7-state' }))?.text).toBe('ok')
+    expect(await stateWord(ui, '2.1+2')).toBe('pending')
+    expect(await stateWord(ui, '1.7')).toBe('ok')
     await ui.unmount()
+  }
+})
+
+test('a lane whose tasks were recorded apart colours each task\'s own word', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  await bash($, w, NEXT, F.stdout(F.REPLAN_BATCH))
+  const recorded = { ok: [...RECORDED_OK, '2.1'], failed: ['1.6', '2.2'], notAttempted: [] }
+  await bash($, w, NEXT, F.stdout({ ...F.RECORD_BATCH, waveIndex: 1, recorded }))
+  const plan = F.REPLAN_BATCH.plan
+  const state = overlay(plan, {
+    cursor: { waveIndex: 1, batchIndex: null, phase: 'verify' },
+    completed: recorded.ok,
+    failures: [FAILED_16, { ...FAILED_16, id: '2.2' }]
+  })
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await stateWord(ui, '2.1+2')).toBe('per task')
+    await expectBoard(ui, plan, state, [...ADOPTED_LANES, '1.5', '1.1'], F.RECORD_BATCH.spawns)
+    await ui.unmount()
+  }
+})
+
+test('a card is the body wide up to the published default, and a lane wider than its card stays one line', async ($: any, on: any) => {
+  await adopted($, on)
+  const plan = F.ADOPTION_BATCH.plan
+  const state = overlay(plan, { cursor: AT_FIRST_BATCH })
+  const min = LIMITS.waveBoardMinColumns
+  const max = LIMITS.waveBoardDefaultColumns
+  for (const body of [min, Math.floor((min + max) / 2), max + 60]) {
+    for (const surface of SURFACES) {
+      const ui = await mount($, surface, body)
+      await expectBoard(ui, plan, state, ADOPTED_LANES, [], Math.min(body, max))
+      await ui.unmount()
+    }
   }
 })
 

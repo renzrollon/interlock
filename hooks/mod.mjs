@@ -612,32 +612,32 @@ async function noteSpawn($, input, spawned) {
 }
 
 /**
- * What a `classic.SessionStart` chain returned, handed back unchanged.
- * A clear, resume or fork ends the run the meter holds, and the preflight
- * is read after that chain. A non-interactive session changes nothing.
- * The value returned is the chain's own result: no first message, no
- * permission decision.
+ * A clear, resume or fork ends the run the meter holds, before the chain
+ * beneath runs. Any other source, and a non-interactive session, changes
+ * nothing. Never throws.
  */
-async function noteSessionStart($, input, forwarded) {
-  if (!session.interactive) return forwarded
+function endRunAtBoundary($, input) {
+  if (!session.interactive) return
   try {
     const boundary = BOUNDARIES.get(input.source)
-    if (boundary) {
-      const ended = run
-      stopTick()
-      run = freshRun()
-      start = freshStart()
-      spec = freshSpec({ afterBoundary: true })
-      setStatus($)
-      $.ui.invalidate('ui.render')
-      const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
-      $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
-    }
+    if (!boundary) return
+    const ended = run
+    stopTick()
+    run = freshRun()
+    start = freshStart()
+    spec = freshSpec({ afterBoundary: true })
+    setStatus($)
+    $.ui.invalidate('ui.render')
+    const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
+    $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
   } catch (err) {
     $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
   }
-  await readPreflight($, str(input.cwd) || session.cwd)
-  return forwarded
+}
+
+/** Once the chain beneath has run: the preflight's report, read for every source. */
+async function readPreflightAfterStart($, input) {
+  if (session.interactive) await readPreflight($, str(input.cwd) || session.cwd)
 }
 
 /** One Explore investigator the chain let through (design D5). Never throws. */
@@ -1092,36 +1092,40 @@ function waveTitleOf(row) {
   return (cut === -1 ? rest : rest.slice(0, cut)).trimEnd()
 }
 
-function idNodes(Box, Text, key, parts) {
+/** A lane's ids cell, as spans: each task's own state word coloured when its tasks disagree. */
+function idSpans(Text, parts) {
   if (parts.state === 'per task' && Array.isArray(parts.tasks) && parts.tasks.length) {
-    const nodes = [h(Text, null, ' [')]
+    const spans = [' [']
     parts.tasks.forEach((task, i) => {
-      if (i) nodes.push(h(Text, null, ', '))
-      nodes.push(h(Text, null, task.word ? `${task.id} ` : task.id))
-      if (task.word) {
-        nodes.push(h(Box, { key: `${key}-task-${task.id}` }, h(Text, stateProps(task.word), task.word)))
-      }
+      if (i) spans.push(', ')
+      if (!task.word) return spans.push(task.id)
+      spans.push(`${task.id} `, h(Text, stateProps(task.word), task.word))
     })
-    nodes.push(h(Text, null, ']'))
-    return nodes
+    spans.push(']')
+    return spans
   }
-  return parts.ids ? [h(Text, null, ` [${parts.ids}]`)] : []
+  return parts.ids ? [` [${parts.ids}]`] : []
 }
 
+/**
+ * A lane in its card: the fixed cells as one Text, the gist wrapping beneath,
+ * then the host's note, dim. The coloured words are spans nested in that one
+ * Text, because a row of separate elements shrinks each into its own column
+ * and breaks words apart once the line is wider than the card.
+ */
 function drawLane($, e, row) {
   const { Box, Text } = $.ui.resolve(e)
   const key = boardKey(row.key)
   const parts = row.parts
   if (!parts) return h(Box, { key }, h(Text, { wrap: 'truncate-end' }, row.text))
   const head = [parts.batch, parts.label, parts.model, parts.tier, parts.effort].filter(Boolean).join(' ')
-  const cells = [
-    h(Text, null, parts.state ? `${head} ` : head),
-    parts.state ? h(Box, { key: `${key}-state` }, h(Text, stateProps(parts.state), parts.state)) : null,
-    ...idNodes(Box, Text, key, parts),
-    Array.isArray(parts.after) && parts.after.length ? h(Text, null, ` ←${parts.after.join(',')}`) : null
-  ].filter(Boolean)
+  const line = [
+    ...(parts.state ? [`${head} `, h(Text, stateProps(parts.state), parts.state)] : [head]),
+    ...idSpans(Text, parts),
+    ...(Array.isArray(parts.after) && parts.after.length ? [` ←${parts.after.join(',')}`] : [])
+  ]
   const kids = [
-    h(Box, { flexDirection: 'row' }, ...cells),
+    h(Text, { wrap: 'wrap' }, ...line),
     parts.gist ? h(Box, { key: `${key}-gist` }, h(Text, { wrap: 'wrap' }, parts.gist)) : null,
     parts.note ? h(Box, { key: `${key}-note` }, h(Text, { dimColor: true }, parts.note)) : null
   ].filter(Boolean)
@@ -1178,7 +1182,8 @@ function drawBoardCards($, e, board, width) {
 
 /**
  * The waves section (design D7, D8): the board once a plan summary has
- * crossed, at the pane's own width, one truncating text per row; then a flat
+ * crossed, one bordered card per wave at the body width capped at the board's
+ * default, the rows between cards one truncating text each; then a flat
  * row for each spawn no planned lane carries. Before a summary, the flat rows,
  * beneath a spoken line once a batch was dispatched. Below the board's minimum
  * the renderer's spoken line stands in for it, and a renderer that throws is
@@ -1527,13 +1532,12 @@ export function register(on) {
   // a module, so there the prompt hook above reads the report instead.
   //
   // Pass the event on unchanged. The value this hook returns is the forward
-  // itself: no first message, no permission decision. The meter reset and
-  // preflight read run after that chain, and do not become the return.
+  // itself: no first message, no permission decision. The meter's reset runs
+  // before that chain and the preflight read after it; neither becomes the return.
   on('classic.SessionStart', async (meterSessionApi, meterSessionInput, meterSessionForward) => {
+    endRunAtBoundary(meterSessionApi, meterSessionInput)
     const sessionForwarded = meterSessionForward(meterSessionInput)
-    await sessionForwarded.then(sessionStarted =>
-      noteSessionStart(meterSessionApi, meterSessionInput, sessionStarted)
-    )
+    await sessionForwarded.then(() => readPreflightAfterStart(meterSessionApi, meterSessionInput))
     return sessionForwarded
   })
 

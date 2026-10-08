@@ -7,6 +7,14 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **The ship meter draws each wave as a card, and colours only the state word.** The 1.3.0 pane stretched every wave rule to the pane's width and cut each lane's title with `…`. Each wave is now one bordered card, as wide as the pane up to the board's published default width. A lane is its fixed cells, then its title wrapping beneath them, then, once its agent has spawned, what the host reported serving it, dim. The state word is the only coloured text: `ok` green, `failed` red, `current` yellow, the rest dim, and a lane whose tasks disagree colours each task's own word beside its id. The fixed cells are one text with the coloured words inside it, so in a narrow docked pane the line wraps instead of breaking words apart. `interlock waves --format board` prints exactly what it printed before.
+  - **The renderer's rows carry their fields.** `drawPlanBoardRows` gives a wave-header row `parts.title` and a lane row `parts`: batch, label, model, tier, effort, state word, gist, note, task ids, ordered-after ids and each task's own word. A drawer colours a word without searching the cut line. The lines form and the Mermaid output are byte-identical to 1.3.0.
+  - **A hook parameter renamed from `$` is pinned.** The meter's spawn, session-start and command hooks name their parameters for a reader. The allow-list scan reads only `$.`, so `test/spine/mod-pins.test.mjs` now fails when a renamed engine handle is read through, or a renamed forward is called with anything but the hook's own input.
+
+## 1.3.0 — 2026-10-08
+
 ### Added
 
 - **The CLI draws a plan as a wave board and as Mermaid, and a run as a handoff graph.** A run already recorded every node and edge a diagram needs, and nothing drew them. `interlock waves --plan <file> --format board` draws a stored plan as one bordered block per wave and one row per lane, and `--format mermaid` draws it as a `flowchart LR`. `interlock run-log show <runId> --format board|mermaid` draws a run from its trajectory, in sequence order: each CLI ping with its exit code, each spawned agent, the packets handed from one wave to the next with their audit verdicts, the halt and the receipt. Two pure, Node-free modules do the drawing, `lib/draw-plan.mjs` and `lib/draw-run.mjs`. They read no file, no terminal and no clock, so the ship meter's pane can import the board next.
