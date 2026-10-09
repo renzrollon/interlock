@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## 1.4.2 — 2026-10-10
+
+### Fixed
+
+- **A plugin install no longer opens every session with a preflight warning.** The `binaries` check warned whenever `interlock` and `interlock-graph` were not on `PATH`, even when both were in the plugin's `bin/`. The SessionStart hook runs the doctor without that directory on `PATH`, so every plugin user saw `interlock preflight OK (1 warning).` and a `warn binaries` band above the prompt at every session start, for a state nobody had to change. A binary in the plugin's `bin/` is now `ok`, so a clean install draws no band. A binary found neither on `PATH` nor in `bin/` still fails.
+
 ## 1.4.1 — 2026-10-09
 
 ### Changed

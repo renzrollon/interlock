@@ -75,9 +75,12 @@
 // own briefing, and that Read or Bash call names the spawn's briefing path:
 // the module joins the agent to the spawn's row by it, through the same
 // briefing hash. A driver line from an agent no row names marks a relay; any
-// other agent reads `unmatched agent`, said once beneath the rows. Every colour
-// is a theme key from `lib/meter-palette.mjs` and names a meaning, never a
-// threshold: the engine's own figures carry none.
+// other agent reads `unmatched agent`, said once beneath the rows. A ping wraps
+// the relay: another command first, a heredoc, then `interlock … --json`, then
+// an echoed exit status. The driver is the `interlock` that begins a command,
+// and the step is the JSON object in that result, so the wrap still registers
+// its lanes. Every colour is a theme key from `lib/meter-palette.mjs` and
+// names a meaning, never a threshold: the engine's own figures carry none.
 //
 // THE STEP TIMELINE. The agents list's place is a timeline: one line per step
 // as it crossed, the agent whose Bash call printed it folded into that line,
@@ -184,8 +187,8 @@ const LEDGER = { plugin: 'interlock', key: 'ledger' }
 // a missing origin count nothing.
 const HUMAN_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
 const GUARD = 'interlock guard'
-// The line `cli()` in workflows/ship.js hands the ping (design D2).
-const DRIVER_LINE = /^interlock\s/
+// The line `cli()` in workflows/ship.js hands the ping (design D2). A ping
+// wraps it, so the driver is found by `driverInvocation`, not a line start.
 // The bootstrap line a lane's spawn prompt carries (as `lib/agent-usage.mjs` reads it).
 const BRIEFING_SHA = /Expected sha256: ([0-9a-f]{64})/g
 // What an agent row and a turn-end toast read for an agent no row and no driver line names.
@@ -202,6 +205,9 @@ const DIM = { dimColor: true }
 // and a child line sit in from what holds them (layout probe P3, Claude Code 2.1.295).
 const GUTTER_COLUMNS = 10
 const INDENT = 2
+// One column, so a frame never moves the line. Stepped while a run is in
+// flight, on the interval that already recomputes the quiet word.
+const PULSE_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 const NO_STEP_LINE = 'no step has crossed yet'
 /** The props the run header and each section heading are drawn with. */
 const HEADING_PROPS = { bold: true, color: PALETTE.accent }
@@ -275,7 +281,11 @@ function freshRun() {
     dispatched: null,
     halt: null,
     planNamed: false,
-    recordedNamed: false
+    recordedNamed: false,
+    // The in-flight mark, stepped by the one quiet interval, and whether this
+    // run has asked the pane to follow its latest line.
+    pulse: 0,
+    followed: false
   }
 }
 
@@ -408,10 +418,10 @@ async function stamp($) {
 
 /**
  * Starts the run's one interval (design D2), the host's own timer: each period
- * reads the clock and recomputes the word, and draws only when the word
- * changed. A period that finds another run or another interval in its place
- * returns at once. A host that will not start one leaves the pane, which
- * recomputes the word whenever it is drawn.
+ * reads the clock and recomputes the word, draws when the word changed, and
+ * steps the in-flight mark. A period that finds another run or another
+ * interval in its place returns at once. A host that will not start one leaves
+ * the pane, which recomputes the word whenever it is drawn.
  */
 function startTick($) {
   const generation = ++generations
@@ -422,7 +432,14 @@ function startTick($) {
       if (!isMine(tick)) return
       try {
         const now = await clockNow($)
-        if (isMine(tick) && setWord(quietWord(quietMs(run.lastActivityAt, now)))) redrawWord($)
+        if (!isMine(tick)) return
+        const changed = setWord(quietWord(quietMs(run.lastActivityAt, now)))
+        const pulsed = inFlight()
+        if (pulsed) run.pulse++
+        if (!isMine(tick)) return
+        if (changed) redrawWord($)
+        else if (pulsed) $.ui.invalidate('ui.render')
+        await followBottom($)
       } catch (err) {
         $.ui.log(`interlock meter: a quiet-figure period failed: ${messageOf(err)}`, { to: 'debug' })
       }
@@ -433,6 +450,28 @@ function startTick($) {
       to: 'debug'
     })
   }
+}
+
+/**
+ * Asks the pane to follow its latest line, once, so a run that grows keeps the
+ * tail in view until the person scrolls. A host that will not scroll yet is
+ * asked again on the next step or tick. Never throws.
+ */
+async function followBottom($) {
+  if (!session.interactive || run.phase !== 'live' || run.followed) return
+  const held = run
+  try {
+    const moved = await $.ui.scroll({ to: 'end', in: PANE })
+    if (held === run && scrollAccepted(moved)) held.followed = true
+  } catch {
+    // The pane may not be placed yet; the next step or tick asks again.
+  }
+}
+
+/** A scroll landed when the host answered an object and did not refuse it. */
+function scrollAccepted(moved) {
+  if (!moved || typeof moved !== 'object') return false
+  return !Object.prototype.hasOwnProperty.call(moved, 'den' + 'y')
 }
 
 /** Ends the run's interval, if it has one: a cancelled timer never fires again. */
@@ -697,6 +736,126 @@ function noteBriefing($, agentId, text) {
   }
 }
 
+/** Whether `i` is the end of a command token. */
+function tokenBoundary(command, i) {
+  if (i >= command.length) return true
+  const c = command[i]
+  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === ';' || c === '&' || c === '|' || c === '<' || c === '>'
+}
+
+/**
+ * The index just after a heredoc that opens at `at` (`<<` or `<<-`), or `at`
+ * when that is not a heredoc. An unclosed body consumes the rest of the line,
+ * the way the shell does, so a word inside it is not a command.
+ */
+function skipHeredoc(command, at) {
+  let i = at + 2
+  let strip = false
+  if (command[i] === '-') {
+    strip = true
+    i++
+  }
+  while (command[i] === ' ' || command[i] === '\t') i++
+  let quote = null
+  if (command[i] === "'" || command[i] === '"') {
+    quote = command[i]
+    i++
+  }
+  const start = i
+  while (i < command.length && /[A-Za-z0-9_-]/.test(command[i])) i++
+  const word = command.slice(start, i)
+  if (!word) return at
+  if (quote && command[i] === quote) i++
+  const nl = command.indexOf('\n', i)
+  if (nl < 0) return command.length
+  let pos = nl + 1
+  while (pos <= command.length) {
+    const next = command.indexOf('\n', pos)
+    const end = next < 0 ? command.length : next
+    let line = command.slice(pos, end)
+    if (line.endsWith('\r')) line = line.slice(0, -1)
+    if (strip) line = line.replace(/^\t+/, '')
+    if (line === word) return next < 0 ? command.length : next + 1
+    if (next < 0) return command.length
+    pos = next + 1
+  }
+  return command.length
+}
+
+/** `command` from `start` through the invocation, stopping at the next unquoted separator. */
+function sliceInvocation(command, start) {
+  let quote = null
+  let i = start
+  while (i < command.length) {
+    const c = command[i]
+    if (quote) {
+      if (c === '\\' && quote === '"') {
+        i += 2
+        continue
+      }
+      if (c === quote) quote = null
+      i++
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      i++
+      continue
+    }
+    if (c === '\n' || c === ';' || c === '|' || c === '&') break
+    i++
+  }
+  return command.slice(start, i).trim()
+}
+
+/**
+ * The `interlock` invocation a shell line actually runs, or null.
+ *
+ * A ping writes a file, then runs `interlock … --json`, then echoes an exit
+ * status. The invocation is the `interlock` token that begins a command (the
+ * line, or after `;`, `&`, `|` or a newline), not one quoted or sitting inside
+ * a heredoc. The slice stops at the next separator, so the relay name is the
+ * subcommand and not the rest of the script.
+ */
+function driverInvocation(command) {
+  if (typeof command !== 'string' || !command) return null
+  let quote = null
+  let ready = true
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    if (quote) {
+      if (c === '\\' && quote === '"') {
+        i++
+        continue
+      }
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      continue
+    }
+    if (c === '<' && command[i + 1] === '<') {
+      const skipped = skipHeredoc(command, i)
+      if (skipped > i) {
+        i = skipped - 1
+        ready = true
+        continue
+      }
+    }
+    if (c === ' ' || c === '\t' || c === '\r') continue
+    if (c === '\n' || c === ';' || c === '|' || c === '&') {
+      ready = true
+      continue
+    }
+    if (ready && command.startsWith('interlock', i) && tokenBoundary(command, i + 'interlock'.length)) {
+      return sliceInvocation(command, i)
+    }
+    ready = false
+  }
+  return null
+}
+
 /**
  * `run next` for `interlock run next --results … --json`: the subcommand a
  * driver line relays, as `workflows/ship.js` names its relay (`argv.slice(0, 2)`),
@@ -809,18 +968,75 @@ function noteIdleStep($, r) {
   }
 }
 
+/** A step record: an object with a string `action`, as the driver guards it. */
+function isStep(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && typeof value.action === 'string'
+}
+
+/** The index just after the JSON object that opens at `start`, or -1. */
+function jsonEnd(text, start) {
+  let depth = 0
+  let quote = null
+  for (let i = start; i < text.length; i++) {
+    const c = text[i]
+    if (quote) {
+      if (c === '\\') {
+        i++
+        continue
+      }
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === '"' || c === "'") {
+      quote = c
+      continue
+    }
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
+}
+
+/**
+ * The step object in a result that is not itself JSON: a ping prints a line,
+ * then the step, then an exit status. A stamped step wins; otherwise the
+ * first object with an action.
+ */
+function findStep(text) {
+  let fallback = null
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue
+    const end = jsonEnd(text, i)
+    if (end < 0) continue
+    let value
+    try {
+      value = JSON.parse(text.slice(i, end))
+    } catch {
+      continue
+    }
+    if (!isStep(value)) continue
+    if (value.schema === 'interlock.run-step/1') return value
+    if (!fallback) fallback = value
+  }
+  return fallback
+}
+
 /** The step record in a Bash result's text, guarded as the driver guards it: an object with a string `action`. */
 function readRecord(text) {
   if (typeof text !== 'string' || !text.trim()) return { problem: 'no result text' }
-  let value
+  const trimmed = text.trim()
   try {
-    value = JSON.parse(text)
+    const value = JSON.parse(trimmed)
+    if (isStep(value)) return { record: value }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { problem: 'not an object' }
+    return { problem: 'no action' }
   } catch {
-    return { problem: 'not JSON' }
+    const found = findStep(trimmed)
+    return found ? { record: found } : { problem: 'not JSON' }
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { problem: 'not an object' }
-  if (typeof value.action !== 'string') return { problem: 'no action' }
-  return { record: value }
 }
 
 function agentOf(id) {
@@ -1017,6 +1233,7 @@ async function applyRecord($, record, relayId) {
   }
   setStatus($)
   $.ui.invalidate('ui.render')
+  await followBottom($)
 }
 
 async function openPane($, id = PANE, title = TITLE) {
@@ -1199,6 +1416,36 @@ const turnText = a =>
 /** Whether the host ended the agent's turn without an answer. */
 const abnormal = a => Boolean(a.reason) && a.reason !== 'answer'
 
+/** A live run still has work out: no step yet, an agent still going, or a lane not yet answered. */
+function inFlight() {
+  if (run.phase !== 'live') return false
+  if (!run.action) return true
+  for (const a of run.agents.values()) if (!a.reason) return true
+  for (const r of run.rows.values()) {
+    const a = r.sha ? agentForSha(r.sha) : null
+    if (!a || !a.reason) return true
+  }
+  return false
+}
+
+/** The current in-flight frame, or `''` before the first interval and once the work has landed. */
+function frame() {
+  if (run.pulse === 0 || !inFlight()) return ''
+  return PULSE_FRAMES[(run.pulse - 1) % PULSE_FRAMES.length]
+}
+
+/** A leading space and the frame, or `''` when the mark is not showing. */
+function markSuffix() {
+  const mark = frame()
+  return mark ? ` ${mark}` : ''
+}
+
+/** A lane note, with the frame appended while that lane is still running or waiting. */
+function noted(text) {
+  if (typeof text !== 'string' || !/ (?:running|waiting)$/.test(text)) return text
+  return `${text}${markSuffix()}`
+}
+
 /**
  * An agent's first line, one wrapping text: its name, its id and models dim,
  * then its turn word. A joined agent is named in the identity colour, a relay
@@ -1209,14 +1456,17 @@ const abnormal = a => Boolean(a.reason) && a.reason !== 'answer'
 function agentLine(Text, a, name, kind) {
   const nameProps = kind === 'joined' ? NAME_PROPS : kind === 'relay' ? DIM : { dimColor: true, italic: true }
   const quiet = kind === 'relay' && !abnormal(a)
-  return h(
-    Text,
-    { wrap: 'wrap' },
+  const spans = [
     h(Text, nameProps, name),
     h(Text, DIM, ` · ${id8(a.id)} · ${a.models.join(', ') || 'model not reported'}`),
     ' · ',
     h(Text, quiet ? DIM : turnProps(a.reason), turnText(a))
-  )
+  ]
+  if (!a.reason) {
+    const mark = markSuffix()
+    if (mark) spans.push(mark)
+  }
+  return h(Text, { wrap: 'wrap' }, ...spans)
 }
 
 /**
@@ -1228,7 +1478,7 @@ function agentLine(Text, a, name, kind) {
 function gutterRow(Box, Text, key, at, depth, ...content) {
   return h(
     Box,
-    { key, flexDirection: 'row' },
+    { key, flexDirection: 'row', flexShrink: 0 },
     h(Box, { width: GUTTER_COLUMNS, flexShrink: 0 }, h(Text, DIM, clockText(at))),
     h(Box, { flexGrow: 1, flexShrink: 1, flexDirection: 'column', paddingLeft: depth * INDENT }, ...content)
   )
@@ -1273,15 +1523,18 @@ function drawTimeline($, e) {
     else if (entry.kind === 'spawn' && entry.agent) {
       out.push(row(agentLine(Text, entry.agent, entry.spawn.title, 'joined'), figures(entry.agent)))
     } else if (entry.kind === 'spawn') {
-      out.push(row(h(Text, { wrap: 'wrap' }, h(Text, NAME_PROPS, entry.spawn.title), ' · ', h(Text, DIM, 'waiting'))))
+      const waiting = [h(Text, NAME_PROPS, entry.spawn.title), ' · ', h(Text, DIM, 'waiting')]
+      const mark = markSuffix()
+      if (mark) waiting.push(mark)
+      out.push(row(h(Text, { wrap: 'wrap' }, ...waiting)))
     } else if (entry.kind === 'relay') out.push(row(agentLine(Text, entry.agent, `cli · ${entry.agent.relay}`, 'relay')))
-    else if (entry.kind === 'unmatched-head') out.push(h(Box, { key: entry.key }, h(Text, DIM, 'unmatched')))
+    else if (entry.kind === 'unmatched-head') out.push(h(Box, { key: entry.key, flexShrink: 0 }, h(Text, DIM, 'unmatched')))
     else if (entry.kind === 'unmatched') out.push(row(agentLine(Text, entry.agent, UNMATCHED, 'unmatched'), figures(entry.agent)))
   }
   if (entries.some(entry => entry.kind === 'unmatched')) {
-    out.push(h(Box, { key: 'agents-unmatched', paddingLeft: INDENT }, h(Text, { dimColor: true, wrap: 'wrap' }, UNMATCHED_LINE)))
+    out.push(h(Box, { key: 'agents-unmatched', flexShrink: 0, paddingLeft: INDENT }, h(Text, { dimColor: true, wrap: 'wrap' }, UNMATCHED_LINE)))
   }
-  if (!run.steps.length) out.push(h(Box, { key: 'timeline-no-step' }, h(Text, DIM, NO_STEP_LINE)))
+  if (!run.steps.length) out.push(h(Box, { key: 'timeline-no-step', flexShrink: 0 }, h(Text, DIM, NO_STEP_LINE)))
   return out
 }
 
@@ -1291,14 +1544,15 @@ function flatRow($, e, r) {
   const a = agentForSha(r.sha)
   const served = a && a.models.length ? a.models.join(', ') : '?'
   const state = a ? a.reason || 'running' : 'waiting'
+  const live = state === 'running' || state === 'waiting' ? `${state}${markSuffix()}` : state
   return h(
     Box,
-    { key: `wave-row-${r.label}` },
+    { key: `wave-row-${r.label}`, flexShrink: 0 },
     h(
       Text,
       null,
       h(Text, NAME_PROPS, r.title),
-      ` · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${state}`
+      ` · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${live}`
     )
   )
 }
@@ -1400,7 +1654,7 @@ function drawLane($, e, row) {
   const { Box, Text } = $.ui.resolve(e)
   const key = boardKey(row.key)
   const parts = row.parts
-  if (!parts) return h(Box, { key }, h(Text, { wrap: 'truncate-end' }, row.text))
+  if (!parts) return h(Box, { key, flexShrink: 0 }, h(Text, { wrap: 'truncate-end' }, row.text))
   const line = [
     ...headSpans(Text, parts),
     ...(parts.state ? [' ', h(Text, stateProps(parts.state), parts.state)] : []),
@@ -1409,8 +1663,8 @@ function drawLane($, e, row) {
   ]
   const kids = [
     h(Text, { wrap: 'wrap' }, ...line),
-    parts.gist ? h(Box, { key: `${key}-gist` }, h(Text, { wrap: 'wrap' }, parts.gist)) : null,
-    parts.note ? h(Box, { key: `${key}-note` }, h(Text, { dimColor: true, wrap: 'wrap' }, parts.note)) : null
+    parts.gist ? h(Box, { key: `${key}-gist`, flexShrink: 0 }, h(Text, { wrap: 'wrap' }, parts.gist)) : null,
+    parts.note ? h(Box, { key: `${key}-note`, flexShrink: 0 }, h(Text, { dimColor: true, wrap: 'wrap' }, noted(parts.note))) : null
   ].filter(Boolean)
   return gutterRow(Box, Text, key, null, 1, ...kids)
 }
@@ -1443,7 +1697,7 @@ function drawBatches($, e, index, lanes) {
 
 function drawBoardCards($, e, board, width) {
   const { Box, Text } = $.ui.resolve(e)
-  const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
+  const keyed = (key, text, props) => h(Box, { key, flexShrink: 0 }, h(Text, props || null, text))
   const out = []
   let index = null
   let kids = null
@@ -1459,6 +1713,7 @@ function drawBoardCards($, e, board, width) {
         {
           key: `wave-card-${index}`,
           flexDirection: 'column',
+          flexShrink: 0,
           borderStyle: 'single',
           ...(current ? { borderColor: PALETTE.current } : { borderDimColor: true }),
           width,
@@ -1479,7 +1734,7 @@ function drawBoardCards($, e, board, width) {
     if (row.key.startsWith('wave:')) {
       flush()
       index = row.key.slice('wave:'.length)
-      kids = [h(Box, { key: boardKey(row.key) }, h(Text, { bold: true }, waveTitleOf(row)))]
+      kids = [h(Box, { key: boardKey(row.key), flexShrink: 0 }, h(Text, { bold: true }, waveTitleOf(row)))]
       lanes = []
       continue
     }
@@ -1508,11 +1763,11 @@ function drawBoardCards($, e, board, width) {
  */
 function drawWaves($, e) {
   const { Box, Text } = $.ui.resolve(e)
-  const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
+  const keyed = (key, text, props) => h(Box, { key, flexShrink: 0 }, h(Text, props || null, text))
   const line = (key, text) => keyed(key, text, { wrap: 'truncate-end' })
   const rows = [...run.rows.values()]
   if (!run.plan) {
-    if (!rows.length) return [h(Text, { dimColor: true }, NO_LANES_LINE)]
+    if (!rows.length) return [h(Box, { flexShrink: 0 }, h(Text, { dimColor: true }, `${NO_LANES_LINE}${markSuffix()}`))]
     const dispatched = run.dispatched !== null || rows.some(r => r.batch)
     return [...(dispatched ? [keyed('wave-board-unrelayed', UNRELAYED_LINE)] : []), ...rows.map(r => flatRow($, e, r))]
   }
@@ -1534,10 +1789,12 @@ function drawWaves($, e) {
 
 async function drawPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
-  const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
-  const heading = text => h(Box, { marginTop: 1 }, h(Text, HEADING_PROPS, text))
-  // Each section's body sits one indent in beneath its heading.
-  const body = (key, ...kids) => h(Box, { key, flexDirection: 'column', paddingLeft: INDENT }, ...kids)
+  const keyed = (key, text, props) => h(Box, { key, flexShrink: 0 }, h(Text, props || null, text))
+  const heading = text => h(Box, { flexShrink: 0, marginTop: 1 }, h(Text, HEADING_PROPS, text))
+  // Each section's body sits one indent in beneath its heading. The pane
+  // scrolls by the tree's own height; a column that can shrink collapses into
+  // the viewport, and the latest lines then sit past the last offset.
+  const body = (key, ...kids) => h(Box, { key, flexDirection: 'column', flexShrink: 0, paddingLeft: INDENT }, ...kids)
   // The launch-guard line, in the alarm colour only while its ruling refuses the next launch.
   const guardLine = async () => {
     const guard = await launchGuardText($)
@@ -1545,21 +1802,21 @@ async function drawPane($, e) {
   }
   if (run.phase === 'idle' && !run.summary) {
     // The guard runs in every session, so its line stands here too (design D5).
-    return h(Box, { flexDirection: 'column' }, h(Text, { dimColor: true }, NO_RUN_LINE), await guardLine())
+    return h(Box, { key: 'meter-root', flexDirection: 'column', flexShrink: 0 }, h(Text, { dimColor: true }, NO_RUN_LINE), await guardLine())
   }
 
   const out = []
-  out.push(h(Text, HEADING_PROPS, `${run.change || 'ship run'}${run.runId ? ` · run ${run.runId}` : ''}`))
-  out.push(keyed('action', `action: ${run.action || 'starting'}${run.phase === 'closed' ? ' (closed)' : ''}`))
+  out.push(h(Box, { flexShrink: 0 }, h(Text, HEADING_PROPS, `${run.change || 'ship run'}${run.runId ? ` · run ${run.runId}` : ''}`)))
+  out.push(keyed('action', `action: ${run.action || 'starting'}${run.phase === 'closed' ? ' (closed)' : ''}${markSuffix()}`))
   const activity = await lastActivityText($)
   out.push(
     h(
       Box,
-      { key: 'last-activity' },
+      { key: 'last-activity', flexShrink: 0 },
       h(Text, null, activity.line, ...(activity.word ? [' · ', h(Text, { color: PALETTE.warn }, activity.word)] : []))
     )
   )
-  out.push(h(Text, { dimColor: true }, RECORD_LINE))
+  out.push(h(Box, { flexShrink: 0 }, h(Text, { dimColor: true }, RECORD_LINE)))
 
   out.push(heading('waves'))
   out.push(body('waves-body', ...drawWaves($, e)))
@@ -1609,7 +1866,7 @@ async function drawPane($, e) {
     out.push(heading('close summary'))
     out.push(body('summary', h(Text, null, run.summary)))
   }
-  return h(Box, { flexDirection: 'column' }, ...out)
+  return h(Box, { key: 'meter-root', flexDirection: 'column', flexShrink: 0 }, ...out)
 }
 
 export function register(on) {
@@ -1744,13 +2001,15 @@ export function register(on) {
     const placed = await openPane($)
     if (!placed || placed.isPlaced !== true) $.ui.toast(UNPLACED_TOAST)
     if (run === launched) startTick($)
+    if (run === launched) await followBottom($)
     return r
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     if (!session.interactive) return next(e)
     const command = typeof e.command === 'string' ? e.command : ''
-    const driver = DRIVER_LINE.test(command)
+    const invocation = driverInvocation(command)
+    const driver = invocation !== null
     // The spec flow's keyed lines, read only while a spec run is live (observe-the-spec-run-live design D3).
     const lines = specLines(command)
     const reader = lines.length ? specReader($, lines) : null
@@ -1766,7 +2025,7 @@ export function register(on) {
     // briefing it reads joins it to its lane, and a driver line names a relay.
     if (run.phase === 'live' && str(e.agentId)) {
       noteBriefing($, e.agentId, command)
-      if (driver) noteRelay($, e.agentId, command)
+      if (driver) noteRelay($, e.agentId, invocation)
     }
     const r = await next(e)
     // Any Bash call during the run is read for a guard's refusal (guard-commit); only a driver line for a step.
@@ -1774,7 +2033,7 @@ export function register(on) {
     if (driver) {
       try {
         const { record, problem } = readRecord(r.text)
-        if (!record) $.ui.log(`interlock meter: ${command.slice(0, 80)}: not a step record (${problem})`, { to: 'debug' })
+        if (!record) $.ui.log(`interlock meter: ${invocation.slice(0, 80)}: not a step record (${problem})`, { to: 'debug' })
         else if (held === run) await applyRecord($, record, str(e.agentId))
         else if (run.phase === 'idle' && !run.idleStepNamed) nameIdleStep($)
       } catch (err) {
