@@ -1344,7 +1344,7 @@ test('SIGTERM while a lane is in flight closes the run: a run-halt naming it, a 
   const { root, change } = signalRepo()
   try {
     const runner = startRunner(root, change, shipCommand(['--fixture-delay=4000']))
-    await runner.waitFor(/run-batch: 1\.\d/)
+    await runner.waitFor(/run-batch: tasks? 1\.\d/)
     runner.child.kill('SIGTERM')
     const { code, stdout } = await runner.exited
     assert.notEqual(code, 0, `a killed run is not a clean one:\n${stdout}`)
@@ -1362,7 +1362,7 @@ test('a second signal during the close starts no second close', async () => {
   const { root, change } = signalRepo()
   try {
     const runner = startRunner(root, change, shipCommand(['--fixture-delay=4000']))
-    await runner.waitFor(/run-batch: 1\.\d/)
+    await runner.waitFor(/run-batch: tasks? 1\.\d/)
     runner.child.kill('SIGINT')
     runner.child.kill('SIGTERM')
     const { code, stdout } = await runner.exited

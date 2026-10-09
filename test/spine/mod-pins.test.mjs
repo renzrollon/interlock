@@ -471,10 +471,10 @@ test('the spec pane\'s id is spelled in the module as the pure module names it',
   assert.ok(source.includes(`const SPEC_PANE = '${SPEC_PANE}'`), `hooks/mod.mjs does not declare SPEC_PANE as '${SPEC_PANE}'`)
 })
 
-test('the spec skill\'s two observers pass the prompt and the Skill call on as they came', () => {
+test('the spec skill\'s two observers and the briefing-read observer pass the prompt, the Skill call and the Read call on as they came', () => {
   const source = readFileSync(moduleEntry(), 'utf8')
   assert.ok(!source.includes("on('skill.prompt'"), 'the module hooks skill.prompt, which no probed engine raises for a plugin skill')
-  for (const head of ["on('prompt.submit'", "on('tool.call', { tool: 'Skill' }"]) {
+  for (const head of ["on('prompt.submit'", "on('tool.call', { tool: 'Skill' }", "on('tool.call', { tool: 'Read' }"]) {
     const body = hookAt(source, head)
     assert.ok(body, `the module has no ${head} hook`)
     const built = ['text:', 'next({', 'return {'].filter(t => body.includes(t))

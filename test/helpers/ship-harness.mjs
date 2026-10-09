@@ -470,10 +470,10 @@ export async function runShip(opts = {}) {
   })
 
   const agent = async (prompt, options = {}) => {
-    // The runtime shows an agent under its title (`1.1+2 · Add the guard`);
+    // The runtime shows an agent under its title (`tasks 1.1+2 · Add the guard`);
     // fixtures answer, and assertions find, it by the label that title opens with.
     const title = options.label || '(unlabeled)'
-    const label = title.split(' · ')[0]
+    const label = title.split(' · ')[0].replace(/^tasks? /, '')
     const n = (seen.get(label) || 0) + 1
     seen.set(label, n)
     calls.push(label)

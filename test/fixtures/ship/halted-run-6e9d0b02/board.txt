@@ -1,0 +1,23 @@
+plan · 3 waves · 13 tasks · plan only
+┌─ wave 1 · idx 0 · group 1 · impl · 1 batch ───────────────────────────────────────────────────────
+│ b0 1.7 sonnet T4 inherit · Docs (design D2, D4, D5, D7
+│ b0 1.4 sonnet T3 inherit · In lib/receipt.mjs (design D4, D5, D7
+│ b0 1.2 sonnet T2 low     · Create lib/project-slug.mjs exporting pro…
+│ b0 1.3 sonnet T2 low     · In lib/limits.mjs add notifyTimeoutMs: 50…
+│ b0 1.6 haiku  T1 low     · Verify — do not edit
+└───────────────────────────────────────────────────────────────────────────────────────────────────
+  verify after idx 0
+┌─ wave 2 · idx 1 · group 1 · impl · 5 batches ─────────────────────────────────────────────────────
+│ b0 1.5 sonnet T4 inherit ←1.6 · In lib/doctor.mjs (design D5, D12): append
+│ b0 1.1 sonnet T3 inherit ←1.3 · Create lib/notify.mjs (design D1, D2, D4
+│ b1 2.1 sonnet T4 inherit · In lib/run.mjs (design D1, D5, D7
+│ b2 2.2 sonnet T3 inherit ←2.1 · In bin/interlock (design D1, D14): add
+│ b3 2.3 sonnet T2 low     ←2.2 · In workflows/ship.js and bin/interlock-ru…
+│ b4 3.2 sonnet T2 low     · In skills/spec/SKILL.md §6 (design D6
+└───────────────────────────────────────────────────────────────────────────────────────────────────
+  verify after idx 1
+┌─ test wave · idx 2 · test · 1 batch ──────────────────────────────────────────────────────────────
+│ b0 3.1 sonnet T3 inherit · In test/workflows.test.mjs (design D1, D5…
+│ b0 3.3 sonnet T2 low     · Run 'openspec validate harden-unattended-…
+└───────────────────────────────────────────────────────────────────────────────────────────────────
+then: verify-final → commit → close

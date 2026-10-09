@@ -16,6 +16,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import { denyReason } from '../../lib/launch-rule.mjs'
 import { drawPlanBoard, drawPlanBoardRows } from '../../lib/draw-plan.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
+import { PALETTE } from '../../lib/meter-palette.mjs'
 import { denyText } from '../fixtures/mod/refusals.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 
@@ -31,6 +32,15 @@ const IDLE_STEP = /a step crossed with no live run/
 const CLOCK_LINE = /interlock meter: the clock cannot be read/
 const BENEATH = { additionalContext: ['the stub beneath'] }
 const SPINNER = { word: 'Sauteing', message: null, suffix: '…', mode: 'thinking' }
+const UNMATCHED_LINE = 'unmatched: no briefing read or interlock line seen from this agent yet'
+// What the engine's Read answers beneath the plugin. Built from the engine's
+// type contract (`ToolCallInput = ToolCallEnvelope & AgentLoop`, Claude Code
+// 2.1.289 `claude-code.d.ts`: `file_path` and the loop's `agentId`), not
+// captured: a runtime probe of a Workflow agent's Read could not be run.
+const readAnswer = (path: string) => ({
+  result: { type: 'text', file: { filePath: path, content: 'briefing', numLines: 1, startLine: 1, totalLines: 1 } },
+  text: '1\tbriefing'
+})
 
 type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model: string }
 type World = {
@@ -149,6 +159,7 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
     if (w.bashErrors.has(e.command)) return { result: `Error: ${text}`, text, isError: true }
     return { result: { stdout: text, stderr: '', interrupted: false }, text }
   })
+  on('tool.call', { tool: 'Read' }, (_$: any, e: any) => readAnswer(e.file_path))
   on('tool.call', { tool: 'Edit' }, () => ({ result: {}, text: 'ok' }))
   on('tool.call', { tool: 'Write' }, () => ({ result: {}, text: 'ok' }))
   // The settings layer, where the four guards run: a deny ends the call with
@@ -182,6 +193,13 @@ const bash = ($: any, w: World, command: string, text: string) => {
   w.bash.set(command, text)
   return $.tool.call({ tool: 'Bash', command })
 }
+/** A run agent's Bash call: the loop's id rides on the input, as `AgentLoop` declares it. */
+const bashAs = ($: any, w: World, agentId: string, command: string, text = '') => {
+  w.bash.set(command, text)
+  return $.tool.call({ tool: 'Bash', command, agentId })
+}
+/** A run agent's Read of `file_path`. */
+const readAs = ($: any, agentId: string, file_path: string) => $.tool.call({ tool: 'Read', file_path, agentId })
 async function step($: any, agentId: string, index: number, model: string) {
   const s = $.turn.step({ turnId: `t-${agentId}`, index, model, messageCount: 3, agentId })
   // The answer is the stream's own return value: the 2.1.289 kit's stream
@@ -352,7 +370,9 @@ test('per-agent figures tally separately, mark a missing usage partial, and list
     expect(a2).toMatch(/in 7\b/)
     expect(a2).toMatch(/answer/)
     expect(a2).toMatch(/4\.2s/)
-    expect(a1).toMatch(/lane unknown/)
+    expect(a1.startsWith('unmatched agent · a1 · ')).toBe(true)
+    expect(a2.startsWith('unmatched agent · a2 · ')).toBe(true)
+    expect((await ui.find({ key: 'agents-unmatched' }))?.text).toBe(UNMATCHED_LINE)
     await ui.unmount()
   }
 
@@ -666,7 +686,7 @@ test('a non-interactive session starts no interval', async ($: any, on: any) => 
 })
 
 // The turn-end toast (speak-lane-turn-ends-and-session-cost design D1-D3): the
-// host's reason word, once per run agent, naming the lane's title or `lane unknown`.
+// host's reason word, once per run agent, naming the lane's title or `unmatched agent`.
 const TITLE_A = '1.1+5 · Add the turn-end toast'
 const TITLED_BATCH = {
   ...F.RUN_BATCH,
@@ -705,13 +725,13 @@ test('a run agent whose turn ends with error is named once, by its lane\'s title
   }
 })
 
-test('a turn the host stops for an agent nobody joined reads lane unknown, with no cause beside it', async ($: any, on: any) => {
+test('a turn the host stops for an agent nobody joined reads unmatched agent, with no cause beside it', async ($: any, on: any) => {
   const w = world(on)
   await start($)
   await launch($)
   await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
   await complete($, 'a1', 'aborted')
-  expect(turnEnds(w)).toEqual(['lane unknown · agent a1 · turn ended: aborted'])
+  expect(turnEnds(w)).toEqual(['unmatched agent · agent a1 · turn ended: aborted'])
 })
 
 test('each word the host sends is repeated verbatim; no reason, and no live run, raise nothing', async ($: any, on: any) => {
@@ -725,10 +745,10 @@ test('each word the host sends is repeated verbatim; no reason, and no live run,
   }
   await $.turn.complete({ answer: '', durationMs: 4200, isAborted: false, turnId: 't-a5', agentId: 'a5' })
   expect(turnEnds(w)).toEqual([
-    'lane unknown · agent a1 · turn ended: refusal',
-    'lane unknown · agent a2 · turn ended: aborted',
-    'lane unknown · agent a3 · turn ended: error',
-    'lane unknown · agent a4 · turn ended: cancelled'
+    'unmatched agent · agent a1 · turn ended: refusal',
+    'unmatched agent · agent a2 · turn ended: aborted',
+    'unmatched agent · agent a3 · turn ended: error',
+    'unmatched agent · agent a4 · turn ended: cancelled'
   ])
 
   await bash($, w, NEXT, F.stdout(F.HALT))
@@ -952,10 +972,21 @@ const overlay = (plan: any, over: Overlay = {}) => ({
   halt: null,
   ...over
 })
-/** No agent joined in the kit, so each spawned lane's note reads its served model as unknown. */
-const notesFor = (labels: string[]) => Object.fromEntries(labels.map(label => [label, 'served ?']))
-const boardRows = (plan: any, state: Overlay, labels: string[], columns: number = LIMITS.waveBoardDefaultColumns) =>
-  drawPlanBoardRows(plan, { columns, state, notes: notesFor(labels) })
+/**
+ * Each spawned lane's note: its served model unknown while no agent is joined
+ * to it, and, for a lane named in `joined`, the note the host observed of its agent.
+ */
+const notesFor = (labels: string[], joined: Record<string, string> = {}) => ({
+  ...Object.fromEntries(labels.map(label => [label, 'served ?'])),
+  ...joined
+})
+const boardRows = (
+  plan: any,
+  state: Overlay,
+  labels: string[],
+  columns: number = LIMITS.waveBoardDefaultColumns,
+  joined: Record<string, string> = {}
+) => drawPlanBoardRows(plan, { columns, state, notes: notesFor(labels, joined) })
 /** A flat row, as the section drew every spawn before the board. */
 const flatRow = (s: any) =>
   `${s.title || s.label} · ${s.kind || 'agent'} · routed ${s.model || '?'} · served ? · effort ${s.effort || '?'} · waiting`
@@ -967,7 +998,7 @@ async function waveSection(ui: any) {
 }
 const texts = (section: any[]) => section.map((b: any) => b.text)
 
-const STATE_COLOR: Record<string, string> = { ok: 'green', failed: 'red', current: 'yellow' }
+const STATE_COLOR: Record<string, string> = { ok: PALETTE.ok, failed: PALETTE.failed, current: PALETTE.current }
 const STATE_DIM = new Set(['pending', 'not reached', 'not recorded', 'per task'])
 
 function paintOf(el: any) {
@@ -998,13 +1029,51 @@ const spansOf = (line: any) => (Array.isArray(line?.children) ? line.children : 
 /** A nested node's text: the kit sets `text` on a found element, not on what it holds. */
 const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n?.children) ? n.children.map(textOf).join('') : '')
 
-/** The state word a lane's line prints, read off its first span. */
-async function stateWord(ui: any, label: string) {
-  return textOf(spansOf(laneLine(await ui.find({ key: `wave-row-${label}` })))[0])
+/** A name span: bold, in the identity colour. */
+function expectNamePaint(span: any, name: string) {
+  expect(textOf(span)).toBe(name)
+  expect(span?.props?.bold).toBe(true)
+  expect(span?.props?.color).toBe(PALETTE.identity)
 }
 
-async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[], extra: any[] = [], width: number = LIMITS.waveBoardDefaultColumns) {
-  const rows = boardRows(plan, state, labels, width)
+/** A lane line's spans after its label, the label checked first: the state word, then each task's. */
+function wordSpans(line: any, label: string) {
+  const spans = spansOf(line)
+  expectNamePaint(spans[0], label)
+  return spans.slice(1)
+}
+
+/** The state word a lane's line prints, read off the first span after its label. */
+async function stateWord(ui: any, label: string) {
+  return textOf(wordSpans(laneLine(await ui.find({ key: `wave-row-${label}` })), label)[0])
+}
+
+/** The wave positions whose card holds a lane at the cursor: a lane whose word, or a task's, is `current`. */
+function currentCards(rows: any[]) {
+  const held = new Set<string>()
+  let at: string | null = null
+  for (const row of rows) {
+    if (row.key.startsWith('wave:') && !row.key.endsWith(':end')) at = row.key.slice('wave:'.length)
+    else if (row.key.startsWith('wave:')) at = null
+    else if (row.key.startsWith('lane:') && at !== null) {
+      const p = row.parts
+      if (p.state === 'current' || (Array.isArray(p.tasks) && p.tasks.some((t: any) => t.word === 'current'))) held.add(at)
+    }
+  }
+  return held
+}
+
+async function expectBoard(
+  ui: any,
+  plan: any,
+  state: Overlay,
+  labels: string[],
+  extra: any[] = [],
+  width: number = LIMITS.waveBoardDefaultColumns,
+  joined: Record<string, string> = {}
+) {
+  const rows = boardRows(plan, state, labels, width, joined)
+  const current = currentCards(rows)
   expect((await ui.find({ key: 'wave-board-header' }))?.text).toBe(rows.find(r => r.key === 'header')?.text)
   expect((await ui.find({ key: 'wave-board-tail' }))?.text).toBe(rows.find(r => r.key === 'tail')?.text)
   for (const row of rows) {
@@ -1016,8 +1085,14 @@ async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[],
       const card = await ui.find({ key: `wave-card-${i}` })
       expect(card).toBeDefined()
       expect(card.props.borderStyle).toBe('single')
-      expect(card.props.borderDimColor).toBe(true)
-      expect(card.props.borderColor).toBeUndefined()
+      // The card holding the cursor is bordered in the current colour; every other border is dim.
+      if (current.has(i)) {
+        expect(card.props.borderColor).toBe(PALETTE.current)
+        expect(card.props.borderDimColor).toBeUndefined()
+      } else {
+        expect(card.props.borderDimColor).toBe(true)
+        expect(card.props.borderColor).toBeUndefined()
+      }
       expect(card.props.width).toBe(width)
       const title = await ui.find({ key: `wave-block-${i}` })
       expect(title?.text).toBe(row.parts.title)
@@ -1046,7 +1121,9 @@ async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[],
     const line = laneLine(el)
     expect(line.props?.wrap).toBe('wrap')
     for (const n of tree(line)) if (n !== line && typeof n !== 'string') expect(n.type).toBe('Text')
-    const spans = spansOf(line)
+    // The fixed cells read exactly as the board printed them, the label a bold span in the identity colour.
+    expect(textOf(line).startsWith([p.batch, p.label, p.model, p.tier, p.effort].filter(Boolean).join(' '))).toBe(true)
+    const spans = wordSpans(line, p.label)
     if (p.state) {
       expect(textOf(spans[0])).toBe(p.state)
       expectStatePaint(spans[0], p.state)
@@ -1056,9 +1133,10 @@ async function expectBoard(ui: any, plan: any, state: Overlay, labels: string[],
       expect(spans.slice(1).map(textOf)).toEqual(words.map((t: any) => t.word))
       words.forEach((t: any, i: number) => expectStatePaint(spans[i + 1], t.word))
     }
-    // Colour sits on a state word only: no other text in the lane carries a hue.
+    // Colour sits on a state word and the label only: no other text in the lane carries a hue.
     for (const n of tree(el)) {
-      if (n?.props?.color !== undefined) expect(Object.keys(STATE_COLOR)).toContain(textOf(n))
+      if (n?.props?.color === PALETTE.identity) expect(textOf(n)).toBe(p.label)
+      else if (n?.props?.color !== undefined) expect(Object.keys(STATE_COLOR)).toContain(textOf(n))
     }
   }
   for (const spawn of extra) {
@@ -1093,7 +1171,7 @@ test('a relayed plan draws as cards on both surfaces, wrapping the gist and colo
   }
 })
 
-test('the recorded ids colour ok green and failed red; a verify spawn is a flat row beneath the board', async ($: any, on: any) => {
+test('the recorded ids colour ok and failed in the theme\'s colours; a verify spawn is a flat row beneath the board', async ($: any, on: any) => {
   const w = await adopted($, on)
   await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
   const plan = F.ADOPTION_BATCH.plan
@@ -1108,7 +1186,7 @@ test('the recorded ids colour ok green and failed red; a verify spawn is a flat 
   }
 })
 
-test('a RED wave title carries no colour', async ($: any, on: any) => {
+test('a RED wave title carries no colour, and only the cursor\'s card is bordered in the current colour', async ($: any, on: any) => {
   const w = world(on)
   await start($)
   await launch($)
@@ -1122,9 +1200,13 @@ test('a RED wave title carries no colour', async ($: any, on: any) => {
     const title = await ui.find({ key: 'wave-block-0' })
     expect(title?.text).toMatch(/RED/)
     for (const n of tree(title)) expect(n.props?.color).toBeUndefined()
+    // The cursor is on wave position 0, so that card holds the current lanes.
     const card = await ui.find({ key: 'wave-card-0' })
-    expect(card?.props.borderColor).toBeUndefined()
-    expect(card?.props.borderDimColor).toBe(true)
+    expect(card?.props.borderColor).toBe(PALETTE.current)
+    expect(card?.props.borderDimColor).toBeUndefined()
+    const next = await ui.find({ key: 'wave-card-1' })
+    expect(next?.props.borderColor).toBeUndefined()
+    expect(next?.props.borderDimColor).toBe(true)
     await ui.unmount()
   }
 })
@@ -1305,4 +1387,275 @@ test('a spec skill load during a live ship run leaves the ship position on the l
   await bash($, w, NEXT, F.stdout(F.HALT))
   await bash($, w, CLOSE_CMD, F.stdout(F.CLOSE))
   expect(w.status.at(-1)).toBe('interlock spec: add-the-thing · new change')
+})
+
+// --- every agent named ----------------------------------------------
+//
+// The Workflow host raises no `agent.spawn` for a Workflow agent (probed on
+// 2.1.289), so the spawn event's join never fires there. Every run agent's
+// first act is to read its own briefing: a Read path or a Bash command that
+// names a dispatched spawn's briefing path joins the agent to that spawn's
+// row. A driver line names a relay; an agent with neither reads unmatched.
+
+const KETTLE = '/Users/caro/IdeaProjects/kettle/ship'
+const briefingOf = (label: string) => `.claude/ship/briefings/${label}.md`
+const TITLE_17 = 'task 1.7 · Write the docs'
+const TITLED_ADOPTION = {
+  ...F.ADOPTION_BATCH,
+  spawns: F.ADOPTION_BATCH.spawns.map((s: any) => (s.label === '1.7' ? { ...s, title: TITLE_17 } : s))
+}
+const TITLE_11 = 'task 1.1 · Add the turn-end toast'
+const TITLE_21 = 'tasks 2.1+2 · Name every agent'
+const TITLE_31 = 'task 3.1 · Draw the palette'
+const laneSpawn = (label: string, title: string, c: string, promptPath = briefingOf(label)) => ({
+  label,
+  title,
+  kind: 'implementer',
+  model: 'sonnet',
+  effort: 'low',
+  type: 'interlock:worker',
+  promptPath,
+  promptSha256: c.repeat(64)
+})
+/** A batch of three lanes, the third's briefing path built with Windows separators, as node's `join` builds it there. */
+const BRIEFED_BATCH = {
+  ...F.RUN_BATCH,
+  spawns: [
+    laneSpawn('1.1', TITLE_11, 'c'),
+    laneSpawn('2.1+2', TITLE_21, 'd'),
+    laneSpawn('3.1', TITLE_31, 'e', '.claude\\ship\\briefings\\3.1.md')
+  ]
+}
+const agentRow = async (ui: any, id: string) => (await ui.find({ key: `agent-${id}` }))?.text ?? ''
+/** An agent row's first line, as its spans: the name, the id and models, the turn word. */
+async function agentSpans(ui: any, id: string) {
+  const line = tree(await ui.find({ key: `agent-${id}` })).find((n: any) => n.type === 'Text')
+  return spansOf(line)
+}
+
+test('on the Workflow host an agent that reads its briefing is named by its lane\'s title, with no spawn event', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(TITLED_ADOPTION))
+  const path = `${KETTLE}/${briefingOf('1.7')}`
+  expect(await readAs($, 'a1', path)).toEqual(readAnswer(path))
+  w.usage.set('a1:0', usage('claude-sonnet-5-5', 10))
+  await step($, 'a1', 0, 'claude-sonnet-5-5')
+  const plan = F.ADOPTION_BATCH.plan
+  const state = overlay(plan, { cursor: AT_FIRST_BATCH })
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await agentRow(ui, 'a1')).startsWith(`${TITLE_17} · a1 · claude-sonnet-5-5 · running`)).toBe(true)
+    expectNamePaint((await agentSpans(ui, 'a1'))[0], TITLE_17)
+    await expectBoard(ui, plan, state, ADOPTED_LANES, [], LIMITS.waveBoardDefaultColumns, {
+      '1.7': 'served claude-sonnet-5-5 · running'
+    })
+    expect((await ui.find({ key: 'wave-row-1.7-note' }))?.text).toBe('served claude-sonnet-5-5 · running')
+    expect(await ui.find({ key: 'agents-unmatched' })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  const before = w.toasts.length
+  await complete($, 'a1', 'error')
+  expect(w.toasts.slice(before)).toEqual([`${TITLE_17} · agent a1 · turn ended: error`])
+  const ui = await mount($, 'terminal')
+  expect((await ui.find({ key: 'wave-row-1.7-note' }))?.text).toBe('served claude-sonnet-5-5 · error')
+  await ui.unmount()
+})
+
+test('a Bash cat of a briefing joins its agent; a longer name around the path does not, and the first briefing read wins', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(BRIEFED_BATCH))
+  await bashAs($, w, 'a2', `cat ${briefingOf('1.1')}`, 'the briefing')
+  // Paths that hold row 1.1's briefing path only inside a longer file name.
+  const near = [
+    ['a3', `${KETTLE}/.claude/ship/briefings/11.1.md`],
+    ['a4', `${KETTLE}/.claude/ship/briefings/1.1+2.md`],
+    ['a5', `/repo/x${briefingOf('1.1')}`],
+    ['a6', `${KETTLE}/${briefingOf('1.1')}.bak`]
+  ]
+  for (const [id, path] of near) expect(await readAs($, id, path)).toEqual(readAnswer(path))
+  // A second briefing read by a2 leaves it on its first lane.
+  await readAs($, 'a2', `${KETTLE}/${briefingOf('2.1+2')}`)
+  // A Windows path, read against a row whose briefing path was built with `\`.
+  await readAs($, 'a7', 'C:\\Users\\caro\\kettle\\ship\\.claude\\ship\\briefings\\3.1.md')
+
+  // A briefing path that matches no row makes no agent record of its own.
+  let ui = await mount($, 'terminal')
+  for (const [id] of near) expect(await ui.find({ key: `agent-${id}` })).toBeUndefined()
+  expect((await agentRow(ui, 'a2')).startsWith(`${TITLE_11} · a2 · `)).toBe(true)
+  await ui.unmount()
+
+  for (const id of ['a2', 'a3', 'a4', 'a5', 'a6', 'a7']) {
+    w.usage.set(`${id}:0`, usage('claude-sonnet-5-5', 1))
+    await step($, id, 0, 'claude-sonnet-5-5')
+  }
+  for (const surface of SURFACES) {
+    ui = await mount($, surface)
+    expect((await agentRow(ui, 'a2')).startsWith(`${TITLE_11} · a2 · claude-sonnet-5-5 · running`)).toBe(true)
+    expect((await agentRow(ui, 'a7')).startsWith(`${TITLE_31} · a7 · `)).toBe(true)
+    for (const [id] of near) expect((await agentRow(ui, id)).startsWith(`unmatched agent · ${id} · `)).toBe(true)
+    const flat = await ui.find({ key: 'wave-row-1.1' })
+    expect(flat?.text).toBe(`${TITLE_11} · implementer · routed sonnet · served claude-sonnet-5-5 · effort low · running`)
+    expectNamePaint(spansOf(tree(flat).find((n: any) => n.type === 'Text'))[0], TITLE_11)
+    expect((await ui.find({ key: 'wave-row-2.1+2' }))?.text).toMatch(/served \? · effort low · waiting$/)
+    expect((await ui.find({ key: 'agents-unmatched' }))?.text).toBe(UNMATCHED_LINE)
+    await ui.unmount()
+  }
+})
+
+test('an agent that runs a driver line before any briefing is a relay, named dim by what it relayed', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bashAs($, w, 'a9', NEXT, F.stdout(BRIEFED_BATCH))
+  await bashAs($, w, 'a8', 'interlock limits --json', '{}')
+  // A worker that read its briefing keeps its lane's title when it runs an interlock line.
+  await readAs($, 'a2', `${KETTLE}/${briefingOf('1.1')}`)
+  await bashAs($, w, 'a2', 'interlock graph query --json', '{}')
+  await complete($, 'a8', 'answer')
+  expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION}`)
+
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await agentRow(ui, 'a9')).startsWith('cli · run next · a9 · model not reported · running')).toBe(true)
+    expect((await agentRow(ui, 'a8')).startsWith('cli · limits · a8 · model not reported · answer 4.2s')).toBe(true)
+    expect((await agentRow(ui, 'a2')).startsWith(`${TITLE_11} · a2 · `)).toBe(true)
+    for (const id of ['a9', 'a8']) {
+      const [name, , done] = await agentSpans(ui, id)
+      expect(name.props.dimColor).toBe(true)
+      expect(name.props.color).toBeUndefined()
+      expect(done.props.dimColor).toBe(true)
+      expect(done.props.color).toBeUndefined()
+    }
+    expect(await ui.find({ key: 'agents-unmatched' })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  // A relay's abnormal end is spoken by its relay name and drawn in the alarm colour.
+  await complete($, 'a9', 'error')
+  expect(turnEnds(w)).toEqual(['cli · run next · agent a9 · turn ended: error'])
+  const ui = await mount($, 'terminal')
+  const [, , done] = await agentSpans(ui, 'a9')
+  expect(textOf(done)).toBe('error 4.2s')
+  expect(done.props.color).toBe(PALETTE.alarm)
+  await ui.unmount()
+})
+
+for (const where of ['a live run', 'no live run', 'a non-interactive session'] as const) {
+  test(`in ${where} the Read observer resolves to exactly what the engine beneath answered`, async ($: any, on: any) => {
+    const w = world(on)
+    await start($, where !== 'a non-interactive session')
+    if (where !== 'no live run') await launch($)
+    await bash($, w, NEXT, F.stdout(BRIEFED_BATCH))
+    const path = `${KETTLE}/${briefingOf('1.1')}`
+    const status = [...w.status]
+    expect(await readAs($, 'a1', path)).toEqual(readAnswer(path))
+    expect(await $.tool.call({ tool: 'Read', file_path: path })).toEqual(readAnswer(path))
+    expect(await readAs($, 'a1', 'lib/x.mjs')).toEqual(readAnswer('lib/x.mjs'))
+    expect(w.status).toEqual(status)
+    expect(w.toasts.filter(t => t.includes('a1'))).toEqual([])
+  })
+}
+
+test('the pane draws in the theme\'s keys: accent headings, identity names, warn banners and quiet word, alarm refusals', async ($: any, on: any) => {
+  on('prompt.submit', (_$: any, e: any) => ({ text: e.text, origin: e.origin }))
+  const w = world(on)
+  await start($)
+  // Before any launch the guard allows, and its line carries no colour.
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const guard = await ui.find({ key: 'launch-guard' })
+    expect(guard?.text).toBe('launch guard: next launch allowed')
+    for (const n of tree(guard)) expect(n.props?.color).toBeUndefined()
+    await ui.unmount()
+  }
+
+  await launch($)
+  await bash($, w, NEXT, F.stdout(BRIEFED_BATCH))
+  await editTest($)
+  await readAs($, 'a1', `${KETTLE}/${briefingOf('1.1')}`)
+  await readAs($, 'a2', `${KETTLE}/${briefingOf('2.1+2')}`)
+  await bashAs($, w, 'a9', 'interlock limits --json', '{}')
+  for (const id of ['a1', 'a2', 'a5']) {
+    w.usage.set(`${id}:0`, usage('claude-sonnet-5-5', 1))
+    await step($, id, 0, 'claude-sonnet-5-5')
+  }
+  await complete($, 'a2', 'answer')
+  await complete($, 'a5', 'error')
+  await w.clock!.advance(LIMITS.meterQuietAfterMs)
+
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const header = paintOf(await ui.find({ text: `${F.CHANGE} · run ${F.RUN_ID}` }))
+    expect(header.bold).toBe(true)
+    expect(header.color).toBe(PALETTE.accent)
+    for (const heading of ['waves', 'agents', 'session', 'plan windows', 'banners', 'refusals']) {
+      const props = paintOf(await ui.find({ text: heading }))
+      expect(props.bold).toBe(true)
+      expect(props.color).toBe(PALETTE.accent)
+    }
+
+    const banners = tree(await ui.find({ key: 'banners' })).filter((n: any) => n.type === 'Text' && textOf(n) === F.BANNER)
+    expect(banners).toHaveLength(1)
+    expect(banners[0].props.color).toBe(PALETTE.warn)
+    const denials = await ui.find({ key: 'guard-denials' })
+    expect(denials?.text).toBe('guard denials: 1 (guard-tests 1)')
+    expect(paintOf(denials).color).toBe(PALETTE.alarm)
+    const guard = await ui.find({ key: 'launch-guard' })
+    expect(guard?.text.startsWith('launch guard: next launch refused: ')).toBe(true)
+    expect(paintOf(guard).color).toBe(PALETTE.alarm)
+
+    // The quiet word is a span in the warn colour; the line's text is as it was.
+    const activity = await ui.find({ key: 'last-activity' })
+    expect(activity?.text).toBe(`last activity ${new Date(T0).toISOString()} · ${QUIET_WORD}`)
+    const line = tree(activity).find((n: any) => n.type === 'Text')
+    expect(line.props?.color).toBeUndefined()
+    const quiet = spansOf(line)
+    expect(quiet.map(textOf)).toEqual([QUIET_WORD])
+    expect(quiet[0].props.color).toBe(PALETTE.warn)
+
+    // Joined agents named in the identity colour, the relay dim, the unmatched agent dim and italic.
+    const [a1Name, a1Ids, a1Done] = await agentSpans(ui, 'a1')
+    expectNamePaint(a1Name, TITLE_11)
+    expect(a1Ids.props.dimColor).toBe(true)
+    expect(textOf(a1Done)).toBe('running')
+    expect(a1Done.props.color).toBe(PALETTE.warn)
+    const [a2Name, , a2Done] = await agentSpans(ui, 'a2')
+    expectNamePaint(a2Name, TITLE_21)
+    expect(textOf(a2Done)).toBe('answer 4.2s')
+    expect(a2Done.props.color).toBe(PALETTE.ok)
+    const [a5Name, , a5Done] = await agentSpans(ui, 'a5')
+    expect(textOf(a5Name)).toBe('unmatched agent')
+    expect(a5Name.props.dimColor).toBe(true)
+    expect(a5Name.props.italic).toBe(true)
+    expect(a5Name.props.color).toBeUndefined()
+    expect(textOf(a5Done)).toBe('error 4.2s')
+    expect(a5Done.props.color).toBe(PALETTE.alarm)
+    const [a9Name, , a9Done] = await agentSpans(ui, 'a9')
+    expect(textOf(a9Name)).toBe('cli · limits')
+    expect(a9Name.props.dimColor).toBe(true)
+    expect(a9Done.props.dimColor).toBe(true)
+    const unmatched = await ui.find({ key: 'agents-unmatched' })
+    expect(unmatched?.text).toBe(UNMATCHED_LINE)
+    expect(paintOf(unmatched).dimColor).toBe(true)
+
+    // The engine's own figures carry no colour: no threshold is the meter's.
+    for (const key of ['session-context', 'session-cost', 'plan-window-five_hour', 'action']) {
+      for (const n of tree(await ui.find({ key }))) expect(n.props?.color).toBeUndefined()
+    }
+    await ui.unmount()
+  }
+  expect(turnEnds(w)).toEqual(['unmatched agent · agent a5 · turn ended: error'])
+
+  // A person's prompt re-arms the guard: the line is allowed again, and uncoloured.
+  await $.prompt.submit({ text: 'carry on', wait: false, origin: { kind: 'composer' } })
+  const ui = await mount($, 'terminal')
+  const guard = await ui.find({ key: 'launch-guard' })
+  expect(guard?.text).toBe('launch guard: next launch allowed')
+  for (const n of tree(guard)) expect(n.props?.color).toBeUndefined()
+  await ui.unmount()
 })

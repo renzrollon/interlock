@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **A lane's worker is shown as `task 1.1 · <gist>`.** `/workflows`, `interlock-run`'s log, the meter's rows and toasts and the Mermaid plan all name a lane by `laneTitle`, which read `1.1 · Add the relaunch guard`. A bare `1.1` among `plan-waves`, `cli-3 · run next` and `verify` looked like an outline number rather than a worker. The title now opens with what the agent is doing: `task 1.1 · …` for a one-task lane and `tasks 1.1+2 · …` for a lane of several. The 48-character cap still applies to the label and gist, so a gist is cut where it was and `interlock waves --format board` prints byte-for-byte what it printed before. The label (`1.1`, `1.1+2`) is unchanged and still names the briefing file, the worktree, the trajectory line and `run record-batch`. Non-lane spawns keep their labels as titles. The workflow runtime caches an agent by its label, so resuming a run from `/workflows` that started before this upgrade re-runs its lane agents.
+- **The ship meter names every agent on the Workflow host.** On that host every agent row and turn-end toast read `lane unknown`. The meter joined an agent to its lane only through `agent.spawn`, which the host never raises for a workflow agent, so the board's lane notes never left `served ?` either. Every run agent's first act is to read its own briefing, so the meter now joins on that read. A `Read` whose path names a dispatched spawn's briefing, or a Bash command that names it (a worker that `cat`s it), matches the agent to that spawn's row by the same briefing hash. A new `tool.call` observer on `Read` makes that join and passes the call on unchanged. An agent is named by its spawn's title (`task 1.1 · …`, `plan-waves`, `verify`). A relay ping is named by its own `interlock` line (`cli · run next`). An agent seen doing neither reads `unmatched agent`, and one line beneath the rows says why. The pane and the toast now use one name; before, the pane printed the label and the toast the title.
+- **The meter pane draws in your theme's colours.** Every colour is a theme key, so the pane follows a light, dark or colour-blind theme. A probe on 2.1.295 showed theme keys resolve in a module's pane and an unknown key renders uncoloured.
+  - State words: `success`, `error` and `warning` for `ok`, `failed` and `current`, replacing raw green, red and yellow.
+  - Names: lane labels and agent names in `suggestion`, bold.
+  - Headings: the run header and section headings in `claude`.
+  - Cards: the card of the wave holding a `current` lane is bordered in `warning`; every other card stays dim.
+  - Agent rows: an agent's turn word in `warning` while running, `success` for `answer` and `error` for any other host word, with relay pings dim.
+  - Warnings: the quiet word and banners in `warning`.
+  - Refusals: the guard-denial line, and the launch-guard line when it refuses, in `error`.
+  - Uncoloured, as before: the context, cost and plan-window lines (colour there would read as a threshold) and a `RED` marker in a wave title. The rules are `lib/meter-palette.mjs`'s, a Node-free module pinned by `test/spine/meter-palette.test.mjs`.
+
 ## 1.3.1 — 2026-10-08
 
 ### Changed

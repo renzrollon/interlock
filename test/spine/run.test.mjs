@@ -406,7 +406,7 @@ test('a lane spawn is shown under a title but keyed, briefed and recorded by its
     })
     const batch = run(root, [...started.then.argv]).step
     const lane = batch.spawns.find(s => s.label === '1.1')
-    assert.equal(lane.title, '1.1 · Add the relaunch guard')
+    assert.equal(lane.title, 'task 1.1 · Add the relaunch guard')
     assert.ok(lane.promptPath.endsWith('/1.1.md'), `the briefing file is named by the label, not the title: ${lane.promptPath}`)
     const header = readFileSync(join(root, lane.promptPath), 'utf8').split('\n')[0]
     assert.equal(header, BRIEFING_HEADER('1.1', lane.promptSha256))

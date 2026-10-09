@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { drawPlanBoard, drawPlanMermaid, STATE_WORDS } from '../../lib/draw-plan.mjs'
 // A namespace, so a missing export fails its own cases rather than this file.
 import * as drawPlan from '../../lib/draw-plan.mjs'
-import { laneLabel, laneTitle } from '../../lib/lane.mjs'
+import { laneLabel, laneName, laneTitle } from '../../lib/lane.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import { walkModule } from '../helpers/module-walk.mjs'
 
@@ -111,8 +111,13 @@ test('the fixture plan draws three blocks keyed by position, lanes named as thei
     const row = rowOf(lines, label)
     assert.ok(row, `no row for ${label}`)
     const gist = row.slice(row.indexOf(' · ') + 3)
-    assert.equal(`${label} · ${gist}`, laneTitle(lane))
+    assert.equal(`${laneName(lane)} · ${gist}`, laneTitle(lane))
   }
+})
+
+test('the board is byte-identical to its pre-role-word output', () => {
+  const expected = readFileSync(join(FIXTURE, 'board.txt'), 'utf8')
+  assert.equal(drawPlanBoard(PLAN, { columns: LIMITS.waveBoardDefaultColumns }).join('\n') + '\n', expected)
 })
 
 test('a plan with no waves is still a board, never an exception', () => {

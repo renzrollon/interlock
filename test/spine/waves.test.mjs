@@ -26,6 +26,8 @@ import {
   laneModel,
   laneLabel,
   laneTitle,
+  laneName,
+  laneGist,
   OUTCOME_OK,
   OUTCOME_FAILED,
   OUTCOME_NOT_ATTEMPTED
@@ -3764,26 +3766,41 @@ test('a red-wave task may not depend on the work it pins', () => {
 
 test('laneTitle opens with the lane label and adds the first task\'s words', () => {
   const one = [{ id: '1.1', description: 'Add `laneTitle(lane)` next to laneLabel.' }]
-  assert.equal(laneTitle(one), '1.1 · Add laneTitle(lane) next to laneLabel')
+  assert.equal(laneTitle(one), 'task 1.1 · Add laneTitle(lane) next to laneLabel')
   const three = [
     { id: '2.1', description: 'Guard   the\nrelaunch' },
     { id: '2.2', description: 'b' },
     { id: '2.3', description: 'c' }
   ]
-  assert.equal(laneTitle(three), '2.1+2 · Guard the relaunch')
-  assert.ok(laneTitle(three).startsWith(laneLabel(three)))
+  assert.equal(laneTitle(three), 'tasks 2.1+2 · Guard the relaunch')
+  assert.ok(laneTitle(three).startsWith(laneName(three)))
 })
 
 test('laneTitle truncates a long description and is a pure function of the lane', () => {
   const lane = [{ id: '3.10', description: 'Rewrite the extraordinarily comprehensive dependency-ordered wave scheduler today' }]
   const title = laneTitle(lane)
-  assert.ok(title.length <= 48, title)
+  assert.ok(`${laneLabel(lane)} · ${laneGist(lane)}`.length <= 48, 'the cap is on the label and gist')
   assert.ok(title.endsWith('…'), title)
-  assert.ok(title.startsWith('3.10 · Rewrite'), title)
+  assert.ok(title.startsWith('task 3.10 · Rewrite'), title)
   assert.equal(laneTitle(lane), title, 'a replay must display — and cache-hit — the same agent')
 })
 
 test('laneTitle falls back to the label when the description says nothing', () => {
-  assert.equal(laneTitle([{ id: '4.1', description: '  ' }]), '4.1')
-  assert.equal(laneTitle([{ id: '4.2' }]), '4.2')
+  assert.equal(laneTitle([{ id: '4.1', description: '  ' }]), 'task 4.1')
+  assert.equal(laneTitle([{ id: '4.2' }]), 'task 4.2')
+})
+
+test('laneName says task for one task and tasks for a lane of several', () => {
+  assert.equal(laneName([{ id: '1.1' }]), 'task 1.1')
+  assert.equal(laneName([{ id: '1.1' }, { id: '1.2' }, { id: '1.3' }]), 'tasks 1.1+2')
+})
+
+test('laneGist is cut where it always was, is empty without words, and is a fixed point', () => {
+  const lane = [{ id: '3.10', description: 'Rewrite the extraordinarily comprehensive dependency-ordered wave scheduler today' }]
+  const gist = laneGist(lane)
+  assert.equal(gist, 'Rewrite the extraordinarily comprehensiv…')
+  assert.equal(`${laneLabel(lane)} · ${gist}`.length, 48)
+  assert.equal(laneGist([{ id: '3.10', description: gist }]), gist)
+  assert.equal(laneGist([{ id: '4.1', description: ' ' }]), '')
+  assert.equal(laneGist([{ id: '4.2' }]), '')
 })

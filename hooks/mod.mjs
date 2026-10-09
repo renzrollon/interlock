@@ -65,9 +65,19 @@
 // with an overlay built from the steps alone (the cursor, the ids each recorded
 // batch names, the skipped verifications, the halt). No file is read for it.
 // The module lays those rows as one bordered card per wave, wraps the gist,
-// and colours only the state word the renderer chose. It keys the lanes,
+// and colours the state word the renderer chose and the lane's label. It keys the lanes,
 // appends what the host observed of a lane, and speaks every fallback: a CLI
 // that relays no plan, a pane narrower than the board, a renderer that throws.
+//
+// THE AGENTS' NAMES AND THE PALETTE. The
+// Workflow host raises no `agent.spawn` for a Workflow agent, so the spawn
+// event's join never fires there. Every run agent's first act is to read its
+// own briefing, and that Read or Bash call names the spawn's briefing path:
+// the module joins the agent to the spawn's row by it, through the same
+// briefing hash. A driver line from an agent no row names marks a relay; any
+// other agent reads `unmatched agent`, said once beneath the rows. Every colour
+// is a theme key from `lib/meter-palette.mjs` and names a meaning, never a
+// threshold: the engine's own figures carry none.
 //
 // THE SESSION START (show-preflight-and-interrupted-runs-at-session-start
 // design D5-D8). Outside a run the module draws two things, both from the
@@ -101,6 +111,7 @@
 import { drawPlanBoardRows } from '../lib/draw-plan.mjs'
 import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
 import { LIMITS } from '../lib/limits.mjs'
+import { PALETTE, stateProps, turnProps } from '../lib/meter-palette.mjs'
 import { TICK_MS, quietMs, quietWord } from '../lib/meter-quiet.mjs'
 import { guardDenialLine, guardOf, guardReason, launchGuardLine } from '../lib/meter-refusals.mjs'
 import {
@@ -166,6 +177,17 @@ const GUARD = 'interlock guard'
 const DRIVER_LINE = /^interlock\s/
 // The bootstrap line a lane's spawn prompt carries (as `lib/agent-usage.mjs` reads it).
 const BRIEFING_SHA = /Expected sha256: ([0-9a-f]{64})/g
+// What an agent row and a turn-end toast read for an agent no row and no driver line names.
+const UNMATCHED = 'unmatched agent'
+const UNMATCHED_LINE = 'unmatched: no briefing read or interlock line seen from this agent yet'
+// The characters a briefing path may stand behind in a Read path or a command,
+// and the ones that would make it part of a longer file name after it.
+const PATH_BEFORE = /[\s\/'"=]/
+const PATH_AFTER = /[\w.+-]/
+/** The props a name is drawn with: a lane label, a spawn's title, a joined agent's name. */
+const NAME_PROPS = { bold: true, color: PALETTE.identity }
+/** The props the run header and each section heading are drawn with. */
+const HEADING_PROPS = { bold: true, color: PALETTE.accent }
 const TOKEN_FIELDS = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
 // The classic session-start sources that start the session over, as the person
 // typed them (design D4). `startup` and `compact` are not among them.
@@ -611,6 +633,72 @@ async function noteSpawn($, input, spawned) {
   return spawned
 }
 
+/** Whether `text` names `path` whole: behind its start or a separator, and not followed by more of a file name. */
+function namesPath(text, path) {
+  for (let at = text.indexOf(path); at !== -1; at = text.indexOf(path, at + 1)) {
+    const before = at === 0 ? '' : text[at - 1]
+    const after = text[at + path.length] ?? ''
+    if ((before === '' || PATH_BEFORE.test(before)) && (after === '' || !PATH_AFTER.test(after))) return true
+  }
+  return false
+}
+
+/**
+ * The Workflow host's join: it raises no
+ * `agent.spawn` for a Workflow agent, but every run agent's first act is to
+ * read its own briefing. A Read path or a Bash command that names a
+ * dispatched spawn's briefing path joins the agent to that spawn's row,
+ * through the same briefing hash the spawn event joins on. The first briefing
+ * an agent reads wins; an agent that names none is left as it was, and no
+ * agent record is made for it. Never throws.
+ */
+function noteBriefing($, agentId, text) {
+  try {
+    const id = str(agentId)
+    if (!id || typeof text !== 'string') return
+    const known = run.agents.get(id)
+    if (known && known.sha) return
+    const said = text.split('\\').join('/')
+    for (const r of run.rows.values()) {
+      if (!r.sha || !r.promptPath) continue
+      if (!namesPath(said, r.promptPath.split('\\').join('/'))) continue
+      agentOf(id).sha = r.sha
+      $.ui.invalidate('ui.render')
+      return
+    }
+  } catch (err) {
+    $.ui.log(`interlock meter: a briefing read was not joined to its lane: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/**
+ * `run next` for `interlock run next --results … --json`: the subcommand a
+ * driver line relays, as `workflows/ship.js` names its relay (`argv.slice(0, 2)`),
+ * the second word dropped when it is a flag or a shell operator.
+ */
+function relayOf(command) {
+  const words = command.trim().split(/\s+/).slice(1, 3)
+  if (!words.length || !words[0]) return null
+  const second = words[1]
+  return second && !/^(--|[;&|<>])/.test(second) ? `${words[0]} ${second}` : words[0]
+}
+
+/** An agent that ran a driver line before any briefing named it is a relay, shown by what it relayed. Never throws. */
+function noteRelay($, agentId, command) {
+  try {
+    const id = str(agentId)
+    if (!id) return
+    const known = run.agents.get(id)
+    if (known && known.sha) return
+    const relay = relayOf(command)
+    if (!relay || (known && known.relay === relay)) return
+    agentOf(id).relay = relay
+    $.ui.invalidate('ui.render')
+  } catch (err) {
+    $.ui.log(`interlock meter: a driver line was not read for its agent: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
 /**
  * A clear, resume or fork ends the run the meter holds, before the chain
  * beneath runs. Any other source, and a non-interactive session, changes
@@ -658,11 +746,14 @@ function drawSpecPane($, e) {
   return h(Box, { flexDirection: 'column' }, ...specPaneLines(spec).map(l => h(Box, { key: l.key }, h(Text, props(l), l.text))))
 }
 
-/** The launch guard's ruling now, over the record its branch would read, in the rule's words (design D5). */
+/**
+ * The launch guard's ruling now, over the record its branch would read, in the
+ * rule's words (design D5), and whether that ruling refuses the next launch.
+ */
 async function launchGuardText($) {
   const { record, now } = await guardFacts($)
   const ruling = decideLaunch(record, now)
-  return launchGuardLine(ruling, now)
+  return { text: launchGuardLine(ruling, now), refused: now !== null && ruling.decision !== 'allow' && Boolean(ruling.reason) }
 }
 
 /** Names, once per run record, a step that crossed with no live run (design D4). */
@@ -719,6 +810,8 @@ function agentOf(id) {
       reason: null,
       durationMs: null,
       sha: null,
+      // The two words after `interlock` in the first driver line it ran while no row named it.
+      relay: null,
       // Whether its turn end has been spoken: once per agent per run (speak-lane-turn-ends design D1).
       endToasted: false
     }
@@ -831,6 +924,8 @@ async function applyRecord($, record) {
       model: str(s.model),
       effort: str(s.effort),
       sha: str(s.promptSha256),
+      // The briefing the spawn names, read off the agent's own first read of it.
+      promptPath: str(s.promptPath),
       // Spawned by a step that dispatches a batch: a lane, planned or not.
       batch: BATCH_ACTIONS.has(record.action)
     })
@@ -979,9 +1074,14 @@ function rowForAgent(a) {
   return null
 }
 
-function laneForAgent(a) {
-  const r = rowForAgent(a)
-  return r ? r.label : null
+/**
+ * What an agent is called: its joined spawn's title, else `cli · <what it
+ * relayed>` for a driver-line agent, else `null`, which reads `unmatched agent`.
+ */
+function agentName(a) {
+  const row = rowForAgent(a)
+  if (row) return row.title
+  return a.relay ? `cli · ${a.relay}` : null
 }
 
 /**
@@ -1007,24 +1107,53 @@ function sessionLines(usage, failure) {
 
 /**
  * `last activity <ISO>` or `last activity unknown`, then the quiet word while a
- * live run is quiet. The word is recomputed from the clock at each draw, so a
- * pane opened after the host stopped the interval still shows it (design D2, D5).
+ * live run is quiet, as the line and the word apart. The word is recomputed
+ * from the clock at each draw, so a pane opened after the host stopped the
+ * interval still shows it (design D2, D5).
  */
 async function lastActivityText($) {
-  if (run.lastActivityAt === null) return 'last activity unknown'
+  if (run.lastActivityAt === null) return { line: 'last activity unknown', word: null }
   const at = new Date(run.lastActivityAt).toISOString()
   const word = run.phase === 'live' ? quietWord(quietMs(run.lastActivityAt, await clockNow($))) : null
-  return `last activity ${at}${word ? ` · ${word}` : ''}`
+  return { line: `last activity ${at}`, word }
 }
 
-/** One spawn as a flat row, as the section drew every spawn before the board. */
-function flatRow(keyed, r) {
+/**
+ * An agent's first line: its name, its id and models dim, then its turn word.
+ * A joined agent is named in the identity colour, a relay dim, an unmatched
+ * agent dim and italic. The turn word is the host's, coloured by what it means;
+ * a relay's running or answered turn stays dim, and only its abnormal end is coloured.
+ */
+function agentLine(Text, a, done) {
+  const row = rowForAgent(a)
+  const name = agentName(a)
+  const nameProps = row ? NAME_PROPS : a.relay ? { dimColor: true } : { dimColor: true, italic: true }
+  const quiet = !row && a.relay && (!a.reason || a.reason === 'answer')
+  return h(
+    Text,
+    null,
+    h(Text, nameProps, name || UNMATCHED),
+    h(Text, { dimColor: true }, ` · ${a.id} · ${a.models.join(', ') || 'model not reported'}`),
+    ' · ',
+    h(Text, quiet ? { dimColor: true } : turnProps(a.reason), done)
+  )
+}
+
+/** One spawn as a flat row, as the section drew every spawn before the board: its title in the identity colour. */
+function flatRow($, e, r) {
+  const { Box, Text } = $.ui.resolve(e)
   const a = agentForSha(r.sha)
   const served = a && a.models.length ? a.models.join(', ') : '?'
   const state = a ? a.reason || 'running' : 'waiting'
-  return keyed(
-    `wave-row-${r.label}`,
-    `${r.title} · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${state}`
+  return h(
+    Box,
+    { key: `wave-row-${r.label}` },
+    h(
+      Text,
+      null,
+      h(Text, NAME_PROPS, r.title),
+      ` · ${r.kind || 'agent'} · routed ${r.model || '?'} · served ${served} · effort ${r.effort || '?'} · ${state}`
+    )
   )
 }
 
@@ -1064,17 +1193,6 @@ function boardKey(key) {
   return `${kind === 'wave' ? 'wave-block' : `wave-${kind}`}-${rest.join('-')}`
 }
 
-/** Colour only a state word the board printed: hue for ok/failed/current, dim for the rest. */
-function stateProps(word) {
-  if (word === 'ok') return { color: 'green' }
-  if (word === 'failed') return { color: 'red' }
-  if (word === 'current') return { color: 'yellow' }
-  if (word === 'pending' || word === 'not reached' || word === 'not recorded' || word === 'per task') {
-    return { dimColor: true }
-  }
-  return null
-}
-
 /** The width a card and the renderer share: the body, capped at the published default. */
 function boardColumns(e) {
   const body = e.props && isInt(e.props.bodyColumns) && e.props.bodyColumns > 0
@@ -1108,6 +1226,22 @@ function idSpans(Text, parts) {
 }
 
 /**
+ * A lane's batch, label, model, tier and effort cells, space-joined as the
+ * board prints them, the label a span in the identity colour.
+ */
+function headSpans(Text, parts) {
+  const before = [parts.batch].filter(Boolean).join(' ')
+  const after = [parts.model, parts.tier, parts.effort].filter(Boolean).join(' ')
+  if (!parts.label) return [[before, after].filter(Boolean).join(' ')]
+  return [before ? `${before} ` : '', h(Text, NAME_PROPS, parts.label), after ? ` ${after}` : ''].filter(span => span !== '')
+}
+
+/** Whether a lane the board drew holds the cursor: its own state word, or a task's, is `current`. */
+const isCurrentLane = parts =>
+  Boolean(parts) &&
+  (parts.state === 'current' || (Array.isArray(parts.tasks) && parts.tasks.some(task => task && task.word === 'current')))
+
+/**
  * A lane in its card: the fixed cells as one Text, the gist wrapping beneath,
  * then the host's note, dim. The coloured words are spans nested in that one
  * Text, because a row of separate elements shrinks each into its own column
@@ -1118,9 +1252,9 @@ function drawLane($, e, row) {
   const key = boardKey(row.key)
   const parts = row.parts
   if (!parts) return h(Box, { key }, h(Text, { wrap: 'truncate-end' }, row.text))
-  const head = [parts.batch, parts.label, parts.model, parts.tier, parts.effort].filter(Boolean).join(' ')
   const line = [
-    ...(parts.state ? [`${head} `, h(Text, stateProps(parts.state), parts.state)] : [head]),
+    ...headSpans(Text, parts),
+    ...(parts.state ? [' ', h(Text, stateProps(parts.state), parts.state)] : []),
     ...idSpans(Text, parts),
     ...(Array.isArray(parts.after) && parts.after.length ? [` ←${parts.after.join(',')}`] : [])
   ]
@@ -1138,6 +1272,8 @@ function drawBoardCards($, e, board, width) {
   const out = []
   let index = null
   let kids = null
+  // Whether the card being filled holds a lane at the cursor: its border is then the current colour.
+  let current = false
   const flush = () => {
     if (index === null) return
     out.push(
@@ -1147,7 +1283,7 @@ function drawBoardCards($, e, board, width) {
           key: `wave-card-${index}`,
           flexDirection: 'column',
           borderStyle: 'single',
-          borderDimColor: true,
+          ...(current ? { borderColor: PALETTE.current } : { borderDimColor: true }),
           width,
           paddingLeft: 1,
           paddingRight: 1,
@@ -1158,6 +1294,7 @@ function drawBoardCards($, e, board, width) {
     )
     index = null
     kids = null
+    current = false
   }
   for (const row of board) {
     if (row.key.startsWith('wave:') && row.key.endsWith(':end')) continue
@@ -1169,8 +1306,10 @@ function drawBoardCards($, e, board, width) {
     }
     if (row.key.startsWith('lane:')) {
       const lane = drawLane($, e, row)
-      if (kids) kids.push(lane)
-      else out.push(lane)
+      if (kids) {
+        kids.push(lane)
+        if (isCurrentLane(row.parts)) current = true
+      } else out.push(lane)
       continue
     }
     flush()
@@ -1197,7 +1336,7 @@ function drawWaves($, e) {
   if (!run.plan) {
     if (!rows.length) return [h(Text, { dimColor: true }, NO_LANES_LINE)]
     const dispatched = run.dispatched !== null || rows.some(r => r.batch)
-    return [...(dispatched ? [keyed('wave-board-unrelayed', UNRELAYED_LINE)] : []), ...rows.map(r => flatRow(keyed, r))]
+    return [...(dispatched ? [keyed('wave-board-unrelayed', UNRELAYED_LINE)] : []), ...rows.map(r => flatRow($, e, r))]
   }
   const width = boardColumns(e)
   let board
@@ -1205,29 +1344,41 @@ function drawWaves($, e) {
     board = drawPlanBoardRows(run.plan, { columns: width, state: boardOverlay(run.plan), notes: laneNotes() })
   } catch (err) {
     $.ui.log(`interlock meter: ${BOARD_FAILED_LINE}: ${messageOf(err)}`, { to: 'debug' })
-    return [keyed('wave-board-failed', BOARD_FAILED_LINE), ...rows.map(r => flatRow(keyed, r))]
+    return [keyed('wave-board-failed', BOARD_FAILED_LINE), ...rows.map(r => flatRow($, e, r))]
   }
   // Every board ends in its tail; the renderer's spoken line for a narrow body
   // is one row without one, and the lanes are then drawn flat beneath it.
   const drawn = board.length > 0 && board[board.length - 1].key === 'tail'
   const planned = new Set(drawn ? board.filter(row => row.key.startsWith('lane:')).map(row => row.key.slice('lane:'.length)) : [])
   const body = drawn ? drawBoardCards($, e, board, width) : board.map(row => line(boardKey(row.key), row.text))
-  return [...body, ...rows.filter(r => !planned.has(r.label)).map(r => flatRow(keyed, r))]
+  return [...body, ...rows.filter(r => !planned.has(r.label)).map(r => flatRow($, e, r))]
 }
 
 async function drawPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
   const keyed = (key, text, props) => h(Box, { key }, h(Text, props || null, text))
-  const heading = text => h(Box, { marginTop: 1 }, h(Text, { bold: true }, text))
+  const heading = text => h(Box, { marginTop: 1 }, h(Text, HEADING_PROPS, text))
+  // The launch-guard line, in the alarm colour only while its ruling refuses the next launch.
+  const guardLine = async () => {
+    const guard = await launchGuardText($)
+    return keyed('launch-guard', guard.text, guard.refused ? { color: PALETTE.alarm } : null)
+  }
   if (run.phase === 'idle' && !run.summary) {
     // The guard runs in every session, so its line stands here too (design D5).
-    return h(Box, { flexDirection: 'column' }, h(Text, { dimColor: true }, NO_RUN_LINE), keyed('launch-guard', await launchGuardText($)))
+    return h(Box, { flexDirection: 'column' }, h(Text, { dimColor: true }, NO_RUN_LINE), await guardLine())
   }
 
   const out = []
-  out.push(h(Text, { bold: true }, `${run.change || 'ship run'}${run.runId ? ` · run ${run.runId}` : ''}`))
+  out.push(h(Text, HEADING_PROPS, `${run.change || 'ship run'}${run.runId ? ` · run ${run.runId}` : ''}`))
   out.push(keyed('action', `action: ${run.action || 'starting'}${run.phase === 'closed' ? ' (closed)' : ''}`))
-  out.push(keyed('last-activity', await lastActivityText($)))
+  const activity = await lastActivityText($)
+  out.push(
+    h(
+      Box,
+      { key: 'last-activity' },
+      h(Text, null, activity.line, ...(activity.word ? [' · ', h(Text, { color: PALETTE.warn }, activity.word)] : []))
+    )
+  )
   out.push(h(Text, { dimColor: true }, RECORD_LINE))
 
   out.push(heading('waves'))
@@ -1236,18 +1387,18 @@ async function drawPane($, e) {
   out.push(heading('agents'))
   if (!run.agents.size) out.push(h(Text, { dimColor: true }, 'no agent has reported a request yet'))
   for (const a of run.agents.values()) {
-    const lane = laneForAgent(a)
     const n = a.requests === 1 ? '1 request' : `${a.requests} requests`
     const done = a.reason ? `${a.reason}${a.durationMs !== null ? ` ${(a.durationMs / 1000).toFixed(1)}s` : ''}` : 'running'
     out.push(
       h(
         Box,
         { key: `agent-${a.id}`, flexDirection: 'column' },
-        h(Box, null, h(Text, null, `${lane || 'lane unknown'} · ${a.id} · ${a.models.join(', ') || 'model not reported'} · ${done}`)),
+        h(Box, null, agentLine(Text, a, done)),
         h(Box, null, h(Text, { dimColor: true }, `${n} · ${tokensText(a)}`))
       )
     )
   }
+  if ([...run.agents.values()].some(a => !agentName(a))) out.push(keyed('agents-unmatched', UNMATCHED_LINE, { dimColor: true }))
 
   // One plain read feeds the session lines and the plan windows; a breakdown
   // is never asked for, because only the plain call is free (design D4).
@@ -1279,14 +1430,14 @@ async function drawPane($, e) {
     h(
       Box,
       { key: 'banners', flexDirection: 'column' },
-      ...(run.banners.length ? run.banners.map(b => h(Text, null, b)) : [h(Text, { dimColor: true }, 'none so far')])
+      ...(run.banners.length ? run.banners.map(b => h(Text, { color: PALETTE.warn }, b)) : [h(Text, { dimColor: true }, 'none so far')])
     )
   )
 
   out.push(heading('refusals'))
   const denials = guardDenialLine(run.guardDenials)
-  if (denials) out.push(keyed('guard-denials', denials))
-  out.push(keyed('launch-guard', await launchGuardText($)))
+  if (denials) out.push(keyed('guard-denials', denials, { color: PALETTE.alarm }))
+  out.push(await guardLine())
 
   if (run.summary) {
     out.push(heading('close summary'))
@@ -1444,6 +1595,12 @@ export function register(on) {
       return r
     }
     const held = run
+    // A run agent's command names it: a
+    // briefing it reads joins it to its lane, and a driver line names a relay.
+    if (run.phase === 'live' && str(e.agentId)) {
+      noteBriefing($, e.agentId, command)
+      if (driver) noteRelay($, e.agentId, command)
+    }
     const r = await next(e)
     // Any Bash call during the run is read for a guard's refusal (guard-commit); only a driver line for a step.
     if (held === run) speakRefusal($, r)
@@ -1468,6 +1625,14 @@ export function register(on) {
     const r = await next(e)
     if (!(r && r.isError === true)) await observeLoad($, e.skill)
     return r
+  })
+
+  // A run agent's Read, observed for the briefing it names and passed on as it
+  // came: the Workflow host raises no spawn event, so a briefing read is how an
+  // agent is joined to its lane.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    if (session.interactive && run.phase === 'live' && e.agentId) noteBriefing($, e.agentId, e.file_path)
+    return next(e)
   })
 
   // The tools the manifest's `Edit|Write` matcher names for guard-tests and guard-tasks (design D4).
@@ -1499,9 +1664,8 @@ export function register(on) {
       // (speak-lane-turn-ends-and-session-cost design D1-D3).
       if (a.reason && a.reason !== 'answer' && !a.endToasted) {
         a.endToasted = true
-        const row = rowForAgent(a)
         try {
-          $.ui.toast(`${row ? row.title : 'lane unknown'} · agent ${a.id} · turn ended: ${a.reason}`)
+          $.ui.toast(`${agentName(a) || UNMATCHED} · agent ${a.id} · turn ended: ${a.reason}`)
         } catch (err) {
           $.ui.log(`interlock meter: the turn-end toast for ${a.id} was refused: ${messageOf(err)}`, { to: 'debug' })
         }
