@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
-## [Unreleased]
+## 1.4.2 — 2026-10-10
 
 ### Fixed
 
