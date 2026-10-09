@@ -22,6 +22,11 @@ this project adheres to Semantic Versioning 2.0.0.
   - **Layout probe:** a probe on 2.1.295 showed the gutter keeps a hanging indent when a line wraps, inside a card too. The pane is as tall as the engine seats it, and a long run scrolls.
   - **Unchanged:** `interlock waves --format board` prints exactly what it printed before.
 
+### Fixed
+
+- **A run resumed across the 1.4.0 upgrade does not re-run its lanes.** The 1.4.0 entry said it would, because the runtime caches an agent by its label. The runtime keys an agent on its prompt and its options together, the label among them, but a lane's label is the title its step carried, and on a resume the completed relays hand back the steps they first printed. So every lane the run had already dispatched is spawned under its old title and returns its saved result. `docs/04` now says the replay cache keys on the prompt and the options, not on the prompt text alone, and says why an upgrade does not rename the lanes a resume replays.
+- **`docs/07` no longer says the board names a lane exactly as its spawn.** Since 1.4.0 the spawn is shown as `task 1.1 · …`, while the board, the briefing file, the worktree and the trajectory line name the lane by its label, `1.1`.
+
 ## 1.4.0 — 2026-10-09
 
 ### Changed

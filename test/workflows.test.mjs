@@ -19,6 +19,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
+import { laneTitle } from '../lib/lane.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -2541,7 +2542,12 @@ test('a one-task lane keeps the pre-lane label, schema and result shape', async 
     handoff: laneHandoff('1.1')
   })
   try {
-    assert.ok(calls.includes('1.1'), 'the label is the bare task id, so a replay still cache-hits')
+    assert.ok(calls.includes('1.1'), 'the lane is recorded under its bare task id')
+    assert.equal(
+      prompts.find(p => p.label === '1.1').title,
+      laneTitle(lane),
+      'the host is handed the lane title, a pure function of the lane, so a replay hands it the same label'
+    )
     assert.match(
       prompts.find(p => p.label === '1.1').prompt,
       /Implement exactly one task/,
@@ -3078,6 +3084,29 @@ test('the Workflow host shows agents by title while fixtures and records key on 
   const relay = prompts.find(p => p.relay && p.label.startsWith('cli-'))
   assert.match(relay.title, /^cli-\d+ · run /, 'a relay is shown with the subcommand it runs')
   assert.equal(prompts.find(p => p.label === 'plan-waves').title, 'plan-waves')
+})
+
+test('a lane is spawned under the title its relay printed, so a resume replays the label it first ran under', async () => {
+  // On a resume the runtime hands back each completed relay's saved stdout, and
+  // the runtime keys an agent on its prompt and options, the label among them.
+  // A relay that hands back an older CLI's title stands for that saved stdout:
+  // the script must spawn the lane under it, never under a title of its own.
+  const OLD_TITLE = '1.1 · Add the relaunch guard'
+  const retitle = stdout => {
+    let step
+    try {
+      step = JSON.parse(stdout)
+    } catch {
+      return stdout
+    }
+    if (!step || !Array.isArray(step.spawns)) return stdout
+    return JSON.stringify({ ...step, spawns: step.spawns.map(s => (s && s.label === '1.1' ? { ...s, title: OLD_TITLE } : s)) })
+  }
+  const responses = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`cli-${i + 1}`, retitle]))
+  const { prompts } = await runShip({ responses })
+  const lane = prompts.find(p => p.label === '1.1')
+  assert.ok(lane, 'the default run spawns lane 1.1')
+  assert.equal(lane.title, OLD_TITLE)
 })
 
 test('relay pings, the planner and the commit agent are spawned with no effort key at all', async () => {

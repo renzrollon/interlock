@@ -138,10 +138,10 @@ This page has always used the word "cache" for one thing. There are two, they ar
 
 | | **Workflow replay cache** | **Anthropic prompt cache** |
 |---|---|---|
-| Keyed on | the exact prompt text of a step | the leading prefix of a request |
+| Keyed on | an agent's exact prompt and its options (label, model, schema and the rest), in the order agents started | the leading prefix of a request |
 | What it does | a resumed run skips agents that already finished | a repeated prefix is re-read instead of re-sent |
-| Expires | when the session ends, or the prompt text changes | on idleness, after a lifetime you configure |
-| You control it by | not editing prompts mid-run | two settings keys, below |
+| Expires | when the session ends, or an agent's prompt or options change | on idleness, after a lifetime you configure |
+| You control it by | not editing prompts or labels mid-run | two settings keys, below |
 
 Everything else in this section — resume, replay order, the cache-busting warning below — is the **replay** cache. Nothing on this page about it says anything about the prompt cache.
 
@@ -167,7 +167,9 @@ What a run records: cache-read and cache-creation tokens, per wave and for the r
 
 So stopping mid-wave costs the whole rest of that wave. This is one place Interlock's shape pays off: a run fanned out across many small agents preserves far more progress across a pause than one long agent would, because there is less work sitting behind the first unfinished agent.
 
-**Do not edit a control-plane prompt to "cache-bust" a bad `action`.** Workflow cache keys on the exact prompt text. Changing `next-1`, a shared step suffix, or any earlier agent to force a live re-run of a ping that returned `action: "report"` (or any other invented value) makes that step a cache miss — and **every agent that started after it re-runs**, including implementers whose work is already on disk. `ship` retries an unknown action once itself by re-asking `wave-state next` under a new `next-retry-*` label. That misses cache for the ping only. If a live run on older code already cached a garbage action, change **only** that step's label (for example `record-batch-12` → `record-batch-12b`), never an earlier prompt.
+**Do not edit a control-plane prompt to "cache-bust" a bad `action`.** The Workflow cache keys on an agent's exact prompt and its options, the label among them. Changing `next-1`, a shared step suffix, or any earlier agent to force a live re-run of a ping that returned `action: "report"` (or any other invented value) makes that step a cache miss — and **every agent that started after it re-runs**, including implementers whose work is already on disk. `ship` retries an unknown action once itself by re-asking `wave-state next` under a new `next-retry-*` label. That misses cache for the ping only. If a live run on older code already cached a garbage action, change **only** that step's label (for example `record-batch-12` → `record-batch-12b`), never an earlier prompt.
+
+**Upgrading Interlock does not rename the lanes a resume replays.** A lane's label in `/workflows` is the title its step carried, and a step reaches the script only as its relay's stdout. On a resume the completed relays hand back their saved stdout, so every lane the run had already dispatched is spawned under the title it first ran under, and its saved result comes back. Only the steps the upgraded CLI prints after the resume carry its new titles, and those lanes are new work anyway.
 
 Resume also only works **within the same Claude Code session**. If you exit Claude Code while `ship` is running, the next session starts it fresh — no cached results, no partial credit. On a long run, leave the session open.
 
