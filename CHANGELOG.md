@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **The ship meter pane reads as a timeline.** In 1.4.0 the `agents` section was a flat list in first-seen order: relay pings, the planner and lane workers were interleaved, nothing said when anything happened, and lanes that ran in parallel looked like lanes that ran in turn.
+  - **The `timeline` section replaces it.** There is one line per CLI step as it crossed, such as `run-batch · wave 2 · batch 1/2 · 3 in parallel` or `verify · wave 2 · skipped: <reason>`. The relay agent that carried the step is folded into that line: `cli <id>`, its served model, its request count and its duration.
+  - **Each step's agents** are indented beneath it in the order they started, with name, id, model, turn word and a dim requests-and-tokens line. A spawn no agent has picked up yet reads `waiting`. A relay whose line printed no step, such as `interlock limits`, stands at its own time, and agents nothing names are listed last under `unmatched`.
+  - **Every timed line has a local `HH:MM:SS` gutter**, blank where the clock gave no reading, never a guessed time.
+  - **The header** reads `started <date> <time> · last activity <time>`, replacing `last activity <ISO>`.
+  - **Durations** read `41.2s`, `2m 14s` or `1h 03m`, replacing `134.2s`.
+  - **Wave cards group their lanes by batch**, under a line with the batch's dispatch time and `N in parallel` or `1 lane`. The lanes are indented beneath it and no longer repeat the batch cell. A lane's note adds its duration once its turn ended.
+  - **Each section's body is indented** under its heading.
+  - **Relay token figures:** a relay's token breakdown is no longer drawn. The trajectory's `agent-result` line still carries it.
+  - **New modules:** the words and the order come from two new Node-free modules, `lib/meter-time.mjs` and `lib/meter-timeline.mjs`, pinned by `test/spine/meter-time.test.mjs` and `test/spine/meter-timeline.test.mjs`.
+  - **Layout probe:** a probe on 2.1.295 showed the gutter keeps a hanging indent when a line wraps, inside a card too. The pane is as tall as the engine seats it, and a long run scrolls.
+  - **Unchanged:** `interlock waves --format board` prints exactly what it printed before.
+
 ## 1.4.0 — 2026-10-09
 
 ### Changed

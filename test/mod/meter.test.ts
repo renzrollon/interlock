@@ -17,6 +17,7 @@ import { denyReason } from '../../lib/launch-rule.mjs'
 import { drawPlanBoard, drawPlanBoardRows } from '../../lib/draw-plan.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import { PALETTE } from '../../lib/meter-palette.mjs'
+import { clockText, durationText, stampText } from '../../lib/meter-time.mjs'
 import { denyText } from '../fixtures/mod/refusals.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 
@@ -226,15 +227,41 @@ function ownClock(on: any, answers: number) {
   return c
 }
 const lastActivity = async (ui: any) => (await ui.find({ key: 'last-activity' }))?.text
+/** An agent's timeline line without its gutter: its first line, then its requests and tokens. */
+const agentRow = async (ui: any, id: string) => textOf(contentOf(await ui.find({ key: `agent-${id}` })))
+/**
+ * The header's third line for a run launched at `started` whose last activity
+ * was `at`, in the local time the module draws: computed with the lib's own
+ * helpers over the kit's clock readings, so the case holds in any time zone.
+ */
+const activityLine = (started: number | null, at: number | null) =>
+  `${started === null ? '' : `started ${stampText(started)} · `}last activity ${at === null ? 'unknown' : clockText(at)}`
+// How far a section body sits in beneath its heading (layout probe P3): the
+// pane's body less this is the width the wave board is drawn at.
+const SECTION_INDENT = 2
+/** A timed line's two halves (layout probe P3): the gutter box, then the content box. */
+const gutterOf = (el: any) => (Array.isArray(el?.children) ? el.children[0] : undefined)
+const contentOf = (el: any) => (Array.isArray(el?.children) ? el.children[1] : undefined)
+/** A keyed timed line's text without its gutter, and its gutter's text. */
+const lineText = async (ui: any, key: string) => textOf(contentOf(await ui.find({ key })))
+const gutterText = async (ui: any, key: string) => textOf(gutterOf(await ui.find({ key })))
+const TIMELINE_KEY = /^(launch$|step-|agent-|spawn-|agents-unmatched|timeline-no-step$)/
+/** The timeline's keyed lines, in the order drawn. */
+async function timelineKeys(ui: any) {
+  const boxes = await ui.findAll({ type: 'Box' })
+  return boxes.map((b: any) => b.key).filter((key: unknown) => typeof key === 'string' && TIMELINE_KEY.test(key))
+}
+/** How many steps in a timed line's content sits: its padding over the indent. */
+const depthOf = async (ui: any, key: string) => (contentOf(await ui.find({ key }))?.props?.paddingLeft ?? 0) / SECTION_INDENT
 async function spinner($: any, surface: (typeof SURFACES)[number]) {
   const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Spinner', props: SPINNER })
   const text = (await ui.find({ text: /^Sauteing/ }))?.text
   await ui.unmount()
   return text
 }
-// The body width is the board's published default unless a case names
-// another; both are `interlock limits`'s, never restated here.
-const mount = ($: any, surface: (typeof SURFACES)[number], bodyColumns: number = LIMITS.waveBoardDefaultColumns) =>
+// The section body is the board's published default wide unless a case names
+// another width; both are `interlock limits`'s, never restated here.
+const mount = ($: any, surface: (typeof SURFACES)[number], bodyColumns: number = LIMITS.waveBoardDefaultColumns + SECTION_INDENT) =>
   $.ui.mount({
     plugin: PLUGIN,
     surface,
@@ -361,8 +388,8 @@ test('per-agent figures tally separately, mark a missing usage partial, and list
 
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    const a1 = (await ui.find({ key: 'agent-a1' }))?.text ?? ''
-    const a2 = (await ui.find({ key: 'agent-a2' }))?.text ?? ''
+    const a1 = await agentRow(ui, 'a1')
+    const a2 = await agentRow(ui, 'a2')
     expect(a1).toMatch(/claude-sonnet-5-5/)
     expect(a1).toMatch(/in 30/)
     expect(a1).not.toMatch(/claude-opus-5-5/)
@@ -372,7 +399,18 @@ test('per-agent figures tally separately, mark a missing usage partial, and list
     expect(a2).toMatch(/4\.2s/)
     expect(a1.startsWith('unmatched agent · a1 · ')).toBe(true)
     expect(a2.startsWith('unmatched agent · a2 · ')).toBe(true)
+    // No step names either agent: they form the trailing group, one step in beneath its dim head, first seen first.
+    expect(await timelineKeys(ui)).toEqual(['launch', 'agents-unmatched-head', 'agent-a1', 'agent-a2', 'agents-unmatched', 'timeline-no-step'])
+    expect(await lineText(ui, 'launch')).toBe('launch · interlock:ship')
+    expect(await gutterText(ui, 'launch')).toBe(clockText(T0))
+    expect((await ui.find({ key: 'agents-unmatched-head' }))?.text).toBe('unmatched')
+    expect(paintOf(await ui.find({ key: 'agents-unmatched-head' })).dimColor).toBe(true)
+    for (const id of ['a1', 'a2']) {
+      expect(await depthOf(ui, `agent-${id}`)).toBe(1)
+      expect(await gutterText(ui, `agent-${id}`)).toBe(clockText(T0))
+    }
     expect((await ui.find({ key: 'agents-unmatched' }))?.text).toBe(UNMATCHED_LINE)
+    expect((await ui.find({ key: 'timeline-no-step' }))?.text).toBe('no step has crossed yet')
     await ui.unmount()
   }
 
@@ -381,7 +419,7 @@ test('per-agent figures tally separately, mark a missing usage partial, and list
   w.usage.set('a1:3', usage('claude-sonnet-4-5', 1))
   await step($, 'a1', 3, 'claude-sonnet-4-5')
   const ui = await mount($, 'terminal')
-  const a1 = (await ui.find({ key: 'agent-a1' }))?.text ?? ''
+  const a1 = await agentRow(ui, 'a1')
   expect(a1).toMatch(/partial/)
   expect(a1).toMatch(/4 requests/)
   expect(a1).toMatch(/claude-sonnet-5-5/)
@@ -499,7 +537,7 @@ test('the quiet word comes at the cap on the status line, the spinner and the pa
   for (const surface of SURFACES) {
     expect(await spinner($, surface)).toBe(`Sauteing${BATCH_POSITION}`)
     const ui = await mount($, surface)
-    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0).toISOString()}`)
+    expect(await lastActivity(ui)).toBe(activityLine(T0, T0))
     await ui.unmount()
   }
 
@@ -508,7 +546,7 @@ test('the quiet word comes at the cap on the status line, the spinner and the pa
   for (const surface of SURFACES) {
     expect(await spinner($, surface)).toBe(`Sauteing${BATCH_POSITION} · ${QUIET_WORD}`)
     const ui = await mount($, surface)
-    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0).toISOString()} · ${QUIET_WORD}`)
+    expect(await lastActivity(ui)).toBe(`${activityLine(T0, T0)} · ${QUIET_WORD}`)
     const windows = await ui.find({ key: 'plan-window-five_hour' })
     expect(windows?.text).not.toMatch(/quiet|warn|limit|over|high/i)
     expect(windows?.props.color).toBeUndefined()
@@ -521,7 +559,7 @@ test('the quiet word comes at the cap on the status line, the spinner and the pa
   for (const surface of SURFACES) {
     expect(await spinner($, surface)).toBe(`Sauteing${F.CHANGE} · test-wave · wave 2`)
     const ui = await mount($, surface)
-    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0 + LIMITS.meterQuietAfterMs).toISOString()}`)
+    expect(await lastActivity(ui)).toBe(activityLine(T0, T0 + LIMITS.meterQuietAfterMs))
     await ui.unmount()
   }
 })
@@ -543,7 +581,7 @@ test('a run agent\'s answer with no step between counts as activity; the lead se
   expect(answered.usage).toEqual(usage('claude-sonnet-5-5', 10))
   expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION}`)
   const ui = await mount($, 'terminal')
-  expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0 + LIMITS.meterQuietAfterMs).toISOString()}`)
+  expect(await lastActivity(ui)).toBe(activityLine(T0, T0 + LIMITS.meterQuietAfterMs))
   await ui.unmount()
 
   // A lane that keeps answering inside the threshold is never called quiet.
@@ -649,7 +687,11 @@ test('a clock that stops answering guesses nothing: the stamp stands, no word, o
   for (const surface of SURFACES) {
     expect(await spinner($, surface)).toBe(`Sauteing${BATCH_POSITION}`)
     const ui = await mount($, surface)
-    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0).toISOString()}`)
+    expect(await lastActivity(ui)).toBe(activityLine(T0, T0))
+    // The launch read the clock; every later reading failed, so the step's and the agent's gutters are blank.
+    expect(await gutterText(ui, 'launch')).toBe(clockText(T0))
+    expect(await gutterText(ui, 'step-0')).toBe('')
+    expect(await gutterText(ui, 'agent-a1')).toBe('')
     await ui.unmount()
   }
   expect(w.logs.filter(l => l.to === 'debug' && CLOCK_LINE.test(l.text))).toHaveLength(1)
@@ -670,6 +712,12 @@ test('a run whose clock never answered says its last activity is unknown', async
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
     expect(await lastActivity(ui)).toBe('last activity unknown')
+    expect(await lastActivity(ui)).toBe(activityLine(null, null))
+    expect(await ui.find({ text: /started/ })).toBeUndefined()
+    // No reading at all: every gutter is blank and the lines are drawn all the same, in crossing order.
+    expect(await timelineKeys(ui)).toEqual(['launch', 'step-0', 'spawn-0-lane-a', 'spawn-0-lane-b'])
+    for (const key of ['launch', 'step-0', 'spawn-0-lane-a', 'spawn-0-lane-b']) expect(await gutterText(ui, key)).toBe('')
+    expect(await lineText(ui, 'step-0')).toBe('run-batch · wave 2 · batch 1/2 · 2 in parallel')
     await ui.unmount()
   }
   expect(w.logs.filter(l => l.to === 'debug' && CLOCK_LINE.test(l.text))).toHaveLength(1)
@@ -827,7 +875,7 @@ test('a usage read that fails is named with its reason on every line it feeds, a
     expect((await ui.find({ text: /plan windows unavailable/ }))?.text).toMatch(new RegExp(USAGE_REFUSED))
     expect(await ui.find({ text: /off a subscription/ })).toBeUndefined()
     expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(/lane-a/)
-    expect(await lastActivity(ui)).toBe(`last activity ${new Date(T0).toISOString()}`)
+    expect(await lastActivity(ui)).toBe(activityLine(T0, T0))
     expect(count((await ui.find({ key: 'banners' }))?.text, F.BANNER)).toBe(1)
     await ui.unmount()
   }
@@ -1019,9 +1067,16 @@ function expectStatePaint(el: any, word: string | null | undefined) {
   }
 }
 
-/** A lane's first line: one Text, never a row of elements, its coloured words nested spans. */
+/**
+ * A lane's first line: one Text, never a row of elements, its coloured words
+ * nested spans. The lane is a timed line with a blank gutter, its content one
+ * step in beneath its batch's sub-header.
+ */
 function laneLine(el: any) {
-  const line = Array.isArray(el?.children) ? el.children[0] : undefined
+  expect(textOf(gutterOf(el))).toBe('')
+  const content = contentOf(el)
+  expect(content?.props?.paddingLeft).toBe(SECTION_INDENT)
+  const line = Array.isArray(content?.children) ? content.children[0] : undefined
   expect(line?.type).toBe('Text')
   return line
 }
@@ -1121,8 +1176,10 @@ async function expectBoard(
     const line = laneLine(el)
     expect(line.props?.wrap).toBe('wrap')
     for (const n of tree(line)) if (n !== line && typeof n !== 'string') expect(n.type).toBe('Text')
-    // The fixed cells read exactly as the board printed them, the label a bold span in the identity colour.
-    expect(textOf(line).startsWith([p.batch, p.label, p.model, p.tier, p.effort].filter(Boolean).join(' '))).toBe(true)
+    // The fixed cells read exactly as the board printed them, the label a bold span in the identity colour;
+    // the batch cell is the sub-header the lane sits under, never repeated on the lane.
+    expect(textOf(line).startsWith([p.label, p.model, p.tier, p.effort].filter(Boolean).join(' '))).toBe(true)
+    expect(textOf(line).includes(`${p.batch} `)).toBe(false)
     const spans = wordSpans(line, p.label)
     if (p.state) {
       expect(textOf(spans[0])).toBe(p.state)
@@ -1270,9 +1327,10 @@ test('a card is the body wide up to the published default, and a lane wider than
   const state = overlay(plan, { cursor: AT_FIRST_BATCH })
   const min = LIMITS.waveBoardMinColumns
   const max = LIMITS.waveBoardDefaultColumns
+  // `body` is the section body: the pane's body less the section's indent.
   for (const body of [min, Math.floor((min + max) / 2), max + 60]) {
     for (const surface of SURFACES) {
-      const ui = await mount($, surface, body)
+      const ui = await mount($, surface, body + SECTION_INDENT)
       await expectBoard(ui, plan, state, ADOPTED_LANES, [], Math.min(body, max))
       await ui.unmount()
     }
@@ -1307,7 +1365,7 @@ test('one column below the published minimum the section is the spoken line, the
   const spoken = drawPlanBoard(F.ADOPTION_BATCH.plan, { columns: NARROW })
   expect(spoken).toHaveLength(1)
   for (const surface of SURFACES) {
-    const ui = await mount($, surface, NARROW)
+    const ui = await mount($, surface, NARROW + SECTION_INDENT)
     const section = texts(await waveSection(ui))
     expect(section).toEqual([spoken[0], ...F.ADOPTION_BATCH.spawns.map(flatRow)])
     for (const line of section) expect(BOX_DRAWING.test(line)).toBe(false)
@@ -1426,10 +1484,10 @@ const BRIEFED_BATCH = {
     laneSpawn('3.1', TITLE_31, 'e', '.claude\\ship\\briefings\\3.1.md')
   ]
 }
-const agentRow = async (ui: any, id: string) => (await ui.find({ key: `agent-${id}` }))?.text ?? ''
 /** An agent row's first line, as its spans: the name, the id and models, the turn word. */
 async function agentSpans(ui: any, id: string) {
-  const line = tree(await ui.find({ key: `agent-${id}` })).find((n: any) => n.type === 'Text')
+  const line = tree(contentOf(await ui.find({ key: `agent-${id}` }))).find((n: any) => n.type === 'Text')
+  expect(line?.props?.wrap).toBe('wrap')
   return spansOf(line)
 }
 
@@ -1460,7 +1518,8 @@ test('on the Workflow host an agent that reads its briefing is named by its lane
   await complete($, 'a1', 'error')
   expect(w.toasts.slice(before)).toEqual([`${TITLE_17} · agent a1 · turn ended: error`])
   const ui = await mount($, 'terminal')
-  expect((await ui.find({ key: 'wave-row-1.7-note' }))?.text).toBe('served claude-sonnet-5-5 · error')
+  // The note says how long the turn took once it ended, humanised.
+  expect((await ui.find({ key: 'wave-row-1.7-note' }))?.text).toBe(`served claude-sonnet-5-5 · error ${durationText(4200)}`)
   await ui.unmount()
 })
 
@@ -1512,6 +1571,8 @@ test('an agent that runs a driver line before any briefing is a relay, named dim
   await start($)
   await launch($)
   await bashAs($, w, 'a9', NEXT, F.stdout(BRIEFED_BATCH))
+  w.usage.set('a9:0', usage('claude-haiku-4-5', 3))
+  await step($, 'a9', 0, 'claude-haiku-4-5')
   await bashAs($, w, 'a8', 'interlock limits --json', '{}')
   // A worker that read its briefing keeps its lane's title when it runs an interlock line.
   await readAs($, 'a2', `${KETTLE}/${briefingOf('1.1')}`)
@@ -1519,29 +1580,39 @@ test('an agent that runs a driver line before any briefing is a relay, named dim
   await complete($, 'a8', 'answer')
   expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION}`)
 
+  const stepWords = 'run-batch · wave 2 · batch 1/2 · 3 in parallel'
   for (const surface of SURFACES) {
     const ui = await mount($, surface)
-    expect((await agentRow(ui, 'a9')).startsWith('cli · run next · a9 · model not reported · running')).toBe(true)
-    expect((await agentRow(ui, 'a8')).startsWith('cli · limits · a8 · model not reported · answer 4.2s')).toBe(true)
+    // The agent that printed the step is drawn on the step's own line, dim, and nowhere else.
+    expect(await lineText(ui, 'step-0')).toBe(`${stepWords} · cli a9 · claude-haiku-4-5 · 1 request`)
+    expect(await ui.find({ key: 'agent-a9' })).toBeUndefined()
+    const [relay] = spansOf(tree(contentOf(await ui.find({ key: 'step-0' }))).find((n: any) => n.type === 'Text'))
+    expect(textOf(relay)).toBe(' · cli a9 · claude-haiku-4-5 · 1 request')
+    expect(relay.props.dimColor).toBe(true)
+    // A relay no step names stands at the top level, after the timed lines: it made no request, so it has no time.
+    expect(await timelineKeys(ui)).toEqual(['launch', 'step-0', 'agent-a2', 'spawn-0-2.1+2', 'spawn-0-3.1', 'agent-a8'])
+    expect(await depthOf(ui, 'agent-a8')).toBe(0)
+    expect(await gutterText(ui, 'agent-a8')).toBe('')
+    expect(await agentRow(ui, 'a8')).toBe('cli · limits · a8 · model not reported · answer 4.2s')
     expect((await agentRow(ui, 'a2')).startsWith(`${TITLE_11} · a2 · `)).toBe(true)
-    for (const id of ['a9', 'a8']) {
-      const [name, , done] = await agentSpans(ui, id)
-      expect(name.props.dimColor).toBe(true)
-      expect(name.props.color).toBeUndefined()
-      expect(done.props.dimColor).toBe(true)
-      expect(done.props.color).toBeUndefined()
-    }
+    expect(await depthOf(ui, 'agent-a2')).toBe(1)
+    const [name, , done] = await agentSpans(ui, 'a8')
+    expect(name.props.dimColor).toBe(true)
+    expect(name.props.color).toBeUndefined()
+    expect(done.props.dimColor).toBe(true)
+    expect(done.props.color).toBeUndefined()
     expect(await ui.find({ key: 'agents-unmatched' })).toBeUndefined()
     await ui.unmount()
   }
 
-  // A relay's abnormal end is spoken by its relay name and drawn in the alarm colour.
+  // A relay's abnormal end is spoken by its relay name and drawn on its step's line in the alarm colour.
   await complete($, 'a9', 'error')
   expect(turnEnds(w)).toEqual(['cli · run next · agent a9 · turn ended: error'])
   const ui = await mount($, 'terminal')
-  const [, , done] = await agentSpans(ui, 'a9')
-  expect(textOf(done)).toBe('error 4.2s')
-  expect(done.props.color).toBe(PALETTE.alarm)
+  expect(await lineText(ui, 'step-0')).toBe(`${stepWords} · cli a9 · claude-haiku-4-5 · 1 request · error ${durationText(4200)}`)
+  const spans = spansOf(tree(contentOf(await ui.find({ key: 'step-0' }))).find((n: any) => n.type === 'Text'))
+  expect(textOf(spans[1])).toBe(`error ${durationText(4200)}`)
+  expect(spans[1].props.color).toBe(PALETTE.alarm)
   await ui.unmount()
 })
 
@@ -1593,7 +1664,7 @@ test('the pane draws in the theme\'s keys: accent headings, identity names, warn
     const header = paintOf(await ui.find({ text: `${F.CHANGE} · run ${F.RUN_ID}` }))
     expect(header.bold).toBe(true)
     expect(header.color).toBe(PALETTE.accent)
-    for (const heading of ['waves', 'agents', 'session', 'plan windows', 'banners', 'refusals']) {
+    for (const heading of ['waves', 'timeline', 'session', 'plan windows', 'banners', 'refusals']) {
       const props = paintOf(await ui.find({ text: heading }))
       expect(props.bold).toBe(true)
       expect(props.color).toBe(PALETTE.accent)
@@ -1611,7 +1682,7 @@ test('the pane draws in the theme\'s keys: accent headings, identity names, warn
 
     // The quiet word is a span in the warn colour; the line's text is as it was.
     const activity = await ui.find({ key: 'last-activity' })
-    expect(activity?.text).toBe(`last activity ${new Date(T0).toISOString()} · ${QUIET_WORD}`)
+    expect(activity?.text).toBe(`${activityLine(T0, T0)} · ${QUIET_WORD}`)
     const line = tree(activity).find((n: any) => n.type === 'Text')
     expect(line.props?.color).toBeUndefined()
     const quiet = spansOf(line)
@@ -1658,4 +1729,195 @@ test('the pane draws in the theme\'s keys: accent headings, identity names, warn
   expect(guard?.text).toBe('launch guard: next launch allowed')
   for (const n of tree(guard)) expect(n.props?.color).toBeUndefined()
   await ui.unmount()
+})
+
+// --- the step timeline -------------------------------------------------------
+//
+// One line per step as it crossed, a local `HH:MM:SS` gutter on every timed
+// line (blank where no time was read), the relay folded into its step's line,
+// the agents a step spawned indented beneath it in start order with a waiting
+// spawn last, orphan relays at their time, unmatched agents last. Every
+// expected time is the lib's own helper over the kit's clock readings.
+
+const TITLE_41 = 'task 4.1 · Wait for the lead'
+const FOUR_LANES = { ...BRIEFED_BATCH, spawns: [...BRIEFED_BATCH.spawns, laneSpawn('4.1', TITLE_41, 'f')] }
+const firstSpan = async (ui: any, key: string) =>
+  spansOf(tree(contentOf(await ui.find({ key }))).find((n: any) => n.type === 'Text'))
+
+test('a step\'s line folds in the agent that printed it, and an orphan relay stands at its own time among the steps', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bashAs($, w, 'a9', NEXT, F.stdout(F.RUN_BATCH))
+  w.usage.set('a9:0', usage('claude-haiku-4-5', 3))
+  await step($, 'a9', 0, 'claude-haiku-4-5')
+  await complete($, 'a9', 'answer')
+  await w.clock!.advance(2000)
+  await bashAs($, w, 'a8', 'interlock limits --json', '{}')
+  w.usage.set('a8:0', usage('claude-haiku-4-5', 1))
+  await step($, 'a8', 0, 'claude-haiku-4-5')
+  await w.clock!.advance(1000)
+  await bash($, w, NEXT, F.stdout(F.RELAYED_TEST_WAVE))
+
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    // An answered relay's turn word is not drawn: its line ends in how long it took.
+    expect(await lineText(ui, 'step-0')).toBe(
+      `run-batch · wave 2 · batch 1/2 · 2 in parallel · cli a9 · claude-haiku-4-5 · 1 request · ${durationText(4200)}`
+    )
+    expect(await gutterText(ui, 'step-0')).toBe(clockText(T0))
+    expect((await firstSpan(ui, 'step-0')).map(textOf)).toEqual([' · cli a9 · claude-haiku-4-5 · 1 request', ` · ${durationText(4200)}`])
+    for (const span of await firstSpan(ui, 'step-0')) {
+      expect(span.props.dimColor).toBe(true)
+      expect(span.props.color).toBeUndefined()
+    }
+    // A step printed by the lead session names no relay; the test wave dispatched no lane.
+    expect(await lineText(ui, 'step-1')).toBe('test-wave · wave 2')
+    expect(await gutterText(ui, 'step-1')).toBe(clockText(T0 + 3000))
+    expect(await timelineKeys(ui)).toEqual(['launch', 'step-0', 'spawn-0-lane-a', 'spawn-0-lane-b', 'agent-a8', 'step-1'])
+    expect(await gutterText(ui, 'agent-a8')).toBe(clockText(T0 + 2000))
+    expect(await depthOf(ui, 'agent-a8')).toBe(0)
+    expect(await depthOf(ui, 'step-0')).toBe(0)
+    expect(await agentRow(ui, 'a8')).toBe('cli · limits · a8 · claude-haiku-4-5 · running')
+    // A spawn no agent joined yet: its title in the identity colour, `waiting` dim, and no time.
+    expect(await lineText(ui, 'spawn-0-lane-a')).toBe('lane-a · waiting')
+    expect(await gutterText(ui, 'spawn-0-lane-a')).toBe('')
+    const [title, waiting] = await firstSpan(ui, 'spawn-0-lane-a')
+    expectNamePaint(title, 'lane-a')
+    expect(textOf(waiting)).toBe('waiting')
+    expect(waiting.props.dimColor).toBe(true)
+    await ui.unmount()
+  }
+})
+
+test('a parallel batch\'s lanes sit beneath its step in the order their agents started, a waiting spawn last', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(FOUR_LANES))
+  // Each agent reads its own briefing, then starts its first request a second after the one before.
+  await readAs($, 'a7', `${KETTLE}/${briefingOf('3.1')}`)
+  await readAs($, 'a2', `${KETTLE}/${briefingOf('1.1')}`)
+  await readAs($, 'a3', `${KETTLE}/${briefingOf('2.1+2')}`)
+  for (const [n, id] of [[1, 'a7'], [2, 'a2'], [3, 'a3']] as const) {
+    await w.clock!.advance(1000)
+    w.usage.set(`${id}:0`, usage('claude-sonnet-5-5', n))
+    await step($, id, 0, 'claude-sonnet-5-5')
+  }
+  await $.turn.complete({ answer: '', durationMs: 134_200, isAborted: false, turnId: 't-a3', agentId: 'a3', reason: 'answer' })
+
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await lineText(ui, 'step-0')).toBe('run-batch · wave 2 · batch 1/2 · 4 in parallel')
+    expect(await timelineKeys(ui)).toEqual(['launch', 'step-0', 'agent-a7', 'agent-a2', 'agent-a3', 'spawn-0-4.1'])
+    for (const [n, id] of [[1, 'a7'], [2, 'a2'], [3, 'a3']] as const) {
+      expect(await gutterText(ui, `agent-${id}`)).toBe(clockText(T0 + n * 1000))
+      expect(await depthOf(ui, `agent-${id}`)).toBe(1)
+    }
+    expect(await agentRow(ui, 'a7')).toBe(`${TITLE_31} · a7 · claude-sonnet-5-5 · running1 request · in 1 · out 2 · cache read 3 · cache write 4`)
+    // The duration is humanised: two minutes and fourteen seconds, not 134.2s.
+    expect((await agentRow(ui, 'a3')).startsWith(`${TITLE_21} · a3 · claude-sonnet-5-5 · answer 2m 14s`)).toBe(true)
+    expect(durationText(134_200)).toBe('2m 14s')
+    const content = contentOf(await ui.find({ key: 'agent-a2' }))
+    expect(content.props.flexDirection).toBe('column')
+    expect(content.children[1].props.dimColor).toBe(true)
+    expect(textOf(content.children[1])).toBe('1 request · in 2 · out 4 · cache read 6 · cache write 8')
+    expect(await lineText(ui, 'spawn-0-4.1')).toBe(`${TITLE_41} · waiting`)
+    expect(await gutterText(ui, 'spawn-0-4.1')).toBe('')
+    expect(await depthOf(ui, 'spawn-0-4.1')).toBe(1)
+    await ui.unmount()
+  }
+
+  // The same label dispatched again by a later step, with a new briefing, waits beneath that step.
+  const again = { ...F.RUN_BATCH, batchIndex: 1, spawns: [laneSpawn('4.1', TITLE_41, '9')] }
+  await bash($, w, NEXT, F.stdout(again))
+  const ui = await mount($, 'terminal')
+  expect(await timelineKeys(ui)).toEqual(['launch', 'step-0', 'agent-a7', 'agent-a2', 'agent-a3', 'spawn-0-4.1', 'step-1', 'spawn-1-4.1'])
+  expect(await lineText(ui, 'step-1')).toBe('run-batch · wave 2 · batch 2/2 · 1 lane')
+  await ui.unmount()
+})
+
+/** The keys a card holds, in the order drawn: its title, then each batch's sub-header and lanes. */
+async function cardKeys(ui: any, index: number) {
+  const keys = (await ui.findAll({ type: 'Box' })).map((b: any) => b.key).filter((k: unknown) => typeof k === 'string')
+  const from = keys.indexOf(`wave-card-${index}`)
+  const to = keys.findIndex((k: string, i: number) => i > from && (k.startsWith('wave-card-') || k.startsWith('wave-verify-') || k === 'wave-board-tail'))
+  return keys.slice(from + 1, to).filter((k: string) => !k.endsWith('-gist') && !k.endsWith('-note'))
+}
+
+test('within a card the lanes sit beneath their batch\'s sub-header, timed when the batch was first dispatched', async ($: any, on: any) => {
+  const w = await adopted($, on)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await cardKeys(ui, 0)).toEqual(['wave-block-0', 'wave-batch-0-0', ...ADOPTED_LANES.map(l => `wave-row-${l}`)])
+    expect(await lineText(ui, 'wave-batch-0-0')).toBe('b0 · 5 in parallel')
+    expect(await gutterText(ui, 'wave-batch-0-0')).toBe(clockText(T0))
+    expect(await depthOf(ui, 'wave-batch-0-0')).toBe(0)
+    // The sub-header carries no state word and no colour: the cursor card's border marks where the run is.
+    for (const n of tree(await ui.find({ key: 'wave-batch-0-0' }))) expect(n.props?.color).toBeUndefined()
+    // A batch never dispatched has no time.
+    expect(await lineText(ui, 'wave-batch-1-0')).toBe('b0 · 2 in parallel')
+    expect(await gutterText(ui, 'wave-batch-1-0')).toBe('')
+    expect(await lineText(ui, 'wave-batch-1-1')).toBe('b1 · 1 lane')
+    expect(await lineText(ui, 'wave-batch-2-0')).toBe('b0 · 2 in parallel')
+    await ui.unmount()
+  }
+
+  await w.clock!.advance(60_000)
+  await bash($, w, NEXT, F.stdout(F.RECORD_BATCH))
+  await w.clock!.advance(60_000)
+  await bash($, w, NEXT, F.stdout(F.REPLAN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await cardKeys(ui, 1)).toEqual([
+      'wave-block-1',
+      'wave-batch-1-0',
+      'wave-row-1.5',
+      'wave-row-1.1',
+      'wave-batch-1-1',
+      'wave-row-2.1+2',
+      'wave-row-3.2'
+    ])
+    expect(await gutterText(ui, 'wave-batch-1-0')).toBe(clockText(T0 + 120_000))
+    expect(await gutterText(ui, 'wave-batch-1-1')).toBe('')
+    expect(await gutterText(ui, 'wave-batch-0-0')).toBe(clockText(T0))
+    expect(await lineText(ui, 'wave-batch-1-1')).toBe('b1 · 2 in parallel')
+    for (const label of ['1.5', '1.1', '2.1+2', '3.2']) {
+      expect(await gutterText(ui, `wave-row-${label}`)).toBe('')
+      expect(await depthOf(ui, `wave-row-${label}`)).toBe(1)
+    }
+    // The steps the timeline lists for the same run: the plan's size rides the steps that relayed one.
+    expect(await lineText(ui, 'step-0')).toBe('run-batch · wave 1 · batch 1/1 · 5 in parallel · plan: 3 waves')
+    expect(await lineText(ui, 'step-1')).toBe('verify · wave 1')
+    expect(await lineText(ui, 'step-2')).toBe('run-batch · wave 1 · batch 1/2 · 2 in parallel · plan: 3 waves')
+    await ui.unmount()
+  }
+})
+
+test('every section\'s body sits one indent in beneath its heading', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  await bash($, w, NEXT, F.stdout(F.HALT))
+  await bash($, w, CLOSE_CMD, F.stdout(F.CLOSE))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const keys = (await ui.findAll({ type: 'Box' })).map((b: any) => b.key)
+    const bodies = ['waves-body', 'timeline-body', 'session-body', 'plan-windows-body', 'banners', 'refusals-body', 'summary']
+    for (const key of bodies) {
+      const body = await ui.find({ key })
+      expect(body).toBeDefined()
+      expect(body.props.flexDirection).toBe('column')
+      expect(body.props.paddingLeft).toBe(SECTION_INDENT)
+    }
+    // In the pane's order, each beneath its heading.
+    expect(bodies.map(key => keys.indexOf(key))).toEqual([...bodies.map(key => keys.indexOf(key))].sort((a, b) => a - b))
+    expect((await ui.find({ key: 'session-body' }))?.text).toBe(
+      `${(await ui.find({ key: 'session-context' }))?.text}${(await ui.find({ key: 'session-cost' }))?.text}`
+    )
+    expect(await lineText(ui, 'step-1')).toBe(`halt · ${F.HALT.reason}`)
+    expect(await lineText(ui, 'step-2')).toBe('halt')
+    await ui.unmount()
+  }
 })
