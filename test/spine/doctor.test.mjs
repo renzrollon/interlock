@@ -477,13 +477,27 @@ test('the node check reads the plugin floor, and reports OpenSpec\'s higher one 
   }
 })
 
-test('binaries absent from PATH but present in the plugin warn rather than fail', () => {
+test('binaries absent from PATH but present in the plugin are ok: the session-start band stays quiet', () => {
   const dir = tmp()
   try {
     const report = diagnose(dir, baseOpts(dir, { env: { PATH: '' } }))
     const binaries = byId(report, 'binaries')
-    assert.equal(binaries.status, 'warn')
-    assert.match(binaries.fix, /Nothing to do for a run inside Claude Code/)
+    assert.equal(binaries.status, 'ok')
+    assert.match(binaries.detail, /run from the plugin's bin\//)
+    assert.ok(!report.warnings.includes('binaries'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a binary neither on PATH nor in the plugin\'s bin/ fails', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = fakePlugin(dir, { omit: ['bin/interlock-graph'] })
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot, env: { PATH: '' } }))
+    const binaries = byId(report, 'binaries')
+    assert.equal(binaries.status, 'fail')
+    assert.match(binaries.detail, /interlock, interlock-graph resolve neither on PATH nor in the plugin's bin\//)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -1921,3 +1921,137 @@ test('every section\'s body sits one indent in beneath its heading', async ($: a
     await ui.unmount()
   }
 })
+
+// A ping wraps the relay. The command writes a file, then runs `interlock`,
+// then echoes an exit status; the step JSON sits between a prefix and that
+// status. The lanes come from that step. An `interlock` that is only quoted
+// or inside the heredoc is not a relay.
+
+const PULSE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+const CLASSIFY = {
+  schema: 'interlock.run-step/1',
+  action: 'classify',
+  change: F.CHANGE,
+  spawns: [
+    {
+      label: 'plan-waves',
+      title: 'plan waves',
+      kind: 'plan',
+      model: 'opus',
+      effort: 'high',
+      promptPath: briefingOf('plan-waves'),
+      promptSha256: 'a'.repeat(64)
+    }
+  ]
+}
+
+test('a wrapped interlock relay registers its lanes; a quoted or heredoc mention does not', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  const quoted = 'echo "interlock run next --json"'
+  const decoy = "cat > .claude/ship/results.json <<'EOF'\ninterlock run next --json\nEOF\necho done"
+  await bash($, w, quoted, F.stdout(F.ADOPTION_BATCH))
+  await bash($, w, decoy, F.stdout(F.ADOPTION_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await ui.find({ key: 'action' }))?.text).toBe('action: starting')
+    expect(await ui.find({ text: /no lanes dispatched yet/ })).toBeDefined()
+    expect(await ui.find({ key: 'wave-card-0' })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  const startCmd = `interlock run start --change ${F.CHANGE} --mode waves --host workflow --json; echo "EXIT:$?"`
+  await bashAs($, w, 'cli1', startCmd, `${F.stdout(CLASSIFY)}\nEXIT:0`)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await ui.find({ key: 'action' }))?.text).toBe('action: classify')
+    expect(await ui.find({ text: /no lanes dispatched yet/ })).toBeUndefined()
+    expect((await ui.find({ key: 'wave-row-plan-waves' }))?.text).toMatch(/plan waves · plan · routed opus/)
+    expect(await lineText(ui, 'step-0')).toMatch(/^classify · cli cli1/)
+    expect(await ui.find({ key: 'agents-unmatched' })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  const classified =
+    "cat > .claude/ship/results.json <<'EOF'\n" +
+    '{"ok":true}\n' +
+    'EOF\n' +
+    'python3 -c \'print("results parse")\'; interlock run classified --classified .claude/ship/classified.json --results .claude/ship/results.json --json; echo "EXIT=$?"'
+  const lane = F.ADOPTION_BATCH.spawns.find((s: { label: string }) => s.label === '1.7')
+  const stdout = `results parse\n{"action":"report","schema":"nope"}\n${F.stdout(F.ADOPTION_BATCH)}\nEXIT=0`
+  await bashAs($, w, 'cli2', classified, stdout)
+  await readAs($, 'a1', `${KETTLE}/${briefingOf('1.7')}`)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect(await ui.find({ key: 'wave-card-0' })).toBeDefined()
+    expect(await ui.find({ text: /no lanes dispatched yet/ })).toBeUndefined()
+    expect((await ui.find({ key: 'action' }))?.text).toBe('action: run-batch')
+    expect((await agentRow(ui, 'a1')).startsWith(`${lane.title} · a1 ·`)).toBe(true)
+    expect(await ui.find({ key: 'agents-unmatched' })).toBeUndefined()
+    expect(await lineText(ui, 'step-1')).toMatch(/run-batch · .*cli cli2/)
+    await ui.unmount()
+  }
+})
+
+test('the quiet interval pulses in-flight lines and leaves the turn word', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await ui.find({ key: 'action' }))?.text).toBe('action: run-batch')
+    expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(/waiting$/)
+    await ui.unmount()
+  }
+
+  await w.clock!.advance(LIMITS.meterTickMs)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await ui.find({ key: 'action' }))?.text).toBe(`action: run-batch ${PULSE[0]}`)
+    expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(new RegExp(`waiting ${PULSE[0]}$`))
+    // The interval steps the mark; it is not activity, so the quiet word stays off.
+    expect(await lastActivity(ui)).toBe(activityLine(T0, T0))
+    await ui.unmount()
+  }
+
+  await readAs($, 'a1', `${KETTLE}/.claude/ship/prompts/lane-a.md`)
+  w.usage.set('a1:0', usage('claude-sonnet-5-5', 1))
+  await step($, 'a1', 0, 'claude-sonnet-5-5')
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    expect((await ui.find({ key: 'wave-row-lane-a' }))?.text).toMatch(new RegExp(`running ${PULSE[0]}$`))
+    const spans = await agentSpans(ui, 'a1')
+    expect(textOf(spans[2])).toBe('running')
+    expect(spans[2].props.color).toBe(PALETTE.warn)
+    expect((await agentRow(ui, 'a1')).includes(PULSE[0])).toBe(true)
+    for (const n of tree(await ui.find({ key: 'action' }))) expect(n.props?.color).toBeUndefined()
+    await ui.unmount()
+  }
+
+  await w.clock!.advance(LIMITS.meterTickMs)
+  const ui = await mount($, 'terminal')
+  expect((await ui.find({ key: 'action' }))?.text).toBe(`action: run-batch ${PULSE[1]}`)
+  await ui.unmount()
+})
+
+test('the pane\'s tree does not shrink, so its tail stays in the scroll range', async ($: any, on: any) => {
+  await adopted($, on)
+  for (const surface of SURFACES) {
+    const ui = await mount($, surface)
+    const root = (await ui.findAll({ type: 'Box' })).find((b: any) => b.key === 'meter-root')
+    expect(root?.props?.flexShrink).toBe(0)
+    expect(root?.props?.flexDirection).toBe('column')
+    for (const key of ['waves-body', 'timeline-body', 'session-body', 'plan-windows-body', 'banners', 'refusals-body']) {
+      expect((await ui.find({ key }))?.props?.flexShrink).toBe(0)
+    }
+    const card = await ui.find({ key: 'wave-card-0' })
+    expect(card?.props?.flexShrink).toBe(0)
+    expect(card?.props?.borderStyle).toBe('single')
+    expect((await ui.find({ key: 'launch' }))?.props?.flexShrink).toBe(0)
+    expect(await ui.find({ key: 'refusals-body' })).toBeDefined()
+    expect(await ui.find({ key: 'wave-board-tail' })).toBeDefined()
+    await ui.unmount()
+  }
+})

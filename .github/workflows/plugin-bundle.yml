@@ -71,11 +71,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           spec="$PACKAGE@$VERSION"
-          # The registry can lag a publish that just finished by a little.
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          # The registry serves a new version minutes after `npm publish`
+          # returns, not seconds: 1.3.0 through 1.4.1 each appeared 1.5 to 4
+          # minutes after Release finished, and the packument's edge cache
+          # (max-age=300) can serve the old version list for longer still. Ten
+          # tries 15 seconds apart gave up before every one of them, so wait up
+          # to 15 minutes.
+          for attempt in $(seq 1 60); do
             if npm pack "$spec" --pack-destination "$RUNNER_TEMP" --json > "$RUNNER_TEMP/pack.json"; then break; fi
-            if [ "$attempt" = 10 ]; then
-              echo "::error::$spec is not fetchable from the registry; the release branch is unchanged"
+            if [ "$attempt" = 60 ]; then
+              echo "::error::$spec is not fetchable from the registry after 15 minutes; the release branch is unchanged. Dispatch this workflow with version $VERSION once npm serves it"
               exit 1
             fi
             sleep 15

@@ -37,6 +37,8 @@ export const ALLOWED_CALLS = Object.freeze([
   '$.ui.toast',
   '$.ui.log',
   '$.ui.open',
+  // Follow the pane's latest line once, so a live run keeps its tail in view.
+  '$.ui.scroll',
   '$.ui.invalidate',
   '$.ui.resolve',
   '$.command.register',
