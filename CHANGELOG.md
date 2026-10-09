@@ -5,6 +5,44 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## 1.4.1 — 2026-10-09
+
+### Changed
+
+- **The ship meter pane reads as a timeline.** In 1.4.0 the `agents` section was a flat list in first-seen order: relay pings, the planner and lane workers were interleaved, nothing said when anything happened, and lanes that ran in parallel looked like lanes that ran in turn.
+  - **The `timeline` section replaces it.** There is one line per CLI step as it crossed, such as `run-batch · wave 2 · batch 1/2 · 3 in parallel` or `verify · wave 2 · skipped: <reason>`. The relay agent that carried the step is folded into that line: `cli <id>`, its served model, its request count and its duration.
+  - **Each step's agents** are indented beneath it in the order they started, with name, id, model, turn word and a dim requests-and-tokens line. A spawn no agent has picked up yet reads `waiting`. A relay whose line printed no step, such as `interlock limits`, stands at its own time, and agents nothing names are listed last under `unmatched`.
+  - **Every timed line has a local `HH:MM:SS` gutter**, blank where the clock gave no reading, never a guessed time.
+  - **The header** reads `started <date> <time> · last activity <time>`, replacing `last activity <ISO>`.
+  - **Durations** read `41.2s`, `2m 14s` or `1h 03m`, replacing `134.2s`.
+  - **Wave cards group their lanes by batch**, under a line with the batch's dispatch time and `N in parallel` or `1 lane`. The lanes are indented beneath it and no longer repeat the batch cell. A lane's note adds its duration once its turn ended.
+  - **Each section's body is indented** under its heading.
+  - **Relay token figures:** a relay's token breakdown is no longer drawn. The trajectory's `agent-result` line still carries it.
+  - **New modules:** the words and the order come from two new Node-free modules, `lib/meter-time.mjs` and `lib/meter-timeline.mjs`, pinned by `test/spine/meter-time.test.mjs` and `test/spine/meter-timeline.test.mjs`.
+  - **Layout probe:** a probe on 2.1.295 showed the gutter keeps a hanging indent when a line wraps, inside a card too. The pane is as tall as the engine seats it, and a long run scrolls.
+  - **Unchanged:** `interlock waves --format board` prints exactly what it printed before.
+
+### Fixed
+
+- **A run resumed across the 1.4.0 upgrade does not re-run its lanes.** The 1.4.0 entry said it would, because the runtime caches an agent by its label. The runtime keys an agent on its prompt and its options together, the label among them, but a lane's label is the title its step carried, and on a resume the completed relays hand back the steps they first printed. So every lane the run had already dispatched is spawned under its old title and returns its saved result. `docs/04` now says the replay cache keys on the prompt and the options, not on the prompt text alone, and says why an upgrade does not rename the lanes a resume replays.
+- **`docs/07` no longer says the board names a lane exactly as its spawn.** Since 1.4.0 the spawn is shown as `task 1.1 · …`, while the board, the briefing file, the worktree and the trajectory line name the lane by its label, `1.1`.
+
+## 1.4.0 — 2026-10-09
+
+### Changed
+
+- **A lane's worker is shown as `task 1.1 · <gist>`.** `/workflows`, `interlock-run`'s log, the meter's rows and toasts and the Mermaid plan all name a lane by `laneTitle`, which read `1.1 · Add the relaunch guard`. A bare `1.1` among `plan-waves`, `cli-3 · run next` and `verify` looked like an outline number rather than a worker. The title now opens with what the agent is doing: `task 1.1 · …` for a one-task lane and `tasks 1.1+2 · …` for a lane of several. The 48-character cap still applies to the label and gist, so a gist is cut where it was and `interlock waves --format board` prints byte-for-byte what it printed before. The label (`1.1`, `1.1+2`) is unchanged and still names the briefing file, the worktree, the trajectory line and `run record-batch`. Non-lane spawns keep their labels as titles. The workflow runtime caches an agent by its label, so resuming a run from `/workflows` that started before this upgrade re-runs its lane agents.
+- **The ship meter names every agent on the Workflow host.** On that host every agent row and turn-end toast read `lane unknown`. The meter joined an agent to its lane only through `agent.spawn`, which the host never raises for a workflow agent, so the board's lane notes never left `served ?` either. Every run agent's first act is to read its own briefing, so the meter now joins on that read. A `Read` whose path names a dispatched spawn's briefing, or a Bash command that names it (a worker that `cat`s it), matches the agent to that spawn's row by the same briefing hash. A new `tool.call` observer on `Read` makes that join and passes the call on unchanged. An agent is named by its spawn's title (`task 1.1 · …`, `plan-waves`, `verify`). A relay ping is named by its own `interlock` line (`cli · run next`). An agent seen doing neither reads `unmatched agent`, and one line beneath the rows says why. The pane and the toast now use one name; before, the pane printed the label and the toast the title.
+- **The meter pane draws in your theme's colours.** Every colour is a theme key, so the pane follows a light, dark or colour-blind theme. A probe on 2.1.295 showed theme keys resolve in a module's pane and an unknown key renders uncoloured.
+  - State words: `success`, `error` and `warning` for `ok`, `failed` and `current`, replacing raw green, red and yellow.
+  - Names: lane labels and agent names in `suggestion`, bold.
+  - Headings: the run header and section headings in `claude`.
+  - Cards: the card of the wave holding a `current` lane is bordered in `warning`; every other card stays dim.
+  - Agent rows: an agent's turn word in `warning` while running, `success` for `answer` and `error` for any other host word, with relay pings dim.
+  - Warnings: the quiet word and banners in `warning`.
+  - Refusals: the guard-denial line, and the launch-guard line when it refuses, in `error`.
+  - Uncoloured, as before: the context, cost and plan-window lines (colour there would read as a threshold) and a `RED` marker in a wave title. The rules are `lib/meter-palette.mjs`'s, a Node-free module pinned by `test/spine/meter-palette.test.mjs`.
+
 ## 1.3.1 — 2026-10-08
 
 ### Changed
