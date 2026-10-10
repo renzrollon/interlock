@@ -939,3 +939,28 @@ test('the evals skill requires a transcript to be read before a judged case is e
   // re-argued verdict the exit-code contract exists to prevent.
   assert.match(text, /never for reclassification/i, 'reading does not overturn the verdict')
 })
+
+// --- compiled-repo fit (change: fit-ship-and-graph-to-compiled-repos) ---------
+// Tokens, not sentences: a reword must not delete the pin.
+
+test('the graph skill names the compiled-repo extensions, the INFERRED tier and the unreadable banner', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'graph', 'SKILL.md'), 'utf8')
+  for (const token of ['.cs', '.csproj', '.bicep', 'INFERRED', 'GRAPH SKIPPED UNREADABLE']) {
+    assert.ok(text.includes(token), `skills/graph/SKILL.md must carry ${token}`)
+  }
+})
+
+test('the fix-tests skill names the profile timeout field', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8')
+  assert.ok(text.includes('timeout_ms'), 'skills/fix-tests/SKILL.md must carry timeout_ms')
+})
+
+test('the shared test profile ties timeout_ms to the inter-wave budget in one row or paragraph', () => {
+  const text = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
+  const blocks = text.split(/\n\s*\n/)
+  const together = blocks.some(block =>
+    block.split('\n').some(line => line.includes('timeout_ms') && line.includes('inter-wave')) ||
+    (!block.includes('|') && block.includes('timeout_ms') && block.includes('inter-wave'))
+  )
+  assert.ok(together, 'shared/TEST-PROFILE.md must carry timeout_ms and inter-wave in the same row or paragraph')
+})

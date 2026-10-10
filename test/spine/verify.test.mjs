@@ -15,7 +15,8 @@ import {
   VERIFY_CONTEXTS,
   DEFAULT_VERIFY_CONTEXT,
   checkResultFieldSizes,
-  foldCheckTimings
+  foldCheckTimings,
+  interWaveVerifyBudget
 } from '../../lib/verify.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
@@ -469,6 +470,65 @@ test('the budget comes from LIMITS, not from a hardcoded number', () => {
 
   const overridden = planVerification(profile(), { elapsedMs: 10, budgetMs: 5 })
   assert.equal(overridden.budgetExceeded, true)
+})
+
+// --- the inter-wave budget, derived from the profile --------------------------
+//
+// planVerification keeps its own default (the pins above). What a run passes it
+// as `budgetMs` is derived here: the profile's allowance for one suite run times
+// the checkpoints the run may spend, floored at the published constant so a
+// profile can raise the budget and never lower it.
+
+const withTimeout = timeout_ms => profile({ unit: { ...profile().unit, timeout_ms } })
+
+test('a profile with a unit timeout derives the budget from it', () => {
+  assert.deepEqual(interWaveVerifyBudget(profile()), {
+    ms: LIMITS.interWaveVerifications * 120000,
+    source: 'profile',
+    timeoutMs: 120000
+  })
+})
+
+test('a unit timeout below the published budget leaves the budget at the floor, and says why', () => {
+  assert.deepEqual(interWaveVerifyBudget(withTimeout(1)), {
+    ms: LIMITS.interWaveVerifyBudgetMs,
+    source: 'published',
+    timeoutMs: 1
+  })
+})
+
+test('no usable unit timeout leaves the budget at the floor with timeoutMs null', () => {
+  const absent = profile()
+  delete absent.unit.timeout_ms
+  const unusable = [null, absent, withTimeout(null), withTimeout(0), withTimeout(-5)]
+  for (const p of unusable) {
+    assert.deepEqual(
+      interWaveVerifyBudget(p),
+      { ms: LIMITS.interWaveVerifyBudgetMs, source: 'published', timeoutMs: null },
+      JSON.stringify(p?.unit)
+    )
+  }
+})
+
+test('an enormous unit timeout clamps to a safe integer rather than overflowing', () => {
+  const { ms } = interWaveVerifyBudget(withTimeout(Number.MAX_SAFE_INTEGER))
+  assert.equal(ms, Number.MAX_SAFE_INTEGER)
+  assert.ok(Number.isSafeInteger(ms))
+})
+
+test('a checkpoint 160 seconds into the checks still plans the suite under a derived budget', () => {
+  const elapsedMs = 160000
+  const stated = planVerification(profile(), { context: 'inter-wave', elapsedMs })
+  assert.equal(stated.budgetExceeded, true, 'control: the published budget alone would have dropped it')
+  assert.equal(stepFor(stated, 'unit'), null)
+
+  const derived = planVerification(profile(), {
+    context: 'inter-wave',
+    elapsedMs,
+    budgetMs: interWaveVerifyBudget(profile()).ms
+  })
+  assert.equal(derived.budgetExceeded, false)
+  assert.ok(stepFor(derived, 'unit'), 'the unit step is planned')
 })
 
 test('docs-only --changed skips every kind', () => {

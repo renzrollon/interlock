@@ -1533,3 +1533,31 @@ test('agent-result events raise no reconstructability problem and do not pad a w
   assert.match(rendered, /sessionId="00000000-0000-4000-8000-000000000000"/)
   assert.match(rendered, /wave 1: 1000ms across 2 event\(s\)/)
 })
+
+test('a rejected handoff report is a count on the receipt wave, and an absent key stays absent', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      waves: [
+        { wave: 1, ok: 3, failed: 0, notAttempted: [], reportRejected: ['5.3'] },
+        { wave: 2, ok: 1, failed: 1, notAttempted: ['2.3'] }
+      ]
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.waves[0].reportRejected, 1)
+  assert.equal('reportRejected' in record.waves[1], false, 'never 0 for a receipt that never tallied it')
+
+  const shown = formatRunLog(readRunLog(tmp, RUN_ID)).split('\n')
+  const first = shown.find(l => /^\s*wave 1: 3 ok, 0 failed/.test(l))
+  const second = shown.find(l => /^\s*wave 2: 1 ok, 1 failed/.test(l))
+  assert.ok(first && second, 'both wave lines are shown')
+  assert.match(first, /1 report\(s\) rejected/)
+  assert.equal(second.trim(), 'wave 2: 1 ok, 1 failed, 1 not attempted', 'a wave without the field shows the line it showed before')
+})
+
+test('the inter-wave verify budget on a receipt is carried', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt({ verifyBudget: { ms: 480000, source: 'profile' } }))
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.verifyBudget, { ms: 480000, source: 'profile' })
+})

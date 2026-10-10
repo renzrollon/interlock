@@ -16,6 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { LIMITS } from '../../lib/limits.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
 
@@ -537,6 +538,53 @@ test('verify plan --context inter-wave omits e2e and coverage', () => {
   assert.ok(plan.steps.some(s => s.kind === 'unit'))
   assert.ok(plan.steps.every(s => s.kind !== 'e2e'))
   assert.ok(plan.steps.every(s => s.kind !== 'coverage'))
+})
+
+// The inter-wave budget is derived from the profile's unit.timeout_ms and
+// floored at the published constant (spec: verify). `budgetSource` says which
+// of the two the number came from, so a reader of the plan is never left
+// guessing why it is what it is.
+
+const profileWithTimeout = (name, timeout_ms) =>
+  file(name, { ...PROFILE, unit: { command: 'npm test', timeout_ms } })
+
+test('verify plan --context inter-wave plans against the budget its profile derives', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', paths.profile, '--context', 'inter-wave',
+    '--elapsed-ms', '160000', '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  assert.equal(plan.budgetMs, LIMITS.interWaveVerifications * 120000)
+  assert.equal(plan.budgetSource, 'profile')
+  assert.ok(plan.steps.some(s => s.kind === 'unit'), '160s into the checks, the suite still runs')
+})
+
+test('verify plan --context inter-wave never lets a profile lower the published budget', () => {
+  const plan = runJson([
+    'verify', 'plan', '--profile', profileWithTimeout('profile-timeout-1.json', 1),
+    '--context', 'inter-wave', '--elapsed-ms', String(LIMITS.interWaveVerifyBudgetMs),
+    '--typecheck-command', 'npx tsc --noEmit'
+  ])
+  assert.equal(plan.budgetMs, LIMITS.interWaveVerifyBudgetMs)
+  assert.equal(plan.budgetSource, 'published')
+  assert.deepEqual(plan.steps.map(s => s.kind), ['typecheck'], 'only typecheck remains')
+  assert.ok(plan.steps.every(s => s.kind !== 'unit'))
+})
+
+test('verify plan --budget-ms is used as given, whatever the profile holds', () => {
+  for (const [name, timeout] of [['profile-timeout-120k.json', 120000], ['profile-timeout-one.json', 1]]) {
+    const plan = runJson([
+      'verify', 'plan', '--profile', profileWithTimeout(name, timeout),
+      '--context', 'inter-wave', '--budget-ms', '5000'
+    ])
+    assert.equal(plan.budgetMs, 5000, `a profile with timeout_ms ${timeout} moved an explicit budget`)
+    assert.equal(plan.budgetSource, 'flag')
+  }
+})
+
+test('verify plan with no --context derives nothing and reports the published budget', () => {
+  const plan = runJson(['verify', 'plan', '--profile', paths.profile])
+  assert.equal(plan.budgetMs, LIMITS.interWaveVerifyBudgetMs)
+  assert.equal(plan.budgetSource, 'published')
 })
 
 test('verify plan without --profile or --no-profile says which it wanted', () => {
@@ -1444,13 +1492,16 @@ test('record-batch --write-state reports the per-task outcomes it just recorded'
 
   assert.deepEqual(
     step.recorded.map(o => [o.id, o.outcome]),
-    [['1.1', 'ok'], ['1.2', 'failed']],
-    'one entry per task in the batch, carrying what the state machine recorded'
+    [['1.1', 'ok'], ['1.2', 'ok']],
+    'one entry per task in the batch; a task that claimed success is recorded as done'
   )
   assert.equal(step.recorded[0].reason, undefined, 'a succeeded task owes no reason')
-  assert.match(step.recorded[1].reason, /invalid handoff: .*status/)
+  assert.equal(step.recorded[0].reportRejected, undefined, 'and a validated report rejects nothing')
+  assert.equal(step.recorded[1].outcome, 'ok')
+  assert.equal(step.recorded[1].reason, undefined, 'a rejected report is not a failure')
+  assert.match(step.recorded[1].reportRejected, /status/)
   assert.ok(
-    step.recorded[1].reason.length < 400,
+    step.recorded[1].reportRejected.length < 400,
     'the reason is an adjudication string, not a transcript — it is copied through an agent'
   )
 

@@ -324,3 +324,31 @@ test('the previous-wave block never tells the agent to reconstruct from git', ()
   assert.match(prompt, /do not re-derive from git/)
   assert.doesNotMatch(prompt, /git log|git status|git diff/)
 })
+
+test('a previous-wave task that filed no usable report is named after the PREVIOUS WAVE block', () => {
+  const rejected = [
+    { taskId: '1.2', reason: 'handoff is 3562 characters; the cap is 2000', paths: ['src/a.cs'] }
+  ]
+  const prompt = assembleFromSource({
+    ...forTier(3),
+    previousHandoffs: [handoff()],
+    previousRejectedReports: rejected
+  })
+  assert.match(prompt, /NO VALIDATED REPORT/)
+  assert.ok(prompt.includes('[1.2]'))
+  assert.ok(prompt.includes('the cap is 2000'))
+  assert.ok(prompt.includes('src/a.cs'))
+  assert.ok(
+    prompt.indexOf('NO VALIDATED REPORT') > prompt.indexOf('PREVIOUS WAVE'),
+    'the rejected-report block follows the PREVIOUS WAVE block'
+  )
+})
+
+test('an empty or absent previousRejectedReports leaves the prompt unchanged', () => {
+  const base = assembleFromSource({ ...forTier(2), previousHandoffs: [handoff()] })
+  assert.equal(assembleFromSource({ ...forTier(2), previousHandoffs: [handoff()], previousRejectedReports: [] }), base)
+  assert.equal(
+    assembleFromSource({ ...forTier(2), previousHandoffs: [handoff()], previousRejectedReports: undefined }),
+    base
+  )
+})

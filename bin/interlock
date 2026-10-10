@@ -104,6 +104,7 @@ import {
 import { writeReviewMetrics } from '../lib/metrics.mjs'
 import {
   planVerification,
+  interWaveVerifyBudget,
   judgeVerification,
   judgeUnitResult,
   clusterFailures,
@@ -652,7 +653,8 @@ verify plan:
   --no-lint              Skip lint
   --pre-existing         The suite was already red before this change
   --elapsed-ms <n>       Verification time already spent this run
-  --budget-ms <n>        Soft budget (default ${LIMITS.interWaveVerifyBudgetMs}ms); past it, typecheck only
+  --budget-ms <n>        Soft budget; past it, typecheck only. The inter-wave default is derived
+                         from the profile and floored at the published budget
   --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')}. inter-wave omits e2e and
                          coverage by default (typecheck, unit, lint only).
   --changed <files...>   Repo-relative paths the last wave touched. When every
@@ -766,6 +768,8 @@ wave-state:
                                            blocker }. A task claiming ok:true without a valid,
                                            in-budget packet is recorded as failed ("invalid
                                            handoff: ..."); see "interlock limits" for the cap.
+                                           A rejected packet is reported as reportRejected on a
+                                           succeeded outcome.
                                            The next wave's step carries these as previousHandoffs.
   record-verify --state <f> --result <f>   result: { ok, errors?, blocksNextWave? } or
                                            { skipped: true, reason }
@@ -2575,6 +2579,7 @@ async function main() {
         if (elapsedMs !== undefined) opts.elapsedMs = elapsedMs
         const budgetMs = num(flags, 'budget-ms')
         if (budgetMs !== undefined) opts.budgetMs = budgetMs
+        let budgetSource = budgetMs !== undefined ? 'flag' : 'published'
         const context = flags.context === undefined ? undefined : String(flags.context)
         if (context !== undefined) {
           if (!Object.prototype.hasOwnProperty.call(VERIFY_CONTEXTS, context)) {
@@ -2584,12 +2589,17 @@ async function main() {
           }
           opts.context = context
           if (context === 'inter-wave') opts.coverage = false
+          if (context === 'inter-wave' && profile && budgetMs === undefined) {
+            const derived = interWaveVerifyBudget(profile)
+            opts.budgetMs = derived.ms
+            budgetSource = derived.source
+          }
         }
         if (flags.changed !== undefined) {
           opts.changed = Array.isArray(flags.changed) ? flags.changed : splitPaths(flags.changed)
         }
 
-        const plan = planVerification(profile, opts)
+        const plan = { ...planVerification(profile, opts), budgetSource }
         emit(json, plan, formatVerification(plan))
       } else if (sub === 'judge') {
         const plan = readInput(flags.plan, '--plan <file|->')

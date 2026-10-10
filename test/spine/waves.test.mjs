@@ -1753,21 +1753,25 @@ test('nextStep includes remainingBatches from the current index', () => {
 
 // --- handoffs at the wave boundary ----------------------------------------
 
-test('record-batch fails a task that claims success without a handoff', () => {
+test('record-batch records a task that claims success without a handoff as done, with its report rejected', () => {
   const start = createRunState(simplePlan([1, 2]))
   const step = nextStep(start)
-  const after = recordBatchResult(start, { tasks: [{ id: stepTasks(step)[0].id, ok: true }] })
+  const id = stepTasks(step)[0].id
+  const after = recordBatchResult(start, { tasks: [{ id, ok: true }] })
 
-  assert.deepEqual(after.completed, [], 'an unreported success is not a success')
-  assert.equal(after.failures.length, 1)
-  assert.match(after.failures[0].error, /^invalid handoff: /)
+  assert.deepEqual(after.completed, [id], 'the task reported success, and a packet is not the work')
+  assert.deepEqual(after.failures, [], 'a rejected report is not a failure')
+  assert.equal(after.rejectedReports.length, 1)
+  assert.equal(after.rejectedReports[0].id, id)
+  assert.match(after.rejectedReports[0].reason, /handoff must be an object/)
   assert.deepEqual(after.handoffs, {}, 'nothing to hand the next wave')
 })
 
-test('an invalid packet fails the task and counts toward the failure halt', () => {
+test('rejected reports do not count toward the failure halt, however many there are', () => {
   // Three tasks, all claiming success, all with unusable packets. That is over
-  // LIMITS.taskFailureHalt, so the run stops — a wave whose reports are all
-  // unreadable has not produced a coherent change.
+  // LIMITS.taskFailureHalt as failures, and it is not a halt as rejected
+  // reports: the packet is lost, the work is not, and final verification is
+  // what decides whether the work is sound.
   const tasks = Array.from({ length: LIMITS.taskFailureHalt + 1 }, (_, i) =>
     task({ id: `1.${i + 1}`, group: 1 })
   )
@@ -1780,21 +1784,25 @@ test('an invalid packet fails the task and counts toward the failure halt', () =
       handoff: handoffFor(t.id, { status: 'blocked', blocker: '' })
     }))
   })
-  assert.equal(after.failures.length, LIMITS.taskFailureHalt + 1)
-  assert.equal(after.halt.kind, HALT_TASK_FAILURES)
-  for (const f of after.failures) assert.match(f.error, /non-empty blocker/)
+  assert.equal(after.halt, null)
+  assert.deepEqual(after.failures, [])
+  assert.equal(after.completed.length, LIMITS.taskFailureHalt + 1)
+  assert.equal(after.rejectedReports.length, LIMITS.taskFailureHalt + 1)
+  for (const r of after.rejectedReports) assert.match(r.reason, /non-empty blocker/)
 })
 
-test('an over-budget packet fails the task rather than being trimmed', () => {
+test('an over-budget packet is rejected rather than trimmed, and its task is still done', () => {
   const start = createRunState(simplePlan([1, 2]))
   const step = nextStep(start)
   const id = stepTasks(step)[0].id
   const after = recordBatchResult(start, {
     tasks: [{ id, ok: true, handoff: handoffFor(id, { summary: 'x'.repeat(2500) }) }]
   })
-  assert.equal(after.failures.length, 1)
-  assert.match(after.failures[0].error, /invalid handoff: .*the cap is/)
-  assert.deepEqual(after.handoffs, {})
+  assert.deepEqual(after.completed, [id])
+  assert.deepEqual(after.failures, [])
+  assert.match(after.rejectedReports[0].reason, /the cap is/)
+  assert.deepEqual(after.handoffs, {}, 'never trimmed into a stored packet')
+  assert.equal(Object.prototype.hasOwnProperty.call(after.handoffs, id), false)
 })
 
 test('a null agent result keeps its own reason and is not asked for a packet', () => {
@@ -1826,6 +1834,191 @@ test('a blocked task keeps its packet so the next wave is told why', () => {
   assert.equal(after.handoffs[id].blocker, 'no migration runner')
 })
 
+// --- a rejected report is not a failed task --------------------------------
+//
+// A packet's shape was never evidence of work. A task that reported success is
+// done; a packet that cannot be used is a report that was lost, recorded beside
+// the task and told to the next wave, and it never reaches the failure halt.
+
+/** Three tasks, one wave, one batch of three agents: the shape of the issue's run. */
+function threeTaskRun() {
+  const tasks = ['1.1', '1.2', '1.3'].map(id => task({ id, group: 1, paths: [`src/${id}.cs`] }))
+  const start = createRunState(planOf(tasks, { maxParallel: 3, maxTasksPerAgent: 1 }))
+  const step = nextStep(start)
+  assert.deepEqual(stepTasks(step).map(t => t.id), ['1.1', '1.2', '1.3'], 'fixture: one batch of three')
+  return { start, step }
+}
+
+test('the issue\'s run: three finished tasks with three packet defects do not halt', () => {
+  assert.ok(3 > LIMITS.taskFailureHalt, 'fixture: three failures would have halted this run')
+  const { start } = threeTaskRun()
+  const after = recordBatchResult(start, {
+    tasks: [
+      // A comma inside a locator.
+      {
+        id: '1.1',
+        ok: true,
+        handoff: handoffFor('1.1', { evidence: ['src/DeviceMetricSource.cs:31-73,89'] })
+      },
+      // A summary over the cap.
+      { id: '1.2', ok: true, handoff: handoffFor('1.2', { summary: 'x'.repeat(3562) }) },
+      // An empty next.
+      { id: '1.3', ok: true, handoff: handoffFor('1.3', { next: '' }) }
+    ]
+  })
+
+  assert.equal(after.halt, null)
+  assert.deepEqual(after.completed, ['1.1', '1.2', '1.3'])
+  assert.equal(after.failures.length, 0)
+  assert.equal(after.rejectedReports.length, 3)
+  assert.equal(new Set(after.rejectedReports.map(r => r.reason)).size, 3, 'three defects, three reasons')
+  assert.deepEqual(after.rejectedReports.map(r => r.id), ['1.1', '1.2', '1.3'])
+})
+
+test('real failures still halt, whatever number of rejected reports sit beside them', () => {
+  const rejected = 4
+  const width = LIMITS.taskFailureHalt + rejected + 1
+  const tasks = Array.from({ length: width }, (_, i) =>
+    task({ id: `1.${i + 1}`, group: 1, paths: [`src/f${i + 1}.cs`] })
+  )
+  const start = createRunState(planOf(tasks, { maxParallel: width, maxTasksPerAgent: 1 }))
+  const step = nextStep(start)
+  const ids = stepTasks(step).map(t => t.id)
+  assert.equal(ids.length, width, 'fixture: every task is in one batch')
+
+  const results = last =>
+    ids.map((id, i) => {
+      if (i < LIMITS.taskFailureHalt) return { id, ok: false, error: 'agent gave up' }
+      if (i < LIMITS.taskFailureHalt + rejected) return { id, ok: true }
+      return last(id)
+    })
+
+  const atCap = recordBatchResult(start, { tasks: results(id => okTask(id)) })
+  assert.equal(atCap.failures.length, LIMITS.taskFailureHalt)
+  assert.equal(atCap.rejectedReports.length, rejected)
+  assert.equal(atCap.halt, null, 'rejected reports are not on the halt\'s side of the ledger')
+
+  const overCap = recordBatchResult(start, {
+    tasks: results(id => ({ id, ok: false, error: 'agent gave up' }))
+  })
+  assert.equal(overCap.halt.kind, HALT_TASK_FAILURES)
+  assert.match(overCap.halt.reason, new RegExp(`${LIMITS.taskFailureHalt + 1} task failures`))
+  assert.equal(overCap.rejectedReports.length, rejected)
+})
+
+test('a failed task keeps its own reason and files no rejected report', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  const after = recordBatchResult(start, {
+    tasks: [{ id, ok: false, error: 'could not resolve the build' }]
+  })
+  assert.equal(after.failures.length, 1)
+  assert.equal(after.failures[0].error, 'could not resolve the build')
+  assert.deepEqual(after.rejectedReports ?? [], [])
+  assert.deepEqual(after.completed, [])
+})
+
+test('a packet of exactly LIMITS.maxHandoffChars is stored unchanged; one more is rejected', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  // Counted characters are summary + next + blocker + the evidence joined by
+  // newlines; with no evidence and a null blocker the arithmetic is two terms.
+  const next = 'n'
+  const exact = handoffFor(id, {
+    summary: 'x'.repeat(LIMITS.maxHandoffChars - next.length),
+    next,
+    evidence: []
+  })
+  const stored = recordBatchResult(start, { tasks: [{ id, ok: true, handoff: exact }] })
+  assert.deepEqual(stored.handoffs[id], exact, 'at the cap the packet is kept whole')
+  assert.deepEqual(stored.rejectedReports ?? [], [])
+
+  const over = handoffFor(id, { summary: exact.summary + 'x', next, evidence: [] })
+  const rejected = recordBatchResult(start, { tasks: [{ id, ok: true, handoff: over }] })
+  assert.equal(Object.prototype.hasOwnProperty.call(rejected.handoffs, id), false)
+  assert.equal(rejected.rejectedReports.length, 1)
+  assert.match(rejected.rejectedReports[0].reason, /the cap is/)
+  assert.deepEqual(rejected.completed, [id])
+})
+
+test('a state written before rejected reports existed is initialized, and its failures still count', () => {
+  const fresh = createRunState(simplePlan([1, 2]))
+  const failure = id => ({
+    id,
+    wave: 1,
+    waveKind: 'impl',
+    error: 'invalid handoff: summary must be a non-empty string'
+  })
+  const older = { ...fresh, failures: [failure('x.1'), failure('x.2')] }
+  delete older.rejectedReports
+  assert.equal(older.failures.length, LIMITS.taskFailureHalt)
+
+  const step = nextStep(older)
+  const continued = recordBatchResult(older, allOk(step))
+  assert.deepEqual(continued.rejectedReports, [], 'the key is initialized, not left absent')
+  assert.equal(continued.failures.length, LIMITS.taskFailureHalt, 'the earlier failures are read as written')
+  assert.equal(continued.halt, null)
+
+  const tripped = recordBatchResult(older, {
+    tasks: [{ id: stepTasks(step)[0].id, ok: false, error: 'gave up' }, okTask(stepTasks(step)[1].id)]
+  })
+  assert.equal(tripped.failures.length, LIMITS.taskFailureHalt + 1, 'and they are still counted')
+  assert.equal(tripped.halt.kind, HALT_TASK_FAILURES)
+})
+
+test('the next wave is told which tasks filed no usable report, and what they said they touched', () => {
+  const SECRET = 'UNIQUE-REJECTED-SUMMARY-TEXT'
+  const start = createRunState(simplePlan([1, 2, 3]))
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(nextStep(start), 'previousRejectedReports'),
+    false,
+    'the first wave has no previous wave'
+  )
+
+  const wave1 = recordBatchResult(start, {
+    tasks: [
+      okTask('1.1'),
+      {
+        id: '1.2',
+        ok: true,
+        filesChanged: ['src/a.cs'],
+        handoff: handoffFor('1.2', { summary: `${SECRET} ${'x'.repeat(LIMITS.maxHandoffChars)}` })
+      }
+    ]
+  })
+  const reason = wave1.rejectedReports[0].reason
+  assert.match(reason, /the cap is/)
+
+  const atWave2 = recordVerifyResult(wave1, { ok: true })
+  const step2 = nextStep(atWave2)
+  assert.deepEqual(step2.previousRejectedReports, [{ taskId: '1.2', reason, paths: ['src/a.cs'] }])
+  assert.deepEqual(step2.previousHandoffs.map(h => h.taskId), ['1.1'], 'only the validated packet is a packet')
+  assert.equal(
+    JSON.stringify(step2).includes(SECRET),
+    false,
+    'the rejected packet\'s own text is never handed on — that would be truncation by another name'
+  )
+
+  const wave2 = recordBatchResult(atWave2, allOk(step2))
+  const step3 = nextStep(recordVerifyResult(wave2, { ok: true }))
+  assert.equal(step3.wave, 3)
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(step3, 'previousRejectedReports'),
+    false,
+    'wave 3 is told about wave 2 only, and wave 2 rejected nothing'
+  )
+})
+
+test('formatRunState names rejected reports only when there are some', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  const clean = recordBatchResult(start, allOk(nextStep(start)))
+  assert.doesNotMatch(formatRunState(clean), /report\(s\) rejected/)
+
+  const rejected = recordBatchResult(start, { tasks: [{ id, ok: true }] })
+  assert.match(formatRunState(rejected), /1 report\(s\) rejected/)
+})
+
 // --- what a batch recorded, reported back ---------------------------------
 //
 // The adjudication was always right and always private: `record-batch` failed
@@ -1833,7 +2026,7 @@ test('a blocked task keeps its packet so the next wave is told why', () => {
 // ticked and tallied from the agent's claim, and a run could tick five boxes
 // beside a halt naming those same five tasks as failures.
 
-test('a recorded batch reports an outcome per task, with the reason it failed', () => {
+test('a recorded batch reports an outcome per task, with a rejected report beside the succeeded task', () => {
   const before = createRunState(simplePlan([1, 2]))
   const step = nextStep(before)
   const [first, second] = stepTasks(step).map(t => t.id)
@@ -1848,12 +2041,15 @@ test('a recorded batch reports an outcome per task, with the reason it failed', 
   const outcomes = batchOutcomes(before, after)
   assert.deepEqual(
     outcomes.map(o => [o.id, o.outcome]),
-    [[first, OUTCOME_OK], [second, OUTCOME_FAILED]],
-    'one bad packet fails its own task, not the batch'
+    [[first, OUTCOME_OK], [second, OUTCOME_OK]],
+    'a bad packet does not fail its task, so neither task is failed'
   )
   assert.equal(outcomes[0].reason, undefined, 'a succeeded task owes no reason')
-  assert.match(outcomes[1].reason, /invalid handoff: .*status/)
-  assert.ok(outcomes[1].reason.length <= 300, 'the reason is an adjudication string, not a transcript')
+  assert.equal(outcomes[0].reportRejected, undefined, 'a validated report rejects nothing')
+  const { reportRejected, ...rest } = outcomes[1]
+  assert.deepEqual(rest, { id: second, outcome: OUTCOME_OK }, 'a succeeded task carries no failure reason')
+  assert.match(reportRejected, /status/)
+  assert.ok(reportRejected.length <= 300, 'the reason is an adjudication string, not a transcript')
 })
 
 test('a batch reports only itself, never the run accumulated so far', () => {
@@ -2213,7 +2409,7 @@ test('a run one failure below the halt does not halt on unconfirmed verdicts', (
   assert.equal(after.failures.length, LIMITS.taskFailureHalt, 'the failure count is unchanged')
 })
 
-test('an over-budget packet still fails closed, with no verdict stored for it', () => {
+test('an over-budget packet is still rejected, with no verdict stored for it', () => {
   const start = createRunState(simplePlan([1, 2]))
   const after = recordBatchResult(
     start,
@@ -2229,8 +2425,10 @@ test('an over-budget packet still fails closed, with no verdict stored for it', 
     },
     { changedPaths: ['src/1.1.ts'] }
   )
-  assert.equal(after.completed.length, 0)
-  assert.match(after.failures[0].error, /invalid handoff: .*the cap is/)
+  assert.deepEqual(after.completed, ['1.1'], 'the task claimed success, so it is done')
+  assert.equal(after.failures.length, 0)
+  assert.equal(after.rejectedReports.length, 1)
+  assert.match(after.rejectedReports[0].reason, /the cap is/)
   assert.deepEqual(after.handoffs, {}, 'a rejected packet is not stored')
   assert.equal(
     Object.prototype.hasOwnProperty.call(after.evidenceAudits, '1.1'),

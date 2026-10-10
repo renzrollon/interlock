@@ -192,7 +192,7 @@ There are three loops. Mixing them up is how leftover checkboxes burn a second 2
 | `spec --continue`: you answer the ledger, `interlock ready` exits 0, ship launches **once** | Continuity's one legal bridge | Human answers + `interlock ready` |
 | Resume the **same** workflow from `/workflows` after an interrupt | Cache replay, not a new plan | Human |
 
-**Never auto-retrigger.** Leftover `- [ ]` after `SHIP COMPLETE WITH LEFTOVERS` is a report (failed tasks under the halt cap). Unticked-but-done work is `interlock tasks tick`, not a second implementer pass. A classifier drop is a halt via `interlock tasks coverage`. Dispatch must not route "unchecked tasks → ship" after a workflow just returned. A halt resume card sitting under `.claude/handoff/` is not a trigger either: it is a record of a run that already stopped, nothing reads it, and it repeats this rule in its own text. Finding one licenses no ship — the halt row of the table above does, after you fix the cause and a person asks. The `Large workflow` warning is advisory. Failed leftovers are retried only by a new human ship — preferably `--apply-only` so review and commit are not paid twice.
+**Never auto-retrigger.** Leftover `- [ ]` after `SHIP COMPLETE WITH LEFTOVERS` is a report (failed tasks under the halt cap). A task whose handoff packet was rejected is not among them: it reported success, so its box is ticked and the rejection is named by [`HANDOFF REJECTED`](#handoff-rejected) instead. Unticked-but-done work is `interlock tasks tick`, not a second implementer pass. A classifier drop is a halt via `interlock tasks coverage`. Dispatch must not route "unchecked tasks → ship" after a workflow just returned. A halt resume card sitting under `.claude/handoff/` is not a trigger either: it is a record of a run that already stopped, nothing reads it, and it repeats this rule in its own text. Finding one licenses no ship — the halt row of the table above does, after you fix the cause and a person asks. The `Large workflow` warning is advisory. Failed leftovers are retried only by a new human ship — preferably `--apply-only` so review and commit are not paid twice.
 
 Claude Code's [`/goal`](https://code.claude.com/docs/en/goal) is a *session* Stop hook: a transcript evaluator that starts a new parent turn when the condition is unmet. It does not run commands or read files. Interlock does not invoke `/goal`, and it does not ship a plugin Stop hook that blocks until boxes are empty — that re-creates the token leak and fights the eight-block cap.
 
@@ -251,9 +251,9 @@ The Workflow driver used to decide this itself, from a `test -f` in its validate
 
 If the reason is `never built`, the fix is to run `/interlock:bootstrap` once.
 
-The most common cause is language coverage. **Structural indexing — import and symbol edges — covers JavaScript/TypeScript, Python, and shell only.** A Go, Rust, Java, or Ruby repo will produce little or no structural graph, and that is expected. Those projects still get docs and OpenSpec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph.
+The most common cause is language coverage. **Structural indexing — import and symbol edges — covers JavaScript/TypeScript, Python, shell, C# (`.cs` and `.csproj`) and Bicep (`.bicep`).** A Go, Rust, Java, or Ruby repo will produce little or no structural graph, and that is expected. Those projects still get docs and OpenSpec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph.
 
-If your repo *is* JS/TS, Python, or shell and the graph is still empty, build it directly and read the error:
+If your repo *is* in one of those languages and the graph is still empty, build it directly and read the error:
 
 ```bash
 interlock-graph build .
@@ -267,6 +267,18 @@ GRAPH FROM MAIN CHECKOUT: <path> — it may be stale for this worktree; a lane w
 ```
 
 That graph was built from the main checkout's files, before this worktree's edits, so a query can still name a symbol this branch renamed or miss one it added. Nothing is copied into the worktree. `interlock-graph`'s query commands read through the same way and print the same words on stderr ([07](./07-cli-and-configuration.md#interlock-graph--the-local-code-knowledge-graph)). If the drift matters for this change, build a graph in the worktree with `interlock-graph build .`; the next `run start` finds the worktree's own first.
+
+### `GRAPH SKIPPED UNREADABLE`
+
+A graph command met a file or directory it could not read and went on without it. `interlock-graph build`, `update`, `docs`, `docs-index` and `context` each name every such path on stderr, once, with the error code:
+
+```
+GRAPH SKIPPED UNREADABLE: <path> (<code>)
+```
+
+An unreadable `.gitignore` or `.interlockignore` adds that its patterns were not applied, so files it would have excluded may be indexed. The command still exits `0`, the `build` and `update` summary lines end in `skipped=<n>`, and `GRAPH_REPORT.md` lists the paths under a "Not indexed" heading; the same list is in `manifest.json`, which is how `update` notices a path that has become readable or unreadable since the last build. When nothing under the root could be read, the build says so in place of the language notice.
+
+The graph is correct for what it indexed and silent about the rest, so a query that finds nothing for a skipped file is not evidence the file is unused. The usual cause is file permissions or a checkout that a different user owns. Fix the permission, or exclude the path, and run `interlock-graph update .`; the build rebuilds when the set of unreadable paths changes. Ship runs continue: an agent that needs a skipped file reads it with `Read` or falls back to grep.
 
 ### `PUSH FAILED`
 
@@ -614,6 +626,28 @@ This does not mean the final unit suite was skipped — that one is a hard halt 
 The inter-wave verification budget (`interlock limits`) is meant to count only the checks: how long typecheck, unit and lint actually ran. The verify agent runs each planned step through `interlock verify exec`, which times the command itself and records it to `.claude/ship/verify-timings.jsonl`. The judge charges those timings to the budget.
 
 This banner means at least one planned step has no such timing, usually because the agent ran the command directly instead of through the wrapper. The judge then falls back to the time between the checkpoint's dispatch and its judgement. That interval also counts the relays and the verify agent's own turns, so the budget runs out early and later checkpoints degrade to typecheck only (see [`VERIFICATION SKIPPED`](#verification-skipped)). The banner names the steps with no timing and the milliseconds it charged instead. On a run that repeats it, check whether the verify agent is following its briefing.
+
+### `HANDOFF REJECTED`
+
+A task reported success, but the handoff packet that came with it failed the schema check: not an object, a wrong or missing `status`, a missing field, evidence in the wrong shape, or a packet over the character cap that `interlock limits` publishes. The packet is rejected and never trimmed. The task is **not** failed for it. It is recorded as done, its box is ticked, and the batch's banner names each task and the reason:
+
+```
+HANDOFF REJECTED: <id> — <reason>; ... — recorded as done and not counted toward the task-failure cap; the next wave is told these tasks filed no usable report
+```
+
+A bad packet used to fail its task, and three of them in one wave halted the run on work that was finished. A rejected packet no longer counts toward the task-failure halt, and only a task that reported `ok: false` or never reported does.
+
+What the run does keep: the task's reported file paths. The next wave's briefing gets a `NO VALIDATED REPORT` block naming the task, the reason and those paths, so its agents read the files rather than trust a summary nobody validated. The receipt carries the ids as `reportRejected` on the wave, its summary prints a `handoff reports rejected` row, `interlock run-log show` prints `report(s) rejected` on the wave line, and a halt's resume card repeats them. Nothing here is a failure to fix. If the same reason repeats across tasks, the briefing's handoff instructions are being ignored, and the fix is the agent, not the run.
+
+### `VERIFY BUDGET AT THE PUBLISHED FLOOR`
+
+A checkpoint between waves skipped its checks because the inter-wave verify budget ran out, and that budget sat at the published floor because the test profile carries no usable `unit.timeout_ms`. The run derives its budget once, at `run start`, from the profile; with no `unit.timeout_ms` it falls back to the floor (the `inter-wave verify budget (floor)` row of `interlock limits`), which a suite slower than the floor can never fit inside. It is raised once per run, on the first reduced checkpoint, and is not raised when the profile did carry a timeout that was simply small.
+
+```
+VERIFY BUDGET AT THE PUBLISHED FLOOR: the test profile carries no unit.timeout_ms, so the inter-wave budget was not raised to fit this suite — run /interlock:fix-tests --reconfigure to record one
+```
+
+Run `/interlock:fix-tests --reconfigure`. After a green full unit run it records `unit.timeout_ms` as that run's wall time, and the next ship derives its budget from it. `interlock verify plan --context inter-wave --json` prints the budget and its `budgetSource` (`profile`, `published` or `flag`) without starting a run. The budget is fixed at start, so editing the profile mid-run changes nothing for that run.
 
 ### `E2E FAILED (non-blocking by policy)`
 
