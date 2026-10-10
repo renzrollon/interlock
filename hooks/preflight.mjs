@@ -48,11 +48,19 @@ import { fileURLToPath } from 'node:url'
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-/** Prefer the bundled binary (always present next to this hook), fall back to PATH. */
-function interlockBin() {
+/**
+ * Prefer the bundled binary (always present next to this hook), fall back to PATH.
+ *
+ * The bundled script is run through this hook's own interpreter rather than
+ * executed directly: Windows has no shebang, so spawning the extensionless
+ * `bin/interlock` there fails with ENOENT and the doctor never runs.
+ *
+ * @returns {{ file: string, args: string[] }}
+ */
+function interlockCommand() {
   const bundled = join(PLUGIN_ROOT, 'bin', 'interlock')
-  if (existsSync(bundled)) return bundled
-  return 'interlock' // let PATH resolution decide; a miss throws ENOENT below
+  if (existsSync(bundled)) return { file: process.execPath, args: [bundled] }
+  return { file: 'interlock', args: [] } // let PATH resolution decide; a miss throws ENOENT below
 }
 
 /**
@@ -65,7 +73,8 @@ function interlockBin() {
 function run() {
   let raw
   try {
-    raw = execFileSync(interlockBin(), ['doctor', '--json'], {
+    const { file, args } = interlockCommand()
+    raw = execFileSync(file, [...args, 'doctor', '--json'], {
       cwd: process.cwd(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],

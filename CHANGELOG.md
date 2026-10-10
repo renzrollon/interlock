@@ -10,6 +10,7 @@ this project adheres to Semantic Versioning 2.0.0.
 ### Fixed
 
 - **`interlock-graph build` skips an unreadable file instead of aborting** (#7). A file the walker cannot read, such as a `.mcp.json` the Claude Code sandbox masks, is left out of the graph and named on its own `SKIPPED unreadable file: <path> (<code>)` line, and the build finishes. `update` does the same.
+- **The SessionStart preflight runs on Windows.** The hook executed the extensionless `bin/interlock` directly. Windows has no shebang, so every session there opened with `interlock preflight could not run: … ENOENT` and the doctor never ran. The bundled script now runs through the hook's own Node.
 
 ## 1.4.2 — 2026-10-10
 
