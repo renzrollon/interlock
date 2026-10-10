@@ -27,6 +27,8 @@ Languages outside that set (Go, Rust, Java, Ruby) are **not** structurally index
 
 **Unreadable paths do not stop a build.** A file or directory the build cannot read is skipped, and each one is named on stderr as `GRAPH SKIPPED UNREADABLE: <path> (<code>)`. `build` and `update` still finish and exit 0; the summary line carries `skipped=<n>` and `GRAPH_REPORT.md` lists the paths under a "Not indexed" heading. Report those paths to the user rather than treating the graph as complete.
 
+**A query says when its graph is partial.** `query`, `consumers`, `path`, `explain` and `context` print one line on stderr, `GRAPH PARTIAL: <n> path(s) were unreadable when this graph was built…`, whenever the graph they read was built past skipped paths. Their stdout and exit code are unchanged. When you see it, an empty or short answer is not evidence about the skipped paths: read `GRAPH_REPORT.md` for which they are, then `Read` or grep those paths directly before claiming a symbol has no other consumers.
+
 **Artifacts, all project-local under `.claude/graph/`:**
 
 | Path | Role |

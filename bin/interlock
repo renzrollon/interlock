@@ -766,11 +766,12 @@ wave-state:
                                            handoff: { schema: "interlock.wave-handoff/1", taskId,
                                            status: ok|blocked|partial, summary, evidence[], next,
                                            blocker }. A task claiming ok:true without a valid,
-                                           in-budget packet is recorded as failed ("invalid
-                                           handoff: ..."); see "interlock limits" for the cap.
-                                           A rejected packet is reported as reportRejected on a
-                                           succeeded outcome.
-                                           The next wave's step carries these as previousHandoffs.
+                                           in-budget packet stays recorded as done; the packet
+                                           is rejected, never stored or trimmed, and the outcome
+                                           carries reportRejected with the reason. See
+                                           "interlock limits" for the cap. The next wave's step
+                                           carries valid packets as previousHandoffs and rejected
+                                           ones as previousRejectedReports.
   record-verify --state <f> --result <f>   result: { ok, errors?, blocksNextWave? } or
                                            { skipped: true, reason }
   replan --state <f> --groups <f>          groups: [{ group, tasks: [...] }]

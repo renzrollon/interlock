@@ -316,6 +316,83 @@ describe('prose retrieval skips an unreadable document', () => {
   });
 });
 
+// A build names each path it skips. A query runs later, often in another
+// session, and answers from the graph alone: "no consumers" from a graph that
+// never read the file is not evidence the file is unused. So a query says, once,
+// when the graph it reads was built past skipped paths.
+describe('a query says when its graph was built past skipped paths', () => {
+  const PARTIAL = 'GRAPH PARTIAL';
+  const partialLines = (stderr) => stderr.split('\n').filter((l) => l.includes(PARTIAL));
+  const QUERIES = [
+    ['query', 'AuthService'],
+    ['consumers', 'normalizeEmail'],
+    ['path', 'lib/auth.ts', 'lib/session.ts'],
+    ['explain', 'AuthService'],
+    ['context', 'AuthService'],
+  ];
+
+  /** A clean graph whose manifest records `paths` as skipped by the build. */
+  function builtWithSkips(skipped) {
+    const root = freshRoot();
+    assert.equal(run(root, ['build', '.']).status, 0);
+    const file = path.join(root, '.claude', 'graph', 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (skipped === undefined) delete manifest.skipped;
+    else manifest.skipped = skipped;
+    fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+    return root;
+  }
+
+  it('prints one GRAPH PARTIAL line with the count, on stderr, for every query command', () => {
+    const root = builtWithSkips([
+      { path: '.mcp.json', code: 'EACCES' },
+      { path: 'vault', code: 'EACCES' },
+    ]);
+    for (const args of QUERIES) {
+      const r = run(root, args);
+      const lines = partialLines(r.stderr);
+      assert.equal(lines.length, 1, `${args[0]}: ${r.stderr}`);
+      assert.match(lines[0], /\b2 path\(s\)/, args[0]);
+      assert.ok(!r.stdout.includes(PARTIAL), `${args[0]}: the notice must stay off stdout`);
+    }
+  });
+
+  it('leaves stdout and the exit code exactly as they are without the record', () => {
+    const partial = builtWithSkips([{ path: '.mcp.json', code: 'EACCES' }]);
+    const clean = builtWithSkips([]);
+    for (const args of QUERIES) {
+      const a = run(partial, args);
+      const b = run(clean, args);
+      assert.equal(a.status, b.status, args[0]);
+      assert.equal(a.stdout, b.stdout, args[0]);
+      assert.equal(b.stderr, '', `${args[0]}: a graph built with no skips prints nothing new`);
+    }
+  });
+
+  it('prints nothing for a manifest from before skips were recorded, or one it cannot read', () => {
+    const older = builtWithSkips(undefined);
+    assert.deepEqual(partialLines(run(older, ['consumers', 'normalizeEmail']).stderr), []);
+
+    const broken = builtWithSkips([]);
+    fs.writeFileSync(path.join(broken, '.claude', 'graph', 'manifest.json'), '{ not json');
+    const r = run(broken, ['consumers', 'normalizeEmail']);
+    assert.equal(r.status, 0, 'a query that never needed the manifest does not start failing on it');
+    assert.deepEqual(partialLines(r.stderr), []);
+  });
+
+  it('follows a real build: a masked file is named by the build and counted by the query', (t) => {
+    if (!permissionsEnforced()) return t.skip(NOT_ENFORCED);
+    const root = freshRoot();
+    deny(write(root, '.mcp.json', '{"mcpServers":{}}\n'));
+    assert.equal(run(root, ['build', '.']).status, 0);
+
+    const r = run(root, ['consumers', 'normalizeEmail']);
+    const lines = partialLines(r.stderr);
+    assert.equal(lines.length, 1, r.stderr);
+    assert.match(lines[0], /\b1 path\(s\)/);
+  });
+});
+
 describe('readIndexed and createSkips', () => {
   it('reads a readable file once and returns its text and sha256', () => {
     const dir = tmpRoot();

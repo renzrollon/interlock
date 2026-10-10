@@ -175,6 +175,18 @@ When the state machine asks for the next `run-batch` or `test-wave` after a prio
 
 A task whose report was rejected is otherwise absent from what the next wave is handed, and a silent absence reads as a task that had nothing to say.
 
+What is handed on for a rejected report MUST NOT exceed what a valid packet may carry. The rejection reason MUST be a short adjudication reason on a single line: where it quotes a value from the rejected packet to say what was wrong with it, the quote MUST be escaped so that it cannot break the line and MUST be clipped to a short diagnostic, never the value in full. The reason MUST be bounded where it is recorded on the run state, so every reader of that record holds the same short reason. The reported paths MUST be listed only while each is a single line and the list fits the `maxHandoffChars` cap published by `interlock limits`; paths left out MUST be counted and the count stated, never dropped in silence. A report whose paths all fit MUST be handed on exactly as it would be without this bound.
+
+The reported paths are the task's own unvalidated strings. Without a bound, a task whose packet was rejected for being too long could hand the next wave more text through its reason and its path list than a task whose packet was accepted.
+
+#### Scenario: Failure — a rejected packet's text does not ride in on the reason or the paths
+
+- **GIVEN** wave 1 in which task `1.2` reported success with an evidence entry holding several thousand characters of pasted file body spread over several lines, and reported forty long paths followed by a multi-line paragraph offered as a path
+- **WHEN** wave 2's step and implementer prompts are assembled
+- **THEN** the rejection reason is a single line that names the evidence entry as not a locator and quotes only a clipped piece of it
+- **AND** the paths listed are a prefix of the reported paths that fits the published handoff cap, none of them multi-line
+- **AND** the step states how many reported paths were left out, and each prompt says so beside the listed paths
+
 #### Scenario: Happy path — the next wave is told a task left no report
 
 - **GIVEN** wave 1 in which task `1.2` reported success, reported changing `src/a.cs`, and had its packet rejected as over budget

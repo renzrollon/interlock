@@ -222,3 +222,19 @@ The tasks in this section touch disjoint files and do not need each other.
 - [x] 4.3 `CHANGELOG.md`, under `## [Unreleased]`: one entry per issue, in the file's existing voice, naming issues #7, #8, #9 and #10. Mark the #9 entry **Breaking** for the recorded outcome and say what a reader should now look for (`HANDOFF REJECTED`, the `handoff reports rejected` row, `reportRejected` on the receipt). Say what this change did not do: checkpoint scoping, the re-ask, checkpoint placement.
 
 - [x] 4.4 Run `npm test` and `npm run validate` and paste both outputs. Run the three reproductions from `proposal.md` again and record the new result of each: `interlock-graph build` over a tree holding an unreadable `.mcp.json` exits 0 and names it; three green tasks with the issue's three packet defects do not halt; a second checkpoint after 160 seconds of checks, against a profile with `unit.timeout_ms: 120000`, still plans `unit`.
+
+## 5. Review follow-ups (after the run, by hand)
+
+A review of the commit found places where the change did not meet its own specs, or left a reader told something false. Each item below changed a spec delta as well as the code; `design.md` — "Review follow-ups" gives the reason.
+
+- [x] 5.1 Bound what a rejected report hands on (`lib/waves.mjs`, `lib/prompts/rejected.mjs`). `validateHandoff` quotes an agent-supplied value JSON-escaped and clipped; the reason is stored through `shortReason`; the reported paths are listed only while single-line and within `LIMITS.maxHandoffChars`, with the rest counted as `pathsOmitted`. Tests: `test/spine/handoff.test.mjs`, `test/spine/waves.test.mjs`, `test/spine/implementer-prompt.test.mjs`.
+- [x] 5.2 Say truthfully who was told (`lib/run.mjs`). `rejectedBanner` takes `rejectedReportReader`'s answer: the next wave, the review, final verification, or nothing under `--apply-only`. Tests: `test/spine/run.test.mjs`.
+- [x] 5.3 Tell the review (`lib/waves.mjs` `runRejectedReports`, `lib/run.mjs` `reviewStep`, `lib/prompts/review.mjs`). An `UNVALIDATED REPORTS` block, framed as data, rendered only when the run recorded a rejected report. Tests: `test/spine/prompts.test.mjs`, `test/spine/run.test.mjs`.
+- [x] 5.4 Reword the briefing's over-cap sentence (`lib/prompts/implementer.mjs`), and apply the same sentence to the 15 implementer fixtures and the 4 eval cases that quote it. `implementer-prompts` is modified to allow a deliberate edit to text every form shares.
+- [x] 5.5 Raise `VERIFY BUDGET AT THE PUBLISHED FLOOR` on a checkpoint cut to typecheck alone (`lib/run.mjs` `verifyStep`). Tests: `test/spine/run.test.mjs`.
+- [x] 5.6 Query-time `GRAPH PARTIAL` (`lib/graph/paths.mjs`, `lib/graph/cli.mjs`). Tests: `test/graph/unreadable.test.mjs`.
+- [x] 5.7 `skills/bootstrap/SKILL.md` branches on `skipped=` and on the nothing-readable notice, and names C# and Bicep; `skills/graph/SKILL.md` names `GRAPH PARTIAL`; `skills/fix-tests/SKILL.md` states whole milliseconds and an integer. Each pinned by token in `test/skills.test.mjs`.
+- [x] 5.8 Stale prose the sweep missed: the `record-batch` help in `bin/interlock`, `docs/04` (the budget sentence, the three banner sections, a `GRAPH PARTIAL` section), `docs/07`, `docs/10`, `CHANGELOG.md`, and comments in `lib/limits.mjs`, `lib/run.mjs`, `lib/verify.mjs`, `workflows/ship.js` and five test files (comments only).
+- [x] 5.9 A delta for `ship/completion-gate`, whose "recorded as failed" scenario still used a rejected packet as its example and had no delta in this change.
+- [x] 5.10 `.interlockignore` at the repository root names `test/graph/fixtures/`, so this repository's own graph stops linking OpenSpec prose to fixture symbols that only share a word.
+- [x] 5.11 Run `npm test` and `openspec validate fit-ship-and-graph-to-compiled-repos --strict`.

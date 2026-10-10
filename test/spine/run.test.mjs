@@ -3563,6 +3563,110 @@ test('record-batch records a task whose packet was rejected as done, and says so
   }
 })
 
+// The banner's last clause says who reads a rejected report next. A later wave
+// is briefed with it; the last wave has none, and a banner that claimed one would
+// be a degradation spoken falsely.
+
+/** Record the first (and, for `repo()`'s plan, only) wave with one packet rejected. */
+function recordOnlyWaveRejecting(root, change, startFlags = []) {
+  const batch = toFirstBatch(root, change, startFlags)
+  const rejectedId = batch.lanes[0][0].id
+  writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+  const step = run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => laneWithRejected(batch.lanes[i].map(t => t.id), rejectedId))
+  }).step
+  const banner = (step.banners || []).find(b => b.includes('HANDOFF REJECTED'))
+  assert.ok(banner, `no HANDOFF REJECTED banner: ${JSON.stringify(step.banners)}`)
+  return { step, banner, rejectedId }
+}
+
+const NEXT_WAVE_TOLD = 'the next wave is told'
+
+test('a rejected report on the last wave does not claim a next wave was told', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 First\n- [ ] 1.2 Second\n'
+  })
+  try {
+    const { step, banner } = recordOnlyWaveRejecting(root, change)
+    assert.equal(step.action, 'verify-final', 'fixture: this was the last wave')
+    assert.ok(!banner.includes(NEXT_WAVE_TOLD), `the banner claims a wave that does not exist: ${banner}`)
+    assert.match(banner, /no later wave remains/)
+    assert.match(banner, /final verification is the only check/)
+    assert.match(banner, /not counted toward the task-failure cap/, 'the rest of the banner is unchanged')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('on the last wave of a reviewed run the banner names the review, and under --apply-only that nothing checks', () => {
+  const reviewed = repo('add-thing', { tasks: '# Tasks\n\n- [ ] 1.1 First\n- [ ] 1.2 Second\n' })
+  try {
+    const { step, banner } = recordOnlyWaveRejecting(reviewed.root, reviewed.change, ['--strict'])
+    assert.equal(step.action, 'review')
+    assert.ok(!banner.includes(NEXT_WAVE_TOLD))
+    assert.match(banner, /the review is told instead/)
+  } finally {
+    cleanup(reviewed.root)
+  }
+
+  const applyOnly = repo('add-thing', { tasks: '# Tasks\n\n- [ ] 1.1 First\n- [ ] 1.2 Second\n' })
+  try {
+    const { step, banner } = recordOnlyWaveRejecting(applyOnly.root, applyOnly.change, ['--apply-only'])
+    assert.equal(step.action, 'close')
+    assert.ok(!banner.includes(NEXT_WAVE_TOLD))
+    assert.match(banner, /--apply-only/)
+    assert.match(banner, /nothing in this run checks/)
+  } finally {
+    cleanup(applyOnly.root)
+  }
+})
+
+test('a rejected report with a later wave still says the next wave is told', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const rejectedId = batch.lanes.flat()[0].id
+    const verify = completeBatchRejecting(root, batch, rejectedId)
+    const banner = (verify.banners || []).find(b => b.includes('HANDOFF REJECTED'))
+    assert.ok(banner, 'the batch raised no HANDOFF REJECTED banner')
+    assert.ok(banner.includes(NEXT_WAVE_TOLD), `a later wave exists and the banner does not say so: ${banner}`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the review briefing names every task that filed no validated report, and not what it said', () => {
+  const { root, change } = repo('add-thing', {
+    tasks: '# Tasks\n\n- [ ] 1.1 First\n- [ ] 1.2 Second\n'
+  })
+  try {
+    const { step: review, rejectedId } = recordOnlyWaveRejecting(root, change, ['--strict'])
+    assert.equal(review.action, 'review')
+    const prompt = review.spawns[0].prompt
+    assert.match(prompt, /UNVALIDATED REPORTS/)
+    assert.ok(prompt.includes(`[${rejectedId}]`), 'the review is told which task')
+    assert.ok(prompt.includes('the cap is'), 'and why its report was rejected')
+    assert.ok(prompt.includes('README.md'), 'and the path it reported touching')
+    assert.ok(!prompt.includes(REJECTED_SUMMARY), 'but never the text of the rejected packet')
+    assert.ok(
+      prompt.indexOf('UNVALIDATED REPORTS') < prompt.indexOf('## '),
+      'ahead of the dimensions it is handed to'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review of a run that rejected no report is briefed as it always was', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    assert.equal(review.action, 'review')
+    assert.doesNotMatch(review.spawns[0].prompt, /UNVALIDATED REPORTS/)
+  } finally {
+    cleanup(root)
+  }
+})
+
 /** Report every lane of `batch` ok, with `rejectId`'s packet over the cap. */
 function completeBatchRejecting(root, batch, rejectId) {
   for (const task of batch.lanes.flat()) {
@@ -3618,16 +3722,19 @@ test('the next wave\'s briefing says which task filed no validated report, and n
  * A multi-group repo whose profile carries `unit.timeout_ms` (or does not),
  * written BEFORE `run start` because the run reads it once, there.
  */
-function budgetRepo({ timeoutMs, classified = THREE_GROUPS } = {}) {
+function budgetRepo({ timeoutMs, classified = THREE_GROUPS, typecheck } = {}) {
   const ids = classified.tasks.map(t => t.id)
   const { root, change } = repo('add-thing', {
     tasks: `# Tasks\n\n${ids.map(id => `- [ ] ${id} Edit ${srcOf(id)}`).join('\n')}\n`
   })
   const unit = { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
   if (timeoutMs !== undefined) unit.timeout_ms = timeoutMs
+  // A typecheck command is the one check that survives a spent budget, so a
+  // profile that names one never produces an empty inter-wave plan.
+  const extra = typecheck ? { typecheck: { command: typecheck, cwd: '.' } } : {}
   const writeProfile = ms =>
-    file(root, '.claude/testing/profile.json', { version: 1, unit: { ...unit, timeout_ms: ms } })
-  file(root, '.claude/testing/profile.json', { version: 1, unit })
+    file(root, '.claude/testing/profile.json', { version: 1, unit: { ...unit, timeout_ms: ms }, ...extra })
+  file(root, '.claude/testing/profile.json', { version: 1, unit, ...extra })
   const started = run(root, ['run', 'start', '--change', change, '--mode', 'waves']).step
   file(root, '.claude/ship/classified.json', classified)
   const batch = run(root, [...started.then.argv]).step
@@ -3748,6 +3855,52 @@ test('a reduced checkpoint on a budget left at the floor names the cause and the
     assert.equal(second.skipped, true, 'the second checkpoint is reduced as well')
     assert.equal(second.reason, 'verify-budget-exceeded')
     assert.deepEqual(floorBanners(second), [], 'and the banner is not raised a second time')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// A profile that names a typecheck command never produces an empty plan: past
+// the budget its checkpoint is cut to typecheck alone, which drops the suite
+// exactly as an empty plan does. The banner belongs to the reduction, not to the
+// emptiness — or the repositories with a typecheck step would never be told.
+test('a checkpoint cut to typecheck alone on a floor budget names the cause too, once', () => {
+  const { root, batch } = budgetRepo({ typecheck: 'node --check src/mod11.ts' })
+  try {
+    assert.equal(manifestOf(root).verifyBudget?.timeoutMs, null, 'fixture: the profile carries no timeout')
+    setManifest(root, { verifyElapsedMs: LIMITS.interWaveVerifyBudgetMs })
+
+    const first = completeBatch(root, batch)
+    assert.equal(first.action, 'verify')
+    assert.equal(first.skipped, false, 'typecheck survives the budget, so the checkpoint still dispatches')
+    const plan = interWavePlan(root)
+    assert.equal(plan.budgetExceeded, true)
+    assert.deepEqual(plan.steps.map(s => s.kind), ['typecheck'], 'the suite was dropped for the budget')
+    const banners = floorBanners(first)
+    assert.equal(banners.length, 1, `a reduced checkpoint raised no floor banner: ${JSON.stringify(first.banners)}`)
+    assert.match(banners[0], /\/interlock:fix-tests --reconfigure/)
+    assert.equal(manifestOf(root).verifyBudgetFloorSpoken, true)
+
+    const next = run(root, [...first.then.argv], {
+      results: [{ results: [{ kind: 'typecheck', exitCode: 0 }] }]
+    }).step
+    assert.equal(next.action, 'run-batch')
+    const second = completeBatch(root, next)
+    assert.equal(second.skipped, false, 'the second checkpoint is reduced the same way')
+    assert.deepEqual(floorBanners(second), [], 'and the banner is not raised a second time')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a checkpoint inside its budget raises no floor banner, with or without a typecheck command', () => {
+  const { root, batch } = budgetRepo({ typecheck: 'node --check src/mod11.ts' })
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(interWavePlan(root).budgetExceeded, false)
+    assert.deepEqual(floorBanners(verify), [])
+    assert.notEqual(manifestOf(root).verifyBudgetFloorSpoken, true)
   } finally {
     cleanup(root)
   }

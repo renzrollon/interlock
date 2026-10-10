@@ -955,6 +955,45 @@ test('the fix-tests skill names the profile timeout field', () => {
   assert.ok(text.includes('timeout_ms'), 'skills/fix-tests/SKILL.md must carry timeout_ms')
 })
 
+test('the fix-tests skill states the unit and the type of the timeout it records', () => {
+  // `validateProfile` aborts planning on a non-integer, and a value written in
+  // seconds reads as an allowance a thousand times too small — which leaves the
+  // budget at the floor with the floor banner suppressed, because the profile
+  // "had its say". The instruction has to carry both words on the line that
+  // names the field.
+  const text = readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8')
+  const line = text.split('\n').find(l => l.includes('unit.timeout_ms') && l.includes('wall time'))
+  assert.ok(line, 'skills/fix-tests/SKILL.md must say what unit.timeout_ms is recorded from')
+  for (const token of ['milliseconds', 'integer']) {
+    assert.ok(line.includes(token), `the timeout_ms instruction must carry "${token}"`)
+  }
+})
+
+test('the graph skill names the line a query prints for a partial graph', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'graph', 'SKILL.md'), 'utf8')
+  assert.ok(text.includes('GRAPH PARTIAL'), 'skills/graph/SKILL.md must carry GRAPH PARTIAL')
+  // The marker the skill names is the one the CLI prints.
+  const paths = readFileSync(join(ROOT, 'lib', 'graph', 'paths.mjs'), 'utf8')
+  assert.ok(paths.includes("'GRAPH PARTIAL'"), 'lib/graph/paths.mjs no longer defines the GRAPH PARTIAL marker')
+})
+
+test('the bootstrap skill banners a partial graph and names the compiled languages the graph indexes', () => {
+  // `interlock-graph build` exits 0 past a path it cannot read, so the exit code
+  // bootstrap branches on no longer says the graph is whole. The skill has to
+  // branch on the summary line as well, or a partial graph is reported as a
+  // complete one.
+  const text = readFileSync(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'), 'utf8')
+  for (const token of ['GRAPH PARTIAL', 'skipped=', 'GRAPH SKIPPED UNREADABLE', '.cs', '.bicep']) {
+    assert.ok(text.includes(token), `skills/bootstrap/SKILL.md must carry ${token}`)
+  }
+  // The sentence the snippet greps for is the sentence the CLI prints: a reword
+  // on either side has to fail here, not silently stop matching.
+  const phrase = 'nothing indexable under the root could be read'
+  const cli = readFileSync(join(ROOT, 'lib', 'graph', 'cli.mjs'), 'utf8')
+  assert.ok(text.includes(phrase), 'the bootstrap snippet no longer greps for the nothing-readable notice')
+  assert.ok(cli.includes(phrase), 'lib/graph/cli.mjs no longer prints the notice the bootstrap snippet greps for')
+})
+
 test('the shared test profile ties timeout_ms to the inter-wave budget in one row or paragraph', () => {
   const text = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
   const blocks = text.split(/\n\s*\n/)

@@ -36,7 +36,7 @@ A constant budget fits only the repositories whose suites fit it. A solution who
 
 A ship run SHALL derive its inter-wave verify budget once, when it starts, from the test profile it located, and SHALL record the budget and its source on the run. Every inter-wave plan of that run SHALL use the recorded budget. A change to the profile after the run started SHALL NOT move it. The run's receipt SHALL carry the budget and its source.
 
-When a checkpoint is reduced because the budget is spent, and the budget is the published one because the profile carried no usable `unit.timeout_ms`, the run SHALL raise a banner that says so and names the command that records one. The banner SHALL be raised once per run.
+When a checkpoint is reduced because the budget is spent, and the budget is the published one because the profile carried no usable `unit.timeout_ms`, the run SHALL raise a banner that says so and names the command that records one. A checkpoint is reduced whenever a check was dropped for the spent budget: whether nothing is left to run, or the typecheck alone is left because the profile names a typecheck command. The banner SHALL be raised in both cases, and SHALL be raised once per run.
 
 A run whose record carries no budget, because it started before the budget was recorded, SHALL use the published budget.
 
@@ -56,6 +56,14 @@ The budget is derived at the start rather than at each checkpoint so that it is 
 - **THEN** the unit step is skipped with `VERIFICATION SKIPPED: reason=verify-budget-exceeded`
 - **AND** the run raises a banner containing `VERIFY BUDGET AT THE PUBLISHED FLOOR` and `/interlock:fix-tests --reconfigure`
 - **AND** a third reduced checkpoint in the same run does not raise that banner again
+
+#### Scenario: Failure — a checkpoint cut to typecheck alone says why as well
+
+- **GIVEN** a run started against a profile that names a typecheck command and a unit command and carries no `unit.timeout_ms`, whose earlier checkpoints have spent the published budget
+- **WHEN** the run plans its next inter-wave checkpoint
+- **THEN** the plan holds the typecheck step alone, and the checkpoint is dispatched rather than skipped
+- **AND** the run raises a banner containing `VERIFY BUDGET AT THE PUBLISHED FLOOR` and `/interlock:fix-tests --reconfigure`
+- **AND** a later checkpoint reduced the same way does not raise that banner again
 
 #### Scenario: Edge case — the profile changes mid-run, and an older run resumes
 

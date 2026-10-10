@@ -1,0 +1,4 @@
+# Fixture repositories the graph tests copy into temp roots. They are not this
+# project's code: indexed here, their symbols (Cache, Probe, Dashboard, ...)
+# collect spec links from OpenSpec prose that only shares the word.
+test/graph/fixtures/

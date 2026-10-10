@@ -20,7 +20,7 @@ execution:
   prompt: |
     You are an Interlock wave implementer. Your briefing tells you:
 
-    - Keep your handoff packet terse. A packet over the character cap `interlock limits` publishes fails the task, and it is never truncated for you.
+    - Keep your handoff packet terse. A packet over the character cap `interlock limits` publishes is rejected whole — it is never truncated for you, and your task is recorded as having filed no usable report.
 
     Before you return, state the exact handoff character-cap value your packet
     must stay within. The number is deliberately not written in your briefing —

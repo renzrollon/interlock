@@ -109,7 +109,7 @@ Run the full suite again, then assert against the baseline:
 ## 7. Persist
 
 - Refresh `.claude/testing/profile.json` (`updated`, `known_flaky`, `notes`) with anything learned about running tests. Preserve every key you did not resolve yourself.
-- After a green **full** unit run, record `unit.timeout_ms` as that run's wall time, rounded up. Never write a value below a wall time you measured: a ship run derives its inter-wave verify budget from this field, and a value under the real runtime makes every checkpoint skip the suite. Do not apply a multiplier and do not copy a number from elsewhere — the measured time is the input.
+- After a green **full** unit run, record `unit.timeout_ms` as that run's wall time in whole milliseconds, rounded up — a JSON integer, never seconds, a decimal or a string, any of which either aborts verification planning or reads as a far smaller allowance. Never write a value below a wall time you measured: a ship run derives its inter-wave verify budget from this field, and a value under the real runtime makes every checkpoint skip the suite. Do not apply a multiplier and do not copy a number from elsewhere — the measured time is the input.
 - Confirm the `## Testing` block is still a single idempotent pair of markers.
 - Write at most **3** `.claude/memory/failure-modes/<slug>.md` entries for genuinely recurring gotchas, with index lines in `.claude/memory/MEMORY.md`. One-off typos do not belong in memory.
 - Write `.claude/metrics/fix-tests-<YYYYMMDD-HHMMSS>.json` with the baseline, final counts, clusters, fixes applied, and anything unresolved.

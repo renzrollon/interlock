@@ -270,6 +270,24 @@ test('the character cap is cited, never restated as a number', () => {
   assert.doesNotMatch(prompt, /2000/)
 })
 
+test('the briefing says what a rejected packet does, and not what it used to do', () => {
+  // A packet over the cap is rejected and its task stays done. A briefing that
+  // still said "fails the task" would be an instruction nothing can check, read
+  // by every implementer in every run.
+  const forms = {
+    'single task': forTier(3),
+    'multi-task lane': laneOf(3),
+    'solo lane': laneOf(3, ['1.1', '1.3', '1.4'], { solo: true })
+  }
+  for (const [form, input] of Object.entries(forms)) {
+    const prompt = assembleFromSource(input)
+    assert.match(prompt, /is rejected\s+whole/, `${form}: the packet is rejected whole`)
+    assert.match(prompt, /never truncated for you/, `${form}: and never truncated`)
+    assert.match(prompt, /no usable\s+report/, `${form}: and the task is recorded as having filed no usable report`)
+    assert.doesNotMatch(prompt, /fails the\s+task/, `${form}: the retired consequence is still stated`)
+  }
+})
+
 // --- the previous-wave block ----------------------------------------------
 
 const handoff = (over = {}) => ({
@@ -341,6 +359,32 @@ test('a previous-wave task that filed no usable report is named after the PREVIO
   assert.ok(
     prompt.indexOf('NO VALIDATED REPORT') > prompt.indexOf('PREVIOUS WAVE'),
     'the rejected-report block follows the PREVIOUS WAVE block'
+  )
+})
+
+test('paths a rejected report left out are counted in the briefing, never dropped in silence', () => {
+  const line = entry =>
+    assembleFromSource({ ...forTier(3), previousHandoffs: [], previousRejectedReports: [entry] })
+      .split('\n')
+      .find(l => l.startsWith('- [1.2] rejected:'))
+  const base = { taskId: '1.2', reason: 'next must be a non-empty string' }
+
+  assert.equal(
+    line({ ...base, paths: ['src/a.cs', 'src/b.cs'] }),
+    '- [1.2] rejected: next must be a non-empty string — reported touching: src/a.cs, src/b.cs',
+    'a list that fits renders exactly as it did'
+  )
+  assert.equal(
+    line({ ...base, paths: ['src/a.cs'], pathsOmitted: 3 }),
+    '- [1.2] rejected: next must be a non-empty string — reported touching: src/a.cs (+3 more not listed)'
+  )
+  assert.equal(
+    line({ ...base, paths: [], pathsOmitted: 2 }),
+    '- [1.2] rejected: next must be a non-empty string — reported 2 path(s), none listed'
+  )
+  assert.equal(
+    line({ ...base, paths: [] }),
+    '- [1.2] rejected: next must be a non-empty string — reported no paths'
   )
 })
 

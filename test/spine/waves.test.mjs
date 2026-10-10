@@ -12,6 +12,7 @@ import {
   recordVerifyResult,
   applyReplan,
   formatRunState,
+  runRejectedReports,
   HALT_TASK_FAILURES,
   HALT_INTER_WAVE_VERIFY,
   SKIP_VERIFY_DOCS,
@@ -1586,8 +1587,8 @@ function simplePlan(groups = [1, 2], testTasks = 0, opts) {
 }
 
 /**
- * A valid handoff for one task. Claiming ok:true without one fails the task,
- * so every successful result in these tests carries a packet.
+ * A valid handoff for one task. Claiming ok:true without one gets the report
+ * rejected, so every successful result in these tests carries a packet.
  */
 const handoffFor = (id, over = {}) => ({
   schema: HANDOFF_SCHEMA,
@@ -2007,6 +2008,101 @@ test('the next wave is told which tasks filed no usable report, and what they sa
     false,
     'wave 3 is told about wave 2 only, and wave 2 rejected nothing'
   )
+})
+
+// A rejected report must not hand its reader more than a valid packet may. The
+// reason is stored short and on one line; the paths are the task's own
+// unvalidated strings, so they are listed only up to the published handoff cap
+// and the rest are counted.
+test('a rejected report\'s reason is stored short and single-line, whatever the packet held', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  const body = `PASTED-FILE-BODY\n${'y'.repeat(6000)}`
+  const after = recordBatchResult(start, {
+    tasks: [{ id, ok: true, handoff: handoffFor(id, { evidence: [body] }) }]
+  })
+  const { reason } = after.rejectedReports[0]
+  assert.match(reason, /is not a locator/)
+  assert.ok(reason.length <= 300, `the stored reason is ${reason.length} characters`)
+  assert.ok(!/[\r\n]/.test(reason), 'a newline in the packet must not reach the stored reason')
+  assert.ok(!JSON.stringify(after).includes('y'.repeat(400)), 'the pasted body is not in the run state')
+})
+
+test('the paths a rejected report hands on stop at the handoff cap, and the rest are counted', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  const longPath = n => `src/${String(n).padStart(4, '0')}/${'p'.repeat(90)}.cs`
+  const claimed = [
+    ...Array.from({ length: 40 }, (_, i) => longPath(i)),
+    'a prose\nparagraph passed off as a path'
+  ]
+  const wave1 = recordBatchResult(start, {
+    tasks: [
+      { id, ok: true, filesChanged: claimed },
+      ...stepTasks(nextStep(start)).slice(1).map(t => okTask(t.id))
+    ]
+  })
+  assert.deepEqual(wave1.reportedPaths[id], claimed, 'what the task reported is still recorded whole')
+
+  const step2 = nextStep(recordVerifyResult(wave1, { ok: true }))
+  const [entry] = step2.previousRejectedReports
+  assert.equal(entry.taskId, id)
+  assert.ok(entry.paths.length > 0 && entry.paths.length < 40, 'some paths are listed, not all')
+  assert.ok(
+    entry.paths.join('').length <= LIMITS.maxHandoffChars,
+    'the listed paths fit the cap a valid packet is held to'
+  )
+  assert.deepEqual(entry.paths, claimed.slice(0, entry.paths.length), 'a prefix of what was reported')
+  assert.ok(entry.paths.every(p => !/[\r\n]/.test(p)), 'no multi-line string is listed as a path')
+  assert.equal(entry.pathsOmitted, claimed.length - entry.paths.length, 'and the rest are counted')
+})
+
+test('a rejected report whose paths all fit carries no omitted count', () => {
+  const start = createRunState(simplePlan([1, 2]))
+  const id = stepTasks(nextStep(start))[0].id
+  const wave1 = recordBatchResult(start, {
+    tasks: [
+      { id, ok: true, filesChanged: ['src/a.cs', 'src/b.cs'] },
+      ...stepTasks(nextStep(start)).slice(1).map(t => okTask(t.id))
+    ]
+  })
+  const [entry] = nextStep(recordVerifyResult(wave1, { ok: true })).previousRejectedReports
+  assert.deepEqual(entry.paths, ['src/a.cs', 'src/b.cs'])
+  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'pathsOmitted'), false)
+})
+
+test('runRejectedReports names every rejected report of the run, not only the previous wave\'s', () => {
+  const start = createRunState(simplePlan([1, 2, 3]))
+  assert.deepEqual(runRejectedReports(start), [], 'a run that rejected nothing names nothing')
+  assert.deepEqual(runRejectedReports(null), [])
+
+  const first = stepTasks(nextStep(start))
+  const wave1 = recordBatchResult(start, {
+    tasks: [
+      { id: first[0].id, ok: true, filesChanged: ['src/a.cs'] },
+      ...first.slice(1).map(t => okTask(t.id))
+    ]
+  })
+  const atWave2 = recordVerifyResult(wave1, { ok: true })
+  const wave2 = recordBatchResult(atWave2, allOk(nextStep(atWave2)))
+  const atWave3 = recordVerifyResult(wave2, { ok: true })
+  const last = stepTasks(nextStep(atWave3))
+  const done = recordBatchResult(atWave3, {
+    tasks: [
+      { id: last[0].id, ok: true, filesChanged: ['src/z.cs'] },
+      ...last.slice(1).map(t => okTask(t.id))
+    ]
+  })
+
+  assert.equal(nextStep(done).action, 'done', 'fixture: the last wave has no later wave to be told')
+  assert.deepEqual(
+    runRejectedReports(done).map(r => [r.taskId, r.paths]),
+    [
+      [first[0].id, ['src/a.cs']],
+      [last[0].id, ['src/z.cs']]
+    ]
+  )
+  for (const r of runRejectedReports(done)) assert.match(r.reason, /handoff must be an object/)
 })
 
 test('formatRunState names rejected reports only when there are some', () => {

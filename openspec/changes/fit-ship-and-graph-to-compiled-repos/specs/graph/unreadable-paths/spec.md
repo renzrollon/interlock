@@ -124,3 +124,32 @@ When nothing was skipped, the manifest's record SHALL be empty and the report SH
 - **GIVEN** a build that skipped `src/b.mjs`, after which `src/b.mjs` allows reading
 - **WHEN** `interlock-graph update .` runs
 - **THEN** it rebuilds, `src/b.mjs` is a file node, and no line names it as skipped
+
+### Requirement: A query SHALL say when its graph was built past skipped paths
+
+`interlock-graph query`, `consumers`, `path`, `explain` and `context` SHALL print one line on standard error, carrying a fixed marker and the number of skipped paths, whenever the graph they answer from was built past paths it could not read. The count SHALL come from the skips recorded beside the graph that is actually read, so a query served from another checkout's graph reports that graph's skips. The line SHALL say that no result for a skipped path is evidence about it, and SHALL say where the paths are listed.
+
+The line SHALL NOT change the command's standard output or its exit code. A query against a graph built with no skips, against one whose record carries no skips because it predates the record, and against one whose record cannot be read SHALL print nothing new and SHALL answer as it did before this requirement existed.
+
+A build names each path it skips, once, to whoever ran the build. A query runs later, often in another session and by an agent that never saw the build, and answers from the graph alone. Because an indexing command no longer fails on an unreadable path, the exit code of the build does not tell that reader the graph is partial; without this line, "no consumers" for a file the build never read is indistinguishable from "no consumers".
+
+#### Scenario: Happy path — every query command names the partial graph
+
+- **GIVEN** a graph whose record beside it lists two skipped paths
+- **WHEN** `query`, `consumers`, `path`, `explain` and `context` each run against it
+- **THEN** each prints exactly one line on standard error containing `GRAPH PARTIAL` and the count 2
+- **AND** none prints that line on standard output
+
+#### Scenario: Failure — a record that cannot be read does not break a query
+
+- **GIVEN** a graph beside a record that is not valid JSON
+- **WHEN** `interlock-graph consumers <symbol>` runs
+- **THEN** the command answers and exits as it would have before this requirement existed
+- **AND** it prints no `GRAPH PARTIAL` line
+
+#### Scenario: Edge case — a whole graph, and one from an earlier version, print nothing new
+
+- **GIVEN** one graph built with no skips and one whose record was written before skips were recorded
+- **WHEN** each query command runs against each
+- **THEN** standard error holds no `GRAPH PARTIAL` line
+- **AND** standard output and the exit code are identical to those of the same command against a graph whose record lists a skip

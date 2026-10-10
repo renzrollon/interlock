@@ -18,7 +18,7 @@ See `proposal.md` — Why, for the four issues and their reproductions. This sec
 - A C# + Bicep repository gets edges for its project boundaries, types, namespace imports, tests and module wiring, so `consumers`, `path` and `explain` answer for its code.
 - A finished task with a malformed report is recorded as finished, and the run says the report was rejected everywhere it would have said the task failed.
 - The checkpoints the per-run cap already allows run in full on a repository whose suite is slower than the published budget.
-- No existing pin moves except the seven that assert the retired handoff outcome.
+- No existing pin moves except the seven that assert the retired handoff outcome. (Amended by Decision 23: the implementer fixtures also move, by one sentence, deliberately.)
 
 **Non-Goals:**
 
@@ -269,6 +269,62 @@ VERIFY BUDGET AT THE PUBLISHED FLOOR: the test profile carries no unit.timeout_m
 1. With the budget fitted to the suite, the three checkpoints the cap allows run in full. The reported defect is closed without narrowing any checkpoint.
 2. A checkpoint scoped to the tests a wave *touched* would not have caught the regression the issue itself reports: two existing count-pinning tests, broken by the change, that the wave did not edit. Only the full suite, or selection by what the wave's files are *consumed by*, catches those.
 3. Selection by consumers needs the C# test nodes and reference edges this change adds, and `single_file` is prose in `TEST-PROFILE.md` ("path implied, or template"), not a contract the planner can substitute into. `dotnet test` takes a project, not a file. Both have to be settled before the planner may build a command, and `planVerification` never synthesizes one.
+
+### Review follow-ups
+
+A review of the first commit of this change found five places where it did not meet its own specs or told a reader something false. They are decided here rather than folded into the decisions above, so the record shows what the run shipped and what was corrected after it.
+
+**Decision 20 — A rejected report hands on no more than a valid packet may.**
+
+Decision 12 said the next wave's notice "carries no text of the rejected packet". Two paths broke that. `validateHandoff` quoted the offending value whole in four of its messages (a wrong `schema`, `taskId` or `status`, and an evidence entry that is not a locator), one of them unescaped; and the notice listed every string the task reported as a path, with no check and no limit. The banner path was already bounded by `shortReason`; the run state and the briefing were not. A task whose packet was rejected for being too long could therefore hand the next wave more text than a task whose packet was accepted.
+
+- The validator quotes an agent-supplied value JSON-escaped and clipped, so the reason is one line and a short diagnostic. A short value is quoted exactly as before.
+- The reason is bounded where it is stored (`recordBatchResult`), through the same `shortReason` the banner uses, so every reader of `rejectedReports` holds the same short reason.
+- The paths are listed only while each is a single line and the list fits `LIMITS.maxHandoffChars`, read at use. What is left out is counted as `pathsOmitted` and the briefing says `(+N more not listed)`. The key is present only when something was left out, so a report that fits is the step and the prompt it always was. `reportedPaths` on the run state is not touched: it is the evidence audit's input and stays whole.
+
+*Alternative.* Removing the quoted value from the reason entirely. The issue's own banner example quotes the malformed locator, and that quote is what tells a reader which agent habit to fix; a clipped quote keeps it.
+
+**Decision 21 — The banner says who was told, and the review is told.**
+
+`rejectedBanner` ended every banner with "the next wave is told these tasks filed no usable report". On the last wave there is no next wave, and no later stage received the ids or the paths. The clause is now chosen from the run's own shape, at the one place a batch is recorded:
+
+| A later wave exists | Run | Clause |
+|---|---|---|
+| yes | any | the next wave is told (unchanged) |
+| no | `--review` / `--strict` | no later wave remains; the review is told instead; final verification still gates the commit |
+| no | default | no later wave remains; final verification is the only check on this work |
+| no | `--apply-only` | no later wave remains and the run ends here; nothing in this run checks this work |
+
+`reviewStep` hands `assembleReviewPrompt` every rejected report of the run (`runRejectedReports`), bounded as in Decision 20, in an `UNVALIDATED REPORTS` block framed as quoted run data the way the policy block is: where to look, not a finding and not an instruction. The whole run's, not the last wave's alone, because the review reads the whole diff. An empty list renders nothing, so every existing review prompt is byte-identical.
+
+A rejected report on the last wave still does not stop the commit. Decision 10's argument holds there as it does anywhere: the packet's shape is not evidence about the work, and final verification gates the commit. What changes is that the run no longer claims a reader it does not have. *Alternative considered and declined:* halting before the commit on a last-wave rejection, which would reintroduce issue #9's halt at exactly one wave.
+
+**Decision 22 — The floor banner belongs to the reduction, not to an empty plan.**
+
+Decision 17 says the banner is raised "when a checkpoint is reduced". The implementation raised it only where the plan came out empty. Typecheck is the one check that survives a spent budget, so a profile that names a typecheck command never produces an empty plan: its checkpoint is cut to typecheck alone, the suite is dropped, and the banner never fired. Its test used a profile with no typecheck command. The condition is now "a check was skipped for the spent budget", evaluated before the branch on an empty plan, and raised in both branches, still once per run.
+
+**Decision 23 — The briefing's over-cap sentence is corrected.**
+
+The implementer briefing said a packet over the cap "fails the task". After Decision 10 that is false. Decision 13 left the briefing alone because `implementer-prompts` required the single-task fixtures to stay unmodified, and that was the right call for adding a line; it is the wrong call for leaving a false sentence in every implementer's briefing. The sentence now says the packet is rejected whole, is never truncated, and leaves the task recorded as having filed no usable report. The 15 implementer fixtures and the 4 eval cases that quote the sentence change with it, and `implementer-prompts` is modified to say what the pin is for: drift, not the wording forever.
+
+*Cost, accepted.* Every implementer prompt changes by that sentence, so a Workflow run resumed across this upgrade re-runs lanes it had finished: the replay cache is keyed on the prompt.
+
+**Decision 24 — A query says when its graph is partial.**
+
+Decision 3 keeps the exit code at 0 on a skip, and the Non-Goals leave queries alone. That left a reader the change did not account for. `skills/bootstrap` branches on the exit code of `interlock-graph build` and had no branch for a partial graph; and a query — run later, often by an agent that never saw the build — answered from a partial graph in silence, which `GRAPH FROM MAIN CHECKOUT` already established is not how this CLI treats a degraded graph.
+
+- `query`, `consumers`, `path`, `explain` and `context` print one `GRAPH PARTIAL` line on stderr, with the count, from the manifest beside the graph actually read. stdout and the exit code do not move. A manifest with no skips, with no `skipped` key, or that cannot be parsed prints nothing: a query that never needed the manifest does not start failing on it.
+- `skills/bootstrap/SKILL.md` branches on `skipped=` in the summary line and on the nothing-readable notice, and carries `GRAPH PARTIAL` to its report.
+
+*Alternative declined.* A `--strict` flag making `build` and `update` exit non-zero on any skip. Nothing in the repository would pass it, and the summary line already carries the fact a script needs.
+
+**Decision 25 — This repository's own graph ignores its graph fixtures.**
+
+Indexing `.cs` made `test/graph/fixtures/mini-dotnet/` part of this repository's graph, and the OpenSpec overlay links any capitalised word of prose to a symbol of the same name. `Cache`, `Probe`, `Reading` and `Dashboard` are fixture type names and ordinary words in the specs: 86 spec-to-fixture edges, against 5 before. A root `.interlockignore` names `test/graph/fixtures/`. The tests copy fixtures to temp roots and are unaffected; the file is not in the published package. The overlay's matcher is unchanged.
+
+Also corrected, with no decision to take: `/interlock:fix-tests` now says the recorded `unit.timeout_ms` is whole milliseconds and an integer (a non-integer aborts verification planning, and a value written in seconds leaves the budget on the floor with the floor banner suppressed); the `record-batch` help, which still said a bad packet is "recorded as failed"; `docs/04`'s "roughly a minute"; and `ship/completion-gate`, whose failure scenario used a rejected packet as its example and had no delta here.
+
+**Left as designed.** The budget is the checkpoint cap times one suite run's allowance, with no headroom: typecheck, lint and a repair re-run are charged to it, so a late checkpoint can still drop to typecheck, and says so as `VERIFICATION SKIPPED`. Giving it headroom is a threshold decision and is not taken here.
 
 ## Risks / Trade-offs
 

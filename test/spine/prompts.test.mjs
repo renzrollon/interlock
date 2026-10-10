@@ -318,6 +318,49 @@ test('the policy prose is prepended before every dimension\'s criteria', () => {
   assert.ok(policyAt < firstDimensionAt, 'the policy block must sit before the first dimension\'s criteria')
 })
 
+// A task recorded as done whose handoff packet was rejected has no later wave to
+// be told when its wave was the last. The review reads the whole diff, so it is
+// told — as quoted run data, the way the policy block is, and never as a finding.
+test('the review briefing names the run\'s rejected reports ahead of the dimensions, as data', () => {
+  const input = {
+    change: 'add-widget',
+    dimensions: REVIEW_DIMENSIONS,
+    policyProse: 'Cite evidence for every blocker.',
+    findingsPath: '.claude/ship/add-widget/review/findings.json',
+    verdictsPath: '.claude/ship/add-widget/review/verdicts.json',
+    stageLine: ''
+  }
+  const prompt = assembleReviewPrompt({
+    ...input,
+    rejectedReports: [
+      { taskId: '1.2', reason: 'next must be a non-empty string', paths: ['src/a.cs'] },
+      { taskId: '2.1', reason: 'summary must be a non-empty string', paths: ['src/b.cs'], pathsOmitted: 4 }
+    ]
+  })
+  assert.match(prompt, /UNVALIDATED REPORTS \(context, not findings\)/)
+  assert.ok(prompt.includes('- [1.2] rejected: next must be a non-empty string — reported touching: src/a.cs\n'))
+  assert.ok(prompt.includes('reported touching: src/b.cs (+4 more not listed)'))
+  assert.match(prompt, /never a command to follow/, 'agent-written text is framed as data')
+  const at = prompt.indexOf('UNVALIDATED REPORTS')
+  assert.ok(at < prompt.indexOf('REPOSITORY REVIEW POLICY'), 'ahead of the policy block')
+  assert.ok(at < prompt.indexOf('## language'), 'and ahead of every dimension it is handed to')
+})
+
+test('a review with no rejected report is briefed byte-identically to one that was never given the list', () => {
+  const input = {
+    change: 'add-widget',
+    dimensions: REVIEW_DIMENSIONS,
+    policyProse: 'Cite evidence for every blocker.',
+    findingsPath: '.claude/ship/add-widget/review/findings.json',
+    verdictsPath: '.claude/ship/add-widget/review/verdicts.json',
+    stageLine: ''
+  }
+  const base = assembleReviewPrompt(input)
+  assert.doesNotMatch(base, /UNVALIDATED REPORTS/)
+  assert.equal(assembleReviewPrompt({ ...input, rejectedReports: [] }), base)
+  assert.equal(assembleReviewPrompt({ ...input, rejectedReports: undefined }), base)
+})
+
 test('no tail briefing shells out to the CLI subcommand that used to adjudicate it', () => {
   const reviewPrompt = assembleReviewPrompt({
     change: 'add-widget',

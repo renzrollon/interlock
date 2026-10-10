@@ -43,8 +43,10 @@ Four open issues, all filed from one field run on a .NET + Azure repository insi
 
 ### Modified Capabilities
 - `waves`: a rejected handoff packet no longer fails a task that reported success, and no longer counts toward the task-failure halt; the next wave is told which tasks filed no usable report; the per-task outcome report carries the rejection.
-- `ship-run`: a run's reported tallies carry rejected reports as their own count, distinct from failures.
+- `ship-run`: a run's reported tallies carry rejected reports as their own count, distinct from failures; the banner says truthfully who was told about a rejected report, and a reviewed run hands the review every one.
 - `verify`: the inter-wave verify budget is derived from the test profile, floored at the published constant, fixed at run start and reported.
+- `ship/completion-gate`: a task recorded as succeeded with a rejected report is marked complete, and the run says its report was rejected. (Added in the review follow-ups: the capability's failure scenario used a rejected packet as its example.)
+- `implementer-prompts`: the briefing says truthfully what a rejected packet does; the single-task fixtures change only by a deliberate edit to text every form shares. (Added in the review follow-ups.)
 
 ## Impact
 
@@ -53,5 +55,5 @@ Four open issues, all filed from one field run on a .NET + Azure repository insi
 - **Docs.** `docs/04-when-it-stops.md`, `docs/06-why-it-works.md`, `docs/07-cli-and-configuration.md`, `docs/10-agentic-workflow-ship-and-spec.md`, `CHANGELOG.md`.
 - **Recorded data.** `graph.json` gains node types `namespace` and `test` and relation `declares`; `manifest.json` gains `skipped`. The run state gains `rejectedReports`; a recorded wave row, the receipt and the outcome row gain `reportRejected`; the run manifest and receipt gain the derived verify budget. Every addition is optional on read, so a state, manifest or trajectory written before this change reads as it did.
 - **Behaviour a reader relied on.** A run that used to halt on rejected packets now continues to final verification and its commit. Final verification is unchanged and still gates the commit.
-- **Existing tests.** Seven cases pin the retired outcome (a bad packet fails its task) and are rewritten to pin the new one: six in the red wave, and `test/workflows.test.mjs:2457`, which the sweep missed, by hand after the run. No other existing pin moves: `planVerification`'s default budget, the implementer-prompt fixtures and the hooks-module allow-list are untouched.
+- **Existing tests.** Seven cases pin the retired outcome (a bad packet fails its task) and are rewritten to pin the new one: six in the red wave, and `test/workflows.test.mjs:2457`, which the sweep missed, by hand after the run. No other existing pin moves in the run itself: `planVerification`'s default budget and the hooks-module allow-list are untouched. The implementer-prompt fixtures were untouched by the run and are changed by one sentence in the review follow-ups (`design.md`, Decision 23), together with the four eval cases that quote it.
 - **Dependencies.** None added.

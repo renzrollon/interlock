@@ -68,9 +68,9 @@ function file(name, contents) {
 }
 
 /**
- * A task result claiming success. `record-batch` fails a task that claims
- * ok:true without a valid handoff, so the packet is part of the fixture, not
- * an optional extra.
+ * A task result claiming success. `record-batch` rejects the report of a task
+ * that claims ok:true without a valid handoff, so the packet is part of the
+ * fixture, not an optional extra.
  */
 const okTask = id => ({
   id,
@@ -1469,10 +1469,11 @@ test('record-batch --write-state writes the new state and stdout is the next ste
 })
 
 test('record-batch --write-state reports the per-task outcomes it just recorded', () => {
-  // The verdict and the claim can differ — an invalid packet fails a task that
-  // claimed success — and a caller that receives only the next action has no
-  // way to learn which. Without this field a host ticks and tallies from the
-  // claim, which is how a task ships unimplemented behind a `- [x]`.
+  // What was recorded is more than the claim — an invalid packet leaves a task
+  // that claimed success done with its report rejected — and a caller that
+  // receives only the next action has no way to learn which. Without this field
+  // a host ticks and tallies from the claim, which is how a task ships
+  // unimplemented behind a `- [x]`.
   const plan = runJson(['waves', '--classified', paths.classified])
   const state0 = runJson(['wave-state', 'create', '--plan', file('plan-ro.json', plan)])
   const bad = {
