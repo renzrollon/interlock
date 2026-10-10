@@ -14,7 +14,7 @@ metadata:
 
 Build and query a **local, deterministic** codebase knowledge graph. No vector store, no external service, no network.
 
-**What gets indexed:** JS/TS, Python (`.py`/`.pyi`), shell (`.sh`/`.bash`), and curated small config JSON (`package.json`, `tsconfig*.json` — not lockfiles). Markdown stays on the bounded-retrieval path (`DOCS_DIGEST.md` / `context` / `docs`) plus the OpenSpec overlay — never dump every `*.md` into `graph.json`.
+**What gets indexed:** JS/TS, Python (`.py`/`.pyi`), shell (`.sh`/`.bash`), C# (`.cs` — namespaces, `using`, type declarations, test methods, and type references resolved through `using` scope), .NET project files (`<ProjectReference>` edges between `.csproj`/`.vbproj`/`.fsproj`), and curated small config JSON (`package.json`, `tsconfig*.json` — not lockfiles). Markdown stays on the bounded-retrieval path (`DOCS_DIGEST.md` / `context` / `docs`) plus the OpenSpec overlay — never dump every `*.md` into `graph.json`.
 
 Languages outside that set (Go, Rust, Java, Ruby) are **not** structurally indexed: you still get the docs and OpenSpec overlays, but no import/symbol edges. Say so plainly rather than implying the graph is complete.
 

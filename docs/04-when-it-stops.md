@@ -251,7 +251,7 @@ The Workflow driver used to decide this itself, from a `test -f` in its validate
 
 If the reason is `never built`, the fix is to run `/interlock:bootstrap` once.
 
-The most common cause is language coverage. **Structural indexing — import and symbol edges — covers JavaScript/TypeScript, Python, and shell only.** A Go, Rust, Java, or Ruby repo will produce little or no structural graph, and that is expected. Those projects still get docs and OpenSpec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph.
+The most common cause is language coverage. **Structural indexing — import and symbol edges — covers JavaScript/TypeScript, Python, shell, and C# (with .NET project references) only.** A Go, Rust, Java, or Ruby repo will produce little or no structural graph, and that is expected. Those projects still get docs and OpenSpec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph.
 
 If your repo *is* JS/TS, Python, or shell and the graph is still empty, build it directly and read the error:
 

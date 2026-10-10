@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## Unreleased
+
+### Added
+
+- **The graph indexes C# and .NET project files.** On a .NET repo the graph used to carry only the docs and OpenSpec overlays, so `consumers`, `path` and `explain` returned nothing for the code, and explorers and implementers fell back to grep (#8). The pass is line-oriented and dependency-free:
+  - **`.csproj` / `.vbproj` / `.fsproj`:** each `<ProjectReference>` is an `imports` edge to the referenced project. A reference to a project that does not exist stays an `unresolved` node, so a dangling reference is visible.
+  - **`.cs`:** `class`, `record`, `struct`, `interface` and `enum` declarations are symbols, and `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]` and `[TestCase]` methods are symbols with `kind: "test"`. Each `namespace` is a `namespace:` node. A `using` is an `imports` edge to that node, or to `external:` when no file declares the namespace.
+  - **Type references:** a mention of a repo-declared type is a `references` edge when the declaring namespace is in scope: the file's `using` directives, its project's `global using` directives, or its own enclosing namespaces. `consumers <Type>` therefore lists the files, tests included, that use it. Comments and string literals are blanked first, so nothing inside them counts.
+  - **Build output:** `bin/` and `obj/` are skipped beside a .NET project, and `*.g.cs` files are skipped everywhere.
+- **`.gitignore` patterns with `**/` prefixes, root anchors (`/x`) and character classes (`[Bb]in/`) are honoured** by the graph walker. Before, they never matched, so `**/obj` indexed every build-output file.
+
+### Fixed
+
+- **`interlock-graph build` skips an unreadable file instead of aborting** (#7). A file the walker cannot read, such as a `.mcp.json` the Claude Code sandbox masks, is left out of the graph and named on its own `SKIPPED unreadable file: <path> (<code>)` line, and the build finishes. `update` does the same.
+- **The SessionStart preflight runs on Windows.** The hook executed the extensionless `bin/interlock` directly. Windows has no shebang, so every session there opened with `interlock preflight could not run: … ENOENT` and the doctor never ran. The bundled script now runs through the hook's own Node.
+
 ## 1.4.2 — 2026-10-10
 
 ### Fixed
