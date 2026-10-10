@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## Unreleased
+
+### Fixed
+
+- **`interlock-graph build` skips an unreadable file instead of aborting** (#7). A file the walker cannot read, such as a `.mcp.json` the Claude Code sandbox masks, is left out of the graph and named on its own `SKIPPED unreadable file: <path> (<code>)` line, and the build finishes. `update` does the same.
+
 ## 1.4.2 — 2026-10-10
 
 ### Fixed
