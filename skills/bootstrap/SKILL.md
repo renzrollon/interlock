@@ -46,7 +46,7 @@ fi
 
 **A graph failure is not a stop.** Bootstrap works without it — docs and OpenSpec indexing still happen — so print the banner, carry it to the final report, and continue with degraded expectations: the explorers grep instead of following edges, and they are slower for it.
 
-`nodes=0` is the ordinary case for a repo the graph doesn't structurally index (Go, Rust, Java, Ruby — structural indexing covers JavaScript/TypeScript, Python and shell). Say which of the two reasons applied rather than presenting either as a defect.
+`nodes=0` is the ordinary case for a repo the graph doesn't structurally index (Go, Rust, Java, Ruby — structural indexing covers JavaScript/TypeScript, Python, shell and C#). Say which of the two reasons applied rather than presenting either as a defect.
 
 When the build did produce a graph, **read `.claude/graph/GRAPH_REPORT.md` before spawning anything**. Its hub nodes and module boundaries tell the explorers where to look, so they don't rediscover the tree from scratch.
 
