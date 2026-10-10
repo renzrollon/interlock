@@ -1,0 +1,11 @@
+# Decisions — set-the-inter-wave-verify-budget-per-repo
+
+| id | question | class | resolution | evidence |
+|----|----------|-------|------------|----------|
+| D1 | Where does a per-repository budget live: an environment variable, a CLI flag on `run start`, or the test profile? | agent_resolved | The test profile, top-level `inter_wave_verify_budget_ms`. An environment variable can be set by anything in the run's process tree, and a flag on `run start` is chosen by the agent driving the run | issue #10 ask 3; openspec/specs/ship/cap-authority/spec.md; lib/run.mjs:2414-2418 (profile already located at start) |
+| D2 | Is the budget derived from `unit.timeout_ms` when the field is absent? | agent_resolved | No. `timeout_ms` is written routinely, and deriving from it would raise the budget for almost every repository that has a profile. It would also break a current pin | shared/TEST-PROFILE.md:70; test/spine/verify.test.mjs:22-34 and 465-466 |
+| D3 | What bounds a profile value? | agent_resolved | A new `LIMITS.interWaveVerifyBudgetCeilingMs` (1,800,000 ms). A larger value is clamped with a banner, not rejected. The value itself is the one number in this change a maintainer may prefer to set differently, and nothing else in the design depends on it | lib/limits.mjs:88-91; design.md D3 |
+| D4 | Can a run's budget change after `run start`? | agent_resolved | No. It is resolved once and recorded on the manifest. A manifest without the field uses the constant | lib/run.mjs:1796-1810 (profile re-read at every checkpoint today); design.md D5 |
+| D5 | Is scoping a checkpoint to the touched test projects part of this change? | agent_resolved | No. It needs a map from changed files to test files or test projects, and is named as a follow-up | issue #10 ask 2; proposal.md "Not done here" |
+| D6 | Does a malformed value fall back to the default? | agent_resolved | No. It is a profile error naming the field, as a non-integer `unit.timeout_ms` already is | lib/verify.mjs:158-159 |
+| D7 | Does `--budget-ms` on `interlock verify plan` still win, and is it clamped? | agent_resolved | It wins and is not clamped. It is a caller's explicit instruction on a standalone plan, and the ship loop never passes it | bin/interlock:2576-2577; openspec/specs/verify/spec.md "Inter-wave plan is scoped by changed paths and budget" |

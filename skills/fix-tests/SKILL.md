@@ -108,7 +108,7 @@ Run the full suite again, then assert against the baseline:
 
 ## 7. Persist
 
-- Refresh `.claude/testing/profile.json` (`updated`, `known_flaky`, `notes`) with anything learned about running tests. Preserve every key you did not resolve yourself.
+- Refresh `.claude/testing/profile.json` (`updated`, `known_flaky`, `notes`) with anything learned about running tests. Preserve every key you did not resolve yourself. `inter_wave_verify_budget_ms` is a person's setting that bounds ship's inter-wave checks: never write, raise or remove it, even when the suite runs slower than it allows.
 - Confirm the `## Testing` block is still a single idempotent pair of markers.
 - Write at most **3** `.claude/memory/failure-modes/<slug>.md` entries for genuinely recurring gotchas, with index lines in `.claude/memory/MEMORY.md`. One-off typos do not belong in memory.
 - Write `.claude/metrics/fix-tests-<YYYYMMDD-HHMMSS>.json` with the baseline, final counts, clusters, fixes applied, and anything unresolved.

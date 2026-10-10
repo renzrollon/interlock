@@ -60,6 +60,9 @@ the profile.
 }
 ```
 
+`inter_wave_verify_budget_ms` is absent from the example on purpose: it is
+optional, and a profile without it keeps the default.
+
 | Field | Meaning |
 |-------|---------|
 | `unit.command` / `e2e.command` | Full shell command that runs the suite (as in CI / `package.json`) |
@@ -76,6 +79,7 @@ the profile.
 | `lint.command` | Full shell command that lints the project (e.g. `npm run lint`). `null` = none found; the step is skipped with a reason, never guessed |
 | `known_flaky` | Paths or test-name patterns that flip on re-run (recorded, not "fixed") |
 | `notes` | Short freeform caveats (≤5 lines total) |
+| `inter_wave_verify_budget_ms` | Optional, top level, **set by a person** — `/interlock:fix-tests` never writes it. Replaces the default inter-wave verify budget for every `/interlock:ship` run in this repository. The budget covers all inter-wave checks of one run together. A value above the ceiling `interlock limits` prints is clamped to it, with a banner. A value that is not a positive integer is a profile error. The run reads it once, at `run start`, so an edit mid-run applies to the next run only. Pick a few full inter-wave checks' worth (typecheck + unit + lint) of what a real run measured, not a guess |
 
 `e2e.enabled` defaults to `false`. The skill never runs e2e unless the user
 passes `--e2e` **and** `e2e.command` is set.

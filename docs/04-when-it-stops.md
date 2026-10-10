@@ -615,6 +615,14 @@ The inter-wave verification budget (`interlock limits`) is meant to count only t
 
 This banner means at least one planned step has no such timing, usually because the agent ran the command directly instead of through the wrapper. The judge then falls back to the time between the checkpoint's dispatch and its judgement. That interval also counts the relays and the verify agent's own turns, so the budget runs out early and later checkpoints degrade to typecheck only (see [`VERIFICATION SKIPPED`](#verification-skipped)). The banner names the steps with no timing and the milliseconds it charged instead. On a run that repeats it, check whether the verify agent is following its briefing.
 
+### `VERIFY BUDGET FROM PROFILE`
+
+The repository's test profile sets its own inter-wave verify budget (`inter_wave_verify_budget_ms` in `.claude/testing/profile.json`), and this run uses that budget instead of the default `interlock limits` prints. `run start` raises the banner and repeats it in the close summary. It is information, not a fault: the run fixed the number at start, and editing the profile now changes the next run, not this one. When checkpoints of a run still skip with `verify-budget-exceeded`, the setting is lower than what the checks take: compare it with the per-step timings in `.claude/ship/verify-timings.jsonl` and raise it by hand. See `shared/TEST-PROFILE.md`.
+
+### `VERIFY BUDGET CLAMPED`
+
+The profile's `inter_wave_verify_budget_ms` is above the ceiling `interlock limits` prints, so this run uses the ceiling. The banner names both numbers. The run carries on. Lower the value in the profile to silence it. If the checks really take longer than the ceiling allows, a checkpoint scoped to fewer tests will help more than a larger number.
+
 ### `E2E FAILED (non-blocking by policy)`
 
 The end-to-end suite ran and went red, and the commit happened anyway. This is intentional: `ship` reports e2e failures and never repairs them. E2E failures are frequently environmental, and auto-fixing them is exactly how a real regression gets papered over.

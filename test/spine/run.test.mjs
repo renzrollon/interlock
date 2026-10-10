@@ -2782,6 +2782,109 @@ test('the inter-wave verify budget is measured across the round trip and then bo
   }
 })
 
+// --- the per-repository verify budget, fixed at run start (issue #10) -------
+//
+// The profile may set the inter-wave budget; `run start` resolves it once and
+// the manifest carries it. Every later checkpoint reads the manifest, so a
+// profile edited mid-run — by an agent or a person — cannot move the budget of
+// the run in flight.
+
+const budgetProfile = budgetMs => ({
+  version: 1,
+  inter_wave_verify_budget_ms: budgetMs,
+  unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+})
+
+/** `verifiableRepo`, with a profile that sets its own inter-wave budget. */
+function budgetRepo(budgetMs) {
+  const ids = THREE_GROUPS.tasks.map(t => t.id)
+  const { root, change } = repo('add-thing', {
+    tasks: `# Tasks\n\n${ids.map(id => `- [ ] ${id} Edit ${srcOf(id)}`).join('\n')}\n`
+  })
+  file(root, '.claude/testing/profile.json', budgetProfile(budgetMs))
+  const started = run(root, ['run', 'start', '--change', change, '--mode', 'waves']).step
+  file(root, '.claude/ship/classified.json', THREE_GROUPS)
+  return { root, change, started, batch: run(root, [...started.then.argv]).step }
+}
+
+const interWavePlanOf = root =>
+  JSON.parse(readFileSync(join(root, '.claude/ship/vplan-inter-wave.json'), 'utf8'))
+
+test('run start records the profile budget on the manifest and says so', () => {
+  const { root, started } = budgetRepo(300000)
+  try {
+    const manifest = manifestOf(root)
+    assert.equal(manifest.verifyBudgetMs, 300000)
+    assert.equal(manifest.verifyBudgetSource, 'profile')
+    assert.ok(
+      (started.banners || []).some(b => b.startsWith('VERIFY BUDGET FROM PROFILE:')),
+      `a budget that is not the default is spoken; got ${JSON.stringify(started.banners)}`
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a profile edited mid-run does not move the budget of the run in flight', () => {
+  const { root, batch } = budgetRepo(300000)
+  try {
+    file(root, '.claude/testing/profile.json', budgetProfile(LIMITS.interWaveVerifyBudgetCeilingMs))
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(interWavePlanOf(root).budgetMs, 300000, 'the checkpoint reads the manifest, not the profile')
+
+    // Spend twice the published default: under the run's own 300 s budget, the
+    // next checkpoint must still plan the suite.
+    const dispatched = manifestOf(root)
+    file(root, '.claude/ship/run.json', {
+      ...dispatched,
+      verifyStartedAt: new Date(Date.now() - LIMITS.interWaveVerifyBudgetMs * 2).toISOString()
+    })
+    const next = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    const second = completeBatch(root, next)
+    assert.equal(second.action, 'verify')
+    const plan = interWavePlanOf(root)
+    assert.equal(plan.budgetMs, 300000)
+    assert.equal(plan.budgetExceeded, false)
+    assert.ok(plan.steps.some(s => s.kind === 'unit'), '120 s of a 300 s budget still runs the suite')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a profile budget above the ceiling is clamped, recorded and said', () => {
+  const ceiling = LIMITS.interWaveVerifyBudgetCeilingMs
+  const { root, started } = budgetRepo(ceiling * 4)
+  try {
+    const manifest = manifestOf(root)
+    assert.equal(manifest.verifyBudgetMs, ceiling)
+    assert.equal(manifest.verifyBudgetSource, 'profile-clamped')
+    assert.ok(
+      (started.banners || []).some(b => b.startsWith('VERIFY BUDGET CLAMPED:')),
+      `a clamped budget is spoken; got ${JSON.stringify(started.banners)}`
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest without a recorded budget plans against the published default', () => {
+  const { root, batch } = budgetRepo(300000)
+  try {
+    const manifest = manifestOf(root)
+    delete manifest.verifyBudgetMs
+    delete manifest.verifyBudgetSource
+    file(root, '.claude/ship/run.json', manifest)
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(interWavePlanOf(root).budgetMs, LIMITS.interWaveVerifyBudgetMs)
+  } finally {
+    cleanup(root)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // The TDD task shape, end to end through the real binary.
 //

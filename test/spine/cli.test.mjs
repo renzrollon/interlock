@@ -539,6 +539,28 @@ test('verify plan --context inter-wave omits e2e and coverage', () => {
   assert.ok(plan.steps.every(s => s.kind !== 'coverage'))
 })
 
+test('verify plan reads the per-repository budget from the profile', () => {
+  const profile = file('budget-profile.json', JSON.stringify({
+    version: 1,
+    inter_wave_verify_budget_ms: 300000,
+    unit: { command: 'npm test', cwd: '.' }
+  }))
+  const plan = runJson([
+    'verify', 'plan', '--profile', profile, '--context', 'inter-wave', '--elapsed-ms', '120000'
+  ])
+  assert.equal(plan.budgetMs, 300000)
+  assert.equal(plan.budgetExceeded, false)
+  assert.ok(plan.steps.some(s => s.kind === 'unit'))
+})
+
+test('limits prints the ceiling a profile may ask for', () => {
+  const text = run(['limits'])
+  assert.equal(text.code, 0)
+  assert.match(text.stdout, /inter-wave verify budget ceiling \(profile\)/)
+  const out = runJson(['limits'])
+  assert.ok(Number.isInteger(out.limits.interWaveVerifyBudgetCeilingMs))
+})
+
 test('verify plan without --profile or --no-profile says which it wanted', () => {
   const r = run(['verify', 'plan'])
   assert.notEqual(r.code, 0)
