@@ -459,6 +459,24 @@ test('fix-tests resolves the typecheck and lint commands, the only supplier a sh
   }
 })
 
+test('fix-tests never writes the per-repository inter-wave verify budget', () => {
+  // `inter_wave_verify_budget_ms` bounds ship's inter-wave checks, and a ship
+  // run's own final step can refresh the profile. A skill that "helpfully"
+  // raised it would be a model setting its own cap — the thing a profile field
+  // was chosen over an environment variable to prevent. The same class as the
+  // `--metrics` defect: an instruction nobody asserts silently stops running.
+  // Tokens, not sentences.
+  const text = readFileSync(join(SKILLS_DIR, 'fix-tests', 'SKILL.md'), 'utf8')
+  assert.ok(text.includes('inter_wave_verify_budget_ms'), 'fix-tests/SKILL.md no longer names the budget field')
+  assert.match(
+    text,
+    /(?:never|do not|must not)[^.]{0,80}inter_wave_verify_budget_ms|inter_wave_verify_budget_ms[^.]{0,80}(?:never|not)/i,
+    'fix-tests/SKILL.md must forbid writing inter_wave_verify_budget_ms'
+  )
+  const contract = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
+  assert.ok(contract.includes('inter_wave_verify_budget_ms'), 'shared/TEST-PROFILE.md no longer defines the field')
+})
+
 test('fix-tests mirrors into an existing .claude/CLAUDE.md, never recreating a root one', () => {
   // A plugin repository keeps its instructions in `.claude/CLAUDE.md`, because
   // `claude plugin validate --strict` rejects a `CLAUDE.md` at the plugin root.

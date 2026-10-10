@@ -18,6 +18,10 @@ import {
   foldCheckTimings
 } from '../../lib/verify.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
+// Read through the namespace, not a named import: a named import of an export
+// that does not exist yet fails the whole file at link time, and the budget
+// tests below must fail on their own rather than take every other test down.
+import * as verifyModule from '../../lib/verify.mjs'
 
 const profile = (over = {}) => ({
   version: 1,
@@ -469,6 +473,69 @@ test('the budget comes from LIMITS, not from a hardcoded number', () => {
 
   const overridden = planVerification(profile(), { elapsedMs: 10, budgetMs: 5 })
   assert.equal(overridden.budgetExceeded, true)
+})
+
+// --- the per-repository verify budget ------------------------------------------
+//
+// Issue #10: one 60 s constant cannot fit a ten-second `node --test` suite and a
+// two-minute `dotnet test` solution at once. A repository sets its own budget in
+// the profile; the ceiling it may ask for stays in LIMITS. `unit.timeout_ms` is
+// deliberately NOT the budget — `profile()` carries 120000 and must keep the
+// default, or every repository with a profile would quietly get a looser cap.
+
+test('the budget resolves from the profile, defaults to LIMITS, and is clamped to the ceiling', () => {
+  const { resolveVerifyBudget } = verifyModule
+  assert.equal(typeof resolveVerifyBudget, 'function', 'lib/verify.mjs must export resolveVerifyBudget')
+  const fallback = { budgetMs: LIMITS.interWaveVerifyBudgetMs, source: 'limits', requestedMs: null }
+  assert.deepEqual(resolveVerifyBudget(null), fallback)
+  assert.deepEqual(resolveVerifyBudget(profile()), fallback, 'unit.timeout_ms is not the budget')
+
+  assert.deepEqual(resolveVerifyBudget(profile({ inter_wave_verify_budget_ms: 360000 })), {
+    budgetMs: 360000,
+    source: 'profile',
+    requestedMs: 360000
+  })
+
+  const ceiling = LIMITS.interWaveVerifyBudgetCeilingMs
+  assert.ok(Number.isInteger(ceiling) && ceiling > LIMITS.interWaveVerifyBudgetMs, 'the ceiling lives in LIMITS')
+  assert.deepEqual(resolveVerifyBudget(profile({ inter_wave_verify_budget_ms: ceiling })), {
+    budgetMs: ceiling,
+    source: 'profile',
+    requestedMs: ceiling
+  })
+  assert.deepEqual(resolveVerifyBudget(profile({ inter_wave_verify_budget_ms: ceiling + 1 })), {
+    budgetMs: ceiling,
+    source: 'profile-clamped',
+    requestedMs: ceiling + 1
+  })
+})
+
+test('an inter-wave plan compares against the profile budget, and an explicit budgetMs still wins', () => {
+  const slow = profile({ inter_wave_verify_budget_ms: 360000 })
+  const plan = planVerification(slow, { context: 'inter-wave', elapsedMs: 120000 })
+  assert.equal(plan.budgetMs, 360000)
+  assert.equal(plan.budgetSource, 'profile')
+  assert.equal(plan.budgetExceeded, false)
+  assert.ok(stepFor(plan, 'unit'), '120 s spent of a 360 s budget still runs the suite')
+
+  const caller = planVerification(slow, { context: 'inter-wave', budgetMs: 1000, elapsedMs: 1000 })
+  assert.equal(caller.budgetMs, 1000)
+  assert.equal(caller.budgetSource, 'caller')
+  assert.equal(skipFor(caller, 'unit').reason, SKIP_REASONS.BUDGET_EXCEEDED)
+
+  assert.equal(planVerification(profile(), {}).budgetSource, 'limits')
+  const docs = planVerification(slow, { context: 'inter-wave', changed: ['docs/a.md'] })
+  assert.equal(docs.budgetSource, 'profile', 'the docs-only return carries the source too')
+})
+
+test('a malformed per-repository budget is a profile error, never the default', () => {
+  for (const bad of ['5m', 0, -1, 1.5]) {
+    assert.throws(
+      () => planVerification(profile({ inter_wave_verify_budget_ms: bad }), {}),
+      /inter_wave_verify_budget_ms/,
+      `${JSON.stringify(bad)} must be rejected with the field named`
+    )
+  }
 })
 
 test('docs-only --changed skips every kind', () => {

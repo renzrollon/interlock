@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## Unreleased
+
+### Added
+
+- **A repository can set its own inter-wave verify budget (#10).** The budget is one per run, shared by every inter-wave check, and was a single constant. A compiled solution could spend it on its first checkpoint: `dotnet build` alone takes most of it. Every later checkpoint then ran typecheck only, and a defect between two waves reached the end of the run unchecked.
+  - **The setting:** `inter_wave_verify_budget_ms` in `.claude/testing/profile.json` replaces the default for that repository.
+  - **The ceiling:** `LIMITS.interWaveVerifyBudgetCeilingMs` bounds the value and is printed by `interlock limits`. A larger value is clamped, with a `VERIFY BUDGET CLAMPED` banner.
+  - **Fixed at start:** `run start` resolves the budget once and records it on the manifest, so editing the profile mid-run does not move a run's budget. A non-default budget is announced with `VERIFY BUDGET FROM PROFILE`.
+  - **Malformed values:** a value that is not a positive integer is a profile error, never the default.
+  - **Who sets it:** a person. `/interlock:fix-tests` never writes the field.
+  - **`interlock verify plan`** reads it from `--profile` when `--budget-ms` is absent.
+  - **Unchanged:** a repository without the field behaves as before, and `unit.timeout_ms` does not affect the budget.
+
 ## 1.4.2 — 2026-10-10
 
 ### Fixed

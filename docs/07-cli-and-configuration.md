@@ -181,6 +181,17 @@ The two inputs a fresh worktree lacks are read through, never copied. `run start
 
 ---
 
+### A slower suite: the per-repository verify budget
+
+Inter-wave checks share one budget per run. Past it, a checkpoint runs typecheck only. The default fits a fast suite, and a compiled solution can spend it on its first checkpoint, build included. A repository whose checks are slower sets its own budget with `inter_wave_verify_budget_ms` in `.claude/testing/profile.json` (`shared/TEST-PROFILE.md`). The default and the ceiling a profile may ask for are both in `interlock limits`.
+
+`run start` reads the value once and records it on the manifest. Every checkpoint of that run compares against the recorded value, so a profile edited mid-run changes nothing until the next run. The run says which budget it used:
+
+- `VERIFY BUDGET FROM PROFILE: <n>s (inter_wave_verify_budget_ms)` when the profile set it.
+- `VERIFY BUDGET CLAMPED: profile asks <n>s …, ceiling is <n>s` when the value was above the ceiling.
+
+Without the field, nothing is printed and the default applies. `unit.timeout_ms` does not change the budget. `/interlock:fix-tests` never writes this field: the number is a person's decision.
+
 ## The one network call: push notifications
 
 A ship run that halts or completes while nobody is watching can push you a message. It is off by default. Nothing is read from or written to the repo tree for this. Inside Claude Code the same two values can be set as plugin options (`ntfy topic`, which is masked, and `ntfy server`). Session start copies a set option into the session when the matching variable below is not already set. A variable you already provided wins.
