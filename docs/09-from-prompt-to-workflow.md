@@ -125,7 +125,7 @@ You can stop here and go run something. The rest of the vocabulary shows up in t
 | **MCP** | you want to give agents a new tool from outside the harness. Not needed for any of this. |
 | **ACP** | never, unless you are deliberately running the experimental second host. |
 
-[The harness landscape](./08-harness-landscape.md) surveys other systems in this category. Useful later; it will derail you today.
+[The Interlock harness](./08-harness-landscape.md) maps every part behind these terms and compares Interlock with other systems in this category. Useful later; it will derail you today.
 
 ---
 

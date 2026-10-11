@@ -96,7 +96,7 @@ Most of the category competes on how much structure you write before coding — 
 | OpenSpec | the artifact loop and its CLI | the CLI validates artifacts; skills run the loop |
 | **Interlock** | how many decisions the model may not make | a CLI with exit codes, and a runtime with no channel for a question |
 
-It composes OpenSpec rather than replacing it. `openspec init` installs its own skills, and `/interlock:spec` drives the `openspec` CLI directly, so both stay available. Use `/interlock:spec` when you want the gates, and the stock skills when you want the plain artifact loop. What Interlock adds, and when plain OpenSpec is the right call: [03](docs/03-openspec-vs-interlock.md). Where it sits against OpenClaw, Hermes Agent and DeepSeek Harness: [08](docs/08-harness-landscape.md).
+It composes OpenSpec rather than replacing it. `openspec init` installs its own skills, and `/interlock:spec` drives the `openspec` CLI directly, so both stay available. Use `/interlock:spec` when you want the gates, and the stock skills when you want the plain artifact loop. What Interlock adds, and when plain OpenSpec is the right call: [03](docs/03-openspec-vs-interlock.md). What the harness is made of, and where it sits beside OpenClaw, Hermes Agent and DeepSeek Harness: [08](docs/08-harness-landscape.md).
 
 The trade is portability. Claude Code is the **default and supported host**; Cursor and Copilot are not supported. Everything the loop decides lives in a CLI any host can shell out to, so portability means a second host adapter, not thirty prompt templates.
 
@@ -133,7 +133,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ev
 | [05 — Continuity](docs/05-continuity.md) | When `--continue` may skip the human read |
 | [06 — Why it works](docs/06-why-it-works.md) | The mechanisms, low-level, with the costs stated |
 | [07 — CLI and configuration](docs/07-cli-and-configuration.md) | Every subcommand, environment variable and host |
-| [08 — The harness landscape](docs/08-harness-landscape.md) | OpenClaw, Hermes Agent, DeepSeek Harness, and the spec-driven neighbours |
+| [08 — The Interlock harness](docs/08-harness-landscape.md) | The parts of the harness, what holds on each host, and a short comparison with other harnesses |
 | [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Primer, review of spec+ship, token and quality tactics |
 | [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures and why it gates nothing; whether to commit the run corpora |

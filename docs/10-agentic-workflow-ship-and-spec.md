@@ -33,7 +33,7 @@ Interlock is the product this repository *is*. Stock OpenSpec is what Interlock 
 - **Cursor cannot run Interlock ship.** README is explicit: 0.x is Claude Code. This checkout still installs stock `/opsx:*` skills for Cursor. A new engineer in Cursor will find a propose/apply loop that looks like spec/ship and is not.
 - **No `AGENTS.md` or `CLAUDE.md`.** Industry practice in 2026 is a small always-on instruction file plus on-demand skills ([Claude Code best practices](https://code.claude.com/docs/en/best-practices), [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md), [Cursor rules](https://cursor.com/docs/rules)). This repo relies on plugin skills and `docs/`. Fine for Claude Code with the plugin loaded; thin for anyone else.
 - **`shared/CONTEXT-HYGIENE.md` is unused.** It specifies `[[VARIABLE_NAME]]` wrapping for downstream prompts and claims spec/explore/ship/mr do it. A repo-wide search finds those placeholders only inside that file. Explore's skill *says* to wrap; `assembleImplementerPrompt` in `workflows/ship.js` interpolates change name and task text directly.
-- **[08 — The harness landscape](./08-harness-landscape.md) is stale in one important place.** It still tells you to implement spill and a run trajectory first. `lib/spill.mjs` and `lib/run-log.mjs` exist; `add-ship-run-inspectability/tasks.md` is fully checked. Treat § "Worth taking" in that page as a snapshot from before those changes landed, not as current work.
+- ~~**[08 — The harness landscape](./08-harness-landscape.md) is stale in one important place.** It still tells you to implement spill and a run trajectory first. `lib/spill.mjs` and `lib/run-log.mjs` exist; `add-ship-run-inspectability/tasks.md` is fully checked.~~ **Fixed.** 08 is now a map of the harness, and it lists spill and the trajectory as parts that exist.
 
 ### What's missing
 
@@ -273,7 +273,7 @@ The host-specific part shrank to two things: an interpreter (spawn what a step n
 | Interpreter | `workflows/ship.js`, `bin/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
 | Transport | the Workflow runtime; `lib/host/{claude-cli,acp,codex,qwen}.mjs` | How a prompt reaches a model, and what that host cannot do — declared, and bannered by the runner |
 
-Claude Code is the harness: tools, permissions, compaction, subagent spawn, workflow runtime ([How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)). Interlock is process on top of that harness ([08](./08-harness-landscape.md)).
+Claude Code owns the agent loop: tools, permissions, compaction, subagent spawn, workflow runtime ([How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)). Interlock is the harness around that loop, and [08](./08-harness-landscape.md) maps its parts.
 
 ### Skills and commands in this checkout
 
@@ -388,7 +388,7 @@ Context rot is the reason. Cost is the side effect.
 2. **Keep `openspec/config.yaml` filled** — it is currently commented examples. OpenSpec injects `context` / `rules` into `openspec instructions`; empty config means every spec run re-discovers stack conventions.
 3. **Do not enable `--strict` by habit.** Pay for review when the blast radius is high (auth, money, migrations) or when the suite is thin.
 4. **Allowlist before ship.** A permission prompt mid-workflow is the one interruption the runtime cannot prevent.
-5. **Ignore stale advice in [08](./08-harness-landscape.md)** that says spill/trajectory are still to-do. They landed. Next token wins are: archive, config.yaml, and not re-reading spilled logs.
+5. ~~**Ignore stale advice in [08](./08-harness-landscape.md)** that says spill/trajectory are still to-do.~~ **Fixed:** 08 now lists both as parts of the harness. Next token wins are: archive, config.yaml, and not re-reading spilled logs.
 
 ---
 
@@ -490,7 +490,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 2. **Point the README at this page** (and restore [05](./05-continuity.md) in the doc table — it is missing today). New engineers currently get "first hour" or a 15-section mechanism essay with nothing in between.
 3. **Fill `openspec/config.yaml`** with stack, test command, and artifact rules (proposal non-goals; tasks must name paths). Empty config wastes spec tokens rediscovering what `package.json` already says.
 4. ~~**Gitignore `.claude/ship/`** (and decide whether `.claude/memory/` is source).~~ **Done.** Both are ignored, and the reasoning generalized into a policy — see [11 — whether to keep them](./11-the-indicators.md#whether-to-keep-them). Note the policy is repository-dependent: exclusion is right here and wrong for a repository that ships its own product through `/interlock:ship`.
-5. **Update [08](./08-harness-landscape.md) "Worth taking" items 1–2** to "shipped" (`lib/spill.mjs`, `lib/run-log.mjs`) so the landscape page stops assigning work that is done.
+5. ~~**Update [08](./08-harness-landscape.md) "Worth taking" items 1–2** to "shipped" (`lib/spill.mjs`, `lib/run-log.mjs`) so the landscape page stops assigning work that is done.~~ **Done.** 08 was rewritten as a map of the harness; the "Worth taking" list is gone, and spill and the trajectory are listed as parts.
 6. **Mark `CONTEXT-HYGIENE.md` as aspirational or implement it.** A protocol that claims ship wraps `[[CHANGE_NAME]]` while `assembleImplementerPrompt` interpolates raw strings is the silent-degradation pattern the rest of the codebase refuses.
 
 ### Consider
@@ -499,7 +499,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 2. **Default-path quality without full `--strict`.** Options: run `/interlock:review-code` on MRs rather than inside ship; or auto-`--review` when `interlock risk` is `high`/`critical` while keeping lean for `low`. Inference: not in the code today.
 3. ~~**Make archive harder to skip** without taking the decision away from the merger: `interlock:mr` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.~~ **Shipped, and non-blocking by design.** A clean `SHIP COMPLETE` (no halt, no leftover tasks) now prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — see [04](./04-when-it-stops.md#archive-pending). It stays a reminder, not a gate: the shipped change satisfies the unarchived predicate by construction at every clean close, so a non-zero exit on this line would halt every clean ship forever. Archiving after merge is still the merger's own decision.
 4. **Wire or drop context-pack.** If wave handoffs replaced it, say so in explore/spec docs so people do not run a personal `~/.claude` skill that ship ignores.
-5. **Per-task worktrees** once a host port can spawn them. Predicted-path serialization is the honest interim. Hermes/dsh isolation is the actual close ([08](./08-harness-landscape.md)).
+5. **Per-task worktrees** once a host port can spawn them. Predicted-path serialization is the honest interim. Where isolation stands on each host: [08](./08-harness-landscape.md#what-holds-on-every-host-and-what-does-not).
 6. **Read the outcomes corpus** before relaxing any gate. Earned autonomy is storage-only on purpose. Wiring a branch without a control group would be deciding without the data.
 7. **Delete or clearly label duplicate skill trees** (`.claude/skills/openspec-*` vs plugin `skills/`, plus `.cursor/` copies) in a "which command do I type?" box at the top of [01](./01-first-hour.md). The duplication is inherited from `openspec init`; the confusion is ours.
 
@@ -513,7 +513,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 - [04 — When it stops](./04-when-it-stops.md) — halts and banners
 - [05 — Continuity](./05-continuity.md) — `--continue`
 - [06 — Why it works](./06-why-it-works.md) — mechanisms and costs
-- [08 — Harness landscape](./08-harness-landscape.md) — OpenClaw / Hermes / dsh (check spill/trajectory claims against `lib/`)
+- [08 — The Interlock harness](./08-harness-landscape.md) — the parts, the hosts, and a short comparison with OpenClaw / Hermes / dsh
 
 ## Sources (web)
 

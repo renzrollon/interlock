@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **`docs/08` is about Interlock's own harness.** It was a survey of OpenClaw, Hermes Agent and DeepSeek Harness. It now maps the parts of the harness, what holds on each host, and what is left out on purpose; the other projects are one comparison table. The page no longer says lane isolation is closed on the Workflow host, which still halts with `LANE BASE MISMATCH` after the first fold.
+
 ## 1.5.0 — 2026-10-11
 
 ### Added
