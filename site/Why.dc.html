@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Why · Interlock</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./site.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="il" data-theme="{{theme}}" style="font-family: var(--font-body); color: var(--color-text);">
+<div class="wrap" style="padding-top: 72px; padding-bottom: 24px;">
+
+  <div style="display: flex; flex-direction: column; gap: 20px;">
+    <h2 class="h-tab">How many decisions the model is not allowed to make.</h2>
+    <p class="body soft">Most of the category competes on how much structure you write before coding. Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on a different axis. Every row below is a decision a model used to make in prose, on every run, usually differently. Each now has a command, a hook or a runtime property that makes it, and a cost stated beside it.</p>
+  </div>
+
+  <section class="sec" aria-labelledby="why-pains">
+    <div class="sec-head"><span class="sec-no">01</span><h3 class="h-sub" id="why-pains">The pains</h3></div>
+    <div class="rows">
+      <div class="row">
+        <p class="pain-label">“The agent talked itself past its own cap.”</p>
+        <div>
+          <p class="body">Caps are code. <code>lib/limits.mjs</code> holds every one and <code>interlock limits</code> prints them. Skills are forbidden from restating a number; a test walks the codebase and fails on any published cap nothing reads. The planner prompt is forbidden from naming the solo envelope, because a model that can read a bound can argue with it.</p>
+          <p class="cost"><em>Cost:</em> changing a cap is a code change with a test, not a prompt edit. There are no per-repo caps, on purpose.</p>
+        </div>
+      </div>
+      <div class="row">
+        <p class="pain-label">“The run asked a question at 2am and sat there.”</p>
+        <div>
+          <p class="body"><code>/interlock:ship</code> is a dynamic workflow, a script the Claude Code runtime executes. The runtime takes no mid-run input. There is no question to remove because nothing is listening. Everything that needs a human is settled in <code>spec</code>, before the run starts.</p>
+          <p class="cost"><em>Cost:</em> one interruption survives: a permission prompt for a command you did not allowlist. <code>interlock doctor</code> derives the exact list from what the flow shells out to plus your own test profile, and a session-start hook runs it for you.</p>
+        </div>
+      </div>
+      <div class="row">
+        <p class="pain-label">“Two parallel agents overwrote each other.”</p>
+        <div>
+          <p class="body">The planner compares each task's predicted files on the canonical path and folds any two that collide into one lane, run in order by one agent. With <code>--isolate-waves</code>, each lane runs in its own git worktree and <code>interlock merge-lanes</code> folds them back; two lanes that wrote the same file halt the run naming the path and both lanes, never last-writer-wins.</p>
+          <p class="cost"><em>Cost:</em> the file prediction is still a model's. Without the flag the race is narrowed, not closed.</p>
+        </div>
+      </div>
+      <div class="row">
+        <p class="pain-label">“Nobody can reconstruct what the run did.”</p>
+        <div>
+          <p class="body">Every run appends a JSONL trajectory, one line per wave action, CLI exit, agent spawn and verify judgement, plus a receipt and an outcome record. The summary names the run id, project and directory. <code>interlock run-log check</code> halts an otherwise clean run whose trajectory cannot be replayed.</p>
+          <p class="cost"><em>Cost:</em> the corpora live in the repo tree. Decide once whether they are an audit trail to commit or exhaust to ignore.</p>
+        </div>
+      </div>
+      <div class="row">
+        <p class="pain-label">“The suite went green because it got smaller.”</p>
+        <div>
+          <p class="body">During remediation and final verification, a <code>PreToolUse</code> guard denies edits to test files. Given a baseline, <code>interlock verify</code> flags a test count that fell or a skipped count that rose, and a weakened suite outranks a green one. Repair is by root cause: failures cluster by normalised error signature and the largest cause is fixed first, bounded by a cap.</p>
+          <p class="cost"><em>Cost:</em> the guard binds only on Claude Code. On the experimental Codex and Qwen hosts you get the shrink check alone and a <code>HOOKS NOT IN FORCE</code> banner.</p>
+        </div>
+      </div>
+    </div>
+    <details class="disc" style="border-top: 0;">
+      <summary>Three more</summary>
+      <div class="rows" style="padding-left: 0;">
+        <div class="row">
+          <p class="pain-label">“The review reports everything, so we skim it.”</p>
+          <div>
+            <p class="body">Up to six review dimensions run in parallel, then two skeptics attack every blocker and warning. A finding that does not survive is never shown to you. A dismissal must cite a <code>file:line</code> inside the reviewed diff or it dismisses nothing. The report prints how many findings were dismissed and how many refutations were refused.</p>
+            <p class="cost"><em>Cost:</em> review is opt-in (<code>--review</code>, <code>--strict</code>, or <code>/interlock:review-code</code>) and it is the expensive part of a run. Default ship does not pay for it.</p>
+          </div>
+        </div>
+        <div class="row">
+          <p class="pain-label">“Specs rot, so we stopped writing them.”</p>
+          <div>
+            <p class="body"><code>interlock drift</code> reports four findings at three separate confidence levels, never averaged: unarchived changes (certain), specs citing deleted files (evidence), changed files no spec describes (evidence, always with a repo-wide denominator), specs older than the code they cite (inference, printed last). Every clean ship prints <code>ARCHIVE PENDING</code>.</p>
+            <p class="cost"><em>Cost:</em> drift never blocks. A gate built on regex-inferred links would be wrong often enough to get switched off, and a gate everyone disables protects nothing.</p>
+          </div>
+        </div>
+        <div class="row">
+          <p class="pain-label">“The run degraded and the summary looked identical to a clean one.”</p>
+          <div>
+            <p class="body">Every degradation is a named banner: <code>GRAPH UNAVAILABLE</code>, <code>NO TEST PROFILE</code>, <code>MODEL ROUTING OVERRIDDEN</code>, <code>VERIFICATION SKIPPED</code>, <code>LEAN SHIP</code>, <code>PUSH FAILED</code>, <code>CACHE ACCOUNTING NOT REPORTED</code>, <code>HOOKS NOT IN FORCE</code>. A clean run prints the banner block too, saying nothing degraded, because silence and cleanliness must not look alike. The banner strings are asserted verbatim in the test suite: a reworded banner is a banner nobody greps for.</p>
+            <p class="cost"><em>Cost:</em> summaries are longer.</p>
+          </div>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="sec" aria-labelledby="why-bets">
+    <div class="sec-head"><span class="sec-no">02</span><h3 class="h-sub" id="why-bets">The bets</h3></div>
+    <div class="rows">
+      <div class="row">
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">1</span><h4 class="h-row">The human checkpoint between spec and ship is the product.</h4></div>
+        <div class="stack-24">
+          <p class="body">One required stop, placed where a wrong idea is cheapest to kill, buys an uninterrupted implementation run on the other side. <code>/interlock:spec</code> writes specifications and stops. <code>/interlock:ship</code> asks nothing. The one opt-out, <code>spec --continue</code>, is argued against in its own documentation: “Continuity cannot catch a wrong idea. Every check it runs asks whether the change is implementable. None of them asks whether it is right.”</p>
+          <blockquote class="pq">“The gap is the product.”</blockquote>
+        </div>
+      </div>
+      <div class="row">
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">2</span><h4 class="h-row">Thresholds are code, not prose.</h4></div>
+        <div class="stack-24">
+          <p class="body">The test for what belongs in the CLI: if two competent runs could reach different answers from the same inputs and only one is right, it was never a judgement. Those decisions are subcommands with exit codes. A cap nothing reads was removed rather than wired. A removed cap is removed, not aliased, so a stale reader fails at import.</p>
+          <blockquote class="pq">“A speed limit painted on the road and a governor fitted in the engine are both ‘the rule’. Only one of them still holds when the driver is late.”</blockquote>
+        </div>
+      </div>
+      <div class="row">
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">3</span><h4 class="h-row">Zero-touch is a property of the runtime, not a promise.</h4></div>
+        <div class="stack-24">
+          <p class="body">You cannot get autonomy by instructing a model to be autonomous. You get it by running the loop somewhere that has no channel for a question. <code>lib/run.mjs</code> emits the whole ship program as versioned steps: the agents to spawn, their briefings, and the exact argv to call next. The two drivers interpret those steps and branch on nothing.</p>
+          <blockquote class="pq">“<code>ship</code> asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening.”</blockquote>
+        </div>
+      </div>
+      <div class="row">
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">4</span><h4 class="h-row">A dismissal must cite evidence. A report needn't.</h4></div>
+        <div class="stack-24">
+          <p class="body">The two review errors are not symmetric. A surviving false positive costs a human ten seconds. A wrongly dismissed finding is invisible, and nobody can catch a mistake they never see. So only the dismissing direction is gated: a “not real” verdict must carry a <code>file:line</code> span whose path is in the reviewed diff. An uncited refutation is a non-vote, and the report counts how many were refused.</p>
+          <div class="stack-12">
+            <blockquote class="pq">“Confident prose is the single thing an LLM produces most reliably, so it is the one thing a dismissal must not rest on.”</blockquote>
+            <p class="cap" style="max-width: 64ch;">Cited: <a href="https://arxiv.org/pdf/2604.19049">Refute-or-Promote (arXiv 2604.19049)</a> documents eighty-plus agents, dedicated skeptics among them, unanimously endorsing an OpenSSL padding oracle that did not exist.</p>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">5</span><h4 class="h-row">Degradation is spoken, never silent.</h4></div>
+        <div class="stack-24">
+          <p class="body">The compounding failure is not a bad run. It is a bad run that looks like a good one. Token usage a host cannot report is <code>unknown</code>, never zero. An unobserved indicator renders at the same weight as a measured one, with its reason as the cell content. An empty graph build says so and explains why.</p>
+          <blockquote class="pq">What you cannot see, you cannot correct.</blockquote>
+        </div>
+      </div>
+    </div>
+    <div class="g-split" style="margin-top: 32px;">
+      <p class="eyebrow" style="color: var(--color-text-soft);">Three supporting principles</p>
+      <ul class="list body" style="max-width: 68ch;">
+        <li><strong>Guards fail open, never closed.</strong> The three stage guards bind only agents inside a ship run, the launch guard binds only a session that has already launched ship, and each allows whenever it cannot establish the facts. Installing Interlock does not change how your own editing or committing behaves.</li>
+        <li><strong>Spec drift is measured at three confidence levels, never averaged.</strong> Collapsing them into one number would launder the weakest signal through the strongest.</li>
+        <li><strong>Corpora are recorded but never consulted.</strong> Earned autonomy <span class="tag tag-neutral" style="vertical-align: 2px;">experimental</span> is a ledger nobody reads yet. No autonomy level and no accumulated outcome relaxes a gate. Reading a corpus and branching on it are different acts, and only the first has been built.</li>
+      </ul>
+    </div>
+    <p class="mono" style="margin-top: 32px; font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/06-why-it-works.md">more in 06 · Why it works</a></p>
+  </section>
+
+  <section class="sec" aria-labelledby="why-model">
+    <div class="sec-head"><span class="sec-no">03</span><h3 class="h-sub" id="why-model">What stays with the model</h3></div>
+    <div class="stack-32">
+      <p class="body">Read the two sections above quickly and you could conclude the design distrusts the model. That is the wrong takeaway. Everything that is genuinely a judgement stays with it: reading an unfamiliar codebase, deciding what a task is worth, writing the code, reviewing a diff, synthesising a summary a person will read. What moved out is only what has a correct answer. The split is the point:</p>
+      <blockquote class="pq" style="font-size: 24px; font-weight: 500;">“The script holds the loop, the CLI holds the rules, the agents do the work.”</blockquote>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="why-cost">
+    <div class="sec-head"><span class="sec-no">04</span><h3 class="h-sub" id="why-cost">What this costs</h3></div>
+    <div class="stack-32">
+      <div class="callout" style="max-width: 80ch;">
+        <p class="callout-title">No published benchmark.</p>
+        <p class="body-sm">“The unit suite proves the policy engine behaves as specified. It does not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything above is an argument from mechanism rather than from measurement. The outcome corpus exists to close that gap and currently has no control group.”</p>
+      </div>
+      <div class="rows">
+        <div class="row">
+          <p class="h-row">Portability</p>
+          <p class="body">Claude Code only: Cursor and Copilot are not supported. Spec Kit runs on thirty agents. Interlock runs on one, because the guarantees come from Claude Code's workflow runtime. A portable version of this would be a folder of prompts, which is the thing it exists not to be.</p>
+        </div>
+        <div class="row">
+          <p class="h-row">Surface area</p>
+          <p class="body">Twenty-eight top-level subcommands, sixteen skills, four host adapters, six hook scripts and a hooks module. The repository books this as a cost.</p>
+        </div>
+        <div class="row">
+          <p class="h-row">Review is opt-in</p>
+          <p class="body">Lean ship trusts your unit suite. If <code>tasks.md</code> and the suite are thin, lean ship is a cost default, not a quality default.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":4000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

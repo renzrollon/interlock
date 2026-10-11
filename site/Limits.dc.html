@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Limits and proof · Interlock</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./site.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="il" data-theme="{{theme}}" style="font-family: var(--font-body); color: var(--color-text);">
+<div class="wrap" style="padding-top: 72px; padding-bottom: 24px;">
+
+  <h2 class="h-tab">A cap written in prose is a suggestion.</h2>
+
+  <section class="sec" aria-labelledby="lp-caps">
+    <div class="sec-head"><span class="sec-no">01</span><h3 class="h-sub" id="lp-caps">The caps</h3></div>
+    <div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin-bottom: 16px;">
+      <div style="display: flex; flex-direction: column; gap: 6px; flex: 1 1 280px; max-width: 360px;">
+        <label for="caps-filter" style="font-size: 13px; font-weight: 500;">Filter the caps</label>
+        <input id="caps-filter" class="input" type="search" placeholder="remediation, lane, effort" value="{{q}}" onChange="{{setQ}}" autocomplete="off">
+      </div>
+      <p class="mono-sm">read from <code>interlock limits</code> at v1.5.0 · {{capCount}}</p>
+    </div>
+    <div class="tbox">
+      <div class="dt" role="table" aria-label="interlock limits at v1.5.0" style="min-width: 520px;">
+        <div class="dt-row dt-caps dt-head" role="row"><span role="columnheader">Cap</span><span role="columnheader" style="text-align: right;">Value</span></div>
+        <div class="dt-body" role="rowgroup">
+          <sc-for list="{{caps}}" as="c" hint-placeholder-count="20">
+            <sc-if value="{{c.isBreak}}" hint-placeholder-val="{{false}}">
+              <div class="dt-break" aria-hidden="true"></div>
+            </sc-if>
+            <sc-if value="{{c.isRow}}" hint-placeholder-val="{{true}}">
+              <div class="dt-row dt-caps" role="row"><span role="cell" class="mono" style="font-size: 13px;">{{c.label}}</span><span role="cell" class="mono" style="font-size: 13px; text-align: right; white-space: nowrap;">{{c.value}}</span></div>
+            </sc-if>
+          </sc-for>
+          <sc-if value="{{noCaps}}" hint-placeholder-val="{{false}}">
+            <div class="dt-row dt-caps" role="row"><span role="cell" class="soft">No cap matches “{{q}}”.</span><span role="cell"></span></div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+    <p class="cap muted" style="margin-top: 12px; max-width: 100ch;">Every value lives in one file and is printed by one command. A threshold restated in a skill or a reviewer prompt is a blocker in this repository's own review policy, and a published cap that nothing reads fails a test.</p>
+  </section>
+
+  <section class="sec" aria-labelledby="lp-review">
+    <div class="sec-head"><span class="sec-no">02</span><h3 class="h-sub" id="lp-review">The review</h3></div>
+    <div class="g-split" style="margin-bottom: 32px;">
+      <blockquote class="pq pq-sm" style="align-self: start;">A dismissal needs a citation. A report doesn't.</blockquote>
+      <div class="stack-12">
+        <p class="body">Voting a finding real needs nothing but the vote. Voting a finding not real needs a citation, checked mechanically in two halves, because either alone is defeated: a <code>path:line</code> or <code>path:start-end</code> token, and a path that canonicalises to one actually present in the reviewed diff. An uncited refutation is a non-vote, never a deleted verdict.</p>
+        <p class="body-sm soft">Review is opt-in: <code>/interlock:ship --review</code>, <code>--strict</code>, or <code>/interlock:review-code</code> on its own. Default ship does not pay for it.</p>
+      </div>
+    </div>
+
+    <div class="stack-16">
+      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;">
+        <h4 class="h-row" style="margin-right: auto;">Four sample findings</h4>
+        <button type="button" class="btn btn-secondary btn-sm" onClick="{{adjudicate}}" disabled="{{busy}}">Adjudicate</button>
+        <sc-if value="{{canCite}}" hint-placeholder-val="{{false}}">
+          <button type="button" class="btn btn-secondary btn-sm" onClick="{{citeIt}}">Cite it</button>
+        </sc-if>
+        <button type="button" class="btn btn-ghost btn-sm" onClick="{{resetSim}}">Reset</button>
+      </div>
+      <p class="mono-sm">The diff under review touched <code>app/api/export/route.ts</code>, <code>lib/report.mjs</code>, <code>lib/cache.mjs</code>. <code>src/utils.ts</code> is not in the diff.</p>
+      <div class="tbox">
+        <div class="dt" role="table" aria-label="Four sample findings and their adjudication" style="min-width: 1080px;">
+          <div class="dt-row dt-find dt-head" role="row"><span role="columnheader">#</span><span role="columnheader">Finding</span><span role="columnheader">Skeptic one</span><span role="columnheader">Skeptic two</span><span role="columnheader">Dismissal cited in the diff</span><span role="columnheader">Quality band</span><span role="columnheader">Outcome</span></div>
+          <div class="dt-body" role="rowgroup" aria-live="polite">
+            <sc-for list="{{findings}}" as="f" hint-placeholder-count="4">
+              <div class="dt-row dt-find" role="row">
+                <span role="cell" class="mono" style="font-size: 13px;">{{f.n}}</span>
+                <span role="cell" style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;"><span class="tag tag-neutral">{{f.sev}}</span><span>{{f.title}}</span><span class="mono soft" style="font-size: 12.5px;">{{f.file}}</span></span>
+                <span role="cell" class="mono" style="font-size: 12.5px;">{{f.s1}}</span>
+                <span role="cell" class="mono" style="font-size: 12.5px;">{{f.s2}}</span>
+                <span role="cell">{{f.cite}}</span>
+                <span role="cell">{{f.band}}</span>
+                <span role="cell"><strong>{{f.outHead}}</strong> {{f.outBody}}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      <sc-if value="{{showCounts}}" hint-placeholder-val="{{false}}">
+        <div class="term"><sc-for list="{{counts}}" as="l" hint-placeholder-count="3"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
+      </sc-if>
+      <sc-if value="{{cited}}" hint-placeholder-val="{{false}}">
+        <p class="body"><strong>A tie keeps the finding. The two errors are not symmetric.</strong></p>
+      </sc-if>
+      <p class="mono" style="font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/06-why-it-works.md">more in 06 · Why it works</a></p>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="lp-compared">
+    <div class="sec-head"><span class="sec-no">03</span><h3 class="h-sub" id="lp-compared">Compared</h3></div>
+    <p class="body" style="margin-bottom: 24px;">Read down the layer column and the map resolves. OpenClaw is a harness plus a channel layer. Hermes is a harness plus a channel plus a memory layer. DeepSeek Harness is a harness and nothing else. Interlock is a process layer with no harness of its own; it borrows Claude Code's. Against the tools that sit at Interlock's layer, the difference is where the enforcement lives.</p>
+    <div class="tbox">
+      <table class="tbl" style="min-width: 1040px;">
+        <thead><tr><th>Tool</th><th>Layer</th><th>Competes on</th><th>Where Interlock differs</th><th>Where it is honestly better</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Spec Kit</strong></td><td>process</td><td>phases before code; breadth of host support</td><td>caps, gate verdicts and the review band are a tested CLI with exit codes, not prompts a model follows</td><td>portability: it runs on roughly thirty agents; Interlock runs on one</td></tr>
+          <tr><td><strong>BMAD</strong></td><td>process</td><td>roles and ceremony: PM, architect, dev, QA agents</td><td>no role-play; tiers, lanes and a model clamp. Judgement stays with the model, sequencing does not</td><td>the role vocabulary is legible to non-engineers</td></tr>
+          <tr><td><strong>Kiro</strong></td><td>IDE and process</td><td>an IDE experience around specs</td><td>a terminal plugin with CLIs on your PATH; nothing renders</td><td>the IDE. Interlock has none and is not building one</td></tr>
+          <tr><td><strong>OpenSpec, stock</strong></td><td>artifact format and lifecycle</td><td>the spec contract, templates, validation, archive</td><td>Interlock composes it and does not fork it; it drives the CLI because the CLI is the stable contract</td><td>simplicity and artifact portability. For a one-line change, propose it and implement it yourself. Uninstall Interlock and <code>openspec/</code> is still valid</td></tr>
+          <tr><td><strong>OpenClaw</strong></td><td>harness and channel</td><td>your assistant exists when your laptop is closed: messaging apps into one gateway</td><td>a different floor entirely. It does not know what a wave is and will not cap a remediation round</td><td>reach: start work from your phone and keep it running after you disconnect</td></tr>
+          <tr><td><strong>Hermes Agent</strong></td><td>harness, channel and memory</td><td>an agent that accumulates: self-written memory, self-authored skills</td><td>philosophically opposed: Hermes bets an agent should edit its own instructions; Interlock bets a decision with a correct answer belongs in a tested CLI</td><td>continuity and isolation, including hibernating cloud sandboxes</td></tr>
+          <tr><td><strong>DeepSeek Harness</strong></td><td>harness only</td><td>everything is a plugin: adapter, tools, session log and the loop itself</td><td>a harness is what Interlock runs on, not what it is. Moving Interlock onto it would be a port, not an upgrade</td><td>the architecture and its documentation: an event-sourced session log with the LLM history derived from it</td></tr>
+          <tr><td><strong>A folder of prompts</strong></td><td>process, unenforced</td><td>zero install cost; works everywhere</td><td>every guarantee on this page is absent</td><td>you already have it and it costs nothing. For a small repo with a careful operator this is fine</td></tr>
+          <tr><td><strong>Plain Claude Code with CLAUDE.md</strong></td><td>harness and always-on instructions</td><td>the baseline everyone runs</td><td>CLAUDE.md is read every turn and followed; Interlock's caps are called. Interlock adds the checkpoint, wave isolation, the gates, the trajectory and the drift measure</td><td>simplicity and always-on context. Interlock does not replace it</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="body" style="margin-top: 20px;">The price is portability, and it is not hidden. Spec Kit runs on thirty agents and Interlock runs on one, because the guarantees come from Claude Code's workflow runtime. A portable version of this would be a folder of prompts, which is the thing it exists not to be. The host-specific part turned out to be small, so it is a stated contract with four adapters behind it. Portability here means a second host adapter, not thirty prompt templates.</p>
+
+    <h4 class="h-row" style="margin-top: 48px; margin-bottom: 12px;">Objections</h4>
+    <div>
+      <details class="disc disc-mono" open="open">
+        <summary>“This locks us into Claude Code.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Correct, for the supported path, and the README says so before it says much else. The zero-touch contract, the PATH injection, the subagent fan-out and the guards all come from Claude Code. What is not locked in is everything the loop decides: the run program emits steps, and a host is one file that declares what it cannot do. Four exist. The CLIs install standalone from npm with no plugin at all.</p>
+          <p class="cost"><em>Limit:</em> <code>/interlock:ship</code> runs on the workflow runtime or halts. The runner is experimental, no slash command starts it, and on Codex and Qwen the guards do not exist.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“We already have a CLAUDE.md.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">A CLAUDE.md is instructions the model reads and follows, and following is a decision. Take the situation where the rule has to hold: forty minutes in, two rounds have not fixed it, and it is close. Ask the model whether it has earned a third round. It will say yes, articulately. The real cap is a number in a file read by a script that has no opinion.</p>
+          <p class="cost"><em>Limit:</em> CLAUDE.md is portable, always on, and costs nothing. Interlock does not replace it.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Parallel agents will cost us a fortune.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Context tiering gives tier-1 tasks the task description and nothing else. The model clamp stops classifiers escalating to opus. Retrieval is token-budgeted. Workers are named plugin agents with tool allowlists that exclude the schemas they would otherwise inherit per spawn. Cohesion lanes fold sixteen small tasks into one agent reading the design once. Default ship does not pay for review at all.</p>
+          <p class="cost"><em>Limit:</em> <code>--strict</code> is expensive. One environment variable, <code>CLAUDE_CODE_SUBAGENT_MODEL</code>, defeats the entire ladder, and Interlock banners it rather than hiding it. The prompt-cache lifetime is a setting Interlock cannot set.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Our repo is Go, Rust or Java. The graph won't index it.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Everything else gets docs and spec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph; agents fall back to grep, and the run says <code>GRAPH UNAVAILABLE</code> rather than pretending. Bootstrap phrases its explorers in your stack's vocabulary; verification runs whatever your profile names.</p>
+          <p class="cost"><em>Limit:</em> you lose the structural half of the invariant sweep, the one gate that catches a value canonicalised in one place and still read raw in three others. The grep half still runs.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Another spec format.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Interlock writes nothing Interlock-shaped. It drives the <code>openspec</code> CLI directly. The artifacts are plain markdown readable by any OpenSpec tool or a human with an editor. A change proposed by the stock skill can be shipped by Interlock; ship does not care who wrote the markdown.</p>
+          <p class="cost"><em>Limit:</em> one file is an Interlock addition, the decision ledger. It is plain markdown, committed with the change.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Autonomy is scary.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Then do not skip the read, and the default is that you don't. One flag removes you, it is opt-in permanently, spec never suggests it, and <code>--force-checkpoint</code> beats it unconditionally. Its gate fails closed without exception: a check that could not run is a blocker, not a pass. Risk never averages; a docs change bundled with a payment change is a payment change, and high or critical risk may not continue at all.</p>
+          <p class="cost"><em>Limit:</em> the documentation argues against its own feature: continuity cannot catch a wrong idea. Only a person reading the proposal catches that.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“What if it commits garbage?”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Six things stand between a wave and a commit, each an exit code. Validation refuses an unimplementable change. Inter-wave verify halts the next wave on a red typecheck or suite. Final verify halts on a red suite and repairs by root cause, bounded. The shrink check catches a suite that went green by getting smaller. More than the tolerated task failures halts. A hook denies <code>git commit</code> outside the commit stage, and the commit is one feature-level commit that never adds everything, never amends, never pushes.</p>
+          <p class="cost"><em>Limit:</em> e2e failure is reported and never repaired, and the commit happens anyway with a banner. You have to look at that one. And lean ship never reviews the diff; it trusts your unit suite.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“How do I know what it did?”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">The summary names every default applied and carries the run id. The receipt records the host, the billing path, the spend, the paths touched and the paths predicted. The trajectory is one line per action and can be queried. The report renders indicators with their denominators as an offline HTML file.</p>
+          <p class="cost"><em>Limit:</em> the report gates nothing and is barred from ever doing so. Under roughly twenty observations it tells you to say “too few to read”.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Reviews are noise.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">That is the diagnosis. Every blocker and warning is attacked by two skeptics before you see it, a dismissal must cite a line in the diff, the report prints how many were dismissed and how many refutations were refused, and a quality band drops what is too vague to act on. You can own the scope with a <code>REVIEW.md</code>.</p>
+          <p class="cost"><em>Limit:</em> opt-in and priced accordingly. Diff review is structurally blind to a value read in more than one place, which is why the invariant sweep exists as the one licensed exception to the diff leash.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Does this work on our monorepo?”</summary>
+        <div class="disc-body stack-12">
+          <p class="body"><code>bootstrap --scope</code> restricts onboarding to a subdirectory. The planner schedules from <code>tasks.md</code> and predicted paths, not a directory layout. <code>REVIEW.md</code> at the root declares out-of-scope paths. Verification runs the commands your profile names.</p>
+          <p class="cost"><em>Limit:</em> no monorepo-specific feature exists: no per-package specs, no package-scoped run state. Two teams shipping concurrently in one repo both append to one outcomes file, which is a merge-conflict site. This is the weakest answer on the page.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“We don't have dynamic workflows enabled.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">Then there is no ship, and the trampoline halts rather than implementing the loop in conversation. Claude Code v2.1.154 or newer with workflows enabled; on a Pro plan, enable it in <code>/config</code>. Everything else still works: spec, both reviews, commit, mr, the graph, the full CLI.</p>
+          <p class="cost"><em>Limit:</em> the runner is experimental, weaker on zero-touch, and on the Claude binary it is a metered billing path.</p>
+        </div>
+      </details>
+      <details class="disc disc-mono">
+        <summary>“Show me the benchmark.”</summary>
+        <div class="disc-body stack-12">
+          <p class="body">There isn't one. The unit suite proves the policy engine behaves as specified. It does not prove the workflow produces better outcomes than a simpler loop. That comparison has not been run, and until it has, everything on this page is an argument from mechanism rather than from measurement. The outcome corpus exists to close that gap and currently has no control group.</p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="lp-limits">
+    <div class="sec-head"><span class="sec-no">04</span><h3 class="h-sub" id="lp-limits">Stated limits</h3></div>
+    <ul class="list body" style="max-width: 80ch;">
+      <li>Claude Code only. Cursor and Copilot are not supported. The supported path requires v2.1.154 or newer with dynamic workflows enabled.</li>
+      <li>Adversarial review, handoff artifacts and conformance are opt-in (<code>--strict</code>), not the default.</li>
+      <li>Structural graph indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. C# type references and test links are inferred by identifier, not resolved by a compiler. Go, Rust, Java and Ruby get everything except import and symbol edges.</li>
+      <li>The ship meter needs Claude Code 2.1.287 or newer. On an older host the run is the same, without the pane.</li>
+      <li>The experimental runner over <code>claude -p</code> is a metered billing path; the interactive Workflow runtime is not.</li>
+      <li>On Codex and Qwen hosts the guard hooks do not exist; only the shrink check stands between a repair and a weakened test.</li>
+      <li>E2E failures are reported and never repaired; the commit proceeds with a banner.</li>
+      <li>Drift and conformance never block.</li>
+      <li>The corpora are recorded and nothing reads them to change a run.</li>
+      <li>No monorepo-specific features.</li>
+      <li>No published benchmark. Version 1.5.0.</li>
+    </ul>
+
+    <div style="margin-top: 48px;">
+      <p class="term-cap">counted at v1.5.0 on 2026-10-11</p>
+      <div class="tbox">
+        <table class="tbl" style="min-width: 760px;">
+          <thead><tr><th>Figure</th><th>Value</th><th>How established</th></tr></thead>
+          <tbody>
+            <tr><td>Version</td><td class="m">1.5.0</td><td><code>package.json</code>, <code>plugin.json</code> and <code>marketplace.json</code></td></tr>
+            <tr><td>Runtime dependencies</td><td class="m">0</td><td><code>package.json</code> has no <code>dependencies</code> key; CI installs nothing</td></tr>
+            <tr><td>Node floor</td><td>18 or newer for Interlock; the OpenSpec CLI needs 20.19.0 or newer</td><td><code>package.json</code> engines; OpenSpec's own requirement</td></tr>
+            <tr><td>Test files</td><td class="m">87</td><td><code>find test -name '*.test.mjs' | wc -l</code>. <code>npm test</code>, no model, no network, nothing to install</td></tr>
+            <tr><td>Top-level <code>interlock</code> subcommands</td><td class="m">28</td><td><code>interlock --help</code>; the table in doc 07</td></tr>
+            <tr><td><code>interlock-graph</code> subcommands</td><td class="m">11</td><td><code>build, update, report, query, consumers, path, explain, docs, context, docs-index, which</code></td></tr>
+            <tr><td>Modules under <code>lib/</code></td><td class="m">98</td><td><code>find lib -name '*.mjs' | wc -l</code>: 54 top-level, 23 graph, 13 prompts, 8 host</td></tr>
+            <tr><td>Skills</td><td class="m">16</td><td><code>ls skills</code>; four are the product, the rest are called by them</td></tr>
+            <tr><td>Hook scripts</td><td>6, and one hooks module</td><td>a preflight, a recorder, four guards; <code>hooks/mod.mjs</code> is the ship meter</td></tr>
+            <tr><td>Host adapters</td><td class="m">4</td><td><code>claude</code>, <code>acp</code>, <code>codex</code>, <code>qwen</code></td></tr>
+            <tr><td>Eval cases</td><td class="m">11</td><td>pinned by name in <code>test/evals.test.mjs</code></td></tr>
+            <tr><td>Docs pages</td><td class="m">14</td><td>numbered 01 to 14</td></tr>
+            <tr><td>Changes shipped through its own loop</td><td class="m">59</td><td><code>ls openspec/changes/archive | wc -l</code>, dated 22 Aug to 7 Oct 2026</td></tr>
+            <tr><td>Commits</td><td class="m">107</td><td><code>git rev-list --count HEAD</code> on <code>main</code>, since the first commit on 12 Aug 2026</td></tr>
+            <tr><td>Licence</td><td>MIT</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":6200}}'>
+class Component extends DCLogic {
+  componentWillUnmount() { if (this.timer) clearInterval(this.timer); }
+  setQ = (e) => { this.setState({ q: e.target.value }); };
+  stopTimer() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+  adjudicate = () => {
+    this.stopTimer();
+    this.setState({ revealed: 0, busy: true });
+    this.timer = setInterval(() => {
+      var r = ((this.state || {}).revealed || 0) + 1;
+      if (r >= 4) { this.stopTimer(); this.setState({ revealed: 4, busy: false }); }
+      else this.setState({ revealed: r });
+    }, 650);
+  };
+  citeIt = () => { this.stopTimer(); this.setState({ cited: true, revealed: 4, busy: false }); };
+  resetSim = () => { this.stopTimer(); this.setState({ revealed: 0, busy: false, cited: false }); };
+  renderVals() {
+    var s = this.state || {};
+    var q = (s.q || '').trim().toLowerCase();
+    var groups = [
+      [['max parallel agents per batch', '8'], ['inter-wave fix attempts (per wave)', '2'], ['replans (per run)', '2'], ['remediation rounds', '2'], ['root-cause iterations (per run)', '5'], ['task failures tolerated', '2'], ['run steps (per run)', '200'], ['inter-wave verify budget (floor)', '60s'], ['inter-wave verifications (per run)', '3'], ['verify spill threshold (bytes)', '8192'], ['verify preview budget (chars)', '4096'], ['wave handoff budget (chars, per task)', '2000'], ['review policy scan cap (bytes)', '65536'], ['push timeout (ms)', '5000'], ['resume card list rows (per list)', '40'], ['launch ledger max age (ms)', '86400000'], ['meter quiet after (ms)', '300000'], ['meter tick (ms)', '15000'], ['handoff pane chars', '10000'], ['wave board min width (columns)', '48'], ['wave board default width (columns)', '100']],
+      [['lane cap: tier 1 lane (also untiered)', '8'], ['lane cap: tier 2 lane', '8'], ['lane cap: tier 3 lane', '6'], ['lane cap: tier 4 lane', '4'], ['lane cap: tier 5 lane', '8'], ['cohesion tier ceiling (packs at or below)', '3'], ['multi-task opus floor (hardest tier at or above)', '4'], ['solo envelope (max tasks in one lane)', '20']],
+      [['eval smoke cost ceiling (per PR)', '$2'], ['eval full-run cost ceiling (scheduled)', '$15'], ['eval outcome-run cost ceiling (scheduled)', '$20'], ['eval cost-per-task sweep ceiling (by hand)', '$40'], ['eval runs per case', '3'], ['eval promotion: consecutive qualifying runs', '3'], ['eval promotion: trials per qualifying run', '3'], ['eval promotion: judge agreement floor', '80%']],
+      [['price table id', 'anthropic-list-2026-10'], ['price: claude-haiku-4-5 ($/Mtok)', 'in 1, out 5'], ['price: claude-opus-5-5 ($/Mtok)', 'in 4, out 20'], ['price: claude-sonnet-5-5 ($/Mtok)', 'in 2, out 10'], ['cache read multiplier: claude-haiku-4-5 (x input)', '0.1'], ['cache read multiplier: claude-opus-5-5 (x input)', '0.05'], ['cache read multiplier: claude-sonnet-5-5 (x input)', '0.1'], ['cache write multiplier: ephemeral_1h (x input)', '2'], ['cache write multiplier: ephemeral_5m (x input)', '1.25']],
+      [['report trajectory scan cap', '2000']],
+      [['effort: tier 1 lane', 'low'], ['effort: tier 2 lane', 'low'], ['effort: tier 3 lane', 'inherit (session default)'], ['effort: tier 4 lane', 'inherit (session default)'], ['effort: tier 5 lane', 'xhigh'], ['effort: verify step (inter-wave and final)', 'xhigh'], ['effort: review skeptic step', 'xhigh']],
+      [['runtime ceilings', '16 concurrent, 1000 agents per run']]
+    ];
+    var total = 0, shown = 0, caps = [];
+    groups.forEach(function (g, gi) {
+      var rows = g.filter(function (r) { total++; return !q || (r[0] + ' ' + r[1]).toLowerCase().indexOf(q) !== -1; });
+      if (!rows.length) return;
+      if (caps.length) caps.push({ isBreak: true, isRow: false, label: '', value: '' });
+      rows.forEach(function (r) { shown++; caps.push({ isBreak: false, isRow: true, label: r[0], value: r[1] }); });
+    });
+
+    var diff = ['app/api/export/route.ts', 'lib/report.mjs', 'lib/cache.mjs'];
+    var citedOk = function (c) {
+      if (!c) return false;
+      var m = /^([^\s:]+):(\d+)(-\d+)?$/.exec(c);
+      return !!m && diff.indexOf(m[1].replace(/^\.\//, '')) !== -1;
+    };
+    var data = [
+      { n: 1, sev: 'blocker', file: 'app/api/export/route.ts:31', title: 'Unauthenticated tenant data access', s1: { real: true, q: 5, sv: 5 }, s2: { real: true, q: 4, sv: 5 }, band: 'kept', drop: false },
+      { n: 2, sev: 'warning', file: 'lib/report.mjs:88', title: 'Unused import of formatDate', s1: { real: false, cite: 'lib/report.mjs:12-14', q: 2 }, s2: { real: false, cite: 'lib/report.mjs:88', q: 2 }, band: 'not reached: dismissed first', drop: false },
+      { n: 3, sev: 'blocker', file: 'lib/cache.mjs:40', title: 'Cache key built from the raw email, not the canonical form', s1: s.cited ? { real: false, cite: 'lib/cache.mjs:40', q: 3 } : { real: false, evidence: '👍', q: 3 }, s2: { real: true, q: 4, sv: 4 }, band: 'kept', drop: false },
+      { n: 4, sev: 'warning', file: 'src/utils.ts:5', title: 'Consider refactoring for clarity', s1: { real: true, q: 1 }, s2: { real: true, q: 2 }, band: 'dropped', drop: true }
+    ];
+    var revealed = s.revealed || 0;
+    var refused = 0, dismissed = 0, weak = 0, surviving = 0, blockers = 0;
+    var verdictText = function (v) {
+      if (v.real) return 'real · quality ' + v.q + (v.sv != null ? ' · severity ' + v.sv : '');
+      if (v.cite) return 'not real, cites ' + v.cite + (citedOk(v.cite) ? ' (in the diff)' : ' (not in the diff)') + ' · quality ' + v.q;
+      return 'not real, evidence: “' + v.evidence + '” · quality ' + v.q;
+    };
+    var findings = data.map(function (f, i) {
+      var votes = [f.s1, f.s2];
+      var real = votes.filter(function (v) { return v.real; }).length;
+      var notRealCited = votes.filter(function (v) { return !v.real && citedOk(v.cite); }).length;
+      var uncited = votes.filter(function (v) { return !v.real && !citedOk(v.cite); }).length;
+      var survives = real >= notRealCited;
+      var outHead, outBody;
+      if (!survives) { outHead = 'Dismissed by skeptics.'; outBody = 'Two cited not-real votes, zero real. Never shown.'; }
+      else if (f.drop) { outHead = 'Dropped as too weak to report.'; outBody = 'It survived the vote, but the higher score (2) is below the floor and the two scores are within drift, so the band drops it. Deferred with its reason.'; }
+      else if (uncited) { outHead = 'Survives; one refutation refused.'; outBody = 'The uncited dismissal is a non-vote. One real vote against zero counted not-real votes. Blocker stands.'; }
+      else if (notRealCited && real === notRealCited) { outHead = 'Survives.'; outBody = 'One cited not-real vote against one real vote: a tie, which keeps the finding.'; }
+      else { outHead = 'Survives.'; outBody = 'Two real votes. Blocker stands.'; }
+      if (i < revealed) {
+        refused += uncited;
+        if (!survives) dismissed++; else if (f.drop) weak++; else { surviving++; if (f.sev === 'blocker') blockers++; }
+      }
+      var show = i < revealed;
+      var citeCell = '—';
+      if (show) {
+        var nr = votes.filter(function (v) { return !v.real; });
+        if (!nr.length) citeCell = 'no dismissal to check';
+        else citeCell = nr.map(function (v) { return citedOk(v.cite) ? 'yes, ' + v.cite : 'no: refused, counts as a non-vote'; }).join(' · ');
+      }
+      return {
+        n: f.n, sev: f.sev, file: f.file, title: f.title,
+        s1: show ? verdictText(f.s1) : '—', s2: show ? verdictText(f.s2) : '—',
+        cite: citeCell, band: show ? (survives ? f.band : 'not reached: dismissed first') : '—',
+        outHead: show ? outHead : '', outBody: show ? outBody : '—'
+      };
+    });
+    var done = revealed >= 4;
+    var counts = [
+      { t: 'review: 4 raised, ' + dismissed + ' dismissed by skeptics, ' + weak + ' dropped as too weak to report, ' + surviving + ' surviving', cls: '' },
+      { t: 'refutations refused: ' + refused + ' (a "not real" vote with no file:line citation inside the diff)', cls: '' },
+      { t: 'GATE BLOCKED — ' + blockers + ' blockers of 4 findings', cls: 't-halt' }
+    ];
+    return {
+      theme: this.props.theme ?? 'light',
+      q: s.q || '', setQ: this.setQ,
+      caps: caps, noCaps: shown === 0, capCount: (q ? shown + ' of ' + total + ' values' : total + ' values'),
+      adjudicate: this.adjudicate, citeIt: this.citeIt, resetSim: this.resetSim,
+      busy: !!s.busy,
+      canCite: done && !s.cited,
+      cited: !!s.cited && done,
+      findings: findings,
+      showCounts: done,
+      counts: counts
+    };
+  }
+}
+</script>
+</body>
+</html>

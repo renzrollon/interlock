@@ -1,6 +1,8 @@
 # Claude Design prompt: the Interlock landing site
 
-**How to use this file.** Open Claude Design (claude.ai/design, or the `design` skill inside Claude Code), start a new project, attach the four files in `site/assets/` so the model can see them, and paste everything from `BEGIN PROMPT` to the end of the file. Ask for the output as one `index.html`. When it comes back, drop it at `site/index.html` in this repository; `.github/workflows/pages.yml` deploys `site/` on the next push to `main`. Every fact the page states is in the appendices, pinned to Interlock **v1.5.0**. When a fact changes, change it here first and regenerate. Never hand-edit a number into the HTML.
+**How to use this file.** Open Claude Design (claude.ai/design), start a project with the **Interlock** design system attached, attach the four files in `site/assets/` so the model can see them, and paste everything from `BEGIN PROMPT` to the end of the file. Export the landing artboard as an HTML zip and install it as `site/README.md` describes ("Installing an export"); `.github/workflows/pages.yml` deploys `site/` on the next push to `main`. Every fact the page states is in the appendices, pinned to Interlock **v1.5.0**. When a fact changes, change it here first and regenerate. Never hand-edit a number into the HTML.
+
+**What is deployed.** The page under `site/` was generated from this brief on 2026-10-11 with revision 2 of the Interlock design system, and installed with one local patch that `site/README.md` records.
 
 **What was checked, and when.** On 2026-10-11, at v1.5.0, these blocks were re-read against the repository or regenerated from its code: A.0 to A.8, B.4, B.5, B.6, B.8, C.6 (the loud halts), C.7 to C.9, D.1, D.4, E.2, E.6, F.4, G.1 to G.4, G.6 and Appendix H. The plan preview in C.7 is `interlock waves` run on that example, the summaries in C.7 and D.1 are `formatRunSummary` called on it, C.9 is `interlock waves --format board` over a fixture a test pins, G.1 is `interlock limits`, and the `doctor` block in D.1 is `interlock doctor`. Everything else is carried from the v0.3.0 pin with its version and host wording corrected and is marked **reference** in §4: B.1 to B.3, B.7, C.1 to C.5, D.2, D.3, D.5, D.6, E.1, E.3 to E.5, E.7, E.8 and F.1 to F.3. The page renders some of those (C.3, D.2, D.3, E.1, F.1, F.2), so re-verify them at the next bump; the ones §4 does not name are context and never reach the page.
 
@@ -10,7 +12,7 @@ BEGIN PROMPT
 
 ## 0. What to build
 
-Build a single-page landing site for **Interlock**, an open-source Claude Code plugin for spec-driven development, layered on OpenSpec. Deliver it as **one self-contained `index.html`**: inline CSS, inline SVG, vanilla JavaScript, no framework, no build step. It is served as-is from GitHub Pages at `https://renzrollon.github.io/interlock/`, beside a folder `assets/` that already holds the images named in Appendix A.0.
+Build a single-page landing site for **Interlock**, an open-source Claude Code plugin for spec-driven development, layered on OpenSpec. Deliver it as **one landing artboard** with one component per tab (`Why`, `Run`, `FirstHour`, `Limits`) and one shared stylesheet, `site.css`. The export is installed as-is under `site/`, where the landing artboard becomes `index.html` beside a folder `assets/` that already holds the images named in Appendix A.0. It is served from GitHub Pages at `https://renzrollon.github.io/interlock/`.
 
 The page has one job: convince an engineering team that already uses Claude Code to install Interlock and run one change through it this week. It does that by **showing a real run** and then letting the reader check the claims. Everything it states must be true of Interlock v1.5.0 exactly as the appendices describe it. Do not invent features, numbers, quotes, logos, customer names, testimonials, or benchmarks. If a section would need something the appendices do not supply, leave the section out.
 
@@ -45,47 +47,49 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 
 ## 3. Brand and visual system
 
-The project already has a visual, and the site extends it. You may have its files attached; here it is in words. An off-white paper ground. A wordmark **INTERLOCK** in a wide-tracked monospace, vermilion, over a thin vermilion rule. A very large, heavy grotesk headline in near-black: "Two commands. One human checkpoint." A ladder of commands separated by hairlines, each with a small uppercase mono eyebrow. Between `spec` and `ship`, one solid vermilion block, full width, white text: "THE ONLY STOP — You read the spec." Footer in mono: "The script holds the loop / the CLI holds the rules / the agents do the work". The terminal frames in the README are a dark panel on that paper ground, with the accent on the two or three lines that matter.
+**The visual system is the Interlock design system, revision 2** (the enterprise revision of 2026-10-11): cool neutrals on white, one cobalt accent, a semantic halt red, IBM Plex Sans and IBM Plex Mono, 600-weight headings, sentence-case eyebrows, 4px corners, 1px rules. It replaces the warm paper, vermilion and Archivo 800 of the first version. Its tokens are vendored beside the page at `site/ds/interlock/tokens.json`, each with a usage note; use the tokens by name and do not introduce a colour, a face, a radius or a shadow it does not define. What follows is the part of it this page leans on, and the rules that are this page's own.
 
-**Light is the default. Dark is a preference, not a mood.** The page renders on light paper unless the reader's system asks for dark. The poster, the README frames and the social card are all light, and a dark page with an orange accent is what every other developer tool looks like.
+**Light is the default. Dark is a preference, not a mood.** The page renders light unless the reader's system asks for dark.
 
-**Colour tokens.**
+**Colour, in short.**
 
-| Token | Light | Dark |
-|---|---|---|
-| paper (page ground) | `#F5F3EE` | `#161512` |
-| ink (text) | `#161512` | `#F5F3EE` |
-| muted (secondary text) | `#6B675F` | `#A39E94` |
-| hairline | `#161512` for section rules, `#D9D5CC` for table rows | `#F5F3EE` / `#3A3733` |
-| accent (vermilion) | `#EC3013` | `#FF563C` |
-| accent-ink (text on accent) | `#FFFFFF` | `#FFFFFF` |
-| code ground | `#ECE9E1` | `#201E1B` |
-| terminal ground (film frames and output panels, both themes) | `#201E1B` | `#201E1B` |
+| Token | Light | Dark | Used for |
+|---|---|---|---|
+| `color-bg` | `#ffffff` | `#0d1117` | page ground and the sticky header; never tinted warm |
+| `color-surface` | `#f5f7fa` | `#151b23` | the one quiet fill: code panels, table heads, panel header bars |
+| `color-text` · `-soft` · `-muted` | `#151a21` · `#475161` · `#5f6978` | `#e6eaf0` · `#aab3c0` · `#8c96a4` | copy, secondary copy, provenance and small print |
+| `color-divider` · `color-border` | `#dde2e8` · `#c3cad4` | `#262e39` · `#343d4a` | hairlines; the stronger rule around panels and the flow strip |
+| `color-accent` (cobalt) | `#1d5bd6` | `#5c9bff` | the one brand hue |
+| `color-halt` | `#c42b1c` | `#ff7b6e` | a halt, and nothing else |
+| `term-ground` | `#0f141a` | `#161c24` | output panels and film frames; near-black in both themes |
 
-**One accent, and its budget is a count.** Vermilion appears on exactly these: the checkpoint block, the Install button, eyebrows, the active tab underline, halt outlines and halt banners. Nothing else is vermilion: no link colour, no bullet, no icon, no figure, no section ground.
+**One accent, and its budget is a count.** Cobalt appears on exactly these: the primary button, links, eyebrows, the selected tab underline, focus rings, the checkpoint block in the flow strip and the human node in a diagram. Nothing else is cobalt: no bullet, no icon, no figure, no section ground.
 
-**Type.** Three faces and no more. Display: Archivo 700 to 800, fallback `system-ui, -apple-system, "Segoe UI", sans-serif`. Body: Inter 400 and 500 at 17px, line-height 1.55, measure 60 to 70 characters. Mono: JetBrains Mono, for every command, path, flag, value, label and eyebrow. Eyebrows are uppercase, 11 to 12px, letter-spacing 0.15em.
+**Red is semantic, never decorative.** `color-halt` outlines and labels halt nodes, the halt tag and a `SHIP HALTED` line. It never means "bad" anywhere else and never colours a number.
 
-- Hero H1: `clamp(44px, 6.5vw, 84px)`, letter-spacing `-0.025em`, line-height `1.0`, with at least 24px of clear space before the lede. The headline must never touch or overlap the paragraph under it at any width.
-- Tab headline: the display face, `clamp(30px, 4vw, 48px)`, same tracking.
-- Section subhead: 20 to 24px, Inter or Archivo at **500**, not heavy. A page where every heading is a heavy claim reads as generated; one heavy line per screen is the rule.
-- There is no third heading level. Inside a section, a mono eyebrow does the work.
+**Type.** Two families and no more: IBM Plex Sans for headings and body, IBM Plex Mono for every command, path, flag, value and caption line. Nothing is heavier than 600.
 
-**Layout language.** Swiss datasheet. Sections are separated by 1px hairlines and whitespace. **No card grid**: no boxes with a border and a radius laid out in rows, no tiles. Left-aligned text. Max content width 1120px, a side gutter of at least 16px at every width. Tables with hairline rows and mono values. No gradients, no glass, no drop shadows, no pill buttons (2px radius at most), no stock illustration, no 3D, no rounded blob shapes, no icon set.
+- Hero H1 (`display-hero`): `clamp(36px, 5.2vw, 56px)`, line-height 1.08, letter-spacing `-0.02em`, 600, with 24px of clear space before the lede. The headline must never touch or overlap the paragraph under it at any width.
+- Tab headline (`display-section`): `clamp(28px, 3.6vw, 40px)`, 600. One per tab.
+- Section subhead (`title-lg`): 20 to 24px at **500**, a plain label of what is under it. A page where every heading is a heavy claim reads as generated; one heavy line per screen is the rule.
+- Eyebrow: 13px, 600, sentence case, `color-accent`, no tracking, no uppercase. The wordmark is the one place capitals are tracked.
+- There is no third heading level.
+
+**Layout language.** A datasheet. Sections are separated by 1px `color-divider` rules and whitespace. **No card grid**: no tiles laid out in rows; a bordered box is for a control, a code panel or a table, never for a paragraph. Left-aligned text. Content column 1120px, gutter 24px, 16px under 640px. 4px radius on controls and panels, nothing rounder. Nothing on the landing page casts a shadow. No gradients, no glass, no stock illustration, no 3D, no icon set beyond the few control glyphs.
 
 **Every section earns its place by showing something the tool printed or recorded.** That is film, a still from the film, an output panel, or a table of values. A section with none of those is prose, and prose gets no box, no background and no border: it is a subhead and paragraphs.
 
 **No stat tile for a number that changes monthly.** The proof strip holds three figures that are true by construction (Appendix A.4). Counts that move with every release, such as test files, shipped changes and commits, live in one table row each, labelled with the version and the command that produced them (Appendix G.2).
 
-**Output panels.** A panel is the terminal ground at both themes, mono 13 to 14px, 2px radius, no window chrome and no traffic-light dots. Above it sits one mono caption line saying what printed it. Long lines scroll inside the panel; the body never scrolls sideways.
+**Output panels.** A panel is `term-ground` at both themes, mono 13.5px, 4px radius, no window chrome and no traffic-light dots. Above it sits one mono caption line saying what printed it. `term-accent` marks the two or three lines that matter (`SHIP COMPLETE`, the commit, `GATE` lines), `term-halt` marks a halt, `term-dim` is the page's own narration. Long lines scroll inside the panel; the body never scrolls sideways.
 
-**Diagrams.** Inline SVG. 1.5px strokes in ink. Mono labels. Boxes are rectangles with square corners. Arrows are plain lines with small closed heads. The human node is the only accent-filled shape in any diagram. Halt nodes are outlined in accent with accent text.
+**Diagrams.** Inline SVG. 1px strokes, 2px for the current node only. Mono labels. Boxes are rectangles. Arrows are plain lines with small closed heads. The human node is the only accent-filled shape in any diagram. Halt nodes are outlined in `color-halt`.
 
 **Motion.** Minimal. 150ms fades on tab change. A stepper animates by changing a highlighted node, not by moving things. Respect `prefers-reduced-motion`: no animation at all when set, and the hero film does not autoplay (Appendix A.0).
 
 ## 4. Page structure
 
-**Sticky header** (48 to 56px): wordmark `INTERLOCK` in mono, accent, letter-spaced, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. On phones the tab bar scrolls horizontally inside the header and the GitHub link moves to the footer.
+**Sticky header** (48 to 56px): wordmark `INTERLOCK` in tracked mono capitals after a 10px accent square, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. On phones the tab bar scrolls horizontally inside the header and the GitHub link moves to the footer.
 
 **Hero, above the tabs**, always present on arrival. Two columns from 960px up, stacked below it:
 
@@ -148,18 +152,18 @@ Build these and no others. There is no decision lens, no layer drawer and no too
 
 ## 6. Technical constraints
 
-- One file, `index.html`, aiming under 400KB. Inline everything except Google Fonts, the images in `assets/`, and the two films.
-- **The only network requests** the page may make are: Google Fonts; `assets/poster-hero.jpg`, `assets/poster-full.jpg` and `assets/ship-meter.webp` (same origin, relative paths, exactly as written); and the two `.mp4` URLs in Appendix A.0. No other host, no script, no stylesheet, no tracker, no iframe.
+- One landing artboard, four tab components and `site.css`. No other script, stylesheet or framework than the Design Component runtime the export ships with.
+- **The only requests to another origin or to `assets/`** the page may make are: Google Fonts; `assets/poster-hero.jpg`, `assets/poster-full.jpg` and `assets/ship-meter.webp` (same origin, relative paths, exactly as written); and the two `.mp4` URLs in Appendix A.0. No other host, no script, no stylesheet, no tracker, no iframe.
 - The images and films may not load inside your preview. Keep every `<img>`, `<video>`, `<source>`, `poster`, `width` and `height` exactly as Appendix A.0 gives it; the attributes hold the layout until the file arrives.
-- Vanilla JavaScript, no framework, no bundler. The content is real HTML in the document, not a string assembled by script: with JavaScript off, all four tab panels render stacked in order with their headings.
-- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab and scrolls to the top of it; the browser back button moves between tabs.
+- The page is rendered by the export's runtime, so it needs JavaScript and has no fallback without it. Write nothing that promises one.
+- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab and scrolls to the top of it; the browser back button moves between tabs, including back to the entry URL with no hash, which selects `#why`. An in-page anchor such as `#install` never changes the tab.
 - Tabs use `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, arrow-key navigation, and a visible focus ring.
-- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a CSS custom property on `:root` with the light values; redefine only the tokens under `@media (prefers-color-scheme: dark)` and under `[data-theme="dark"]`. A browser that reports no preference gets the light page.
+- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a custom property with the light values and redefine only the tokens for dark. A browser that reports no preference gets the light page.
 - **Responsive from 375px to 1600px, and there is no horizontal scroll on the body at any width.** Tables, diagrams and output panels scroll inside their own container. At 375px: the flow strip is the vertical list from §5; the proof strip stacks one figure per row; in the install panels each `#` comment drops to its own line above its command instead of being cut off; two-column sections stack.
 - Every SVG diagram has a `<title>` and its labels are real text, not paths.
 - Copy buttons use the Clipboard API and fall back to selecting the text.
 - No analytics, no cookies, no forms.
-- Head: `<title>Interlock</title>`, a meta description, Open Graph title and description, `og:image` and `twitter:image` set to `https://renzrollon.github.io/interlock/assets/social-preview.png` (1280×640), `twitter:card` `summary_large_image`, and an inline SVG favicon as a data URI: a 32×32 paper square with one 4px vermilion rule across its lower third.
+- Head: `<title>Interlock</title>` and the font links. The viewport meta, the description, the Open Graph tags (`og:image` is `https://renzrollon.github.io/interlock/assets/social-preview.png`) and the favicon are static tags added when the export is installed, because a crawler does not run the runtime; do not rely on `<helmet>` for them.
 - Print: nothing special required.
 
 ## 7. Rules of honesty
@@ -182,18 +186,18 @@ These follow the project's own rules and the page breaks trust if it breaks them
 
 Before returning the file, confirm each of these:
 
-- [ ] One `index.html`. Its only requests are Google Fonts, three files under `assets/`, and the two `.mp4` URLs.
+- [ ] One landing artboard and four tab components. Beyond its own files, its only requests are Google Fonts, three files under `assets/`, and the two `.mp4` URLs.
 - [ ] Light by default; dark only on `prefers-color-scheme: dark` or the toggle.
 - [ ] Hero: headline and lede at left, the 34-second loop at right with `muted autoplay loop playsinline` and its poster; the H1 does not touch the lede at 375, 768 or 1440px.
 - [ ] The whole-run film with its poster, `controls`, `preload="none"` and the provenance line.
-- [ ] Four tabs, hash-routed, keyboard-navigable, readable with JavaScript disabled.
+- [ ] Four tabs, hash-routed, keyboard-navigable; the back button works from every tab, including back to the hashless entry URL.
 - [ ] One display-face headline per tab, at most four sections per tab, no third heading level.
 - [ ] Flow strip with the accent checkpoint block; a vertical list under 640px.
 - [ ] Run state machine with Step / Play / Reset, three toggles and the terminal; the loud halts table; the C.9 panel.
 - [ ] First-hour timeline with persisted checkboxes and copy buttons.
 - [ ] Searchable caps table; adjudication simulator; landscape table; objections as `<details>`; stated limits; provenance table.
 - [ ] Three-figure proof strip. No other stat tile anywhere.
-- [ ] Vermilion only on the six things §3 lists. No card grid.
+- [ ] Cobalt only on the things §3 lists; red only on halts. No card grid.
 - [ ] No banned words. No invented facts or output. Every number traceable to Appendix G or A.0.
 - [ ] No horizontal body scroll at 375px.
 
@@ -217,7 +221,7 @@ One real run of `/interlock:spec` then `/interlock:ship`, recorded on a demo rep
 </video>
 ```
 
-The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts, show the poster, and overlay one square play button in ink on paper.
+The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts, show the poster, and overlay one square play button.
 
 Caption under the loop, body face:
 > One real run, cut to 34 s. `spec` asks one question, writes 11 specs and 12 tasks, then stops. `ship` runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.
@@ -251,11 +255,11 @@ A plain text link after it, for a reader whose browser will not play it inline: 
 | `assets/poster-full.jpg` | 1920×1206 | poster of the whole run | The ship meter during wave 1: a wave board with three lanes running in parallel and a second wave pending, above a timeline of the run's steps, captioned "Wave 1: eight slices on three agents". |
 | `assets/ship-meter.webp` | 1400×1050 | The run tab, *You can watch it* | The ship meter's wave board, a frame from the recording: wave 1 with three lanes marked ok and their durations, wave 2 with two lanes current and one pending behind them. |
 
-`assets/social-preview.png` (1280×640) is the Open Graph image and appears nowhere in the body. All of these are dark terminal frames or the light poster; set each on the paper ground with no border, no shadow and no device chrome.
+`assets/social-preview.png` (1280×640) is the Open Graph image and appears nowhere in the body. The three body images are dark terminal frames; set each on the page ground with no shadow and no device chrome. `social-preview.png` was exported in the first, warm palette and is due for re-export in the revised one.
 
 ## A.1 Hero
 
-**Eyebrow:** `SPEC-DRIVEN DEVELOPMENT FOR CLAUDE CODE · LAYERED ON OPENSPEC · v1.5.0`
+**Eyebrow:** Spec-driven development for Claude Code · Layered on OpenSpec · v1.5.0
 
 **H1:** Two commands. One human checkpoint.
 
@@ -275,7 +279,7 @@ Five nodes, left to right. The description follows each.
 | `ship` | `WORKFLOW` (accent outline) | Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything. |
 | `mr` | — | The merge request, when you want it. Ends by reminding you to archive the change. |
 
-Eyebrows above the strip, in mono: over `bootstrap`: `RUN ONCE, AFTER YOU CLONE`; over `spec` through `mr`: `THEN, EVERY CHANGE`; a right-aligned `↺ REVISE IDEA → RE-SPEC` on the checkpoint block.
+Eyebrows above the strip, sentence case: over `bootstrap`: "Run once, after you clone"; over `spec` through `mr`: "Then, every change"; a right-aligned "↺ Revise idea → re-spec" on the checkpoint block.
 
 Mono line beneath the strip: **ship is a dynamic workflow, so there is nobody to ask.**
 
@@ -283,7 +287,7 @@ Mono line beneath the strip: **ship is a dynamic workflow, so there is nobody to
 
 Three code panels, each with a copy button.
 
-Panel 1, caption `INSTALL`:
+Panel 1, caption "Install":
 ```
 npm install -g @fission-ai/openspec@latest
 cd your-project && openspec init
@@ -291,13 +295,13 @@ cd your-project && openspec init
 /plugin install interlock@interlock
 ```
 
-Panel 2, caption `ONCE PER REPO`:
+Panel 2, caption "Once per repo":
 ```
 interlock doctor              # prints the exact allowlist an unattended run needs
 /interlock:bootstrap          # code → understanding → graph
 ```
 
-Panel 3, caption `EVERY CHANGE`:
+Panel 3, caption "Every change":
 ```
 /interlock:spec "<idea>"      # explore → artifacts → review, then stops
 /interlock:ship               # waves → verify → commit
