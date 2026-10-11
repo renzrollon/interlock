@@ -1,6 +1,6 @@
 {
   "name": "@renzrollon/interlock",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Spec-driven development for Claude Code, layered on OpenSpec. You read one spec; parallel agents ship it to a tested commit.",
   "type": "module",
   "engines": {

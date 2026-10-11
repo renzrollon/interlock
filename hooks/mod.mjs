@@ -2125,14 +2125,18 @@ export function register(on) {
   // The kit raises this event; Claude Code 2.1.291 raises no classic event to
   // a module, so there the prompt hook above reads the report instead.
   //
-  // Pass the event on unchanged. The value this hook returns is the forward
-  // itself: no first message, no permission decision. The meter's reset runs
-  // before that chain and the preflight read after it; neither becomes the return.
+  // Pass the event on unchanged. The hook returns the forward call itself,
+  // continued once: when the chain beneath has resolved, the preflight's
+  // report is read, and the continuation hands back the value that chain
+  // resolved with, as it came. No first message and no permission decision
+  // come from this hook. The meter's reset runs before the chain. A chain
+  // that rejects skips the read, and the rejection goes on as it came.
   on('classic.SessionStart', async (meterSessionApi, meterSessionInput, meterSessionForward) => {
     endRunAtBoundary(meterSessionApi, meterSessionInput)
-    const sessionForwarded = meterSessionForward(meterSessionInput)
-    await sessionForwarded.then(() => readPreflightAfterStart(meterSessionApi, meterSessionInput))
-    return sessionForwarded
+    return meterSessionForward(meterSessionInput).then(async started => {
+      await readPreflightAfterStart(meterSessionApi, meterSessionInput)
+      return started
+    })
   })
 
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {

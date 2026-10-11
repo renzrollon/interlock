@@ -7,6 +7,17 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.5.1 — 2026-10-11
+
+### Changed
+
+- **`docs/08` is about Interlock's own harness.** It was a survey of OpenClaw, Hermes Agent and DeepSeek Harness. It now maps the parts of the harness, what holds on each host, and what is left out on purpose; the other projects are one comparison table. The page no longer says lane isolation is closed on the Workflow host, which still halts with `LANE BASE MISMATCH` after the first fold.
+- **The README says what the one network call sends.** It said a push happens when `INTERLOCK_NTFY_TOPIC` is set. It now names what goes out (the close summary's first line, the change name and the run id; the change name at the spec checkpoint; the title and body of a `notify` you type), which server receives it, that the topic is the only thing in the request that identifies you, and that no request is made without one. It also says the plugin's `ntfy topic` option reaches the CLI through the session's environment, and that `interlock doctor` reads a model credential by name and never by value. The plugin directory holds a plugin that reads a value from the environment and posts to a server until a reviewer has read this.
+
+### Fixed
+
+- **The session-start hook returns the forward itself.** The `classic.SessionStart` hook in `hooks/mod.mjs` held the forward in a variable, awaited the preflight read, and returned the variable. The plugin directory's reader could not tell that return from a first message or a permission decision of the hook's own, and held the version. The hook now returns the forward call, continued once to read the preflight's report and hand back the value the chain resolved with. Nothing a session sees changes: the read still finishes before the event resolves, and a chain that rejects still skips it. `test/mod/session-start.test.ts` and `test/spine/mod-pins.test.mjs` cover it unchanged.
+
 ## 1.5.0 — 2026-10-11
 
 ### Added
