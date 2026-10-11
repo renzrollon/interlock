@@ -195,7 +195,7 @@ Under `--isolate-waves` the race closes anyway, without needing the prediction t
 
 `paths` is optional by design. A classifier that cannot predict must be able to say nothing: an invented path serializes a batch for no reason, while an omitted one leaves things exactly as they were.
 
-Inter-wave verification is capped (`LIMITS.interWaveVerifications`) and skipped for docs-only waves. A wave boundary is not automatically a checkpoint.
+Inter-wave verification is capped (`LIMITS.interWaveVerifications`) and skipped for docs-only waves. Its time budget is derived from the test profile's `unit.timeout_ms` when the profile has one and is floored at the published budget (the `inter-wave verify budget (floor)` row of `interlock limits`), so a suite slower than the floor is still planned; a profile with no timeout gets the floor and a named banner. A wave boundary is not automatically a checkpoint.
 
 ### 5.3 Hardest first
 
@@ -320,7 +320,7 @@ Node types: `file`, `module`, `symbol`, `external`, `unresolved`, `openspec`, `m
 
 Every edge carries a `confidence` — `EXTRACTED` (parsed) or `INFERRED` (matched). That distinction propagates all the way to policy: **treat `INFERRED` edges as hints and verify with `Read` spans before making claims.** It is also why the drift gate reports rather than blocks (§10).
 
-Structural indexing covers JavaScript/TypeScript, Python and shell. Other languages get docs and OpenSpec indexing, spec→file links, prose retrieval, and the complete workflow. When a build indexes nothing it says so and explains why — an empty graph is never reported as success.
+Structural indexing covers JavaScript/TypeScript, Python, shell, C# (`.cs`, `.csproj`) and Bicep (`.bicep`); C# type and test references are `INFERRED`. Other languages get docs and OpenSpec indexing, spec→file links, prose retrieval, and the complete workflow. When a build indexes nothing it says so and explains why — an empty graph is never reported as success.
 
 `interlock-graph consumers <symbol>` is the structural half of the invariant sweep. The prose retrieval half feeds §4.3.
 

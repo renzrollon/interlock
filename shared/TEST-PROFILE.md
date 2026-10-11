@@ -67,7 +67,7 @@ the profile.
 | `single_file` | How to run one file (string with path implied, or template) |
 | `env` | Extra env vars required for a green run (not secrets — names/placeholders only) |
 | `prerequisites` | Human-readable setup steps (dev server, seeded DB, `npx playwright install`, …) |
-| `timeout_ms` | Soft budget for one full suite run; do not raise to mask races |
+| `timeout_ms` | Soft budget for one full suite run; do not raise to mask races. The ship run's inter-wave verify budget is derived from `unit.timeout_ms` (floored at the published budget); `interlock verify plan --context inter-wave --json` prints the result |
 | `coverage.enabled` | Whether a coverage command is known. `false` = not configured (never an error) |
 | `coverage.command` | Full shell command that produces a coverage report (e.g. `npm run coverage`) |
 | `coverage.report_path` | Where the report lands, relative to `unit.cwd` (`coverage/lcov.info`, `coverage/coverage-summary.json`, …) |

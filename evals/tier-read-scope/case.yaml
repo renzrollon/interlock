@@ -45,7 +45,7 @@ execution:
         "summary": "...", "evidence": ["path:12-40"], "next": "...", "blocker": null }
     - status "ok" means blocker is null; "blocked" and "partial" need a non-empty blocker.
     - evidence is at most 8 locators (path, path:line, path:start-end) — never file bodies.
-    - Keep it terse. A packet over the character cap `interlock limits` publishes fails the task, and it is never truncated for you.
+    - Keep it terse. A packet over the character cap `interlock limits` publishes is rejected whole — it is never truncated for you, and your task is recorded as having filed no usable report.
 
     Report ok:false if you could not complete the task, with what blocked you.
   max_turns: 8

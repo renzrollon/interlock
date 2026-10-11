@@ -47,7 +47,7 @@ function file(name, contents) {
   return p
 }
 
-/** record-batch fails a task that claims ok:true without a valid handoff. */
+/** record-batch rejects the report of a task that claims ok:true without a valid handoff. */
 const okTask = id => ({
   id,
   ok: true,

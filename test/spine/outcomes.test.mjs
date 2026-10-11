@@ -571,3 +571,19 @@ test('formatOutcomes counts by mode and states that nothing gates on it', () => 
 function isRoot() {
   return typeof process.getuid === 'function' && process.getuid() === 0
 }
+
+test('a wave row with rejected reports carries the ids into the outcome, and an absent key stays absent', () => {
+  const observed = observedFromReceipt(
+    receiptOf({
+      waves: [
+        { wave: 1, ok: 2, failed: 0, notAttempted: [], reportRejected: ['5.3'] },
+        { wave: 2, ok: 1, failed: 0, notAttempted: [] }
+      ]
+    })
+  )
+  const record = JSON.parse(lines(appendOutcome(tmp, { ...base, observed }).path)[0])
+  assert.deepEqual(record.observed.waves[0].reportRejected, ['5.3'])
+  // Absent, not null: a row from before the field existed keeps the shape the
+  // older pins hold it to, and absent is what reads as unobserved.
+  assert.equal('reportRejected' in record.observed.waves[1], false, 'never [] and never 0')
+})

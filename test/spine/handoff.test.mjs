@@ -2,7 +2,7 @@
 // before it. Everything else it knows, it reads for itself.
 //
 // So the tests here are about refusal. A packet that is missing, malformed,
-// mislabelled or over budget must fail its task rather than reach the next wave
+// mislabelled or over budget must be rejected rather than reach the next wave
 // as prose — the whole reason the schema exists is that the alternative (infer
 // it from git and a mutable state file) cannot be refused. There is deliberately
 // no truncation path to test: an over-budget packet is rejected, never trimmed.
@@ -165,6 +165,39 @@ test('a dropped schema tag is defaulted, a wrong one is refused', () => {
   const wrong = validateHandoff('1.1', packet({ schema: 'interlock.wave-handoff/2' }))
   assert.equal(wrong.ok, false)
   assert.match(wrong.error, /unknown handoff schema/)
+})
+
+// The reason a packet was rejected travels: to the banner, the run state, the
+// next wave's briefing and the review. So what it quotes of the packet is a short
+// single-line diagnostic, never the packet's own text riding along as "the reason".
+test('a rejection reason quotes the offending value clipped and on one line', () => {
+  const body = `export const secret = 1\n${'x'.repeat(5000)}`
+  const offenders = {
+    schema: packet({ schema: body }),
+    taskId: packet({ taskId: body }),
+    status: packet({ status: body }),
+    evidence: packet({ evidence: [body] })
+  }
+  for (const [field, bad] of Object.entries(offenders)) {
+    const got = validateHandoff('1.1', bad)
+    assert.equal(got.ok, false, `${field}: must not validate`)
+    assert.ok(!/[\r\n]/.test(got.error), `${field}: the reason must stay on one line`)
+    assert.ok(got.error.length < 400, `${field}: the reason carried ${got.error.length} characters`)
+    assert.ok(!got.error.includes('x'.repeat(200)), `${field}: the value was quoted whole`)
+    assert.ok(got.error.includes('export const secret'), `${field}: the reason still names what was wrong`)
+  }
+})
+
+test('a short offending value is quoted whole, as it always was', () => {
+  assert.equal(
+    validateHandoff('1.1', packet({ schema: 'interlock.wave-handoff/2' })).error,
+    `unknown handoff schema "interlock.wave-handoff/2" (expected ${HANDOFF_SCHEMA})`
+  )
+  assert.equal(
+    validateHandoff('1.1', packet({ evidence: ['src/DeviceMetricSource.cs:31-73,89'] })).error,
+    'evidence entry "src/DeviceMetricSource.cs:31-73,89" is not a locator (path, path:line or path:start-end)'
+  )
+  assert.match(validateHandoff('1.1', packet({ status: undefined })).error, /got undefined$/)
 })
 
 test('evidence is optional and normalizes to an empty array', () => {

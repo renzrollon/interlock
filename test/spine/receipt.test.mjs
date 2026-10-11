@@ -437,3 +437,32 @@ test('a main-checkout run prints no state home row, so its summary is unchanged'
   assert.equal(formatRunSummary({ ...base, stateHome: '' }), before)
   assert.equal(formatRunSummary({ ...base, stateHome: null }), before)
 })
+
+// --- reportRejected and verifyBudget (spec: ship-run, verify) ---------------
+
+test('a wave row with rejected reports is carried to the receipt and rendered on its own line', () => {
+  const wave = { wave: 1, kind: 'implement', ok: 3, failed: 0 }
+  const plain = { change: 'add-thing', summary: { waves: [wave] } }
+  const rejected = { change: 'add-thing', summary: { waves: [{ ...wave, reportRejected: ['5.3', '8.1'] }] } }
+
+  assert.deepEqual(buildReceipt(rejected).waves[0].reportRejected, ['5.3', '8.1'])
+
+  const text = formatRunSummary(rejected)
+  assert.match(text, /handoff reports rejected: 5\.3, 8\.1/)
+
+  const waveLine = t => t.split('\n').find(l => /wave 1 \(implement\): 3 ok, 0 failed/.test(l))
+  assert.ok(waveLine(text), 'the wave line is still printed')
+  assert.equal(waveLine(text), waveLine(formatRunSummary(plain)), 'the wave line is byte-identical without the field')
+
+  assert.doesNotMatch(formatRunSummary(plain), /handoff reports rejected/)
+  const empty = { change: 'add-thing', summary: { waves: [{ ...wave, reportRejected: [] }] } }
+  assert.doesNotMatch(formatRunSummary(empty), /handoff reports rejected/)
+})
+
+test('the inter-wave verify budget on the summary is carried to the receipt', () => {
+  const receipt = buildReceipt({
+    change: 'add-thing',
+    summary: { waves: [], verifyBudget: { ms: 480000, source: 'profile' } }
+  })
+  assert.deepEqual(receipt.verifyBudget, { ms: 480000, source: 'profile' })
+})

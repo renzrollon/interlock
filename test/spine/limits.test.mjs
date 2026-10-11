@@ -665,3 +665,26 @@ test('the handoff pane\'s cap is published, read under lib/, and restated nowher
     assert.ok(!mod.includes(restated), `hooks/mod.mjs restates ${restated} instead of leaving it to lib/preflight-file.mjs`)
   }
 })
+
+test('the inter-wave verify budget is published as a floor, in prose and in --json, and read by name', () => {
+  assert.match(
+    formatLimits(),
+    new RegExp(`inter-wave verify budget \\(floor\\)\\s+${LIMITS.interWaveVerifyBudgetMs / 1000}s`)
+  )
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, `interlock limits --json exited ${run.status}: ${run.stderr}`)
+  assert.equal(JSON.parse(run.stdout).limits.interWaveVerifyBudgetMs, LIMITS.interWaveVerifyBudgetMs)
+
+  const source = readFileSync(join(ROOT, 'lib', 'verify.mjs'), 'utf8')
+  const start = source.indexOf('function interWaveVerifyBudget')
+  assert.ok(start >= 0, 'lib/verify.mjs defines interWaveVerifyBudget')
+  const rest = source.slice(start + 1)
+  const next = rest.search(/\n(?:export )?(?:async )?function |\n\/\*\*/)
+  const body = source.slice(start, next < 0 ? undefined : start + 1 + next)
+  assert.ok(body.includes('LIMITS.interWaveVerifyBudgetMs'), 'the floor is read by name')
+  assert.ok(body.includes('LIMITS.interWaveVerifications'), 'the verification count is read by name')
+  assert.doesNotMatch(body, /\b(?:60_?000|60|3)\b/, 'no numeric literal restates either constant')
+})

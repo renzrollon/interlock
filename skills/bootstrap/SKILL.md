@@ -32,21 +32,28 @@ This is archaeology, not design. Every spec you write describes behavior that ex
 test -f openspec/config.yaml || openspec init --tools claude
 
 # Build the structural graph once — it seeds every explorer below.
-# Never swallow the outcome: stderr stays visible, and both failure modes
-# (build errored / nothing indexable) get a banner.
+# Never swallow the outcome: stderr stays visible, and every way the graph can
+# come back less than whole (build errored / nothing readable / nothing
+# indexable / some paths unreadable) gets a banner.
 graph_log=$(interlock-graph build .)
 graph_status=$?
 printf '%s\n' "$graph_log"
 if [ "$graph_status" -ne 0 ]; then
   echo "GRAPH UNAVAILABLE: build errored (exit $graph_status) — explorers fall back to grep and will be slower"
+elif printf '%s' "$graph_log" | grep -q 'nothing indexable under the root could be read'; then
+  echo "GRAPH UNAVAILABLE: nothing under the root could be read — explorers fall back to grep and will be slower"
 elif printf '%s' "$graph_log" | grep -q 'nodes=0'; then
   echo "GRAPH UNAVAILABLE: nothing indexable found — explorers fall back to grep and will be slower"
+elif printf '%s' "$graph_log" | grep -q 'skipped='; then
+  echo "GRAPH PARTIAL: some paths were unreadable and are not in the graph (each is named above as GRAPH SKIPPED UNREADABLE) — a missing edge for one of them is not evidence of absence"
 fi
 ```
 
 **A graph failure is not a stop.** Bootstrap works without it — docs and OpenSpec indexing still happen — so print the banner, carry it to the final report, and continue with degraded expectations: the explorers grep instead of following edges, and they are slower for it.
 
-`nodes=0` is the ordinary case for a repo the graph doesn't structurally index (Go, Rust, Java, Ruby — structural indexing covers JavaScript/TypeScript, Python and shell). Say which of the two reasons applied rather than presenting either as a defect.
+**A partial graph is not a failure, and not a whole graph either.** `interlock-graph build` exits 0 when it meets a path it cannot read: it skips the path, names it on stderr as `GRAPH SKIPPED UNREADABLE: <path> (<code>)`, and ends its summary line in `skipped=<n>`. The exit code alone no longer tells you the graph is complete. The explorers still follow edges, but nothing about a skipped path is in the graph, so tell them which paths those were and have them `Read` or grep there instead of trusting an empty result.
+
+`nodes=0` is the ordinary case for a repo the graph doesn't structurally index (Go, Rust, Java, Ruby — structural indexing covers JavaScript/TypeScript, Python, shell, C# (`.cs`, `.csproj`) and Bicep (`.bicep`)). Say which reason applied — an unsupported language, or a tree that could not be read — rather than presenting either as a defect.
 
 When the build did produce a graph, **read `.claude/graph/GRAPH_REPORT.md` before spawning anything**. Its hub nodes and module boundaries tell the explorers where to look, so they don't rediscover the tree from scratch.
 
@@ -159,7 +166,7 @@ Fill in the project context in `openspec/config.yaml` with what was discovered �
 
 ## 6. REPORT
 
-- Any `GRAPH UNAVAILABLE: <reason> — explorers fall back to grep and will be slower` banner from pre-flight, repeated verbatim. If the graph built, say so in one line instead — a report that mentions neither reads like a graph-backed run that never happened.
+- Any `GRAPH UNAVAILABLE: <reason> — explorers fall back to grep and will be slower` banner from pre-flight, repeated verbatim. A `GRAPH PARTIAL` banner is repeated verbatim too, followed by the paths the build named as `GRAPH SKIPPED UNREADABLE`. If the graph built whole, say so in one line instead — a report that mentions none of these reads like a graph-backed run that never happened.
 - Architecture doc path and what it covers
 - Specs created, and specs skipped because they already existed
 - Features deliberately not specced, with the reason

@@ -511,3 +511,20 @@ test('listResumeCards never throws, whatever it is handed', () => {
   assert.deepEqual(listResumeCards(), { listed: [], archived: 0, unreadable: [], lookedIn: [] })
   assert.deepEqual(listResumeCards({ roots: 'nope' }), { listed: [], archived: 0, unreadable: [], lookedIn: [] })
 })
+
+test('a halted run with a rejected handoff report names the task ids, and a run with none says nothing', () => {
+  const withRejected = formatResumeCard({
+    ...HALTED,
+    waves: [{ wave: 1, kind: 'implement', ok: 2, failed: 1, reportRejected: ['5.3', '8.1'] }]
+  })
+  const line = withRejected.split('\n').find(l => /handoff reports rejected/.test(l))
+  assert.ok(line, 'the card has a handoff reports rejected line')
+  assert.match(withRejected, /5\.3/)
+  assert.match(withRejected, /8\.1/)
+
+  assert.doesNotMatch(formatResumeCard(HALTED), /handoff reports rejected/)
+  assert.doesNotMatch(
+    formatResumeCard({ ...HALTED, waves: [{ wave: 1, kind: 'implement', ok: 2, failed: 1, reportRejected: [] }] }),
+    /handoff reports rejected/
+  )
+})

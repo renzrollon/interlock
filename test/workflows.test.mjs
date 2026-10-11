@@ -2453,12 +2453,18 @@ test('a mid-lane failure ticks the earlier task and counts one failure', async (
 // success with a packet the state machine rejects, and the CLI records what it
 // records — so the two observations differ for the reason they differ in
 // production, instead of because a fixture said so.
+//
+// What the CLI records for that input changed (fit-ship-and-graph-to-compiled-
+// repos): the PACKET still fails closed, the task does not. A task that reported
+// success with a rejected packet is recorded as done with a rejected report, so
+// claim and record agree and nothing is overridden. The tick and the tally are
+// still read from the record — which is what this case goes on pinning.
 
-test('a claim the CLI recorded as failed is neither ticked nor counted as ok', async () => {
+test('a claim whose packet the CLI rejected is ticked, tallied as ok, and said to have filed no report', async () => {
   const lane = [laneTask('1.1'), laneTask('1.2')]
   const { output, root } = await runLane(lane, {
     // Both claimed ok, both carrying a packet whose status is outside the
-    // accepted set — which `record-batch` fails the task for.
+    // accepted set — which `record-batch` rejects the packet for.
     tasks: lane.map(t => ({
       id: t.id,
       outcome: 'ok',
@@ -2466,16 +2472,22 @@ test('a claim the CLI recorded as failed is neither ticked nor counted as ok', a
     }))
   })
   try {
-    assert.deepEqual(ticked(root), [], 'a task the run recorded as failed must never be ticked')
+    assert.deepEqual(ticked(root), ['1.1', '1.2'], 'a task the run recorded as done is ticked')
     assert.match(
       output,
-      /wave 1 \(run-batch\): 0 ok, 2 failed/,
-      'the tally counts the recorded outcomes, not the claims'
+      /wave 1 \(run-batch\): 2 ok, 0 failed/,
+      'the tally counts the recorded outcomes, and a rejected report is not a failure'
     )
     assert.match(
       output,
-      /CLAIM OVERRIDDEN: 1\.1, 1\.2/,
-      'overriding a claim is a finding, not a silent fix'
+      /HANDOFF REJECTED: [^\n]*1\.1[^\n]*1\.2/,
+      'a rejected report is a finding, not a silent pass'
+    )
+    assert.match(output, /handoff reports rejected: 1\.1, 1\.2/, 'and has a row of its own')
+    assert.doesNotMatch(
+      output,
+      /CLAIM OVERRIDDEN/,
+      'the claim and the record agree, so nothing was overridden'
     )
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -4017,6 +4029,26 @@ test('the CLI ticks and tallies from what it recorded, never from the agent\'s c
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   assert.match(run, /verdict\.tickIds/)
   assert.doesNotMatch(run, /\.filter\(r => r\.ok\)/, 'the tick list must not be rebuilt from the agents own claims')
+})
+
+test('a report the CLI rejected rides the recorded outcome through adjudication and the relay', () => {
+  const { recordedOutcomes, adjudicateBatches, RELAY_STEP_FIELDS, relayStep } = RUN_MODULE
+  const recorded = recordedOutcomes([{ id: '1.1', outcome: 'ok', reportRejected: 'the cap is 2000' }])
+  assert.equal(recorded[0].reportRejected, 'the cap is 2000')
+
+  const verdict = adjudicateBatches([[{ id: '1.1', ok: true }]], recorded)
+  assert.deepEqual(verdict.tickIds, ['1.1'])
+  assert.deepEqual(verdict.overrides, [])
+  assert.deepEqual(verdict.rejected, [{ id: '1.1', reason: 'the cap is 2000' }])
+  assert.equal(verdict.waves[0].failed, 0)
+  assert.deepEqual(verdict.waves[0].reportRejected, ['1.1'])
+
+  assert.ok(RELAY_STEP_FIELDS.includes('recorded'))
+  const slim = relayStep(
+    { host: { id: 'workflow' } },
+    { action: 'run-batch', recorded: [{ id: '1.1', outcome: 'ok', reportRejected: 'the cap is 2000' }] }
+  )
+  assert.equal(slim.recorded[0].reportRejected, 'the cap is 2000')
 })
 
 test('the CLI asks the checkboxes what is unchecked instead of listing failures', () => {
