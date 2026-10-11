@@ -14,9 +14,20 @@ metadata:
 
 Build and query a **local, deterministic** codebase knowledge graph. No vector store, no external service, no network.
 
-**What gets indexed:** JS/TS, Python (`.py`/`.pyi`), shell (`.sh`/`.bash`), and curated small config JSON (`package.json`, `tsconfig*.json` — not lockfiles). Markdown stays on the bounded-retrieval path (`DOCS_DIGEST.md` / `context` / `docs`) plus the OpenSpec overlay — never dump every `*.md` into `graph.json`.
+**What gets indexed:** JS/TS, Python (`.py`/`.pyi`), shell (`.sh`/`.bash`), C# (`.cs`, and `.csproj` project references), Bicep (`.bicep`), and curated small config JSON (`package.json`, `tsconfig*.json` — not lockfiles). Markdown stays on the bounded-retrieval path (`DOCS_DIGEST.md` / `context` / `docs`) plus the OpenSpec overlay — never dump every `*.md` into `graph.json`.
 
 Languages outside that set (Go, Rust, Java, Ruby) are **not** structurally indexed: you still get the docs and OpenSpec overlays, but no import/symbol edges. Say so plainly rather than implying the graph is complete.
+
+**C# is inferred, not resolved.** A `.csproj` `ProjectReference` is an `EXTRACTED` project-to-project edge. A C# type reference and a test-to-type link are `INFERRED`: they come from identifier matching against the namespaces a file can see, not from a compiler. Treat them as hints to verify. Four limits are known and not worked around:
+
+- A type named only by its fully-qualified name, with no `using`, is not seen.
+- `global using` applies to the file that holds it, not to its project.
+- A nested type is a symbol with no record of its nesting.
+- A declaration-shaped line inside a verbatim or raw string literal is a false positive.
+
+**Unreadable paths do not stop a build.** A file or directory the build cannot read is skipped, and each one is named on stderr as `GRAPH SKIPPED UNREADABLE: <path> (<code>)`. `build` and `update` still finish and exit 0; the summary line carries `skipped=<n>` and `GRAPH_REPORT.md` lists the paths under a "Not indexed" heading. Report those paths to the user rather than treating the graph as complete.
+
+**A query says when its graph is partial.** `query`, `consumers`, `path`, `explain` and `context` print one line on stderr, `GRAPH PARTIAL: <n> path(s) were unreadable when this graph was built…`, whenever the graph they read was built past skipped paths. Their stdout and exit code are unchanged. When you see it, an empty or short answer is not evidence about the skipped paths: read `GRAPH_REPORT.md` for which they are, then `Read` or grep those paths directly before claiming a symbol has no other consumers.
 
 **Artifacts, all project-local under `.claude/graph/`:**
 

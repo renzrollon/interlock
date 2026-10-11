@@ -1,8 +1,8 @@
 {
   "name": "interlock",
   "displayName": "Interlock",
-  "version": "1.4.2",
-  "description": "Autonomous spec-driven development orchestration for Claude Code, layered on OpenSpec. Onboard a repo, produce a reviewed spec, then ship it start-to-commit with parallel agents and a deterministic gate spine.",
+  "version": "1.5.0",
+  "description": "Spec-driven development for Claude Code, layered on OpenSpec. You read one spec; parallel agents ship it to a tested commit.",
   "author": {
     "name": "Carl Rollon",
     "url": "https://github.com/renzrollon"

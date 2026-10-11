@@ -6,10 +6,16 @@
 [![CI](https://github.com/renzrollon/interlock/actions/workflows/ci.yml/badge.svg)](https://github.com/renzrollon/interlock/actions/workflows/ci.yml)
 [![Claude Code ≥ 2.1.154](https://img.shields.io/badge/Claude%20Code-%E2%89%A5%202.1.154-blue)](docs/01-first-hour.md#before-you-start)
 [![MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![Site](https://img.shields.io/badge/site-renzrollon.github.io%2Finterlock-ff563c)](https://renzrollon.github.io/interlock/)
 
 <p align="center">
-  <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
+  <img src="docs/assets/spec-and-ship.gif" alt="One real run, 34 seconds: /interlock:spec asks one question, writes the change and stops at the checkpoint; /interlock:ship runs two waves of parallel agents, the suite passes 180 of 180, one commit." width="838">
 </p>
+<p align="center"><sub>One real run, cut to 34 s. <code>spec</code> asks one question, writes 11 specs and 12 tasks, then stops. <code>ship</code> runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.</sub></p>
+<p align="center"><code>12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</code></p>
+<!-- The uncut, captioned 2:34 of the same run is not in git. Once it is a release asset, uncomment:
+<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.4.2/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
+-->
 
 ```bash
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
@@ -54,11 +60,22 @@ interlock doctor          # preflight: prints the exact allowlist an unattended 
 | `/interlock:ship` | Reviewed change → waves (parallel batches of file-disjoint tasks) → your test suite → commit. No review by default; `--strict` adds adversarial review and handoff artifacts. `--solo` / `--waves` force the shape | **workflow** |
 | `/interlock:mr` | Change → merge request | skill |
 
+<p align="center">
+  <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
+</p>
+
 `ship` is the odd one out on purpose. A skill is instructions Claude follows; a workflow is a script a runtime executes, and this runtime has no channel for a question. That is why every decision that could need a human is settled *before* ship starts, and why `spec` is conversational where it has to be. The plan preview names the shape and the agent count before anything is spawned.
+
+<p align="center">
+  <img src="docs/assets/ship-meter.png" alt="The ship meter pane during the recorded run: wave 1 with three lanes marked ok and the model that served each, the verify checkpoint between the waves, wave 2 with two lanes running and one pending, then verify-final, commit and close." width="760">
+</p>
+<p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
+
+**You can watch it.** On Claude Code 2.1.287 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
 
 ## Why this and not a folder of prompts
 
-Decisions that have a correct answer are moved out of prose and into code, one at a time. The script holds the loop, the CLI holds the rules, the agents do the work.
+Decisions that have a correct answer are moved out of prose and into code, one at a time. The script holds the loop, the CLI holds the rules, the agents do the work. Interlock is built with Interlock: the features and fixes here start as OpenSpec changes and go through the same spec, checkpoint and ship, and [openspec/changes/archive](openspec/changes/archive) is the record, one folder per change.
 
 - **Thresholds are code.** Wave order, the parallel-agent cap, the remediation round budget, the review quality band: each is an `interlock` subcommand with an exit code, not markdown a model can talk itself past. [Every subcommand →](docs/07-cli-and-configuration.md)
 - **Parallel agents cannot overwrite each other.** The planner separates tasks that would touch the same file; with `--isolate-waves`, every parallel task runs in its own git worktree and a collision is a named halt, never a lost write.
@@ -71,6 +88,14 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 
 Most of the category competes on how much structure you write before coding — Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on a different axis: **how many decisions the model is not allowed to make.**
 
+| | Competes on | Where the rules live |
+|---|---|---|
+| Spec Kit | phases you write before code | prompt templates, portable across thirty agents |
+| BMAD | roles you assign | prompt templates |
+| Kiro | an IDE with specs built in | the IDE |
+| OpenSpec | the artifact loop and its CLI | the CLI validates artifacts; skills run the loop |
+| **Interlock** | how many decisions the model may not make | a CLI with exit codes, and a runtime with no channel for a question |
+
 It composes OpenSpec rather than replacing it. `openspec init` installs its own skills, and `/interlock:spec` drives the `openspec` CLI directly, so both stay available. Use `/interlock:spec` when you want the gates, and the stock skills when you want the plain artifact loop. What Interlock adds, and when plain OpenSpec is the right call: [03](docs/03-openspec-vs-interlock.md). Where it sits against OpenClaw, Hermes Agent and DeepSeek Harness: [08](docs/08-harness-landscape.md).
 
 The trade is portability. Claude Code is the **default and supported host**; Cursor and Copilot are not supported. Everything the loop decides lives in a CLI any host can shell out to, so portability means a second host adapter, not thirty prompt templates.
@@ -79,7 +104,7 @@ The trade is portability. Claude Code is the **default and supported host**; Cur
 
 `interlock-run` drives the same loop over the Claude Code CLI, any [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code. You start it yourself. No slash command does, and `/interlock:ship` never falls back to it.
 
-Two things to know before you do. `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit; the interactive Workflow runtime that `/interlock:ship` uses is the exempted path, and the runner prints which path it is on. And Codex and Qwen do not understand the planner's model tiers, so map them per host with `INTERLOCK_MODEL_MAP`; an unmapped tier is bannered, never silently run on your default.
+Two caveats, both bannered by the runner. `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit, while the Workflow runtime behind `/interlock:ship` is the exempted path. And Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`; an unmapped tier is bannered, never silently run on your default.
 
 Host table, banners and configuration: [07](docs/07-cli-and-configuration.md#interlock-run--the-experimental-runner). The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor. Code Mode is out of scope.
 

@@ -164,7 +164,8 @@ const RUNAWAY_BACKSTOP = 1000
 // file whose first line carries its sha256; this script hands the worker the
 // path and requires the hash back. A result whose `briefing` is absent or
 // differs is treated as a null result — the task fails closed with a named
-// reason, exactly as a missing handoff packet does.
+// reason. (A missing handoff packet no longer does: that task stays done and its
+// report is rejected.)
 //
 // This text is plumbing, not policy: it names a file and a field and says
 // nothing whatsoever about the work. It is pinned against
