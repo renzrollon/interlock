@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.5.0 — 2026-10-11
+
 ### Added
 
 - **The graph indexes C# and Bicep (#8).** `.cs`, `.csproj` and `.bicep` files were skipped, so a .NET repository got docs and OpenSpec links and nothing structural.
