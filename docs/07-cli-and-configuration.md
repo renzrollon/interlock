@@ -49,6 +49,7 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 | `interlock risk` | How dangerous a change is, from its paths and artifacts |
 | `interlock drift` | Which completed changes were never archived, which specs cite files that are gone, and which changed files no spec describes |
 | `interlock conformance` | Which spec scenarios a change must be checked against — the questions, never the verdicts |
+| `interlock merge-confidence` | Whether a change can merge: `MERGE`, `HUMAN` or `BLOCK` from the worst band over every merge signal, a score bounded by that band, and what would lift each signal that is not green. `HUMAN` exits 0 ([below](#merge-confidence-interlock-merge-confidence)) |
 | `interlock ready` | Whether a change may skip the human checkpoint — fail-closed. See [05](./05-continuity.md) |
 | `interlock ledger` | Whether the decision ledger still holds an unanswered product question |
 | `interlock validate` | Whether a change is actually implementable |
@@ -66,6 +67,34 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 `--json` on any command emits JSON instead of prose. Any `<file>` argument accepts `-` to read that input from stdin.
 
 Two of `interlock doctor`'s rows are advice, `ok` or `skip` and never `fail`, on the same posture as its `prompt-cache` row. **`state-home`** names the home this root's corpora go to and what the root is — a main checkout, a linked worktree, one of Interlock's lane worktrees — or `skip` with the reason when it could not tell ([the state home](#where-a-runs-records-go-the-state-home)); `doctor --json` carries the resolved `stateHome`, which the SessionStart preflight reads interrupted-run notes from. **`claude-bare`** says whether a bare `claude -p` would have a credential to run on: `ok` when `ANTHROPIC_API_KEY` is set (checked by name, never printed) or an `apiKeyHelper` is configured in a settings scope, `skip` otherwise. It exists because Claude Code's headless docs recommend `--bare` and say it will become the `-p` default, and under it OAuth and the keychain are never read: `--host claude` lanes would then need a key or a helper, and a plugin would load only through `--plugin-dir`. Nothing changes for a run today. **`mods`** says whether the probed `claude` can load the plugin's hooks module, the ship meter and the in-process form of the launch guard ([13](./13-the-guards.md#two-forms-and-which-is-active)): `ok` from Claude Code 2.1.287, `skip` below it or with the version unknown. It names the binary it read (`claude` on PATH, or `INTERLOCK_CLAUDE_COMMAND`), because the engine behind a Desktop Code tab is not that binary; the meter itself logs the engine it loaded in at session start. A host that cannot load mods runs exactly today's run and prints every banner at close.
+
+### Merge confidence: `interlock merge-confidence`
+
+`interlock merge-confidence [change] --changed <files...>` answers "can this be merged?" with a verdict (`MERGE`, `HUMAN` or `BLOCK`), a score, and one entry per registered signal carrying its band (`green`, `amber`, `red` or `unobserved`), its flags, its evidence and its reason. The verdict is the worst band over the gating signals: any red is `BLOCK`, every signal green is `MERGE`, anything else is `HUMAN`, and an unobserved signal ranks as amber. No number of green signals lifts one amber or red. A flag (`no-e2e`, `no-coverage`, `no-graph` and the rest of the published list) lowers the score and never moves a band. The score sits inside the worst band's range, positioned by the share of gating signals that are green with no flag, so a red never outscores an amber and two changes in one band still sort. Every entry in `driving` says what would lift it: a person, more evidence, or a fix. `--json` carries `verdict`, `score`, `worstBand`, `signals`, `driving`, `counts` and `flags`.
+
+**Exit codes.**
+
+- `0`: the verdict is `MERGE` or `HUMAN`. A change that needs a person is not a failed command, so a CI job that only wants a label does not go red on it.
+- `1`: the verdict is `BLOCK`, or, with `--require-merge`, anything but `MERGE`.
+- `1` with nothing on stdout: an input could not be read or parsed. The reason is on stderr and names the file, exactly as for `interlock gate`. Exit 1 alone does not tell this from `BLOCK`; a verdict object on stdout does.
+
+**Inputs.** The command gathers what the repository says for itself: the change's artifacts (the risk classifier reads them with the changed paths), its decision ledger, its delta-spec scenario count, which is the conformance denominator and which no input can shrink, drift narrowed to what this change did, `HEAD`, and, with `--base <ref>`, the diff shape from `git diff --numstat <ref>...HEAD`. With no change named it assesses the single active change, and with none it says so on stderr. Everything else is a file the caller names:
+
+| Option | What it holds | Who produces it |
+|---|---|---|
+| `--review <file>` | The adjudicated review: surviving findings with their votes, the counts, and an optional dimension record | `interlock review --json`, or the `review.json` a ship run writes |
+| `--verify <file>` | The final verification verdict, including its `typecheck` field | `interlock verify judge --context final --json` |
+| `--handoff <file>` | `scenariosChecked` and `scenariosUnconfirmed`. A `verdictsRequired` in the file is ignored | the ship run's handoff step |
+| `--pipeline <file>` | `{ sha, checks: [{ name, state, required }] }` for the head commit, `state` one of `pass`, `fail`, `pending`, `skipped` | the `mr` skill's platform recipes, landing in E3 |
+| `--coverage <file>` | `{ configured, headTotalPct, baseTotalPct, baseSha, baseIsAncestor, diffPct, changedLines }` | the coverage baseline writer, landing in E8 |
+
+An input not given reads `unobserved`, and its reason names the option that would supply it. A pipeline file for another commit is unobserved rather than red, even when it records a failed required check: the head may have fixed it. The evidence still names that check.
+
+**Offline.** The command reads the repository, the files named and the published limits. It never calls `gh`, `glab` or the network, so a CI job on a plain checkout can run it with no platform credential.
+
+**No input can read `MERGE` yet.** Three registered signals have no producer in this release and read `unobserved`, each naming the brief that lands it: `conformance.living` and `spec.coverage` (E6, `confirm-living-requirements-at-handoff`) and `policy.humanPaths` (E4, `read-review-policy-from-the-base-ref`). Until those land every assessment is `HUMAN` or `BLOCK`, and the output's `reasons` says so on one line per signal rather than hiding it. Nothing in the ship loop calls the command yet either: writing the verdict at close and onto the receipt is E2.
+
+**Thresholds.** Every number the verdict applies is a merge-band row of `interlock limits`: the green, amber and red band ceilings (unobserved takes amber's range), the cap on surviving warnings, the skeptic verdicts each surviving blocker or warning needs, the coverage decline tolerance, the patch-coverage floor used when there is no baseline, the small-change floor below which coverage is not judged, and the two diff-size caps. `interlock limits --json` publishes them as `mergeBands`. A reason that applies one names it as `MERGE_BANDS.<name> = <value>`; none is restated here.
 
 ### Drawing a plan and a run: `--format board|mermaid`
 

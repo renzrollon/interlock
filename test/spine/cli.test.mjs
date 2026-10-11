@@ -16,7 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS } from '../../lib/limits.mjs'
+import { LIMITS, MERGE_BANDS } from '../../lib/limits.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
 
@@ -220,7 +220,8 @@ test('USAGE documents every subcommand this file exercises', () => {
     'interlock wave-state record-verify',
     'interlock wave-state replan',
     'interlock tasks tick',
-    'interlock tasks coverage'
+    'interlock tasks coverage',
+    'interlock merge-confidence'
   ]) {
     assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
   }
@@ -2860,4 +2861,177 @@ test('run-log show --format draws the run and keeps every exit code', async () =
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+// --- merge-confidence (spec: review/merge-confidence — command contract) ------
+//
+// The module is covered at its own level against one fixture per signal state.
+// What only the binary can get wrong is the wiring: which flag reads which file,
+// that an unreadable file dies before anything is printed, that the head commit
+// and the scenario count come from the repository rather than the caller, and
+// that the exit status follows the verdict — BLOCK is 1, HUMAN is 0, and
+// --require-merge makes anything but MERGE a 1.
+
+const CALLER_INPUT_SIGNALS = {
+  'review.blockers': '--review',
+  'review.warnings': '--review',
+  'review.adversarial': '--review',
+  'verify.suite': '--verify',
+  'verify.e2e': '--verify',
+  'verify.coverage': '--coverage',
+  'ci.pipeline': '--pipeline',
+  'diff.shape': '--base'
+}
+
+const SCENARIO_COUNT = 5
+
+let mergeRepo = null
+/** A git checkout holding one change whose delta specs carry SCENARIO_COUNT scenarios. */
+function mergeConfidenceRepo() {
+  if (mergeRepo) return mergeRepo
+  const scenarios = Array.from(
+    { length: SCENARIO_COUNT },
+    (_, i) => `#### Scenario: case ${i + 1}\n\n- **GIVEN** a catalogue\n- **WHEN** it renders\n- **THEN** it lists case ${i + 1}\n`
+  ).join('\n')
+  mergeRepo = gitRepo('merge-confidence-repo', {
+    'openspec/changes/add-widget-catalogue/proposal.md': '## Why\n\nList the widgets a shop sells in one catalogue view.\n',
+    'openspec/changes/add-widget-catalogue/design.md': '## Decisions\n\nD1. The catalogue reads the existing widget store.\n',
+    'openspec/changes/add-widget-catalogue/tasks.md': '- [ ] 1.1 Render the catalogue\n',
+    'openspec/changes/add-widget-catalogue/decisions.md': [
+      '# Decisions — add-widget-catalogue',
+      '',
+      '| id | question | class | resolution | evidence |',
+      '|----|----|----|----|----|',
+      '| D1 | Read the existing store or add one? | agent_resolved | read the existing store | design.md:3 |',
+      ''
+    ].join('\n'),
+    'openspec/changes/add-widget-catalogue/specs/widgets/catalogue/spec.md':
+      `## ADDED Requirements\n\n### Requirement: The catalogue lists widgets\n\nThe catalogue SHALL list every widget.\n\n${scenarios}`,
+    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n'
+  })
+  return mergeRepo
+}
+
+const mergeArgs = (...extra) => [
+  'merge-confidence',
+  'add-widget-catalogue',
+  '--root',
+  mergeConfidenceRepo().root,
+  ...extra,
+  '--changed',
+  'src/widgets/catalogue.ts'
+]
+const signalIn = (out, id) => out.signals.find(s => s.id === id)
+
+test('merge-confidence --json carries the verdict, the score, the worst band, every signal, what drives it, the counts and the flags', () => {
+  const out = runJson(mergeArgs())
+  for (const key of ['verdict', 'score', 'worstBand', 'signals', 'driving', 'counts', 'flags']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(out, key), `--json is missing "${key}"`)
+  }
+  assert.equal(out.change, 'add-widget-catalogue')
+  assert.ok(Number.isInteger(out.score))
+})
+
+test('merge-confidence with only changed paths reads HUMAN, every caller-input signal unobserved, and exits 0', () => {
+  const repo = mergeConfidenceRepo()
+  const r = run(['merge-confidence', '--root', repo.root, '--changed', 'src/widgets/catalogue.ts', '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'HUMAN')
+  for (const [id, flag] of Object.entries(CALLER_INPUT_SIGNALS)) {
+    const entry = signalIn(out, id)
+    assert.equal(entry.band, 'unobserved', `${id}: ${entry.reason}`)
+    assert.ok(entry.reason.includes(flag), `${id} does not name ${flag}: ${entry.reason}`)
+    assert.match(entry.reason, /not given/, id)
+  }
+  // The repository's own facts are still read: the single change resolves.
+  assert.equal(out.change, 'add-widget-catalogue')
+  assert.equal(signalIn(out, 'decisions.open').band, 'green', signalIn(out, 'decisions.open').reason)
+})
+
+test('merge-confidence exits 1 on a review with a surviving blocker', () => {
+  const review = file('mc-review-blocker.json', {
+    surviving: [
+      {
+        dimension: 'typescript',
+        severity: 'blocker',
+        title: 'unchecked null deref on an empty store',
+        file: 'src/widgets/catalogue.ts',
+        votes: { real: 2, notReal: 0, uncited: 0, total: 2 }
+      }
+    ],
+    counts: { raised: 1, droppedByPolicy: 0, dismissed: 0, droppedByQuality: 0, surviving: 1, dismissalsRejected: 0 }
+  })
+  const out = runJson(mergeArgs('--review', review), 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+  assert.equal(run(mergeArgs('--review', review)).code, 1, 'the exit is the verdict with or without --json')
+})
+
+test('HUMAN exits 0, and exits 1 under --require-merge', () => {
+  const plain = run(mergeArgs('--json'))
+  assert.equal(plain.code, 0, plain.stderr)
+  assert.equal(JSON.parse(plain.stdout).verdict, 'HUMAN')
+  const required = run(mergeArgs('--require-merge', '--json'))
+  assert.equal(required.code, 1)
+  assert.equal(JSON.parse(required.stdout).verdict, 'HUMAN', 'the verdict is still printed; only the exit changes')
+})
+
+test('a --review file that is not JSON exits 1 with nothing on stdout and the file named on stderr', () => {
+  const broken = file('mc-review-broken.json', '{ "surviving": [')
+  const r = run(mergeArgs('--review', broken, '--json'))
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '', 'no verdict may be printed for input that could not be read')
+  assert.ok(r.stderr.includes(broken), r.stderr)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+
+  const missing = join(dir, 'mc-no-such-review.json')
+  const absent = run(mergeArgs('--review', missing, '--json'))
+  assert.equal(absent.code, 1)
+  assert.equal(absent.stdout, '')
+  assert.ok(absent.stderr.includes(missing), absent.stderr)
+})
+
+test('a --pipeline file for another commit is unobserved; one for HEAD is read', () => {
+  const repo = mergeConfidenceRepo()
+  const checks = [{ name: 'unit', state: 'pass', required: true }]
+  const stale = file('mc-pipeline-stale.json', { sha: '0'.repeat(40), checks })
+  const staleOut = runJson(mergeArgs('--pipeline', stale))
+  assert.equal(signalIn(staleOut, 'ci.pipeline').band, 'unobserved')
+  assert.match(signalIn(staleOut, 'ci.pipeline').reason, /another commit/)
+
+  const head = file('mc-pipeline-head.json', { sha: repo.sha, checks })
+  assert.equal(signalIn(runJson(mergeArgs('--pipeline', head)), 'ci.pipeline').band, 'green', 'HEAD comes from the repository')
+})
+
+test('a --handoff file that states a smaller denominator is amber, naming the change’s own scenario count', () => {
+  const handoff = file('mc-handoff-short.json', { scenariosChecked: 3, scenariosUnconfirmed: 0, verdictsRequired: 3 })
+  const entry = signalIn(runJson(mergeArgs('--handoff', handoff)), 'conformance.delta')
+  assert.equal(entry.band, 'amber')
+  assert.ok(entry.reason.includes(`3 of ${SCENARIO_COUNT}`), entry.reason)
+
+  const full = file('mc-handoff-full.json', { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 })
+  assert.equal(signalIn(runJson(mergeArgs('--handoff', full)), 'conformance.delta').band, 'green')
+})
+
+test('--base reads the diff shape from git, and a base git cannot diff dies with nothing on stdout', () => {
+  const out = runJson(mergeArgs('--base', 'HEAD'))
+  assert.equal(signalIn(out, 'diff.shape').band, 'green', signalIn(out, 'diff.shape').reason)
+
+  const bad = run(mergeArgs('--base', 'no-such-ref-anywhere', '--json'))
+  assert.equal(bad.code, 1)
+  assert.equal(bad.stdout, '')
+  assert.match(bad.stderr, /no-such-ref-anywhere/)
+
+  const option = run(mergeArgs('--base', '-p', '--json'))
+  assert.equal(option.code, 1, 'a base that reads as an option is refused, never handed to git')
+  assert.equal(option.stdout, '')
+  assert.match(option.stderr, /must name a ref/)
+})
+
+test('limits --json carries the merge bands as their own group, ceiling table included', () => {
+  const out = runJson(['limits'])
+  assert.deepEqual(out.mergeBands, JSON.parse(JSON.stringify(MERGE_BANDS)))
+  assert.deepEqual(out.mergeBands.ceiling, { ...MERGE_BANDS.ceiling })
+  assert.equal(out.limits.maxWarningsForMerge, undefined, 'the merge bands are not entries of the iteration-count limits')
 })

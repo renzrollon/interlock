@@ -92,6 +92,7 @@ import {
   EFFORT,
   LANE_CAPS,
   SOLO,
+  MERGE_BANDS,
   formatLimits
 } from '../lib/limits.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
@@ -118,6 +119,7 @@ import { classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { mergeDecision, foldMutationPaths } from '../lib/merge-lanes.mjs'
 import { analyzeDrift, formatDrift } from '../lib/drift.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
+import { assessMergeConfidence, formatMergeConfidence } from '../lib/merge-confidence.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 import {
   computeFingerprint,
@@ -172,6 +174,14 @@ Usage:
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
+  interlock merge-confidence [change]       Decide whether a change can merge:
+                  --changed <files...>      MERGE | HUMAN | BLOCK, a score bounded
+                  [--review <f>]            by the worst band, and every signal
+                  [--verify <f>]            with its evidence. Offline: reads the
+                  [--handoff <f>]           repository and the files named, never
+                  [--pipeline <f>]          a hosting platform (see
+                  [--coverage <f>]          "merge-confidence:" below)
+                  [--base <ref>] [--require-merge]
   interlock report [--since <iso>]          Indicators over the three recorded
                   [--change <name>]         corpora — outcome records, run
                                             trajectories, review metrics. Every
@@ -351,6 +361,9 @@ Exit codes:
     ledger                   the ledger is missing or unparseable, or
                              needs_human or invalid rows remain
     ready                    the change may not skip the human checkpoint
+    merge-confidence         the verdict is BLOCK, or with --require-merge
+                             anything but MERGE; an unreadable input also
+                             exits 1, with no verdict on stdout
     merge-lanes              a lane worktree collided with another on a real
                              path, or a lane's worktree could not be located —
                              a clean fold is the only zero exit
@@ -462,8 +475,46 @@ gate:
 limits:
   Prints the caps the loop obeys and the workflow-runtime ceilings above them.
   Cite these rather than restating a number in prose. With --json the per-tier
-  lane-cap table and the solo envelope are their own top-level groups (laneCaps,
-  solo), never entries of the iteration-count limits.
+  lane-cap table, the solo envelope and the merge bands are their own top-level
+  groups (laneCaps, solo, mergeBands), never entries of the iteration-count
+  limits.
+
+merge-confidence:
+  [change]               The change under assessment (or --change <name>); with
+                         none named, the single active change. Its artifacts,
+                         decision ledger, delta-spec scenario count and
+                         capabilities are read from the repository. With no
+                         change, that is said on stderr and those signals read
+                         amber rather than clean.
+  --changed <files...>   Repo-relative changed paths ("-" for stdin). The risk
+                         class, the conformance checklist and drift read them.
+  --review <file>        The adjudicated review: "interlock review --json", or
+                         the review.json a ship run writes.
+  --verify <file>        The final verification verdict: "interlock verify
+                         judge --context final --json".
+  --handoff <file>       The handoff's scenariosChecked and scenariosUnconfirmed.
+                         A verdictsRequired in the file is ignored: the
+                         denominator is the command's own scenario count.
+  --pipeline <file>      { sha, checks: [{ name, state, required }] } for the
+                         head commit, state pass | fail | pending | skipped.
+                         Produced by the mr skill's platform recipes (E3).
+  --coverage <file>      { configured, headTotalPct, baseTotalPct, baseSha,
+                         baseIsAncestor, diffPct, changedLines }. Produced by
+                         the coverage baseline writer (E8).
+  --base <ref>           Diff against this ref (git diff --numstat
+                         <ref>...HEAD) for the diff shape. Absent, the diff
+                         shape is unobserved.
+  --require-merge        Exit 1 unless the verdict is MERGE.
+  Every input not given reads unobserved with that reason, and unobserved ranks
+  as amber. The command never calls gh, glab or the network. conformance.living,
+  spec.coverage and policy.humanPaths read unobserved until their producers
+  land (E6 for the first two, E4 for the third), so no input to this version
+  can read MERGE, and the output says so. Every threshold is a merge-band row
+  of "interlock limits", cited by name in the reason that applies it.
+  HUMAN exits 0: a change that needs a person is not a failed command. Exit 1
+  is BLOCK, and, as for gate, also an input that could not be read or parsed,
+  which prints nothing on stdout. Exit 1 alone does not tell the two apart; a
+  verdict on stdout does.
 
 doctor:
   The preflight. Every condition here would otherwise be discovered mid-run, by
@@ -841,7 +892,9 @@ const BOOLEAN_FLAGS = new Set([
   'no-tdd',
   // `run close --notify`: both drivers pass it unconditionally, and the CLI —
   // not the driver — decides whether a topic is configured (design D1).
-  'notify'
+  'notify',
+  // `merge-confidence --require-merge`: exit 1 unless the verdict is MERGE.
+  'require-merge'
   // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
   // NOT here. `interlock ready --review <findings.json>` takes a value under
   // the same spelling, and making the name boolean everywhere would silently
@@ -1844,6 +1897,92 @@ function readChangeArtifacts(root, change) {
   return artifacts
 }
 
+/**
+ * One caller-supplied input to `merge-confidence`, read before any assessment
+ * (design D9). Not given is `null`, which the signal reads as unobserved. An
+ * input that cannot be read or parsed ends the command through `die()`, as
+ * `gate` does: exit 1, the reason on stderr naming the file, nothing on stdout.
+ */
+function readMergeInput(flags, key) {
+  const value = flags[key]
+  if (value === undefined) return null
+  if (value === true) die(`--${key} needs a file (or "-" for stdin)`)
+  let raw
+  if (value === '-') raw = readStdin()
+  else {
+    try {
+      raw = readFileSync(value, 'utf8')
+    } catch (err) {
+      die(`--${key} ${value} could not be read: ${err.message}`)
+    }
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    die(`--${key} ${value} is not valid JSON: ${err.message}`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) die(`--${key} ${value} must hold a JSON object`)
+  return parsed
+}
+
+/** A change's capabilities: each delta-spec path under specs/ without its `/spec.md`. */
+function capabilitiesOf(root, change) {
+  return inspectChange(root, change)
+    .specFiles.map(rel => rel.replace(/\\/g, '/'))
+    .filter(rel => /(^|\/)spec\.md$/.test(rel))
+    .map(rel => rel.replace(/\/?spec\.md$/, ''))
+    .filter(Boolean)
+}
+
+/** HEAD's sha, or null when the root is not a git checkout — never a guess. */
+function headShaOf(root) {
+  try {
+    const out = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    return out.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The diff shape against a base: `git diff --numstat <base>...HEAD`. A binary
+ * row (`-\t-\tpath`) counts as one file and no lines; a rename counts as git
+ * reports it. A base git cannot diff against is input the command could not
+ * read, so it dies before any assessment.
+ */
+function diffShapeOf(root, base) {
+  let out
+  try {
+    out = execFileSync('git', ['diff', '--numstat', `${base}...HEAD`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  } catch (err) {
+    const detail = (err.stderr && String(err.stderr).trim()) || err.message
+    die(`--base ${base}: git could not diff it against HEAD: ${detail}`)
+  }
+  let changedLines = 0
+  let changedFiles = 0
+  let binaryFiles = 0
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue
+    const [added, deleted] = line.split('\t')
+    changedFiles += 1
+    if (added === '-' || deleted === '-') {
+      binaryFiles += 1
+      continue
+    }
+    changedLines += (Number(added) || 0) + (Number(deleted) || 0)
+  }
+  return { base, changedLines, changedFiles, binaryFiles }
+}
+
 function splitPaths(value) {
   if (value === undefined || value === true) return []
   const raw = value === '-' ? readStdin().split('\n') : String(value).split(',')
@@ -2074,6 +2213,91 @@ async function main() {
       break
     }
 
+    case 'merge-confidence': {
+      // Offline by construction: the repository, the files the caller names and
+      // the published limits. Never gh, glab or the network (design D4).
+      //
+      // Every caller file is read FIRST, so an unreadable one ends the command
+      // before any assessment and nothing reaches stdout (design D9).
+      const review = readMergeInput(flags, 'review')
+      const verify = readMergeInput(flags, 'verify')
+      const handoffFile = readMergeInput(flags, 'handoff')
+      const pipeline = readMergeInput(flags, 'pipeline')
+      const coverage = readMergeInput(flags, 'coverage')
+      // The conformance denominator is the command's own scenario count. A
+      // count the handoff file carries is dropped here (and ignored by the
+      // module), so a caller cannot shrink it.
+      let handoff = null
+      if (handoffFile) {
+        const { verdictsRequired: _ignored, ...counts } = handoffFile
+        handoff = counts
+      }
+      if (flags.base === true) die('--base needs a ref')
+      const base = typeof flags.base === 'string' ? flags.base : null
+      // A ref is handed to git as an argument; one that reads as an option is
+      // refused rather than passed through.
+      if (base && base.startsWith('-')) die(`--base ${base}: a base must name a ref, not an option`)
+      let changedPaths = []
+      if (flags.changed !== undefined) {
+        const given = [].concat(flags.changed)
+        changedPaths =
+          given.length === 1 && given[0] === '-'
+            ? readStdin().split('\n').map(p => p.trim()).filter(Boolean)
+            : splitPaths(given.join(','))
+      }
+
+      // What the repository itself says.
+      const requested = typeof flags.change === 'string' ? flags.change : positional[1]
+      const resolved = resolveChange(root, requested)
+      const name = resolved.error ? null : resolved.name
+      if (!name) {
+        warn(`no change under assessment: ${resolved.error} — its ledger, artifacts and scenarios are not read`)
+      }
+      const change = name ? { name, capabilities: capabilitiesOf(root, name) } : null
+      const artifacts = name ? readChangeArtifacts(root, name) : {}
+      let ledger = null
+      if (name) {
+        const parsed = readLedger(root, name)
+        ledger = {
+          ...summarizeLedger(parsed),
+          rows: parsed.rows.map(r => ({ id: r.id, question: r.question, class: r.class, valid: r.valid }))
+        }
+      }
+      const checklist = buildChecklist(root, name || requested, { changed: changedPaths })
+      // Drift is repo-wide; the module narrows it to what this change did. Each
+      // unarchived change carries its capabilities so the overlap can be read.
+      const driftReport = analyzeDrift(root, { changed: changedPaths })
+      const drift = {
+        ...driftReport,
+        unarchived: driftReport.unarchived.map(u => ({ ...u, capabilities: capabilitiesOf(root, u.change) }))
+      }
+      const headSha = headShaOf(root)
+      const diff = base ? diffShapeOf(root, base) : null
+
+      const result = assessMergeConfidence({
+        change,
+        changedPaths,
+        headSha,
+        artifacts,
+        review,
+        verify,
+        checklist,
+        handoff,
+        pipeline,
+        coverage,
+        diff,
+        ledger,
+        drift,
+        // The run record is written at close (E2); by hand there is none.
+        run: null
+      })
+      emit(json, { change: name, ...result }, formatMergeConfidence(result))
+      // HUMAN exits 0: a change that needs a reviewer is not a failed command.
+      const failed = flags['require-merge'] === true ? result.verdict !== 'MERGE' : result.verdict === 'BLOCK'
+      if (failed) process.exit(1)
+      break
+    }
+
     case 'limits': {
       // `laneCaps` and `solo` are their OWN top-level groups, not entries of
       // `limits`: LIMITS holds positive-integer loop counts (its invariant test
@@ -2097,7 +2321,10 @@ async function main() {
           report: REPORT_CAPS,
           effort: EFFORT,
           laneCaps: LANE_CAPS,
-          solo: SOLO
+          solo: SOLO,
+          // The merge verdict's thresholds: their own group, a ceiling table
+          // and seven scalars, never entries of the iteration-count limits.
+          mergeBands: MERGE_BANDS
         },
         formatLimits({ runtimeObserved })
       )

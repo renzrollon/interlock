@@ -7,6 +7,16 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **A merge verdict and score, computed by the CLI (`lib/merge-confidence.mjs`).** `assessMergeConfidence` takes the facts a review and a run already produce and returns `MERGE`, `HUMAN` or `BLOCK`, a score, and one entry per registered signal with its band (`green`, `amber`, `red`, `unobserved`), its flags, its evidence and its reason. The verdict is the worst band over the gating signals, and an unobserved signal ranks as amber. A flag lowers the score and never moves a band. The score sits inside the worst band's range, so a red never outscores an amber. Signals live in one frozen registry (`SIGNALS`, seventeen gating signals and the informational `plan.fidelity`) and flags in one published list (`FLAGS`); `combineSignals` is the formula and names no signal. The module is pure.
+  - **Three signals have no producer yet.** `conformance.living` and `spec.coverage` (E6) and `policy.humanPaths` (E4) read unobserved and name the brief that lands them, so no input to this version can read `MERGE`. The output says so on one line per signal.
+- **`interlock merge-confidence [change] --changed <files...>`.** It reads the change's artifacts, its decision ledger, its delta-spec scenario count, drift and `HEAD` from the repository, and `--review`, `--verify`, `--handoff`, `--pipeline` and `--coverage` from files the caller names. `--base <ref>` adds the diff shape from `git diff --numstat`. It is offline and never calls `gh`, `glab` or the network. It exits 1 on `BLOCK`, or on anything but `MERGE` under `--require-merge`. `HUMAN` exits 0. An input it cannot read or parse also exits 1, with the reason on stderr and nothing on stdout, as `gate` does. The pipeline file and the coverage file are defined here and produced by later changes (E3, E8).
+- **`MERGE_BANDS` in `lib/limits.mjs` and `MERGE_ALLOWED_CLASSES` in `lib/risk.mjs`.** `MERGE_BANDS` holds the band ceilings and every threshold the verdict applies. It is a separate export beside `LANE_CAPS`, `interlock limits` prints one row per entry and per ceiling, `--json` publishes it as `mergeBands`, and the cap-authority sweep covers it. `MERGE_ALLOWED_CLASSES` holds the risk classes the merge verdict reads green. It sits beside `CONTINUITY_ALLOWED_CLASSES` and holds the same classes today, so the two policies can diverge without one moving the other.
+- **The `verify judge` verdict carries `typecheck: { ran, exitCode, passed }`,** or `null` when no type-check result was reported, in every context. A passing type check used to leave no trace, so "passed" could not be told from "never reported". No key is renamed and no halting set moves: a failed type check at the final gate still prints its non-blocking banner and does not halt.
+
+Nothing in the ship loop, the receipt, the review-metrics record or `interlock report` reads the new verdict yet. Writing it at close is E2.
+
 ## 1.5.1 — 2026-10-11
 
 ### Changed

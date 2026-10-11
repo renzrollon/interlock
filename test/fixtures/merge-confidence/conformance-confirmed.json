@@ -1,0 +1,256 @@
+{
+  "change": {
+    "name": "add-widget-catalogue",
+    "capabilities": [
+      "widgets/catalogue"
+    ]
+  },
+  "changedPaths": [
+    "src/widgets/catalogue.ts",
+    "test/widgets/catalogue.test.ts"
+  ],
+  "headSha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "artifacts": {
+    "proposal.md": "## Why\n\nList the widgets a shop sells in one catalogue view.\n",
+    "design.md": "## Decisions\n\nD1. The catalogue reads the existing widget store.\n",
+    "tasks.md": "- [x] 1.1 Render the catalogue\n"
+  },
+  "review": {
+    "surviving": [
+      {
+        "dimension": "qa",
+        "severity": "warning",
+        "title": "name the empty-catalogue case",
+        "file": "src/widgets/catalogue.ts",
+        "votes": {
+          "real": 2,
+          "notReal": 0,
+          "uncited": 0,
+          "total": 2
+        }
+      }
+    ],
+    "dismissed": [
+      {
+        "dimension": "typescript",
+        "severity": "suggestion",
+        "title": "prefer a readonly array",
+        "file": "src/widgets/catalogue.ts",
+        "votes": {
+          "real": 0,
+          "notReal": 2,
+          "uncited": 0,
+          "total": 2
+        }
+      }
+    ],
+    "droppedByQuality": [],
+    "droppedByPolicy": [],
+    "counts": {
+      "raised": 2,
+      "droppedByPolicy": 0,
+      "dismissed": 1,
+      "droppedByQuality": 0,
+      "surviving": 1,
+      "dismissalsRejected": 0
+    },
+    "dimensionStats": {
+      "qa": {
+        "raised": 1,
+        "surviving": 1
+      },
+      "typescript": {
+        "raised": 1,
+        "surviving": 0
+      }
+    },
+    "anomalies": {
+      "orphanVerdicts": [],
+      "malformedVerdicts": []
+    },
+    "dimensions": {
+      "selected": [
+        "qa",
+        "typescript"
+      ],
+      "ran": [
+        "qa",
+        "typescript"
+      ],
+      "unavailable": [],
+      "completed": true
+    }
+  },
+  "verify": {
+    "halt": false,
+    "reason": null,
+    "context": "final",
+    "haltingKinds": [
+      "unit"
+    ],
+    "unit": {
+      "halt": false,
+      "reason": "unit suite is green",
+      "status": "green",
+      "ran": true,
+      "exitCode": 0,
+      "counts": {
+        "total": 42,
+        "passed": 42,
+        "failed": 0,
+        "skipped": 0
+      },
+      "clusters": [],
+      "weakened": null,
+      "weakenedCheck": "ok",
+      "preExisting": false,
+      "signals": []
+    },
+    "e2e": {
+      "halt": false,
+      "blocking": false,
+      "passed": true,
+      "status": "green",
+      "reason": "e2e suite is green",
+      "repairable": false,
+      "counts": {
+        "total": 6,
+        "passed": 6,
+        "failed": 0,
+        "skipped": 0
+      },
+      "clusters": [],
+      "signals": []
+    },
+    "coverage": {
+      "halt": false,
+      "blocking": false,
+      "advisory": true,
+      "ran": true,
+      "pct": 91.2,
+      "changedLines": 120,
+      "coveredLines": 109,
+      "perFile": [],
+      "warnings": [],
+      "signals": []
+    },
+    "typecheck": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "signals": [
+      {
+        "level": "info",
+        "kind": "lint",
+        "reason": "no-detectable-command",
+        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
+      }
+    ],
+    "banners": [
+      "VERIFICATION SKIPPED: reason=no-detectable-command"
+    ],
+    "skipped": [
+      {
+        "kind": "lint",
+        "reason": "no-detectable-command",
+        "detail": "no lint command in the profile or from the caller"
+      }
+    ]
+  },
+  "checklist": {
+    "skipped": false,
+    "reason": null,
+    "change": "add-widget-catalogue",
+    "outsideSpecs": 0,
+    "changedFiles": [
+      "src/widgets/catalogue.ts"
+    ],
+    "verdictsRequired": 3
+  },
+  "handoff": {
+    "scenariosChecked": 3,
+    "scenariosUnconfirmed": 0
+  },
+  "pipeline": {
+    "sha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+    "checks": [
+      {
+        "name": "unit",
+        "state": "pass",
+        "required": true
+      },
+      {
+        "name": "lint",
+        "state": "pass",
+        "required": true
+      },
+      {
+        "name": "preview-deploy",
+        "state": "skipped",
+        "required": false
+      }
+    ]
+  },
+  "coverage": {
+    "configured": true,
+    "headTotalPct": 85.4,
+    "baseTotalPct": 85,
+    "baseSha": "0e8c6a4f2d0b8e6c4a2f0e8c6a4f2d0b8e6c4a2f",
+    "baseIsAncestor": true,
+    "diffPct": 91.2,
+    "changedLines": 120
+  },
+  "diff": {
+    "changedLines": 120,
+    "changedFiles": 2
+  },
+  "ledger": {
+    "total": 1,
+    "needsHuman": 0,
+    "agentResolved": 1,
+    "invalidCount": 0,
+    "invalid": 0,
+    "exists": true,
+    "missing": false,
+    "unparseable": false,
+    "changeExists": true,
+    "blocking": false,
+    "rows": [
+      {
+        "id": "D1",
+        "question": "Read the existing widget store or add a new one?",
+        "class": "agent_resolved",
+        "valid": true
+      }
+    ]
+  },
+  "drift": {
+    "root": ".",
+    "unarchived": [],
+    "stale": {
+      "skipped": false,
+      "reason": null,
+      "broken": [],
+      "aging": [],
+      "indexed": 4,
+      "graphBuiltAt": "2026-10-11T09:00:00Z"
+    },
+    "orphans": {
+      "skipped": false,
+      "reason": null,
+      "orphans": [],
+      "considered": 1
+    },
+    "hasFindings": false
+  },
+  "run": {
+    "halted": false,
+    "trajectoryComplete": true,
+    "stageMarkerGaps": 0,
+    "rejectedReports": 0,
+    "permissionPrompts": 0,
+    "autoModeDenials": 0,
+    "policyDiffersFromBase": false
+  }
+}
