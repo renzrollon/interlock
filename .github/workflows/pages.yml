@@ -1,7 +1,7 @@
 name: Pages
 
-# Deploys site/ to GitHub Pages. The page itself is a single hand-authored
-# index.html (see site/README.md) — no build step, nothing to install.
+# Deploys site/ to GitHub Pages. The page is a Claude Design export installed
+# as it came (see site/README.md) — no build step, nothing to install.
 #
 # One-time setup, in the repository settings: Pages → Source → "GitHub Actions".
 # Until that is set this workflow's deploy step fails with a Pages error rather

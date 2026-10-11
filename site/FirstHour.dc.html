@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>First hour · Interlock</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./site.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="il" data-theme="{{theme}}" style="font-family: var(--font-body); color: var(--color-text);">
+<div class="wrap" style="padding-top: 72px; padding-bottom: 24px;">
+
+  <h2 class="h-tab">Read the spec. That's the whole ask.</h2>
+
+  <section class="sec" aria-labelledby="fh-cmds">
+    <div class="sec-head"><span class="sec-no">01</span><h3 class="h-sub" id="fh-cmds">The commands, in order</h3><span class="mono-sm" style="margin-left: auto;">{{doneCount}}</span></div>
+    <div class="tl">
+
+      <div class="tl-step">
+        <p class="tl-time">min 0–2</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s1.done}}" onChange="{{s1.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Install</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s1.copy}}" aria-label="Copy the install commands">{{s1.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s1.lines}}" as="l" hint-placeholder-count="4"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
+          </div>
+          <p class="body">Interlock drives the <code>openspec</code> CLI; it does not replace it. <code>openspec init</code> creates <code>openspec/</code> and installs OpenSpec's own skills, which stay available beside Interlock's.</p>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 2–5</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s2.done}}" onChange="{{s2.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Allowlist the commands</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s2.copy}}" aria-label="Copy interlock doctor">{{s2.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s2.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          </div>
+          <p class="body">Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. <code>doctor</code> derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. The same check runs at every session start as an advisory hook.</p>
+          <div>
+            <p class="term-cap">interlock doctor · example of a healthy repo</p>
+            <div class="term"><sc-for list="{{doctor}}" as="l" hint-placeholder-count="14"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
+            <p class="cap muted" style="margin-top: 8px; max-width: 90ch;"><code>interlock doctor</code> run on this repository on 2026-10-11 at v1.5.0, with the root replaced, four long advisory rows cut at <code>…</code>, and three trailing <code>[skip]</code> rows about the experimental runner and the eval harness left out.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 5–20</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s3.done}}" onChange="{{s3.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Onboard the repo, once</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s3.copy}}" aria-label="Copy the bootstrap command">{{s3.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s3.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          </div>
+          <p class="body">Initialises OpenSpec if the repo never was, builds the code graph, fans out read-only explorers phrased in your stack's vocabulary, and writes <code>openspec/initial-architecture.md</code> plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. <code>--quick</code> on a small repo, <code>--scope packages/api</code> on a monorepo. If the repo is Go, Rust, Java or Ruby, expect <code>GRAPH UNAVAILABLE: nothing indexable found</code>; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.</p>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 20–30</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s4.done}}" onChange="{{s4.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Spec one small change</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s4.copy}}" aria-label="Copy the spec command">{{s4.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s4.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          </div>
+          <p class="body">Pick something genuinely small: one endpoint, one flag, one bug with a known repro. It explores first, drives the OpenSpec CLI to produce the artifacts, then reviews them. It writes:</p>
+          <pre class="code">{{tree}}</pre>
+          <p class="body">Then it stops, having written no code. If you asked for a bug fix, it refuses to create anything until you give it real error output and a reproduction. That gate is deliberate.</p>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 30–40</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s5.done}}" onChange="{{s5.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Read the spec</span></label>
+          <p class="body">The checkpoint. The ten-minute read below says what to read and in what order. Two cheap machine checks that do not replace reading: <code>openspec validate</code> and <code>interlock validate &lt;change-name&gt;</code>. Ship runs the second one first and refuses to start on a failure.</p>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 40–55</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s6.done}}" onChange="{{s6.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Ship it</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s6.copy}}" aria-label="Copy the ship command">{{s6.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s6.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          </div>
+          <p class="body">Runs start-to-commit without asking anything. Before a single implementer spawns it prints the plan: waves, lanes, the model per task, every clamp and every fold. At the end it prints one summary, always ending in a degradation block. Useful flags for a first run: <code>--no-commit</code> to see the diff before git touches it, <code>--apply-only</code> to stop after the waves, <code>--strict</code> to see what the review and the bill look like.</p>
+          <div>
+            <p class="term-cap">the expected ending · interlock run close</p>
+            <div class="term"><sc-for list="{{summary}}" as="l" hint-placeholder-count="14"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tl-step" style="border-bottom: 1px solid var(--color-divider);">
+        <p class="tl-time">min 55–60</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{s7.done}}" onChange="{{s7.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Merge request, then archive</span></label>
+          <div class="codebox">
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s7.copy}}" aria-label="Copy the merge request and archive commands">{{s7.copyLabel}}</button>
+            <div class="cmd-body"><sc-for list="{{s7.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
+          </div>
+          <p class="body"><code>openspec archive</code> folds the change's delta specs into the living specs, so the next <code>spec</code> plans against what is now true. Interlock never archives for you. It prints <code>ARCHIVE PENDING</code> and counts the backlog in <code>interlock drift</code>.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="g-split" style="margin-top: 32px;">
+      <p class="eyebrow" style="color: var(--color-text-soft);">Do not run these yet</p>
+      <div class="stack-12">
+        <p class="mono" style="font-size: 13.5px; line-height: 1.8; color: var(--color-text-soft);">dispatch · graph · docs-digest · explore · review-artifacts · review-code · fix-tests · manual-test-plan · explain-code · commit · spec --continue</p>
+        <p class="body-sm soft">Every one is either called by the four commands above or is a recovery tool. “Skipping the read before you have done it once is skipping the part of the loop that earns the rest.”</p>
+        <p class="mono" style="font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/01-first-hour.md">more in 01 · The first hour</a></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="fh-read">
+    <div class="sec-head"><span class="sec-no">02</span><h3 class="h-sub" id="fh-read">The ten-minute read</h3></div>
+    <p class="body" style="margin-bottom: 24px;">A wrong idea costs a paragraph here and a day after shipping. Read cheapest-to-reject first.</p>
+    <div class="tbox">
+      <table class="tbl" style="min-width: 820px;">
+        <thead><tr><th>Minutes</th><th>File</th><th>The one question you are answering</th><th>Red flags</th></tr></thead>
+        <tbody>
+          <tr><td class="num" style="text-align: left;">0–2</td><td class="m">proposal.md</td><td>Is this the change I asked for?</td><td>A change name broader than the request. Work nobody asked for. A bug fix that grew a refactor.</td></tr>
+          <tr><td class="num" style="text-align: left;">2–5</td><td class="m">design.md</td><td>Would I have made these decisions?</td><td>An abstraction for a single caller. A decision with no rationale. A dependency named without a version. “We'll handle X later” where X is the hard part.</td></tr>
+          <tr><td class="num" style="text-align: left;">5–8</td><td class="m">tasks.md</td><td>Could someone else do this without asking me anything?</td><td>“update accordingly”, “handle edge cases”, “refactor as needed”, “etc.” Consecutive checkboxes naming the same file.</td></tr>
+          <tr><td class="num" style="text-align: left;">8–10</td><td class="m">specs/**</td><td>Does this describe behaviour I can verify?</td><td>“should work correctly”. Missing empty, error, loading, boundary and permission-denied cases.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rows" style="margin-top: 32px;">
+      <div class="row" style="padding: 16px 0;"><p class="h-row" style="font-size: 16px;">Wrong idea</p><p class="body">Re-run <code>spec</code> with a sharper intent and an explicit out-of-scope boundary.</p></div>
+      <div class="row" style="padding: 16px 0;"><p class="h-row" style="font-size: 16px;">Right idea, wrong approach</p><p class="body">Say what you want instead and re-spec. The explore brief is reused, so the second pass is fast.</p></div>
+      <div class="row" style="padding: 16px 0;"><p class="h-row" style="font-size: 16px;">Right idea, small gaps</p><p class="body">Edit <code>design.md</code> or <code>tasks.md</code> by hand. Plain markdown; ship reads whatever is on disk.</p></div>
+      <div class="row" style="padding: 16px 0;"><p class="h-row" style="font-size: 16px;">Looks right</p><p class="body"><code>/interlock:ship</code>.</p></div>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="fh-asked">
+    <div class="sec-head"><span class="sec-no">03</span><h3 class="h-sub" id="fh-asked">Asked, and never asked</h3></div>
+    <div class="g2" style="align-items: start;">
+      <div class="stack-16">
+        <h4 class="h-row">Every question the loop can ask you</h4>
+        <p class="body-sm soft"><code>spec</code> is conversational where it has to be. <code>ship</code> is not, and cannot be.</p>
+        <div class="tbox">
+          <table class="tbl" style="min-width: 520px;">
+            <thead><tr><th>When</th><th>The question</th><th>Trigger</th></tr></thead>
+            <tbody>
+              <tr><td class="m">spec</td><td>What change do you want to work on?</td><td>The request is not clear enough to name a change.</td></tr>
+              <tr><td class="m">spec</td><td>Real log output or the error message, <strong>and</strong> a reproduction: a failing test path or a command that triggers it</td><td>The request is a bug fix. No artifact is created until both exist. “A repro is required so the fix has a pass/fail signal; without it we are fixing a symptom.”</td></tr>
+              <tr><td class="m">spec</td><td>Which version of this dependency?</td><td>The design names a dependency without one. A plausible-looking wrong pin is worse than an open question.</td></tr>
+              <tr><td class="m">spec</td><td>Test-first or implementation-first?</td><td><code>--tdd</code> and <code>--no-tdd</code> were both passed.</td></tr>
+              <tr><td class="m">spec</td><td>Continue the existing change or start a new one?</td><td>A change with that name already exists.</td></tr>
+              <tr><td class="m">spec --continue</td><td>“Continuity paused — N decisions need you”, listing only the ledger rows and blockers</td><td><code>interlock ready</code> exited 1. The last place a question is possible.</td></tr>
+              <tr><td class="m">bootstrap</td><td>Generate specs for all discovered features, or select some?</td><td>Always, before generating.</td></tr>
+              <tr><td class="m">bootstrap</td><td>This project already has N specs; add specs for undocumented features without overwriting any?</td><td><code>openspec/specs/</code> is non-empty.</td></tr>
+              <tr><td class="m">fix-tests</td><td>At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command</td><td>First run or <code>--reconfigure</code>. The only skill permitted to interview you about tests.</td></tr>
+              <tr><td class="m">mr</td><td>GitLab or GitHub?</td><td>Only when both or neither of <code>glab</code> and <code>gh</code> resolve.</td></tr>
+              <tr><td class="m">mr</td><td>Overwrite this description?</td><td>It contains hand-written prose.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="stack-16">
+        <h4 class="h-row">Never asked, because a CLI already decided</h4>
+        <p class="body-sm soft">Read the values from <code>interlock limits</code>. The page does not restate a threshold as its own rule.</p>
+        <div class="tbox">
+          <table class="tbl" style="min-width: 460px;">
+            <thead><tr><th>Never asked</th><th>Decided by</th></tr></thead>
+            <tbody>
+              <tr><td>How many agents run in parallel</td><td><code>interlock waves</code>, from the published cap</td></tr>
+              <tr><td>How many tasks one agent's lane may hold</td><td>the lane-cap table, keyed by the lane's hardest task tier</td></tr>
+              <tr><td>Which model and reasoning effort each task earns</td><td>the tier ladder and the lane's hardest task; every clamp and every promotion is printed in the plan preview</td></tr>
+              <tr><td>Whether two tasks may share a batch</td><td><code>interlock waves</code>, on canonical-path collision</td></tr>
+              <tr><td>How many remediation rounds, root-cause repairs, replans, inter-wave fix attempts, task failures</td><td>the caps, each with one reader in the loop</td></tr>
+              <tr><td>Whether a review finding survives</td><td><code>interlock review</code>: a dismissal needs a <code>file:line</code> inside the diff</td></tr>
+              <tr><td>Which findings are too weak to report</td><td><code>interlock gate</code>'s quality band, in the CLI, never in the review prose</td></tr>
+              <tr><td>Whether a review blocks</td><td><code>interlock gate</code>: the exit status is the verdict</td></tr>
+              <tr><td>Whether a diff needs a manual test plan</td><td><code>interlock surface</code></td></tr>
+              <tr><td>Whether a change may skip the checkpoint</td><td><code>interlock ready</code>, fail-closed: a check that could not run is a blocker</td></tr>
+              <tr><td>The blast radius of a change</td><td><code>interlock risk</code>: the maximum over every signal, never an average</td></tr>
+              <tr><td>Which checkboxes may be ticked</td><td><code>interlock tasks tick</code>, keyed off recorded outcomes; a hand edit is denied by a hook</td></tr>
+              <tr><td>Whether the plan dropped a checkbox</td><td><code>interlock tasks coverage</code>; an omitted box halts</td></tr>
+              <tr><td>Whether a run can be reconstructed</td><td><code>interlock run-log check</code>; an unreplayable trajectory halts a clean run</td></tr>
+              <tr><td>Whether a <code>REVIEW.md</code> may move the bar</td><td>it may change scope and advice; a threshold-shaped key is reported and ignored</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":4600}}'>
+class Component extends DCLogic {
+  componentDidMount() {
+    var done = {};
+    try { var raw = window.localStorage.getItem('il-first-hour'); if (raw) done = JSON.parse(raw) || {}; } catch (e) {}
+    this.setState({ done: done });
+  }
+  componentWillUnmount() { if (this.copyTimer) clearTimeout(this.copyTimer); }
+  toggleDone = (k) => () => {
+    var d = Object.assign({}, (this.state || {}).done || {});
+    d[k] = !d[k];
+    try { window.localStorage.setItem('il-first-hour', JSON.stringify(d)); } catch (e) {}
+    this.setState({ done: d });
+  };
+  copy = (key, text) => (e) => {
+    var btn = e && e.currentTarget;
+    var done = () => {
+      this.setState({ copied: key });
+      if (this.copyTimer) clearTimeout(this.copyTimer);
+      this.copyTimer = setTimeout(() => this.setState({ copied: null }), 1400);
+    };
+    var select = function () {
+      try {
+        var body = btn && btn.parentNode && btn.parentNode.querySelector('.cmd-body');
+        if (body) { var r = document.createRange(); r.selectNodeContents(body); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+      } catch (err) {}
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, select);
+      else select();
+    } catch (err) { select(); }
+  };
+  renderVals() {
+    var s = this.state || {};
+    var d = s.done || {};
+    var mkStep = (key, lines, wide) => {
+      var w = wide ? 36 : 30;
+      var text = lines.map(function (l) { return l.m ? (l.c + ' '.repeat(Math.max(1, w - l.c.length)) + l.m) : l.c; }).join('\n');
+      return {
+        done: !!d[key], toggle: this.toggleDone(key),
+        copy: this.copy(key, text), copyLabel: s.copied === key ? 'Copied' : 'Copy',
+        lines: lines.map(function (l) { return { c: l.c, m: l.m || '', hasM: !!l.m, cls: l.m ? (wide ? 'ln ln-wide' : 'ln') : 'ln ln-solo' }; })
+      };
+    };
+    var cls = function (t) {
+      if (t.indexOf('SHIP COMPLETE') === 0 || t.indexOf('PREFLIGHT OK') === 0 || t.indexOf('  commit:') === 0) return 't-acc';
+      if (t.indexOf('  [skip]') === 0 || t.indexOf('LEAN SHIP') === 0) return 't-dim';
+      return '';
+    };
+    var toLines = function (arr) { return arr.map(function (t) { return { t: t === '' ? ' ' : t, cls: cls(t) }; }); };
+    var doctor = [
+      'PREFLIGHT OK — 11 passed',
+      '  root: /Users/you/src/yourrepo',
+      '  [ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 20.19.0+)',
+      '  [ok  ] plugin: plugin 1.5.0 complete: workflow, both agent types, both binaries',
+      '  [ok  ] binaries: interlock and interlock-graph resolve on PATH',
+      '  [ok  ] openspec: openspec CLI available and this project is initialised',
+      '  [ok  ] git: git version 2.54.0 in a work tree',
+      '  [ok  ] test-profile: unit suite: npm test',
+      '  [ok  ] permissions: all 9 required commands are allowed',
+      '  [ok  ] state-home: state home is the root itself, /Users/you/src/yourrepo, surface main',
+      '  [ok  ] state-dirs: every run-state directory is writable or creatable',
+      '  [skip] notify: INTERLOCK_NTFY_TOPIC is not set — optional; an unattended run that stops will not reach you',
+      '  [skip] prompt-cache: a prompt-cache lifetime is unset, so its bucket runs on the host default …',
+      '  [ok  ] claude-env: Claude Code 2.1.296; CLAUDE_CODE_SUBAGENT_MODEL=unset …',
+      '  [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.287+): /interlock-meter draws a ship run live …'
+    ];
+    var summary = [
+      'SHIP COMPLETE — add-report-json-flag',
+      '  PLAN REBUILT (no-plan): no stored plan at .claude/ship/plan.json',
+      '  wave 1 (run-batch): 3 ok, 0 failed',
+      '  wave 2 (run-batch): 2 ok, 0 failed',
+      '  wave ? (test-wave): 2 ok, 0 failed',
+      '  commit: 4a91c0e',
+      '  run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01',
+      '  project: -Users-you-src-yourrepo',
+      '  cwd: /Users/you/src/yourrepo',
+      'ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag',
+      'Do not start another ship run unless the user asks.',
+      '',
+      'LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable',
+      'No degradation banners — graph, test profile, model routing, verification and e2e were all clean.',
+      'GOAL MET: interlock ship returned a terminal summary.'
+    ];
+    var tree = [
+      'openspec/changes/<change-name>/',
+      '├── proposal.md      what and why',
+      '├── design.md        how, and the decisions taken',
+      '├── tasks.md         ordered checkbox tasks — this is the wave plan',
+      '├── decisions.md     the decision ledger (Interlock\'s addition)',
+      '└── specs/**         delta specs, Given/When/Then'
+    ].join('\n');
+    var keys = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
+    var n = keys.filter(function (k) { return d[k]; }).length;
+    return {
+      theme: this.props.theme ?? 'light',
+      doneCount: n + ' of 7 done',
+      s1: mkStep('s1', [{ c: 'npm install -g @fission-ai/openspec@latest' }, { c: 'cd your-project && openspec init' }, { c: '/plugin marketplace add renzrollon/interlock' }, { c: '/plugin install interlock@interlock' }]),
+      s2: mkStep('s2', [{ c: 'interlock doctor' }]),
+      s3: mkStep('s3', [{ c: '/interlock:bootstrap' }]),
+      s4: mkStep('s4', [{ c: '/interlock:spec add a --json flag to the report command' }]),
+      s5: { done: !!d.s5, toggle: this.toggleDone('s5') },
+      s6: mkStep('s6', [{ c: '/interlock:ship' }]),
+      s7: mkStep('s7', [{ c: '/interlock:mr --create', m: '# detects GitLab or GitHub from the remote' }, { c: 'openspec archive <change-name>', m: '# after it merges. Stock OpenSpec; Interlock does not wrap it.' }], true),
+      doctor: toLines(doctor),
+      summary: toLines(summary),
+      tree: tree
+    };
+  }
+}
+</script>
+</body>
+</html>

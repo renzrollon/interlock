@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The run · Interlock</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./site.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="il" data-theme="{{theme}}" style="font-family: var(--font-body); color: var(--color-text);">
+<div class="wrap" style="padding-top: 72px; padding-bottom: 24px;">
+
+  <h2 class="h-tab">One human checkpoint. Everything else is a script.</h2>
+
+  <section class="sec" aria-labelledby="run-sm">
+    <div class="sec-head"><span class="sec-no">01</span><h3 class="h-sub" id="run-sm">The state machine</h3></div>
+    <p class="body" style="margin-bottom: 24px;">The change: <code>add-report-json-flag</code>, seven tasks across two numbered sections plus two test tasks. Tasks 1.1 and 1.3 both name <code>lib/report.mjs</code>. Default lean ship, no flags.</p>
+
+    <div class="sm-controls">
+      <button type="button" class="btn btn-secondary btn-sm" onClick="{{step}}" disabled="{{atEnd}}">Step</button>
+      <button type="button" class="btn btn-secondary btn-sm" onClick="{{togglePlay}}" aria-pressed="{{playingAttr}}">{{playLabel}}</button>
+      <button type="button" class="btn btn-ghost btn-sm" onClick="{{reset}}">Reset</button>
+      <span class="mono-sm" aria-live="polite">{{stepCount}}</span>
+      <span class="sep" aria-hidden="true"></span>
+      <label class="chk mono"><input type="checkbox" checked="{{strict}}" onChange="{{toggleStrict}}"><span class="chk-box" aria-hidden="true"></span>--strict</label>
+      <label class="chk mono"><input type="checkbox" checked="{{isolate}}" onChange="{{toggleIsolate}}"><span class="chk-box" aria-hidden="true"></span>--isolate-waves</label>
+      <label class="chk mono"><input type="checkbox" checked="{{solo}}" onChange="{{toggleSolo}}"><span class="chk-box" aria-hidden="true"></span>--solo</label>
+    </div>
+
+    <div class="sm-scroll" role="img" aria-label="State machine of a ship run, drawn left to right in seven lanes: pre-flight, plan, waves, verify, tail (strict only), commit, close. Every halt routes to close.">
+      <div class="sm-canvas">
+        <svg width="1484" height="452" aria-hidden="true">
+          <path d="{{edgeD}}" class="sm-edge"></path>
+          <path d="{{edgeH}}" class="sm-head"></path>
+          <path d="{{edgeDimD}}" class="sm-edge dim"></path>
+          <path d="{{edgeDimH}}" class="sm-head dim"></path>
+        </svg>
+        <sc-for list="{{lanes}}" as="ln" hint-placeholder-count="7">
+          <span class="sm-lane" style="left: {{ln.x}}px;">{{ln.t}}</span>
+        </sc-for>
+        <sc-for list="{{elabels}}" as="l" hint-placeholder-count="5">
+          <span class="sm-elabel {{l.cls}}" style="left: {{l.x}}px; top: {{l.y}}px;">{{l.t}}</span>
+        </sc-for>
+        <sc-for list="{{nodes}}" as="n" hint-placeholder-count="27">
+          <div class="sm-node {{n.cls}}" style="left: {{n.x}}px; top: {{n.y}}px; width: {{n.w}}px; height: 48px;">{{n.label}}</div>
+        </sc-for>
+      </div>
+    </div>
+    <p class="cap" style="margin-top: 10px; max-width: 110ch;">Every halt routes to close: a halted run writes the same receipt, outcome record and terminal trajectory event a completion does. Only the exit code differs. Dashed states appear with their flag. Not drawn: run start → close when a stored plan is reused and every task is already ticked, and done → close under <code>--apply-only</code>.</p>
+
+    <div style="margin-top: 24px;">
+      <p class="term-cap">interlock run, one step at a time · add-report-json-flag</p>
+      <div class="term term-tall" role="log" aria-live="polite" ref="{{termRef}}">
+        <sc-for list="{{lines}}" as="l" hint-placeholder-count="6">
+          <div class="tline {{l.cls}}">{{l.t}}</div>
+        </sc-for>
+      </div>
+      <sc-if value="{{hasNote}}" hint-placeholder-val="{{false}}">
+        <p class="body-sm soft" style="margin-top: 12px; max-width: 90ch;">{{note}}</p>
+      </sc-if>
+      <p class="mono-sm" style="margin-top: 12px;"><span style="color: var(--color-text); font-weight: 500;">$</span> a command the run program named · <span style="color: var(--color-text); font-weight: 500;">#</span> this page's narration · unmarked: output the CLI printed at v1.5.0</p>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="run-stops">
+    <div class="sec-head"><span class="sec-no">02</span><h3 class="h-sub" id="run-stops">When it stops</h3></div>
+    <p class="body" style="margin-bottom: 24px;">Two categories, and they are not the same thing. A <strong>loud halt</strong> stops the run, commits nothing, and reports what completed and what you need to decide. A <strong>soft continue</strong> keeps going with a documented default and prints a banner saying what it degraded. Almost everything is a soft continue. The halts are deliberately few. On any halt: nothing is committed, and it will not ask you a question. Every one is a non-zero exit from a CLI subcommand rather than a judgement call.</p>
+    <div class="tbox">
+      <table class="tbl" style="min-width: 920px;">
+        <thead><tr><th style="width: 36%;">Banner</th><th>Trigger</th><th>Stage</th><th style="width: 30%;">Next</th></tr></thead>
+        <tbody>
+          <tr class="clk {{rows.h1.cls}}" onClick="{{rows.h1.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — validate failed: &lt;problems&gt;</button></td><td>an artifact missing or empty, or <code>tasks.md</code> has no real checkbox tasks</td><td>run start</td><td><code>interlock validate &lt;change&gt;</code>; usually the change was never fully specced.</td></tr>
+          <tr class="clk {{rows.h2.cls}}" onClick="{{rows.h2.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — plan omitted unchecked tasks: &lt;ids&gt;</button></td><td>the classifier dropped a checkbox</td><td>run classified</td><td>Re-run; if it recurs the checkbox wording is the problem.</td></tr>
+          <tr class="clk {{rows.h3.cls}}" onClick="{{rows.h3.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — waves failed: &lt;message&gt;</button></td><td>a dangling, backward or cyclic <code>dependsOn</code></td><td>run classified</td><td>Fix the edge in <code>tasks.md</code>.</td></tr>
+          <tr class="clk {{rows.h4.cls}}" onClick="{{rows.h4.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — &lt;n&gt; task failures accumulated across waves; more than 2 halts the run</button></td><td>failures over the cap</td><td>record-batch</td><td>Repeated failures in one area mean <code>tasks.md</code> was underspecified there. Re-spec that slice.</td></tr>
+          <tr class="clk {{rows.h5.cls}}" onClick="{{rows.h5.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — inter-wave checks after wave &lt;n&gt; still failing after 2 fix attempts, and the caller reported the errors block &lt;next&gt;</button></td><td>fix budget spent and blocking</td><td>judge, inter-wave</td><td>Fix by hand or <code>/interlock:fix-tests</code>.</td></tr>
+          <tr class="clk {{rows.h6.cls}}" onClick="{{rows.h6.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — verification reported no result for &lt;kinds&gt;</button></td><td>a planned step nobody reported on</td><td>judge</td><td>An unverified step is not a passing one, and an unverified run does not commit.</td></tr>
+          <tr class="clk {{rows.h7.cls}}" onClick="{{rows.h7.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — unit suite is red (&lt;n&gt; failing, &lt;k&gt; root-cause cluster(s)) · unit suite was weakened (&lt;signal&gt;) · unit suite did not run</button></td><td>final verification</td><td>judge, final</td><td>Fix it, or <code>/interlock:fix-tests</code>. Ship will not weaken a test, loosen an assertion, or narrow the suite to get green.</td></tr>
+          <tr class="clk {{rows.h8.cls}}" onClick="{{rows.h8.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — &lt;n&gt; unresolved blocker(s) after 2 remediation round(s)</button></td><td>strict only</td><td>verdict</td><td>Two failed rounds usually means the design was wrong, not the code. Re-spec rather than a third round.</td></tr>
+          <tr class="clk {{rows.h9.cls}}" onClick="{{rows.h9.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — merge-lanes halted on wave &lt;n&gt;: real collision on &lt;paths&gt;</button></td><td>isolate-waves: two lanes wrote the same file despite a disjoint prediction</td><td>record-batch</td><td>Resolve the writes by hand from the named worktrees. Merge-lanes never applies a guess.</td></tr>
+          <tr class="clk {{rows.h10.cls}}" onClick="{{rows.h10.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — the run exceeded the published run-step cap without reaching a terminal state</button></td><td>the loop is not converging</td><td>any</td><td>Read the trajectory.</td></tr>
+          <tr class="clk {{rows.h11.cls}}" onClick="{{rows.h11.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — out of sequence: the run program's last step named interlock &lt;x&gt; and this call was interlock &lt;y&gt;</button></td><td>a driver skipped, repeated or invented a subcommand</td><td>any</td><td>A driver bug.</td></tr>
+          <tr class="clk {{rows.h12.cls}}" onClick="{{rows.h12.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — contradictory plan-shape flags: --solo and --waves were both passed</button></td><td>both flags</td><td>parse</td><td>Pass one. Halting here costs one invocation; guessing costs a whole run of the wrong shape.</td></tr>
+          <tr class="clk {{rows.h13.cls}}" onClick="{{rows.h13.pick}}"><td><button type="button" class="row-btn m">RUN NOT RECONSTRUCTABLE: &lt;problems&gt; (exit 1 even beside SHIP COMPLETE)</button></td><td>a sequence gap, a missing run-start, or a CLI call with no logged exit</td><td>close</td><td><code>interlock run-log check</code>. Usually a write to <code>.claude/ship/</code> failed mid-run. <code>interlock doctor</code> probes exactly that.</td></tr>
+          <tr class="clk {{rows.h14.cls}}" onClick="{{rows.h14.pick}}"><td><button type="button" class="row-btn m">Trampoline halt</button></td><td>Workflow tool unavailable</td><td>before the run</td><td>Enable dynamic workflows. Everything else still works. It does not fall back to chat and does not start the experimental runner.</td></tr>
+          <tr class="clk {{rows.h15.cls}}" onClick="{{rows.h15.pick}}"><td><button type="button" class="row-btn m">spec: blockers at the artifact review</button></td><td>a reviewer reported a blocker</td><td>spec</td><td>Fix the cause, not the report. No silent fix-and-continue.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cap muted" style="margin-top: 12px; max-width: 100ch;">Almost everything else is a soft continue: the run keeps going with a documented default and prints a banner naming what it degraded. Every banner is decoded in <a href="https://github.com/renzrollon/interlock/blob/main/docs/04-when-it-stops.md">04 · When it stops</a>.</p>
+
+    <div style="margin-top: 40px;">
+      <p class="term-cap">interlock waves --plan plan.json --state state.json --format board</p>
+      <pre class="term">{{board}}</pre>
+      <p class="body-sm" style="margin-top: 12px; max-width: 90ch;">A run of this repository that halted on 7 September 2026, drawn at v1.5.0. Its plan and state are a fixture the test suite pins. The board prints only what the run recorded: <code>not recorded</code>, <code>not reached</code> and <code>unplaced</code> are its words for what it does not know, and the last line is the halt.</p>
+      <p class="cap muted" style="margin-top: 6px; max-width: 90ch;">Two of the three failures here were finished tasks whose handoff reports ran over the character cap. Since 1.5.0 such a task is recorded ok with its report rejected, and no longer counts toward this halt.</p>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="run-rules">
+    <div class="sec-head"><span class="sec-no">03</span><h3 class="h-sub" id="run-rules">Where the rules live</h3></div>
+
+    <div class="g-split" style="margin-bottom: 20px;">
+      <h4 class="h-row">The guards</h4>
+      <blockquote class="pq pq-sm">Six hook scripts. Four can deny. All fail open.</blockquote>
+    </div>
+    <div class="tbox">
+      <table class="tbl" style="min-width: 760px;">
+        <thead><tr><th>Hook</th><th>Event</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td class="m">preflight.mjs</td><td>session start</td><td>Denies nothing. Runs <code>interlock doctor</code> and surfaces each failing check with its fix, speaks any note an interrupted run left, and in an OpenSpec project leaves its report in <code>.claude/ship/preflight.json</code>. Advisory: it never blocks the session.</td></tr>
+          <tr><td class="m">recorder.mjs</td><td>session end, subagent start and stop, permission request, permission denied</td><td>Denies nothing and returns no decision. Records what a run cannot see about itself: a session that ended mid-run, what each Workflow agent spent and which model served it, each permission prompt and each call auto mode refused.</td></tr>
+          <tr><td class="m">guard-tests.mjs</td><td>before Edit or Write</td><td>Denies an edit to a test file while the stage is <code>remediation</code> or <code>fix-tests</code>. Test edits during <code>implement</code> are allowed: adding coverage for the feature you are building is the point, not a hazard.</td></tr>
+          <tr><td class="m">guard-tasks.mjs</td><td>before Edit or Write</td><td>Denies an edit that flips a checkbox in the active change's <code>tasks.md</code>. The tick is the CLI's job, keyed off recorded outcomes.</td></tr>
+          <tr><td class="m">guard-commit.mjs</td><td>before Bash</td><td>Denies a <code>git commit</code> unless the stage is <code>commit</code>.</td></tr>
+          <tr><td class="m">guard-relaunch.mjs</td><td>before and after Workflow; each human prompt</td><td>Denies a second ship launch in one session when no human prompt has arrived since the last one. A parent chat once relaunched over leftover checkboxes and spent another twenty agents; this is the guard for that.</td></tr>
+          <tr><td class="m">mod.mjs, a hooks module (Claude Code 2.1.287+)</td><td>engine events</td><td>The ship meter. It observes a run and draws it. Apart from the launch guard's one refusal it returns no deny.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="stack-16" style="margin-top: 24px;">
+      <p class="body">The three stage guards read a stage marker at <code>.claude/ship/&lt;change&gt;/stage.json</code> carrying the stage, the change, a monotonic index and the writing process's pid. The agent performing each step publishes it; the run program clears it on every terminal path. The launch guard cannot use the marker, because the mistake it bounds happens after the close has cleared it, so it keeps its own small record per session.</p>
+      <p class="body">When a guard cannot establish the facts, because the marker is absent, unreadable, malformed, stale, the process is gone, or the guard itself crashed, it allows. The asymmetry is argued rather than hidden: a lost marker during a real run silently disables the guard for that window; fail-closed would, on the same lost marker, brick every edit in the session.</p>
+      <p class="body"><strong>Installing Interlock does not change how your own editing or committing behaves.</strong> The stage guards bind only agents inside a ship run and are inert outside one.</p>
+      <p class="mono" style="font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/13-the-guards.md">more in 13 · The guards</a></p>
+    </div>
+
+    <div class="g-split" style="margin-top: 56px; margin-bottom: 20px;">
+      <h4 class="h-row">The hosts</h4>
+      <blockquote class="pq pq-sm">What a host cannot do is declared, never discovered.</blockquote>
+    </div>
+    <div class="stack-16" style="margin-bottom: 24px;">
+      <p class="body"><code>lib/host.mjs</code> states the whole host contract as three operations: spawn one labelled agent, spawn a batch in parallel, and run <code>interlock</code> and hand back its exit code and stdout. A host may not decide wave order, judge a verify result, apply a cap or a gate; those live behind the CLI on purpose, so a second host cannot quietly grow a second copy of the rules. A non-zero exit is an answer, not an error: a host that threw on it would turn a halt into a crash.</p>
+      <p class="body">An adapter under <code>lib/host/</code> is a transport plus a declaration of eight capabilities. Every one describes a way a run on that host is weaker than the default, and the run program branches on the declaration, never on the host's name. <code>/interlock:ship</code> on the Workflow runtime is the supported path. The runner is experimental, no slash command starts it, and it refuses <code>--host workflow</code> from the other side.</p>
+    </div>
+    <div class="tbox">
+      <table class="tbl" style="min-width: 1080px;">
+        <thead><tr><th>Host</th><th>Drives</th><th>Result schema</th><th>Model selection</th><th>Plugin hooks</th><th>Token usage</th><th>Cache accounting</th><th>Billing path</th></tr></thead>
+        <tbody>
+          <tr><td>Workflow (default, <code>/interlock:ship</code>)</td><td>the Claude Code Workflow runtime</td><td>enforced</td><td>the planner's tiers</td><td>yes</td><td>yes</td><td><strong>not from the runtime</strong>: one cumulative scalar; the recorder hook reads each agent's transcript instead</td><td>Claude subscription, interactive</td></tr>
+          <tr><td><code>claude</code> (runner) <span class="tag tag-neutral">experimental</span></td><td><code>claude -p</code></td><td>enforced</td><td>the planner's tiers</td><td>yes</td><td>yes</td><td>yes</td><td>Claude subscription, <strong>programmatic</strong> (metered)</td></tr>
+          <tr><td><code>acp</code> (runner) <span class="tag tag-neutral">experimental</span></td><td>your <code>INTERLOCK_ACP_COMMAND</code></td><td>recovered from text</td><td>negotiated on session start</td><td>only over the Claude binary</td><td>no</td><td>no</td><td>whatever the agent is</td></tr>
+          <tr><td><code>codex</code> (runner) <span class="tag tag-neutral">experimental</span></td><td><code>codex exec</code></td><td>enforced</td><td>mapped, or unrouted</td><td><strong>no</strong></td><td>yes</td><td>no</td><td>ChatGPT plan or API key</td></tr>
+          <tr><td><code>qwen</code> (runner) <span class="tag tag-neutral">experimental</span></td><td><code>qwen -p</code></td><td>enforced</td><td>mapped, or unrouted</td><td><strong>no</strong></td><td>no</td><td>no</td><td>whatever you configured</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="sec" aria-labelledby="run-watch">
+    <div class="sec-head"><span class="sec-no">04</span><h3 class="h-sub" id="run-watch">You can watch it</h3></div>
+    <p class="body" style="margin-bottom: 24px;">On Claude Code 2.1.287 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.</p>
+    <figure style="margin: 0;">
+      <p class="term-cap">/interlock-meter · the wave board, a frame from the recorded run</p>
+      <div style="border-radius: 4px; overflow: hidden; background: var(--term-ground); max-width: 900px;">
+        <img src="assets/ship-meter.webp" width="1400" height="1050" alt="The ship meter's wave board, a frame from the recording: wave 1 with three lanes marked ok and their durations, wave 2 with two lanes current and one pending behind them." style="width: 100%; height: auto;">
+      </div>
+      <figcaption class="cap muted" style="margin-top: 8px;">Recorded 2026-10-10 on plugin 1.4.2 and Claude Code 2.1.295 against a demo repository; fast-forwarded where marked.</figcaption>
+    </figure>
+    <dl class="dl" style="margin-top: 32px;">
+      <dt>status line</dt><dd><code>interlock: &lt;change&gt; · &lt;action&gt; · wave &lt;w&gt;</code>, plus <code>batch &lt;j&gt;/&lt;k&gt;</code> where the step carries a batch position. Cleared at the close or a halt.</dd>
+      <dt>wave board</dt><dd>The same fields <code>interlock waves --plan &lt;file&gt; --format board</code> prints, as one bordered card per wave. Lanes are grouped by batch under a line with the time it was dispatched and <code>N in parallel</code>. The state words are <code>ok</code>, <code>failed</code>, <code>current</code>, <code>pending</code>, <code>not reached</code> and <code>not recorded</code>.</dd>
+      <dt>timeline</dt><dd>The run in the order it happened: one line per CLI step as it crossed, each with its local time, and the agents that step spawned indented beneath it.</dd>
+      <dt>guard denials</dt><dd>When a guard refuses a call, one toast repeats the guard's own sentence from its name on (<code>guard-tests: …</code>), and the pane counts <code>guard denials: &lt;n&gt;</code>. Before this a denial reached only the blocked agent.</dd>
+      <dt>quiet &lt;n&gt; min</dt><dd>How long the run has gone without activity, and nothing more. The word names no cause: a run waiting on a plan window looks exactly like a run that hung, which is why the pane lists the plan windows beside it.</dd>
+      <dt>at session start</dt><dd>When a doctor check failed or warned, an interrupted run was spoken, or a halted run left a resume card, a band above the prompt shows those lines in the doctor's own words. <code>/interlock-preflight</code> opens the whole report; <code>/interlock-handoff</code> renders each resume card.</dd>
+    </dl>
+    <ul class="list body" style="margin-top: 32px; max-width: 72ch;">
+      <li><strong>The meter prices nothing.</strong> The session cost on the pane is the engine's own figure for the whole session, not the run's. The meter computes no dollar figure of its own.</li>
+      <li><strong>The close summary and the receipt are the record.</strong> Every figure on the pane is live and display-only, and the pane says so.</li>
+      <li><strong>It observes.</strong> It writes no file, calls no model and opens no connection, and a test reads the module as text and fails on any engine call outside the ones it is allowed. Nothing draws in a <code>-p</code> session, the SDK or a runner lane.</li>
+    </ul>
+    <p class="mono" style="margin-top: 24px; font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/07-cli-and-configuration.md">more in 07 · CLI and configuration</a></p>
+  </section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":4700}}'>
+class Component extends DCLogic {
+  componentWillUnmount() { if (this.timer) clearInterval(this.timer); }
+  componentDidUpdate() {
+    var el = this.termEl;
+    if (el) { try { el.scrollTop = el.scrollHeight; } catch (e) {} }
+  }
+  termRef = (el) => { this.termEl = el; };
+  steps() {
+    var s = this.state || {};
+    var strict = !!s.strict, isolate = !!s.isolate, solo = !!s.solo;
+    var iso = '# each lane ran in its own git worktree; interlock merge-lanes folded them back with no collision';
+    var plan = [
+      'mode: waves (default)',
+      '7 tasks → 2 wave(s), 5 impl + 2 test, max 8 parallel',
+      '  Wave 1: 3 task(s)',
+      '    - [sonnet/T4] 1.2 thread the flag through the parser and its three callers',
+      '    lane [sonnet/T3] 2 tasks, one agent, in order:',
+      '    - [sonnet/T2] 1.1 add the --json flag to the report command',
+      '    - [sonnet/T3] 1.3 shape the JSON payload',
+      '  Wave 2: 2 task(s)',
+      '    - [sonnet/T4] 2.1 render the payload in the HTML report',
+      '    - [sonnet/T2] 2.2 document the flag',
+      '  Test wave: 2 task(s)',
+      '    lane [sonnet/T2] 2 tasks, one agent, in order:',
+      '    - [sonnet/T2] 3.1 unit tests for the payload shape',
+      '    - [sonnet/T2] 3.2 unit tests for the flag parsing',
+      '  clamped 1.3: opus → sonnet (tier 3)',
+      '  serialized 1.3: same lane in wave 1 (lib/report.mjs held by 1.1)',
+      '  lane 1.1 → 1.3: 2 tasks in wave 1 on one sonnet/T3 agent',
+      '  cohesion 3.1 → 3.2: 2 path-disjoint tasks in the test wave on one sonnet/T2 agent (cap 8)',
+      '  effort 1.1 → 1.3: inherited (by policy) (tier 3)',
+      '  effort 3.1 → 3.2: low (tier 2)',
+      'projected agents: 10 (5 implementers + 3 record + 2 verify)'
+    ];
+    var soloPlan = [
+      'mode: solo (flag)',
+      '7 tasks → 1 wave(s), 5 impl + 2 test, max 8 parallel',
+      '  Wave 1: 7 task(s)',
+      '    lane [opus/T4] 7 tasks, one agent, in order:',
+      '    - [opus/T2] 1.1 add the --json flag to the report command',
+      '    - [opus/T4] 1.2 thread the flag through the parser and its three callers',
+      '    - [opus/T3] 1.3 shape the JSON payload',
+      '    - [opus/T4] 2.1 render the payload in the HTML report',
+      '    - [opus/T2] 2.2 document the flag',
+      '    - [opus/T2] 3.1 unit tests for the payload shape',
+      '    - [opus/T2] 3.2 unit tests for the flag parsing',
+      '  clamped 1.3: opus → sonnet (tier 3)',
+      '  solo 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: 7 tasks, the whole change on one opus/T4 agent',
+      '  effort 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: inherited (by policy) (tier 4)',
+      'projected agents: 2 (1 implementers + 1 record + 0 verify)'
+    ];
+    var summaryTop = [
+      '$ interlock run close',
+      'SHIP COMPLETE — add-report-json-flag',
+      '  PLAN REBUILT (no-plan): no stored plan at .claude/ship/plan.json',
+      '  wave 1 (run-batch): 3 ok, 0 failed',
+      '  wave 2 (run-batch): 2 ok, 0 failed',
+      '  wave ? (test-wave): 2 ok, 0 failed'
+    ];
+    var summaryTail = [
+      '  commit: 4a91c0e',
+      '  run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01',
+      '  project: -Users-you-src-yourrepo',
+      '  cwd: /Users/you/src/yourrepo',
+      'ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag',
+      'Do not start another ship run unless the user asks.',
+      ''
+    ];
+    var lean = summaryTop.concat(summaryTail, [
+      'LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable',
+      'No degradation banners — graph, test profile, model routing, verification and e2e were all clean.',
+      'GOAL MET: interlock ship returned a terminal summary.'
+    ]);
+    var strictSum = summaryTop.concat([
+      '  review: 7 raised, 4 dismissed by skeptics, 1 dropped as too weak to report, 2 surviving',
+      '  remediation: 2 fixed, 1 deferred',
+      '  handoff: manual test plan skipped (not UI-testable)',
+      '  conformance: 5/5 scenarios confirmed'
+    ], summaryTail, [
+      'No degradation banners — graph, test profile, model routing, verification and e2e were all clean.',
+      'GOAL MET: interlock ship returned a terminal summary.'
+    ]);
+    var withIso = function (lines, at) { if (!isolate) return lines; var c = lines.slice(); c.splice(at, 0, iso); return c; };
+    var out = [];
+    out.push({ node: 'ship_launch', lines: ['$ /interlock:ship', '# The skill parses the arguments, calls the Workflow tool once, and stops narrating.', '# From here nothing can ask the human anything.'] });
+    out.push({ node: 'run_start', lines: ['$ interlock run start --change add-report-json-flag', '# validates the change; there is no stored plan, so the plan is rebuilt'] });
+    out.push({ node: 'classify', lines: ['# one planner agent reads proposal.md, design.md, tasks.md and specs/** in full,', '# gives each of the seven unchecked tasks a tier, a model and its predicted paths,', '# and is told not to run the CLI itself'] });
+    out.push({ node: 'plan', lines: ['$ interlock run classified --classified .claude/ship/classified.json', '# the plan, as `interlock waves --classified` prints it for this change:'].concat(solo ? soloPlan : plan),
+      note: solo ? 'Seven promoted lines, one per task, and one warning: line are cut from this preview.' : 'Three warning: lines that restate the folds in full sentences are cut. Read the rest: seven tasks became five implementers, not seven. 1.1 and 1.3 both write lib/report.mjs, so they run in one lane, in order, on one agent. The two tier-2 test tasks pack into one lane. The classifier\'s opus on 1.3 was clamped to sonnet.' });
+    if (solo) {
+      out.push({ node: 'batch', visit: ['record_batch', 'done'], lines: withIso(['# each agent reads its briefing by path and must return the briefing\'s sha256', '$ interlock run record-batch --results <file>', '# no wave follows; a lean ship goes straight to final verification'], 2) });
+    } else {
+      out.push({ node: 'batch', lines: ['# wave 1, one batch, two lanes in parallel:', '#   task 1.2          one agent', '#   tasks 1.1+1       one agent, 1.1 then 1.3', '# each agent reads its briefing by path and must return the briefing\'s sha256'] });
+      out.push({ node: 'record_batch', lines: withIso(['$ interlock run record-batch --results <file>', '# outcomes are recorded against the run\'s own git status, not the agents\' claims', '# the CLI ticks 1.1, 1.2 and 1.3; another wave follows, so a checkpoint runs'], 1) });
+      out.push({ node: 'interwave_verify', lines: ['# one verify agent runs the commands .claude/testing/profile.json names, verbatim,', '# and reports exit codes and counts. It is never asked whether the run may continue.'] });
+      out.push({ node: 'judge_interwave', lines: ['$ interlock run judge --context inter-wave --results <file>', '# green: advance to wave 2'] });
+      out.push({ node: 'batch', lines: ['# wave 2, one batch, two lanes in parallel: task 2.1 and task 2.2', '# each receives wave 1\'s handoff packets'] });
+      out.push({ node: 'judge_interwave', visit: ['record_batch', 'interwave_verify'], lines: withIso(['$ interlock run record-batch --results <file>', '$ interlock run judge --context inter-wave --results <file>', '# 2.1 and 2.2 are ticked; the second checkpoint is green'], 1) });
+      out.push({ node: 'batch', visit: ['record_batch', 'done'], lines: withIso(['# the test wave: tasks 3.1+1, one agent, 3.1 then 3.2', '$ interlock run record-batch --results <file>', '# no wave follows; a lean ship goes straight to final verification'], 2) });
+    }
+    if (strict) {
+      out.push({ node: 'review', lines: ['# one review worker fans out one reviewer per dimension, then two skeptics per finding', '# four dimensions always run; devops and security are added by a rule over the changed paths'] });
+      out.push({ node: 'reviewed', lines: ['$ interlock run reviewed --results <file>', '# findings that survived two skeptics go to remediation round 1'] });
+      out.push({ node: 'remediation', visit: ['verdict_gate'], lines: ['$ interlock run remediated --round 1 --results <file>', '# every blocker cleared: straight to the verdict, then final verification'] });
+    }
+    out.push({ node: 'final_verify', lines: ['$ interlock run verify-final', '# stage marker: fix-tests. guard-tests now denies any edit to a test file.', '# one verify agent runs the profile\'s commands and reports'] });
+    out.push({ node: 'commit', visit: ['judge_final'], lines: ['$ interlock run judge --context final --results <file>', '# the unit suite is green, so the commit step is emitted', '# stage marker: commit. guard-commit lets git commit through, here and nowhere else.', '# one commit agent: one feature-level commit, only the files this run touched'] });
+    if (strict) {
+      out.push({ node: 'handoff', lines: ['# one handoff worker writes the code walkthrough and the conformance check; the CLI decides whether the diff needs a manual test plan'] });
+    }
+    out.push({ node: 'close', lines: strict ? strictSum : lean, note: 'Exit 0. A --strict run of the same change adds a review worker, up to two remediation workers, a verdict worker where blockers remain, and a handoff worker.' });
+    return out;
+  }
+  altEnding() {
+    return { node: 'interwave_halt', lines: [
+      '$ interlock run close',
+      'SHIP HALTED — inter-wave checks after wave 2 still failing after 2 fix attempts, and the caller reported the errors block the test wave',
+      '  leftover tasks (boxes still unchecked): 3.1, 3.2',
+      '  PLAN REBUILT (no-plan): no stored plan at .claude/ship/plan.json',
+      '  wave 1 (run-batch): 3 ok, 0 failed',
+      '  wave 2 (run-batch): 2 ok, 0 failed',
+      '  run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01',
+      '  project: -Users-you-src-yourrepo',
+      '  cwd: /Users/you/src/yourrepo',
+      '  resume card: .claude/handoff/ship-add-report-json-flag-7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01.md',
+      'Do not start another ship run unless the user asks.',
+      '',
+      'LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable',
+      'No degradation banners — graph, test profile, model routing, verification and e2e were all clean.',
+      'GOAL MET: interlock ship returned a terminal summary.'
+    ], note: 'Exit 1. No commit. No question. The resume card is the one file a halted run leaves for a reader who was not watching. Leftover tasks are a report, not authorisation to relaunch.' };
+  }
+  stopTimer() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+  step = () => {
+    var s = this.state || {};
+    var n = this.steps().length;
+    var cur = (s.alt ? -1 : (s.cur == null ? -1 : s.cur));
+    if (cur < n - 1) this.setState({ cur: cur + 1, alt: false, hl: null });
+  };
+  togglePlay = () => {
+    var s = this.state || {};
+    if (s.playing) { this.stopTimer(); this.setState({ playing: false }); return; }
+    var n = this.steps().length;
+    var start = (s.alt || s.cur == null || s.cur >= n - 1) ? -1 : s.cur;
+    this.setState({ playing: true, alt: false, hl: null, cur: start });
+    this.stopTimer();
+    this.timer = setInterval(() => {
+      var st = this.state || {};
+      var len = this.steps().length;
+      var c = st.cur == null ? -1 : st.cur;
+      if (c >= len - 1) { this.stopTimer(); this.setState({ playing: false }); return; }
+      this.setState({ cur: c + 1 });
+    }, 1200);
+  };
+  reset = () => { this.stopTimer(); this.setState({ cur: -1, playing: false, alt: false, hl: null }); };
+  toggleFlag = (k) => () => { this.stopTimer(); var o = { cur: -1, playing: false, alt: false, hl: null }; o[k] = !(this.state || {})[k]; this.setState(o); };
+  pickHalt = (key, node) => () => {
+    this.stopTimer();
+    var s = this.state || {};
+    if (s.hlRow === key) { this.setState({ hlRow: null, hl: null, alt: false }); return; }
+    this.setState({ hlRow: key, hl: node, alt: key === 'h5', playing: false });
+  };
+  renderVals() {
+    var s = this.state || {};
+    var strict = !!s.strict, isolate = !!s.isolate, solo = !!s.solo;
+    var steps = this.steps();
+    var cur = s.cur == null ? -1 : s.cur;
+    var shown, current = null, visited = {}, note = '';
+    if (s.alt) {
+      var pre = steps.slice(0, solo ? 4 : 9);
+      var alt = this.altEnding();
+      shown = pre.concat([alt]);
+      current = 'interwave_halt';
+      note = alt.note;
+    } else {
+      shown = steps.slice(0, cur + 1);
+      if (cur >= 0) { current = steps[cur].node; note = steps[cur].note || ''; }
+    }
+    shown.forEach(function (st) { visited[st.node] = true; (st.visit || []).forEach(function (v) { visited[v] = true; }); });
+    var lines = [];
+    shown.forEach(function (st, i) {
+      if (i > 0) lines.push({ t: ' ', cls: '' });
+      st.lines.forEach(function (t) {
+        var cls = '';
+        if (t.indexOf('$') === 0) cls = 't-cmd';
+        else if (t.indexOf('#') === 0) cls = 't-dim';
+        else if (t.indexOf('SHIP COMPLETE') === 0 || t.indexOf('  commit:') === 0) cls = 't-acc';
+        else if (t.indexOf('SHIP HALTED') === 0) cls = 't-halt';
+        lines.push({ t: t === '' ? ' ' : t, cls: cls });
+      });
+    });
+
+    var CX = function (c) { return 24 + c * 208; };
+    var RY = function (r) { return 52 + r * 76; };
+    var W = 168, HW = 160, H = 48;
+    var HXL = function (i) { return 24 + i * 176; };
+    var L = function (c) { return CX(c); }, R = function (c) { return CX(c) + W; }, MX = function (c) { return CX(c) + 84; };
+    var CY = function (r) { return RY(r) + 24; }, T = function (r) { return RY(r); }, B = function (r) { return RY(r) + H; };
+    var G = function (c) { return CX(c) + 188; };
+    var HC = function (i) { return HXL(i) + 80; };
+    var HT = RY(4), HB = RY(4) + H, CH = 342, BUS = 426, TOP = 38;
+    var waveOnly = { replan: 1, interwave_verify: 1, judge_interwave: 1, interwave_halt: 1 };
+    var dimScope = function (scope) {
+      if (scope === 'strict') return !strict;
+      if (scope === 'isolate') return !isolate;
+      if (scope === 'waves') return solo;
+      if (scope === 'default') return strict;
+      return false;
+    };
+    var defs = [
+      ['ship_launch', '/interlock:ship → Workflow(), once', 'stage', 'all', L(0), T(0), W],
+      ['run_start', 'run start: validate + plan reuse', 'stage', 'all', L(0), T(1), W],
+      ['classify', 'classify — one planner agent', 'stage', 'all', L(1), T(0), W],
+      ['plan', 'run classified: coverage → waves → plan.json', 'stage', 'all', L(1), T(1), W],
+      ['batch', 'run-batch: up to 8 lanes in parallel', 'stage', 'all', L(2), T(0), W],
+      ['record_batch', 'run record-batch', 'stage', 'all', L(2), T(1), W],
+      ['replan', 'replan (one ping, max 2 per run)', 'stage', 'waves', L(2), T(2), W],
+      ['interwave_verify', 'verify (inter-wave)', 'stage', 'waves', L(3), T(0), W],
+      ['judge_interwave', 'run judge --context inter-wave', 'stage', 'waves', L(3), T(1), W],
+      ['done', 'done', 'stage', 'all', L(3), T(2), W],
+      ['review', 'review: dimensions + two skeptics', 'stage', 'strict', L(4), T(0), W],
+      ['reviewed', 'run reviewed: adjudicate', 'stage', 'strict', L(4), T(1), W],
+      ['remediation', 'remediate, rounds 1..2', 'stage', 'strict', L(4), T(2), W],
+      ['verdict_gate', 'verdict round', 'stage', 'strict', L(4), T(3), W],
+      ['final_verify', 'verify-final (marker: fix-tests)', 'stage', 'all', L(5), T(0), W],
+      ['judge_final', 'run judge --context final', 'stage', 'all', L(5), T(1), W],
+      ['handoff', 'handoff: test plan, walkthrough, conformance', 'stage', 'strict', L(5), T(2), W],
+      ['commit', 'commit: one feature-level commit', 'stage', 'all', L(5), T(3), W],
+      ['mr', '/interlock:mr', 'human', 'all', L(6), T(2), W],
+      ['close', 'run close → receipt, outcome, trajectory', 'term', 'all', L(6), T(3), W],
+      ['trampoline_halt', 'No Workflow tool → HALT', 'halt', 'all', HXL(0), HT, HW],
+      ['preflight_halt', 'HALTED: validate / coverage / plan', 'halt', 'all', HXL(1), HT, HW],
+      ['failure_halt', 'HALTED: more than 2 task failures', 'halt', 'all', HXL(2), HT, HW],
+      ['merge_halt', 'HALTED: merge-lanes collision (isolate)', 'halt', 'isolate', HXL(3), HT, HW],
+      ['interwave_halt', 'HALTED: inter-wave checks still red', 'halt', 'waves', HXL(4), HT, HW],
+      ['blocker_halt', 'HALTED: unresolved blockers', 'halt', 'strict', HXL(5), HT, HW],
+      ['unit_halt', 'HALTED: unit suite red / weakened', 'halt', 'all', HXL(6), HT, HW]
+    ];
+    var nodes = defs.map(function (d) {
+      var id = d[0], cls = 'sm-' + d[2];
+      if (dimScope(d[3])) cls += ' sm-dim';
+      if (s.hl === id && !s.alt) cls += ' sm-hl';
+      else if (current === id) cls += (d[2] === 'halt' ? ' sm-hl' : ' sm-current');
+      else if (visited[id]) cls += ' sm-visited';
+      return { label: d[1], cls: cls, x: d[4], y: d[5], w: d[6] };
+    });
+    var E = [
+      [[[L(0), CY(0)], [L(0) - 12, CY(0)], [L(0) - 12, CY(4)], [HXL(0), CY(4)]], 'all'],
+      [[[MX(0), B(0)], [MX(0), T(1)]], 'all'],
+      [[[R(0), CY(1) - 8], [G(0) - 6, CY(1) - 8], [G(0) - 6, CY(0)], [L(1), CY(0)]], 'all'],
+      [[[R(0), CY(1) + 8], [G(0) + 6, CY(1) + 8], [G(0) + 6, 186], [G(1) - 6, 186], [G(1) - 6, CY(0) + 8], [L(2), CY(0) + 8]], 'all'],
+      [[[MX(0), B(1)], [MX(0), CH], [HC(1), CH], [HC(1), HT]], 'all'],
+      [[[MX(1), B(0)], [MX(1), T(1)]], 'all'],
+      [[[MX(1), B(1)], [MX(1), CH], [HC(1), CH], [HC(1), HT]], 'all'],
+      [[[R(1), CY(1)], [G(1), CY(1)], [G(1), CY(0)], [L(2), CY(0)]], 'all'],
+      [[[MX(2) - 14, B(0)], [MX(2) - 14, T(1)]], 'all'],
+      [[[MX(2) + 14, T(1)], [MX(2) + 14, B(0)]], 'all'],
+      [[[MX(2), B(1)], [MX(2), T(2)]], 'waves'],
+      [[[R(2), CY(2)], [R(2) + 10, CY(2)], [R(2) + 10, CY(0) + 10], [R(2), CY(0) + 10]], 'waves'],
+      [[[R(2), CY(1) - 8], [G(2) + 6, CY(1) - 8], [G(2) + 6, CY(0) - 8], [L(3), CY(0) - 8]], 'waves'],
+      [[[R(2), CY(1) + 8], [G(2) + 6, CY(1) + 8], [G(2) + 6, CY(2)], [L(3), CY(2)]], 'all'],
+      [[[L(3), CY(1)], [G(2) - 6, CY(1)], [G(2) - 6, CY(0) - 12], [R(2), CY(0) - 12]], 'waves'],
+      [[[MX(3) - 14, B(0)], [MX(3) - 14, T(1)]], 'waves'],
+      [[[MX(3) + 14, T(1)], [MX(3) + 14, B(0)]], 'waves'],
+      [[[R(3), CY(1)], [R(3) + 10, CY(1)], [R(3) + 10, CH], [HC(4), CH], [HC(4), HT]], 'waves'],
+      [[[R(3), CY(2) - 8], [G(3) - 6, CY(2) - 8], [G(3) - 6, CY(0)], [L(4), CY(0)]], 'strict'],
+      [[[R(3), CY(2) + 8], [G(3) + 6, CY(2) + 8], [G(3) + 6, TOP], [G(4) - 6, TOP], [G(4) - 6, CY(0) - 8], [L(5), CY(0) - 8]], 'default'],
+      [[[MX(4), B(0)], [MX(4), T(1)]], 'strict'],
+      [[[R(4), CY(1)], [G(4), CY(1)], [G(4), CY(0) + 8], [L(5), CY(0) + 8]], 'strict'],
+      [[[MX(4), B(1)], [MX(4), T(2)]], 'strict'],
+      [[[R(4), CY(2) - 8], [R(4) + 12, CY(2) - 8], [R(4) + 12, CY(2) + 8], [R(4), CY(2) + 8]], 'strict'],
+      [[[MX(4), B(2)], [MX(4), T(3)]], 'strict'],
+      [[[MX(4), B(3)], [MX(4), CH], [HC(5), CH], [HC(5), HT]], 'strict'],
+      [[[R(4), CY(3)], [G(4), CY(3)], [G(4), CY(0) + 8], [L(5), CY(0) + 8]], 'strict'],
+      [[[MX(5), B(0)], [MX(5), T(1)]], 'all'],
+      [[[MX(5), B(1)], [MX(5), T(2)]], 'strict'],
+      [[[L(5), CY(1)], [L(5) - 10, CY(1)], [L(5) - 10, CY(3)], [L(5), CY(3)]], 'default'],
+      [[[L(5), CY(1) + 6], [L(5) - 10, CY(1) + 6], [L(5) - 10, CH], [HC(6), CH], [HC(6), HT]], 'all'],
+      [[[MX(5), B(2)], [MX(5), T(3)]], 'strict'],
+      [[[R(5), CY(3)], [L(6), CY(3)]], 'all'],
+      [[[MX(6), T(3)], [MX(6), B(2)]], 'all'],
+      [[[L(2) - 12, CY(1)], [L(2), CY(1)]], 'none'],
+      [[[L(2), CY(1) + 4], [L(2) - 12, CY(1) + 4], [L(2) - 12, CH], [HC(2), CH], [HC(2), HT]], 'all'],
+      [[[L(2) - 12, CH], [HC(3), CH], [HC(3), HT]], 'isolate'],
+      [[[HC(0), BUS], [MX(6), BUS], [MX(6), B(3)]], 'all']
+    ];
+    var path = function (pts) { return 'M' + pts.map(function (p) { return p[0] + ' ' + p[1]; }).join(' L'); };
+    var head = function (pts) {
+      var a = pts[pts.length - 2], b = pts[pts.length - 1];
+      var dx = Math.sign(b[0] - a[0]), dy = Math.sign(b[1] - a[1]);
+      var bx = b[0] - dx * 7, by = b[1] - dy * 7, px = -dy * 3.5, py = dx * 3.5;
+      return 'M' + b[0] + ' ' + b[1] + ' L' + (bx + px) + ' ' + (by + py) + ' L' + (bx - px) + ' ' + (by - py) + ' Z';
+    };
+    var edges = E.filter(function (e) { return e[1] !== 'none'; }).map(function (e) {
+      return { d: path(e[0]), h: head(e[0]), cls: dimScope(e[1]) ? 'dim' : '' };
+    });
+    for (var i = 0; i < 7; i++) {
+      var sc = ['all', 'all', 'all', 'isolate', 'waves', 'strict', 'all'][i];
+      edges.push({ d: path([[HC(i), HB], [HC(i), BUS]]), h: '', cls: dimScope(sc) ? 'dim' : '' });
+    }
+    var lanes = [['pre-flight', 0], ['plan', 1], ['waves', 2], ['verify', 3], ['tail · strict only', 4], ['commit', 5], ['close', 6]].map(function (l) { return { t: l[0], x: L(l[1]) }; });
+    var elabels = [
+      { t: 'plan reused', x: 252, y: 189, cls: '' },
+      { t: 'next batch', x: MX(2) + 20, y: 107, cls: '' },
+      { t: '2 per wave', x: MX(3) + 18, y: 107, cls: solo ? 'dim' : '' },
+      { t: 'lean ship', x: 900, y: TOP - 7, cls: strict ? 'dim' : '' },
+      { t: 'every halt → close: receipt, outcome record, trajectory, exit 1', x: 470, y: BUS + 6, cls: '' }
+    ];
+    var hrow = {};
+    var map = { h1: 'preflight_halt', h2: 'preflight_halt', h3: 'preflight_halt', h4: 'failure_halt', h5: 'interwave_halt', h6: 'unit_halt', h7: 'unit_halt', h8: 'blocker_halt', h9: 'merge_halt', h10: null, h11: null, h12: 'trampoline_halt', h13: 'close', h14: 'trampoline_halt', h15: null };
+    Object.keys(map).forEach((k) => { hrow[k] = { cls: s.hlRow === k ? 'sel' : '', pick: this.pickHalt(k, map[k]) }; });
+    var board = [
+      'plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted',
+      '┌─ wave 1 · idx 0 · group 1 · impl · 1 batch ───────────────────────────────────────────────────────',
+      '│ b0 1.7 sonnet T4 inherit ok           · Docs (design D2, D4, D5, D7',
+      '│ b0 1.4 sonnet T3 inherit ok           · In lib/receipt.mjs (design D4, D5, D7',
+      '│ b0 1.2 sonnet T2 low     ok           · Create lib/project-slug.mjs exporting pro…',
+      '│ b0 1.3 sonnet T2 low     ok           · In lib/limits.mjs add notifyTimeoutMs: 50…',
+      '│ b0 1.6 haiku  T1 low     not recorded · Verify — do not edit',
+      '└───────────────────────────────────────────────────────────────────────────────────────────────────',
+      '  verify after idx 0 · 1 skip for group 1 · state does not say idx 0 or idx 1 · no-detectable-comma…',
+      '┌─ wave 2 · idx 1 · group 1 · impl · 5 batches ─────────────────────────────────────────────────────',
+      '│ b0 1.5 sonnet T4 inherit failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append',
+      '│ b0 1.1 sonnet T3 inherit failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4',
+      '│ b1 2.1 sonnet T4 inherit current      · In lib/run.mjs (design D1, D5, D7',
+      '│ b2 2.2 sonnet T3 inherit not reached  ←2.1 · In bin/interlock (design D1, D14): add',
+      '│ b3 2.3 sonnet T2 low     not reached  ←2.2 · In workflows/ship.js and bin/interlock-ru…',
+      '│ b4 3.2 sonnet T2 low     not reached  · In skills/spec/SKILL.md §6 (design D6',
+      '└───────────────────────────────────────────────────────────────────────────────────────────────────',
+      '  verify after idx 1 · not reached · group 1 skips: see idx 0',
+      '┌─ test wave · idx 2 · test · 1 batch ──────────────────────────────────────────────────────────────',
+      '│ b0 3.1 sonnet T3 inherit not reached  · In test/workflows.test.mjs (design D1, D5…',
+      '│ b0 3.3 sonnet T2 low     not reached  · Run \'openspec validate harden-unattended-…',
+      '└───────────────────────────────────────────────────────────────────────────────────────────────────',
+      '  unplaced: task-1.6-verify-settings · wave 1 impl · no error recorded',
+      'then: verify-final → commit → close · halted: 3 task failures accumulated across waves; more than 2…'
+    ].join('\n');
+    var n = steps.length;
+    return {
+      theme: this.props.theme ?? 'light',
+      strict: strict, isolate: isolate, solo: solo,
+      toggleStrict: this.toggleFlag('strict'), toggleIsolate: this.toggleFlag('isolate'), toggleSolo: this.toggleFlag('solo'),
+      step: this.step, togglePlay: this.togglePlay, reset: this.reset,
+      playLabel: s.playing ? 'Pause' : 'Play', playingAttr: s.playing ? 'true' : 'false',
+      atEnd: !s.alt && cur >= n - 1,
+      stepCount: s.alt ? 'Alternate ending: the inter-wave halt' : ('Step ' + Math.max(0, cur + 1) + ' of ' + n),
+      nodes: nodes, lanes: lanes, elabels: elabels,
+      edgeD: edges.filter(function (e) { return !e.cls; }).map(function (e) { return e.d; }).join(' '),
+      edgeH: edges.filter(function (e) { return !e.cls && e.h; }).map(function (e) { return e.h; }).join(' '),
+      edgeDimD: edges.filter(function (e) { return e.cls; }).map(function (e) { return e.d; }).join(' ') || 'M0 0',
+      edgeDimH: edges.filter(function (e) { return e.cls && e.h; }).map(function (e) { return e.h; }).join(' ') || 'M0 0',
+      lines: lines, termRef: this.termRef,
+      hasNote: !!note, note: note,
+      rows: hrow,
+      board: board
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -13,9 +13,7 @@
 </p>
 <p align="center"><sub>One real run, cut to 34 s. <code>spec</code> asks one question, writes 11 specs and 12 tasks, then stops. <code>ship</code> runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.</sub></p>
 <p align="center"><code>12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</code></p>
-<!-- The uncut, captioned 2:34 of the same run is not in git. Once it is a release asset, uncomment:
-<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.4.2/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
--->
+<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
 
 ```bash
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
