@@ -10,6 +10,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { capabilityOf, parseSpec, requirementKey } from '../../lib/spec-text.mjs'
+// `specMentionedPaths` is reached through the namespace so a missing export
+// fails its own tests and leaves the ones above running.
+import * as specText from '../../lib/spec-text.mjs'
 
 const LIVING = `# demo/cache Specification
 
@@ -270,4 +273,83 @@ test('capabilityOf is null for a path that is not a spec file', () => {
 test('capabilityOf is null for a spec.md with no capability above it', () => {
   assert.equal(capabilityOf('spec.md'), null)
   assert.equal(capabilityOf('openspec/specs/spec.md'), null)
+})
+
+// --- specMentionedPaths ---------------------------------------------------
+//
+// The one rule for "a spec mentions this file". The graph's openspec extractor
+// and the spec-coverage signal both read it, so a fresh graph and the signal
+// agree by construction. design D7 of complete-and-record-the-merge-verdict.
+
+const mentioned = text => specText.specMentionedPaths(text)
+
+test('specMentionedPaths is exported as a function', () => {
+  assert.equal(typeof specText.specMentionedPaths, 'function')
+})
+
+test('specMentionedPaths finds a backticked repository-relative path', () => {
+  assert.deepEqual(mentioned('The module `lib/widget.mjs` SHALL serve.'), ['lib/widget.mjs'])
+})
+
+test('specMentionedPaths finds a quoted path, double or single', () => {
+  assert.deepEqual(mentioned('Read "lib/quoted.mjs" first.'), ['lib/quoted.mjs'])
+  assert.deepEqual(mentioned("Read 'lib/single.mjs' first."), ['lib/single.mjs'])
+})
+
+test('specMentionedPaths finds a bare path at the start of a line and after a space', () => {
+  assert.deepEqual(mentioned('lib/first.mjs holds it, and so does lib/second.mjs.'), [
+    'lib/first.mjs',
+    'lib/second.mjs'
+  ])
+})
+
+test('specMentionedPaths finds a path in parentheses and in brackets', () => {
+  assert.deepEqual(mentioned('(lib/paren.mjs) and [lib/bracket.mjs]').sort(), [
+    'lib/bracket.mjs',
+    'lib/paren.mjs'
+  ])
+})
+
+test('specMentionedPaths finds a nested path with an extension, any extension', () => {
+  assert.deepEqual(mentioned('`cmd/api/main.py` and `internal/service/handler.go`').sort(), [
+    'cmd/api/main.py',
+    'internal/service/handler.go'
+  ])
+})
+
+test('specMentionedPaths reads ./lib/new.mjs as lib/new.mjs', () => {
+  assert.deepEqual(mentioned('Created by `./lib/new.mjs`.'), ['lib/new.mjs'])
+  assert.deepEqual(mentioned('Created by ./lib/bare-new.mjs today.'), ['lib/bare-new.mjs'])
+})
+
+test('specMentionedPaths names a file once however often a spec mentions it', () => {
+  const text = '`lib/a.mjs`, "lib/a.mjs" and ./lib/a.mjs, then lib/a.mjs again.'
+  assert.deepEqual(mentioned(text), ['lib/a.mjs'])
+})
+
+test('specMentionedPaths does not read the path segments of a URL', () => {
+  assert.deepEqual(mentioned('See https://example.com/lib/url-only.mjs for background.'), [])
+  assert.deepEqual(mentioned('(https://example.com/docs/guide.md)'), [])
+  assert.deepEqual(mentioned('<http://example.com/lib/x.mjs>'), [])
+})
+
+test('specMentionedPaths does not read a path with no extension', () => {
+  assert.deepEqual(mentioned('Everything under `lib/graph/` and lib/host is covered.'), [])
+})
+
+test('specMentionedPaths finds a path beside a URL that has one', () => {
+  const text = 'Background at https://example.com/lib/url-only.mjs; the code is `lib/real.mjs`.'
+  assert.deepEqual(mentioned(text), ['lib/real.mjs'])
+})
+
+test('specMentionedPaths of text with no path, no text and no string is empty', () => {
+  assert.deepEqual(mentioned('The cache SHALL evict old entries.'), [])
+  assert.deepEqual(mentioned(''), [])
+  assert.deepEqual(mentioned(undefined), [])
+})
+
+test('specMentionedPaths finds the paths in a whole spec', () => {
+  assert.deepEqual(mentioned(LIVING), [])
+  const withPath = LIVING + '\nImplemented in `lib/cache.mjs`.\n'
+  assert.deepEqual(mentioned(withPath), ['lib/cache.mjs'])
 })

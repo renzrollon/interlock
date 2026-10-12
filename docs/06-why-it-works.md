@@ -351,7 +351,7 @@ Design notes worth stealing:
 - **The orphan count always ships with its denominator.** "2 files have no spec" is alarming; "2 of 6, in a repo where 34% of source files have one" is informative. Orphan detection skips entirely when no spec links to any file — every file would be unowned, which is the loudest possible way to say nothing.
 - **Absence is never reported as cleanliness.** No graph, no living specs, no changed source files: each is a distinct message, not a pass.
 
-`interlock conformance` is the other half — it enumerates the scenarios a change's delta specs promised so each can be checked against what was built. It emits questions, never verdicts.
+`interlock conformance` is the other half — it enumerates the scenarios a change's delta specs promised so each can be checked against what was built. It emits questions, never verdicts. With `--living` it also lists the living requirements already in force for the capabilities the change touches, chosen and bounded as the `domain` reviewer's are, and the ship run's handoff step asks about them under `--conformance` too. Still questions: the command exits 0 in every case and blocks nothing; an unconfirmed requirement costs something only in the merge verdict, where it holds the change at `HUMAN`.
 
 **Neither blocks.** Every other gating subcommand exits non-zero when it blocks; these two never do. [The Spec Growth Engine](https://arxiv.org/abs/2606.27045) can block a merge on intent/evidence disagreement because its specs are machine-readable contracts with declared dependency edges. `implements_spec` links are regex path-mentions marked `INFERRED`. A blocking gate on that basis would be wrong often enough to be switched off, and a gate everyone disables protects nothing.
 

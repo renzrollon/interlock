@@ -131,7 +131,10 @@ test('the record carries §F4\'s fields and nothing else', () => {
     remediationRounds: 1,
     codeBlockersSurviving: 0,
     waves: [],
-    commit: 'deadbee'
+    commit: 'deadbee',
+    // A receipt with no merge-confidence block: the close assessed nothing, and
+    // that is `null`, never a verdict nobody reached.
+    mergeVerdict: null
   })
   assert.equal(record.reported.unitGreen, true)
   assert.deepEqual(record.human, { intervened: false, wouldRejectSpec: null, notes: 'looked fine' })
@@ -155,7 +158,8 @@ test('missing sub-objects become the fixed shape, with unknowns as null not fals
     remediationRounds: null,
     codeBlockersSurviving: null,
     waves: null,
-    commit: null
+    commit: null,
+    mergeVerdict: null
   })
   assert.deepEqual(record.reported, {
     unitGreen: null,
@@ -586,4 +590,82 @@ test('a wave row with rejected reports carries the ids into the outcome, and an 
   // Absent, not null: a row from before the field existed keeps the shape the
   // older pins hold it to, and absent is what reads as unobserved.
   assert.equal('reportRejected' in record.observed.waves[1], false, 'never [] and never 0')
+})
+
+// --- the merge verdict (design D12, spec: ship/outcome-provenance) -------------
+//
+// Observed, because the orchestrator assessed it at close; stored, because a
+// reader of the corpus wants it beside the other things the run saw; and read by
+// nothing that decides. The tests pin the first two. The third is pinned in
+// `test/spine/report.test.mjs`.
+
+const mergeBlock = verdict => ({
+  verdict,
+  score: 72,
+  worstBand: 'amber',
+  counts: { gating: 17, clean: 14, green: 14, amber: 2, red: 0, unobserved: 1, flagged: 1 },
+  driving: ['risk.class'],
+  flags: []
+})
+
+test('mergeVerdict is an observed field, not a reported one', () => {
+  assert.ok(OBSERVED_FIELDS.includes('mergeVerdict'))
+  assert.ok(!REPORTED_FIELDS.includes('mergeVerdict'))
+})
+
+test('observedFromReceipt takes the verdict from the receipt block, one of the three words', () => {
+  for (const verdict of ['MERGE', 'HUMAN', 'BLOCK']) {
+    const observed = observedFromReceipt(receiptOf({ mergeConfidence: mergeBlock(verdict) }))
+    assert.equal(observed.mergeVerdict, verdict)
+    const record = JSON.parse(lines(appendOutcome(tmp, { ...base, observed }).path).at(-1))
+    assert.equal(record.observed.mergeVerdict, verdict, 'and the line carries it in the observed group')
+    assert.equal(record.reported.mergeVerdict, undefined, 'and nowhere else')
+  }
+})
+
+test('a receipt without a block reads null, never a default verdict', () => {
+  for (const extra of [{}, { mergeConfidence: null }, { mergeConfidence: undefined }, { mergeConfidence: 'HUMAN' }]) {
+    const observed = observedFromReceipt(receiptOf(extra))
+    assert.equal(observed.mergeVerdict, null, JSON.stringify(extra))
+    const record = JSON.parse(lines(appendOutcome(tmp, { ...base, observed }).path).at(-1))
+    assert.equal(record.observed.mergeVerdict, null)
+  }
+  assert.equal(observedFromReceipt(null).mergeVerdict, null, 'no receipt at all is no verdict')
+  assert.equal(observedFromReceipt(receiptOf({ halted: true, haltReason: 'stopped' })).mergeVerdict, null)
+})
+
+test('a verdict outside the three words is null in the observed value and in the line', () => {
+  for (const verdict of ['SHIP', 'merge', 'MERGE ', '', 7, null, {}, ['MERGE']]) {
+    const observed = observedFromReceipt(receiptOf({ mergeConfidence: mergeBlock(verdict) }))
+    assert.equal(observed.mergeVerdict, null, JSON.stringify(verdict))
+  }
+  // The second layer: a caller that assembles `observed` in process.
+  const record = JSON.parse(
+    lines(appendOutcome(tmp, { ...base, observed: { ...observedFromReceipt(receiptOf()), mergeVerdict: 'SHIP' } }).path)[0]
+  )
+  assert.equal(record.observed.mergeVerdict, null)
+})
+
+test('a merge verdict in the reported group, or the legacy flat group, is rejected', () => {
+  for (const group of ['reported', 'ship']) {
+    const r = appendOutcome(tmp, {
+      ...base,
+      observed: observedFromReceipt(receiptOf({ mergeConfidence: mergeBlock('HUMAN') })),
+      [group]: { mergeVerdict: 'MERGE', unitGreen: true }
+    })
+    assert.equal(r.written, true, 'a refused field must not cost the whole line')
+    assert.match(r.reason, new RegExp(`${group}\\.mergeVerdict`), 'a rejection is reported, never silently dropped')
+    const record = JSON.parse(lines(r.path).at(-1))
+    assert.equal(record.observed.mergeVerdict, 'HUMAN', 'the run assessed HUMAN, whatever the agent said')
+    assert.equal(record.reported.mergeVerdict, undefined)
+    assert.equal(record.mergeVerdict, undefined)
+  }
+})
+
+test('the observed group is the OBSERVED_FIELDS and no more, the verdict included', () => {
+  const record = JSON.parse(
+    lines(appendOutcome(tmp, { ...base, observed: observedFromReceipt(receiptOf({ mergeConfidence: mergeBlock('MERGE') })) }).path)[0]
+  )
+  assert.deepEqual(Object.keys(record.observed).sort(), [...OBSERVED_FIELDS].sort())
+  assert.ok('mergeVerdict' in record.observed)
 })

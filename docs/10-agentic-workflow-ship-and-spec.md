@@ -222,7 +222,7 @@ Since `emit-strict-tail-from-cli` the tail is part of the same program: `interlo
 2. **`run reviewed`** adjudicates those two files with `lib/review-core.mjs` — the same survival, evidence and band rules `interlock review` applies — using the run's *observed* changed paths and the `REVIEW.md` lists as they stood at the run's start commit (`POLICY DIFFERS FROM BASE` when the working copy has moved), writes `review.json` and the review metrics, and asks `lib/remediate.mjs` for round one. Nothing survived to fix → straight to final verification, no round spent.
 3. **`remediate` rounds 1..`remediationRounds`**, each inlining its own plan (one fixer per `byFile` group, the unscoped group last) and the criteria for every dimension to be re-reviewed. Each continues to `run remediated --round <n>`, which re-adjudicates the rewritten files, records fixed/deferred, and asks for the next round. Every blocker cleared → jump to the verdict rather than spend the rest of the budget.
 4. **The verdict round** (`remediationRounds + 1`) fixes nothing and re-reviews nothing. Blockers still standing → a `halt` step naming the surviving count, and no commit step is ever emitted. Otherwise final verification.
-5. **`handoff`**, after final verification passes, when `--handoff` or `--conformance` is set. The CLI ran `surface` and `conformance` itself and inlined the answers: whether a manual test plan is needed (with the reason when it is not) and the scenario checklist to answer. Continues to `run commit`.
+5. **`handoff`**, after final verification passes, when `--handoff` or `--conformance` is set. The CLI ran `surface` and `conformance` itself and inlined the answers: whether a manual test plan is needed (with the reason when it is not) and the scenario checklist to answer. Under `--conformance` the checklist also lists the living requirements already in force for the capabilities the change touches (`L1..Ln`, a spec path and line each, bounded by the same size limit the `domain` reviewer's text is), read from the run's start commit; the writer answers each with a `file:line` citation or records it as unconfirmed, and the two counts are recorded for the merge verdict to read. Conformance still emits questions and blocks nothing: an unconfirmed requirement lowers the merge verdict and never halts the run. Continues to `run commit`.
 6. **`run close`** writes the autonomy-ladder record for a strict run, from the CLI's own last adjudication. No agent is asked for that count.
 
 ### Stock apply is not ship
@@ -415,7 +415,7 @@ Lean ship trusts the unit suite. No `.claude/testing/profile.json` means inferre
 ### Adversarial checks that are not review-code
 
 - Invariant sweep at spec time (consumers of a normalized value).
-- `interlock conformance` on `--conformance`: questions, never verdicts; unconfirmed stays unconfirmed.
+- `interlock conformance` on `--conformance`: questions, never verdicts; unconfirmed stays unconfirmed. The living requirements are asked alongside the delta scenarios, and the answers block nothing.
 - Reconstructability of the ship trajectory: a run you cannot replay is a halt.
 
 ### Evals

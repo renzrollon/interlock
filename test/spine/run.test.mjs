@@ -43,6 +43,7 @@ import {
   laneOutcomes,
   relayStep,
   runClassified,
+  runClose,
   runRecordBatch,
   runRemediated,
   runReviewed
@@ -6521,6 +6522,1003 @@ test('adjudication checks a citation against the start commit\'s spec, reports a
     assert.equal(reported[0].title, first.title)
     assert.equal(reported[0].requirement, first.requirement)
     assert.match(reported[0].problem, /no requirement/i)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the close states the merge verdict (complete-and-record-the-merge-verdict) ---
+//
+// Everything below is RED until the change is implemented (tasks 2.7 and 2.8).
+// It drives the real CLI against real git history wherever it can; the few
+// in-process calls inject `ctx.deps` stubs exactly where the design says the
+// run reaches the outside world (D1, D3, D17).
+//
+// Contracts these tests fix, where the design names the idea and not the key:
+//
+//   - `manifest.reviewDimensions.unavailable` — selected dimensions whose rubric
+//     could not be read, recorded by the review step (D4).
+//   - `review.json` carries `dimensions: { selected, ran, unavailable, completed,
+//     skipped }`, rewritten by every adjudication (D4).
+//   - `.claude/ship/verify-final.json` is the final verdict itself, with the
+//     run's id beside it as a top-level `runId` (D3, D18).
+//   - the handoff step carries the living entry count as `living`, beside
+//     `scenarios`, and `null` when conformance is off (D5).
+//   - `manifest.handoff` carries `requirementsChecked` and
+//     `requirementsUnconfirmed`, absent and not zero when not reported (D5).
+//   - `.claude/ship/merge-confidence.json` is the evidence file (D9).
+
+const REVIEW_JSON = join('.claude', 'ship', 'review.json')
+const VERIFY_FINAL_JSON = join('.claude', 'ship', 'verify-final.json')
+const EVIDENCE_JSON = join('.claude', 'ship', 'merge-confidence.json')
+const HEADLINE = /^MERGE CONFIDENCE (MERGE|HUMAN|BLOCK) — score \d+/m
+const HAS_VERDICT = /MERGE CONFIDENCE (MERGE|HUMAN|BLOCK) — score/
+
+const jsonAt = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'))
+const evidenceOf = root => jsonAt(root, EVIDENCE_JSON)
+const signalOf = (assessed, id) => {
+  const found = assessed.signals.find(s => s.id === id)
+  assert.ok(found, `the assessment has no ${id} signal: ${assessed.signals.map(s => s.id).join(', ')}`)
+  return found
+}
+const countOf = (text, needle) => text.split(needle).length - 1
+const outcomeOf = root =>
+  readFileSync(join(root, '.claude', 'learning', 'outcomes.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .pop()
+
+/** A repo that ignores its own run state, as every real one does, so a real commit is just the work. */
+function shippedRepo(name = 'add-thing') {
+  const r = repo(name)
+  file(r.root, '.gitignore', '.claude/\n')
+  commitAll(r.root, 'ignore run state')
+  return r
+}
+
+/** Commit what the run changed, for real, and return the commit's sha. */
+function realCommit(root) {
+  commitAll(root, 'ship: add the thing')
+  return headOf(root)
+}
+
+/** The handoff result of a strict run that confirmed everything it was asked. */
+const HANDOFF_OK = {
+  ok: true,
+  manualTestPlan: false,
+  skipReason: 'backend only',
+  scenariosChecked: 0,
+  scenariosUnconfirmed: 0
+}
+
+/** Drive a strict run, clean review and all, to the commit step. */
+function strictToCommit(root, change, handoff = HANDOFF_OK) {
+  const review = toTail(root, change, ['--strict'])
+  assert.equal(review.action, 'review')
+  writeReview(root, { dismissed: 1 })
+  const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+  assert.equal(verified.action, 'verify-final')
+  const handoffStep = run(root, [...verified.then.argv]).step
+  assert.equal(handoffStep.action, 'handoff')
+  const commit = run(root, [...handoffStep.then.argv], { results: [handoff] }).step
+  assert.equal(commit.action, 'commit')
+  return commit
+}
+
+/** Drive a lean run (no review, no handoff) to whatever follows final verification. */
+function leanToCommit(root, change, flags = []) {
+  const verified = toTail(root, change, flags)
+  assert.equal(verified.action, 'verify-final')
+  return run(root, [...verified.then.argv]).step
+}
+
+const closeAt = (root, sha, over = {}) => run(root, ['run', 'close'], { results: [{ ok: true, sha }], ...over })
+
+/** `runClose` in this process, with the given `ctx.deps`, for the seams the CLI does not expose. */
+async function closeInProcess(root, deps, results) {
+  const warnings = []
+  const step = await runClose({ root, warn: message => warnings.push(message), deps }, { results })
+  return { step, warnings }
+}
+
+// --- the review step records unreadable rubrics ------------------------------
+
+/** Run the review step through a plugin copy that lacks one dimension's rubric file. */
+function reviewWithoutRubric(root, change, rubric, flags = ['--review']) {
+  const plugin = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
+  try {
+    cpSync(join(ROOT, 'package.json'), join(plugin, 'package.json'))
+    for (const dir of ['bin', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
+    cpSync(
+      join(ROOT, 'skills', 'review-code', 'dimensions'),
+      join(plugin, 'skills', 'review-code', 'dimensions'),
+      { recursive: true, filter: src => !src.endsWith(`${sep}${rubric}.md`) }
+    )
+    const batch = toFirstBatch(root, change, flags)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    file(
+      root,
+      '.claude/ship/results.json',
+      batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    )
+    return JSON.parse(
+      execFileSync(
+        process.execPath,
+        [join(plugin, 'bin', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
+        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+    )
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+  }
+}
+
+test('the review step records a dimension whose rubric could not be read on the manifest', () => {
+  const { root, change } = repo()
+  try {
+    const step = reviewWithoutRubric(root, change, 'qa')
+    assert.equal(step.action, 'review')
+    assert.deepEqual(manifestOf(root).reviewDimensions.unavailable, ['qa'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review whose rubrics were all readable records no unavailable dimension', () => {
+  const { root, change } = repo()
+  try {
+    toTail(root, change, ['--review'])
+    assert.deepEqual(manifestOf(root).reviewDimensions.unavailable || [], [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- review.json carries the dimension record (D4) ---------------------------
+
+test('run reviewed writes the dimension record: every selected dimension ran when the worker reported ok', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+
+    const manifest = manifestOf(root)
+    const selected = manifest.reviewDimensions.selected
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.ok(dims && typeof dims === 'object', 'review.json carries no dimension record')
+    assert.deepEqual(dims.selected, selected)
+    assert.deepEqual(dims.ran, selected, 'dispatched with its rubric in a review the worker reported complete')
+    assert.deepEqual(dims.unavailable, [])
+    assert.equal(dims.completed, true)
+    // No graph and no declared capability: domain was refused, and the record says so.
+    assert.deepEqual(dims.skipped, manifest.reviewDimensions.skipped)
+    assert.deepEqual(dims.skipped.map(s => s.name), ['domain'])
+    assert.equal(typeof dims.skipped[0].reason, 'string')
+    assert.ok(dims.skipped[0].reason.length > 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the dimension record names an unreadable rubric as unavailable and never as run', () => {
+  const { root, change } = repo()
+  try {
+    const review = reviewWithoutRubric(root, change, 'qa')
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+
+    const selected = manifestOf(root).reviewDimensions.selected
+    assert.ok(selected.includes('qa'), 'qa was selected; only its rubric was unreadable')
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.deepEqual(dims.selected, selected)
+    assert.deepEqual(dims.unavailable, ['qa'])
+    assert.ok(!dims.ran.includes('qa'), 'a dimension without its rubric did not run')
+    assert.deepEqual(dims.ran, selected.filter(d => d !== 'qa'))
+    assert.equal(dims.completed, true)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review whose worker returned nothing usable records completed:false and no dimension as run', () => {
+  for (const reported of [undefined, [{ ok: false, detail: 'the worker died' }]]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeReview(root, { dismissed: 1 })
+      run(root, [...review.then.argv], reported === undefined ? {} : { results: reported })
+
+      const dims = jsonAt(root, REVIEW_JSON).dimensions
+      assert.equal(dims.completed, false, JSON.stringify(dims))
+      assert.deepEqual(dims.ran, [], 'nothing is recorded as run when the review did not complete')
+      assert.ok(dims.selected.length > 0, 'what the CLI selected is still recorded')
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a dimension the reviewer added is recorded as run and not as selected', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeReview(root, { warnings: 1, dimension: 'security' })
+    run(root, [...review.then.argv], {
+      results: [{ ok: true, addedDimensions: [{ name: 'security', reason: 'the diff touches a token path' }] }]
+    })
+
+    const selected = manifestOf(root).reviewDimensions.selected
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.ok(!dims.selected.includes('security'), 'the CLI never selected it')
+    assert.deepEqual(dims.selected, selected)
+    assert.ok(dims.ran.includes('security'), 'it ran: the worker said so and its findings were adjudicated')
+    assert.deepEqual([...dims.ran].sort(), [...selected, 'security'].sort())
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation round rewrites review.json with the same dimension record', () => {
+  for (const firstReport of [{ ok: true }, null]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], firstReport ? { results: [firstReport] } : {}).step
+      assert.equal(round1.action, 'remediate')
+      const first = jsonAt(root, REVIEW_JSON).dimensions
+      assert.equal(first.completed, firstReport !== null)
+
+      // The fixer cleared it; the adjudication rewrites the file.
+      writeReview(root, {})
+      run(root, [...round1.then.argv], { results: [{ ok: true }] })
+      const second = jsonAt(root, REVIEW_JSON).dimensions
+      assert.deepEqual(
+        second,
+        first,
+        'the last review record a run leaves must still say which dimensions ran, and whether the review completed'
+      )
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+// --- run judge --context final persists the verdict (D3) ---------------------
+
+test('a final verification the CLI skipped is recorded with the run id and the plan\'s skip list', () => {
+  const { root, change } = repo()
+  try {
+    const verified = toTail(root, change, [])
+    assert.equal(verified.action, 'verify-final')
+    assert.equal(verified.skipped, true, 'the fixture has no test profile, so the CLI skips verification')
+    assert.equal(existsSync(join(root, VERIFY_FINAL_JSON)), false, 'nothing is recorded before the judge')
+    run(root, [...verified.then.argv])
+
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    const plan = jsonAt(root, '.claude/ship/vplan-final.json')
+    assert.equal(written.runId, manifestOf(root).runId)
+    assert.equal(written.context, 'final')
+    assert.ok(plan.skipped.length > 0)
+    assert.deepEqual(written.skipped, plan.skipped, 'one band per reason, read from the same list the planner gave')
+    for (const key of ['unit', 'e2e', 'coverage', 'typecheck']) {
+      assert.equal(written[key], null, `${key} did not run, so it is null and not absent`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a judged final verification is recorded with the run id and the verdict', () => {
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    run(root, [...final.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] }] }]
+    })
+
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    assert.equal(written.runId, manifestOf(root).runId)
+    assert.equal(written.context, 'final')
+    assert.equal(written.halt, false)
+    assert.ok(written.unit && typeof written.unit === 'object', 'the unit result is the verdict the run acted on')
+    assert.equal(written.unit.status, 'green')
+    assert.ok(Array.isArray(written.skipped))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an inter-wave judge writes no final verification record', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.context, 'inter-wave')
+    run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] }] }]
+    })
+    assert.equal(existsSync(join(root, VERIFY_FINAL_JSON)), false)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the handoff step lists the living requirements (D5) ---------------------
+
+const LIVING_BANNER = 'LIVING CONFORMANCE'
+
+/** A conformance run, driven to the handoff step. */
+function toHandoff(root, change, flags = ['--conformance']) {
+  const verified = toTail(root, change, flags)
+  assert.equal(verified.action, 'verify-final')
+  const handoff = run(root, [...verified.then.argv]).step
+  assert.equal(handoff.action, 'handoff')
+  return handoff
+}
+
+test('a conformance run lists each living requirement in the handoff briefing and carries the count', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 2, 'the step carries the number of living entries')
+    const briefing = briefingOf(root, handoff)
+    assert.match(briefing, /\bL1\b/)
+    assert.match(briefing, /\bL2\b/)
+    assert.doesNotMatch(briefing, /\bL3\b/)
+    assert.ok(briefing.includes(LIVING_SPEC_PATH), 'each entry cites its spec')
+    assert.ok(briefing.includes(REQ_ALPHA) && briefing.includes(REQ_BETA), 'and its heading')
+    assert.ok(!briefing.includes(ALPHA_COMMITTED) && !briefing.includes(BETA_IN_FORCE), 'never the body')
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+    assert.deepEqual((handoff.banners || []).filter(b => b.startsWith(LIVING_BANNER)), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a partial living list is bannered once, on the step and in the close summary', () => {
+  const { root, change } = domainRepo({ graph: false, declared: true })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 1, 'ALPHA is superseded by the change; BETA is in force')
+    const banners = bannersWith(root, `${LIVING_BANNER} PARTIAL`)
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /not mapped/)
+    assert.deepEqual(bannersWith(root, `${LIVING_BANNER} SKIPPED`), [])
+    assert.equal((handoff.banners || []).filter(b => b === banners[0]).length, 1)
+
+    const briefing = briefingOf(root, handoff)
+    assert.ok(briefing.includes(REQ_BETA))
+    assert.ok(!briefing.includes(REQ_ALPHA), 'a requirement the change modifies is not asked about')
+    const at = re => briefing.search(re)
+    assert.ok(at(/\bC1\b/) !== -1 && at(/\bC1\b/) < at(/\bL1\b/), 'the change\'s scenarios come first')
+
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, `${LIVING_BANNER} PARTIAL`), 1, 'once in the summary')
+    assert.equal(closed.banners.filter(b => b.startsWith(`${LIVING_BANNER} PARTIAL`)).length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a living list that could not be selected is bannered as skipped, once', () => {
+  const { root, change } = domainRepo({ graph: false })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.ok(!handoff.living, 'there is nothing to count')
+    const banners = bannersWith(root, `${LIVING_BANNER} SKIPPED`)
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /no graph/i)
+    assert.deepEqual(bannersWith(root, `${LIVING_BANNER} PARTIAL`), [])
+    assert.ok(handoff.banners.includes(banners[0]))
+    assert.ok(!briefingOf(root, handoff).includes(REQ_BETA), 'no list was built')
+
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, `${LIVING_BANNER} SKIPPED`), 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a graph that links none of the changed paths gives an empty living list and raises neither banner', () => {
+  const { root, change } = domainRepo({ graph: graphLinking('lib/elsewhere.mjs') })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 0, 'an empty list is a list with nothing to confirm')
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+    assert.deepEqual((handoff.banners || []).filter(b => b.startsWith(LIVING_BANNER)), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run that did not ask for conformance builds no living list and its briefing names none', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change, ['--handoff'])
+    assert.ok(handoff.living === null || handoff.living === undefined)
+    const briefing = briefingOf(root, handoff)
+    assert.doesNotMatch(briefing, /\bL1\b/)
+    assert.ok(!briefing.includes(REQ_ALPHA) && !briefing.includes(REQ_BETA))
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- run commit records the two requirement counts (D5) ----------------------
+
+test('run commit records the two requirement counts beside the scenario counts, and the summary states them', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change)
+    const commit = run(root, [...handoff.then.argv], {
+      results: [{ ...HANDOFF_OK, requirementsChecked: 2, requirementsUnconfirmed: 1 }]
+    }).step
+    assert.equal(commit.action, 'commit')
+    const recorded = manifestOf(root).handoff
+    assert.equal(recorded.requirementsChecked, 2)
+    assert.equal(recorded.requirementsUnconfirmed, 1)
+    assert.equal(recorded.scenariosChecked, 0, 'the scenario counts are untouched')
+
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.match(closed.summary, /living requirements:[^\n]*\b1\b[^\n]*\b2\b/, 'one confirmed of two checked')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run commit leaves the requirement counts absent, not zero, when the handoff reported none or nothing', () => {
+  const absent = h => h === null || (h.requirementsChecked === undefined && h.requirementsUnconfirmed === undefined)
+  const cases = [
+    ['no usable result', undefined],
+    ['a result without the counts', [{ ok: true, manualTestPlan: false }]],
+    ['counts that are not integers', [{ ok: true, requirementsChecked: '3', requirementsUnconfirmed: 1.5 }]]
+  ]
+  for (const [label, results] of cases) {
+    const { root, change } = domainRepo()
+    try {
+      const handoff = toHandoff(root, change)
+      const commit = run(root, [...handoff.then.argv], results === undefined ? {} : { results }).step
+      const recorded = manifestOf(root).handoff
+      assert.ok(absent(recorded), `${label}: ${JSON.stringify(recorded)}`)
+
+      const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+      assert.doesNotMatch(closed.summary, /living requirements:/, `${label}: no row for a count nobody reported`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+// --- the close assesses merge confidence (D2) --------------------------------
+
+test('a strict run\'s close prints the verdict, records it in the receipt, the outcome and an evidence file', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const startSha = headOf(root)
+    const commit = strictToCommit(root, change)
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+
+    assert.equal(closed.exitCode, 0)
+    assert.match(closed.summary, HEADLINE)
+    assert.match(closed.summary, /assessment: \.claude\/ship\/merge-confidence\.json/)
+    // Between the identity rows and the archive reminder.
+    assert.ok(closed.summary.search(HEADLINE) < closed.summary.indexOf('ARCHIVE PENDING'))
+
+    const file1 = evidenceOf(root)
+    assert.equal(file1.schema, 'interlock.merge-evidence/1')
+    assert.equal(file1.change, change)
+    assert.equal(file1.runId, manifestOf(root).runId)
+    assert.equal(file1.base, startSha)
+    assert.equal(file1.headSha, sha)
+    assert.equal(file1.committed, true)
+    assert.deepEqual(Object.keys(file1.evidence).sort(), ['coverage', 'handoff', 'review', 'run', 'verify'])
+    assert.equal(file1.evidence.run.halted, false)
+    assert.equal(file1.evidence.run.trajectoryComplete, true)
+    assert.equal(file1.evidence.run.leftoverTasks, 0)
+    assert.ok(file1.evidence.review.dimensions, 'the review input carries the dimension record')
+
+    const result = file1.result
+    assert.equal(result.verdict, 'HUMAN')
+    assert.ok(result.driving.some(d => d.id === 'ci.pipeline'), JSON.stringify(result.driving.map(d => d.id)))
+    assert.match(signalOf(result, 'ci.pipeline').reason, /pipeline/i)
+    // What the run observed is read as observed.
+    assert.equal(signalOf(result, 'review.blockers').band, 'green')
+    assert.equal(signalOf(result, 'review.ran').band, 'green')
+    assert.equal(signalOf(result, 'run.integrity').band, 'green')
+    assert.match(signalOf(result, 'verify.suite').reason, /unit was skipped/, 'the skip list the CLI recorded')
+
+    const block = receiptOf(root).mergeConfidence
+    assert.equal(block.verdict, 'HUMAN')
+    assert.equal(block.score, result.score)
+    assert.equal(block.worstBand, result.worstBand)
+    for (const key of ['gating', 'clean']) assert.equal(block.counts[key], result.counts[key], key)
+    for (const [key, value] of Object.entries(block.counts)) assert.equal(value, result.counts[key], key)
+    assert.ok(block.driving.includes('ci.pipeline'))
+    assert.ok(Array.isArray(block.flags))
+    assert.doesNotMatch(JSON.stringify(block), /"reason"|"evidence"/, 'no finding text rides into the trajectory')
+
+    assert.equal(outcomeOf(root).observed.mergeVerdict, 'HUMAN')
+    assert.equal(commit.action, 'commit')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a lean run reads HUMAN and names the review nobody ran', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const commit = leanToCommit(root, change)
+    assert.equal(commit.action, 'commit')
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+
+    assert.match(closed.summary, HEADLINE)
+    const stored = evidenceOf(root)
+    assert.equal(stored.result.verdict, 'HUMAN')
+    assert.ok(stored.result.driving.some(d => d.id === 'review.ran'))
+    assert.match(signalOf(stored.result, 'review.ran').reason, /no review/i)
+    assert.ok(stored.evidence.review == null, 'a lean run adjudicated no review')
+    assert.equal(stored.committed, true)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a lean close in a directory holding an earlier run\'s review and verdict reads neither', () => {
+  const { root, change } = shippedRepo()
+  try {
+    // What an earlier strict run left behind: a clean review with a full
+    // dimension record, and a green final verdict under another run's id.
+    file(root, REVIEW_JSON, {
+      surviving: [],
+      counts: { raised: 0, surviving: 0, blockers: 0 },
+      dimensions: {
+        selected: ['language'],
+        ran: ['language'],
+        unavailable: [],
+        completed: true,
+        skipped: []
+      }
+    })
+    file(root, VERIFY_FINAL_JSON, {
+      runId: 'an-earlier-run',
+      context: 'final',
+      halt: false,
+      unit: { status: 'green', reason: 'green' },
+      typecheck: { ran: true, exitCode: 0, passed: true },
+      e2e: null,
+      coverage: null,
+      skipped: []
+    })
+    leanToCommit(root, change)
+    assert.equal(jsonAt(root, VERIFY_FINAL_JSON).runId, manifestOf(root).runId, 'this run overwrote the verdict')
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const stored = evidenceOf(root)
+    assert.ok(stored.evidence.review == null, 'the earlier review is not this run\'s')
+    const ran = signalOf(stored.result, 'review.ran')
+    assert.equal(ran.band, 'amber')
+    assert.match(ran.reason, /no review/i)
+    assert.equal(signalOf(stored.result, 'review.blockers').band, 'unobserved')
+    // The verification signals read what THIS run recorded: the CLI's skip list.
+    assert.match(signalOf(stored.result, 'verify.suite').reason, /unit was skipped/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a verification record carrying another run\'s id is treated as absent', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    file(root, VERIFY_FINAL_JSON, {
+      runId: 'someone-elses-run',
+      context: 'final',
+      halt: false,
+      unit: { status: 'green', reason: 'green' },
+      typecheck: { ran: true, exitCode: 0, passed: true },
+      e2e: null,
+      coverage: null,
+      skipped: []
+    })
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const stored = evidenceOf(root)
+    assert.ok(stored.evidence.verify == null)
+    const suite = signalOf(stored.result, 'verify.suite')
+    assert.equal(suite.band, 'unobserved')
+    assert.match(suite.reason, /verification verdict/i)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a halted close records no merge confidence: no block, no file, no line', () => {
+  const { root, change } = shippedRepo()
+  try {
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close', '--halt', 'the test halted it'], { expectExit: 1 }).step
+    assert.equal(closed.action, 'halt')
+    assert.doesNotMatch(closed.summary, HAS_VERDICT)
+    assert.doesNotMatch(closed.summary, /assessment: /)
+    assert.equal(existsSync(join(root, EVIDENCE_JSON)), false)
+    assert.equal(receiptOf(root).mergeConfidence, null, 'absent, never a zero score or a default verdict')
+    assert.ok(outcomeOf(root).observed.mergeVerdict == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run with no recorded start commit reads every base signal unobserved and names the missing commit', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    setManifest(root, { startSha: null })
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.base, null)
+    for (const id of ['diff.shape', 'policy.humanPaths', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      const said = `${signal.reason}\n${signal.evidence.join('\n')}`
+      assert.match(said, /start commit/i, `${id}: ${said}`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run told not to commit reads the diff signals unobserved and its evidence file is not reusable', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const closing = leanToCommit(root, change, ['--no-commit'])
+    assert.equal(closing.action, 'close', 'no commit step was emitted')
+    const closed = run(root, ['run', 'close']).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.committed, false)
+    for (const id of ['diff.shape', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      assert.match(signal.reason, /no commit/i, `${id}: ${signal.reason}`)
+    }
+    // The rest read the working tree's changed paths, which hold this run's edits.
+    assert.match(
+      signalOf(stored.result, 'policy.humanPaths').evidence.join('\n'),
+      /\b[1-9]\d* changed path\(s\)/
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run whose commit step reported failure reads the diff signals unobserved and records committed:false', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const commit = leanToCommit(root, change)
+    assert.equal(commit.action, 'commit')
+    const closed = run(root, [...commit.then.argv], {
+      results: [{ ok: false, detail: 'a pre-commit hook refused it' }]
+    }).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.committed, false)
+    for (const id of ['diff.shape', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      assert.match(signal.reason, /no commit/i, `${id}: ${signal.reason}`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- what the close says when a fact, the assessment or the file fails (D1, D17) ---
+
+test('a fact the gather could not read is a banner, and the assessment is still recorded with that signal unobserved', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    // A start commit that has gone: git cannot diff against it.
+    setManifest(root, { startSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' })
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha)
+
+    assert.equal(closed.code, 0, 'a fact the gather could not read changes no exit code')
+    assert.match(closed.step.summary, HEADLINE)
+    const notes = closed.step.banners.filter(b => b.startsWith('MERGE EVIDENCE UNAVAILABLE: '))
+    assert.ok(notes.length > 0, JSON.stringify(closed.step.banners))
+    assert.ok(notes.some(n => /diff/i.test(n)), `no note names the diff: ${JSON.stringify(notes)}`)
+    for (const note of notes) assert.match(note, /^MERGE EVIDENCE UNAVAILABLE: .+ — .+/)
+    assert.equal(signalOf(evidenceOf(root).result, 'diff.shape').band, 'unobserved')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a close given no git functions does not crash: each missing read is a note and an unobserved signal', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const { step } = await closeInProcess(root, {}, [{ ok: true, sha }])
+
+    assert.equal(step.exitCode, 0)
+    assert.match(step.summary, HEADLINE)
+    const notes = step.banners.filter(b => b.startsWith('MERGE EVIDENCE UNAVAILABLE: '))
+    assert.ok(notes.length > 0, JSON.stringify(step.banners))
+    assert.equal(signalOf(evidenceOf(root).result, 'diff.shape').band, 'unobserved')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an assessment that throws is a banner, leaves the block absent, writes no file and changes no exit code', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const { step } = await closeInProcess(
+      root,
+      {
+        gatherMergeEvidence: () => {
+          throw new Error('the gather exploded')
+        }
+      },
+      [{ ok: true, sha }]
+    )
+
+    assert.equal(step.exitCode, 0)
+    assert.ok(
+      step.banners.some(b => /^MERGE CONFIDENCE NOT ASSESSED: .*the gather exploded/.test(b)),
+      JSON.stringify(step.banners)
+    )
+    assert.doesNotMatch(step.summary, HAS_VERDICT)
+    assert.equal(existsSync(join(root, EVIDENCE_JSON)), false)
+    assert.equal(receiptOf(root).mergeConfidence, null)
+    assert.ok(outcomeOf(root).observed.mergeVerdict == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an evidence file that cannot be written is a banner, drops the assessment row and changes no exit code', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    // A directory where the file goes: the write fails whatever the uid.
+    mkdirSync(join(root, EVIDENCE_JSON), { recursive: true })
+    const closed = closeAt(root, sha)
+
+    assert.equal(closed.code, 0)
+    assert.ok(
+      closed.step.banners.some(b => b.startsWith('MERGE CONFIDENCE NOT WRITTEN: ')),
+      JSON.stringify(closed.step.banners)
+    )
+    assert.match(closed.step.summary, HEADLINE, 'the assessment was made and is still printed')
+    assert.doesNotMatch(closed.step.summary, /assessment: /)
+    assert.equal(receiptOf(root).mergeConfidence.verdict, 'HUMAN')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a failed terminal append leaves the run record incomplete, the assessment amber on run.integrity, and exit 1', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    // A regular file where the trajectory directory goes: every append fails.
+    rmSync(join(root, '.claude', 'ship', 'runs'), { recursive: true, force: true })
+    writeFileSync(join(root, '.claude', 'ship', 'runs'), 'not a directory\n')
+    const closed = closeAt(root, sha, { expectExit: 1 })
+
+    assert.equal(closed.step.exitCode, 1, 'the close\'s own exit code, from the failed write')
+    assert.ok(closed.step.banners.some(b => b.startsWith('TRAJECTORY APPEND FAILED: run-complete')))
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.trajectoryComplete, false)
+    const integrity = signalOf(stored.result, 'run.integrity')
+    assert.equal(integrity.band, 'amber')
+    assert.match(integrity.reason, /trajectory is incomplete/)
+    assert.match(closed.step.summary, HEADLINE)
+    assert.match(closed.step.summary, /needs a person:[^\n]*run\.integrity/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- what the close hands the gather (D1, D2, D3, D13, D15) ------------------
+
+/** A gather stub that records how it was called and returns the run record as the whole input. */
+function recordingGather(calls, { notes = [] } = {}) {
+  return (...args) => {
+    calls.push(args)
+    const given = args[1]
+    return {
+      input: {
+        change: { name: given.change, capabilities: [] },
+        changedPaths: given.changedPaths,
+        headSha: given.headSha,
+        run: given.supplied.run
+      },
+      notes
+    }
+  }
+}
+
+test('the close gathers once, against the start commit, with only what this run observed', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    const startSha = headOf(root)
+    strictToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+
+    assert.equal(calls.length, 1, 'one gather, one assessment')
+    const [gatheredRoot, given] = calls[0]
+    assert.equal(realpathSync(gatheredRoot), realpathSync(root))
+    assert.equal(given.change, change)
+    assert.equal(given.base, startSha, 'the base is the commit the run started on')
+    assert.equal(given.headSha, sha)
+    assert.ok(given.changedPaths.includes('README.md'), 'the commit\'s own touched paths')
+    assert.ok(given.supplied.pipeline == null, 'the run is offline: no pipeline input')
+    assert.ok(given.supplied.review && given.supplied.review.dimensions, 'the review this run adjudicated')
+    assert.equal(given.supplied.verify.context, 'final')
+    assert.equal(given.supplied.handoff.ok, true)
+    assert.ok(given.supplied.coverage == null, 'the verdict carries no coverage result, so none is computed')
+    assert.equal(given.supplied.run.halted, false)
+    assert.equal(given.supplied.run.trajectoryComplete, true)
+    assert.equal(given.supplied.run.leftoverTasks, 0)
+    assert.match(step.summary, HEADLINE)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the close supplies no review the run did not adjudicate, whatever is on disk', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    file(root, REVIEW_JSON, { surviving: [], counts: {}, dimensions: { selected: ['language'], ran: ['language'] } })
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+    assert.ok(calls[0][1].supplied.review == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('tasks left unticked reach the run record the gather is handed', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    writeFileSync(tasksPath, readFileSync(tasksPath, 'utf8').replace('- [x] 1.2', '- [ ] 1.2'))
+    const sha = realCommit(root)
+    const calls = []
+    await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+    assert.equal(calls[0][1].supplied.run.leftoverTasks, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('coverage is computed against the start commit only when the recorded verdict shows it ran', async () => {
+  const cases = [
+    ['a verdict that carries a coverage result', { status: 'measured' }, { input: { configured: true, changedLines: 80, headTotalPct: 90 } }],
+    ['a verdict that carries none', null, { input: { configured: true } }]
+  ]
+  for (const [label, verdictCoverage, answer] of cases) {
+    const { root, change } = shippedRepo()
+    try {
+      const startSha = headOf(root)
+      leanToCommit(root, change)
+      file(root, VERIFY_FINAL_JSON, { ...jsonAt(root, VERIFY_FINAL_JSON), coverage: verdictCoverage })
+      const sha = realCommit(root)
+      const asked = []
+      const calls = []
+      await closeInProcess(
+        root,
+        {
+          gatherMergeEvidence: recordingGather(calls),
+          coverageInput: (...args) => {
+            asked.push(args)
+            return answer
+          }
+        },
+        [{ ok: true, sha }]
+      )
+
+      if (verdictCoverage) {
+        assert.equal(asked.length, 1, label)
+        assert.ok(JSON.stringify(asked[0]).includes(startSha), `${label}: computed against the start commit`)
+        assert.deepEqual(calls[0][1].supplied.coverage, answer.input, label)
+      } else {
+        assert.equal(asked.length, 0, `${label}: this run's report is not read`)
+        assert.ok(calls[0][1].supplied.coverage == null, label)
+      }
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a coverage computation that gives a reason leaves coverage absent and says why', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    file(root, VERIFY_FINAL_JSON, { ...jsonAt(root, VERIFY_FINAL_JSON), coverage: { status: 'measured' } })
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(
+      root,
+      { gatherMergeEvidence: recordingGather(calls), coverageInput: () => ({ reason: 'no coverage baseline exists' }) },
+      [{ ok: true, sha }]
+    )
+    assert.ok(calls[0][1].supplied.coverage == null)
+    assert.ok(
+      step.banners.some(b => /^MERGE EVIDENCE UNAVAILABLE: .*coverage.* — .*no coverage baseline exists/i.test(b)),
+      JSON.stringify(step.banners)
+    )
+    assert.equal(step.exitCode, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a gather note the stub returns reaches the degradation block as MERGE EVIDENCE UNAVAILABLE', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(
+      root,
+      { gatherMergeEvidence: recordingGather(calls, { notes: ['the diff against the start commit — a shallow clone'] }) },
+      [{ ok: true, sha }]
+    )
+    assert.ok(
+      step.banners.includes('MERGE EVIDENCE UNAVAILABLE: the diff against the start commit — a shallow clone'),
+      JSON.stringify(step.banners)
+    )
+    assert.match(step.summary, /MERGE EVIDENCE UNAVAILABLE: the diff against the start commit — a shallow clone/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a terminal append that fails after the assessment reassesses from the same gather, not a second one', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    rmSync(join(root, '.claude', 'ship', 'runs'), { recursive: true, force: true })
+    writeFileSync(join(root, '.claude', 'ship', 'runs'), 'not a directory\n')
+    const calls = []
+    const { step } = await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+
+    assert.equal(step.exitCode, 1)
+    assert.equal(calls.length, 1, 'the late failure does not re-gather')
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.trajectoryComplete, false)
+    assert.equal(signalOf(stored.result, 'run.integrity').band, 'amber')
   } finally {
     cleanup(root)
   }

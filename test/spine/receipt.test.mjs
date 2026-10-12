@@ -466,3 +466,294 @@ test('the inter-wave verify budget on the summary is carried to the receipt', ()
   })
   assert.deepEqual(receipt.verifyBudget, { ms: 480000, source: 'profile' })
 })
+
+// --- the merge-confidence block (spec: ship/close-summary, ship/run-program) --
+//
+// Design D10 and D11. The receipt carries the verdict and its shape and no
+// text; the summary carries the headline it is handed and the ids that drive
+// it. `lib/receipt.mjs` stays import-free, so the close hands both the
+// pre-rendered headline and the grouped ids, and neither is derived here.
+
+/** An assessment as `combineSignals` returns it, with the text a receipt must not copy. */
+function assessment(over = {}) {
+  return {
+    verdict: 'HUMAN',
+    score: 72,
+    worstBand: 'amber',
+    range: { band: 'amber', floor: 40, ceiling: 79 },
+    counts: { gating: 17, clean: 14, green: 14, amber: 2, red: 0, unobserved: 1, flagged: 1 },
+    driving: [
+      {
+        id: 'risk.class',
+        band: 'amber',
+        kind: 'person',
+        reason: 'SECRET-REASON the class is high',
+        evidence: ['SECRET-EVIDENCE a finding title in a file']
+      },
+      { id: 'ci.pipeline', band: 'unobserved', kind: 'evidence', reason: 'SECRET-REASON-2', evidence: [] }
+    ],
+    flags: [{ id: 'verify.e2e', flag: 'no-e2e' }],
+    signals: [{ id: 'risk.class', reason: 'SECRET-SIGNAL-REASON' }],
+    reasons: ['HUMAN: amber on risk.class'],
+    ...over
+  }
+}
+
+test('the receipt carries the merge-confidence block when handed an assessment', () => {
+  const receipt = buildReceipt({ change: 'add-thing', summary: {}, mergeConfidence: assessment() })
+  assert.deepEqual(receipt.mergeConfidence, {
+    verdict: 'HUMAN',
+    score: 72,
+    worstBand: 'amber',
+    counts: { gating: 17, clean: 14, green: 14, amber: 2, red: 0, unobserved: 1, flagged: 1 },
+    driving: ['risk.class', 'ci.pipeline'],
+    flags: [{ id: 'verify.e2e', flag: 'no-e2e' }]
+  })
+})
+
+test('the receipt block carries ids, flags and counts and no reason or evidence text', () => {
+  const receipt = buildReceipt({ change: 'add-thing', summary: {}, mergeConfidence: assessment() })
+  const raw = JSON.stringify(receipt.mergeConfidence)
+  assert.doesNotMatch(raw, /SECRET/, 'a reason or an evidence line can quote a finding and its file')
+  assert.deepEqual(Object.keys(receipt.mergeConfidence).sort(), [
+    'counts',
+    'driving',
+    'flags',
+    'score',
+    'verdict',
+    'worstBand'
+  ])
+  for (const entry of receipt.mergeConfidence.driving) assert.equal(typeof entry, 'string')
+})
+
+test('a receipt with no assessment carries no block, never a zero score or a default verdict', () => {
+  for (const input of [
+    { change: 'add-thing', summary: {} },
+    { change: 'add-thing', summary: {}, mergeConfidence: undefined },
+    { change: 'add-thing', summary: {}, mergeConfidence: null },
+    { change: 'add-thing', summary: {}, mergeConfidence: 'HUMAN' }
+  ]) {
+    const receipt = buildReceipt(input)
+    assert.equal(receipt.mergeConfidence, undefined, JSON.stringify(input.mergeConfidence))
+  }
+})
+
+/** The summary input for a completed run that assessed, with the block the close hands over. */
+function assessed(over = {}) {
+  return {
+    change: 'add-thing',
+    runId: 'run-9',
+    root: '/r',
+    projectSlug: 'proj',
+    summary: { plan: { reused: false, status: 'none', reason: 'first' } },
+    flags: { review: true, handoff: true, conformance: true },
+    unarchived: { thisChange: true, others: 0 },
+    mergeConfidence: {
+      headline:
+        'MERGE CONFIDENCE HUMAN — score 72 (amber range 40–79; 14 of 17 gating signals clean)',
+      groups: {
+        fix: [],
+        person: ['risk.class'],
+        evidence: ['ci.pipeline', 'conformance.delta']
+      },
+      flags: [{ id: 'verify.e2e', flag: 'no-e2e' }],
+      assessmentPath: '.claude/ship/merge-confidence.json'
+    },
+    ...over
+  }
+}
+
+const HEADLINE =
+  'MERGE CONFIDENCE HUMAN — score 72 (amber range 40–79; 14 of 17 gating signals clean)'
+
+test('the summary prints the headline it is handed and each non-empty group row, labels verbatim', () => {
+  const lines = formatRunSummary(assessed()).split('\n')
+  assert.ok(lines.includes(HEADLINE), 'the headline is unindented and character for character as handed')
+  assert.ok(lines.includes('  needs a person: risk.class'))
+  assert.ok(lines.includes('  needs more evidence: ci.pipeline, conformance.delta'))
+  assert.ok(lines.includes('  flags: verify.e2e no-e2e'))
+  assert.ok(lines.includes('  assessment: .claude/ship/merge-confidence.json'))
+  assert.ok(!lines.some(line => line.startsWith('  needs a fix:')), 'an empty group prints no row')
+})
+
+test('the three group rows come in the order fix, person, evidence, then flags, then the assessment', () => {
+  const text = formatRunSummary(
+    assessed({
+      mergeConfidence: {
+        headline: HEADLINE,
+        groups: { fix: ['review.warnings'], person: ['risk.class'], evidence: ['ci.pipeline'] },
+        flags: [{ id: 'verify.e2e', flag: 'no-e2e' }],
+        assessmentPath: '.claude/ship/merge-confidence.json'
+      }
+    })
+  )
+  const lines = text.split('\n')
+  const at = prefix => lines.findIndex(line => line.startsWith(prefix))
+  const order = [
+    HEADLINE,
+    '  needs a fix: review.warnings',
+    '  needs a person: risk.class',
+    '  needs more evidence: ci.pipeline',
+    '  flags: verify.e2e no-e2e',
+    '  assessment: '
+  ].map(at)
+  assert.ok(order.every(i => i >= 0), `every row is printed: ${JSON.stringify(order)}`)
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the rows are in the published order')
+  assert.equal(new Set(order).size, order.length)
+  assert.ok(lines.includes('  needs a fix: review.warnings'))
+})
+
+test('a group with no entry prints no row, whichever group it is', () => {
+  const only = groups =>
+    formatRunSummary(
+      assessed({
+        mergeConfidence: {
+          headline: HEADLINE,
+          groups: { fix: [], person: [], evidence: [], ...groups },
+          flags: [],
+          assessmentPath: '.claude/ship/merge-confidence.json'
+        }
+      })
+    )
+  const fixOnly = only({ fix: ['review.blockers'] })
+  assert.match(fixOnly, /^ {2}needs a fix: review\.blockers$/m)
+  assert.doesNotMatch(fixOnly, /needs a person:|needs more evidence:/)
+  const personOnly = only({ person: ['risk.class'] })
+  assert.match(personOnly, /^ {2}needs a person: risk\.class$/m)
+  assert.doesNotMatch(personOnly, /needs a fix:|needs more evidence:/)
+  const evidenceOnly = only({ evidence: ['ci.pipeline'] })
+  assert.match(evidenceOnly, /^ {2}needs more evidence: ci\.pipeline$/m)
+  assert.doesNotMatch(evidenceOnly, /needs a fix:|needs a person:/)
+  for (const text of [fixOnly, personOnly, evidenceOnly]) {
+    assert.doesNotMatch(text, /^ {2}flags:/m, 'no flag, no flags row')
+  }
+})
+
+test('the flags row names every flag with its signal', () => {
+  const text = formatRunSummary(
+    assessed({
+      mergeConfidence: {
+        headline: HEADLINE,
+        groups: { fix: [], person: [], evidence: [] },
+        flags: [
+          { id: 'verify.e2e', flag: 'no-e2e' },
+          { id: 'conformance.living', flag: 'requirements-omitted' }
+        ],
+        assessmentPath: '.claude/ship/merge-confidence.json'
+      }
+    })
+  )
+  const row = text.split('\n').find(line => line.startsWith('  flags:'))
+  assert.ok(row, 'a flagged assessment prints the flags row')
+  assert.match(row, /verify\.e2e no-e2e/)
+  assert.match(row, /conformance\.living requirements-omitted/)
+})
+
+test('the block sits after the identity rows and above the archive reminder', () => {
+  const lines = formatRunSummary(assessed()).split('\n')
+  const at = prefix => lines.findIndex(line => line.startsWith(prefix))
+  assert.ok(at('  run: run-9') >= 0 && at('  project: proj') >= 0 && at('  cwd: /r') >= 0)
+  const headline = lines.indexOf(HEADLINE)
+  const assessmentRow = at('  assessment: ')
+  const archive = at('ARCHIVE PENDING')
+  const closing = lines.indexOf('Do not start another ship run unless the user asks.')
+  assert.ok(headline > at('  cwd: /r'), 'after the identity rows')
+  assert.ok(assessmentRow < archive, 'the whole block is above ARCHIVE PENDING')
+  assert.ok(archive < closing)
+})
+
+test('the assessment row is left out when the evidence file was not written', () => {
+  const text = formatRunSummary(
+    assessed({
+      mergeConfidence: {
+        headline: HEADLINE,
+        groups: { fix: [], person: ['risk.class'], evidence: [] },
+        flags: [],
+        assessmentPath: null
+      },
+      degradations: ['MERGE CONFIDENCE NOT WRITTEN: EACCES']
+    })
+  )
+  assert.ok(text.split('\n').includes(HEADLINE))
+  assert.match(text, /^ {2}needs a person: risk\.class$/m)
+  assert.doesNotMatch(text, /assessment:/)
+  assert.match(text, /^MERGE CONFIDENCE NOT WRITTEN: EACCES$/m, 'the degradation block still says so')
+})
+
+test('a halted summary carries no line of the block', () => {
+  const text = formatRunSummary(assessed({ summary: { halted: 'the failure budget was spent' } }))
+  assert.doesNotMatch(text, /MERGE CONFIDENCE/)
+  assert.doesNotMatch(text, /assessment:|needs a (fix|person)|needs more evidence|^ {2}flags:/m)
+  assert.equal(text.split('\n')[0], 'SHIP HALTED — the failure budget was spent')
+})
+
+test('no assessment, no line: a summary handed no block prints none', () => {
+  for (const mergeConfidence of [undefined, null]) {
+    const text = formatRunSummary(assessed({ mergeConfidence }))
+    assert.doesNotMatch(text, /MERGE CONFIDENCE/)
+    assert.doesNotMatch(text, /assessment:|needs a (fix|person)|needs more evidence/)
+  }
+})
+
+test('no line of the block contains the lean line or the clean sentence', () => {
+  for (const flags of [{}, { review: true, handoff: true, conformance: true }]) {
+    for (const degradations of [[], ['PUSH FAILED: HTTP 403']]) {
+      const lines = formatRunSummary(assessed({ flags, degradations })).split('\n')
+      const start = lines.indexOf(HEADLINE)
+      const end = lines.findIndex(line => line.startsWith('ARCHIVE PENDING'))
+      assert.ok(start >= 0 && end > start)
+      const block = lines.slice(start, end)
+      assert.ok(block.length >= 5)
+      for (const line of block) {
+        assert.doesNotMatch(line, /LEAN SHIP/)
+        assert.doesNotMatch(line, /No degradation banners/)
+      }
+    }
+  }
+})
+
+test('adding the block changes nothing else in the summary', () => {
+  const withBlock = formatRunSummary(assessed()).split('\n')
+  const without = formatRunSummary(assessed({ mergeConfidence: undefined })).split('\n')
+  const kept = withBlock.filter(
+    line => line !== HEADLINE && !/^ {2}(needs a (fix|person)|needs more evidence|flags|assessment):/.test(line)
+  )
+  assert.deepEqual(kept, without, 'the first line, the LEAN SHIP line and the banner block are as they were')
+})
+
+test('the living requirements row prints confirmed over checked, beside the conformance row', () => {
+  const summary = {
+    handoff: {
+      scenariosChecked: 4,
+      scenariosUnconfirmed: 1,
+      requirementsChecked: 3,
+      requirementsUnconfirmed: 1
+    }
+  }
+  const lines = formatRunSummary({ change: 'add-thing', summary, flags: { handoff: true, conformance: true } }).split('\n')
+  const row = lines.findIndex(line => line.startsWith('  living requirements: '))
+  assert.ok(row >= 0, 'the row is printed')
+  assert.match(lines[row], /^ {2}living requirements: 2\/3 confirmed/)
+  const conformance = lines.findIndex(line => line.startsWith('  conformance: '))
+  assert.ok(conformance >= 0 && conformance < row, 'the row follows the conformance row')
+
+  const clean = formatRunSummary({
+    change: 'add-thing',
+    summary: { handoff: { scenariosChecked: 2, requirementsChecked: 3, requirementsUnconfirmed: 0 } }
+  })
+  assert.match(clean, /^ {2}living requirements: 3\/3 confirmed/m)
+  assert.doesNotMatch(clean.split('\n').find(line => line.startsWith('  living requirements:')), /unconfirmed/)
+})
+
+test('the living requirements row is absent when its count is', () => {
+  for (const handoff of [
+    { scenariosChecked: 2 },
+    { scenariosChecked: 2, requirementsChecked: 0, requirementsUnconfirmed: 0 },
+    { scenariosChecked: 2, requirementsUnconfirmed: 1 },
+    { scenariosChecked: 2, requirementsChecked: null }
+  ]) {
+    const text = formatRunSummary({ change: 'add-thing', summary: { handoff } })
+    assert.doesNotMatch(text, /living requirements/, JSON.stringify(handoff))
+  }
+  assert.doesNotMatch(formatRunSummary({ change: 'add-thing' }), /living requirements/)
+})

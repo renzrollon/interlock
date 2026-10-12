@@ -225,6 +225,16 @@ receipt path has not fired* — not *the runs were clean*. `lib/outcomes.mjs` pu
 the reason plainly: a corpus that read absence as cleanliness would flatter
 exactly the runs it exists to explain.
 
+A completed run's receipt also carries a `mergeConfidence` block: the verdict the
+close assessed, its score, worst band, signal counts, the ids of the driving
+signals and the flags, with no reason or evidence text. The report reads none of
+it. No indicator takes the verdict, the score or a count from the block, a corpus
+whose receipts carry the block yields the same indicators as the same corpus
+without it, and neither the report's text nor its payload names a merge verdict.
+A figure built on the verdict would turn a verdict into a target, and the report
+is where a figure becomes one. [15](./15-merge-confidence.md#what-a-runs-close-records-and-prints)
+says what the close records and prints.
+
 ### first-pass ship — source: receipt
 
 The share of runs whose receipt reports the run did not halt **and** reports zero

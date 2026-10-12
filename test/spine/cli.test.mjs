@@ -3110,36 +3110,415 @@ test('--base assesses every path git reports, naming on stderr the ones --change
   assert.ok(risk.evidence.some(line => line.includes('payments')), risk.evidence.join('\n'))
 })
 
-test('a full set of inputs on a clean change reads HUMAN, held only by what no caller can supply yet, and exits 0', () => {
-  const repo = mergeBaseRepo('merge-confidence-base-full', {
-    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n'
-  })
+/** The widget change's delta spec, rewritten so it mentions `path` — the rule the graph applies, read from text. */
+const widgetSpecNaming = path => {
+  const key = 'openspec/changes/add-widget-catalogue/specs/widgets/catalogue/spec.md'
+  return {
+    [key]: widgetChangeFiles()[key].replace(
+      'The catalogue SHALL list every widget.',
+      `The catalogue SHALL list every widget, rendered by \`${path}\`.`
+    )
+  }
+}
+
+const WIDGET_SOURCE = 'src/widgets/catalogue.ts'
+
+/** A base + head checkout whose head adds WIDGET_SOURCE and whose delta spec names it. */
+const namedWidgetRepo = sub => mergeBaseRepo(sub, { [WIDGET_SOURCE]: 'export const catalogue = () => []\n' }, widgetSpecNaming(WIDGET_SOURCE))
+
+const baseArgs = repo => ['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', WIDGET_SOURCE]
+
+test('a full set of hand-given inputs on a clean change reads HUMAN, held only by the run record no hand run has, and exits 0', () => {
+  const repo = namedWidgetRepo('merge-confidence-base-full')
   const green = greenFixture()
   const r = run([
-    'merge-confidence', 'add-widget-catalogue', '--root', repo.root,
-    '--base', repo.base,
+    ...baseArgs(repo),
     '--review', file('mc-full-review.json', green.review),
     '--verify', file('mc-full-verify.json', green.verify),
     '--handoff', file('mc-full-handoff.json', { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 }),
     '--pipeline', file('mc-full-pipeline.json', { ...green.pipeline, sha: repo.sha }),
     '--coverage', file('mc-full-coverage.json', green.coverage),
-    '--changed', 'src/widgets/catalogue.ts',
     '--json'
   ])
   assert.equal(r.code, 0, r.stderr)
   const out = JSON.parse(r.stdout)
   assert.equal(out.verdict, 'HUMAN')
-  // The two producers not yet landed, plus the run record a hand run never has.
-  // `policy.humanPaths` is not among them: with a base it reads the policy
+  // Neither signal that used to be producer-less is among what drives it: the
+  // living list and the spec-coverage facts are gathered from the repository.
+  // `policy.humanPaths` is not either: with a base it reads the policy
   // committed there, and this base lists no changed path.
   assert.deepEqual(
     out.driving.map(d => d.id).sort(),
-    ['conformance.living', 'run.integrity', 'spec.coverage'],
+    ['run.integrity'],
     JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2)
   )
-  for (const id of ['verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran', 'policy.humanPaths']) {
+  assert.equal(signalIn(out, 'run.integrity').band, 'unobserved')
+  for (const id of [
+    'verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran', 'policy.humanPaths',
+    'spec.coverage', 'conformance.living'
+  ]) {
     assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
   }
+  assert.doesNotMatch(r.stdout, /no input to this version can read MERGE|until .* lands/)
+})
+
+// --- spec.coverage through the binary: text only, no graph --------------------------
+
+test('spec.coverage is amber, needing a fix, for an added source file no spec names, in a repository with no graph', () => {
+  const repo = mergeBaseRepo('mc-speccov-unnamed', { [WIDGET_SOURCE]: 'export const catalogue = () => []\n' })
+  assert.equal(existsSync(join(repo.root, '.claude', 'graph')), false, 'this fixture has no graph')
+  const out = runJson(baseArgs(repo))
+  const signal = signalIn(out, 'spec.coverage')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'finding', 'a missing mention is a fix, not a question for a person')
+  assert.ok(said(signal).includes(WIDGET_SOURCE), said(signal))
+  assert.equal(out.verdict, 'HUMAN')
+})
+
+test('spec.coverage is green when a delta spec of the change names the added file, in a repository with no graph', () => {
+  const repo = namedWidgetRepo('mc-speccov-named')
+  assert.equal(existsSync(join(repo.root, '.claude', 'graph')), false, 'this fixture has no graph')
+  const signal = signalIn(runJson(baseArgs(repo)), 'spec.coverage')
+  assert.equal(signal.band, 'green', said(signal))
+  assert.deepEqual(signal.flags, [])
+})
+
+test('spec.coverage ignores an added test file and an added document, so only source files can leave it amber', () => {
+  const repo = mergeBaseRepo('mc-speccov-not-source', {
+    'test/widgets/catalogue.test.ts': 'export {}\n',
+    'docs/widgets.md': '# Widgets\n'
+  })
+  const signal = signalIn(
+    runJson(['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', 'test/widgets/catalogue.test.ts,docs/widgets.md']),
+    'spec.coverage'
+  )
+  assert.equal(signal.band, 'green', said(signal))
+})
+
+test('spec.coverage is unobserved, for want of a base, when --base is not given', () => {
+  const repo = mergeConfidenceRepo()
+  const r = run(['merge-confidence', '--root', repo.root, '--changed', WIDGET_SOURCE, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const signal = signalIn(JSON.parse(r.stdout), 'spec.coverage')
+  assert.equal(signal.band, 'unobserved')
+  assert.match(signal.reason, /base/)
+})
+
+// --- merge-confidence --run: the evidence file a ship run's close writes -------------
+
+const RUN_EVIDENCE_SCHEMA = 'interlock.merge-evidence/1'
+
+/** What a clean, reviewed run's close would have written for `repo`'s head commit. */
+function runEvidence(repo, over = {}) {
+  const green = greenFixture()
+  const { evidence = {}, ...top } = over
+  return {
+    schema: RUN_EVIDENCE_SCHEMA,
+    change: 'add-widget-catalogue',
+    runId: 'run-fixture-1',
+    base: repo.base,
+    headSha: repo.sha,
+    committed: true,
+    evidence: {
+      review: green.review,
+      verify: green.verify,
+      handoff: { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 },
+      coverage: green.coverage,
+      run: {
+        halted: false,
+        trajectoryComplete: true,
+        stageMarkerGaps: 0,
+        rejectedReports: 0,
+        permissionPrompts: 0,
+        autoModeDenials: 0,
+        leftoverTasks: 0
+      },
+      ...evidence
+    },
+    result: null,
+    ...top
+  }
+}
+
+const SURVIVING_BLOCKER = {
+  dimension: 'typescript',
+  severity: 'blocker',
+  title: 'unchecked null deref on an empty store',
+  file: WIDGET_SOURCE,
+  votes: { real: 2, notReal: 0, uncited: 0, total: 2 }
+}
+
+const pipelineFor = repo => file(`mc-run-pipeline-${repo.sha.slice(0, 7)}.json`, { ...greenFixture().pipeline, sha: repo.sha })
+
+test('--run supplies the review, verification, handoff, coverage and run record, and with a passing pipeline the verdict is MERGE and the exit 0', () => {
+  const repo = namedWidgetRepo('mc-run-merge')
+  const evidence = file('mc-run-merge-evidence.json', runEvidence(repo))
+  const r = run([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'MERGE', JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2))
+  assert.deepEqual(out.driving, [], 'nothing stands between this change and MERGE')
+  for (const id of ['review.ran', 'review.blockers', 'verify.suite', 'verify.coverage', 'conformance.delta', 'run.integrity', 'spec.coverage', 'ci.pipeline']) {
+    assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
+  }
+  assert.equal(r.stderr.includes('another commit'), false, 'a usable file is not complained about')
+  assert.equal(run([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo), '--require-merge']).code, 0, 'MERGE satisfies --require-merge')
+})
+
+test('--run without a pipeline reads HUMAN, held by ci.pipeline alone, and exits 0', () => {
+  const repo = namedWidgetRepo('mc-run-no-pipeline')
+  const out = runJson([...baseArgs(repo), '--run', file('mc-run-no-pipeline-evidence.json', runEvidence(repo))])
+  assert.equal(out.verdict, 'HUMAN')
+  assert.deepEqual(out.driving.map(d => d.id), ['ci.pipeline'])
+})
+
+for (const [label, over, expected] of [
+  ['another commit', { headSha: '0'.repeat(40) }, run => [/another commit/, new RegExp(run.sha.slice(0, 7)), /0000000/]],
+  ['no commit made', { committed: false }, () => [/commit/i]],
+  ['another change', { change: 'some-other-change' }, () => [/some-other-change/, /add-widget-catalogue/]],
+  ['another schema', { schema: 'interlock.something-else/9' }, () => [/schema/i]]
+]) {
+  test(`a --run file for ${label} is refused on stderr, and nothing is taken from it`, () => {
+    const repo = namedWidgetRepo(`mc-run-refused-${label.replace(/\W+/g, '-')}`)
+    const evidence = file(`mc-run-refused-${label.replace(/\W+/g, '-')}.json`, runEvidence(repo, over))
+    const r = run([...baseArgs(repo), '--run', evidence, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    for (const pattern of expected(repo)) assert.match(r.stderr, pattern)
+    const out = JSON.parse(r.stdout)
+    for (const id of ['review.blockers', 'verify.suite', 'run.integrity']) {
+      assert.equal(signalIn(out, id).band, 'unobserved', `${id} took something from a refused file: ${signalIn(out, id).reason}`)
+    }
+    // With no file, review.ran is amber because no review ran; a refused file leaves it there.
+    assert.equal(signalIn(out, 'review.ran').band, 'amber', signalIn(out, 'review.ran').reason)
+    assert.match(signalIn(out, 'review.ran').reason, /no review ran/i)
+    assert.equal(out.verdict, 'HUMAN')
+  })
+}
+
+test('an explicit --review replaces the evidence file’s review, and the file’s other entries still stand', () => {
+  const repo = namedWidgetRepo('mc-run-override')
+  const evidence = file('mc-run-override-evidence.json', runEvidence(repo))
+  const blocked = file('mc-run-override-review.json', {
+    surviving: [SURVIVING_BLOCKER],
+    counts: { raised: 1, droppedByPolicy: 0, dismissed: 0, droppedByQuality: 0, surviving: 1, dismissalsRejected: 0 }
+  })
+  const out = runJson([...baseArgs(repo), '--run', evidence, '--review', blocked], 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+  assert.equal(signalIn(out, 'verify.suite').band, 'green', 'the verification still comes from the file')
+  assert.equal(signalIn(out, 'run.integrity').band, 'green', 'so does the run record')
+})
+
+test('a recorded MERGE over a surviving blocker still reads BLOCK, because the file’s result is never read', () => {
+  const repo = namedWidgetRepo('mc-run-recorded-merge')
+  const green = greenFixture()
+  const evidence = file(
+    'mc-run-recorded-merge-evidence.json',
+    runEvidence(repo, {
+      evidence: {
+        review: { ...green.review, surviving: [SURVIVING_BLOCKER], counts: { ...green.review.counts, surviving: 1 } }
+      },
+      result: { verdict: 'MERGE', score: 100, worstBand: 'green', driving: [] }
+    })
+  )
+  const out = runJson([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo)], 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+})
+
+test('an unparseable or missing --run file exits 1 with nothing on stdout and the file named on stderr', () => {
+  const repo = namedWidgetRepo('mc-run-unreadable')
+  const broken = file('mc-run-broken.json', '{ "schema": ')
+  const r = run([...baseArgs(repo), '--run', broken, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '', 'no verdict may be printed for input that could not be read')
+  assert.ok(r.stderr.includes(broken), r.stderr)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+
+  const missing = join(dir, 'mc-run-no-such-evidence.json')
+  const absent = run([...baseArgs(repo), '--run', missing, '--json'])
+  assert.equal(absent.code, 1)
+  assert.equal(absent.stdout, '')
+  assert.ok(absent.stderr.includes(missing), absent.stderr)
+})
+
+// --- conformance --living ---------------------------------------------------------------
+
+const LIVING_BODY_MARKER = 'LIVING-BODY-MARKER-4471'
+
+/** A living spec with three requirements, each carrying a body the list must not echo. */
+const LIVING_WIDGETS_SPEC = [
+  '# widgets/catalogue Specification',
+  '',
+  '## Purpose',
+  '',
+  'The shop catalogue.',
+  '',
+  '## Requirements',
+  '',
+  ...['The store SHALL keep widgets', 'Prices SHALL be whole cents', 'A widget SHALL have one name'].flatMap(title => [
+    `### Requirement: ${title}`,
+    '',
+    `${title}. ${LIVING_BODY_MARKER}`,
+    '',
+    '#### Scenario: Happy path — holds',
+    '',
+    '- **GIVEN** a widget',
+    '- **WHEN** it is stored',
+    '- **THEN** the rule holds',
+    ''
+  ])
+].join('\n')
+
+const LIVING_SPEC_PATH = 'openspec/specs/widgets/catalogue/spec.md'
+const livingHeadingLine = title => LIVING_WIDGETS_SPEC.split('\n').findIndex(l => l === `### Requirement: ${title}`) + 1
+
+/**
+ * The base commit holds the change and a living spec of three requirements; the
+ * head adds the widget source and a fourth requirement to the working-tree spec,
+ * so a list read from the base differs from one read from the working tree.
+ */
+function livingRepo(sub, headExtra = {}) {
+  return mergeBaseRepo(
+    sub,
+    {
+      [WIDGET_SOURCE]: 'export const catalogue = () => []\n',
+      [LIVING_SPEC_PATH]: `${LIVING_WIDGETS_SPEC}\n### Requirement: Added at the head only\n\nHead text.\n`,
+      ...headExtra
+    },
+    { [LIVING_SPEC_PATH]: LIVING_WIDGETS_SPEC }
+  )
+}
+
+test('conformance --living lists the delta scenarios C, then the living requirements L, names the base it read, and blocks nothing', () => {
+  const repo = livingRepo('cf-living-text')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base])
+  assert.equal(r.code, 0, r.stderr)
+  const text = r.stdout
+  for (const id of ['C1', 'C2', 'C3', 'C4', 'C5', 'L1', 'L2', 'L3']) assert.match(text, new RegExp(`\\b${id}\\b`), `${id} is listed`)
+  assert.ok(text.indexOf('C5') < text.indexOf('L1'), 'the living entries follow the scenarios')
+  assert.doesNotMatch(text, /\bL4\b/, 'the requirement the head added is not in the base')
+  assert.ok(text.includes('The store SHALL keep widgets'), text)
+  assert.ok(text.includes(`${LIVING_SPEC_PATH}:${livingHeadingLine('The store SHALL keep widgets')}`), text)
+  assert.ok(!text.includes(LIVING_BODY_MARKER), 'a requirement body is read at the cited line, never echoed')
+  assert.ok(text.includes(repo.base) || text.includes(repo.base.slice(0, 7)), `the source of the living text is named: ${text}`)
+  assert.match(text, /Nothing here blocks/)
+})
+
+test('conformance --living reads the working tree when no base is named, and says so', () => {
+  const repo = livingRepo('cf-living-tree')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living'])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /\bL4\b/, 'the working tree carries the fourth requirement')
+  assert.match(r.stdout, /working tree/i)
+})
+
+test('conformance --living --json carries the living entries, their count, what the bound left out, and the partial reason', () => {
+  const repo = livingRepo('cf-living-json')
+  const out = runJson(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base])
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+  assert.deepEqual(out.scenarios.map(s => s.id), ['C1', 'C2', 'C3', 'C4', 'C5'])
+  const living = out.living
+  assert.ok(living && typeof living === 'object', 'the living block is on the checklist')
+  assert.deepEqual(living.requirements.map(e => e.id), ['L1', 'L2', 'L3'])
+  assert.equal(living.requirementsRequired, 3, 'the count is the list’s own')
+  assert.deepEqual(living.omitted, [])
+  assert.ok(String(living.source).includes(repo.base) || String(living.source).includes(repo.base.slice(0, 7)), living.source)
+  const first = living.requirements[0]
+  assert.equal(first.capability, 'widgets/catalogue')
+  assert.equal(first.artifact, LIVING_SPEC_PATH)
+  assert.equal(first.line, livingHeadingLine('The store SHALL keep widgets'))
+  assert.equal(first.title, 'The store SHALL keep widgets')
+  assert.ok(!JSON.stringify(out).includes(LIVING_BODY_MARKER), 'no entry carries a requirement body')
+  // No graph, one declared capability: built from the declaration, and said so.
+  assert.match(String(living.partial), /graph/)
+  assert.ok(!living.skipped)
+})
+
+test('conformance --living with nothing to select is a spoken skip, and the scenarios are still listed', () => {
+  const repo = mergeBaseRepo('cf-living-skipped', { [WIDGET_SOURCE]: 'export {}\n' })
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.match(String(out.living.skipped), /graph/)
+  assert.deepEqual(out.living.requirements ?? [], [])
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+})
+
+test('conformance --living with a base that names no commit reports the list as not built and still exits 0 with the scenarios', () => {
+  const repo = livingRepo('cf-living-bad-ref')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', 'no-such-ref-anywhere'])
+  assert.equal(r.code, 0, r.stderr)
+  for (const id of ['C1', 'C5']) assert.match(r.stdout, new RegExp(`\\b${id}\\b`), `${id} is still listed`)
+  assert.doesNotMatch(r.stdout, /\bL1\b/)
+  assert.match(r.stdout, /not built/i)
+  assert.ok(r.stdout.includes('no-such-ref-anywhere'), 'the reference is named')
+
+  const json = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', 'no-such-ref-anywhere', '--json'])
+  assert.equal(json.code, 0, json.stderr)
+  const out = JSON.parse(json.stdout)
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+  assert.deepEqual(out.living.requirements ?? [], [])
+  assert.ok(JSON.stringify(out.living).includes('no-such-ref-anywhere'), JSON.stringify(out.living))
+})
+
+test('conformance without --living prints what it printed before: no living entry, count or reason, whatever else is given', () => {
+  const repo = livingRepo('cf-living-off')
+  const keys = ['change', 'changedFiles', 'outsideSpecs', 'reason', 'scenarios', 'skipped', 'verdictsRequired']
+  for (const extra of [[], ['--base', repo.base]]) {
+    const out = runJson(['conformance', 'add-widget-catalogue', '--root', repo.root, ...extra])
+    assert.deepEqual(Object.keys(out).sort(), keys, `the checklist is field for field what it was (${extra.join(' ') || 'no extras'})`)
+    const text = run(['conformance', 'add-widget-catalogue', '--root', repo.root, ...extra])
+    assert.equal(text.code, 0, text.stderr)
+    assert.doesNotMatch(text.stdout, /\bL\d+\b|living/i)
+    assert.match(text.stdout, /Nothing here blocks/)
+  }
+})
+
+// --- merge-confidence reads the living list and the handoff's requirement counts ---------
+
+test('conformance.living is green for every listed requirement confirmed, and amber for a short, an unconfirmed or an absent count', () => {
+  const repo = livingRepo('mc-living-counts')
+  const read = counts =>
+    signalIn(
+      runJson([...baseArgs(repo), '--handoff', file(`mc-living-${JSON.stringify(counts).length}-${Object.keys(counts).join('')}.json`, { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0, ...counts })]),
+      'conformance.living'
+    )
+
+  const confirmed = read({ requirementsChecked: 3, requirementsUnconfirmed: 0 })
+  assert.equal(confirmed.band, 'green', said(confirmed))
+  assert.ok(confirmed.flags.includes('no-graph'), 'built from a declaration alone, and flagged')
+
+  const short = read({ requirementsChecked: 2, requirementsUnconfirmed: 0, requirementsRequired: 2 })
+  assert.equal(short.band, 'amber', 'a count the handoff states for itself does not shrink the command’s own')
+  assert.ok(said(short).includes('3'), said(short))
+
+  assert.equal(read({ requirementsChecked: 3, requirementsUnconfirmed: 1 }).band, 'amber')
+  assert.equal(read({}).band, 'amber', 'a list with no counts reported is not confirmed')
+
+  const none = signalIn(runJson(baseArgs(repo)), 'conformance.living')
+  assert.equal(none.band, 'unobserved', 'with no handoff at all there is nothing to read the list against')
+})
+
+// --- USAGE ---------------------------------------------------------------------------
+
+test('USAGE names --living and --run, and no longer says that no input can read MERGE', () => {
+  const { stdout } = run(['--help'])
+  const between = (from, to) => {
+    const start = stdout.indexOf(from)
+    assert.notEqual(start, -1, `USAGE is missing "${from}"`)
+    const end = stdout.indexOf(to, start + from.length)
+    return stdout.slice(start, end === -1 ? undefined : end)
+  }
+  const conformance = between('  interlock conformance', '  interlock domain-context')
+  assert.ok(conformance.includes('--living'), conformance)
+  assert.ok(conformance.includes('--base'), conformance)
+  const mergeConfidence = between('  interlock merge-confidence', '  interlock report')
+  assert.ok(mergeConfidence.includes('--run'), mergeConfidence)
+  assert.doesNotMatch(stdout, /no input\s+to this version can read MERGE/)
+  assert.doesNotMatch(stdout, /read unobserved until their producer lands/)
+  // The detail text still tells a reader what an exit of 1 means.
+  assert.match(stdout, /Exit 1 alone does not tell the two apart/)
 })
 
 test('limits --json carries the merge bands as their own group, ceiling table included', () => {

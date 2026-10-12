@@ -170,7 +170,9 @@
   },
   "handoff": {
     "scenariosChecked": 5,
-    "scenariosUnconfirmed": 1
+    "scenariosUnconfirmed": 1,
+    "requirementsChecked": 4,
+    "requirementsUnconfirmed": 0
   },
   "pipeline": {
     "sha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
@@ -250,7 +252,8 @@
     "stageMarkerGaps": 0,
     "rejectedReports": 0,
     "permissionPrompts": 0,
-    "autoModeDenials": 0
+    "autoModeDenials": 0,
+    "leftoverTasks": 0
   },
   "reviewPolicy": {
     "ref": "origin/main",
@@ -259,5 +262,26 @@
     ],
     "problems": [],
     "differsFromBase": false
+  },
+  "living": {
+    "skipped": null,
+    "partial": null,
+    "requirementsRequired": 4,
+    "omitted": [],
+    "source": "base origin/main"
+  },
+  "specCoverage": {
+    "added": [
+      {
+        "path": "src/widgets/catalogue.ts",
+        "namedBy": "delta"
+      }
+    ],
+    "lost": [],
+    "legacy": [],
+    "repo": {
+      "named": 12,
+      "total": 40
+    }
   }
 }

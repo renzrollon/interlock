@@ -706,6 +706,59 @@ DOMAIN REVIEW PARTIAL: <reason>
 
 Neither banner changes the exit code. A graph that was built but links no changed file to any spec raises neither: that is recorded as "not selected" with the unlinked paths, because an unlinked file is a gap in the specs, not a fault in the review, and the spec audit (`interlock spec-audit`) is where that gap is measured.
 
+### `LIVING CONFORMANCE SKIPPED` and `LIVING CONFORMANCE PARTIAL`
+
+On a run with conformance on, the handoff step asks the writer about the living requirements already in force for the capabilities the change touches, alongside the change's own delta scenarios. Which requirements those are is the domain review's answer, selected by the same rule, read from the same base and cut at the same size bound, so the reviewer and the handoff are judged against one set. When the run cannot name them, it says so instead of listing nothing:
+
+```
+LIVING CONFORMANCE SKIPPED: <reason>
+LIVING CONFORMANCE PARTIAL: <reason>
+```
+
+`LIVING CONFORMANCE SKIPPED` means no list was built. The usual reason is that no graph exists and the change declares no capability it modifies, so nothing could be selected. The handoff is asked only about the delta scenarios, and the merge verdict reads the living-conformance signal as green with the `no-graph` flag: a missing graph lowers the score and holds nothing at `HUMAN`. `LIVING CONFORMANCE PARTIAL` means there was no graph but the change does declare capabilities, so the list holds only those capabilities' requirements and a capability the code links to but the change does not declare was not asked about. Build the graph with `/interlock:bootstrap` (or `interlock-graph build .`) and run `interlock conformance --living --base <ref>` yourself to see the full list.
+
+Each prints once per run, and neither changes the exit code. A graph that was built but links no changed file to any spec raises neither: the list is empty because nothing in force is touched, and there is nothing to confirm. A list the size bound cut short is not a banner: the requirements left out are named in the conformance output, and the verdict carries a `requirements-omitted` flag that lowers the score without moving the band.
+
+### `MERGE EVIDENCE UNAVAILABLE`
+
+The close assesses merge confidence from facts it gathers from the repository: the change and its artifacts, the decision ledger, the diff shape, the review policy at the base, and the living and spec-coverage facts. When one of those cannot be read, the signal that needed it reads unobserved and the close names why, once for each fact:
+
+```
+MERGE EVIDENCE UNAVAILABLE: <what> — <reason>
+```
+
+Typical reasons are a shallow clone with no history to diff against, a start commit that has gone from the repository, and a git command that failed. It never means a score was invented: the signal reads unobserved, which ranks as amber, so the verdict can only be held at `HUMAN`, never raised. It does not change the exit code. Fix the cause (fetch the history, or run in the checkout that has it) and run `interlock merge-confidence --change <name> --base <ref>` for an assessment with the fact in hand.
+
+### `MERGE CONFIDENCE NOT ASSESSED` and `MERGE CONFIDENCE NOT WRITTEN`
+
+A run that completed ends its summary with a merge-confidence block. Two things can stop that block from appearing, and each is spoken:
+
+```
+MERGE CONFIDENCE NOT ASSESSED: <reason>
+MERGE CONFIDENCE NOT WRITTEN: <reason>
+```
+
+`MERGE CONFIDENCE NOT ASSESSED` means gathering the evidence or running the assessment threw. The summary has no merge-confidence block, the receipt records none, and the outcome record carries a null verdict, which reads as "never assessed" and not as a low score. `MERGE CONFIDENCE NOT WRITTEN` means the assessment was made but `.claude/ship/merge-confidence.json` could not be written (a read-only directory, a full disk). The block is printed without its `assessment:` row, and `interlock merge-confidence --run` has no file to read.
+
+Neither changes the exit code, which stays what the close already makes it: non-zero on a halt, an incomplete trajectory or a run that cannot be reconstructed. They are the same class of failure as the outcome corpus and the review metrics, reported and never enforced. Run `interlock merge-confidence --change <name> --base <start commit>` by hand to get the assessment the close could not make.
+
+### The `MERGE CONFIDENCE` block of the close summary
+
+A run that completed prints one block between the identity rows and the archive reminder. It is the run's verdict, stated once, from facts the run observed:
+
+```
+MERGE CONFIDENCE HUMAN — score 72 (amber range 40–79; 14 of 17 gating signals clean)
+  needs a fix: review.warnings
+  needs a person: risk.class
+  needs more evidence: ci.pipeline, conformance.delta
+  flags: verify.e2e no-e2e
+  assessment: .claude/ship/merge-confidence.json
+```
+
+The headline is the same line `interlock merge-confidence` prints first: the verdict (`MERGE`, `HUMAN` or `BLOCK`), the score with the range its worst band allows, and how many gating signals are clean. Read the three groups as what would lift the verdict. **needs a fix** is a finding or a gap in the change that code or a spec edit repairs. **needs a person** is a call only a person can make, such as a risk class that is not allowed to merge unattended, an open decision row, or a run that degraded. **needs more evidence** is a fact nobody gathered, which reads unobserved and clears when the fact is supplied. A group with no entry is not printed, and the flags row is the signals a flag lowered the score on without moving a band. The reasons and the evidence behind each line are in the `assessment:` file, which the summary leaves out on purpose.
+
+**No close reads `MERGE`.** The pipeline signal reads unobserved inside a run: the run is offline and no platform has seen the commit it just made. So a close can read `HUMAN` or `BLOCK` and `ci.pipeline` is always among the entries that need more evidence. The first `MERGE` anyone sees comes from `interlock merge-confidence --run .claude/ship/merge-confidence.json --pipeline <file>` once the pipeline has run, and only when the head is still the commit the run made. A halted run prints no block at all, because a diff that stopped part-way is not a candidate for merging. The verdict never changes the exit code and nothing gates on it: the readiness gate, the autonomy ladder and `interlock report` do not read it.
+
 ### `E2E FAILED (non-blocking by policy)`
 
 The end-to-end suite ran and went red, and the commit happened anyway. This is intentional: `ship` reports e2e failures and never repairs them. E2E failures are frequently environmental, and auto-fixing them is exactly how a real regression gets papered over.

@@ -415,3 +415,106 @@ test('assembly is deterministic', () => {
   }
   assert.equal(assembleDomainContext(input).text, assembleDomainContext(input).text)
 })
+
+// --- `kept`: the requirements the text carries, as locations -------------------
+//
+// Change `complete-and-record-the-merge-verdict`, design D5. The handoff's
+// living list is built from this field, so the reviewer and the handoff can
+// never disagree about which living requirements a change is judged against.
+//
+//   kept: Array<{ capability, heading, line }>   capability order, then spec order;
+//         `line` is the heading's 1-based line in the living spec text.
+
+// 1-based line of a requirement block's heading inside a spec text.
+const lineOfBlock = (md, block) => {
+  const heading = block.split('\n')[0]
+  const at = md.split('\n').findIndex(l => l === heading)
+  assert.ok(at !== -1, `fixture drift: ${heading} not found`)
+  return at + 1
+}
+
+const keptShape = r => r.kept.map(k => [k.capability, norm(k.heading), k.line])
+
+test('kept lists the carried requirements by capability, heading and line, in capability then spec order', () => {
+  const r = assembleDomainContext({
+    capabilities: caps(GUARDS, POLICY),
+    living: { [GUARDS]: LIVING_GUARDS, [POLICY]: LIVING_POLICY },
+    deltas: {},
+    maxChars: 100_000,
+    ref: 'abc1234'
+  })
+  assert.deepEqual(keptShape(r), [
+    ...GUARD_BLOCKS.map(b => [GUARDS, headingOf(b), lineOfBlock(LIVING_GUARDS, b)]),
+    ...POLICY_BLOCKS.map(b => [POLICY, headingOf(b), lineOfBlock(LIVING_POLICY, b)])
+  ])
+  for (const entry of r.kept) {
+    assert.deepEqual(Object.keys(entry).sort(), ['capability', 'heading', 'line'], 'a location, never a body')
+    assert.ok(Number.isInteger(entry.line) && entry.line >= 1)
+  }
+})
+
+test('kept equals the requirements the text carries, no more and no fewer', () => {
+  const r = assembleDomainContext({
+    capabilities: caps(GUARDS, POLICY),
+    living: { [GUARDS]: LIVING_GUARDS, [POLICY]: LIVING_POLICY },
+    deltas: { [POLICY]: DELTA_POLICY },
+    maxChars: 100_000,
+    ref: 'abc1234'
+  })
+  const carried = (r.text.match(/^### Requirement:.*$/gm) || []).map(l => norm(l.replace(/^###\s+/, '')))
+  assert.deepEqual(r.kept.map(k => norm(k.heading)), carried)
+  assert.ok(r.kept.length > 0)
+})
+
+test('a superseded requirement is absent from kept', () => {
+  const r = assembleDomainContext({
+    capabilities: caps(POLICY),
+    living: { [POLICY]: LIVING_POLICY },
+    deltas: { [POLICY]: DELTA_POLICY },
+    maxChars: 100_000,
+    ref: 'abc1234'
+  })
+  const supersededHeadings = r.superseded.map(s => norm(s.heading))
+  assert.equal(supersededHeadings.length, 1)
+  assert.ok(!r.kept.some(k => supersededHeadings.includes(norm(k.heading))))
+  assert.deepEqual(
+    r.kept.map(k => norm(k.heading)),
+    [headingOf(POLICY_BLOCKS[1]), headingOf(POLICY_BLOCKS[2])]
+  )
+})
+
+test('a requirement the bound left out is absent from kept and present in omitted', () => {
+  const r = assembleDomainContext({
+    capabilities: caps(POLICY),
+    living: { [POLICY]: LIVING_POLICY },
+    deltas: {},
+    maxChars: POLICY_BLOCKS[0].length + 50,
+    ref: 'abc1234'
+  })
+  assert.deepEqual(keptShape(r), [[POLICY, headingOf(POLICY_BLOCKS[0]), lineOfBlock(LIVING_POLICY, POLICY_BLOCKS[0])]])
+  assert.equal(r.omitted.length, 2)
+  for (const o of r.omitted) {
+    assert.ok(!r.kept.some(k => norm(k.heading) === norm(o.heading)), `${o.heading} is both kept and omitted`)
+  }
+})
+
+test('kept is an empty list when nothing is in force, never absent', () => {
+  const none = assembleDomainContext({
+    capabilities: caps(GUARDS),
+    living: { [GUARDS]: LIVING_GUARDS },
+    deltas: { [GUARDS]: `## MODIFIED Requirements\n\n${GUARD_BLOCKS.map(b => `${b}\n`).join('\n')}` },
+    maxChars: 100_000,
+    ref: 'abc1234'
+  })
+  assert.ok(none.skipped)
+  assert.deepEqual(none.kept, [])
+  const tooSmall = assembleDomainContext({
+    capabilities: caps(POLICY),
+    living: { [POLICY]: LIVING_POLICY },
+    deltas: {},
+    maxChars: 10,
+    ref: 'abc1234'
+  })
+  assert.ok(tooSmall.skipped)
+  assert.deepEqual(tooSmall.kept, [])
+})

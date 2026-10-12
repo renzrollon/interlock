@@ -146,6 +146,7 @@ import { assembleDomainContext, selectDomainCapabilities } from '../lib/prompts/
 import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import { assessMergeConfidence, formatMergeConfidence } from '../lib/merge-confidence.mjs'
+import { gatherLivingList, gatherMergeEvidence, readRunEvidence } from '../lib/merge-evidence.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 import {
   computeFingerprint,
@@ -200,6 +201,9 @@ Usage:
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
+                  [--changed <files>]       and, with --living, the requirements
+                  [--living] [--base <ref>] already in force for the capabilities
+                                            it touches (see "conformance:" below)
   interlock domain-context [change]         The living requirements the domain
                   --changed <files>         review dimension judges a diff
                   [--base <ref>]            against: which capabilities, and
@@ -215,6 +219,7 @@ Usage:
                   [--handoff <f>]           repository and the files named, never
                   [--pipeline <f>]          a hosting platform (see
                   [--coverage <f>]          "merge-confidence:" below)
+                  [--run <f>]
                   [--base <ref>] [--require-merge]
   interlock report [--since <iso>]          Indicators over the three recorded
                   [--change <name>]         corpora — outcome records, run
@@ -529,6 +534,33 @@ limits:
   groups (laneCaps, solo, mergeBands), never entries of the iteration-count
   limits.
 
+conformance:
+  [change]               The change whose delta-spec scenarios are listed (or
+                         --change <name>); with none named, the single active
+                         change. Each scenario is a question, C1..Cn, with the
+                         artifact and line it is written at.
+  --changed <files>      Repo-relative changed paths. Listed as the source files
+                         to check against; with --living they also select
+                         capabilities through the graph.
+  --living               Also list, after the scenarios, the living requirements
+                         in force for the capabilities the change touches:
+                         L1..Ln, each with its capability, the living spec's
+                         path and the line of its heading, never its body. The
+                         capabilities, the text and the size bound are the ones
+                         "domain-context" gives the domain reviewer, so the two
+                         cannot disagree. A requirement the change's own delta
+                         specs modify, remove or rename is not listed; one past
+                         the bound is named as left out. --json carries the
+                         block as "living": { requirements, requirementsRequired,
+                         omitted, source, skipped, partial }.
+  --base <ref>           With --living: read the living text from this ref
+                         instead of the working tree. The output names which it
+                         read. A ref that names no commit is the reason the list
+                         was not built; the scenarios are still listed.
+  Questions, never verdicts: nothing here decides whether a scenario or a
+  requirement is satisfied. Without --living the output is what it was before the
+  option existed. Always exits 0.
+
 merge-confidence:
   [change]               The change under assessment (or --change <name>); with
                          none named, the single active change. Its artifacts,
@@ -537,20 +569,34 @@ merge-confidence:
                          change, that is said on stderr and those signals read
                          amber rather than clean.
   --changed <files...>   Repo-relative changed paths ("-" for stdin). The risk
-                         class, the conformance checklist and drift read them.
+                         class, the conformance checklist, the living list and
+                         drift read them.
   --review <file>        The adjudicated review: "interlock review --json", or
                          the review.json a ship run writes.
   --verify <file>        The final verification verdict: "interlock verify
                          judge --context final --json".
-  --handoff <file>       The handoff's scenariosChecked and scenariosUnconfirmed.
-                         A verdictsRequired in the file is ignored: the
-                         denominator is the command's own scenario count.
+  --handoff <file>       The handoff's scenariosChecked and scenariosUnconfirmed,
+                         and its requirementsChecked and requirementsUnconfirmed
+                         for the living list. A verdictsRequired or a
+                         requirementsRequired in the file is ignored: each
+                         denominator is the command's own count.
   --pipeline <file>      { sha, checks: [{ name, state, required }] } for the
                          head commit, state pass | fail | pending | skipped.
                          Produced by the mr skill's platform recipes (E3).
   --coverage <file>      { configured, headTotalPct, baseTotalPct, baseSha,
                          baseIsAncestor, diffPct, changedLines }. Produced by
-                         the coverage baseline writer (E8).
+                         "interlock verify coverage".
+  --run <file>           The evidence file a ship run's close writes
+                         (.claude/ship/merge-confidence.json). Supplies what only
+                         the run observed: the adjudicated review, the final
+                         verification verdict, the handoff counts, the coverage
+                         figures and the run record. Used only when it carries
+                         the published schema, names this change, says the run
+                         committed and records HEAD as that commit; otherwise
+                         nothing is taken from it and stderr says which of those
+                         failed. An explicit --review, --verify, --handoff or
+                         --coverage replaces its entry. The verdict recorded in
+                         the file is never read: the command always reassesses.
   --base <ref>           Diff against this ref (git diff --numstat
                          <ref>...HEAD) for the diff shape. Every path git
                          reports is assessed too, whether or not --changed
@@ -558,16 +604,26 @@ merge-confidence:
                          Absent, or a ref that is HEAD or ahead of it (an
                          empty diff by construction), the diff shape is
                          unobserved. The same ref is where REVIEW.md's
-                         always-human-review list is read from.
+                         always-human-review list and the living requirements
+                         are read from, and what spec.coverage tells an added
+                         file from an edited one against. A ref that names no
+                         commit exits 1 with nothing on stdout.
   --require-merge        Exit 1 unless the verdict is MERGE.
   Every input not given reads unobserved with that reason, and unobserved ranks
-  as amber. The command never calls gh, glab or the network. conformance.living
-  and spec.coverage read unobserved until their producer lands (E6), so no input
-  to this version can read MERGE, and the output says so. policy.humanPaths is
-  observed when --base is given: the always-human-review list is read from the
-  REVIEW.md committed at that ref, never from the working copy, and the signal
-  is unobserved ("no --base") without it. Every threshold is a merge-band row
-  of "interlock limits", cited by name in the reason that applies it.
+  as amber. The command never calls gh, glab or the network. Every gating signal
+  has a producer, so a clean, reviewed, verified change reads MERGE once the
+  run's evidence (--run) and a passing pipeline for HEAD (--pipeline) are given.
+  conformance.living counts the handoff's answers against the living list the
+  command builds itself (the list "conformance --living" prints). spec.coverage
+  needs --base: an added source file that no living spec and none of the
+  change's delta specs names is amber; it reads spec text, never the graph.
+  policy.humanPaths is observed when --base is given: the always-human-review
+  list is read from the REVIEW.md committed at that ref, never from the working
+  copy, and the signal is unobserved ("no --base") without it. A fact the
+  repository could not supply (a diff git cannot compute, a file unreadable at
+  the base) is named on stderr and its signal reads unobserved. Every threshold
+  is a merge-band row of "interlock limits", cited by name in the reason that
+  applies it.
   HUMAN exits 0: a change that needs a person is not a failed command. Exit 1
   is BLOCK, and, as for gate, also an input that could not be read or parsed,
   which prints nothing on stdout. Exit 1 alone does not tell the two apart; a
@@ -993,6 +1049,8 @@ Examples:
   interlock verify baseline --report coverage/lcov.info
   interlock verify coverage --base origin/main --json > coverage-input.json
   interlock domain-context add-auth --changed src/auth/session.ts --base origin/main --json
+  interlock conformance add-auth --changed src/auth/session.ts --living --base origin/main
+  interlock merge-confidence add-auth --base origin/main --run .claude/ship/merge-confidence.json --pipeline pipeline.json --require-merge
   interlock spec-audit
   interlock plan reuse add-auth --json || true
   interlock plan fingerprint add-auth --write --json
@@ -1035,7 +1093,10 @@ const BOOLEAN_FLAGS = new Set([
   'require-merge',
   // `verify coverage --compute-base`: measure the merge base in a temporary worktree
   // when no usable baseline exists. A flag, not a value: it must not swallow the next argument.
-  'compute-base'
+  'compute-base',
+  // `conformance --living`: add the living requirements to the checklist. A
+  // flag, so a change name may follow it.
+  'living'
   // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
   // NOT here. `interlock ready --review <findings.json>` takes a value under
   // the same spelling, and making the name boolean everywhere would silently
@@ -1163,9 +1224,32 @@ function readRawInput(value, what) {
   return value === '-' ? readStdin() : readFileSync(value, 'utf8')
 }
 
+/** What `die` raises inside `reasonInsteadOfExit`, in place of ending the process. */
+class Refusal extends Error {}
+let refusalDepth = 0
+
 function die(message) {
+  if (refusalDepth > 0) throw new Refusal(message)
   process.stderr.write(`interlock: ${message}\n`)
   process.exit(1)
+}
+
+/**
+ * Run `fn` so that a `die()` anywhere beneath it returns `{ reason }` rather
+ * than ending the process. A subcommand's body can then be called from a ship
+ * run's close, where a refusal is a fact to report and never an exit: the
+ * subcommand dies with the reason, the close records it.
+ */
+function reasonInsteadOfExit(fn) {
+  refusalDepth += 1
+  try {
+    return fn()
+  } catch (err) {
+    if (err instanceof Refusal) return { reason: err.message }
+    throw err
+  } finally {
+    refusalDepth -= 1
+  }
 }
 
 function warn(message) {
@@ -2068,16 +2152,6 @@ function readMergeInput(flags, key) {
 }
 
 /**
- * A change's capabilities: the capability each delta spec belongs to. Derived
- * through `capabilityOf`, the one derivation `domain-context` and the spec audit
- * share, so `drift.stale`, domain selection and the audit cannot disagree on
- * what a capability is called.
- */
-function capabilitiesOf(root, change) {
-  return inspectChange(root, change).specFiles.map(rel => capabilityOf(rel)).filter(Boolean)
-}
-
-/**
  * One file as `ref` has it, for a reader that must not trust the working tree
  * (judge-against-base-and-living-specs D3): `{ text }`, `{ absent: true }` when
  * the commit has no such file, or `{ tooLarge: true, size }` over `maxBytes`.
@@ -2256,6 +2330,45 @@ function readSpecText(root, base, relPath) {
   }
 }
 
+/**
+ * The living list `conformance --living` adds to the checklist (design D5 of
+ * complete-and-record-the-merge-verdict): the graph read root first then the
+ * state home, the living text from `--base` when one is named and from the
+ * working tree otherwise. Never ends the command, which exits 0 in every case:
+ * a base nobody can read is the reason the list was not built.
+ */
+function livingListFor(root, flags, { change, changed }) {
+  const notBuilt = (reason, source) => ({
+    skipped: reason,
+    partial: null,
+    requirements: [],
+    requirementsRequired: 0,
+    omitted: [],
+    source
+  })
+  let base = null
+  if (flags.base !== undefined) {
+    if (flags.base === true) return notBuilt('--base needs a ref, so there is no base to read the living requirements from', 'no base')
+    base = String(flags.base)
+    if (base.startsWith('-') || !commitOf(root, base)) {
+      return notBuilt(`--base ${base} names no commit, so the living requirements could not be read from it`, `base ${base}`)
+    }
+  }
+  const graph = locateInput(root, startStateHome(root, flags).home, GRAPH_FILE_PATH)
+  const { living, notes } = gatherLivingList(root, {
+    change,
+    changedPaths: changed,
+    base,
+    deps: { readAtRef },
+    ...(graph.path ? { graphPath: graph.path } : {})
+  })
+  if (living) return living
+  return notBuilt(
+    notes.map(note => `${note.what}: ${note.reason}`).join('; ') || 'the living requirements could not be read',
+    base ? `base ${base}` : 'the working tree'
+  )
+}
+
 /** The graph, root first then the state home, as `run start` locates it. */
 function readGraphFor(root, flags) {
   const located = locateInput(root, startStateHome(root, flags).home, GRAPH_FILE_PATH)
@@ -2424,6 +2537,102 @@ function computeBaselineAt(root, base, profile) {
   }
 }
 
+/**
+ * The coverage input the merge verdict reads, computed from the head report, the
+ * baseline and the diff against `base`: figures only, no band (design D2 of
+ * judge-against-base-and-living-specs). This is the body of `interlock verify
+ * coverage`, and a ship run's close calls it too (`ctx.deps.coverageInput`,
+ * design D3 of complete-and-record-the-merge-verdict), so it never ends the
+ * process: it returns `{ input, text }`, or `{ reason }` with the words the
+ * subcommand exits on.
+ *
+ * `flags` are the subcommand's own (`--report`, `--baseline`, `--compute-base`,
+ * `--state-home`); a close passes none of the first three, so it reads the
+ * profile's report and the recorded baseline and runs no coverage command.
+ */
+function coverageInputFor(root, base, flags = {}) {
+  return reasonInsteadOfExit(() => {
+    if (!commitOf(root, base)) die(`--base ${base}: cannot resolve it to a commit`)
+    const found = readTestProfile(root, flags)
+    const profile = found ? found.profile : null
+    const coverage = profile && profile.coverage && typeof profile.coverage === 'object' ? profile.coverage : null
+    const named = flags.report !== undefined
+    if (flags.report === true) die('--report needs an lcov file')
+    const declared = Boolean(coverage && coverage.enabled !== false && typeof coverage.command === 'string' && coverage.command.trim())
+    if (!named && !declared) {
+      return {
+        input: buildCoverageInput({ configured: false }),
+        text: 'coverage: not configured (no coverage command in the test profile)\n'
+      }
+    }
+
+    const reportRel = named ? null : typeof coverage.report_path === 'string' && coverage.report_path ? coverage.report_path : 'coverage/lcov.info'
+    const reportDir = unitCwdOf(root, profile)
+    const reportPath = named ? String(flags.report) : resolve(reportDir, reportRel)
+    const format = named ? 'lcov' : coverage.format || 'lcov'
+    if (format !== 'lcov') die(`the coverage report ${reportRel} is ${format}: only lcov is supported`)
+    let reportText
+    try {
+      reportText = readFileSync(reportPath, 'utf8')
+    } catch (err) {
+      die(
+        `the coverage report ${named ? reportPath : reportRel} could not be read (${err.code || err.message}) — ` +
+          `run the coverage command${declared ? ` (${coverage.command})` : ''} first`
+      )
+    }
+    const head = readLcovFigures(reportText, root, reportDir)
+    if (head.outsideRoot) warn(`${head.outsideRoot} record(s) in the report lie outside the repository and were left out of both figures`)
+
+    let diffText
+    try {
+      diffText = gitText(root, ['diff', '-U0', '--no-color', '--no-ext-diff', `${base}...HEAD`])
+    } catch (err) {
+      die(`--base ${base}: git could not diff it against HEAD: ${err.message}`)
+    }
+    const changed = changedLineCoverage(head.records, parseAddedLines(diffText))
+
+    let baseline = readCoverageBaseline(root, flags)
+    let baseIsAncestor = baseline ? isAncestorOfHead(root, baseline.sha) : null
+    if (flags['compute-base'] === true && (!baseline || baseIsAncestor !== true)) {
+      let computed
+      try {
+        computed = computeBaselineAt(root, base, profile)
+      } catch (err) {
+        die(`--compute-base: ${(err && err.message) || err}`)
+      }
+      const target = typeof flags.baseline === 'string' ? flags.baseline : join(root, COVERAGE_BASELINE_PATH)
+      const recorded = {
+        schema: BASELINE_SCHEMA,
+        sha: computed.sha,
+        ref: base,
+        totalPct: computed.totalPct,
+        generatedAt: new Date().toISOString()
+      }
+      try {
+        writeJsonAtomic(target, recorded)
+      } catch (err) {
+        die(`--compute-base: the baseline could not be written to ${target}: ${err.message}`)
+      }
+      warn(`recorded a coverage baseline: ${recorded.totalPct}% at merge base ${computed.sha.slice(0, 7)} → ${target}`)
+      baseline = recorded
+      baseIsAncestor = isAncestorOfHead(root, computed.sha)
+    }
+
+    const input = buildCoverageInput({ configured: true, head: head.totals, baseline, baseIsAncestor, changed })
+    const fmt = v => (v === null ? 'unobserved' : v)
+    return {
+      input,
+      text: [
+        'COVERAGE INPUT',
+        `  head total: ${fmt(input.headTotalPct)}%`,
+        `  base total: ${fmt(input.baseTotalPct)}%${input.baseSha ? ` at ${input.baseSha.slice(0, 7)} (${input.baseIsAncestor ? 'an ancestor of HEAD' : 'NOT an ancestor of HEAD'})` : ' (no baseline)'}`,
+        `  changed lines: ${fmt(input.changedLines)}, covered ${fmt(input.diffPct)}%`,
+        ''
+      ].join('\n')
+    }
+  })
+}
+
 /** HEAD's sha, or null when the root is not a git checkout — never a guess. */
 function headShaOf(root) {
   try {
@@ -2438,29 +2647,35 @@ function headShaOf(root) {
   }
 }
 
+// --- git, as the merge-confidence gather reaches it ---------------------------
+//
+// `lib/merge-evidence.mjs` reads git only through four functions, each taking
+// the root first: `diffShape`, `nameStatus`, `listFiles` and `readAtRef` (above).
+// They are handed to the `merge-confidence` command's gather and to a ship run's
+// close alike (`ctx.deps`). None of them ends the process: a git that cannot
+// answer THROWS, in git's own words, and the gather turns that into a note and
+// an unobserved signal. Whether an unreadable base ends a command is the
+// command's decision, made before it gathers.
+
 /**
  * The diff shape against a base: `git diff --numstat -z <base>...HEAD`. A
  * binary row (`-\t-\tpath`) counts as one file and no lines; a rename counts
- * as git reports it, and both of its paths are changed paths. A base git
- * cannot diff against is input the command could not read, so it dies before
- * any assessment. A base that is HEAD or a descendant of it diffs empty by
- * construction, so it carries `nothingToDiff` instead of counts — an empty
- * diff there proves nothing about the change.
+ * as git reports it, and both of its paths are changed paths. A base that is
+ * HEAD or a descendant of it diffs empty by construction, so it carries
+ * `nothingToDiff` instead of counts — an empty diff there proves nothing about
+ * the change. Throws when git cannot diff the base against HEAD.
  */
-function diffShapeOf(root, base, headSha) {
-  const git = args =>
-    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-  const fail = err => {
-    const detail = (err.stderr && String(err.stderr).trim()) || err.message
-    die(`--base ${base}: git could not diff it against HEAD: ${detail}`)
-  }
+function diffShape(root, base, headSha) {
+  const explain = err => new Error(`git could not diff ${base} against HEAD: ${err.message}`)
+  // HEAD as the repository has it; the caller's sha only when it cannot be read.
+  const head = headShaOf(root) || headSha
   let mergeBase
   try {
-    mergeBase = git(['merge-base', base, 'HEAD']).trim()
+    mergeBase = gitText(root, ['merge-base', base, 'HEAD']).trim()
   } catch (err) {
-    fail(err)
+    throw explain(err)
   }
-  if (headSha && mergeBase === headSha) {
+  if (head && mergeBase === head) {
     return {
       base,
       paths: [],
@@ -2469,9 +2684,9 @@ function diffShapeOf(root, base, headSha) {
   }
   let out
   try {
-    out = git(['diff', '--numstat', '-z', `${base}...HEAD`])
+    out = gitText(root, ['diff', '--numstat', '-z', `${base}...HEAD`])
   } catch (err) {
-    fail(err)
+    throw explain(err)
   }
   // -z: `added\tdeleted\tpath\0`, or for a rename `added\tdeleted\t\0old\0new\0`.
   let changedLines = 0
@@ -2496,6 +2711,47 @@ function diffShapeOf(root, base, headSha) {
     changedLines += (Number(added) || 0) + (Number(deleted) || 0)
   }
   return { base, changedLines, changedFiles, binaryFiles, paths }
+}
+
+/**
+ * The paths `<base>...HEAD` adds, edits and deletes, for the spec-coverage
+ * facts. Renames are not detected (`--no-renames`), so a rename is a delete of
+ * the old path and an add of the new one — which is how the signal reads it. A
+ * type change is an edit. Throws when git cannot diff the base against HEAD.
+ */
+function nameStatus(root, base) {
+  let out
+  try {
+    out = gitText(root, ['diff', '--name-status', '--no-renames', '-z', `${base}...HEAD`])
+  } catch (err) {
+    throw new Error(`git could not list the files ${base}...HEAD changes: ${err.message}`)
+  }
+  const result = { added: [], modified: [], deleted: [] }
+  // -z: `status\0path\0`, one pair per file.
+  const tokens = out.split('\0')
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    const status = tokens[i]
+    const path = tokens[i + 1]
+    if (!status || !path) continue
+    if (status.startsWith('A')) result.added.push(path)
+    else if (status.startsWith('D')) result.deleted.push(path)
+    else result.modified.push(path)
+  }
+  return result
+}
+
+/** Every path tracked at `ref`. Throws when `ref` names no tree git can list. */
+function listFiles(root, ref) {
+  if (typeof ref !== 'string' || !ref || ref.startsWith('-')) {
+    throw new Error(`cannot list the files at ${JSON.stringify(ref)}: it names no commit`)
+  }
+  let out
+  try {
+    out = gitText(root, ['ls-tree', '-r', '--name-only', '-z', ref])
+  } catch (err) {
+    throw new Error(`git could not list the files tracked at ${ref}: ${err.message}`)
+  }
+  return out.split('\0').filter(Boolean)
 }
 
 function splitPaths(value) {
@@ -2720,10 +2976,15 @@ async function main() {
 
     case 'conformance': {
       // Emits questions, never verdicts, and never exits non-zero — see the
-      // header of lib/conformance.mjs.
+      // header of lib/conformance.mjs. That holds for `--living` and a `--base`
+      // nobody can read too: the reason is printed in the list's place.
       const name = typeof flags.change === 'string' ? flags.change : positional[1]
       const changed = flags.changed === undefined ? [] : splitPaths(flags.changed)
       const result = buildChecklist(root, name, { changed })
+      // `--living` adds the requirements already in force, after the scenarios
+      // (design D5 of complete-and-record-the-merge-verdict). Without it the
+      // checklist is field for field what it was, whatever else is given.
+      if (flags.living === true) result.living = livingListFor(root, flags, { change: result.change, changed })
       emit(json, result, formatChecklist(result) + '\n')
       break
     }
@@ -2739,19 +3000,16 @@ async function main() {
       const handoffFile = readMergeInput(flags, 'handoff')
       const pipeline = readMergeInput(flags, 'pipeline')
       const coverage = readMergeInput(flags, 'coverage')
-      // The conformance denominator is the command's own scenario count. A
-      // count the handoff file carries is dropped here (and ignored by the
-      // module), so a caller cannot shrink it.
-      let handoff = null
-      if (handoffFile) {
-        const { verdictsRequired: _ignored, ...counts } = handoffFile
-        handoff = counts
-      }
+      const runFile = readMergeInput(flags, 'run')
       if (flags.base === true) die('--base needs a ref')
       const base = typeof flags.base === 'string' ? flags.base : null
       // A ref is handed to git as an argument; one that reads as an option is
-      // refused rather than passed through.
+      // refused rather than passed through. A ref that names no commit is input
+      // the command could not read, so it ends here, before any assessment. A
+      // base that resolves and still cannot be diffed (a shallow clone with no
+      // merge base) is the gather's to note: those signals read unobserved.
       if (base && base.startsWith('-')) die(`--base ${base}: a base must name a ref, not an option`)
+      if (base && !commitOf(root, base)) die(`--base ${base}: cannot resolve it to a commit, so git cannot diff it against HEAD`)
       let changedPaths = []
       if (flags.changed !== undefined) {
         const given = [].concat(flags.changed)
@@ -2761,82 +3019,67 @@ async function main() {
             : splitPaths(given.join(','))
       }
 
-      // With a base, git's own file list is a changed-path source: a path the
-      // caller left out of --changed still reaches risk, conformance and drift.
       const headSha = headShaOf(root)
-      const diff = base ? diffShapeOf(root, base, headSha) : null
-      if (diff) {
-        const named = new Set(changedPaths)
-        const added = diff.paths.filter(p => !named.has(p))
-        if (added.length) {
-          warn(`${added.length} path(s) git reports in ${base}...HEAD were not in --changed and are assessed too: ${added.join(', ')}`)
-          changedPaths = [...changedPaths, ...added]
-        }
-      }
-
-      // What the repository itself says.
       const requested = typeof flags.change === 'string' ? flags.change : positional[1]
       const resolved = resolveChange(root, requested)
       const name = resolved.error ? null : resolved.name
-      if (!name) {
-        warn(`no change under assessment: ${resolved.error} — its ledger, artifacts and scenarios are not read`)
+
+      // A run's evidence file (design D9 of complete-and-record-the-merge-verdict)
+      // supplies what only that run observed, and only for the commit it made:
+      // a file for another commit, another change or a run that made no commit
+      // is refused whole, out loud, and the signals read as with no file. The
+      // assessment recorded in it is never read: the command always reassesses.
+      let fromRun = {}
+      if (runFile) {
+        const read = readRunEvidence(runFile, { change: name, headSha })
+        if (read.usable) fromRun = read.evidence
+        else warn(`--run ${flags.run} is not used: ${read.reason}`)
       }
-      const change = name ? { name, capabilities: capabilitiesOf(root, name) } : null
-      const artifacts = name ? readChangeArtifacts(root, name) : {}
-      let ledger = null
-      if (name) {
-        const parsed = readLedger(root, name)
-        ledger = {
-          ...summarizeLedger(parsed),
-          rows: parsed.rows.map(r => ({ id: r.id, question: r.question, class: r.class, valid: r.valid }))
-        }
-      }
-      const checklist = buildChecklist(root, name || requested, { changed: changedPaths })
-      // Drift is repo-wide; the module narrows it to what this change did. Each
-      // unarchived change carries its capabilities so the overlap can be read.
-      const driftReport = analyzeDrift(root, { changed: changedPaths })
-      const drift = {
-        ...driftReport,
-        unarchived: driftReport.unarchived.map(u => ({ ...u, capabilities: capabilitiesOf(root, u.change) }))
+      // The conformance denominators are the command's own counts. A count the
+      // handoff carries is dropped here (and ignored by the module), so a
+      // caller cannot shrink one.
+      const handoffGiven = handoffFile ?? fromRun.handoff ?? null
+      let handoff = null
+      if (handoffGiven && typeof handoffGiven === 'object' && !Array.isArray(handoffGiven)) {
+        const { verdictsRequired: _ignored, ...counts } = handoffGiven
+        handoff = counts
       }
 
-      // The always-human-review list is enforced, so it is read from the base
-      // tip, as a hosting platform reads CODEOWNERS from the base branch, and the
-      // working copy is compared against it (design D3). Without --base there is
-      // nothing to read it from and the signal reads unobserved.
-      let reviewPolicy = null
-      if (base) {
-        const at = reviewPolicyAt(root, base)
-        // Only the base copy's problems: an unreadable committed always-human-review
-        // section is what the signal names, and a Do Not Report slip is not its business.
-        const problems = at.baseProblems.filter(p => !/Do Not Report|excludes nothing|no exclusions applied/.test(p))
-        reviewPolicy = {
-          ref: base,
-          humanPaths: at.policy.humanPaths,
-          problems,
-          differsFromBase: at.differsFromBase
-        }
-      }
-
-      const result = assessMergeConfidence({
-        change,
+      // One gather, shared with a ship run's close (design D1): the repository's
+      // own facts, read here, and git through the four functions handed in. An
+      // explicit input replaces the evidence file's entry for it.
+      const graph = locateInput(root, startStateHome(root, flags).home, GRAPH_FILE_PATH)
+      const { input, notes } = gatherMergeEvidence(root, {
+        change: requested,
         changedPaths,
+        base,
         headSha,
-        artifacts,
-        review,
-        verify,
-        checklist,
-        handoff,
-        pipeline,
-        coverage,
-        diff,
-        ledger,
-        drift,
-        reviewPolicy,
-        // The run record is written at close (E2); by hand there is none.
-        run: null
+        supplied: {
+          review: review ?? fromRun.review ?? null,
+          verify: verify ?? fromRun.verify ?? null,
+          handoff,
+          pipeline,
+          coverage: coverage ?? fromRun.coverage ?? null,
+          // A run record exists only where a run wrote one; by hand there is none.
+          run: fromRun.run ?? null
+        },
+        deps: { diffShape, nameStatus, listFiles, readAtRef },
+        ...(graph.path ? { graphPath: graph.path } : {})
       })
-      emit(json, { change: name, ...result }, formatMergeConfidence(result))
+
+      // With a base, git's own file list is a changed-path source: a path the
+      // caller left out of --changed still reaches risk, conformance and drift.
+      const named = new Set(changedPaths)
+      const added = input.changedPaths.filter(p => !named.has(p))
+      if (added.length) {
+        warn(`${added.length} path(s) git reports in ${base}...HEAD were not in --changed and are assessed too: ${added.join(', ')}`)
+      }
+      // What the gather could not read, with the reason. The signal that needed
+      // it reads unobserved; this is where a reader learns why.
+      for (const note of notes) warn(`${note.what}: ${note.reason}`)
+
+      const result = assessMergeConfidence(input)
+      emit(json, { change: input.change ? input.change.name : null, ...result }, formatMergeConfidence(result))
       // HUMAN exits 0: a change that needs a reviewer is not a failed command.
       const failed = flags['require-merge'] === true ? result.verdict !== 'MERGE' : result.verdict === 'BLOCK'
       if (failed) process.exit(1)
@@ -3712,83 +3955,11 @@ async function main() {
           die('verify coverage: --base <ref> is required — the diff against it is the changed-line figure')
         }
         const base = baseRefOf(root, flags)
-        const found = readTestProfile(root, flags)
-        const profile = found ? found.profile : null
-        const coverage = profile && profile.coverage && typeof profile.coverage === 'object' ? profile.coverage : null
-        const named = flags.report !== undefined
-        if (flags.report === true) die('--report needs an lcov file')
-        const declared = Boolean(coverage && coverage.enabled !== false && typeof coverage.command === 'string' && coverage.command.trim())
-        if (!named && !declared) {
-          const input = buildCoverageInput({ configured: false })
-          emit(json, input, 'coverage: not configured (no coverage command in the test profile)\n')
-          break
-        }
-
-        const reportRel = named ? null : typeof coverage.report_path === 'string' && coverage.report_path ? coverage.report_path : 'coverage/lcov.info'
-        const reportDir = unitCwdOf(root, profile)
-        const reportPath = named ? String(flags.report) : resolve(reportDir, reportRel)
-        const format = named ? 'lcov' : coverage.format || 'lcov'
-        if (format !== 'lcov') die(`the coverage report ${reportRel} is ${format}: only lcov is supported`)
-        let reportText
-        try {
-          reportText = readFileSync(reportPath, 'utf8')
-        } catch (err) {
-          die(
-            `the coverage report ${named ? reportPath : reportRel} could not be read (${err.code || err.message}) — ` +
-              `run the coverage command${declared ? ` (${coverage.command})` : ''} first`
-          )
-        }
-        const head = readLcovFigures(reportText, root, reportDir)
-        if (head.outsideRoot) warn(`${head.outsideRoot} record(s) in the report lie outside the repository and were left out of both figures`)
-
-        let diffText
-        try {
-          diffText = gitText(root, ['diff', '-U0', '--no-color', '--no-ext-diff', `${base}...HEAD`])
-        } catch (err) {
-          die(`--base ${base}: git could not diff it against HEAD: ${err.message}`)
-        }
-        const changed = changedLineCoverage(head.records, parseAddedLines(diffText))
-
-        let baseline = readCoverageBaseline(root, flags)
-        let baseIsAncestor = baseline ? isAncestorOfHead(root, baseline.sha) : null
-        if (flags['compute-base'] === true && (!baseline || baseIsAncestor !== true)) {
-          let computed
-          try {
-            computed = computeBaselineAt(root, base, profile)
-          } catch (err) {
-            die(`--compute-base: ${(err && err.message) || err}`)
-          }
-          const target = typeof flags.baseline === 'string' ? flags.baseline : join(root, COVERAGE_BASELINE_PATH)
-          const recorded = {
-            schema: BASELINE_SCHEMA,
-            sha: computed.sha,
-            ref: base,
-            totalPct: computed.totalPct,
-            generatedAt: new Date().toISOString()
-          }
-          try {
-            writeJsonAtomic(target, recorded)
-          } catch (err) {
-            die(`--compute-base: the baseline could not be written to ${target}: ${err.message}`)
-          }
-          warn(`recorded a coverage baseline: ${recorded.totalPct}% at merge base ${computed.sha.slice(0, 7)} → ${target}`)
-          baseline = recorded
-          baseIsAncestor = isAncestorOfHead(root, computed.sha)
-        }
-
-        const input = buildCoverageInput({ configured: true, head: head.totals, baseline, baseIsAncestor, changed })
-        const fmt = v => (v === null ? 'unobserved' : v)
-        emit(
-          json,
-          input,
-          [
-            'COVERAGE INPUT',
-            `  head total: ${fmt(input.headTotalPct)}%`,
-            `  base total: ${fmt(input.baseTotalPct)}%${input.baseSha ? ` at ${input.baseSha.slice(0, 7)} (${input.baseIsAncestor ? 'an ancestor of HEAD' : 'NOT an ancestor of HEAD'})` : ' (no baseline)'}`,
-            `  changed lines: ${fmt(input.changedLines)}, covered ${fmt(input.diffPct)}%`,
-            ''
-          ].join('\n')
-        )
+        // The body is `coverageInputFor`, which a ship run's close calls too. Here
+        // a refusal is unreadable input: exit 1, nothing on stdout.
+        const computed = coverageInputFor(root, base, flags)
+        if (computed.reason) die(computed.reason)
+        emit(json, computed.input, computed.text)
       } else if (sub === 'cluster') {
         const failures = readInput(flags.failures, '--failures <file|->')
         if (!Array.isArray(failures)) {
@@ -3939,6 +4110,14 @@ async function main() {
             }
           },
           readAtRef,
+          // Git and coverage, as the close's merge-confidence gather reaches them
+          // (complete-and-record-the-merge-verdict, D1 and D3): the same
+          // functions the `merge-confidence` command hands its own gather.
+          diffShape,
+          nameStatus,
+          listFiles,
+          coverageInput: (repoRoot, { base } = {}) =>
+            coverageInputFor(repoRoot, base, { 'state-home': flags['state-home'] }),
           snapshotTree,
           worktreeHead,
           logWaveMutation,

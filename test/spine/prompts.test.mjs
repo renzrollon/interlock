@@ -665,3 +665,122 @@ test('the prompt registry exercises the domain input of the review and remediati
     }
   }
 })
+
+// --- the handoff's living requirements (change `complete-and-record-the-merge-verdict`, design D5) ----
+//
+// `assembleHandoffPrompt` gains one optional input, `living`: the entries of
+// the living list `lib/conformance.mjs` builds (`L1..Ln`, each with the living
+// spec's path, the line of the requirement's heading and its heading). Given
+// one, the briefing lists the entries after the scenarios and asks the agent
+// to answer them the way it answers a scenario. Given none, the briefing is
+// byte-identical to what it was before the input existed.
+
+const LIVING = [
+  { id: 'L1', capability: 'ship/run-program', artifact: 'openspec/specs/ship/run-program/spec.md', line: 14, title: 'A run SHALL record its steps' },
+  { id: 'L2', capability: 'review/merge-confidence', artifact: 'openspec/specs/review/merge-confidence/spec.md', line: 31, title: 'The score SHALL be bounded' }
+]
+const SCENARIO_LIST = [{ id: 'C1', artifact: 'specs/x.md', line: 3, title: 'does the thing' }]
+
+const handoffInput = (over = {}) => ({
+  change: 'add-widget',
+  needsManualTestPlan: true,
+  conformance: SCENARIO_LIST,
+  learnings: true,
+  ...over
+})
+
+// What the assembler printed for `handoffInput()` before `living` existed.
+const HANDOFF_BEFORE_LIVING =
+  'Produce the handoff artifacts for change "add-widget".\n\n' +
+  'Write openspec/changes/add-widget/manual-test-plan.md covering every touched file, with spec scenarios and tasks mapped to numbered cases.\n\n' +
+  'Then write openspec/changes/add-widget/code-explanation.md as a commit teach-in: why each file changed, what changed, the blast radius, and what would break if it were left out.\n\n' +
+  'Spec conformance — for each scenario below, read the implementation and answer whether the described behaviour was actually built, citing file:line. Write the answers to openspec/changes/add-widget/conformance.md with one section per scenario id. A scenario you cannot confirm is recorded as unconfirmed with what you looked at — never as satisfied, and never omitted. If the checklist is empty, say so and move on.\n\n' +
+  '  C1  does the thing\n      specs/x.md:3\n\n' +
+  'This never halts the run: a prose scenario matched to code is a judgement, and a judgement that stopped a ship run would be a gate built on a guess. Report it and let a person read it.\n\n' +
+  'Finally, capture at most three learnings from fixes made during this run — recurring failure modes under .claude/memory/failure-modes/, module coupling under .claude/memory/coupling/ — each one small file, indexed in .claude/memory/MEMORY.md. Only genuinely recurring patterns; write nothing if nothing recurred. This is silent.'
+
+const occurrences = (text, pattern) => (text.match(new RegExp(pattern, 'g')) || []).length
+
+test('with no living list the handoff briefing is byte-identical to what it was', () => {
+  assert.equal(assembleHandoffPrompt(handoffInput()), HANDOFF_BEFORE_LIVING)
+  assert.equal(assembleHandoffPrompt(handoffInput({ living: undefined })), HANDOFF_BEFORE_LIVING)
+  assert.equal(assembleHandoffPrompt(handoffInput({ living: null })), HANDOFF_BEFORE_LIVING)
+  assert.doesNotMatch(HANDOFF_BEFORE_LIVING, /\bL\d+\b/)
+})
+
+test('a living list prints each L entry with its spec path and line after the scenarios', () => {
+  const prompt = assembleHandoffPrompt(handoffInput({ living: LIVING }))
+  const scenarioAt = prompt.indexOf('specs/x.md:3')
+  assert.ok(scenarioAt !== -1, 'the scenarios are still listed')
+  let from = scenarioAt
+  for (const entry of LIVING) {
+    const idAt = prompt.indexOf(entry.id, from)
+    assert.ok(idAt > from, `${entry.id} is listed after the scenarios and in order`)
+    const titleAt = prompt.indexOf(entry.title, idAt)
+    assert.ok(titleAt !== -1, `${entry.id} carries its heading`)
+    const locationAt = prompt.indexOf(`${entry.artifact}:${entry.line}`, idAt)
+    assert.ok(locationAt !== -1, `${entry.id} carries its spec path and line`)
+    from = idAt
+  }
+})
+
+test('the living part of the briefing asks for a file:line citation, never records an unconfirmed one as satisfied or omitted, and never halts', () => {
+  const without = assembleHandoffPrompt(handoffInput())
+  const withLiving = assembleHandoffPrompt(handoffInput({ living: LIVING }))
+  // Tokens, not sentences: each must occur more often than the scenario text alone makes it occur.
+  for (const [what, pattern] of [
+    ['a file:line citation', 'file:line'],
+    ['an unconfirmed requirement', 'unconfirmed'],
+    ['never recorded as satisfied', 'satisfied'],
+    ['never omitted', 'omitted'],
+    ['an answer that never halts the run', 'never halts?']
+  ]) {
+    assert.ok(
+      occurrences(withLiving, pattern) > occurrences(without, pattern),
+      `the living list adds no instruction about ${what}`
+    )
+  }
+  assert.match(withLiving, /requirement/i)
+})
+
+test('the living list is its own section and leaves the rest of the briefing alone', () => {
+  const withLiving = assembleHandoffPrompt(handoffInput({ living: LIVING }))
+  assert.ok(withLiving.startsWith('Produce the handoff artifacts for change "add-widget".'))
+  assert.ok(withLiving.includes('  C1  does the thing\n      specs/x.md:3'), 'the scenario list is byte for byte as before')
+  assert.ok(withLiving.endsWith('This is silent.'), 'learnings still close the briefing')
+  assert.ok(withLiving.indexOf('L1') < withLiving.indexOf('Finally, capture at most three learnings'))
+})
+
+test('the living briefing is a pure function of its input', () => {
+  const input = handoffInput({ living: LIVING })
+  assert.equal(assembleHandoffPrompt(input), assembleHandoffPrompt(input))
+  const before = JSON.stringify(input)
+  assembleHandoffPrompt(input)
+  assert.equal(JSON.stringify(input), before)
+})
+
+test('the handoff entry of the sample-input registry carries one input with a living list, so the integrity sweep assembles the new text', () => {
+  const withLiving = PROMPTS.handoff.inputs.filter(i => Array.isArray(i.living) && i.living.length > 0)
+  assert.equal(withLiving.length, 1, 'exactly one sample input carries a living list')
+  const [sample] = withLiving
+  for (const entry of sample.living) {
+    for (const key of ['id', 'artifact', 'line', 'title']) assert.ok(entry[key] !== undefined, `sample entry lacks ${key}`)
+    assert.match(entry.id, /^L\d+$/)
+  }
+  const prompt = PROMPTS.handoff.assemble(sample)
+  assert.equal(typeof prompt, 'string')
+  assert.ok(prompt.includes(sample.living[0].title))
+  assert.ok(prompt.includes(`${sample.living[0].artifact}:${sample.living[0].line}`))
+  // The existing samples are untouched: the ones without a list still assemble without one.
+  assert.ok(PROMPTS.handoff.inputs.some(i => !i.living))
+})
+
+test('HANDOFF_RESULT_SCHEMA declares the two requirement counts as integers and still requires only ok', () => {
+  const schema = SCHEMAS.HANDOFF_RESULT_SCHEMA
+  assert.equal(schema.properties.requirementsChecked.type, 'integer')
+  assert.equal(schema.properties.requirementsUnconfirmed.type, 'integer')
+  assert.deepEqual(schema.required, ['ok'])
+  // The scenario counts beside them are unchanged.
+  assert.equal(schema.properties.scenariosChecked.type, 'integer')
+  assert.equal(schema.properties.scenariosUnconfirmed.type, 'integer')
+})

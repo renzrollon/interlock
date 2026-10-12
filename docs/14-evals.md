@@ -79,6 +79,15 @@ nothing**: it issues no verdict, applies no threshold to any figure, always exit
 denominator, and a value nothing observed reads as unobserved with its reason
 rather than as a zero.
 
+The outcome record's observed group carries one more value from the close,
+`mergeVerdict`: the merge-confidence verdict (`MERGE`, `HUMAN` or `BLOCK`) taken
+from the run's receipt, or `null` for a run that was halted, never assessed, or
+closed before the receipt carried one. It is observed, because the orchestrator
+saw it, and stored, so a later question can be answered from evidence. Nothing
+that decides reads it back: no gate, readiness check or autonomy level consults
+it, `interlock outcomes append` refuses it in the reported group, and
+`interlock report` reads neither it nor the receipt block it comes from.
+
 Whether these three belong in version control depends on what your repository is,
 and there is one place that answers it rather than two:
 [11 — Whether to keep them](11-the-indicators.md#whether-to-keep-them). Read
