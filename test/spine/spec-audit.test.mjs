@@ -427,3 +427,88 @@ test('an archive that adds a well-formed capability passes the pin without a tes
   assert.equal(after.scenarios, before.scenarios + 2)
   assert.equal(after.specs, before.specs + 1)
 })
+
+// --- which output carries the per-capability measures (label-and-harden-the-merge-verdict, design D19) ---
+//
+// Behaviour that already holds, pinned because docs/15 used to promise a table
+// per capability. The report object is what `--json` prints; the text output is
+// a summary of where to look.
+
+/** The lines of the text output between one heading and the next blank line. */
+function partOf(text, heading) {
+  const lines = text.split('\n')
+  const start = lines.findIndex(line => line.startsWith(heading))
+  assert.ok(start > -1, `the text output has no "${heading}" part`)
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex(line => line === '')
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
+test('the text output prints the totals, then only the flagged capabilities with their flags', () => {
+  const report = audit()
+  const text = formatSpecAudit(report)
+  const lines = text.split('\n')
+  assert.equal(lines[0], 'SPEC AUDIT')
+  assert.ok(lines[1].includes(`covers ${report.coverage.specs} of ${report.coverage.corpus}`), lines[1])
+  assert.ok(text.includes(`requirements ${report.totals.requirements}`))
+  assert.ok(text.includes(`scenarios ${report.totals.scenarios}`))
+
+  const flagged = report.capabilities.filter(c => c.flags.length > 0)
+  const unflagged = report.capabilities.filter(c => c.flags.length === 0)
+  assert.ok(flagged.length > 0 && unflagged.length > 0, 'precondition: the fixture has both kinds')
+  const rows = partOf(text, 'FLAGS')
+  assert.equal(rows.length, flagged.length, rows.join(' | '))
+  for (const c of flagged) {
+    const row = rows.find(line => line.trim().startsWith(c.capability))
+    assert.ok(row, `${c.capability} is flagged and has no row`)
+    for (const flag of c.flags) assert.ok(row.includes(flag), `${row} lacks ${flag}`)
+  }
+  // An unflagged capability has no row of its own anywhere in the text output.
+  for (const c of unflagged) {
+    assert.ok(!lines.some(line => line.trim().startsWith(`${c.capability} `) || line.trim() === c.capability), c.capability)
+  }
+  assert.ok(text.indexOf('covers') < text.indexOf('FLAGS'), 'the totals come before the flags')
+})
+
+test('the text output lists each numeric literal with its spec, line and value, after the flags', () => {
+  const report = audit()
+  const text = formatSpecAudit(report)
+  const literals = report.capabilities.flatMap(c => c.numericLiterals)
+  assert.ok(literals.length > 0, 'precondition: the fixture has numeric literals')
+  const rows = partOf(text, 'NUMERIC LITERALS')
+  assert.equal(rows.length, literals.length)
+  for (const n of literals) {
+    assert.ok(rows.some(line => line.includes(`${n.spec}:${n.line}`) && line.includes(String(n.value))), `${n.spec}:${n.line}`)
+  }
+  assert.ok(text.indexOf('FLAGS') < text.indexOf('NUMERIC LITERALS'))
+})
+
+test('with no graph, each graph measure is printed with its reason, never as zero', () => {
+  const reason = 'no graph has been built'
+  const text = formatSpecAudit(audit({ edges: null, broken: [], graphFiles: [], graphReason: reason }))
+  for (const measure of ['FILE LINKS', 'UNSPECIFIED SOURCE']) {
+    const line = text.split('\n').find(l => l.startsWith(measure))
+    assert.ok(line, `no ${measure} line`)
+    assert.ok(line.includes('not measured') && line.includes(reason), line)
+    assert.doesNotMatch(line, /\b0\b/)
+  }
+  assert.ok(text.indexOf('NUMERIC LITERALS') < text.indexOf('FILE LINKS'), 'the graph measures come last')
+})
+
+test('a corpus in which no capability is flagged says none', () => {
+  const specs = gather(FIXTURE).filter(s => s.path === BOUNDED)
+  const report = auditSpecs({ specs, edges: null, broken: [], graphFiles: [], graphReason: 'no graph has been built' })
+  assert.deepEqual(report.capabilities.map(c => c.flags), [[]], 'precondition: the one capability carries no flag')
+  assert.deepEqual(partOf(formatSpecAudit(report), 'FLAGS'), ['  none'])
+})
+
+test('the report --json prints carries every capability, flagged or not, each with its own measures', () => {
+  const report = audit()
+  assert.equal(report.capabilities.length, report.coverage.specs)
+  for (const c of report.capabilities) {
+    for (const key of ['requirements', 'scenarios', 'boundLines', 'numericLiterals', 'flags', 'failure', 'edgeCase']) {
+      assert.ok(key in c, `${c.capability} carries no ${key}`)
+    }
+  }
+  assert.ok(report.capabilities.some(c => c.flags.length === 0), 'an unflagged capability is not lost')
+})

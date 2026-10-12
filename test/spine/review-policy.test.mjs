@@ -491,3 +491,50 @@ test('the shipped REVIEW.template.md parses with no problems and declares both p
   assert.deepEqual(policy.excludePaths, [])
   assert.deepEqual(policy.humanPaths, [])
 })
+
+// --- a glob-shaped item in an enforced list (design D11 of label-and-harden-the-merge-verdict) ---
+//
+// The lists hold prefixes, not patterns. A pattern read as a literal path
+// matches no file, so it is a reported problem naming its section, never a path.
+
+const SECTIONS = [
+  { heading: '## Do Not Report', label: 'Do Not Report', list: 'excludePaths' },
+  { heading: '## Always Human Review', label: 'Always Human Review', list: 'humanPaths' }
+]
+
+for (const section of SECTIONS) {
+  test(`${section.label}: an item holding * or ? is a problem naming the section and the item, and is not in the list`, () => {
+    for (const item of ['src/**', 'docs/*.md', '*.lock', 'lib/a?.mjs', 'src/**/']) {
+      const p = parseReviewPolicy(`${section.heading}\n- kept/\n- ${item}\n`)
+      assert.deepEqual(p[section.list], ['kept'], `${item} was read as a path`)
+      const hits = p.problems.filter(msg => msg.includes(`"${item}"`))
+      assert.equal(hits.length, 1, `${item}: ${p.problems.join(' | ')}`)
+      assert.ok(hits[0].includes(`"${section.label}" item "${item}"`), hits[0])
+      assert.match(hits[0], /path or a directory prefix/)
+      assert.doesNotMatch(hits[0], /threshold/)
+    }
+  })
+
+  test(`${section.label}: brackets and braces are characters a path may hold`, () => {
+    const p = parseReviewPolicy(`${section.heading}\n- app/[id]/\n- lib/{a,b}/\n- docs/(drafts)/\n`)
+    assert.deepEqual(p[section.list], ['app/[id]', 'lib/{a,b}', 'docs/(drafts)'])
+    assert.deepEqual(p.problems, [])
+  })
+}
+
+test('a pattern in one section says nothing about the other, and each problem names its own section', () => {
+  const p = parseReviewPolicy('## Do Not Report\n- docs/*.md\n\n## Always Human Review\n- src/**\n')
+  assert.deepEqual(p.excludePaths, [])
+  assert.deepEqual(p.humanPaths, [])
+  assert.equal(p.problems.length, 2)
+  const about = item => p.problems.find(msg => msg.includes(`"${item}"`))
+  assert.ok(about('docs/*.md').includes('Do Not Report') && !about('docs/*.md').includes('Always Human Review'))
+  assert.ok(about('src/**').includes('Always Human Review') && !about('src/**').includes('Do Not Report'))
+})
+
+test('a pattern in Do Not Report drops no finding: the item is not a prefix of anything', () => {
+  const policy = parseReviewPolicy('## Do Not Report\n- src/*\n')
+  const result = resolveReview([f({ file: 'src/a.ts' })], [], { excludePaths: policy.excludePaths })
+  assert.equal(result.droppedByPolicy.length, 0)
+  assert.equal(result.surviving.length, 1)
+})

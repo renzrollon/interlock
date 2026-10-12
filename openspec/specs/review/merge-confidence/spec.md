@@ -308,9 +308,13 @@ Rationale: a repository is judged on what the change did to coverage, not on whe
 
 ### Requirement: The pipeline signal SHALL read the platform's checks for the head commit
 
-The pipeline input SHALL carry the commit it describes and one entry per check with its name, state and whether the platform requires it. A failed required check SHALL make the pipeline signal (`ci.pipeline`) red. A failed non-required check SHALL make it amber. A pending check SHALL make it unobserved. An input whose commit is not the head SHALL make it unobserved even when the input records a failed required check, and the evidence SHALL name that check. An input with no checks SHALL be green with a flag. An absent input SHALL be unobserved.
+The pipeline input SHALL carry the commit it describes and one entry per check with its name, state and whether the platform requires it. A failed required check SHALL make the pipeline signal (`ci.pipeline`) red. A failed non-required check SHALL make it amber. A pending check SHALL make it unobserved. An input whose commit is not the head SHALL make it unobserved even when the input records a failed required check, and the evidence SHALL name that check. An input whose check list is present and empty SHALL be green with a flag. An absent input SHALL be unobserved.
 
-Rationale: a check that failed on another commit says nothing certain about the head, which may have fixed it; reading it red would block on stale evidence, and dropping it from the evidence would hide it.
+An input that is not well-formed SHALL never read as an input with no checks. The command SHALL accept a `--pipeline` file only when it is well-formed by the one rule `lib/pipeline.mjs` publishes: an object carrying a string `sha` and a list `checks` in which every entry is an object with a non-empty string `name`, a `state` that is one of `pass`, `fail`, `pending` or `skipped`, and a boolean `required`; an `excluded` list of strings MAY be present. Any other file SHALL exit 1 with the fault named on standard error and nothing on standard output, as an unreadable input does. The assessment itself SHALL read a pipeline whose `checks` is not a list, or holds an entry that is not an object, as unobserved, naming the fault, and SHALL read an entry whose state is none of the four as amber, marked as needing more evidence.
+
+When the input records excluded check names, the pipeline signal SHALL name each one in its evidence, whatever band it reads.
+
+Rationale: a check that failed on another commit says nothing certain about the head, which may have fixed it; reading it red would block on stale evidence, and dropping it from the evidence would hide it. An absent or misspelt list and an empty list are different statements: read alike, a file whose only fault is a misspelt key hides a failed required check behind a green signal. A check the caller left out has to stay visible wherever the verdict is shown.
 
 #### Scenario: Happy path — every check passed
 
@@ -339,6 +343,34 @@ Rationale: a check that failed on another commit says nothing certain about the 
 - **WHEN** the merge confidence is assessed
 - **THEN** the pipeline signal is unobserved with the reason that the input describes another commit
 - **AND** the evidence names the failed required check, and the verdict is not `BLOCK` on its account
+
+#### Scenario: Failure — a misspelt key over a failed required check never reads green
+
+- **GIVEN** a pipeline file for the head commit that carries a failed required check under the key `check`, and no `checks`
+- **WHEN** `interlock merge-confidence --pipeline <file>` runs
+- **THEN** it exits 1, standard error says the file carries no `checks` list, and no verdict is printed
+
+#### Scenario: Failure — the assessment reads a misshapen list as unobserved
+
+- **GIVEN** an assessment input whose pipeline carries the head commit and a `checks` value that is a string
+- **WHEN** the merge confidence is assessed
+- **THEN** the pipeline signal is unobserved with a reason saying the input is not well-formed
+- **AND** the verdict is not `MERGE`
+
+#### Scenario: Edge case — an explicit empty list, and a state outside the four
+
+- **GIVEN** a pipeline file for the head commit whose `checks` is an empty list; a pipeline file with an entry whose state is `SUCCESS`; and an assessment input holding that same entry
+- **WHEN** the command is given each file, and the assessment is given the input
+- **THEN** the first reads the pipeline signal green with the flag `no-pipeline`
+- **AND** the second exits 1 naming the entry and the four states the file may carry
+- **AND** the assessment reads the pipeline signal amber, marked as needing more evidence
+
+#### Scenario: Edge case — an excluded check is named beside a green signal
+
+- **GIVEN** a pipeline input for the head commit in which every check passed and `excluded` holds `merge-gate`, and another with no `excluded` list
+- **WHEN** each is assessed
+- **THEN** the first reads the pipeline signal green and its evidence says `merge-gate` was excluded by the caller
+- **AND** the second carries no exclusion line
 
 ### Requirement: The delta-conformance signal SHALL read the handoff's answers against the command's own checklist
 
@@ -383,13 +415,13 @@ Rationale: an unanswered checklist is not a pass, and the conformance module say
 
 ### Requirement: The change-shape signals SHALL read the diff, the ledger, drift and the run
 
-The diff-shape signal (`diff.shape`) SHALL be green when changed lines and changed files are both at or under their published caps, amber above either, and unobserved when no base is given to diff against, or when the base is the head commit or a descendant of it, because that diff is empty by construction and says nothing about the change. The open-decisions signal (`decisions.open`) SHALL be amber, marked as needing a person, when the ledger holds a needs-human row, an invalid row, or is missing. The drift signal (`drift.stale`) SHALL be amber, marked as needing a fix, when a living spec cites a file this change removed, and amber, marked as needing a person, when another change that is complete and unarchived has delta specs for a capability this change also has delta specs for. The change under assessment SHALL NOT count against itself; with no change under assessment, every complete, unarchived change SHALL count. Aging specs and changed files that no spec describes SHALL NOT move the drift signal. When the stale-citation check could not run because no usable graph exists, the drift signal SHALL carry a flag with the reason, and SHALL NOT read the empty result as clean. The run-integrity signal (`run.integrity`) SHALL be amber when the run halted, its trajectory is incomplete, a stage marker was not published, a handoff report was rejected, or a permission prompt or auto-mode denial occurred, and unobserved when no run record is given.
+The diff-shape signal (`diff.shape`) SHALL be green when changed lines and changed files are both at or under their published caps, amber above either, and unobserved when no base is given to diff against, or when the base is the head commit or a descendant of it, because that diff is empty by construction and says nothing about the change. The open-decisions signal (`decisions.open`) SHALL be amber, marked as needing a person, when the ledger holds a needs-human row, an invalid row, or is missing. The drift signal (`drift.stale`) SHALL be amber, marked as needing a fix, when a living spec cites a file this change removed, and amber, marked as needing a person, when another change that is complete and unarchived has delta specs for a capability this change also has delta specs for. The change under assessment SHALL NOT count against itself; with no change under assessment, every complete, unarchived change SHALL count. Aging specs and changed files that no spec describes SHALL NOT move the drift signal. When the stale-citation check could not run because no usable graph exists, the drift signal SHALL carry a flag with the reason, and SHALL NOT read the empty result as clean. The run-integrity signal (`run.integrity`) SHALL be amber, marked as needing a person, when the run halted, its trajectory is incomplete, a stage marker was not published, a handoff report was rejected, a permission prompt or auto-mode denial occurred, or the run left tasks of the change unticked, and unobserved when no run record is given.
 
-Rationale: drift on a pull request is about what this change did to the specs. A broken citation elsewhere, or a finished change in an unrelated capability, is the repository's backlog, which `interlock drift` already reports; counting it would hold every pull request at `HUMAN` for a reason no one on it can act on.
+Rationale: drift on a pull request is about what this change did to the specs. A broken citation elsewhere, or a finished change in an unrelated capability, is the repository's backlog, which `interlock drift` already reports; counting it would hold every pull request at `HUMAN` for a reason no one on it can act on. A run that left a task unticked did not finish the change, and whether what remains matters is a person's call.
 
 #### Scenario: Happy path — a small on-ledger change with a clean run
 
-- **GIVEN** a diff under both caps, a ledger with only agent-resolved rows, no drift findings, and a run record with no degradation
+- **GIVEN** a diff under both caps, a ledger with only agent-resolved rows, no drift findings, and a run record with no degradation and no task left unticked
 - **WHEN** the merge confidence is assessed
 - **THEN** the diff-shape, open-decisions, drift and run-integrity signals are all green
 
@@ -407,6 +439,13 @@ Rationale: drift on a pull request is about what this change did to the specs. A
 - **THEN** the first reads the drift signal amber, marked as needing a fix, naming the spec and the file
 - **AND** the second reads it amber, marked as needing a person, naming the other change and the shared capability
 
+#### Scenario: Failure — a run that left tasks unticked needs a person
+
+- **GIVEN** a run record with no other degradation that records two tasks left unticked
+- **WHEN** the merge confidence is assessed
+- **THEN** the run-integrity signal is amber, marked as needing a person, and its reason states the two tasks
+- **AND** the verdict is `HUMAN` or worse however clean the rest of the input is
+
 #### Scenario: Edge case — no base to diff against, and a missing ledger
 
 - **GIVEN** an assessment given no base reference and a change with no ledger file
@@ -423,14 +462,14 @@ Rationale: drift on a pull request is about what this change did to the specs. A
 
 ### Requirement: The command SHALL run offline, treat every absent input as unobserved, and exit on the verdict
 
-The merge-confidence command SHALL read only the repository, the files the caller names and the published limits. It SHALL NOT call a hosting platform or the network. A signal whose input the caller does not supply SHALL resolve unobserved with the reason that the input was not given, unless a fact the command gathers from the repository itself decides the signal first, as the risk class, the ledger, the conformance checklist, drift and, with a base reference, the review policy committed at the base do. With a base reference, every path the diff between the base and the head reports SHALL be assessed as a changed path whether or not the caller named it, and the paths the caller did not name SHALL be listed on standard error. When the assessment completes, the command SHALL exit non-zero if and only if the verdict is `BLOCK`, and, when asked to require a merge, if and only if the verdict is not `MERGE`. An input the command cannot read or parse SHALL end it before any assessment, with exit 1, the reason on standard error and no verdict on standard output, as the gate command does; the usage text SHALL say that exit 1 alone does not tell a blocked change from unreadable input, and that a verdict on standard output does.
+The merge-confidence command SHALL read only the repository, the files the caller names and the published limits. It SHALL NOT call a hosting platform or the network. A signal whose input the caller does not supply SHALL resolve unobserved with the reason that the input was not given, unless a fact the command gathers from the repository itself decides the signal first, as the risk class, the ledger, the conformance checklist, the living list, drift and, with a base reference, the review policy committed at the base and the spec-coverage facts do. With a base reference, every path the diff between the base and the head reports SHALL be assessed as a changed path whether or not the caller named it, and the paths the caller did not name SHALL be listed on standard error. When the assessment completes, the command SHALL exit non-zero if and only if the verdict is `BLOCK`, and, when asked to require a merge, if and only if the verdict is not `MERGE`. An input the command cannot read or parse SHALL end it before any assessment, with exit 1, the reason on standard error and no verdict on standard output, as the gate command does; the usage text SHALL say that exit 1 alone does not tell a blocked change from unreadable input, and that a verdict on standard output does.
 
 #### Scenario: Happy path — a full set of inputs on a clean change
 
-- **GIVEN** a change name, changed paths, a base reference whose `REVIEW.md` lists no changed path, and review, verification, handoff, pipeline and coverage inputs that all resolve green
+- **GIVEN** a change name, changed paths, a base reference whose `REVIEW.md` lists no changed path, a living list whose requirements were all confirmed, no added source file left unnamed, a run record with no degradation, and review, verification, handoff, pipeline and coverage inputs that all resolve green
 - **WHEN** the command runs with JSON output
 - **THEN** it prints the verdict, the score, the driving signals, the flags and every signal entry
-- **AND** the verdict is `HUMAN`, driven only by the `conformance.living` and `spec.coverage` signals whose producers have not landed, and by `run.integrity`, because a command run by hand has no run record
+- **AND** the verdict is `MERGE`, and the output lists no driving signal
 - **AND** it exits zero
 
 #### Scenario: Failure — a blocking verdict exits non-zero, and a required merge turns HUMAN into non-zero
@@ -445,7 +484,7 @@ The merge-confidence command SHALL read only the repository, the files the calle
 - **GIVEN** the command run with changed paths and no other input or base reference
 - **WHEN** it runs
 - **THEN** every signal that reads only a caller-supplied input resolves unobserved, each with the reason that its input was not given
-- **AND** the human-paths signal resolves unobserved with the reason that no base was given
+- **AND** the human-paths and spec-coverage signals resolve unobserved with the reason that no base was given, and the run-integrity signal with the reason that no run record was given
 - **AND** the verdict is `HUMAN` and the exit is zero
 
 #### Scenario: Edge case — an unreadable input exits 1 with no verdict
@@ -514,11 +553,176 @@ Rationale: a path the repository has declared as needing a person cannot be clea
 - **AND** the second reads it green
 - **AND** the third reads it unobserved with the reason that no base was given
 
-### Requirement: Every registered gating signal SHALL appear in the output, and a signal whose producer has not landed SHALL be unobserved
+### Requirement: The living-conformance signal SHALL read the handoff's answers against the command's own list of living requirements
 
-The output SHALL carry one entry per registered signal, in a fixed order, whatever the input holds. The registered gating signals, in order, SHALL be `review.blockers`, `review.warnings`, `review.ran`, `review.adversarial`, `risk.class`, `verify.suite`, `verify.e2e`, `verify.coverage`, `ci.pipeline`, `conformance.delta`, `conformance.living`, `spec.coverage`, `diff.shape`, `decisions.open`, `run.integrity`, `drift.stale` and `policy.humanPaths`, followed by the one informational signal, `plan.fidelity`. An informational signal SHALL be reported with its evidence and no band, and SHALL NOT enter the worst band, the clean share or the driving list. A signal whose producing capability is not yet implemented SHALL resolve unobserved with a reason naming the absent producer, and SHALL NOT be omitted or reported as green.
+The living-conformance signal (`conformance.living`) SHALL compare the handoff's counts of living requirements checked and living requirements unconfirmed with the number of entries in the living list, which the command SHALL count itself. A count of required answers carried in the handoff input SHALL be ignored, so a caller cannot shrink the denominator. The signal SHALL be:
 
-Rationale: a later change that adds a signal silently would change every verdict without anyone seeing the table grow; declaring the full table now makes the growth visible. The identifiers are the ones the receipt, the merge-request labels and the documentation of later changes name.
+- unobserved when no living list was gathered, with that reason;
+- green with the `no-graph` flag when the list was skipped because no graph exists and the change declares no capability;
+- green when the list holds no entry, because there is nothing to confirm;
+- unobserved when the list holds entries and no handoff input is given;
+- amber, marked as needing more evidence, when the handoff input carries neither living count, when any living requirement is unconfirmed, or when the number checked differs from the number the command counted;
+- green when every listed requirement was checked and none is unconfirmed.
+
+A list built from declared capabilities only, for want of a graph, SHALL add the `no-graph` flag to whichever band the answers decide. A list from which the bound left requirements out SHALL add the `requirements-omitted` flag, and its evidence SHALL state how many were asked and how many were left out. Neither flag SHALL move the band.
+
+Rationale: an unanswered list is not a pass, and the merge verdict is where an unconfirmed requirement costs something. A list the tool itself cut short is something a reader should know and nobody on the change can act on, which is what a flag is for.
+
+#### Scenario: Happy path — every living requirement confirmed is green
+
+- **GIVEN** a living list of four entries, built with a graph and cut by no bound, and a handoff input that checked four and left none unconfirmed
+- **WHEN** the merge confidence is assessed
+- **THEN** the living-conformance signal is green with no flag
+- **AND** the evidence states the number checked and the number the command counted
+
+#### Scenario: Failure — an unconfirmed living requirement is amber
+
+- **GIVEN** a living list of four entries and a handoff input that checked four and left one unconfirmed
+- **WHEN** the merge confidence is assessed
+- **THEN** the living-conformance signal is amber, marked as needing more evidence
+- **AND** the evidence carries both counts, and the verdict is `HUMAN` or worse
+
+#### Scenario: Failure — a handoff that claims a smaller denominator
+
+- **GIVEN** a living list of four entries and a handoff input that checked two, left none unconfirmed, and states that two answers were required
+- **WHEN** the merge confidence is assessed
+- **THEN** the living-conformance signal is amber, with the reason that two of four living requirements were checked
+- **AND** the stated two is ignored
+
+#### Scenario: Edge case — no graph, a graph that links nothing, and a list cut by the bound
+
+- **GIVEN** three assessments: one whose living list was skipped for want of a graph and of any declared capability; one whose list is empty because the graph links none of the changed paths; and one whose four listed requirements were all confirmed while the bound left two more out
+- **WHEN** each is assessed
+- **THEN** the first reads the living-conformance signal green with the `no-graph` flag
+- **AND** the second reads it green with no flag
+- **AND** the third reads it green with the `requirements-omitted` flag, its evidence stating four asked and two left out, and scores below the same input with nothing left out
+
+#### Scenario: Edge case — a list nobody answered, and a list nobody gathered
+
+- **GIVEN** one assessment whose living list holds three entries with no handoff input, and another with no living list at all
+- **WHEN** both are assessed
+- **THEN** each reads the living-conformance signal unobserved
+- **AND** the first's reason says the listed requirements have no answers, and the second's that the list was not gathered
+
+### Requirement: The spec-coverage signal SHALL judge the source files a change adds, and SHALL flag, never band, the ones it inherited
+
+The spec-coverage signal (`spec.coverage`) SHALL read which files the diff between the base and the head adds, edits and deletes. A file SHALL count as named when its repository-relative path, on the canonical path form, is mentioned in a living spec as the head has it or in one of the change's own delta specs. A mention SHALL be recognised by the same rule the graph applies when it links a spec to a file, so the two cannot disagree about what a mention is. Only coverable source files SHALL be judged: a test, a configuration file or a document SHALL NOT move the signal. The signal SHALL NOT read the graph, and SHALL be judged the same in a repository that has none.
+
+The signal SHALL be:
+
+- amber, marked as needing a fix, when a coverable source file the diff adds is named by no living spec and no delta spec, naming each such file; a renamed file's new path counts as added;
+- amber, marked as needing a fix, when a coverable source file that exists at the base and at the head was named at the base by a living spec the diff changed or deleted and is named by nothing at the head, naming the file and the spec;
+- green otherwise.
+
+A coverable source file the diff edits that no spec names and that lost no spec in this diff SHALL NOT move the band. It SHALL raise the `legacy-unspecced` flag, and the evidence SHALL state how many such files the diff edits and, for the whole repository at the head, how many tracked coverable source files are named out of how many exist.
+
+The signal SHALL be unobserved, with the reason, when no base is given, because an added file cannot be told from an edited one without a diff, and when the base is the head commit or a descendant of it, because that diff is empty by construction.
+
+Rationale: a repository still being specced is judged on what a change adds, not on what it inherited, and the change's own delta specs are the living specs the archive will write. The facts are computed in `lib/spec-coverage.mjs` from text alone, so a job with nothing but git reads the same band a developer's machine does.
+
+#### Scenario: Happy path — an added file its own delta spec names is green
+
+- **GIVEN** a diff that adds `lib/new.mjs` and `test/spine/new.test.mjs`, and a change whose delta spec mentions `lib/new.mjs`
+- **WHEN** the merge confidence is assessed with that base
+- **THEN** the spec-coverage signal is green with no flag
+- **AND** the evidence says the added source file is named by the change's delta specs, and the test file is not among the files judged
+
+#### Scenario: Failure — an added source file no spec names is amber
+
+- **GIVEN** a diff that adds `lib/orphan.mjs`, mentioned in no living spec and in none of the change's delta specs
+- **WHEN** the merge confidence is assessed with that base
+- **THEN** the spec-coverage signal is amber, marked as needing a fix, naming `lib/orphan.mjs`
+- **AND** the verdict is `HUMAN` or worse however clean the rest of the input is
+
+#### Scenario: Failure — a kept file loses the only spec that named it
+
+- **GIVEN** a base in which one living spec mentions `lib/kept.mjs` and no other spec does, and a diff that deletes that spec and leaves `lib/kept.mjs` in place
+- **WHEN** the merge confidence is assessed with that base
+- **THEN** the spec-coverage signal is amber, marked as needing a fix, naming `lib/kept.mjs` and the deleted spec
+- **AND** the same diff with a delta spec that mentions `lib/kept.mjs` reads green
+
+#### Scenario: Edge case — an edited file that was never named is a flag with the repository's figure
+
+- **GIVEN** a diff that edits `lib/old.mjs`, which no spec has ever mentioned, in a repository where 20 of 60 tracked coverable source files are named
+- **WHEN** the merge confidence is assessed with that base
+- **THEN** the spec-coverage signal is green with the `legacy-unspecced` flag
+- **AND** the evidence states one edited file and 20 of 60, and the score is below the same input without the edit
+
+#### Scenario: Edge case — no base, an empty diff, and no graph
+
+- **GIVEN** three assessments: one with no base reference; one whose base is the head commit; and one with a base, in a repository with no graph, whose diff adds a source file a delta spec names
+- **WHEN** each is assessed
+- **THEN** the first and second read the spec-coverage signal unobserved, each with its reason
+- **AND** the third reads it green with no flag, because the signal does not read the graph
+
+### Requirement: The command SHALL accept a run's evidence file and SHALL use it only for the commit that run made
+
+The merge-confidence command SHALL accept an option naming the evidence file a ship run's close wrote. From a usable file it SHALL take the inputs only a run observed: the adjudicated review, the final verification verdict, the handoff's counts, the coverage figures and the run record. A file SHALL be usable only when it carries the published schema identifier, names the change under assessment, records that the run made a commit, and records as that commit the head commit. When any of these does not hold, the command SHALL use nothing from the file, SHALL say on standard error which condition failed, and SHALL read each of those signals as it would with no file. An input the caller also names explicitly SHALL replace the file's entry for that input. The command SHALL NOT read the verdict, the score or any signal result recorded in the file: it SHALL always assess from the evidence.
+
+A file that cannot be read or parsed SHALL end the command as any other unreadable input does: exit 1, the reason on standard error naming the file, and no verdict on standard output.
+
+Rationale: a run's facts are evidence about the commit the run made. A later commit, or a run that made none, leaves evidence about a tree no later command can name, which is the same reason a pipeline result for another commit is unobserved.
+
+#### Scenario: Happy path — a run's evidence and a passing pipeline read MERGE
+
+- **GIVEN** a change, a base, an evidence file a clean reviewed run wrote for the head commit, and a pipeline input in which every check for the head passed
+- **WHEN** the command runs with the evidence file, the pipeline input and the base
+- **THEN** the review, verification, conformance, coverage and run-integrity signals read what the run's evidence supports
+- **AND** the verdict is `MERGE` and the command exits zero
+
+#### Scenario: Failure — evidence for another commit is not used
+
+- **GIVEN** an evidence file whose recorded commit is not the head commit
+- **WHEN** the command runs with it
+- **THEN** standard error says the file describes another commit, naming both
+- **AND** the review, verification and run-integrity signals read as they would with no file, and the verdict is `HUMAN`
+
+#### Scenario: Failure — an unreadable evidence file exits 1 with no verdict
+
+- **GIVEN** an evidence file that is not valid JSON
+- **WHEN** the command runs with it and JSON output
+- **THEN** it exits 1
+- **AND** standard output carries no verdict, and standard error names the file
+
+#### Scenario: Edge case — an explicit input wins, a run with no commit is refused, and a recorded verdict is ignored
+
+- **GIVEN** three runs of the command: one with a usable evidence file and an explicit review input that carries a surviving blocker; one with an evidence file that records the run made no commit; and one with a usable evidence file whose recorded verdict says `MERGE` while its review evidence carries a surviving blocker
+- **WHEN** each runs
+- **THEN** the first reads the blockers signal red from the explicit review
+- **AND** the second uses nothing from the file and says so on standard error
+- **AND** the third reads `BLOCK`, because the verdict recorded in the file is never read
+
+### Requirement: The assessment's input SHALL be gathered the same way for the command and for a run's close
+
+The command and a ship run's close SHALL obtain the assessment's input from one gather, so that the same repository state and the same supplied inputs yield the same signal results from either. The gather SHALL read from the repository what the repository can say for itself: the change and its artifacts, the decision ledger, the delta checklist, the living list, drift, and, with a base, the diff shape, the review policy committed at the base and the spec-coverage facts. A fact the gather could not read SHALL leave its signal unobserved or as the signal's own rule decides, never green by default, and SHALL be reported with its reason: by the command on standard error, and by a run's close in its degradation block. A missing means of reaching version control SHALL be such a fact and SHALL NOT end the caller.
+
+Rationale: two assemblies of one input drift apart, and the drift would show as two verdicts for one change. The gather is `lib/merge-evidence.mjs`.
+
+#### Scenario: Happy path — the command and the close agree on the same facts
+
+- **GIVEN** one repository state, one change, one base and the same review, verification, handoff and run-record inputs
+- **WHEN** the input is gathered for the command and for a run's close
+- **THEN** every gating signal resolves to the same band, flags and reason in both
+
+#### Scenario: Failure — a fact that could not be read is spoken and is not green
+
+- **GIVEN** a gather that cannot read the diff against the base
+- **WHEN** the merge confidence is assessed
+- **THEN** the diff-shape and spec-coverage signals are unobserved, each with the reason
+- **AND** the command names what it could not read on standard error, and a run's close names it in the degradation block
+
+#### Scenario: Edge case — no means of reaching version control
+
+- **GIVEN** a caller that supplies no way to read the diff, the tracked files or a file at the base
+- **WHEN** the input is gathered
+- **THEN** the gather completes, and each signal that needed one of them is unobserved with that reason
+- **AND** the signals that read only the working tree are unaffected
+
+### Requirement: Every registered signal SHALL appear in the output in a fixed order, and every gating signal SHALL have a producer
+
+The output SHALL carry one entry per registered signal, in a fixed order, whatever the input holds. The registered gating signals, in order, SHALL be `review.blockers`, `review.warnings`, `review.ran`, `review.adversarial`, `risk.class`, `verify.suite`, `verify.e2e`, `verify.coverage`, `ci.pipeline`, `conformance.delta`, `conformance.living`, `spec.coverage`, `diff.shape`, `decisions.open`, `run.integrity`, `drift.stale` and `policy.humanPaths`, followed by the one informational signal, `plan.fidelity`. An informational signal SHALL be reported with its evidence and no band, and SHALL NOT enter the worst band, the clean share or the driving list. Every registered gating signal SHALL be resolved from the facts its own rule names: no gating signal SHALL resolve unobserved for want of a capability that produces it, and the output SHALL NOT state that a verdict of `MERGE` is unreachable.
+
+Rationale: a signal added silently would change every verdict without anyone seeing the table grow, so the table is declared in full and pinned. The identifiers are the ones the receipt, the merge-request labels and the documentation of later changes name. With every producer in place, a signal reads unobserved only because a fact about this change is missing, which is something a reader can act on.
 
 #### Scenario: Happy path — a full input yields a band for every registered signal
 
@@ -533,11 +737,209 @@ Rationale: a later change that adds a signal silently would change every verdict
 - **WHEN** the output is checked against the registry
 - **THEN** the check fails naming the missing identifier
 
-#### Scenario: Edge case — the two signals whose producers have not landed
+#### Scenario: Edge case — a clean input reads MERGE, and nothing says it cannot
 
-- **GIVEN** any input to this version of the capability
+- **GIVEN** an input in which every gating signal has the facts it reads and each resolves green
 - **WHEN** the merge confidence is assessed
-- **THEN** the `conformance.living` and `spec.coverage` signals are each present and unobserved
-- **AND** each reason names the capability that will produce it
-- **AND** the verdict is therefore `HUMAN` or `BLOCK` for every input, never `MERGE`, which is stated in the output rather than hidden
-- **AND** the `policy.humanPaths` signal is not among them: it reads the base policy, and is unobserved only when no base is given
+- **THEN** the `conformance.living` and `spec.coverage` signals are each present and green, and neither reason names an absent producer
+- **AND** the verdict is `MERGE`
+- **AND** no reason line in the output says that `MERGE` cannot be read
+
+#### Scenario: Edge case — an input that omits the two newest facts reads them unobserved for that reason
+
+- **GIVEN** an input that carries no living list and no spec-coverage facts
+- **WHEN** the merge confidence is assessed
+- **THEN** the `conformance.living` and `spec.coverage` signals are each unobserved, with the reason that the fact was not gathered
+- **AND** neither reason names a capability that has yet to be built
+
+### Requirement: A run's evidence SHALL be used only for the diff that run reviewed
+
+In addition to the conditions under which a run's evidence file is used at all, when a base is given the command SHALL use the file only when the commit the file records as its base equals the merge base of that base and the head. When they differ, when the file records no base, or when the merge base cannot be read, the command SHALL take nothing from the file, SHALL name on standard error the diff the run reviewed and the diff under assessment, and SHALL read each of the run-supplied signals as it would with no file. The command SHALL NOT take a base from the file: with no base given, every signal that needs one SHALL stay unobserved, as it is without an evidence file, so the verdict cannot be `MERGE`.
+
+Rationale: a run reviews the diff from its start commit to the commit it made. A pull request of five commits whose last commit came from a reviewed run is not a reviewed pull request, and the evidence file ends at the same head either way. A base the file supplied would let that same file choose the diff it is judged on.
+
+#### Scenario: Happy path — one run, one pull request
+
+- **GIVEN** a branch whose only commit beyond the target branch is the one a ship run made, that run's evidence file, and `--base` naming the target branch
+- **WHEN** the command runs with `--run`
+- **THEN** the file is used, and with a passing pipeline input for the head the verdict can read `MERGE`
+
+#### Scenario: Failure — a run that reviewed only the last of several commits
+
+- **GIVEN** a branch five commits beyond the target branch, the evidence file of a run that started at the fourth, and `--base` naming the target branch
+- **WHEN** the command runs with `--run`
+- **THEN** nothing is taken from the file, and standard error names the run's base and the merge base
+- **AND** the review signals read as they would with no file, and the verdict is not `MERGE`
+
+#### Scenario: Failure — no base given never borrows the file's
+
+- **GIVEN** the same five-commit branch and evidence file, a passing pipeline input for the head, and no `--base`
+- **WHEN** the command runs with `--run`
+- **THEN** the diff shape, the spec coverage and the human-paths signals are unobserved for want of a base
+- **AND** the verdict is not `MERGE`, and with `--require-merge` the command exits 1
+
+#### Scenario: Edge case — a target branch that moved on after the run started
+
+- **GIVEN** a one-commit branch and its run's evidence file, and a target branch that gained a commit after the run started
+- **WHEN** the command runs with `--run` and `--base` naming the target branch
+- **THEN** the file is used, because the merge base is still the commit the run started on
+
+### Requirement: An observation the run record does not carry SHALL be unobserved, never a zero
+
+The run-integrity signal (`run.integrity`) SHALL read the observations a run's close records: whether the run halted, whether its trajectory is complete, and its counts of unpublished stage markers, rejected handoff reports, permission prompts, auto-mode denials and unticked tasks. A recorded degradation SHALL read amber, marked as needing a person, whatever else is absent. With no recorded degradation, a record that lacks any of those observations, or carries one as null, SHALL read unobserved and SHALL name the observations it lacks by the keys the record uses for them. Only a record that carries every observation, none of them a degradation, SHALL read green.
+
+Rationale: a host that observed no permission prompt and a host that could not observe one are different facts. Counting the second as zero is the reading this repository refuses everywhere else it records an observation.
+
+#### Scenario: Happy path — every observation present and clean
+
+- **GIVEN** a run record carrying every observation, with no halt, a complete trajectory and every count zero
+- **WHEN** the merge confidence is assessed
+- **THEN** the run-integrity signal is green
+
+#### Scenario: Failure — an empty record never reads as a clean run
+
+- **GIVEN** a run record that is an empty object
+- **WHEN** the merge confidence is assessed
+- **THEN** the run-integrity signal is unobserved and names every observation as missing
+- **AND** the verdict is not `MERGE`
+
+#### Scenario: Edge case — counts the host could not observe, and a degradation beside them
+
+- **GIVEN** two run records whose permission-prompt and auto-mode-denial counts are null: one otherwise clean, one that also records an unticked task
+- **WHEN** each is assessed
+- **THEN** the first reads the signal unobserved, naming the two counts by their record keys
+- **AND** the second reads it amber, marked as needing a person, naming the unticked task
+
+### Requirement: Changed source the coverage report does not list SHALL be flagged, and SHALL NOT pass unremarked
+
+When the coverage input records changed source files the report does not list, a coverage signal that reads green SHALL carry the flag `unmeasured-source`, and its evidence SHALL name the files and state the number of lines the diff adds in them. A coverage signal that reads any other band SHALL state the same in its evidence. The flag SHALL NOT move the band: the small-change floor, the decline rule and the patch rule SHALL each be applied as they are without it. An input that carries neither unreported field SHALL raise no flag, and the evidence SHALL say the input does not state unreported files. A repository with no coverage configured SHALL read green with the flag `no-coverage` and SHALL NOT carry `unmeasured-source`.
+
+Rationale: a report lists the files the tests loaded. A new source file no test loads is absent from it, so its lines count neither for nor against any figure, and the change that most needs the signal read "under the small-change floor" with nothing said. A report cannot tell a file no test loaded from one the project left out of coverage on purpose, so holding the band would give some repositories an amber nothing can lift; a flag is what "green, but you should know" is for.
+
+#### Scenario: Happy path — every changed source file is in the report
+
+- **GIVEN** a coverage input whose unreported list is empty
+- **WHEN** the merge confidence is assessed
+- **THEN** the coverage signal carries no `unmeasured-source` flag
+
+#### Scenario: Failure — a new, unloaded source file is flagged where it used to pass unremarked
+
+- **GIVEN** a coverage input reporting zero measured changed lines and one unreported source file with three hundred added lines
+- **WHEN** the merge confidence is assessed
+- **THEN** the coverage signal is green under the small-change floor and carries the flag `unmeasured-source`
+- **AND** its evidence names the file and the three hundred lines
+- **AND** the score is lower than the same input scores with an empty unreported list
+
+#### Scenario: Edge case — a decline with unreported source, an input from an older producer, and no coverage configured
+
+- **GIVEN** a coverage input whose head total fell beyond the tolerance and which lists one unreported source file; an input that carries neither unreported field; and an input saying coverage is not configured
+- **WHEN** each is assessed
+- **THEN** the first reads the coverage signal amber, and its evidence names the unreported file
+- **AND** the second raises no `unmeasured-source` flag, and its evidence says the input does not state unreported files
+- **AND** the third reads green with `no-coverage` and without `unmeasured-source`
+
+### Requirement: The command SHALL name the commit and the base it assessed, and SHALL print the labels for its verdict
+
+The command's JSON output SHALL carry `head`, an object holding the assessed commit as `sha`, or null when the head could not be read; `base`, an object holding the reference given as `ref` and the merge base the diff was taken from as `sha`, with `sha` null when the reference resolves and its merge base cannot be read, or null when no base was assessed; and `labels`, an object holding `verdict` and `score`, each an object with a `name`, a `color` and a `description`, together with `verdictNames`, the three verdict label names, and `scorePrefix`. The verdict label SHALL be `interlock/merge` for `MERGE`, `interlock/human-review` for `HUMAN` and `interlock/blocked` for `BLOCK`. The score label SHALL be `interlock/score-` followed by the integer score with no padding. The label names SHALL be defined in one place in `lib/merge-confidence.mjs` and SHALL NOT be restated as literals by the command or the skill. The text output SHALL print the two label names on one line.
+
+Rationale: a label name composed in a skill is a second definition of the verdict's vocabulary; the documentation, the skill and the platform recipes all have to agree with one list.
+
+#### Scenario: Happy path — a human verdict prints its two labels
+
+- **GIVEN** an assessment that reads `HUMAN` with a score of 72 for a readable head commit and a given base
+- **WHEN** the command prints JSON
+- **THEN** `labels.verdict.name` is `interlock/human-review` and `labels.score.name` is `interlock/score-72`
+- **AND** `labels.verdictNames` lists the three verdict names and `labels.scorePrefix` is `interlock/score-`
+- **AND** `head.sha` is the head commit, `base.ref` is the reference given and `base.sha` is the merge base
+
+#### Scenario: Failure — an unreadable head is null, not a guess
+
+- **GIVEN** a directory that is not a repository
+- **WHEN** the command prints JSON
+- **THEN** `head` is null and `base` is null
+- **AND** the labels are still printed for the verdict, which is not `MERGE`
+
+#### Scenario: Edge case — the score is written as the integer it is
+
+- **GIVEN** two assessments, one whose score has three digits and one whose score has fewer
+- **WHEN** the labels are printed
+- **THEN** each score label name is the prefix followed by the decimal digits of that assessment's score, with no leading zero
+
+### Requirement: With `--markdown` the command SHALL print the description block and nothing else
+
+With `--markdown`, standard output SHALL be one Markdown block and nothing else: a `## Merge confidence` heading; the verdict, the score and the band range on one line; the commit assessed and the base; one group per kind of driving signal that has an entry, in the order needs a fix, needs a person, needs more evidence; the flags; the checks excluded from the pipeline input, when any; the two labels; and the full signal table inside a collapsed section. The block SHALL be rendered by `lib/merge-confidence.mjs` from the assessment and from the head, the base and the excluded names the command holds. Every reason and evidence line, and every excluded name, SHALL be rendered as an inline code span, with any backtick in it replaced, line breaks folded, and its length bounded, so that no name a platform, a review or a ledger supplied can render as a mention, a link or markup. The exit status SHALL be what it is without the flag. `--markdown` together with `--json` SHALL exit 1 with a usage error and nothing on standard output.
+
+Rationale: a block a model renders from JSON is a block a model can mis-render. Printed by the command, the description shows what the command computed. A check is named by the workflow that defines it and a finding by the reviewer that wrote it; posted as plain Markdown under the account of whoever ran the skill, either could mention a person or close the collapsed section.
+
+#### Scenario: Happy path — a human verdict's block
+
+- **GIVEN** an assessment reading `HUMAN` with one signal needing a person, two needing more evidence and one flag
+- **WHEN** the command runs with `--markdown`
+- **THEN** standard output starts with `## Merge confidence`, carries the verdict line, the commit and the base, a group for each of the two kinds, the flag, the two labels and one table row per registered signal
+- **AND** it carries no group for needs a fix
+
+#### Scenario: Failure — a name that tries to be markup stays text
+
+- **GIVEN** a pipeline input with a failed check named with an `@` mention, a link and a closing `details` tag, and a backtick; and another whose check name is many times longer than a line
+- **WHEN** the command runs with `--markdown` for each
+- **THEN** in the first the name appears only inside an inline code span, with the backtick replaced
+- **AND** with its code spans removed, the block holds one opening and one closing `details` tag
+- **AND** in the second the name is cut short and ends with an ellipsis
+
+#### Scenario: Failure — both output flags is a usage error
+
+- **GIVEN** the command run with `--markdown` and `--json`
+- **WHEN** it starts
+- **THEN** it exits 1, standard error names the two flags, and standard output is empty
+
+#### Scenario: Edge case — a blocking verdict still prints its block
+
+- **GIVEN** an assessment reading `BLOCK`
+- **WHEN** the command runs with `--markdown`
+- **THEN** the block is printed and the exit status is 1
+
+### Requirement: Every registered signal and every flag SHALL have a row in the delivery documentation
+
+`docs/15-merge-confidence.md` SHALL carry, under a heading `## The signals`, one table row per registered signal, saying what the signal reads and what moves it to each band, and under a heading `## The flags`, one table row per flag. The first cell of each row SHALL be the identifier in backticks. The set of signal identifiers under the first heading SHALL equal the registry's, and the set of flags under the second SHALL equal the published flag list; the suite SHALL fail, naming the identifier, when either differs. An informational signal SHALL be marked as not gating.
+
+#### Scenario: Happy path — the tables and the registry agree
+
+- **GIVEN** the shipped page and the registry
+- **WHEN** the suite compares the two sets of signal identifiers and the two sets of flags
+- **THEN** each pair is equal
+
+#### Scenario: Failure — a signal registered without a row fails the suite
+
+- **GIVEN** a registry that gained a signal the page does not list
+- **WHEN** the suite runs
+- **THEN** it fails naming the signal
+
+#### Scenario: Edge case — the informational signal is listed and marked
+
+- **GIVEN** the registry's one informational signal
+- **WHEN** a reader finds its row
+- **THEN** the row says it is reported and never banded
+
+### Requirement: A file at the repository root SHALL be named by its `./` form, and a bare file name SHALL NOT be read as a path mention
+
+The rule that recognises a path mention in spec text (`lib/spec-text.mjs`) SHALL read a path as a mention only when it carries a directory and a file extension. A file at the repository root that carries an extension SHALL therefore be named as `./<file>`, which SHALL be read as the same path. A bare file name SHALL NOT name a file.
+
+Rationale: a bare file name in a spec is usually an example or a file elsewhere in the tree. Reading it as a mention would link specs to every root file that happens to share the name.
+
+#### Scenario: Happy path — a root file named by its `./` form
+
+- **GIVEN** a change that adds a source file with an extension at the repository root and a delta spec that mentions it as `./<file>` in backticks
+- **WHEN** the merge confidence is assessed with a base
+- **THEN** the spec-coverage signal reads the file as named
+
+#### Scenario: Failure — a bare file name names nothing
+
+- **GIVEN** the same change with the delta spec mentioning only the bare file name in backticks
+- **WHEN** the merge confidence is assessed with a base
+- **THEN** the spec-coverage signal is amber and names the file as added and named by no spec
+
+#### Scenario: Edge case — a path with a directory is unaffected
+
+- **GIVEN** a spec that mentions a source file two directories deep by its repository-relative path in backticks
+- **WHEN** the mention rule reads the spec
+- **THEN** the file is named, with or without a leading `./`

@@ -116,6 +116,20 @@ mirroring the default filesystem:
   folding case would drop files the filesystem treats as distinct.
 - A path that cannot be placed inside the repo (absolute, escaping the root)
   excludes nothing and is reported.
+- **The lists hold paths and directory prefixes, never patterns.** An item that
+  holds `*` or `?`, such as `src/**` or `docs/*.md`, is **reported as a problem
+  and added to neither list**. The problem names the section it was found in and
+  the item, and says that only a path or a directory prefix is read. Read as a
+  literal path a pattern matches no file, so `- src/**` under `## Always Human
+  Review` used to list nothing and say nothing, and every path under it read as
+  not needing a person. List the directory instead: `src/` covers every file
+  under it. Square brackets and braces are characters a real path may hold (a
+  route directory such as `app/[id]/`), so they are read as part of the path.
+  At the merge verdict a pattern in the always-human-review section committed
+  at the base reads `policy.humanPaths` amber, needing a person, like any other
+  problem in that section; the same item under `## Do Not Report` is reported
+  wherever policy problems are and does not move that signal
+  ([15](15-merge-confidence.md#always-human-review-paths-and-why-they-are-read-from-the-base)).
 
 ## Try it
 

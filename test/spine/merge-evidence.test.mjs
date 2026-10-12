@@ -613,3 +613,94 @@ test('reading a file does not mutate it', () => {
   readRunEvidence(file, { change: CHANGE, headSha: HEAD })
   assert.equal(JSON.stringify(file), before)
 })
+
+// --- the diff a run's evidence covers (design D8 of label-and-harden-the-merge-verdict) ---
+//
+//   readRunEvidence(file, { change, headSha, base })
+//     base  undefined          no --base was given: nothing changes
+//           { sha }            the merge base of --base and the head
+//           { unreadable: true }  git gave no merge base (a shallow clone)
+//
+// The file's own `base` is the commit the run started on. With a base given the
+// file is used only when the two are the same commit, and the condition is
+// applied after the four that already hold.
+
+const OTHER_BASE = 'feed0000000000000000000000000000000000cc'
+
+test('with no base given, every existing case reads as it did before the condition existed', () => {
+  const cases = [
+    built(),
+    built({ base: null }),
+    built({ base: OTHER_BASE }),
+    { ...built(), schema: 'interlock.merge-evidence/2' },
+    built({ change: 'some-other-change' }),
+    built({ committed: false }),
+    built({ headSha: 'cafe000000000000000000000000000000000000' })
+  ]
+  for (const file of cases) {
+    const plain = readRunEvidence(file, { change: CHANGE, headSha: HEAD })
+    assert.deepEqual(readRunEvidence(file, { change: CHANGE, headSha: HEAD, base: undefined }), plain)
+  }
+  // A file for another base is still usable when nobody named a base to judge it against.
+  assert.equal(readRunEvidence(built({ base: OTHER_BASE }), { change: CHANGE, headSha: HEAD }).usable, true)
+  assert.equal(readRunEvidence(built({ base: null }), { change: CHANGE, headSha: HEAD }).usable, true)
+})
+
+test('a file whose base is the merge base is usable, and supplies what it supplied before', () => {
+  const read = readRunEvidence(built(), { change: CHANGE, headSha: HEAD, base: { sha: BASE } })
+  assert.equal(read.usable, true)
+  assert.deepEqual(read.evidence, EVIDENCE)
+})
+
+test('a file whose base is another commit is refused whole, and the reason carries both commits', () => {
+  const read = readRunEvidence(built({ base: OTHER_BASE }), { change: CHANGE, headSha: HEAD, base: { sha: BASE } })
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence, 'nothing is taken from a refused file')
+  assert.ok(read.reason.includes(OTHER_BASE), read.reason)
+  assert.ok(read.reason.includes(BASE), read.reason)
+})
+
+test('a file that records no base is refused when a base is given', () => {
+  for (const file of [built({ base: null }), without(built(), 'base')]) {
+    const read = readRunEvidence(file, { change: CHANGE, headSha: HEAD, base: { sha: BASE } })
+    assert.equal(read.usable, false)
+    assert.ok(!read.evidence)
+    assert.ok(read.reason.includes(BASE), read.reason)
+  }
+})
+
+test('a merge base git could not give refuses the file, and the reason names fetch depth', () => {
+  const read = readRunEvidence(built(), { change: CHANGE, headSha: HEAD, base: { unreadable: true } })
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence)
+  assert.ok(read.reason.includes('fetch depth'), read.reason)
+  // A base object that names no commit is not a match for anything either.
+  for (const empty of [{}, { sha: '' }, { sha: null }]) {
+    assert.equal(readRunEvidence(built(), { change: CHANGE, headSha: HEAD, base: empty }).usable, false, JSON.stringify(empty))
+  }
+})
+
+test('the four existing conditions are checked first: a file that fails one and has another base reports the existing reason', () => {
+  const against = { change: CHANGE, headSha: HEAD }
+  const failing = [
+    { ...built({ base: OTHER_BASE }), schema: 'interlock.merge-evidence/2' },
+    built({ base: OTHER_BASE, change: 'some-other-change' }),
+    built({ base: OTHER_BASE, committed: false }),
+    built({ base: OTHER_BASE, headSha: 'cafe000000000000000000000000000000000000' })
+  ]
+  for (const file of failing) {
+    const before = readRunEvidence(file, against)
+    assert.equal(before.usable, false)
+    for (const base of [{ sha: BASE }, { unreadable: true }]) {
+      assert.deepEqual(readRunEvidence(file, { ...against, base }), before)
+    }
+  }
+})
+
+test('the base condition does not mutate the file or the base it is handed', () => {
+  const file = built({ base: OTHER_BASE })
+  const base = { sha: BASE }
+  const before = JSON.stringify([file, base])
+  readRunEvidence(file, { change: CHANGE, headSha: HEAD, base })
+  assert.equal(JSON.stringify([file, base]), before)
+})

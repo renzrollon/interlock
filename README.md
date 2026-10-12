@@ -56,7 +56,7 @@ interlock doctor          # preflight: prints the exact allowlist an unattended 
 | `/interlock:spec "<idea>"` | Idea → explored, reviewed, implementation-ready change. Asks you what the repo cannot answer, then stops | skill |
 | **You read the spec** | The checkpoint. [Ten minutes, with a checklist](docs/02-the-checkpoint.md) | you |
 | `/interlock:ship` | Reviewed change → waves (parallel batches of file-disjoint tasks) → your test suite → commit. No review by default; `--strict` adds adversarial review and handoff artifacts. `--solo` / `--waves` force the shape | **workflow** |
-| `/interlock:mr` | Change → merge request | skill |
+| `/interlock:mr` | Change → merge request, with the CLI's merge-confidence verdict in the description and as labels. It never merges | skill |
 
 <p align="center">
   <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
@@ -77,7 +77,7 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 
 - **Thresholds are code.** Wave order, the parallel-agent cap, the remediation round budget, the review quality band: each is an `interlock` subcommand with an exit code, not markdown a model can talk itself past. [Every subcommand →](docs/07-cli-and-configuration.md)
 - **Parallel agents cannot overwrite each other.** The planner separates tasks that would touch the same file; with `--isolate-waves`, every parallel task runs in its own git worktree and a collision is a named halt, never a lost write.
-- **Reviews you can actually read.** On `--strict`, up to six review dimensions run in parallel, then two skeptics attack every finding. A dismissal must cite a `file:line` in the diff or it dismisses nothing. You see only what survived, and how many did not. [How and why →](docs/06-why-it-works.md)
+- **Reviews you can actually read.** On `--strict`, up to seven review dimensions run in parallel (the seventh, `domain`, when the change touches a capability that has a living spec), then two skeptics attack every finding. A dismissal must cite a `file:line` in the diff or it dismisses nothing. You see only what survived, and how many did not. [How and why →](docs/06-why-it-works.md)
 - **A guard, not a request.** During remediation an agent cannot edit a test, tick a task box, or commit outside the commit stage. They are `PreToolUse` hooks, inert outside a run. [The guards →](docs/13-the-guards.md)
 - **Specs that don't quietly rot.** `interlock drift` reports unarchived changes, specs citing missing files, and code no spec describes. Each at its own confidence level, and it never blocks. [OpenSpec vs Interlock →](docs/03-openspec-vs-interlock.md)
 - **Degradation is spoken, never silent.** A missing graph, an overridden model, a failed push, a host that cannot report tokens: each is a named banner in the summary. [When it stops →](docs/04-when-it-stops.md)
@@ -138,7 +138,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ev
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change and what it cannot |
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
-| [15 — Merge confidence](docs/15-merge-confidence.md) | Recording a coverage baseline, computing the base on demand, reading the policy from the base, reading a spec audit |
+| [15 — Merge confidence](docs/15-merge-confidence.md) | What the merge verdict reads, signal by signal and flag by flag; how it reaches a merge request (the pipeline input, the description block, the labels, three platform recipes and how far a label can be trusted); recording a coverage baseline, computing the base on demand, reading the policy from the base, reading a spec audit |
 
 ## Development
 

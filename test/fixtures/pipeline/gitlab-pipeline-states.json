@@ -1,0 +1,83 @@
+{
+  "id": 9001,
+  "sha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "ref": "feature/catalogue",
+  "status": "running",
+  "jobs": [
+    {
+      "name": "job-a",
+      "status": "success",
+      "allow_failure": false
+    },
+    {
+      "name": "job-b",
+      "status": "failed",
+      "allow_failure": false
+    },
+    {
+      "name": "job-c",
+      "status": "skipped",
+      "allow_failure": false
+    },
+    {
+      "name": "job-d",
+      "status": "manual",
+      "allow_failure": true
+    },
+    {
+      "name": "job-e",
+      "status": "manual",
+      "allow_failure": false
+    },
+    {
+      "name": "job-f",
+      "status": "created",
+      "allow_failure": false
+    },
+    {
+      "name": "job-g",
+      "status": "pending",
+      "allow_failure": false
+    },
+    {
+      "name": "job-h",
+      "status": "preparing",
+      "allow_failure": false
+    },
+    {
+      "name": "job-i",
+      "status": "running",
+      "allow_failure": false
+    },
+    {
+      "name": "job-j",
+      "status": "scheduled",
+      "allow_failure": false
+    },
+    {
+      "name": "job-k",
+      "status": "waiting_for_resource",
+      "allow_failure": false
+    },
+    {
+      "name": "job-l",
+      "status": "waiting_for_callback",
+      "allow_failure": false
+    },
+    {
+      "name": "job-m",
+      "status": "canceled",
+      "allow_failure": false
+    },
+    {
+      "name": "job-n",
+      "status": "canceling",
+      "allow_failure": false
+    },
+    {
+      "name": "job-o",
+      "status": "something_new",
+      "allow_failure": false
+    }
+  ]
+}

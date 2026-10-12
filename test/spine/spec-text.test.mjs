@@ -353,3 +353,26 @@ test('specMentionedPaths finds the paths in a whole spec', () => {
   const withPath = LIVING + '\nImplemented in `lib/cache.mjs`.\n'
   assert.deepEqual(mentioned(withPath), ['lib/cache.mjs'])
 })
+
+// --- a file at the repository root (label-and-harden-the-merge-verdict, design D19) ---
+//
+// Behaviour that already holds, pinned because docs/15 states it and the
+// spec-coverage signal rests on it: a mention needs a directory and an
+// extension, so a root-level file is named by its `./` form.
+
+test('a bare file name in backticks is not a mention', () => {
+  assert.deepEqual(mentioned('The entry point is `index.js`.'), [])
+  assert.deepEqual(mentioned('Read `package.json`, then `server.mjs`.'), [])
+  assert.deepEqual(mentioned('index.js starts the server.'), [])
+})
+
+test('./index.js names the root-level file index.js', () => {
+  assert.deepEqual(mentioned('The entry point is `./index.js`.'), ['index.js'])
+  assert.deepEqual(mentioned('Started by ./server.mjs today.'), ['server.mjs'])
+})
+
+test('a path with a directory is named with or without a leading ./', () => {
+  assert.deepEqual(mentioned('`src/app/index.js`'), ['src/app/index.js'])
+  assert.deepEqual(mentioned('`./src/app/index.js`'), ['src/app/index.js'])
+  assert.deepEqual(mentioned('`src/app/index.js` and `./src/app/index.js`'), ['src/app/index.js'])
+})

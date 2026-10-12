@@ -54,10 +54,24 @@ capability your run does not use. They do not affect the exit status.
 | The run may proceed / the recorded result did not halt it | `interlock wave-state next` and `record-*` — exit 1 |
 | The run's trajectory can be reconstructed later | `interlock run-log check` — exit 1 on a gap, a missing start, or a missing close |
 
-Two commands deliberately never exit non-zero: `interlock drift` and
-`interlock conformance` report and ask, and `interlock report` is barred from a
-non-zero status as policy, not as convenience — a non-zero exit is exactly the
-comparison it may not make.
+### Asked or reported, never decided
+
+Some commands deliberately never exit non-zero on what they find. They ask a
+question or report a figure, and no step of a run branches on their status:
+
+| Asked or reported | By |
+|---|---|
+| Which of the change's own delta scenarios the handoff must answer for | `interlock conformance` — the questions, never the verdicts; exit 0 |
+| Which living requirements already in force the handoff must answer for | `interlock conformance --living` — the list the `domain` reviewer is judged against, from the same base; exit 0. The answers are read by the merge verdict's `conformance.living` signal and never halt a run |
+| Which completed changes were never archived, and which specs cite files that are gone | `interlock drift` — exit 0 |
+| How much contract each living capability carries | `interlock spec-audit` — exit 0 whenever it completes |
+| Indicators over the recorded corpora | `interlock report` — barred from a non-zero status as policy, not as convenience: a non-zero exit is exactly the comparison it may not make |
+
+A run's close also states a merge-confidence verdict, and that too is reported
+and never enforced: the verdict does not change the close's exit code, and
+nothing in a run consults it. Run by hand, `interlock merge-confidence` is a
+deciding command like the ones above: exit 1 on `BLOCK`, or on anything but
+`MERGE` with `--require-merge` ([15](15-merge-confidence.md)).
 
 **Your own test suite is not on this list, and that is the point.** Interlock
 decides whether your suite ran, whether it was green, and whether a test was

@@ -83,7 +83,14 @@ import {
   DEFAULT_NTFY_URL
 } from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
-import { applyToleranceBand, evaluateGate, formatGate, TOLERANCE_BAND } from '../lib/findings.mjs'
+import {
+  applyToleranceBand,
+  carriesFindingsList,
+  evaluateGate,
+  formatGate,
+  NO_FINDINGS_LIST,
+  TOLERANCE_BAND
+} from '../lib/findings.mjs'
 import {
   inspectChange,
   isCoverableSource,
@@ -139,13 +146,20 @@ import {
   coverageTotals,
   parseAddedLines,
   parseLcov,
+  unreportedChangedSource,
   validateBaseline
 } from '../lib/coverage.mjs'
 import { capabilityOf, parseSpec } from '../lib/spec-text.mjs'
 import { assembleDomainContext, selectDomainCapabilities } from '../lib/prompts/domain-context.mjs'
 import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
-import { assessMergeConfidence, formatMergeConfidence } from '../lib/merge-confidence.mjs'
+import { assessMergeConfidence, formatMergeConfidence, formatMergeConfidenceMarkdown } from '../lib/merge-confidence.mjs'
+import {
+  pendingFromGitlabMr,
+  pipelineFromGithub,
+  pipelineFromGitlab,
+  validatePipelineInput
+} from '../lib/pipeline.mjs'
 import { gatherLivingList, gatherMergeEvidence, readRunEvidence } from '../lib/merge-evidence.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 import {
@@ -221,6 +235,16 @@ Usage:
                   [--coverage <f>]          "merge-confidence:" below)
                   [--run <f>]
                   [--base <ref>] [--require-merge]
+                  [--markdown]
+  interlock pipeline --github <file|->      Turn a platform's own check output
+                  [--required <name>]...    into the pipeline input "merge-
+                  [--exclude <name>]...     confidence --pipeline" reads. Offline:
+                  [--out <file>]            reads the document it is handed, never
+  interlock pipeline --gitlab-mr <file|->   gh, glab or the network (see
+                  --out <file>              "pipeline:" below)
+  interlock pipeline --gitlab <file|->
+                  --mr <file>
+                  [--exclude <name>]... [--out <file>]
   interlock report [--since <iso>]          Indicators over the three recorded
                   [--change <name>]         corpora — outcome records, run
                                             trajectories, review metrics. Every
@@ -409,8 +433,16 @@ Exit codes:
                              needs_human or invalid rows remain
     ready                    the change may not skip the human checkpoint
     merge-confidence         the verdict is BLOCK, or with --require-merge
-                             anything but MERGE; an unreadable input also
-                             exits 1, with no verdict on stdout
+                             anything but MERGE; an unreadable input, a
+                             --pipeline file that is not well-formed, or
+                             --markdown with --json also exits 1, with no
+                             verdict on stdout
+    pipeline                 the document is not JSON or not the one the
+                             platform flag expects, --out or --mr is missing
+                             where required, the pipeline is not the merge
+                             request's head pipeline, or a branch pipeline ran
+                             on another commit; nothing is printed on stdout and
+                             an earlier file at --out is removed
     verify baseline          the report cannot be read or has no project total;
                              the previous baseline is left in place
     verify coverage          --base is missing or names no commit, the report is
@@ -561,6 +593,55 @@ conformance:
   requirement is satisfied. Without --living the output is what it was before the
   option existed. Always exits 0.
 
+pipeline:
+  --github <file|->      The document "gh pr view <n> --json
+                         headRefOid,statusCheckRollup" prints: the head commit
+                         and its checks in one response. A document with no
+                         statusCheckRollup is refused; an empty one is "no
+                         checks". A check run that is not completed reads
+                         pending; SUCCESS reads pass; NEUTRAL and SKIPPED read
+                         skipped; FAILURE, TIMED_OUT, ACTION_REQUIRED and
+                         STARTUP_FAILURE read fail; CANCELLED, STALE and anything
+                         else read pending. A commit status reads pass for
+                         SUCCESS, fail for FAILURE and ERROR, pending otherwise.
+                         A re-run is read from the run that started last.
+  --required <name>      With --github: mark the check of that exact name as
+                         required. Repeatable, and every name is kept. A name
+                         that matches no reported check becomes a pending,
+                         required entry. Absent, every check is not required and
+                         stderr says the required set was not given.
+  --gitlab-mr <file|->   The document "glab mr view <iid> --output json" prints.
+                         Needs --out. With no head pipeline it writes an input
+                         with the merge request's head commit and no checks;
+                         with one it writes a pending record { sha, headPipeline }
+                         for the next step, which "merge-confidence --pipeline"
+                         refuses. A document with no sha or no head_pipeline key
+                         is refused.
+  --gitlab <file|->      The document "glab ci get --merge-request <iid> --output
+                         json" prints. Needs --mr. A job reads pass for success,
+                         fail for failed, skipped for skipped and for a manual
+                         job allowed to fail, pending otherwise; it is required
+                         when its allow_failure is false. The input's commit is
+                         the record's, never typed: a pipeline that is not the
+                         record's, or a branch pipeline for another commit, is
+                         refused.
+  --mr <file>            With --gitlab: the pending record --gitlab-mr wrote. May
+                         be the same path as --out.
+  --exclude <name>       With --github or --gitlab: leave the check of that exact
+                         name out and record it under "excluded". Repeatable. No
+                         character is special: a name that matches nothing is
+                         said on stderr and not recorded. For the check whose own
+                         result waits on the verdict.
+  --out <file>           Write the input (or the pending record) here, creating
+                         the directories above it. When no input is produced, an
+                         earlier file at this path is removed, and stderr says so.
+  --json                 Print the input (or the pending record) instead of the
+                         one-line summary.
+  Prints "pipeline <sha>: <n> check(s) (… pass, … fail, … pending, … skipped);
+  required: …; excluded: …", or "pending <sha>: head pipeline <id>". The input
+  carries names and states only. The GitLab reader is written from GitLab's and
+  glab's documentation; see docs/15-merge-confidence.md.
+
 merge-confidence:
   [change]               The change under assessment (or --change <name>); with
                          none named, the single active change. Its artifacts,
@@ -580,23 +661,36 @@ merge-confidence:
                          for the living list. A verdictsRequired or a
                          requirementsRequired in the file is ignored: each
                          denominator is the command's own count.
-  --pipeline <file>      { sha, checks: [{ name, state, required }] } for the
-                         head commit, state pass | fail | pending | skipped.
-                         Produced by the mr skill's platform recipes (E3).
+  --pipeline <file>      { sha, checks: [{ name, state, required }], excluded }
+                         for the head commit, state pass | fail | pending |
+                         skipped. Produced by "interlock pipeline" from the
+                         platform's own output. A file that is not well-formed
+                         (no checks list, an entry in another state, a pending
+                         GitLab record) exits 1 naming the fault, with nothing
+                         on stdout: an absent list is never read as no checks.
   --coverage <file>      { configured, headTotalPct, baseTotalPct, baseSha,
-                         baseIsAncestor, diffPct, changedLines }. Produced by
-                         "interlock verify coverage".
+                         baseIsAncestor, diffPct, changedLines, unreportedFiles,
+                         unreportedAddedLines }. Produced by "interlock verify
+                         coverage".
   --run <file>           The evidence file a ship run's close writes
                          (.claude/ship/merge-confidence.json). Supplies what only
                          the run observed: the adjudicated review, the final
                          verification verdict, the handoff counts, the coverage
                          figures and the run record. Used only when it carries
                          the published schema, names this change, says the run
-                         committed and records HEAD as that commit; otherwise
-                         nothing is taken from it and stderr says which of those
-                         failed. An explicit --review, --verify, --handoff or
-                         --coverage replaces its entry. The verdict recorded in
-                         the file is never read: the command always reassesses.
+                         committed and records HEAD as that commit; and, with
+                         --base, only when the base it records is the merge base
+                         of --base and HEAD, because a run's evidence covers the
+                         diff that run reviewed and no other. Otherwise nothing
+                         is taken from it and stderr says which of those failed.
+                         Pass it with --base, as in
+                           --base origin/main --run .claude/ship/merge-confidence.json
+                         No base is taken from the file: without --base the
+                         signals that need one stay unobserved, so the verdict
+                         cannot be MERGE. An explicit --review, --verify,
+                         --handoff or --coverage replaces its entry. The verdict
+                         recorded in the file is never read: the command always
+                         reassesses.
   --base <ref>           Diff against this ref (git diff --numstat
                          <ref>...HEAD) for the diff shape. Every path git
                          reports is assessed too, whether or not --changed
@@ -609,6 +703,20 @@ merge-confidence:
                          file from an edited one against. A ref that names no
                          commit exits 1 with nothing on stdout.
   --require-merge        Exit 1 unless the verdict is MERGE.
+  --markdown             Print the description block for a merge request and
+                         nothing else: the verdict line, the commit and the base,
+                         what is driving by kind, the flags, the checks excluded
+                         from the pipeline input, the two labels, and every
+                         signal in a collapsed table. Each quoted reason, evidence
+                         line and name is an inline code span, so nothing a
+                         platform, a review or a ledger supplied renders as a
+                         mention, a link or markup. The exit status is what it is
+                         without the flag. With --json it exits 1.
+  --json carries "head" ({ sha }, or null when the head cannot be read), "base"
+  ({ ref, sha }: the reference given and the merge base the diff was taken from,
+  sha null when it cannot be read; null with no --base) and "labels" (the verdict
+  and score labels for a merge request, each { name, color, description }, with
+  verdictNames and scorePrefix). The text form prints the two label names.
   Every input not given reads unobserved with that reason, and unobserved ranks
   as amber. The command never calls gh, glab or the network. Every gating signal
   has a producer, so a clean, reviewed, verified change reads MERGE once the
@@ -945,10 +1053,15 @@ verify coverage:
                          installed dependencies; a shallow clone may lack the
                          baseline's commit, which reads as not an ancestor.
   Prints { configured, headTotalPct, baseTotalPct, baseSha, baseIsAncestor,
-  diffPct, changedLines } — figures only, no band — for "merge-confidence
-  --coverage". No coverage command declared prints configured: false. A declared
-  report that is missing, unreadable or not lcov exits 1 with nothing on stdout.
-  Runs no coverage command unless --compute-base asks it to.
+  diffPct, changedLines, unreportedFiles, unreportedAddedLines } — figures only,
+  no band — for "merge-confidence --coverage". unreportedFiles lists the changed
+  source files the report holds no record for (a file the diff adds a line to
+  that the project counts as coverable source: never a test, a configuration
+  file or a document), and unreportedAddedLines the lines the diff adds in them;
+  the changed-line figure still counts only lines the report instruments. No
+  coverage command declared prints configured: false, with both of those null.
+  A declared report that is missing, unreadable or not lcov exits 1 with nothing
+  on stdout. Runs no coverage command unless --compute-base asks it to.
 
 verify exec:
   --kind <k>             The planned step this runs, e.g. typecheck/unit/lint (required)
@@ -1096,7 +1209,10 @@ const BOOLEAN_FLAGS = new Set([
   'compute-base',
   // `conformance --living`: add the living requirements to the checklist. A
   // flag, so a change name may follow it.
-  'living'
+  'living',
+  // `merge-confidence --markdown`: print the description block. A flag, so it
+  // never swallows a change name that follows it.
+  'markdown'
   // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
   // NOT here. `interlock ready --review <findings.json>` takes a value under
   // the same spelling, and making the name boolean everywhere would silently
@@ -1127,12 +1243,14 @@ function parseArgs(argv) {
       out.flags.changed = vals
       continue
     }
-    if (key === 'mode') {
+    if (key === 'mode' || key === 'required' || key === 'exclude') {
       // Accumulated rather than last-wins: `--mode solo --mode waves` must reach
       // `decideMode` as an array so it is rejected as contradictory, not silently
       // resolved to the last flag. A single `--mode solo` stays a scalar string.
+      // `pipeline --required` and `--exclude` accumulate for the opposite reason:
+      // every name given is kept, and a last-wins parse would drop all but one.
       const val = next === undefined || next.startsWith('--') ? true : argv[++i]
-      out.flags.mode = out.flags.mode === undefined ? val : [].concat(out.flags.mode, val)
+      out.flags[key] = out.flags[key] === undefined ? val : [].concat(out.flags[key], val)
       continue
     }
     if (next === undefined || next.startsWith('--')) {
@@ -1214,6 +1332,20 @@ function readInput(value, what) {
   } catch (err) {
     die(`${what} is not valid JSON: ${err.message}`)
   }
+}
+
+/**
+ * A findings input, for `gate`, `review` and `remediate`: read as `readInput`
+ * reads, then refused when it carries no findings list (design D10 of
+ * label-and-harden-the-merge-verdict). The shape reader returns nothing for an
+ * object it does not recognise, and each of those commands used to read that as
+ * a clean review. Exit 1, the reason on stderr, nothing on stdout — as for a
+ * file that cannot be read.
+ */
+function readFindingsInput(value, what = '--findings') {
+  const input = readInput(value, what)
+  if (!carriesFindingsList(input)) die(`${what} ${value === '-' ? '(stdin)' : value}: ${NO_FINDINGS_LIST}`)
+  return input
 }
 
 // Like `readInput`, but for a payload that is bytes to spill rather than JSON
@@ -2589,7 +2721,11 @@ function coverageInputFor(root, base, flags = {}) {
     } catch (err) {
       die(`--base ${base}: git could not diff it against HEAD: ${err.message}`)
     }
-    const changed = changedLineCoverage(head.records, parseAddedLines(diffText))
+    const added = parseAddedLines(diffText)
+    const changed = changedLineCoverage(head.records, added)
+    // The changed source the report holds no record for: named, never judged
+    // (design D13 of label-and-harden-the-merge-verdict).
+    const unreported = unreportedChangedSource(head.records, added)
 
     let baseline = readCoverageBaseline(root, flags)
     let baseIsAncestor = baseline ? isAncestorOfHead(root, baseline.sha) : null
@@ -2618,7 +2754,7 @@ function coverageInputFor(root, base, flags = {}) {
       baseIsAncestor = isAncestorOfHead(root, computed.sha)
     }
 
-    const input = buildCoverageInput({ configured: true, head: head.totals, baseline, baseIsAncestor, changed })
+    const input = buildCoverageInput({ configured: true, head: head.totals, baseline, baseIsAncestor, changed, unreported })
     const fmt = v => (v === null ? 'unobserved' : v)
     return {
       input,
@@ -2627,6 +2763,9 @@ function coverageInputFor(root, base, flags = {}) {
         `  head total: ${fmt(input.headTotalPct)}%`,
         `  base total: ${fmt(input.baseTotalPct)}%${input.baseSha ? ` at ${input.baseSha.slice(0, 7)} (${input.baseIsAncestor ? 'an ancestor of HEAD' : 'NOT an ancestor of HEAD'})` : ' (no baseline)'}`,
         `  changed lines: ${fmt(input.changedLines)}, covered ${fmt(input.diffPct)}%`,
+        input.unreportedFiles.length
+          ? `  changed source the report does not list: ${input.unreportedFiles.length} file(s), ${input.unreportedAddedLines} added line(s): ${input.unreportedFiles.join(', ')}`
+          : '  changed source the report does not list: none',
         ''
       ].join('\n')
     }
@@ -2754,6 +2893,128 @@ function listFiles(root, ref) {
   return out.split('\0').filter(Boolean)
 }
 
+/** A repeatable name flag as a list: absent is none, one use is a list of one. A use with no value ends the command. */
+function nameList(flags, key, fail) {
+  const value = flags[key]
+  if (value === undefined) return []
+  const given = [].concat(value)
+  if (given.some(v => typeof v !== 'string' || !v)) fail(`--${key} needs a check name`)
+  return given
+}
+
+/**
+ * `interlock pipeline`: a platform's own check document in, the pipeline input
+ * `merge-confidence --pipeline` reads out (design D2 of
+ * label-and-harden-the-merge-verdict). Offline by construction: it reads the
+ * document it is handed, from a file or standard input, and never gh, glab or
+ * the network. `lib/pipeline.mjs` decides everything; this owns the files.
+ *
+ * Every way this command produces no input goes through `refuse`, which removes
+ * an earlier file at `--out` first and says so. A fixed output path that kept
+ * its last good file would hand the next command an earlier moment's checks,
+ * with a commit that may still match.
+ */
+function pipelineCommand(flags, json) {
+  const outPath = typeof flags.out === 'string' && flags.out ? flags.out : null
+  const refuse = message => {
+    if (outPath && existsSync(outPath)) {
+      try {
+        rmSync(outPath, { force: true })
+        warn(`removed ${outPath}: no pipeline input was produced, so the earlier file there is not left for the next command to read`)
+      } catch (err) {
+        warn(`${outPath} could not be removed (${err.message}): it still holds an earlier file, which describes an earlier moment`)
+      }
+    }
+    die(message)
+  }
+  if (flags.out === true) refuse('--out needs a file')
+
+  const platforms = ['github', 'gitlab-mr', 'gitlab'].filter(key => flags[key] !== undefined)
+  if (platforms.length !== 1) {
+    refuse(
+      `pipeline needs exactly one of --github, --gitlab-mr or --gitlab, each with the platform's document ` +
+        `(a file, or "-" for stdin)${platforms.length ? `; got ${platforms.map(p => `--${p}`).join(' and ')}` : ''}`
+    )
+  }
+  const platform = platforms[0]
+  const source = flags[platform]
+  if (source === true) refuse(`--${platform} needs the platform's document: a file, or "-" for stdin`)
+
+  const required = nameList(flags, 'required', refuse)
+  const exclude = nameList(flags, 'exclude', refuse)
+  if (platform !== 'github' && required.length) {
+    refuse(`--required is read with --github only: on GitLab a job is required when its allow_failure is false`)
+  }
+  if (platform === 'gitlab-mr' && exclude.length) {
+    refuse('--exclude is read with --github and --gitlab: the merge request document carries no checks to leave out')
+  }
+  if (platform === 'gitlab-mr' && !outPath) {
+    refuse('--gitlab-mr needs --out <file>: the head commit travels to "interlock pipeline --gitlab --mr <file>" in that file')
+  }
+
+  // The record of the first GitLab step, read before anything at --out is
+  // touched: --mr and --out may name the same path.
+  let record = null
+  if (platform === 'gitlab') {
+    if (typeof flags.mr !== 'string' || !flags.mr || flags.mr === '-') {
+      refuse('--gitlab needs --mr <file>: the file "interlock pipeline --gitlab-mr --out <file>" wrote, which carries the head commit')
+    }
+    try {
+      record = JSON.parse(readFileSync(flags.mr, 'utf8'))
+    } catch (err) {
+      refuse(`--mr ${flags.mr} could not be read as JSON: ${err.message}`)
+    }
+  }
+
+  let raw
+  try {
+    raw = source === '-' ? readStdin() : readFileSync(source, 'utf8')
+  } catch (err) {
+    refuse(`--${platform} ${source} could not be read: ${err.message}`)
+  }
+  let doc
+  try {
+    doc = JSON.parse(raw)
+  } catch (err) {
+    refuse(`--${platform} ${source === '-' ? '(stdin)' : source} is not valid JSON: ${err.message}`)
+  }
+
+  const read =
+    platform === 'github'
+      ? pipelineFromGithub(doc, { required, exclude })
+      : platform === 'gitlab-mr'
+        ? pendingFromGitlabMr(doc)
+        : pipelineFromGitlab(doc, record, { exclude })
+  if (!read.ok) refuse(`--${platform} ${source === '-' ? '(stdin)' : source}: ${read.reason}`)
+  for (const note of read.notes || []) warn(note)
+
+  const produced = read.pending || read.input
+  if (outPath) {
+    try {
+      writeJsonAtomic(outPath, produced)
+    } catch (err) {
+      refuse(`--out ${outPath} could not be written: ${err.message}`)
+    }
+  }
+
+  if (read.pending) {
+    emit(json, read.pending, `pending ${read.pending.sha}: head pipeline ${read.pending.headPipeline}\n`)
+    return
+  }
+  const { input } = read
+  const count = state => input.checks.filter(c => c.state === state).length
+  const requiredNames = input.checks.filter(c => c.required).map(c => c.name)
+  // GitHub's required set is the caller's to give; GitLab states it per job.
+  const requiredText = platform === 'github' && !required.length ? 'not given' : requiredNames.join(', ') || 'none'
+  emit(
+    json,
+    input,
+    `pipeline ${input.sha}: ${input.checks.length} check(s) (${count('pass')} pass, ${count('fail')} fail, ` +
+      `${count('pending')} pending, ${count('skipped')} skipped); required: ${requiredText}; ` +
+      `excluded: ${input.excluded.join(', ') || 'none'}\n`
+  )
+}
+
 function splitPaths(value) {
   if (value === undefined || value === true) return []
   const raw = value === '-' ? readStdin().split('\n') : String(value).split(',')
@@ -2846,7 +3107,7 @@ async function main() {
     }
 
     case 'gate': {
-      const input = readInput(flags.findings, '--findings')
+      const input = readFindingsInput(flags.findings)
       const dismissed =
         typeof flags.dismissed === 'string'
           ? flags.dismissed.split(',').map(s => s.trim()).filter(Boolean)
@@ -2989,16 +3250,34 @@ async function main() {
       break
     }
 
+    case 'pipeline': {
+      pipelineCommand(flags, json)
+      break
+    }
+
     case 'merge-confidence': {
       // Offline by construction: the repository, the files the caller names and
       // the published limits. Never gh, glab or the network (design D4).
       //
+      // Two output forms and one stdout: asking for both is a usage error.
+      const markdown = flags.markdown === true
+      if (markdown && json) die('--markdown and --json cannot be given together: one prints the description block, the other the assessment')
       // Every caller file is read FIRST, so an unreadable one ends the command
       // before any assessment and nothing reaches stdout (design D9).
       const review = readMergeInput(flags, 'review')
       const verify = readMergeInput(flags, 'verify')
       const handoffFile = readMergeInput(flags, 'handoff')
       const pipeline = readMergeInput(flags, 'pipeline')
+      // A pipeline file that is not well-formed is an input error, as one that is
+      // not JSON is (design D7 of label-and-harden-the-merge-verdict). An absent
+      // or misspelt check list read as "no checks" would hide a failed required
+      // check behind a green signal.
+      if (pipeline) {
+        const shape = validatePipelineInput(pipeline)
+        if (!shape.ok) {
+          die(`--pipeline ${flags.pipeline} is not a pipeline input: ${shape.reason} (produce it with "interlock pipeline")`)
+        }
+      }
       const coverage = readMergeInput(flags, 'coverage')
       const runFile = readMergeInput(flags, 'run')
       if (flags.base === true) die('--base needs a ref')
@@ -3024,14 +3303,36 @@ async function main() {
       const resolved = resolveChange(root, requested)
       const name = resolved.error ? null : resolved.name
 
+      // The diff under assessment runs from the merge base of --base and the
+      // head. The output names both, and a run's evidence is judged against it.
+      // A base that resolves and has no merge base to read (a shallow clone) is
+      // named with no commit.
+      let assessedBase = null
+      if (base) {
+        let mergeBase = null
+        try {
+          mergeBase = gitText(root, ['merge-base', base, 'HEAD']).trim() || null
+        } catch {
+          mergeBase = null
+        }
+        assessedBase = { ref: base, sha: mergeBase }
+      }
+
       // A run's evidence file (design D9 of complete-and-record-the-merge-verdict)
       // supplies what only that run observed, and only for the commit it made:
       // a file for another commit, another change or a run that made no commit
-      // is refused whole, out loud, and the signals read as with no file. The
-      // assessment recorded in it is never read: the command always reassesses.
+      // is refused whole, out loud, and the signals read as with no file. With a
+      // base it is also refused unless that is the diff the run reviewed (design
+      // D8 of label-and-harden-the-merge-verdict); no base is ever taken from
+      // the file. The assessment recorded in it is never read: the command
+      // always reassesses.
       let fromRun = {}
       if (runFile) {
-        const read = readRunEvidence(runFile, { change: name, headSha })
+        const read = readRunEvidence(runFile, {
+          change: name,
+          headSha,
+          base: assessedBase ? (assessedBase.sha ? { sha: assessedBase.sha } : { unreadable: true }) : undefined
+        })
         if (read.usable) fromRun = read.evidence
         else warn(`--run ${flags.run} is not used: ${read.reason}`)
       }
@@ -3079,7 +3380,21 @@ async function main() {
       for (const note of notes) warn(`${note.what}: ${note.reason}`)
 
       const result = assessMergeConfidence(input)
-      emit(json, { change: input.change ? input.change.name : null, ...result }, formatMergeConfidence(result))
+      // The commit and the base the verdict is about: a label is a claim about
+      // one commit, so the output says which (design D14).
+      const assessedHead = headSha ? { sha: headSha } : null
+      if (markdown) {
+        // The block is rendered by the module from what the command holds, so
+        // the description shows what was computed and nothing a model retyped.
+        const excluded = input.pipeline && Array.isArray(input.pipeline.excluded) ? input.pipeline.excluded : []
+        process.stdout.write(formatMergeConfidenceMarkdown(result, { head: assessedHead, base: assessedBase, excluded }))
+      } else {
+        emit(
+          json,
+          { change: input.change ? input.change.name : null, ...result, head: assessedHead, base: assessedBase },
+          formatMergeConfidence(result)
+        )
+      }
       // HUMAN exits 0: a change that needs a reviewer is not a failed command.
       const failed = flags['require-merge'] === true ? result.verdict !== 'MERGE' : result.verdict === 'BLOCK'
       if (failed) process.exit(1)
@@ -3278,7 +3593,7 @@ async function main() {
     }
 
     case 'remediate': {
-      const input = readInput(flags.findings, '--findings')
+      const input = readFindingsInput(flags.findings)
       const round = num(flags, 'round')
       const plan = planRemediation(input, { round, band: parseBand(flags) })
       emit(json, plan, formatRemediationPlan(plan))
@@ -3287,7 +3602,7 @@ async function main() {
     }
 
     case 'review': {
-      const findings = readInput(flags.findings, '--findings')
+      const findings = readFindingsInput(flags.findings)
       const verdicts = readInput(flags.verdicts, '--verdicts')
       // The reviewed diff. A dismissing verdict has to cite a path that is in
       // it — shape alone is satisfied by inventing `lib/nowhere.ts:1`. Optional

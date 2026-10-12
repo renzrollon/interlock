@@ -98,14 +98,19 @@ generatedAt }` for a commit on the default branch. It is not part of
   `interlock verify coverage --compute-base` writes it when it measures the merge
   base itself. Neither the skills nor the ship run write it.
 - **Who reads it.** `interlock verify coverage --base <ref>` reads it as an input
-  to the coverage figures the merge verdict judges: the root's copy first, then
+  to the coverage figures the merge verdict judges (`configured`, `headTotalPct`,
+  `baseTotalPct`, `baseSha`, `baseIsAncestor`, `diffPct` and `changedLines`, with
+  `unreportedFiles` and `unreportedAddedLines` naming the changed source files
+  the report does not list and the lines the diff adds in them): the root's copy first, then
   the **state home**'s, so a linked worktree finds the one the main checkout
   holds. It is **never written to the state home**: the state home holds the
   project's corpora, and an input is read through, not copied there. A baseline
   is usable only when its commit is an ancestor of `HEAD`.
 - **Not committed by default.** `.claude/testing/` is gitignored, so the baseline
   travels as a CI cache or, if a project chooses, a committed path passed with
-  `--baseline`. [docs/15](../docs/15-merge-confidence.md) has the recipe.
+  `--baseline`. The recipe is in
+  [docs/15 — Merge confidence](https://github.com/renzrollon/interlock/blob/main/docs/15-merge-confidence.md#recording-a-coverage-baseline),
+  linked in full because the published package ships this file and not `docs/`.
 
 The advisory rule above is unchanged: a missing baseline or report leaves the
 coverage signal unobserved, and nothing in the profile or the baseline can fail a

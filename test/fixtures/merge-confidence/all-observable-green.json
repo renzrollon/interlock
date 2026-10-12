@@ -201,7 +201,9 @@
     "baseSha": "0e8c6a4f2d0b8e6c4a2f0e8c6a4f2d0b8e6c4a2f",
     "baseIsAncestor": true,
     "diffPct": 91.2,
-    "changedLines": 120
+    "changedLines": 120,
+    "unreportedFiles": [],
+    "unreportedAddedLines": 0
   },
   "diff": {
     "changedLines": 120,

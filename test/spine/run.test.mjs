@@ -7031,7 +7031,14 @@ test('a strict run\'s close prints the verdict, records it in the receipt, the o
     // What the run observed is read as observed.
     assert.equal(signalOf(result, 'review.blockers').band, 'green')
     assert.equal(signalOf(result, 'review.ran').band, 'green')
-    assert.equal(signalOf(result, 'run.integrity').band, 'green')
+    // This harness is a host with no recorder: nothing observed a permission
+    // prompt or an auto-mode denial, and a count nobody made is not a zero
+    // (design D9 of label-and-harden-the-merge-verdict).
+    const integrity = signalOf(result, 'run.integrity')
+    assert.equal(integrity.band, 'unobserved')
+    assert.ok(integrity.reason.includes('permissionPrompts') && integrity.reason.includes('autoModeDenials'), integrity.reason)
+    assert.equal(file1.evidence.run.permissionPrompts, null)
+    assert.equal(file1.evidence.run.autoModeDenials, null)
     assert.match(signalOf(result, 'verify.suite').reason, /unit was skipped/, 'the skip list the CLI recorded')
 
     const block = receiptOf(root).mergeConfidence
@@ -7519,6 +7526,299 @@ test('a terminal append that fails after the assessment reassesses from the same
     const stored = evidenceOf(root)
     assert.equal(stored.evidence.run.trajectoryComplete, false)
     assert.equal(signalOf(stored.result, 'run.integrity').band, 'amber')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// =============================================================================
+// A run adjudicates only what this review wrote, and says what it was not given
+// (label-and-harden-the-merge-verdict, design D9, D10, D20, D24)
+//
+// Shapes pinned here, so the red wave and the green wave agree:
+//
+//   - the review step removes `.claude/ship/findings.json` and `verdicts.json`
+//     when it is first emitted, and only then: `manifest.reviewDimensions` is the
+//     marker, so deriving the step again removes nothing (D24).
+//   - `run reviewed` over a findings file that is absent, unparseable or carries
+//     no findings list records the review as not completed, with a note holding
+//     `no findings list`, and goes on to final verification (D10).
+//   - `run remediated` over such a file keeps the last adjudication's surviving
+//     findings, with a note holding `not re-reviewed`; when `review.json` cannot
+//     be read back either, it halts naming both files (D10).
+//   - a size cut of the domain text is one `DOMAIN REVIEW PARTIAL` banner, naming
+//     how many requirements were left out and `maxDomainSpecChars` (D20).
+// =============================================================================
+
+const FINDINGS_FILE = join('.claude', 'ship', 'findings.json')
+const VERDICTS_FILE = join('.claude', 'ship', 'verdicts.json')
+const notesOf = root => manifestOf(root).notes || []
+const hasNote = (root, token) => notesOf(root).some(note => String(note).includes(token))
+
+test('a strict close given a host record reads run.integrity green: every observation was made', () => {
+  const { root, change } = shippedRepo()
+  try {
+    strictToCommit(root, change)
+    const sha = realCommit(root)
+    const closed = step0(root, ['run', 'close'], {
+      results: [{ ok: true, sha }],
+      hostRecords: [hostRecord('commit')]
+    })
+    assert.equal(closed.exitCode, 0)
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.permissionPrompts, 0)
+    assert.equal(stored.evidence.run.autoModeDenials, 0)
+    const integrity = signalOf(stored.result, 'run.integrity')
+    assert.equal(integrity.band, 'green', integrity.reason)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the review step removes the work files an earlier run left, and deriving the step again removes nothing', () => {
+  const { root, change } = repo()
+  try {
+    // An earlier run's findings and verdicts, holding no blocker.
+    writeReview(root, { dismissed: 1 })
+    const batch = toFirstBatch(root, change, ['--strict'])
+    assert.ok(existsSync(join(root, FINDINGS_FILE)), 'precondition: nothing before the review step clears the work files')
+    assert.ok(existsSync(join(root, VERDICTS_FILE)))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    assert.equal(review.action, 'review')
+    assert.ok(!existsSync(join(root, FINDINGS_FILE)), 'the earlier findings are gone before the reviewer starts')
+    assert.ok(!existsSync(join(root, VERDICTS_FILE)), 'and so are the earlier verdicts')
+
+    // The reviewer has started writing. The step is derived again, as a driver
+    // that lost it would ask: nothing this review wrote may be removed.
+    writeReview(root, { blockers: 1 })
+    const findings = read(root, FINDINGS_FILE)
+    const verdicts = read(root, VERDICTS_FILE)
+    setManifest(root, { lastThen: null })
+    const again = run(root, ['run', 'next']).step
+    assert.equal(again.action, 'review')
+    assert.equal(read(root, FINDINGS_FILE), findings)
+    assert.equal(read(root, VERDICTS_FILE), verdicts)
+
+    // And what it wrote is what is adjudicated.
+    const round1 = run(root, [...again.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+  } finally {
+    cleanup(root)
+  }
+})
+
+for (const [label, leave] of [
+  ['writes no findings file', () => {}],
+  ['leaves a findings file that is not JSON', root => file(root, FINDINGS_FILE, '{oops')],
+  ['leaves an object with no findings list', root => file(root, FINDINGS_FILE, { summary: 'nothing to report' })],
+  ['leaves an empty object', root => file(root, FINDINGS_FILE, {})]
+]) {
+  test(`a review step that reports ok and ${label} is recorded as not completed, and the run goes on to final verification`, () => {
+    const { root, change } = repo()
+    try {
+      // An earlier run's clean result must not stand in for this review's.
+      writeReview(root, { dismissed: 1 })
+      const review = toTail(root, change, ['--strict'])
+      assert.equal(review.action, 'review')
+      leave(root)
+      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(next.action, 'verify-final', 'a review that did not complete does not stop the run')
+
+      assert.ok(hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+      const record = jsonAt(root, REVIEW_JSON)
+      assert.equal(record.dimensions.completed, false)
+      assert.deepEqual(record.dimensions.ran, [])
+      assert.deepEqual(record.surviving, [], 'adjudicated as with no findings')
+      assert.equal(record.counts.raised, 0, 'nothing of the earlier run was counted')
+      assert.equal(manifestOf(root).reviewDimensions.completed, false)
+    } finally {
+      cleanup(root)
+    }
+  })
+}
+
+test('a findings file holding an empty list is a completed review that found nothing', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    file(root, FINDINGS_FILE, [])
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final')
+    assert.ok(!hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+    assert.ok(!hasNote(root, 'did not complete'), JSON.stringify(notesOf(root)))
+    const record = jsonAt(root, REVIEW_JSON)
+    assert.equal(record.dimensions.completed, true)
+    assert.ok(record.dimensions.ran.length > 0)
+    assert.deepEqual(record.surviving, [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('at close, a review that wrote no findings reads review.ran amber as not completed, never as a review that found nothing', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verified.action, 'verify-final')
+    const handoffStep = run(root, [...verified.then.argv]).step
+    const commit = run(root, [...handoffStep.then.argv], { results: [HANDOFF_OK] }).step
+    assert.equal(commit.action, 'commit')
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const { result } = evidenceOf(root)
+    const ran = signalOf(result, 'review.ran')
+    assert.equal(ran.band, 'amber')
+    assert.match(ran.reason, /did not complete/)
+    assert.notEqual(result.verdict, 'MERGE')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation round that leaves no findings list keeps the blocker, records the round as not re-reviewed, and the run halts at its verdict', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { blockers: 1 })
+    let step = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    const survivors = jsonAt(root, REVIEW_JSON).surviving
+    assert.equal(survivors.length, 1, 'precondition: the review left one surviving blocker')
+
+    for (let round = 1; round <= LIMITS.remediationRounds; round++) {
+      assert.equal(step.action, 'remediate', `round ${round}`)
+      assert.equal(step.round, round)
+      // The fixer leaves the findings file without a list in it.
+      file(root, FINDINGS_FILE, { fixed: true })
+      step = run(root, [...step.then.argv], { results: [{ ok: true }] }).step
+      assert.ok(hasNote(root, 'not re-reviewed'), JSON.stringify(notesOf(root)))
+      assert.deepEqual(jsonAt(root, REVIEW_JSON).surviving, survivors, 'the last adjudication is left as it is')
+      assert.equal(manifestOf(root).remediation.blockersRemaining, 1, `round ${round} did not clear the blocker`)
+    }
+
+    assert.equal(step.action, 'verdict')
+    const halted = run(root, [...step.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(halted.action, 'halt', 'an unresolved blocker halts the run: it does not commit')
+    assert.match(halted.reason, /blocker/)
+    assert.deepEqual(halted.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+for (const [label, spoil] of [
+  ['absent', root => rmSync(join(root, REVIEW_JSON))],
+  ['not JSON', root => file(root, REVIEW_JSON, '{oops')],
+  ['without its surviving list', root => file(root, REVIEW_JSON, { counts: { raised: 1, surviving: 1 } })]
+]) {
+  test(`a round with no findings list and a last adjudication that is ${label} halts naming both files`, () => {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--strict'])
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(round1.action, 'remediate')
+
+      file(root, FINDINGS_FILE, {})
+      spoil(root)
+      const halted = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(halted.action, 'halt')
+      assert.ok(halted.reason.includes('findings.json') && halted.reason.includes('review.json'), halted.reason)
+      assert.deepEqual(halted.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+    } finally {
+      cleanup(root)
+    }
+  })
+}
+
+// --- a size cut of the domain reviewer's text (D20) ---------------------------
+
+/** A living spec whose requirements cannot all fit the bound, whatever the bound is. */
+function oversizedSpec() {
+  const sentence = 'The guide SHALL keep this sentence as it is written. '
+  const body = sentence.repeat(Math.ceil(LIMITS.maxDomainSpecChars / 2 / sentence.length))
+  const extra = ['one', 'two', 'three', 'four']
+    .map(
+      n =>
+        `\n### Requirement: The guide SHALL carry filler ${n}\n\n${body}\n\n` +
+        `#### Scenario: Happy path — filler ${n} is kept\n\n- **GIVEN** the guide\n- **WHEN** it is read\n- **THEN** filler ${n} is there\n`
+    )
+    .join('')
+  return livingSpec(ALPHA_COMMITTED, extra)
+}
+
+function oversizedDomainRepo({ graph = true, declared = false } = {}) {
+  const r = repo()
+  file(r.root, LIVING_SPEC_PATH, oversizedSpec())
+  if (graph) file(r.root, GRAPH_PATH, graphLinking('README.md'))
+  if (declared) file(r.root, `openspec/changes/${r.change}/specs/docs/guide/spec.md`, DELTA_SPEC)
+  commitAll(r.root, 'fixtures')
+  return r
+}
+
+/** The one banner a cut raises, checked for what it must hold and must not. */
+function cutBannerOf(root) {
+  const omitted = manifestOf(root).reviewDimensions.domain.omitted
+  assert.ok(omitted.length > 0, 'precondition: the bound left requirements out')
+  const banners = bannersWith(root, 'DOMAIN REVIEW PARTIAL')
+  assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+  assert.ok(banners[0].includes(`${omitted.length} requirement`), banners[0])
+  assert.ok(banners[0].includes('maxDomainSpecChars'), banners[0])
+  assert.ok(!banners[0].includes(String(LIMITS.maxDomainSpecChars)), 'the limit is cited by its key, never restated')
+  return banners[0]
+}
+
+test('a size cut of the domain text raises one DOMAIN REVIEW PARTIAL line, naming the count and the limit by its key, once in the close summary after two rounds', () => {
+  const { root, change } = oversizedDomainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    const banner = cutBannerOf(root)
+    assert.doesNotMatch(banner, /not mapped/, 'a graph was read, so the selection is whole')
+    assert.ok(review.banners.includes(banner))
+
+    // Two rounds: the review, then a fixing round that reviews again.
+    writeReview(root, { blockers: 1 })
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    writeReview(root, {})
+    run(root, [...round1.then.argv], { results: [{ ok: true }] })
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [banner])
+
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, 'DOMAIN REVIEW PARTIAL'), 1, closed.summary)
+    assert.ok(closed.summary.includes(banner))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a domain text that fits the bound raises no DOMAIN REVIEW PARTIAL banner', () => {
+  const { root, change } = domainRepo()
+  try {
+    toReview(root, change, ['--review'])
+    assert.deepEqual(manifestOf(root).reviewDimensions.domain.omitted, [])
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and a cut together are still one DOMAIN REVIEW PARTIAL line, and it states both', () => {
+  const { root, change } = oversizedDomainRepo({ graph: false, declared: true })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const banner = cutBannerOf(root)
+    assert.match(banner, /not mapped/, 'the partial selection is stated')
+    assert.ok(review.banners.includes(banner))
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, 'DOMAIN REVIEW PARTIAL'), 1, closed.summary)
   } finally {
     cleanup(root)
   }

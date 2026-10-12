@@ -651,3 +651,32 @@ test('the quality band applies to the readiness count, exactly as it does at the
   ])
   assert.equal(checkFor(weak, 'artifacts.review-blockers').status, 'pass', formatReadiness(weak))
 })
+
+// --- a findings input that carries no findings list (design D10 of label-and-harden-the-merge-verdict) ---
+
+test('an object with no findings list is an artifact review that has not run, and the change is not ready', () => {
+  makeChange()
+  for (const findings of [{}, { summary: 'clean' }, { counts: { blocker: 0 } }, { findings: 'none' }, '{}', '{"blockers":[]}']) {
+    const r = withFindings(findings)
+    assert.equal(r.ready, false, `findings ${JSON.stringify(findings)} must not be ready`)
+    assert.deepEqual(
+      codes(r).filter(code => code.startsWith('REVIEW_')),
+      ['REVIEW_NOT_RUN'],
+      `findings ${JSON.stringify(findings)}: ${codes(r)}`
+    )
+    const blocked = r.blockers.find(b => b.code === 'REVIEW_NOT_RUN')
+    assert.ok(blocked.message.includes('no findings list'), blocked.message)
+    assert.equal(checkFor(r, 'artifacts.review-blockers').status, 'fail')
+  }
+})
+
+test('a review record is read from its surviving list: an empty one passes, a blocker in it blocks', () => {
+  makeChange()
+  const clean = withFindings({ surviving: [], dismissed: [finding()], counts: { raised: 1, surviving: 0 } })
+  assert.equal(checkFor(clean, 'artifacts.review-blockers').status, 'pass', formatReadiness(clean))
+  assert.equal(clean.ready, true, formatReadiness(clean))
+
+  const blocked = withFindings({ surviving: [finding()], counts: { raised: 1, surviving: 1 } })
+  assert.equal(blocked.ready, false)
+  assert.ok(codes(blocked).includes('REVIEW_BLOCKERS'), codes(blocked).join(', '))
+})

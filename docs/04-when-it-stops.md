@@ -36,7 +36,7 @@ The plugin also runs it for you at every session start, through its `SessionStar
 |---|---|---|
 | `interlock validate` exits non-zero | The change is not implementable: an artifact is missing or empty, or `tasks.md` has no real checkbox tasks | Run `interlock validate <change-name>` yourself and read the reason. Usually the change was never fully specced — go back to [the checkpoint](./02-the-checkpoint.md) or re-run `/interlock:spec`. |
 | Subagents unavailable | `ship` orchestrates and never implements inline — context isolation is the entire point, so it stops rather than falling back | Usually your own permission settings restrict the `Agent` tool. Allow it and re-run. Do not work around it by asking the model to implement in the main conversation. |
-| Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
+| Unresolved blockers after two remediation rounds | `--review` / `--strict` only. The diff review found problems the fixers could not close in two passes. A round that leaves no findings list clears nothing: its blockers stand, and the run reaches this halt as if the round had fixed none ([below](#a-review-or-a-round-that-left-no-findings-list-and-review-work-file-not-cleared)) | Read the surviving findings. Two failed rounds usually means the design was wrong, not the code — consider re-speccing rather than a third round. A lean run never reaches this halt. |
 | Unit suite still red | Repair by root cause was capped and the suite did not go green | Fix it yourself, or run `/interlock:fix-tests`. Note what `ship` did **not** do: it will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | More than two task failures across waves | Enough tasks failed that the remaining plan is not trustworthy | Read which tasks failed. Repeated failures in one area usually mean `tasks.md` was underspecified there. |
 | A trajectory line could not be written mid-run | A `run` step tried to append to `.claude/ship/runs/<runId>.jsonl` and the write did not land, so it halts **before** ticking any task and before the commit. The reason reads `trajectory append failed: <site>: <cause>`, where the site is the step that owed the line — `run-start`, `wave-state create`, `wave-state record-batch`, `wave-state record-verify`, `wave-state replan`, `agent-spawn`, `agent-result` or `cli-exit`. | Read the cause in the halt reason; it is the filesystem's own, usually a full disk or a `.claude/ship/runs` nothing can write to. Fix that and re-run. Nothing was ticked and nothing was committed, so the re-run starts from a truthful `tasks.md`. This is new: the live run path used to warn and continue, which produced exactly the artifact the trajectory exists to prevent — a run that ticked boxes, committed, and cannot be replayed. |
@@ -702,9 +702,43 @@ DOMAIN REVIEW PARTIAL: <reason>
 
 `DOMAIN REVIEW SKIPPED` means the dimension did not run. The usual reason is that no graph was built and the change declares no capability, so there was nothing to select from. The other dimensions ran as normal; what is missing is the check against the living specs. The same fact is recorded on the review as a skipped dimension, and the merge verdict reads it as a `domain-skipped` flag that lowers the score without moving the band. Build the graph with `/interlock:bootstrap` (or `interlock-graph build .`) and re-run the review, or run `interlock domain-context --changed <files>` yourself to see what would be selected.
 
-`DOMAIN REVIEW PARTIAL` means the dimension ran on less than it should have. Either there was no graph, so only the capabilities the change declares were selected and a capability linked only through the graph was not, or the specs did not fit the prompt and whole requirements were left out (each omission is counted in the text the reviewer saw and named in the review record, and the size limit is the `domain` row of `interlock limits`). A clean domain review under this banner is not evidence that the omitted requirements are respected. Read the omitted headings in the record and check those against the diff.
+`DOMAIN REVIEW PARTIAL` means the dimension ran on less than it should have. There are two reasons, and the line states whichever hold:
+
+```
+DOMAIN REVIEW PARTIAL: no graph (…): the changed files were not mapped to capabilities, so domain is judged against the declared capabilities only (…)
+DOMAIN REVIEW PARTIAL: <n> requirement(s) were left out of the domain reviewer's text by the size bound (LIMITS.maxDomainSpecChars, printed by `interlock limits`)
+```
+
+The first is a selection made without a graph: only the capabilities the change declares were selected, and a capability linked only through the graph was not. The second is a size cut: the specs did not fit the prompt and whole requirements were left out, in capability then spec order. The line says how many and cites the limit by its key; the value is the `domain spec text budget (chars)` row of `interlock limits`, and each omitted heading is named in the text the reviewer saw and in the review record. When both hold, one line states both, joined by a semicolon. It is raised once per run, however many review rounds follow, and it reaches the close summary.
+
+A clean domain review under this banner is not evidence that the omitted requirements are respected. Read the omitted headings in the record (`reviewDimensions.domain.omitted` on the run manifest) and check those against the diff. On a repository with large specs the size cut is common: the bound is global, so a large first capability can leave later ones with little. The banner makes that visible; it does not move the bound.
 
 Neither banner changes the exit code. A graph that was built but links no changed file to any spec raises neither: that is recorded as "not selected" with the unlinked paths, because an unlinked file is a gap in the specs, not a fault in the review, and the spec audit (`interlock spec-audit`) is where that gap is measured.
+
+### A review or a round that left no findings list, and `REVIEW WORK FILE NOT CLEARED`
+
+A strict run adjudicates only findings this review wrote. The review worker writes its findings and verdicts to two work files under `.claude/ship/`, a directory no run clears, so the run removes both files when it first emits the review step. A review that writes nothing therefore leaves nothing behind, and an earlier run's clean result can never stand in for this one's. The review and remediation briefings both tell the agent to write an empty list, `[]`, when nothing is found: a clean result is a file with a list in it.
+
+A findings file that is absent, is not JSON, or holds none of the shapes a findings list takes carries no findings list. What the run does about it depends on where it is, and each is said as a line in the close summary:
+
+```
+review did not complete: .claude/ship/findings.json carries no findings list (<why>), so there is nothing this review wrote to adjudicate
+round <n> was not re-reviewed: .claude/ship/findings.json carries no findings list (<why>); the <k> finding(s) that survived the last adjudication stand unchanged
+```
+
+- **At the review.** The review is recorded as not completed, whatever the review step reported about itself, and the run goes on to final verification, as it does for a step that returned nothing usable. `review.json` carries `dimensions.completed: false` and an empty `ran`, and the merge verdict reads `review.ran` amber: a review that did not complete, never a review that found nothing. It costs a look and grants nothing.
+- **In a remediation round.** Read as an empty review, such a round would clear the very blockers it was asked to fix, and the run would commit. So the round is adjudicated from the surviving findings of the last adjudication, unchanged, and the next round or the verdict is planned from them. A blocker that survived is still a blocker at the verdict round, where the run halts on it.
+- **When the last adjudication cannot be read back either.** The run halts, naming both files (`.claude/ship/findings.json` and `.claude/ship/review.json`). There is nothing to stand on, and a halt is the one outcome that cannot clear a blocker.
+
+`REVIEW WORK FILE NOT CLEARED` means the run could not remove one of the two work files before the review:
+
+```
+REVIEW WORK FILE NOT CLEARED: <path> could not be removed (<reason>) — what an earlier run left there may be adjudicated as this review's
+```
+
+The usual cause is a read-only `.claude/ship/`. The run continues. If the reviewer then writes its own files the banner cost nothing; if it writes none, the adjudication reads what was left there, which is exactly what the removal exists to prevent. Read the findings in `review.json` against this run's diff before trusting them, fix the permissions, and run again.
+
+`interlock gate`, `interlock review` and `interlock remediate` apply the same rule by hand: an input with no findings list exits 1 with the reason on stderr and nothing on stdout, and an empty list is how to say nothing was found ([07](./07-cli-and-configuration.md)).
 
 ### `LIVING CONFORMANCE SKIPPED` and `LIVING CONFORMANCE PARTIAL`
 
@@ -757,7 +791,7 @@ MERGE CONFIDENCE HUMAN — score 72 (amber range 40–79; 14 of 17 gating signal
 
 The headline is the same line `interlock merge-confidence` prints first: the verdict (`MERGE`, `HUMAN` or `BLOCK`), the score with the range its worst band allows, and how many gating signals are clean. Read the three groups as what would lift the verdict. **needs a fix** is a finding or a gap in the change that code or a spec edit repairs. **needs a person** is a call only a person can make, such as a risk class that is not allowed to merge unattended, an open decision row, or a run that degraded. **needs more evidence** is a fact nobody gathered, which reads unobserved and clears when the fact is supplied. A group with no entry is not printed, and the flags row is the signals a flag lowered the score on without moving a band. The reasons and the evidence behind each line are in the `assessment:` file, which the summary leaves out on purpose.
 
-**No close reads `MERGE`.** The pipeline signal reads unobserved inside a run: the run is offline and no platform has seen the commit it just made. So a close can read `HUMAN` or `BLOCK` and `ci.pipeline` is always among the entries that need more evidence. The first `MERGE` anyone sees comes from `interlock merge-confidence --run .claude/ship/merge-confidence.json --pipeline <file>` once the pipeline has run, and only when the head is still the commit the run made. A halted run prints no block at all, because a diff that stopped part-way is not a candidate for merging. The verdict never changes the exit code and nothing gates on it: the readiness gate, the autonomy ladder and `interlock report` do not read it.
+**No close reads `MERGE`.** The pipeline signal reads unobserved inside a run: the run is offline and no platform has seen the commit it just made. So a close can read `HUMAN` or `BLOCK` and `ci.pipeline` is always among the entries that need more evidence. `run.integrity` joins it on a host with no recorder: when neither the runner nor the hook sidecar could observe a permission prompt or an auto-mode denial, the run record carries those two counts as null, and the signal reads unobserved naming them (`permissionPrompts`, `autoModeDenials`). An observation the host did not make is not a zero. The first `MERGE` anyone sees comes from `interlock merge-confidence --base <ref> --run .claude/ship/merge-confidence.json --pipeline <file>` once the pipeline has run, and only when the head is still the commit the run made and the base is where the run started: a run's evidence covers the diff that run reviewed and no other, and without `--base` the signals that need one stay unobserved ([15](./15-merge-confidence.md#the-runs-evidence-file-and---run)). The pipeline file is produced by `interlock pipeline`. A halted run prints no block at all, because a diff that stopped part-way is not a candidate for merging. The verdict never changes the exit code and nothing gates on it: the readiness gate, the autonomy ladder and `interlock report` do not read it.
 
 ### `E2E FAILED (non-blocking by policy)`
 

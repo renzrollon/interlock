@@ -1,0 +1,187 @@
+{
+  "headRefOid": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "run-a",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-b",
+      "status": "COMPLETED",
+      "conclusion": "NEUTRAL",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-c",
+      "status": "COMPLETED",
+      "conclusion": "SKIPPED",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-d",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-e",
+      "status": "COMPLETED",
+      "conclusion": "TIMED_OUT",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-f",
+      "status": "COMPLETED",
+      "conclusion": "ACTION_REQUIRED",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-g",
+      "status": "COMPLETED",
+      "conclusion": "STARTUP_FAILURE",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-h",
+      "status": "COMPLETED",
+      "conclusion": "CANCELLED",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-i",
+      "status": "COMPLETED",
+      "conclusion": "STALE",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-j",
+      "status": "IN_PROGRESS",
+      "conclusion": "",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-k",
+      "status": "QUEUED",
+      "conclusion": "",
+      "workflowName": "CI",
+      "startedAt": null,
+      "completedAt": null,
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "run-l",
+      "status": "COMPLETED",
+      "conclusion": "SOMETHING_NEW",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-a",
+      "state": "SUCCESS",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-a"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-b",
+      "state": "FAILURE",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-b"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-c",
+      "state": "ERROR",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-c"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-d",
+      "state": "PENDING",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-d"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-e",
+      "state": "EXPECTED",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-e"
+    },
+    {
+      "__typename": "StatusContext",
+      "context": "ctx-f",
+      "state": "SOMETHING_NEW",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "targetUrl": "https://ci.example.test/ctx-f"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "rerun",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:03:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "rerun",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:30:00Z",
+      "completedAt": "2026-10-12T09:33:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/5"
+    }
+  ]
+}

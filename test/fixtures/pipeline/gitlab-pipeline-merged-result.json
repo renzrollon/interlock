@@ -1,0 +1,18 @@
+{
+  "id": 9001,
+  "sha": "9d8c7b6a5f4e3d2c1b0a9d8c7b6a5f4e3d2c1b0a",
+  "ref": "refs/merge-requests/7/merge",
+  "status": "manual",
+  "jobs": [
+    {
+      "name": "job-a",
+      "status": "success",
+      "allow_failure": false
+    },
+    {
+      "name": "job-m",
+      "status": "manual",
+      "allow_failure": false
+    }
+  ]
+}

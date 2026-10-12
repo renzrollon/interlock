@@ -784,3 +784,44 @@ test('HANDOFF_RESULT_SCHEMA declares the two requirement counts as integers and 
   assert.equal(schema.properties.scenariosChecked.type, 'integer')
   assert.equal(schema.properties.scenariosUnconfirmed.type, 'integer')
 })
+
+// --- a clean result is a file with a list in it (design D24 of label-and-harden-the-merge-verdict) ---
+//
+// A review or a re-review that finds nothing and writes nothing leaves the run
+// with no findings list to adjudicate, which it reads as "did not complete" or
+// "not re-reviewed". Both briefings therefore name the findings file and ask for
+// an empty list.
+
+const FINDINGS_AT = '.claude/ship/add-widget/review/findings.json'
+const VERDICTS_AT = '.claude/ship/add-widget/review/verdicts.json'
+const EMPTY_LIST = '`[]`'
+
+test('the review briefing names the findings file and asks for an empty list when nothing is found', () => {
+  const prompt = assembleReviewPrompt(reviewInput({ findingsPath: FINDINGS_AT, verdictsPath: VERDICTS_AT }))
+  assert.ok(prompt.includes(FINDINGS_AT), 'the findings path is not in the review briefing')
+  assert.ok(prompt.includes(EMPTY_LIST), 'the review briefing never asks for an empty list')
+})
+
+test('the remediation briefing names the findings file and asks for an empty list when nothing is found', () => {
+  const prompt = assembleRemediatePrompt({
+    change: 'add-widget',
+    round: 1,
+    plan: {
+      fix: { byFile: [{ file: 'lib/db.mjs', findings: [] }], unscoped: [] },
+      reReviewDimensions: ['language']
+    },
+    dimensions: [{ name: 'language', rubric: 'criteria' }],
+    policyProse: '',
+    findingsPath: FINDINGS_AT,
+    verdictsPath: VERDICTS_AT,
+    stageLine: ''
+  })
+  assert.ok(prompt.includes(FINDINGS_AT), 'the findings path is not in the remediation briefing')
+  assert.ok(prompt.includes(VERDICTS_AT), 'the verdicts path is not in the remediation briefing')
+  assert.ok(prompt.includes(EMPTY_LIST), 'the remediation briefing never asks for an empty list')
+})
+
+test('the verdict briefing fixes and re-reviews nothing, so it asks for no file', () => {
+  const prompt = assembleVerdictPrompt({ change: 'add-widget', round: 3 })
+  assert.ok(!prompt.includes(EMPTY_LIST))
+})

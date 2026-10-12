@@ -1,6 +1,6 @@
 // The coverage reader: lcov parsing on canonical repository paths, project
 // totals, changed-line coverage from a `git diff -U0`, the baseline schema, and
-// the seven-field coverage input the merge verdict reads. One scenario per
+// the nine-field coverage input the merge verdict reads. One scenario per
 // scenario in judge-against-base-and-living-specs/specs/verify/spec.md (the
 // reader, the baseline and the coverage input), against lib/coverage.mjs (design D2).
 //
@@ -21,14 +21,18 @@ const read = name => readFileSync(join(FIXTURES, name), 'utf8')
 
 const ROOT = '/work/repo'
 const AT_ROOT = { root: ROOT, reportDir: ROOT }
-const SEVEN_FIELDS = [
+// The seven figures, and the two fields that name changed source the report does
+// not list (design D13 of label-and-harden-the-merge-verdict).
+const INPUT_FIELDS = [
   'baseIsAncestor',
   'baseSha',
   'baseTotalPct',
   'changedLines',
   'configured',
   'diffPct',
-  'headTotalPct'
+  'headTotalPct',
+  'unreportedAddedLines',
+  'unreportedFiles'
 ]
 
 // `parseLcov` returns `{ records, outsideRoot }`; a record is
@@ -153,6 +157,76 @@ test('a record outside the root is counted, not kept, and left out of both figur
   assert.equal(changed.diffPct, 75)
 })
 
+// --- changed source the report does not list ---------------------------------
+//
+// `unreportedChangedSource(records, added)` -> `{ files, addedLines }`: the
+// coverable source files the diff adds at least one line to and the report holds
+// no record for, in path order, and the lines the diff adds in them.
+
+const addedMap = entries => new Map(entries.map(([path, lines]) => [path, new Set(lines)]))
+
+test('a changed source file the report holds no record for is listed, with the lines the diff adds in it', () => {
+  const { records } = parse('two-files.lcov') // lib/a.mjs and lib/b.mjs
+  const added = addedMap([
+    ['lib/a.mjs', [1, 2, 3]],
+    ['lib/new.mjs', [1, 2, 3, 4, 5]],
+    ['lib/also-new.mjs', [10, 11]]
+  ])
+  assert.deepEqual(coverage.unreportedChangedSource(records, added), {
+    files: ['lib/also-new.mjs', 'lib/new.mjs'],
+    addedLines: 7
+  })
+})
+
+test('every changed source file in the report gives an empty list and a zero', () => {
+  const { records } = parse('two-files.lcov')
+  const added = addedMap([['lib/a.mjs', [1]], ['lib/b.mjs', [4, 5]]])
+  assert.deepEqual(coverage.unreportedChangedSource(records, added), { files: [], addedLines: 0 })
+  assert.deepEqual(coverage.unreportedChangedSource(records, new Map()), { files: [], addedLines: 0 })
+})
+
+test('a test file, a configuration file and a document are never listed, by the coverable-source rule', () => {
+  const { records } = parse('two-files.lcov')
+  const added = addedMap([
+    ['test/x.test.mjs', [1, 2, 3]],
+    ['package.json', [4]],
+    ['docs/notes.md', [1, 2]],
+    ['README.md', [9]],
+    ['vite.config.ts', [1]],
+    ['.github/workflows/ci.yml', [1]]
+  ])
+  assert.deepEqual(coverage.unreportedChangedSource(records, added), { files: [], addedLines: 0 })
+  // Beside a real one, only the real one is listed, and only its lines are counted.
+  added.set('lib/new.mjs', new Set([1, 2]))
+  assert.deepEqual(coverage.unreportedChangedSource(records, added), { files: ['lib/new.mjs'], addedLines: 2 })
+})
+
+test('a file the diff touches without adding a line is not listed', () => {
+  const { records } = parse('two-files.lcov')
+  const added = addedMap([['lib/emptied.mjs', []]])
+  assert.deepEqual(coverage.unreportedChangedSource(records, added), { files: [], addedLines: 0 })
+})
+
+test('unreportedChangedSource tolerates what is not a record list or a map, and mutates neither', () => {
+  for (const [records, added] of [[null, null], [undefined, new Map()], ['x', {}]]) {
+    assert.deepEqual(coverage.unreportedChangedSource(records, added), { files: [], addedLines: 0 })
+  }
+  const { records } = parse('two-files.lcov')
+  const added = addedMap([['lib/new.mjs', [3, 1, 2]]])
+  const before = JSON.stringify([records.map(r => r.path), [...added].map(([k, v]) => [k, [...v]])])
+  coverage.unreportedChangedSource(records, added)
+  assert.equal(JSON.stringify([records.map(r => r.path), [...added].map(([k, v]) => [k, [...v]])]), before)
+})
+
+test('naming the unreported files leaves the changed-line figure what it was', () => {
+  const { records } = parse('two-files.lcov')
+  const withNew = coverage.parseAddedLines(read('added-a.diff'))
+  const figure = coverage.changedLineCoverage(records, withNew)
+  withNew.set('lib/new.mjs', new Set([1, 2, 3]))
+  assert.deepEqual(coverage.changedLineCoverage(records, withNew), figure)
+  assert.deepEqual(coverage.unreportedChangedSource(records, withNew).files, ['lib/new.mjs'])
+})
+
 // --- buildCoverageInput ----------------------------------------------------
 
 const HEAD = { totalPct: 79.2, lf: 120, lh: 95 }
@@ -165,7 +239,7 @@ const BASELINE = {
   generatedAt: '2026-10-12T09:00:00.000Z'
 }
 
-test('buildCoverageInput emits exactly the seven fields the merge verdict reads', () => {
+test('buildCoverageInput emits exactly the nine fields the merge verdict reads', () => {
   const input = coverage.buildCoverageInput({
     configured: true,
     head: HEAD,
@@ -173,7 +247,7 @@ test('buildCoverageInput emits exactly the seven fields the merge verdict reads'
     baseIsAncestor: true,
     changed: CHANGED
   })
-  assert.deepEqual(Object.keys(input).sort(), SEVEN_FIELDS)
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
   assert.deepEqual(input, {
     configured: true,
     headTotalPct: 79.2,
@@ -181,8 +255,42 @@ test('buildCoverageInput emits exactly the seven fields the merge verdict reads'
     baseSha: 'a'.repeat(40),
     baseIsAncestor: true,
     diffPct: 75,
-    changedLines: 4
+    changedLines: 4,
+    // Configured, and not handed the unreported files: not stated, never an empty list.
+    unreportedFiles: null,
+    unreportedAddedLines: null
   })
+})
+
+test('buildCoverageInput carries the unreported files and their added lines beside the seven figures', () => {
+  const unreported = { files: ['lib/b.mjs', 'lib/new.mjs'], addedLines: 43 }
+  const input = coverage.buildCoverageInput({
+    configured: true,
+    head: HEAD,
+    baseline: BASELINE,
+    baseIsAncestor: true,
+    changed: CHANGED,
+    unreported
+  })
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
+  assert.deepEqual(input.unreportedFiles, ['lib/b.mjs', 'lib/new.mjs'])
+  assert.equal(input.unreportedAddedLines, 43)
+  // The figures are what they are without it.
+  assert.equal(input.diffPct, 75)
+  assert.equal(input.changedLines, 4)
+  // Nothing unreported is an empty list and a zero: a statement, not an absence.
+  const none = coverage.buildCoverageInput({ configured: true, head: HEAD, changed: CHANGED, unreported: { files: [], addedLines: 0 } })
+  assert.deepEqual(none.unreportedFiles, [])
+  assert.equal(none.unreportedAddedLines, 0)
+  // The list handed in is copied, never aliased.
+  assert.notEqual(input.unreportedFiles, unreported.files)
+})
+
+test('a repository with no coverage configured states no unreported files, whatever it is handed', () => {
+  const input = coverage.buildCoverageInput({ configured: false, unreported: { files: ['lib/new.mjs'], addedLines: 9 } })
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
+  assert.equal(input.unreportedFiles, null)
+  assert.equal(input.unreportedAddedLines, null)
 })
 
 test('a baseline whose commit is not an ancestor is passed through marked so, never dropped or banded', () => {
@@ -193,7 +301,7 @@ test('a baseline whose commit is not an ancestor is passed through marked so, ne
     baseIsAncestor: false,
     changed: CHANGED
   })
-  assert.deepEqual(Object.keys(input).sort(), SEVEN_FIELDS)
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
   assert.equal(input.baseIsAncestor, false)
   assert.equal(input.baseSha, 'a'.repeat(40))
   assert.equal(input.baseTotalPct, 81.5)
@@ -207,7 +315,7 @@ test('with no baseline every base field is empty and the changed-line figures re
     baseIsAncestor: null,
     changed: CHANGED
   })
-  assert.deepEqual(Object.keys(input).sort(), SEVEN_FIELDS)
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
   assert.equal(input.baseTotalPct, null)
   assert.equal(input.baseSha, null)
   assert.equal(input.baseIsAncestor, null)
@@ -224,9 +332,9 @@ test('a repository with no coverage configured says so and carries nothing else'
     baseIsAncestor: null,
     changed: null
   })
-  assert.deepEqual(Object.keys(input).sort(), SEVEN_FIELDS)
+  assert.deepEqual(Object.keys(input).sort(), INPUT_FIELDS)
   assert.equal(input.configured, false)
-  for (const key of SEVEN_FIELDS.filter(k => k !== 'configured')) {
+  for (const key of INPUT_FIELDS.filter(k => k !== 'configured')) {
     assert.equal(input[key], null, `${key} must be null, not zero or false`)
   }
 })

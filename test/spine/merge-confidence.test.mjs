@@ -24,9 +24,11 @@ import { fileURLToPath } from 'node:url'
 import {
   SIGNALS,
   FLAGS,
+  MERGE_LABELS,
   combineSignals,
   assessMergeConfidence,
   formatMergeConfidence,
+  formatMergeConfidenceMarkdown,
   mergeConfidenceHeadline
 } from '../../lib/merge-confidence.mjs'
 import { MERGE_BANDS } from '../../lib/limits.mjs'
@@ -35,6 +37,7 @@ import { MERGE_ALLOWED_CLASSES } from '../../lib/risk.mjs'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const FIXTURES = join(ROOT, 'test', 'fixtures', 'merge-confidence')
 const MODULE = join(ROOT, 'lib', 'merge-confidence.mjs')
+const DELIVERY_PAGE = join(ROOT, 'docs', '15-merge-confidence.md')
 
 const fixture = name => JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))
 const signalOf = (result, id) => {
@@ -288,7 +291,8 @@ test('FLAGS is the frozen published vocabulary of design D2', () => {
       'domain-skipped',
       'legacy-unspecced',
       'no-graph',
-      'requirements-omitted'
+      'requirements-omitted',
+      'unmeasured-source'
     ]
   )
 })
@@ -367,11 +371,21 @@ const EXPECT = {
   'coverage-not-ancestor': { 'verify.coverage': U() },
   'coverage-tiny-diff': {},
   'coverage-at-size-floor': { 'verify.coverage': A('finding') },
+  // Changed source the report never saw (design D13): a flag on a green
+  // reading, a line of evidence on any other, nothing from an older producer.
+  'coverage-unreported': { 'verify.coverage': G(['unmeasured-source']) },
+  'coverage-unreported-decline': { 'verify.coverage': A('finding') },
+  'coverage-unreported-fields-absent': {},
   'pipeline-required-fail': { 'ci.pipeline': R() },
   'pipeline-optional-fail': { 'ci.pipeline': A('finding') },
   'pipeline-pending': { 'ci.pipeline': U() },
   'pipeline-stale-sha': { 'ci.pipeline': U() },
   'pipeline-stale-sha-required-fail': { 'ci.pipeline': U() },
+  // A pipeline input that is not well-formed is never "no checks" (design D7).
+  'pipeline-checks-not-a-list': { 'ci.pipeline': U() },
+  'pipeline-entry-not-an-object': { 'ci.pipeline': U() },
+  'pipeline-unknown-state': { 'ci.pipeline': A('evidence') },
+  'pipeline-excluded': {},
   'conformance-confirmed': {},
   'conformance-unconfirmed': { 'conformance.delta': A('evidence') },
   'conformance-short-denominator': { 'conformance.delta': A('evidence') },
@@ -400,6 +414,7 @@ const EXPECT = {
   'living-partial': { 'conformance.living': G(['no-graph']) },
   'living-empty': {},
   'living-omitted': { 'conformance.living': G(['requirements-omitted']) },
+  'living-cut-to-nothing': { 'conformance.living': G(['requirements-omitted']) },
   'living-no-handoff': { 'conformance.delta': U(), 'conformance.living': U() },
   'living-not-gathered': { 'conformance.living': U() },
   // The spec-coverage states (design D8).
@@ -408,6 +423,11 @@ const EXPECT = {
   'spec-coverage-legacy': { 'spec.coverage': G(['legacy-unspecced']) },
   // A run record with tasks left unticked (design D13).
   'run-tasks-unticked': { 'run.integrity': A('person') },
+  // An observation the run record does not carry is unobserved, never a zero
+  // (design D9); a recorded degradation beside it still wins.
+  'run-record-empty': { 'run.integrity': U() },
+  'run-counts-unobserved': { 'run.integrity': U() },
+  'run-counts-unobserved-unticked': { 'run.integrity': A('person') },
   // Neither new input carried: both signals unobserved, for want of the fact.
   'new-inputs-not-gathered': { 'conformance.living': U(), 'spec.coverage': U() }
 }
@@ -532,11 +552,19 @@ test('each boundary fixture sits where its name says relative to MERGE_BANDS', (
   assert.ok(cov('coverage-tiny-diff').diffPct < MERGE_BANDS.patchCoverageFloorPct, 'the tiny diff is exempt, not passing')
   assert.equal(cov('coverage-at-size-floor').changedLines, MERGE_BANDS.minChangedLinesForCoverage)
   assert.ok(cov('coverage-at-size-floor').diffPct < MERGE_BANDS.patchCoverageFloorPct)
+  // The fixtures that sit under the small-change floor on purpose: the tiny
+  // diff, and the change whose only added lines the report never saw.
+  const UNDER_FLOOR = ['coverage-tiny-diff', 'coverage-unreported']
   for (const name of Object.keys(EXPECT).filter(n => n.startsWith('coverage-'))) {
     const c = cov(name)
     if (c.changedLines >= MERGE_BANDS.minChangedLinesForCoverage || name === 'coverage-at-size-floor') continue
-    assert.equal(name, 'coverage-tiny-diff', `${name} unexpectedly sits under the small-change floor`)
+    assert.ok(UNDER_FLOOR.includes(name), `${name} unexpectedly sits under the small-change floor`)
   }
+  for (const name of UNDER_FLOOR) {
+    assert.ok(cov(name).changedLines < MERGE_BANDS.minChangedLinesForCoverage, `${name} is no longer under the floor`)
+  }
+  assert.ok(decline(cov('coverage-unreported-decline')) > MERGE_BANDS.maxCoverageDeclinePts)
+  assert.ok(cov('coverage-unreported-decline').changedLines >= MERGE_BANDS.minChangedLinesForCoverage)
   assert.ok(cov('all-observable-green').changedLines >= MERGE_BANDS.minChangedLinesForCoverage)
 
   const warnings = name => fixture(name).review.surviving.filter(f => f.severity === 'warning')
@@ -793,6 +821,87 @@ test('coverage not configured is green with the flag, from the coverage input or
   assert.match(unobserved.reason, /--coverage/)
 })
 
+// --- changed source the report does not list (design D13) --------------------------
+
+const verifyCoverageOf = name => signalOf(assessMergeConfidence(fixture(name)), 'verify.coverage')
+
+test('every changed source file in the report: no unmeasured-source flag', () => {
+  const input = fixture('all-observable-green')
+  assert.deepEqual(input.coverage.unreportedFiles, [], 'precondition: the green input states an empty list')
+  const entry = signalOf(assessMergeConfidence(input), 'verify.coverage')
+  assert.equal(entry.band, 'green')
+  assert.ok(!entry.flags.includes('unmeasured-source'))
+})
+
+test('a new source file no test loaded is a flag under the small-change floor, named with its added lines, and lowers the score', () => {
+  const input = fixture('coverage-unreported')
+  const [file] = input.coverage.unreportedFiles
+  assert.equal(input.coverage.unreportedFiles.length, 1)
+  const entry = verifyCoverageOf('coverage-unreported')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, ['unmeasured-source'])
+  assert.ok(entry.reason.includes('MERGE_BANDS.minChangedLinesForCoverage'), 'the floor still decides the band')
+  assert.ok(said(entry).includes(file), said(entry))
+  assert.ok(said(entry).includes(String(input.coverage.unreportedAddedLines)), said(entry))
+
+  const flagged = assessMergeConfidence(input)
+  const plain = assessMergeConfidence(fixture('all-observable-green'))
+  assert.equal(flagged.verdict, 'MERGE', 'a flag does not move the band')
+  assert.ok(flagged.score < plain.score, `${flagged.score} is not below ${plain.score}`)
+})
+
+test('the flag never moves a band: a decline with unreported source is still amber, names the file, and carries no flag', () => {
+  const input = fixture('coverage-unreported-decline')
+  const entry = verifyCoverageOf('coverage-unreported-decline')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'finding')
+  assert.deepEqual(entry.flags, [])
+  assert.ok(entry.evidence.some(line => line.includes(input.coverage.unreportedFiles[0])), entry.evidence.join('\n'))
+  // The band is what it is without the two fields.
+  assert.equal(verifyCoverageOf('coverage-decline-beyond').band, entry.band)
+})
+
+test('an input from an older producer raises no flag and says the input does not state unreported files', () => {
+  const input = fixture('coverage-unreported-fields-absent')
+  assert.ok(!('unreportedFiles' in input.coverage) && !('unreportedAddedLines' in input.coverage))
+  const entry = verifyCoverageOf('coverage-unreported-fields-absent')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, [])
+  assert.ok(entry.evidence.some(line => /does not state/.test(line)), entry.evidence.join('\n'))
+  // And an input that does state them does not say so.
+  assert.ok(!verifyCoverageOf('all-observable-green').evidence.some(line => /does not state/.test(line)))
+})
+
+test('no coverage configured is green with no-coverage and never unmeasured-source', () => {
+  const input = fixture('all-observable-green')
+  input.coverage = { configured: false, unreportedFiles: null, unreportedAddedLines: null }
+  const entry = signalOf(assessMergeConfidence(input), 'verify.coverage')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, ['no-coverage'])
+})
+
+test('the flag rides every green reading: the tolerance, the patch floor and the size floor each keep their own', () => {
+  const unreported = { unreportedFiles: ['src/widgets/importer.ts'], unreportedAddedLines: 12 }
+  for (const [name, own] of [
+    ['coverage-decline-inside', []],
+    ['coverage-no-baseline', ['no-baseline']],
+    ['coverage-tiny-diff', []]
+  ]) {
+    const input = fixture(name)
+    input.coverage = { ...input.coverage, ...unreported }
+    const entry = signalOf(assessMergeConfidence(input), 'verify.coverage')
+    assert.equal(entry.band, 'green', name)
+    assert.deepEqual([...entry.flags].sort(), [...own, 'unmeasured-source'].sort(), name)
+  }
+  // An unobserved reading names the files too, and is still unobserved.
+  const stale = fixture('coverage-not-ancestor')
+  stale.coverage = { ...stale.coverage, ...unreported }
+  const entry = signalOf(assessMergeConfidence(stale), 'verify.coverage')
+  assert.equal(entry.band, 'unobserved')
+  assert.deepEqual(entry.flags, [])
+  assert.ok(entry.evidence.some(line => line.includes('src/widgets/importer.ts')))
+})
+
 // --- pipeline --------------------------------------------------------------------
 
 test('a failed required check is red, naming the check', () => {
@@ -819,6 +928,75 @@ test('a pipeline with no checks is green with the no-pipeline flag', () => {
   const entry = signalOf(assessMergeConfidence(input), 'ci.pipeline')
   assert.equal(entry.band, 'green')
   assert.deepEqual(entry.flags, ['no-pipeline'])
+})
+
+test('a pipeline whose checks is not a list is unobserved, saying the input is not well-formed, and is never MERGE', () => {
+  const input = fixture('pipeline-checks-not-a-list')
+  assert.equal(typeof input.pipeline.checks, 'string')
+  assert.equal(input.pipeline.sha, input.headSha, 'precondition: the input is for the head commit')
+  const result = assessMergeConfidence(input)
+  const entry = signalOf(result, 'ci.pipeline')
+  assert.equal(entry.band, 'unobserved')
+  assert.match(entry.reason, /not well-formed/)
+  assert.deepEqual(entry.flags, [], 'never the no-pipeline flag')
+  assert.notEqual(result.verdict, 'MERGE')
+
+  // A list that is simply absent reads the same way: absent is not empty.
+  const missing = fixture('all-observable-green')
+  delete missing.pipeline.checks
+  const absent = signalOf(assessMergeConfidence(missing), 'ci.pipeline')
+  assert.equal(absent.band, 'unobserved')
+  assert.match(absent.reason, /not well-formed/)
+
+  // The reproduced defect: a failed required check under a misspelt key.
+  const misspelt = fixture('pipeline-required-fail')
+  misspelt.pipeline = { sha: misspelt.pipeline.sha, check: misspelt.pipeline.checks }
+  const hidden = assessMergeConfidence(misspelt)
+  assert.equal(signalOf(hidden, 'ci.pipeline').band, 'unobserved')
+  assert.notEqual(hidden.verdict, 'MERGE')
+})
+
+test('a pipeline holding an entry that is not an object is unobserved, saying the input is not well-formed', () => {
+  const entry = signalOf(assessMergeConfidence(fixture('pipeline-entry-not-an-object')), 'ci.pipeline')
+  assert.equal(entry.band, 'unobserved')
+  assert.match(entry.reason, /not well-formed/)
+})
+
+test('an entry in a state outside the four is amber, needing more evidence, naming the entry and its state', () => {
+  const input = fixture('pipeline-unknown-state')
+  const odd = input.pipeline.checks.find(c => !['pass', 'fail', 'pending', 'skipped'].includes(c.state))
+  const entry = signalOf(assessMergeConfidence(input), 'ci.pipeline')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.ok(entry.reason.includes(`${odd.name}=${odd.state}`), entry.reason)
+})
+
+test('an excluded check is named in the evidence beside a green signal, and an input with no exclusions has no such line', () => {
+  const input = fixture('pipeline-excluded')
+  const [excluded] = input.pipeline.excluded
+  assert.ok(!input.pipeline.checks.some(c => c.name === excluded), 'precondition: the excluded check is not an entry')
+  const entry = signalOf(assessMergeConfidence(input), 'ci.pipeline')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, [])
+  assert.ok(entry.evidence.some(line => line.includes(excluded) && /excluded by the caller/.test(line)), entry.evidence.join('\n'))
+
+  const plain = signalOf(assessMergeConfidence(fixture('all-observable-green')), 'ci.pipeline')
+  assert.ok(!plain.evidence.some(line => /excluded by the caller/.test(line)))
+})
+
+test('excluded names are in the evidence whatever band the signal reads', () => {
+  const named = entry => entry.evidence.some(line => line.includes('merge-gate') && /excluded by the caller/.test(line))
+  for (const name of ['pipeline-required-fail', 'pipeline-optional-fail', 'pipeline-pending', 'pipeline-stale-sha', 'pipeline-unknown-state']) {
+    const input = fixture(name)
+    input.pipeline = { ...input.pipeline, excluded: ['merge-gate'] }
+    const entry = signalOf(assessMergeConfidence(input), 'ci.pipeline')
+    assert.ok(named(entry), `${name} [${entry.band}]: ${entry.evidence.join(' | ')}`)
+  }
+  const empty = fixture('all-observable-green')
+  empty.pipeline = { ...empty.pipeline, checks: [], excluded: ['merge-gate'] }
+  const entry = signalOf(assessMergeConfidence(empty), 'ci.pipeline')
+  assert.deepEqual(entry.flags, ['no-pipeline'])
+  assert.ok(named(entry), entry.evidence.join(' | '))
 })
 
 // --- delta conformance -------------------------------------------------------------
@@ -956,6 +1134,25 @@ test('a list the bound cut short is green with requirements-omitted, its evidenc
   assert.equal(cut.verdict, 'MERGE', 'a flag does not move the band')
   assert.ok(cut.score < plain.score, `${cut.score} is not below ${plain.score}`)
   assert.equal(cut.counts.clean, plain.counts.clean - 1)
+})
+
+test('a list the bound cut to nothing is green with requirements-omitted, stating none asked and how many were left out', () => {
+  const input = fixture('living-cut-to-nothing')
+  assert.equal(input.living.requirementsRequired, 0)
+  const left = input.living.omitted.length
+  assert.ok(left > 0, 'precondition: requirements were left out')
+  const entry = livingOf('living-cut-to-nothing')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, ['requirements-omitted'])
+  assert.ok(entry.evidence.some(line => line.includes(`0 requirement(s) asked`) && line.includes(`${left} left out`)), entry.evidence.join('\n'))
+  for (const o of input.living.omitted) assert.ok(said(entry).includes(o.heading), o.heading)
+
+  const cut = assessMergeConfidence(input)
+  const plain = assessMergeConfidence(fixture('all-observable-green'))
+  assert.equal(cut.verdict, 'MERGE', 'a flag does not move the band')
+  assert.ok(cut.score < plain.score, `${cut.score} is not below ${plain.score}`)
+  // An empty list with nothing left out is still green with no flag.
+  assert.deepEqual(livingOf('living-empty').flags, [])
 })
 
 test('a list with entries and no handoff is unobserved saying the requirements have no answers; no list is unobserved saying not gathered', () => {
@@ -1190,12 +1387,74 @@ test('tasks left unticked hold the run at amber, need a person, and the reason s
   assert.ok(result.driving.some(d => d.id === 'run.integrity' && d.kind === 'person'))
 })
 
-test('no task left unticked, and a record that does not carry the count, are not degradations', () => {
+test('no task left unticked is not a degradation; a record that does not carry the count is unobserved, naming it', () => {
   const clean = fixture('all-observable-green')
   assert.equal(clean.run.leftoverTasks, 0)
   assert.equal(signalOf(assessMergeConfidence(clean), 'run.integrity').band, 'green')
   delete clean.run.leftoverTasks
-  assert.equal(signalOf(assessMergeConfidence(clean), 'run.integrity').band, 'green')
+  const entry = signalOf(assessMergeConfidence(clean), 'run.integrity')
+  assert.equal(entry.band, 'unobserved')
+  assert.equal(entry.kind, 'evidence')
+  assert.ok(entry.reason.includes('leftoverTasks'), entry.reason)
+})
+
+// The seven observations a close records, by the keys the record uses for them
+// (design D9). Two tests written apart assert the same strings.
+const RUN_OBSERVATIONS = [
+  'halted',
+  'trajectoryComplete',
+  'stageMarkerGaps',
+  'rejectedReports',
+  'permissionPrompts',
+  'autoModeDenials',
+  'leftoverTasks'
+]
+
+test('an empty run record is unobserved and names every observation it lacks; the verdict is not MERGE', () => {
+  const input = fixture('run-record-empty')
+  assert.deepEqual(input.run, {})
+  const result = assessMergeConfidence(input)
+  const entry = signalOf(result, 'run.integrity')
+  assert.equal(entry.band, 'unobserved')
+  for (const key of RUN_OBSERVATIONS) assert.ok(entry.reason.includes(key), `${entry.reason} does not name ${key}`)
+  assert.notEqual(result.verdict, 'MERGE')
+})
+
+test('counts the host could not observe are unobserved, naming those two keys and no other', () => {
+  const input = fixture('run-counts-unobserved')
+  assert.equal(input.run.permissionPrompts, null)
+  assert.equal(input.run.autoModeDenials, null)
+  const entry = signalOf(assessMergeConfidence(input), 'run.integrity')
+  assert.equal(entry.band, 'unobserved')
+  const named = RUN_OBSERVATIONS.filter(key => entry.reason.includes(key))
+  assert.deepEqual(named, ['permissionPrompts', 'autoModeDenials'], entry.reason)
+})
+
+test('a recorded degradation beside unobserved counts is still amber, needing a person, naming the unticked task', () => {
+  const input = fixture('run-counts-unobserved-unticked')
+  assert.equal(input.run.permissionPrompts, null)
+  assert.equal(input.run.leftoverTasks, 1)
+  const entry = signalOf(assessMergeConfidence(input), 'run.integrity')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.match(entry.reason, /unticked/)
+  // A halt beside nothing else at all is a degradation too, not a missing record.
+  const halted = fixture('all-observable-green')
+  halted.run = { halted: true }
+  assert.equal(signalOf(assessMergeConfidence(halted), 'run.integrity').band, 'amber')
+})
+
+test('every observation, absent or null on its own, moves a clean record to unobserved', () => {
+  for (const key of RUN_OBSERVATIONS) {
+    for (const strip of ['absent', 'null']) {
+      const input = fixture('all-observable-green')
+      if (strip === 'absent') delete input.run[key]
+      else input.run[key] = null
+      const entry = signalOf(assessMergeConfidence(input), 'run.integrity')
+      assert.equal(entry.band, 'unobserved', `${key} ${strip}: ${entry.reason}`)
+      assert.deepEqual(RUN_OBSERVATIONS.filter(k => entry.reason.includes(k)), [key], `${key} ${strip}: ${entry.reason}`)
+    }
+  }
 })
 
 // --- the human-paths signal (spec: review/merge-confidence) -----------------------
@@ -1462,6 +1721,328 @@ test('mergeConfidenceHeadline is the first line formatMergeConfidence prints, in
       name
     )
   }
+})
+
+// --- the labels (design D14) ----------------------------------------------------------
+
+const HEX_COLOR = /^[0-9a-f]{6}$/i
+const VERDICTS = ['MERGE', 'HUMAN', 'BLOCK']
+
+test('MERGE_LABELS is frozen: one named, coloured, described label per verdict, a score prefix and the score label’s look', () => {
+  assert.ok(Object.isFrozen(MERGE_LABELS))
+  assert.ok(Object.isFrozen(MERGE_LABELS.verdicts))
+  assert.ok(Object.isFrozen(MERGE_LABELS.score))
+  assert.deepEqual(Object.keys(MERGE_LABELS).sort(), ['score', 'scorePrefix', 'verdicts'])
+  assert.deepEqual(Object.keys(MERGE_LABELS.verdicts).sort(), [...VERDICTS].sort())
+  for (const verdict of VERDICTS) {
+    const label = MERGE_LABELS.verdicts[verdict]
+    assert.ok(Object.isFrozen(label), `${verdict} label is not frozen`)
+    assert.deepEqual(Object.keys(label).sort(), ['color', 'description', 'name'])
+    assert.equal(typeof label.name, 'string')
+    assert.match(label.color, HEX_COLOR, `${verdict} color`)
+    assert.ok(typeof label.description === 'string' && label.description.length > 0)
+  }
+  assert.deepEqual(
+    VERDICTS.map(v => MERGE_LABELS.verdicts[v].name),
+    ['interlock/merge', 'interlock/human-review', 'interlock/blocked']
+  )
+  assert.equal(MERGE_LABELS.scorePrefix, 'interlock/score-')
+  assert.deepEqual(Object.keys(MERGE_LABELS.score).sort(), ['color', 'description'])
+  assert.match(MERGE_LABELS.score.color, HEX_COLOR)
+  assert.ok(typeof MERGE_LABELS.score.description === 'string' && MERGE_LABELS.score.description.length > 0)
+})
+
+test('an assessment carries the labels for its verdict and score, read from the one list', () => {
+  for (const name of ['all-observable-green', 'no-review', 'review-with-blocker']) {
+    const result = assessMergeConfidence(fixture(name))
+    const { labels } = result
+    assert.deepEqual(Object.keys(labels).sort(), ['score', 'scorePrefix', 'verdict', 'verdictNames'], name)
+    assert.deepEqual(labels.verdict, { ...MERGE_LABELS.verdicts[result.verdict] }, name)
+    assert.equal(labels.verdict.name, MERGE_LABELS.verdicts[result.verdict].name)
+    assert.deepEqual(Object.keys(labels.score).sort(), ['color', 'description', 'name'])
+    assert.equal(labels.score.name, MERGE_LABELS.scorePrefix + String(result.score), name)
+    assert.equal(labels.score.color, MERGE_LABELS.score.color)
+    assert.equal(labels.score.description, MERGE_LABELS.score.description)
+    assert.deepEqual(labels.verdictNames, VERDICTS.map(v => MERGE_LABELS.verdicts[v].name))
+    assert.equal(labels.scorePrefix, MERGE_LABELS.scorePrefix)
+  }
+  // combineSignals is where the verdict and score are made, so it carries them too.
+  const combined = combineSignals([sig('green'), sig('amber', { kind: 'person' })])
+  assert.equal(combined.labels.verdict.name, MERGE_LABELS.verdicts.HUMAN.name)
+})
+
+test('the score label is the prefix and the decimal digits of the score, with no padding', () => {
+  const unpadded = /-(0|[1-9]\d*)$/
+  const three = assessMergeConfidence(fixture('all-observable-green'))
+  const fewer = assessMergeConfidence(fixture('review-with-blocker'))
+  assert.equal(String(three.score).length, 3, 'precondition: a three-digit score')
+  assert.ok(String(fewer.score).length < 3, 'precondition: a score of fewer digits')
+  for (const result of [three, fewer]) {
+    assert.equal(result.labels.score.name, MERGE_LABELS.scorePrefix + String(result.score))
+    assert.match(result.labels.score.name, unpadded)
+  }
+  // The floor of the red range, whatever the bands are.
+  const zero = combineSignals([sig('red', { kind: 'finding' })], { bands: { ...MERGE_BANDS, ceiling: { green: 9, amber: 5, red: 0 } } })
+  assert.equal(zero.labels.score.name, MERGE_LABELS.scorePrefix + String(zero.score))
+  assert.match(zero.labels.score.name, unpadded)
+})
+
+test('formatMergeConfidence prints the two label names on one labels: line', () => {
+  const result = assessMergeConfidence(fixture('no-review'))
+  const lines = formatMergeConfidence(result).split('\n').filter(line => line.startsWith('labels:'))
+  assert.equal(lines.length, 1)
+  assert.ok(lines[0].includes(result.labels.verdict.name) && lines[0].includes(result.labels.score.name), lines[0])
+})
+
+// --- the description block (design D15) ------------------------------------------------
+
+const HEAD_GIVEN = { sha: 'abcdef0123456789abcdef0123456789abcdef01' }
+const BASE_GIVEN = { ref: 'origin/trunk', sha: '0123456789abcdef0123456789abcdef01234567' }
+const blockOf = (result, given = {}) =>
+  formatMergeConfidenceMarkdown(result, { head: HEAD_GIVEN, base: BASE_GIVEN, excluded: [], ...given })
+const count = (text, needle) => text.split(needle).length - 1
+const CODE_SPAN = /`[^`\n]*`/g
+const withoutSpans = text => text.replace(CODE_SPAN, '')
+const spansOf = text => (text.match(CODE_SPAN) || []).map(span => span.slice(1, -1))
+const groupAt = (text, label) => text.search(new RegExp(`^\\*\\*${label}\\*\\*`, 'im'))
+
+/** One person, two evidence, one flag, nothing to fix. */
+function humanInput() {
+  const input = fixture('verify-skipped-no-profile')
+  input.ledger = fixture('ledger-needs-human').ledger
+  input.run = null
+  return input
+}
+
+test('the block starts with its heading and carries the verdict line, the commit, the base, the groups in order, the flags and the labels', () => {
+  const result = assessMergeConfidence(humanInput())
+  assert.equal(result.verdict, 'HUMAN')
+  assert.deepEqual(result.driving.map(d => d.kind).sort(), ['evidence', 'evidence', 'person'])
+  assert.equal(result.flags.length, 1)
+
+  const text = blockOf(result)
+  assert.ok(text.startsWith('## Merge confidence\n'))
+  assert.ok(text.endsWith('\n') && !text.endsWith('\n\n'))
+  const verdictLine = text.split('\n').find(line => line.includes(result.verdict) && line.includes(`score ${result.score}`))
+  assert.ok(verdictLine, 'no line carries both the verdict and the score')
+  assert.ok(verdictLine.includes(`${result.range.floor}–${result.range.ceiling}`), verdictLine)
+  assert.ok(text.includes(HEAD_GIVEN.sha))
+  assert.ok(text.includes(BASE_GIVEN.ref) && text.includes(BASE_GIVEN.sha))
+
+  // Only the groups that have entries, in the order fix, person, evidence.
+  assert.equal(groupAt(text, 'needs a fix'), -1)
+  const person = groupAt(text, 'needs a person')
+  const evidence = groupAt(text, 'needs more evidence')
+  assert.ok(person > -1 && evidence > person, `person at ${person}, evidence at ${evidence}`)
+  const details = text.indexOf('<details>')
+  for (const d of result.driving) {
+    const at = text.indexOf(`\`${d.id}\``)
+    assert.ok(at > -1 && at < details, `${d.id} is not listed above the table`)
+    assert.ok(d.kind === 'person' ? at > person && at < evidence : at > evidence, `${d.id} is in the wrong group`)
+  }
+
+  for (const { id, flag } of result.flags) assert.ok(text.includes(flag) && text.includes(id))
+  assert.ok(text.includes(result.labels.verdict.name))
+  assert.ok(text.includes(result.labels.score.name))
+  assert.doesNotMatch(text, /undefined|\[object Object\]/)
+})
+
+test('all three groups print in the order fix, person, evidence when each has an entry', () => {
+  const input = humanInput()
+  input.review = fixture('review-with-blocker').review
+  const result = assessMergeConfidence(input)
+  assert.equal(result.verdict, 'BLOCK')
+  const text = blockOf(result)
+  const fix = groupAt(text, 'needs a fix')
+  const person = groupAt(text, 'needs a person')
+  const evidence = groupAt(text, 'needs more evidence')
+  assert.ok(fix > -1 && person > fix && evidence > person, `${fix}, ${person}, ${evidence}`)
+})
+
+test('a MERGE block has no group at all, and says nothing is driving', () => {
+  const text = blockOf(assessMergeConfidence(fixture('all-observable-green')))
+  for (const label of ['needs a fix', 'needs a person', 'needs more evidence']) assert.equal(groupAt(text, label), -1, label)
+})
+
+test('the signal table sits in exactly one collapsed section, one row per registered signal, in registry order', () => {
+  const result = assessMergeConfidence(humanInput())
+  const text = blockOf(result)
+  assert.equal(count(text, '<details>'), 1)
+  assert.equal(count(text, '</details>'), 1)
+  assert.ok(text.indexOf('<details>') < text.indexOf('</details>'))
+  const table = text.slice(text.indexOf('<details>'), text.indexOf('</details>'))
+  let last = -1
+  for (const id of SPEC_ORDER) {
+    const rows = table.split('\n').filter(line => line.startsWith(`| \`${id}\` |`))
+    assert.equal(rows.length, 1, `${id} has ${rows.length} table row(s)`)
+    const at = table.indexOf(rows[0])
+    assert.ok(at > last, `${id} is out of registry order`)
+    last = at
+  }
+  const rows = table.split('\n').filter(line => line.startsWith('| `'))
+  assert.equal(rows.length, SIGNALS.length)
+  // The informational signal is in the table and is not given a band.
+  const fidelity = rows.find(line => line.startsWith('| `plan.fidelity` |'))
+  assert.doesNotMatch(fidelity.split('|')[2], /green|amber|red|unobserved/)
+})
+
+test('a pipe in a reason never breaks a table row', () => {
+  const result = assessMergeConfidence(fixture('review-malformed'))
+  assert.ok(result.signals.some(s => s.reason.includes('|')), 'precondition: a reason carries a pipe')
+  const text = blockOf(result)
+  const table = text.slice(text.indexOf('<details>'), text.indexOf('</details>')).split('\n').filter(line => line.startsWith('|'))
+  const cells = line => line.replace(/\\\|/g, '').split('|').length
+  assert.ok(table.length > SIGNALS.length, 'a header, a rule and a row per signal')
+  for (const line of table) assert.equal(cells(line), cells(table[0]), line)
+})
+
+test('the excluded checks are printed only when there are any', () => {
+  const result = assessMergeConfidence(fixture('pipeline-excluded'))
+  const none = blockOf(result)
+  const some = blockOf(result, { excluded: ['merge-gate', 'label-gate'] })
+  assert.doesNotMatch(none.slice(0, none.indexOf('<details>')), /excluded/i)
+  const line = some.split('\n').find(l => /excluded/i.test(l) && l.includes('`merge-gate`'))
+  assert.ok(line && line.includes('`label-gate`'), some)
+  assert.ok(some.indexOf(line) < some.indexOf('<details>'))
+})
+
+test('a name that tries to be markup stays text: inside a code span, its backtick replaced, the section still closed once', () => {
+  const hostile = 'x`@user [l](http://e) </details>'
+  const input = fixture('pipeline-optional-fail')
+  const failed = input.pipeline.checks.find(c => c.state === 'fail')
+  failed.name = hostile
+  const result = assessMergeConfidence(input)
+  assert.ok(signalOf(result, 'ci.pipeline').reason.includes(hostile), 'precondition: the reason quotes the name')
+
+  const text = blockOf(result, { excluded: [hostile] })
+  const inert = hostile.replace(/`/g, "'")
+  assert.ok(!text.includes(hostile), 'the raw name, backtick included, is in the block')
+  assert.ok(spansOf(text).some(span => span.includes(inert)), 'no code span holds the name')
+  const bare = withoutSpans(text)
+  assert.ok(!bare.includes('@user') && !bare.includes('](http') && !bare.includes("x'"), bare)
+  assert.equal(count(bare, '<details>'), 1)
+  assert.equal(count(bare, '</details>'), 1)
+})
+
+test('a line break in a quoted string is folded, so one reason is one line', () => {
+  const input = fixture('ledger-needs-human')
+  const row = input.ledger.rows.find(r => r.class === 'needs_human')
+  row.question = 'first line\n\n## A heading\n- [ ] a task'
+  const text = blockOf(assessMergeConfidence(input))
+  assert.doesNotMatch(text, /^## A heading/m)
+  assert.doesNotMatch(text, /^- \[ \] a task/m)
+  assert.equal(text.split('\n').filter(line => /^#{1,6} /.test(line)).length, 1, 'the block holds one heading, its own')
+})
+
+test('a very long name is cut: the span holding it is shorter than the name and ends with an ellipsis', () => {
+  const long = 'k'.repeat(1000)
+  const input = fixture('pipeline-optional-fail')
+  input.pipeline.checks.find(c => c.state === 'fail').name = long
+  const text = blockOf(assessMergeConfidence(input), { excluded: [long] })
+  const holding = spansOf(text).filter(span => span.includes('k'.repeat(40)))
+  assert.ok(holding.length >= 2, 'the name is quoted by a reason and by the excluded list')
+  for (const span of holding) {
+    assert.ok(span.length < long.length, `a span of ${span.length} characters`)
+    assert.ok(span.endsWith('…'), span.slice(-12))
+  }
+  assert.ok(!text.includes(long))
+})
+
+test('an unreadable head and no base are said, not printed as null', () => {
+  const result = assessMergeConfidence(fixture('no-base'))
+  const text = formatMergeConfidenceMarkdown(result, { head: null, base: null, excluded: [] })
+  assert.ok(text.startsWith('## Merge confidence\n'))
+  assert.doesNotMatch(text, /\bnull\b|undefined/)
+  // A base whose merge base could not be read still names the reference.
+  const shallow = formatMergeConfidenceMarkdown(result, { head: HEAD_GIVEN, base: { ref: 'origin/trunk', sha: null }, excluded: [] })
+  assert.ok(shallow.includes('origin/trunk'))
+  assert.doesNotMatch(shallow, /\bnull\b|undefined/)
+  // And the options are optional.
+  assert.ok(formatMergeConfidenceMarkdown(result).startsWith('## Merge confidence\n'))
+})
+
+test('the block is a rendering: the same assessment and the same context give the same text, and nothing is mutated', () => {
+  const result = assessMergeConfidence(humanInput())
+  const before = JSON.stringify(result)
+  assert.equal(blockOf(result), blockOf(result))
+  assert.equal(JSON.stringify(result), before)
+})
+
+// --- the delivery documentation (design D17, D18) -------------------------------------
+//
+// Pinned by identifier, never by sentence: the page's tables must list exactly
+// what the registry and the flag list publish, and each recipe must open with
+// its three labelled lines.
+
+const page = () => readFileSync(DELIVERY_PAGE, 'utf8')
+
+/** The text under a `## ` heading, up to the next one. */
+function sectionOf(text, heading) {
+  const lines = text.split('\n')
+  const start = lines.findIndex(line => line.trim() === heading)
+  assert.ok(start > -1, `docs/15-merge-confidence.md has no "${heading}" heading`)
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex(line => /^## /.test(line))
+  return (end === -1 ? rest : rest.slice(0, end)).join('\n')
+}
+
+/** The backticked first cell of every table row in a section. */
+const firstCells = section =>
+  section
+    .split('\n')
+    .map(line => line.match(/^\|\s*`([^`]+)`\s*\|/))
+    .filter(Boolean)
+    .map(m => m[1])
+
+function assertSameSet(listed, published, what) {
+  const missing = published.filter(id => !listed.includes(id))
+  const extra = listed.filter(id => !published.includes(id))
+  assert.deepEqual(missing, [], `docs/15 has no ${what} row for: ${missing.join(', ')}`)
+  assert.deepEqual(extra, [], `docs/15 has a ${what} row the code does not publish: ${extra.join(', ')}`)
+  assert.equal(listed.length, published.length, `docs/15 lists a ${what} more than one time`)
+}
+
+test('docs/15 has one signal row per registered signal, and marks the informational one as not gating', () => {
+  const section = sectionOf(page(), '## The signals')
+  assertSameSet(firstCells(section), SIGNALS.map(s => s.id), 'signal')
+  for (const entry of SIGNALS.filter(s => !s.gating)) {
+    const row = section.split('\n').find(line => line.startsWith(`| \`${entry.id}\``))
+    assert.match(row, /not gating/i, `${entry.id} is not marked as not gating`)
+  }
+})
+
+test('docs/15 has one flag row per published flag', () => {
+  assertSameSet(firstCells(sectionOf(page(), '## The flags')), [...FLAGS], 'flag')
+})
+
+test('the table check itself names a signal registered without a row', () => {
+  const section = sectionOf('## The signals\n\n| Signal | Reads |\n|---|---|\n| `review.blockers` | x |\n\n## Next\n', '## The signals')
+  assert.deepEqual(firstCells(section), ['review.blockers'])
+  assert.throws(() => assertSameSet(firstCells(section), ['review.blockers', 'review.warnings'], 'signal'), /review\.warnings/)
+})
+
+test('docs/15 names every label the command can print', () => {
+  const text = page()
+  for (const verdict of VERDICTS) {
+    const { name } = MERGE_LABELS.verdicts[verdict]
+    assert.ok(text.includes(name), `docs/15 does not name the ${verdict} label ${name}`)
+  }
+  assert.ok(text.includes(MERGE_LABELS.scorePrefix), `docs/15 does not name the score prefix ${MERGE_LABELS.scorePrefix}`)
+})
+
+test('docs/15 carries at least three recipes, each opening with who merges, what clears the labels and whether it was exercised', () => {
+  const text = page()
+  const recipes = text.split(/^(?=### Recipe:)/m).filter(part => part.startsWith('### Recipe:'))
+  assert.ok(recipes.length >= 3, `docs/15 carries ${recipes.length} recipe(s)`)
+  for (const recipe of recipes) {
+    const title = recipe.split('\n')[0]
+    const body = recipe.split(/^#{2,3} /m)[1] ?? recipe
+    for (const label of ['**Merges:**', '**Clears labels:**', '**Exercised:**']) {
+      assert.ok(body.includes(label), `${title} has no ${label} line`)
+    }
+  }
+  assert.ok(text.includes('--gate-check'), 'docs/15 does not mention --gate-check')
+  assert.ok(text.includes('--require-merge'))
 })
 
 // --- thresholds are read, never restated (spec: thresholds published) -------------

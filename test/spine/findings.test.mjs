@@ -8,6 +8,7 @@ import {
   TOLERANCE_BAND,
   UNSCOPED_GROUP
 } from '../../lib/findings.mjs'
+import * as findingsModule from '../../lib/findings.mjs'
 
 const f = (over = {}) => ({
   severity: 'warning',
@@ -307,4 +308,85 @@ test('formatGate names a malformed severity rather than hiding it in a count', (
   const text = formatGate(evaluateGate([f({ severity: 'critical', title: 'scary' })]))
   assert.match(text, /malformed/i)
   assert.match(text, /scary/)
+})
+
+// --- an input that carries no findings list (design D10 of label-and-harden-the-merge-verdict) ---
+//
+// Reached through the namespace so the missing export fails only these tests.
+// `carriesFindingsList(input)` is the one predicate five readers share: a reader
+// that cannot find the findings has not established that there are none.
+
+const blocker = (over = {}) => f({ severity: 'blocker', title: 'the loop drops the last row', ...over })
+
+test('carriesFindingsList is true for each accepted shape, an empty list included', () => {
+  const { carriesFindingsList } = findingsModule
+  for (const input of [
+    [],
+    [f()],
+    [{ dimension: 'qa', findings: [f()] }],
+    [{ dimension: 'qa', findings: [] }],
+    { dimension: 'qa', findings: [f()] },
+    { dimension: 'qa', findings: [] },
+    { surviving: [blocker()] },
+    { surviving: [] },
+    // The record `interlock review --json` prints carries more than its list.
+    { surviving: [], dismissed: [], droppedByQuality: [], counts: { raised: 0, surviving: 0 } }
+  ]) {
+    assert.equal(carriesFindingsList(input), true, JSON.stringify(input))
+  }
+})
+
+test('carriesFindingsList is false for anything that holds no list of findings', () => {
+  const { carriesFindingsList } = findingsModule
+  for (const input of [
+    {},
+    null,
+    undefined,
+    'no findings',
+    '[]',
+    0,
+    7,
+    true,
+    { summary: 'clean' },
+    { counts: { blocker: 0 } },
+    { findings: 'none' },
+    { surviving: 0 },
+    { dismissed: [] },
+    { blockers: [] }
+  ]) {
+    assert.equal(carriesFindingsList(input), false, JSON.stringify(input))
+  }
+})
+
+test('the gate reads a review record’s surviving list, and blocks on the blocker in it', () => {
+  const record = {
+    surviving: [blocker(), f({ title: 'a warning beside it' })],
+    dismissed: [blocker({ title: 'verified away' })],
+    counts: { raised: 3, dismissed: 1, surviving: 2 }
+  }
+  const result = evaluateGate(record)
+  assert.equal(result.passed, false)
+  assert.equal(result.total, 2, 'only the surviving list is read')
+  assert.deepEqual(result.blockers.map(b => b.title), ['the loop drops the last row'])
+  assert.match(formatGate(result), /GATE BLOCKED/)
+})
+
+test('an empty list, and a record whose surviving list is empty, each pass with zero findings', () => {
+  for (const input of [[], { surviving: [] }]) {
+    const result = evaluateGate(input)
+    assert.equal(result.passed, true, JSON.stringify(input))
+    assert.equal(result.total, 0)
+  }
+})
+
+test('a surviving finding keeps the dimension it already carries', () => {
+  const result = evaluateGate({ surviving: [blocker({ dimension: 'security' })] })
+  assert.equal(result.byDimension.security, 1)
+})
+
+test('the shape reader stays total: an input with no list is not thrown on, it is the caller’s to refuse', () => {
+  for (const input of [{}, null, 'text', 7]) {
+    assert.doesNotThrow(() => evaluateGate(input))
+    assert.doesNotThrow(() => applyToleranceBand(input))
+  }
 })

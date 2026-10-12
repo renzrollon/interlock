@@ -3627,7 +3627,8 @@ const covScript = ({ exit = 0, marker = null } = {}) =>
   ].join('\n') + '\n'
 
 const COVERAGE_INPUT_FIELDS = [
-  'baseIsAncestor', 'baseSha', 'baseTotalPct', 'changedLines', 'configured', 'diffPct', 'headTotalPct'
+  'baseIsAncestor', 'baseSha', 'baseTotalPct', 'changedLines', 'configured', 'diffPct', 'headTotalPct',
+  'unreportedAddedLines', 'unreportedFiles'
 ]
 
 test('verify baseline records the total of a report on this commit, and refuses a report with none', () => {
@@ -3730,7 +3731,7 @@ test('verify coverage dies without --base, and on a ref that names no commit', (
   assert.match(bad.stderr, /no-such-ref-anywhere/)
 })
 
-test('verify coverage prints exactly the seven fields the merge verdict reads, from the report, the baseline and the diff', () => {
+test('verify coverage prints exactly the nine fields the merge verdict reads, from the report, the baseline and the diff', () => {
   const repo = coverageRepo('cov-happy')
   writeProfile(repo.root, COVERAGE_ON)
   writeHeadReport(repo.root)
@@ -3746,8 +3747,52 @@ test('verify coverage prints exactly the seven fields the merge verdict reads, f
     baseSha: repo.base,
     baseIsAncestor: true,
     diffPct: 75,
-    changedLines: 4
+    changedLines: 4,
+    // Every changed source file is in the report: an empty list, stated.
+    unreportedFiles: [],
+    unreportedAddedLines: 0
   })
+})
+
+// A changed source file the report holds no record for (design D13 of
+// label-and-harden-the-merge-verdict). The head commit adds both files; the
+// report still lists lib/a.mjs alone.
+test('verify coverage names a new source file the report does not list, with its added lines, and leaves the figures alone', () => {
+  const repo = coverageRepo('cov-unreported')
+  const forty = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i}`).join('\n') + '\n'
+  commitFiles(repo.root, { 'lib/fresh.mjs': forty, 'test/fresh.test.mjs': "import '../lib/fresh.mjs'\n", 'docs/fresh.md': '# fresh\n' })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.deepEqual(Object.keys(out).sort(), COVERAGE_INPUT_FIELDS)
+  assert.deepEqual(out.unreportedFiles, ['lib/fresh.mjs'], 'the source file only: a test and a document are never listed')
+  assert.equal(out.unreportedAddedLines, 40)
+  // What the report did measure is what it was without that file.
+  assert.equal(out.diffPct, 75)
+  assert.equal(out.changedLines, 4)
+
+  // The text form says it too.
+  const text = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.includes('lib/fresh.mjs'), text.stdout)
+})
+
+test('verify coverage lists no test file the report lacks, and prints both unreported fields as null with no coverage configured', () => {
+  const repo = coverageRepo('cov-unreported-test-only')
+  commitFiles(repo.root, { 'test/fresh.test.mjs': 'export {}\n' })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.deepEqual(out.unreportedFiles, [])
+  assert.equal(out.unreportedAddedLines, 0)
+
+  const bare = coverageRepo('cov-unreported-not-configured')
+  commitFiles(bare.root, { 'lib/fresh.mjs': 'export {}\n' })
+  const none = runJson(['verify', 'coverage', '--base', bare.base, '--root', bare.root])
+  assert.deepEqual(Object.keys(none).sort(), COVERAGE_INPUT_FIELDS)
+  assert.equal(none.configured, false)
+  assert.equal(none.unreportedFiles, null)
+  assert.equal(none.unreportedAddedLines, null)
 })
 
 test('verify coverage with no baseline anywhere leaves every base field empty and still judges the changed lines', () => {
@@ -4336,4 +4381,110 @@ test('spec-audit names a spec it cannot read, leaves it out of the totals, and s
   } finally {
     chmodSync(locked, 0o600)
   }
+})
+
+// =============================================================================
+// A findings input with no findings list (label-and-harden-the-merge-verdict,
+// design D10): `gate`, `review` and `remediate` exit 1 with the reason on
+// stderr and nothing on stdout, as they do for a file they cannot read.
+// =============================================================================
+
+const LISTED_BLOCKER = {
+  dimension: 'language',
+  severity: 'blocker',
+  file: 'lib/a.mjs',
+  title: 'the loop drops the last row',
+  description: 'off by one in the loop bound'
+}
+
+for (const [label, argv] of [
+  ['gate', path => ['gate', '--findings', path]],
+  ['review', path => ['review', '--findings', path, '--verdicts', file('nfl-verdicts.json', [])]],
+  ['remediate', path => ['remediate', '--findings', path]]
+]) {
+  test(`${label} refuses an input that carries no findings list: exit 1, the reason on stderr, nothing on stdout`, () => {
+    for (const [name, body] of [
+      ['empty-object', {}],
+      ['other-keys', { summary: 'nothing to report', counts: { blocker: 0 } }],
+      ['a-number', 7],
+      // `file` writes a string as it is, so the JSON string is spelt with its quotes.
+      ['a-string', '"clean"']
+    ]) {
+      const path = file(`nfl-${label}-${name}.json`, body)
+      for (const json of [[], ['--json']]) {
+        const r = run([...argv(path), ...json])
+        assert.equal(r.code, 1, `${label} ${name} ${json.join('')}: ${r.stdout}`)
+        assert.equal(r.stdout, '', `${label} ${name}: stdout must be empty`)
+        assert.ok(r.stderr.includes('no findings list'), r.stderr)
+      }
+    }
+  })
+}
+
+test('gate handed the record interlock review --json prints blocks on its surviving blocker and lists it', () => {
+  const findings = file('nfl-record-findings.json', [{ dimension: 'language', findings: [LISTED_BLOCKER] }])
+  const verdicts = file('nfl-record-verdicts.json', [])
+  const reviewed = run(['review', '--findings', findings, '--verdicts', verdicts, '--json'])
+  assert.equal(reviewed.code, 0, reviewed.stderr)
+  const record = JSON.parse(reviewed.stdout)
+  assert.equal(record.surviving.length, 1, 'precondition: the review left one surviving blocker')
+  assert.ok(!Array.isArray(record.findings), 'precondition: the record carries no findings key')
+
+  const recordPath = file('nfl-record.json', record)
+  const gated = run(['gate', '--findings', recordPath])
+  assert.equal(gated.code, 1)
+  assert.match(gated.stdout, /GATE BLOCKED/)
+  assert.ok(gated.stdout.includes(LISTED_BLOCKER.title), gated.stdout)
+
+  // The remediation plan reads the same list.
+  const planned = runJson(['remediate', '--findings', recordPath])
+  assert.equal(planned.counts.blockers, 1)
+})
+
+test('an empty list, and a record whose surviving list is empty, each pass the gate with zero findings', () => {
+  for (const [name, body] of [['list', []], ['record', { surviving: [], dismissed: [LISTED_BLOCKER], counts: { raised: 1, surviving: 0 } }]]) {
+    const out = runJson(['gate', '--findings', file(`nfl-empty-${name}.json`, body)])
+    assert.equal(out.passed, true, name)
+    assert.equal(out.total, 0, name)
+  }
+  // And nothing to fix is still a plan, exit 0.
+  assert.equal(run(['remediate', '--findings', file('nfl-empty-plan.json', [])]).code, 0)
+  assert.equal(run(['review', '--findings', file('nfl-empty-review.json', []), '--verdicts', file('nfl-empty-verdicts.json', [])]).code, 0)
+})
+
+// =============================================================================
+// A glob-shaped item in an enforced list, at the merge verdict (design D11).
+// The base commit holds the REVIEW.md, so its lists are the ones applied.
+// =============================================================================
+
+test('an always-human-review item src/** reads policy.humanPaths amber, for a person, naming the item', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-pattern', '## Always Human Review\n- src/**\n', changed)
+  const out = humanPathsRun(repo, changed)
+  const signal = signalIn(out, 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('"src/**"'), said(signal))
+  assert.ok(said(signal).includes('Always Human Review'), said(signal))
+  assert.notEqual(out.verdict, 'MERGE')
+})
+
+test('a do-not-report item docs/*.md is reported by review-policy and leaves policy.humanPaths green', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-pattern-other-list', '## Do Not Report\n- docs/*.md\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'green', said(signal))
+
+  const policy = runJson(['review-policy', '--root', repo.root, '--base', repo.base])
+  assert.deepEqual(policy.excludePaths, [])
+  assert.ok(policy.problems.some(p => p.includes('"Do Not Report" item "docs/*.md"')), policy.problems.join(' | '))
+})
+
+test('an always-human-review item app/[id]/ is a path: a file under it is amber by the path, and nothing is reported as a pattern', () => {
+  const changed = ['app/[id]/page.tsx']
+  const repo = humanPathsRepo('mc-human-brackets', '## Always Human Review\n- app/[id]/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.ok(said(signal).includes('app/[id]/page.tsx'), said(signal))
+  assert.doesNotMatch(said(signal), /directory prefix/)
 })

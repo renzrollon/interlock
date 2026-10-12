@@ -1,6 +1,17 @@
 # Epic: a merge-confidence scoring gate for PR/MR review
 
-Written 2026-10-12 against Interlock 1.5.1 (`23856b0`); revised the same day after the owner's answers to the six open questions (§6). Status: findings and change briefs. Nothing in this file is implemented; each brief in §5 is the source for one OpenSpec change, created with `openspec new change`, never by hand-scaffolding `openspec/changes/`.
+Written 2026-10-12 against Interlock 1.5.1 (`23856b0`); revised the same day after the owner's answers to the six open questions (§6). Each brief in §5 was the source for one OpenSpec change, created with `openspec new change`, never by hand-scaffolding `openspec/changes/`.
+
+**Status, 2026-10-13: all eight briefs are implemented.** This file is the findings and the briefs as they were written; it was not revised to match what was built. Four changes carried them:
+
+| Change | Briefs | State |
+|---|---|---|
+| `add-merge-confidence-gate` (`8ec2dc7`, `28a296d`) | E1, the verdict and the command | archived |
+| `judge-against-base-and-living-specs` (`b2c1384`) | E8 the coverage figures, E4 policy from the base, E5 the `domain` dimension, E7 the spec audit | archived |
+| `complete-and-record-the-merge-verdict` (`a170225`) | E2 the close and the receipt, E6 living conformance and spec coverage | archived |
+| `label-and-harden-the-merge-verdict` | E3 the labels and the `mr` skill, and the hardening an audit of the epic's commits called for | implemented on this branch |
+
+Where a change departed from its brief, the departure and its reason are recorded in that change's `design.md`, not here. The larger ones: the coverage baseline is `interlock verify baseline` and `verify coverage --base`, not a `verify exec` option (E8); the platform's checks become the pipeline file in code (`interlock pipeline`), not in the skill, and the skill carries no label name (E3); a run's evidence file never supplies a base (E3); changed source the coverage report does not list is a flag, not a band (E3). One question stays open for the owner: what `risk.class` reads at merge (D1 in the last change's decision ledger).
 
 Two asks produced it:
 
