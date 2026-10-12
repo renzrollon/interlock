@@ -502,8 +502,12 @@ merge-confidence:
                          baseIsAncestor, diffPct, changedLines }. Produced by
                          the coverage baseline writer (E8).
   --base <ref>           Diff against this ref (git diff --numstat
-                         <ref>...HEAD) for the diff shape. Absent, the diff
-                         shape is unobserved.
+                         <ref>...HEAD) for the diff shape. Every path git
+                         reports is assessed too, whether or not --changed
+                         names it; the ones it did not are listed on stderr.
+                         Absent, or a ref that is HEAD or ahead of it (an
+                         empty diff by construction), the diff shape is
+                         unobserved.
   --require-merge        Exit 1 unless the verdict is MERGE.
   Every input not given reads unobserved with that reason, and unobserved ranks
   as amber. The command never calls gh, glab or the network. conformance.living,
@@ -1950,29 +1954,55 @@ function headShaOf(root) {
 }
 
 /**
- * The diff shape against a base: `git diff --numstat <base>...HEAD`. A binary
- * row (`-\t-\tpath`) counts as one file and no lines; a rename counts as git
- * reports it. A base git cannot diff against is input the command could not
- * read, so it dies before any assessment.
+ * The diff shape against a base: `git diff --numstat -z <base>...HEAD`. A
+ * binary row (`-\t-\tpath`) counts as one file and no lines; a rename counts
+ * as git reports it, and both of its paths are changed paths. A base git
+ * cannot diff against is input the command could not read, so it dies before
+ * any assessment. A base that is HEAD or a descendant of it diffs empty by
+ * construction, so it carries `nothingToDiff` instead of counts — an empty
+ * diff there proves nothing about the change.
  */
-function diffShapeOf(root, base) {
-  let out
-  try {
-    out = execFileSync('git', ['diff', '--numstat', `${base}...HEAD`], {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-  } catch (err) {
+function diffShapeOf(root, base, headSha) {
+  const git = args =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const fail = err => {
     const detail = (err.stderr && String(err.stderr).trim()) || err.message
     die(`--base ${base}: git could not diff it against HEAD: ${detail}`)
   }
+  let mergeBase
+  try {
+    mergeBase = git(['merge-base', base, 'HEAD']).trim()
+  } catch (err) {
+    fail(err)
+  }
+  if (headSha && mergeBase === headSha) {
+    return {
+      base,
+      paths: [],
+      nothingToDiff: `--base ${base} is HEAD or a descendant of it, so ${base}...HEAD is empty by construction and says nothing about the change`
+    }
+  }
+  let out
+  try {
+    out = git(['diff', '--numstat', '-z', `${base}...HEAD`])
+  } catch (err) {
+    fail(err)
+  }
+  // -z: `added\tdeleted\tpath\0`, or for a rename `added\tdeleted\t\0old\0new\0`.
   let changedLines = 0
   let changedFiles = 0
   let binaryFiles = 0
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue
-    const [added, deleted] = line.split('\t')
+  const paths = []
+  const tokens = out.split('\0')
+  for (let i = 0; i < tokens.length; i++) {
+    if (!tokens[i]) continue
+    const [added, deleted, path] = tokens[i].split('\t')
+    if (path) {
+      paths.push(path)
+    } else {
+      paths.push(...tokens.slice(i + 1, i + 3).filter(Boolean))
+      i += 2
+    }
     changedFiles += 1
     if (added === '-' || deleted === '-') {
       binaryFiles += 1
@@ -1980,7 +2010,7 @@ function diffShapeOf(root, base) {
     }
     changedLines += (Number(added) || 0) + (Number(deleted) || 0)
   }
-  return { base, changedLines, changedFiles, binaryFiles }
+  return { base, changedLines, changedFiles, binaryFiles, paths }
 }
 
 function splitPaths(value) {
@@ -2246,6 +2276,19 @@ async function main() {
             : splitPaths(given.join(','))
       }
 
+      // With a base, git's own file list is a changed-path source: a path the
+      // caller left out of --changed still reaches risk, conformance and drift.
+      const headSha = headShaOf(root)
+      const diff = base ? diffShapeOf(root, base, headSha) : null
+      if (diff) {
+        const named = new Set(changedPaths)
+        const added = diff.paths.filter(p => !named.has(p))
+        if (added.length) {
+          warn(`${added.length} path(s) git reports in ${base}...HEAD were not in --changed and are assessed too: ${added.join(', ')}`)
+          changedPaths = [...changedPaths, ...added]
+        }
+      }
+
       // What the repository itself says.
       const requested = typeof flags.change === 'string' ? flags.change : positional[1]
       const resolved = resolveChange(root, requested)
@@ -2271,8 +2314,6 @@ async function main() {
         ...driftReport,
         unarchived: driftReport.unarchived.map(u => ({ ...u, capabilities: capabilitiesOf(root, u.change) }))
       }
-      const headSha = headShaOf(root)
-      const diff = base ? diffShapeOf(root, base) : null
 
       const result = assessMergeConfidence({
         change,

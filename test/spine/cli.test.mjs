@@ -2885,15 +2885,13 @@ const CALLER_INPUT_SIGNALS = {
 
 const SCENARIO_COUNT = 5
 
-let mergeRepo = null
-/** A git checkout holding one change whose delta specs carry SCENARIO_COUNT scenarios. */
-function mergeConfidenceRepo() {
-  if (mergeRepo) return mergeRepo
+/** The one change's files: delta specs carrying SCENARIO_COUNT scenarios. */
+function widgetChangeFiles() {
   const scenarios = Array.from(
     { length: SCENARIO_COUNT },
     (_, i) => `#### Scenario: case ${i + 1}\n\n- **GIVEN** a catalogue\n- **WHEN** it renders\n- **THEN** it lists case ${i + 1}\n`
   ).join('\n')
-  mergeRepo = gitRepo('merge-confidence-repo', {
+  return {
     'openspec/changes/add-widget-catalogue/proposal.md': '## Why\n\nList the widgets a shop sells in one catalogue view.\n',
     'openspec/changes/add-widget-catalogue/design.md': '## Decisions\n\nD1. The catalogue reads the existing widget store.\n',
     'openspec/changes/add-widget-catalogue/tasks.md': '- [ ] 1.1 Render the catalogue\n',
@@ -2906,11 +2904,46 @@ function mergeConfidenceRepo() {
       ''
     ].join('\n'),
     'openspec/changes/add-widget-catalogue/specs/widgets/catalogue/spec.md':
-      `## ADDED Requirements\n\n### Requirement: The catalogue lists widgets\n\nThe catalogue SHALL list every widget.\n\n${scenarios}`,
+      `## ADDED Requirements\n\n### Requirement: The catalogue lists widgets\n\nThe catalogue SHALL list every widget.\n\n${scenarios}`
+  }
+}
+
+let mergeRepo = null
+/** A git checkout holding the change and its source in one commit. */
+function mergeConfidenceRepo() {
+  if (mergeRepo) return mergeRepo
+  mergeRepo = gitRepo('merge-confidence-repo', {
+    ...widgetChangeFiles(),
     'src/widgets/catalogue.ts': 'export const catalogue = () => []\n'
   })
   return mergeRepo
 }
+
+/**
+ * A checkout whose first commit holds only the change's artifacts and whose
+ * second adds `headFiles`, so `--base <base>` has a real diff to read.
+ */
+function mergeBaseRepo(sub, headFiles) {
+  const repo = gitRepo(sub, widgetChangeFiles())
+  for (const [rel, body] of Object.entries(headFiles)) {
+    mkdirSync(dirname(join(repo.root, rel)), { recursive: true })
+    writeFileSync(join(repo.root, rel), body)
+  }
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@example.invalid',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@example.invalid'
+  }
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env })
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'head'])
+  return { root: repo.root, base: repo.sha, sha: git(['rev-parse', 'HEAD']).stdout.trim() }
+}
+
+const greenFixture = () =>
+  JSON.parse(readFileSync(new URL('../fixtures/merge-confidence/all-observable-green.json', import.meta.url), 'utf8'))
 
 const mergeArgs = (...extra) => [
   'merge-confidence',
@@ -3015,8 +3048,10 @@ test('a --handoff file that states a smaller denominator is amber, naming the ch
 })
 
 test('--base reads the diff shape from git, and a base git cannot diff dies with nothing on stdout', () => {
-  const out = runJson(mergeArgs('--base', 'HEAD'))
-  assert.equal(signalIn(out, 'diff.shape').band, 'green', signalIn(out, 'diff.shape').reason)
+  // HEAD as the base diffs empty by construction: unobserved, never a small diff.
+  const head = signalIn(runJson(mergeArgs('--base', 'HEAD')), 'diff.shape')
+  assert.equal(head.band, 'unobserved', head.reason)
+  assert.match(head.reason, /descendant/)
 
   const bad = run(mergeArgs('--base', 'no-such-ref-anywhere', '--json'))
   assert.equal(bad.code, 1)
@@ -3027,6 +3062,57 @@ test('--base reads the diff shape from git, and a base git cannot diff dies with
   assert.equal(option.code, 1, 'a base that reads as an option is refused, never handed to git')
   assert.equal(option.stdout, '')
   assert.match(option.stderr, /must name a ref/)
+})
+
+test('--base assesses every path git reports, naming on stderr the ones --changed left out', () => {
+  const repo = mergeBaseRepo('merge-confidence-base-unnamed', {
+    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n',
+    'src/payments/charge.ts': 'export const charge = () => 0\n'
+  })
+  const r = run([
+    'merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base,
+    '--changed', 'src/widgets/catalogue.ts', '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /were not in --changed/)
+  assert.ok(r.stderr.includes('src/payments/charge.ts'), r.stderr)
+  const out = JSON.parse(r.stdout)
+  const diff = signalIn(out, 'diff.shape')
+  assert.equal(diff.band, 'green', diff.reason)
+  assert.ok(diff.evidence.some(line => /2 changed file/.test(line)), diff.evidence.join('\n'))
+  const risk = signalIn(out, 'risk.class')
+  assert.equal(risk.band, 'amber', 'the payments path --changed omitted still reaches the risk classifier')
+  assert.ok(risk.evidence.some(line => line.includes('payments')), risk.evidence.join('\n'))
+})
+
+test('a full set of inputs on a clean change reads HUMAN, held only by what no caller can supply yet, and exits 0', () => {
+  const repo = mergeBaseRepo('merge-confidence-base-full', {
+    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n'
+  })
+  const green = greenFixture()
+  const r = run([
+    'merge-confidence', 'add-widget-catalogue', '--root', repo.root,
+    '--base', repo.base,
+    '--review', file('mc-full-review.json', green.review),
+    '--verify', file('mc-full-verify.json', green.verify),
+    '--handoff', file('mc-full-handoff.json', { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 }),
+    '--pipeline', file('mc-full-pipeline.json', { ...green.pipeline, sha: repo.sha }),
+    '--coverage', file('mc-full-coverage.json', green.coverage),
+    '--changed', 'src/widgets/catalogue.ts',
+    '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'HUMAN')
+  // The three producers not yet landed, plus the run record a hand run never has.
+  assert.deepEqual(
+    out.driving.map(d => d.id).sort(),
+    ['conformance.living', 'policy.humanPaths', 'run.integrity', 'spec.coverage'],
+    JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2)
+  )
+  for (const id of ['verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran']) {
+    assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
+  }
 })
 
 test('limits --json carries the merge bands as their own group, ceiling table included', () => {

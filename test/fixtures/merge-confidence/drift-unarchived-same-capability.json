@@ -260,7 +260,6 @@
     "stageMarkerGaps": 0,
     "rejectedReports": 0,
     "permissionPrompts": 0,
-    "autoModeDenials": 0,
-    "policyDiffersFromBase": false
+    "autoModeDenials": 0
   }
 }

@@ -561,6 +561,15 @@ test('an incomplete review, and one whose selected dimension could not run, are 
   assert.match(unavailable.reason, /typescript/)
 })
 
+test('a selected dimension recorded neither as ran nor as unavailable is amber, naming it', () => {
+  const input = fixture('all-observable-green')
+  input.review.dimensions = { ...input.review.dimensions, ran: ['qa'], unavailable: [] }
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.match(entry.reason, /no record that they ran: typescript/)
+})
+
 test('a refused refutation, and verdicts below the floor, are amber on the adversarial signal', () => {
   const refused = signalOf(assessMergeConfidence(fixture('review-dismissal-rejected')), 'review.adversarial')
   assert.match(refused.reason, /refus/)
@@ -629,6 +638,14 @@ test('each skip reason resolves to the one band the requirement names, each reas
   assert.match(read('verify-budget-exceeded').reason, /budget/)
   assert.match(read('typecheck-no-result').reason, /typecheck/)
   assert.deepEqual(read('typecheck-no-command').flags, ['no-typecheck'])
+})
+
+test('a flag on one blocking kind is still reported when the other kind holds the suite at a worse band', () => {
+  const input = fixture('typecheck-no-command')
+  input.verify = { ...input.verify, unit: fixture('unit-pre-existing').verify.unit }
+  const entry = signalOf(assessMergeConfidence(input), 'verify.suite')
+  assert.equal(entry.band, 'amber', entry.reason)
+  assert.deepEqual(entry.flags, ['no-typecheck'])
 })
 
 test('a skip reason this table does not name fails closed to amber', () => {
@@ -829,6 +846,14 @@ test('no base to diff against is unobserved, saying so', () => {
   assert.match(signalOf(assessMergeConfidence(fixture('no-base')), 'diff.shape').reason, /no base/i)
 })
 
+test('a base with nothing to diff is unobserved with its reason, never an empty diff read as small', () => {
+  const input = fixture('all-observable-green')
+  input.diff = { base: 'HEAD', paths: [], nothingToDiff: '--base HEAD is HEAD or a descendant of it' }
+  const entry = signalOf(assessMergeConfidence(input), 'diff.shape')
+  assert.equal(entry.band, 'unobserved')
+  assert.match(entry.reason, /descendant/)
+})
+
 test('a needs-human row is amber needing a person, carrying the row’s id and question', () => {
   const input = fixture('ledger-needs-human')
   const row = input.ledger.rows.find(r => r.class === 'needs_human')
@@ -883,13 +908,17 @@ test('a degraded run is amber, and no run record is unobserved with plan fidelit
     { stageMarkerGaps: 1 },
     { rejectedReports: 1 },
     { permissionPrompts: 1 },
-    { autoModeDenials: 1 },
-    { policyDiffersFromBase: true }
+    { autoModeDenials: 1 }
   ]) {
     const input = fixture('all-observable-green')
     input.run = { ...input.run, ...degradation }
     assert.equal(signalOf(assessMergeConfidence(input), 'run.integrity').band, 'amber', JSON.stringify(degradation))
   }
+  // A REVIEW.md that differs from the base ref is policy.humanPaths' question
+  // (E4); the run signal does not read it too.
+  const policy = fixture('all-observable-green')
+  policy.run = { ...policy.run, policyDiffersFromBase: true }
+  assert.equal(signalOf(assessMergeConfidence(policy), 'run.integrity').band, 'green')
   const input = fixture('all-observable-green')
   input.run = null
   const result = assessMergeConfidence(input)
