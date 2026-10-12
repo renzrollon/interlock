@@ -4,7 +4,7 @@
 //
 //   - `combineSignals` is the formula: worst band wins, unobserved ranks amber,
 //     a flag lowers the score and never moves a band. No input this version
-//     accepts can read MERGE, because three signals have no producer yet, so the
+//     accepts can read MERGE, because two signals have no producer yet, so the
 //     MERGE path, the green ceiling and the flag rules are pinned here on
 //     synthetic result lists — the first input that reaches them must not also
 //     be the first time they run.
@@ -71,11 +71,12 @@ const SPEC_ORDER = [
 const INFORMATIONAL = ['plan.fidelity']
 const GATING_IDS = SPEC_ORDER.filter(id => !INFORMATIONAL.includes(id))
 
-// The three signals whose producer has not landed, and the brief that lands it.
+// The two signals whose producer has not landed, and the brief that lands it.
+// `policy.humanPaths` left this table when it began reading the review policy
+// committed at the base (spec: review/merge-confidence, the human-paths signal).
 const PENDING = {
   'conformance.living': /E6/,
-  'spec.coverage': /E6/,
-  'policy.humanPaths': /E4/
+  'spec.coverage': /E6/
 }
 
 const KINDS = ['person', 'evidence', 'finding']
@@ -332,7 +333,7 @@ const R = () => ({ band: 'red', kind: 'finding', flags: [] })
 const U = () => ({ band: 'unobserved', kind: 'evidence', flags: [] })
 
 // What the all-observable-green fixture reads: every observable signal green
-// with no flag, and the three producer-less signals unobserved.
+// with no flag, and the two producer-less signals unobserved.
 const BASELINE = Object.fromEntries(GATING_IDS.map(id => [id, id in PENDING ? U() : G()]))
 
 // The signals each state moves away from BASELINE. Everything not named here
@@ -349,6 +350,7 @@ const EXPECT = {
   'review-malformed': { 'review.blockers': R() },
   'review-warnings-over-cap': { 'review.warnings': A('finding') },
   'review-no-dimensions': { 'review.ran': G(['dimensions-unrecorded']) },
+  'review-domain-skipped': { 'review.ran': G(['domain-skipped']) },
   'review-incomplete': { 'review.ran': A('evidence') },
   'review-dismissal-rejected': { 'review.adversarial': A('evidence') },
   'review-votes-below-floor': { 'review.adversarial': A('evidence') },
@@ -392,7 +394,10 @@ const EXPECT = {
   'drift-unarchived-other-capability': {},
   'drift-unarchived-self': {},
   'drift-no-graph': { 'drift.stale': G(['no-graph']) },
-  'no-base': { 'diff.shape': U() }
+  'policy-listed-path-touched': { 'policy.humanPaths': A('person') },
+  'policy-edited': { 'policy.humanPaths': A('person') },
+  'policy-unreadable': { 'policy.humanPaths': A('person') },
+  'no-base': { 'diff.shape': U(), 'policy.humanPaths': U() }
 }
 
 test('the fixture directory holds exactly one input per state the table names', () => {
@@ -465,7 +470,14 @@ for (const [name, delta] of Object.entries(EXPECT)) {
 test('the output says it can never read MERGE until the producers land, one reason line per pending signal', () => {
   const result = assessMergeConfidence(fixture('all-observable-green'))
   assert.equal(result.verdict, 'HUMAN')
-  assert.deepEqual(result.driving.map(d => d.id).sort(), Object.keys(PENDING).sort())
+  assert.deepEqual(result.driving.map(d => d.id).sort(), ['conformance.living', 'spec.coverage'])
+  assert.deepEqual(Object.keys(PENDING).sort(), ['conformance.living', 'spec.coverage'])
+  // The human-paths signal reads the base policy now, so it is not a pending
+  // signal and no line says its producer has not landed.
+  assert.ok(
+    !result.reasons.some(line => line.includes('policy.humanPaths')),
+    'policy.humanPaths is still reported as waiting for a producer'
+  )
   for (const [id, producer] of Object.entries(PENDING)) {
     assert.ok(
       result.reasons.some(line => line.includes(id) && producer.test(line)),
@@ -914,17 +926,180 @@ test('a degraded run is amber, and no run record is unobserved with plan fidelit
     input.run = { ...input.run, ...degradation }
     assert.equal(signalOf(assessMergeConfidence(input), 'run.integrity').band, 'amber', JSON.stringify(degradation))
   }
-  // A REVIEW.md that differs from the base ref is policy.humanPaths' question
-  // (E4); the run signal does not read it too.
+  // A REVIEW.md that differs from the base ref is policy.humanPaths' question;
+  // the run signal does not read it too (spec: review/merge-confidence, the
+  // human-paths signal — a difference SHALL NOT move run integrity).
   const policy = fixture('all-observable-green')
   policy.run = { ...policy.run, policyDiffersFromBase: true }
   assert.equal(signalOf(assessMergeConfidence(policy), 'run.integrity').band, 'green')
+  const edited = signalOf(assessMergeConfidence(fixture('policy-edited')), 'run.integrity')
+  assert.equal(edited.band, 'green')
+  assert.deepEqual(edited.flags, [])
   const input = fixture('all-observable-green')
   input.run = null
   const result = assessMergeConfidence(input)
   assert.equal(signalOf(result, 'run.integrity').band, 'unobserved')
   assert.match(signalOf(result, 'run.integrity').reason, /no run record/)
   assert.ok(signalOf(result, 'plan.fidelity').evidence.some(line => /no run record/.test(line)))
+})
+
+// --- the human-paths signal (spec: review/merge-confidence) -----------------------
+//
+// The list is read from the base, so the input carries `reviewPolicy`:
+// { ref, humanPaths, problems, differsFromBase }. Each fixture is the green
+// input with one policy state; the EXPECT table above pins that nothing but
+// policy.humanPaths moved.
+
+const withPolicy = (reviewPolicy, extra = {}) => {
+  const input = fixture('all-observable-green')
+  input.reviewPolicy = { ref: 'origin/main', humanPaths: [], problems: [], differsFromBase: false, ...reviewPolicy }
+  return Object.assign(input, extra)
+}
+const humanPaths = input => signalOf(assessMergeConfidence(input), 'policy.humanPaths')
+
+test('no listed path touched and an unchanged policy is green with no flag, naming the reference the list came from', () => {
+  const input = fixture('all-observable-green')
+  assert.deepEqual(input.reviewPolicy.humanPaths, ['lib/release'], 'the green input lists a path none of its changes touch')
+  assert.ok(!input.changedPaths.some(p => p.startsWith('lib/release')))
+  const entry = humanPaths(input)
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, [])
+  assert.equal(entry.kind, null)
+  assert.ok(said(entry).includes(input.reviewPolicy.ref), `the evidence does not name ${input.reviewPolicy.ref}: ${said(entry)}`)
+})
+
+test('a touched listed path is amber, needs a person, and names the changed path and the path it falls under', () => {
+  const entry = humanPaths(fixture('policy-listed-path-touched'))
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.ok(said(entry).includes('lib/release/publish.mjs'), said(entry))
+  assert.ok(said(entry).includes('lib/release/'), 'the listed path is not named')
+  const result = assessMergeConfidence(fixture('policy-listed-path-touched'))
+  assert.equal(result.verdict, 'HUMAN')
+  assert.ok(result.driving.some(d => d.id === 'policy.humanPaths' && d.kind === 'person'))
+})
+
+test('a policy edited in the working tree is amber naming REVIEW.md, and the listed path the base still holds', () => {
+  const input = fixture('policy-edited')
+  const entry = humanPaths(input)
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.ok(said(entry).includes('REVIEW.md'), said(entry))
+  assert.ok(said(entry).includes('lib/release/publish.mjs'), said(entry))
+  assert.ok(said(entry).includes('lib/release'), said(entry))
+})
+
+test('an edited policy alone is amber even when no listed path is touched', () => {
+  const entry = humanPaths(withPolicy({ humanPaths: ['lib/release'], differsFromBase: true }))
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.ok(said(entry).includes('REVIEW.md'), said(entry))
+})
+
+test('an unreadable always-human-review section is amber, naming the problem', () => {
+  const input = fixture('policy-unreadable')
+  const entry = humanPaths(input)
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.ok(said(entry).includes(input.reviewPolicy.problems[0]), said(entry))
+})
+
+test('listed paths match on the canonical form: ./lib/release matches lib/release/a.mjs and not lib/releasex/a.mjs', () => {
+  const hit = humanPaths(withPolicy({ humanPaths: ['./lib/release'] }, { changedPaths: ['lib/release/a.mjs'] }))
+  assert.equal(hit.band, 'amber')
+  assert.equal(hit.kind, 'person')
+  assert.ok(said(hit).includes('lib/release/a.mjs'), said(hit))
+  for (const prefix of ['./lib/release', 'lib/release/', 'lib/release']) {
+    const miss = humanPaths(withPolicy({ humanPaths: [prefix] }, { changedPaths: ['lib/releasex/a.mjs'] }))
+    assert.equal(miss.band, 'green', `${prefix} matched lib/releasex/a.mjs`)
+  }
+  // The boundary is a path segment, and the changed path may be spelled the long way too.
+  const spelled = humanPaths(withPolicy({ humanPaths: ['lib/release'] }, { changedPaths: ['./lib/release/a.mjs'] }))
+  assert.equal(spelled.band, 'amber')
+})
+
+test('a base with no REVIEW.md is green; no reviewPolicy at all is unobserved, saying no base was given', () => {
+  const absent = humanPaths(withPolicy({ humanPaths: [], problems: [], differsFromBase: false }))
+  assert.equal(absent.band, 'green')
+  assert.deepEqual(absent.flags, [])
+
+  const input = fixture('all-observable-green')
+  input.reviewPolicy = null
+  const none = humanPaths(input)
+  assert.equal(none.band, 'unobserved')
+  assert.equal(none.kind, 'evidence')
+  assert.match(none.reason, /--base/)
+  assert.match(none.reason, /no base|not given/i)
+  assert.equal(signalOf(assessMergeConfidence(fixture('no-base')), 'policy.humanPaths').band, 'unobserved')
+})
+
+test('every reason the human-paths signal holds is listed in one amber entry, never one per reason', () => {
+  const input = withPolicy(
+    {
+      humanPaths: ['lib/release', 'docs/policy'],
+      problems: ['## Always Human Review: a section it could not read'],
+      differsFromBase: true
+    },
+    { changedPaths: ['lib/release/publish.mjs', 'docs/policy/a.md', 'src/widgets/catalogue.ts'] }
+  )
+  const result = assessMergeConfidence(input)
+  assert.equal(result.signals.filter(s => s.id === 'policy.humanPaths').length, 1)
+  const entry = signalOf(result, 'policy.humanPaths')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  for (const needle of ['lib/release/publish.mjs', 'docs/policy/a.md', 'REVIEW.md', 'a section it could not read']) {
+    assert.ok(said(entry).includes(needle), `the evidence omits ${needle}: ${said(entry)}`)
+  }
+  assert.ok(!said(entry).includes('src/widgets/catalogue.ts'), 'an unlisted path is named')
+})
+
+test('a REVIEW.md difference moves only the human-paths signal: run integrity reads the run, not the policy', () => {
+  const clean = assessMergeConfidence(withPolicy({ humanPaths: [], differsFromBase: false }))
+  const edited = assessMergeConfidence(withPolicy({ humanPaths: [], differsFromBase: true }))
+  for (const entry of edited.signals) {
+    if (entry.id === 'policy.humanPaths') continue
+    const before = signalOf(clean, entry.id)
+    assert.equal(entry.band, before.band, `${entry.id} moved with the policy edit`)
+    assert.deepEqual(entry.flags, before.flags, `${entry.id} flags moved with the policy edit`)
+  }
+  assert.equal(signalOf(edited, 'policy.humanPaths').band, 'amber')
+})
+
+// --- the domain-skipped flag (spec: review/merge-confidence, the review signals) ----
+
+test('a skipped domain review is a flag on a green ran signal, and scores below the same review without the skip', () => {
+  const skipped = assessMergeConfidence(fixture('review-domain-skipped'))
+  const entry = signalOf(skipped, 'review.ran')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, ['domain-skipped'])
+  assert.ok(FLAGS.includes('domain-skipped'))
+  assert.match(said(entry), /domain/i, 'the skip is not reported beside the signal')
+
+  const plain = assessMergeConfidence(fixture('all-observable-green'))
+  assert.equal(skipped.verdict, plain.verdict)
+  assert.equal(skipped.worstBand, plain.worstBand)
+  assert.ok(skipped.score < plain.score, `${skipped.score} is not below ${plain.score}`)
+  assert.equal(skipped.counts.clean, plain.counts.clean - 1)
+})
+
+test('a skipped domain review beside a dimension that could not run keeps the amber and the flag', () => {
+  const input = fixture('review-domain-skipped')
+  input.review.dimensions = { ...input.review.dimensions, ran: ['qa'], unavailable: ['typescript'] }
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.match(entry.reason, /typescript/)
+  assert.deepEqual(entry.flags, ['domain-skipped'])
+})
+
+test('only a skipped domain dimension raises the flag: another skipped name, or an empty list, does not', () => {
+  for (const skipped of [[], [{ name: 'security', reason: 'not selected' }]]) {
+    const input = fixture('all-observable-green')
+    input.review.dimensions = { ...input.review.dimensions, skipped }
+    const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+    assert.equal(entry.band, 'green', JSON.stringify(skipped))
+    assert.deepEqual(entry.flags, [], JSON.stringify(skipped))
+  }
 })
 
 // --- the input contract -------------------------------------------------------------
@@ -962,11 +1137,23 @@ test('every signal reading only a caller-supplied input is unobserved, saying th
     assert.match(entry.reason, flag, `${id}: ${entry.reason}`)
     assert.match(entry.reason, /not given/, `${id}: ${entry.reason}`)
   }
+  // The human-paths signal reads a fact the CLI gathers from the base, so with
+  // no base reference it is unobserved and says why.
+  const policy = signalOf(result, 'policy.humanPaths')
+  assert.equal(policy.band, 'unobserved')
+  assert.match(policy.reason, /--base/)
+  assert.match(policy.reason, /no base|not given/i)
   assert.equal(result.verdict, 'HUMAN')
 })
 
 test('assessing never mutates its input', () => {
-  for (const name of ['all-observable-green', 'drift-broken-removed-file', 'conformance-short-denominator']) {
+  for (const name of [
+    'all-observable-green',
+    'drift-broken-removed-file',
+    'conformance-short-denominator',
+    'policy-edited',
+    'review-domain-skipped'
+  ]) {
     const input = fixture(name)
     const before = JSON.stringify(input)
     assessMergeConfidence(input)

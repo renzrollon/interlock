@@ -221,7 +221,11 @@ test('USAGE documents every subcommand this file exercises', () => {
     'interlock wave-state replan',
     'interlock tasks tick',
     'interlock tasks coverage',
-    'interlock merge-confidence'
+    'interlock merge-confidence',
+    'interlock verify baseline',
+    'interlock verify coverage',
+    'interlock domain-context',
+    'interlock spec-audit'
   ]) {
     assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
   }
@@ -2572,6 +2576,27 @@ async function relay(status = 200) {
   }
 }
 
+/**
+ * False, or the reason the relay tests cannot run here. A sandbox that denies
+ * binding loopback is an environment fact, not a result: the tests that need
+ * the relay skip and say so, and any other probe failure skips nothing, so
+ * they still run and fail where the cause is anything else.
+ */
+function loopbackDenied() {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer()" +
+        ".on('error', e => process.exit(e.code === 'EPERM' || e.code === 'EACCES' ? 3 : 1))" +
+        ".listen(0, '127.0.0.1', function () { this.close() })"
+    ],
+    { stdio: 'ignore' }
+  )
+  return probe.status === 3 ? 'this environment denies binding loopback (a sandbox) — rerun outside it' : false
+}
+const LOOPBACK_DENIED = loopbackDenied()
+
 /** Read back a `Title` header — a headline travels RFC 2047 encoded. */
 function decodeTitle(value) {
   const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
@@ -2592,7 +2617,7 @@ test('notify --json emits { sent, reason } whether or not a push was attempted',
   assert.match(parsed.reason, /not configured/)
 })
 
-test('notify checkpoint posts the spec checkpoint title at default priority', async () => {
+test('notify checkpoint posts the spec checkpoint title at default priority', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   try {
     const r = run(['notify', 'checkpoint', 'add-thing'], {
@@ -2611,7 +2636,7 @@ test('notify checkpoint posts the spec checkpoint title at default priority', as
   }
 })
 
-test('a notify a person invoked directly exits 1 when the relay refused it', async () => {
+test('a notify a person invoked directly exits 1 when the relay refused it', { skip: LOOPBACK_DENIED }, async () => {
   const broken = await relay(500)
   try {
     const r = run(['notify', '--title', 'a title', '--body', 'a body'], {
@@ -2923,8 +2948,8 @@ function mergeConfidenceRepo() {
  * A checkout whose first commit holds only the change's artifacts and whose
  * second adds `headFiles`, so `--base <base>` has a real diff to read.
  */
-function mergeBaseRepo(sub, headFiles) {
-  const repo = gitRepo(sub, widgetChangeFiles())
+function mergeBaseRepo(sub, headFiles, baseExtra = {}) {
+  const repo = gitRepo(sub, { ...widgetChangeFiles(), ...baseExtra })
   for (const [rel, body] of Object.entries(headFiles)) {
     mkdirSync(dirname(join(repo.root, rel)), { recursive: true })
     writeFileSync(join(repo.root, rel), body)
@@ -3104,13 +3129,15 @@ test('a full set of inputs on a clean change reads HUMAN, held only by what no c
   assert.equal(r.code, 0, r.stderr)
   const out = JSON.parse(r.stdout)
   assert.equal(out.verdict, 'HUMAN')
-  // The three producers not yet landed, plus the run record a hand run never has.
+  // The two producers not yet landed, plus the run record a hand run never has.
+  // `policy.humanPaths` is not among them: with a base it reads the policy
+  // committed there, and this base lists no changed path.
   assert.deepEqual(
     out.driving.map(d => d.id).sort(),
-    ['conformance.living', 'policy.humanPaths', 'run.integrity', 'spec.coverage'],
+    ['conformance.living', 'run.integrity', 'spec.coverage'],
     JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2)
   )
-  for (const id of ['verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran']) {
+  for (const id of ['verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran', 'policy.humanPaths']) {
     assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
   }
 })
@@ -3120,4 +3147,814 @@ test('limits --json carries the merge bands as their own group, ceiling table in
   assert.deepEqual(out.mergeBands, JSON.parse(JSON.stringify(MERGE_BANDS)))
   assert.deepEqual(out.mergeBands.ceiling, { ...MERGE_BANDS.ceiling })
   assert.equal(out.limits.maxWarningsForMerge, undefined, 'the merge bands are not entries of the iteration-count limits')
+})
+
+// --- judge-against-base-and-living-specs: the four new commands and the --base flag --
+//
+// What only the binary can get wrong: which ref a list is read from, that an
+// unresolvable ref or a bad baseline ends the command with nothing on stdout,
+// that a temporary worktree never outlives the command, and that the verdict's
+// new signals are fed from the repository. The pure modules carry their own
+// tests (coverage, spec-text, spec-audit, domain-context, review-policy); a
+// fixture here is only as large as the wiring needs.
+//
+// Several JSON field names below (`capabilities`, `via`, `totals`, `flags`,
+// `unreadable`, `humanPaths`, `differsFromBase`, `anomalies.requirementCitations`)
+// are this file's statement of the CLI contract, taken from the change's design.
+
+const GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'Test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'Test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid'
+}
+
+function gitAt(root, ...args) {
+  return spawnSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, ...GIT_IDENTITY } })
+}
+
+/** Write `files` into a checkout and commit them; returns the new commit. */
+function commitFiles(root, files, message = 'next') {
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true })
+    writeFileSync(join(root, rel), body)
+  }
+  gitAt(root, 'add', '-A')
+  gitAt(root, 'commit', '-q', '-m', message)
+  return gitAt(root, 'rev-parse', 'HEAD').stdout.trim()
+}
+
+/** `git worktree list` rows: one means only the main checkout exists. */
+const worktreeCount = root =>
+  gitAt(root, 'worktree', 'list', '--porcelain').stdout.split('\n').filter(l => l.startsWith('worktree ')).length
+
+/** An lcov record instrumenting lines 1..n with the given hit counts. */
+const lcovRecord = (path, hits) =>
+  `SF:${path}\n` +
+  hits.map((h, i) => `DA:${i + 1},${h}`).join('\n') +
+  `\nLF:${hits.length}\nLH:${hits.filter(h => h > 0).length}\nend_of_record\n`
+
+// --- verify baseline / verify coverage ----------------------------------------
+
+const COVERAGE_ON = { enabled: true, command: 'node cov.mjs', report_path: 'coverage/lcov.info', format: 'lcov' }
+const BASELINE_PATH = '.claude/testing/coverage-baseline.json'
+// Seven lines, the last unhit: 6 of 7 is 85.7. The diff below adds lines 4 to 7,
+// three of them hit: 75 over 4 changed lines.
+const HEAD_HITS = [1, 1, 1, 1, 1, 1, 0]
+
+/** Base commit with a three-line lib/a.mjs; the head commit grows it to seven lines. */
+function coverageRepo(sub, baseFiles = {}) {
+  const repo = gitRepo(sub, { 'lib/a.mjs': 'a1\na2\na3\n', ...baseFiles })
+  const head = commitFiles(repo.root, { 'lib/a.mjs': 'a1\na2\na3\na4\na5\na6\na7\n' })
+  return { root: repo.root, base: repo.sha, head }
+}
+
+function writeProfile(root, coverage) {
+  mkdirSync(join(root, '.claude', 'testing'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'testing', 'profile.json'),
+    JSON.stringify({ version: 1, unit: { command: 'npm test', cwd: '.' }, coverage })
+  )
+}
+
+function writeHeadReport(root, hits = HEAD_HITS) {
+  mkdirSync(join(root, 'coverage'), { recursive: true })
+  writeFileSync(join(root, 'coverage', 'lcov.info'), lcovRecord('lib/a.mjs', hits))
+}
+
+function writeBaseline(root, over = {}) {
+  mkdirSync(join(root, '.claude', 'testing'), { recursive: true })
+  writeFileSync(
+    join(root, BASELINE_PATH),
+    JSON.stringify({
+      schema: 'interlock.coverage-baseline/1',
+      sha: over.sha,
+      ref: 'main',
+      totalPct: 80,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      ...over
+    })
+  )
+}
+
+/** A coverage command committed at the base: it writes a 50 percent report where it runs. */
+const covScript = ({ exit = 0, marker = null } = {}) =>
+  [
+    "import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs'",
+    marker ? `appendFileSync(${JSON.stringify(marker)}, 'ran\\n')` : '',
+    "mkdirSync('coverage', { recursive: true })",
+    "writeFileSync('coverage/lcov.info', 'SF:lib/a.mjs\\nLF:10\\nLH:5\\nend_of_record\\n')",
+    `process.exit(${exit})`
+  ].join('\n') + '\n'
+
+const COVERAGE_INPUT_FIELDS = [
+  'baseIsAncestor', 'baseSha', 'baseTotalPct', 'changedLines', 'configured', 'diffPct', 'headTotalPct'
+]
+
+test('verify baseline records the total of a report on this commit, and refuses a report with none', () => {
+  const repo = coverageRepo('cov-baseline-repo')
+  const report = file('cov-baseline-report.lcov', lcovRecord('lib/a.mjs', [1, 1, 1, 1, 0]))
+  const ok = run(['verify', 'baseline', '--report', report, '--root', repo.root])
+  assert.equal(ok.code, 0, ok.stderr)
+  const target = join(repo.root, BASELINE_PATH)
+  const written = JSON.parse(readFileSync(target, 'utf8'))
+  assert.equal(written.schema, 'interlock.coverage-baseline/1')
+  assert.equal(written.sha, repo.head, 'the commit the report was taken on')
+  assert.equal(written.ref, 'main', 'the branch it was taken on')
+  assert.equal(written.totalPct, 80)
+  assert.ok(!Number.isNaN(Date.parse(written.generatedAt)), `generatedAt: ${written.generatedAt}`)
+
+  // No instrumented line, and no report at all: exit 1, the previous file untouched.
+  const before = readFileSync(target, 'utf8')
+  const noTotal = file('cov-baseline-empty.lcov', 'SF:lib/a.mjs\nend_of_record\n')
+  const refused = run(['verify', 'baseline', '--report', noTotal, '--root', repo.root])
+  assert.equal(refused.code, 1)
+  assert.match(refused.stderr, /total/i)
+  assert.equal(readFileSync(target, 'utf8'), before, 'a refused write leaves the previous baseline in place')
+
+  const missing = join(dir, 'cov-baseline-no-such.lcov')
+  const unreadable = run(['verify', 'baseline', '--report', missing, '--root', repo.root])
+  assert.equal(unreadable.code, 1)
+  assert.ok(unreadable.stderr.includes(missing), unreadable.stderr)
+  assert.equal(readFileSync(target, 'utf8'), before)
+
+  // A named path is written instead of the default one.
+  const custom = join(dir, 'cov-baseline-custom.json')
+  const named = run(['verify', 'baseline', '--report', report, '--baseline', custom, '--root', repo.root])
+  assert.equal(named.code, 0, named.stderr)
+  assert.equal(JSON.parse(readFileSync(custom, 'utf8')).totalPct, 80)
+  assert.equal(readFileSync(target, 'utf8'), before, 'the default path is not touched when another is named')
+})
+
+test('verify coverage prints configured: false, and nothing else, when the profile declares no coverage', () => {
+  let n = 0
+  for (const coverage of [
+    { ...COVERAGE_ON, enabled: false },
+    { ...COVERAGE_ON, command: null }
+  ]) {
+    const repo = coverageRepo(`cov-unconfigured-${n++}`)
+    writeProfile(repo.root, coverage)
+    const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+    assert.equal(out.configured, false, JSON.stringify(coverage))
+    for (const key of ['headTotalPct', 'baseTotalPct', 'baseSha', 'diffPct', 'changedLines']) {
+      assert.equal(out[key], null, `${key} is absent, not a measured figure`)
+    }
+  }
+})
+
+test('verify coverage exits 1 with an empty stdout for a missing report, an unsupported format and a corrupt baseline', () => {
+  const missing = coverageRepo('cov-missing-report')
+  writeProfile(missing.root, COVERAGE_ON)
+  const noReport = run(['verify', 'coverage', '--base', missing.base, '--root', missing.root, '--json'])
+  assert.equal(noReport.code, 1)
+  assert.equal(noReport.stdout, '', 'the verdict reads an unproduced input as unobserved, never as clean')
+  assert.ok(noReport.stderr.includes('coverage/lcov.info'), noReport.stderr)
+  assert.match(noReport.stderr, /coverage command/)
+
+  const xml = coverageRepo('cov-unsupported-format')
+  writeProfile(xml.root, { ...COVERAGE_ON, report_path: 'coverage/cobertura.xml', format: 'cobertura' })
+  mkdirSync(join(xml.root, 'coverage'), { recursive: true })
+  writeFileSync(join(xml.root, 'coverage', 'cobertura.xml'), '<coverage/>\n')
+  const unsupported = run(['verify', 'coverage', '--base', xml.base, '--root', xml.root, '--json'])
+  assert.equal(unsupported.code, 1)
+  assert.equal(unsupported.stdout, '')
+  assert.ok(unsupported.stderr.includes('coverage/cobertura.xml'), unsupported.stderr)
+  assert.match(unsupported.stderr, /lcov/, 'it names the one supported format')
+
+  let n = 0
+  for (const corrupt of [{ schema: undefined }, { totalPct: 101 }, { totalPct: 'high' }]) {
+    const repo = coverageRepo(`cov-corrupt-baseline-${n++}`)
+    writeProfile(repo.root, COVERAGE_ON)
+    writeHeadReport(repo.root)
+    writeBaseline(repo.root, { sha: repo.base, ...corrupt })
+    const r = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root, '--json'])
+    assert.equal(r.code, 1, JSON.stringify(corrupt))
+    assert.equal(r.stdout, '', 'a corrupt baseline is never read as no baseline')
+    assert.ok(r.stderr.includes('coverage-baseline.json'), r.stderr)
+  }
+})
+
+test('verify coverage dies without --base, and on a ref that names no commit', () => {
+  const repo = coverageRepo('cov-needs-base')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const none = run(['verify', 'coverage', '--root', repo.root, '--json'])
+  assert.equal(none.code, 1)
+  assert.equal(none.stdout, '', 'the diff is the base: without it the reader would be handed changedLines: null')
+  assert.match(none.stderr, /--base/)
+  assert.match(none.stderr, /required/)
+
+  const bad = run(['verify', 'coverage', '--base', 'no-such-ref-anywhere', '--root', repo.root, '--json'])
+  assert.equal(bad.code, 1)
+  assert.equal(bad.stdout, '')
+  assert.match(bad.stderr, /no-such-ref-anywhere/)
+})
+
+test('verify coverage prints exactly the seven fields the merge verdict reads, from the report, the baseline and the diff', () => {
+  const repo = coverageRepo('cov-happy')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  writeBaseline(repo.root, { sha: repo.base })
+  const r = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(Object.keys(out).sort(), COVERAGE_INPUT_FIELDS, 'figures only: no band, no verdict')
+  assert.deepEqual(out, {
+    configured: true,
+    headTotalPct: 85.7,
+    baseTotalPct: 80,
+    baseSha: repo.base,
+    baseIsAncestor: true,
+    diffPct: 75,
+    changedLines: 4
+  })
+})
+
+test('verify coverage with no baseline anywhere leaves every base field empty and still judges the changed lines', () => {
+  const repo = coverageRepo('cov-no-baseline')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(out.configured, true)
+  assert.equal(out.headTotalPct, 85.7)
+  assert.equal(out.diffPct, 75)
+  assert.equal(out.changedLines, 4)
+  assert.equal(out.baseTotalPct, null)
+  assert.equal(out.baseSha, null)
+  assert.ok(out.baseIsAncestor === null || out.baseIsAncestor === false, `baseIsAncestor: ${out.baseIsAncestor}`)
+})
+
+test('verify coverage reports whether the baseline commit is an ancestor of HEAD, whatever its age, from the repository', () => {
+  const repo = coverageRepo('cov-ancestry')
+  // A sibling branch the head does not descend from.
+  gitAt(repo.root, 'checkout', '-q', '-b', 'sibling', repo.base)
+  const sibling = commitFiles(repo.root, { 'lib/sibling.mjs': 's\n' })
+  gitAt(repo.root, 'checkout', '-q', 'main')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  writeBaseline(repo.root, { sha: repo.base })
+  const onHistory = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(onHistory.baseSha, repo.base)
+  assert.equal(onHistory.baseIsAncestor, true)
+
+  writeBaseline(repo.root, { sha: sibling })
+  const elsewhere = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(elsewhere.baseSha, sibling, 'the baseline is still named, so the verdict can say why it is unobserved')
+  assert.equal(elsewhere.baseIsAncestor, false)
+})
+
+test('verify coverage --compute-base records a baseline for the merge base and leaves no worktree behind', () => {
+  const repo = coverageRepo('cov-compute-base', { 'cov.mjs': covScript() })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const r = run(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.baseTotalPct, 50, 'the coverage command ran on the merge base, not on the head')
+  assert.equal(out.baseSha, repo.base)
+  assert.equal(out.baseIsAncestor, true)
+  assert.match(r.stderr, /baseline/i, 'it says it recorded one')
+
+  const recorded = JSON.parse(readFileSync(join(repo.root, BASELINE_PATH), 'utf8'))
+  assert.equal(recorded.sha, repo.base)
+  assert.equal(recorded.totalPct, 50)
+  assert.equal(worktreeCount(repo.root), 1, gitAt(repo.root, 'worktree', 'list').stdout)
+})
+
+test('verify coverage --compute-base exits 1 naming the command and its status, and cleans up after a failing run', () => {
+  const repo = coverageRepo('cov-compute-base-fails', { 'cov.mjs': covScript({ exit: 3 }) })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const r = run(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.ok(r.stderr.includes('node cov.mjs'), r.stderr)
+  assert.match(r.stderr, /\b3\b/, 'the exit status')
+  assert.equal(worktreeCount(repo.root), 1, 'the worktree is removed whether the command passed or not')
+  assert.equal(existsSync(join(repo.root, BASELINE_PATH)), false, 'a failed measurement records nothing')
+})
+
+test('verify coverage --compute-base creates no worktree and runs no command when a usable baseline exists', () => {
+  const marker = join(dir, 'cov-compute-marker.txt')
+  const repo = coverageRepo('cov-compute-base-usable', { 'cov.mjs': covScript({ marker }) })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  writeBaseline(repo.root, { sha: repo.base, totalPct: 80 })
+
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root])
+  assert.equal(existsSync(marker), false, 'the coverage command ran')
+  assert.equal(out.baseTotalPct, 80, 'the existing baseline is the base figure')
+  assert.equal(out.baseSha, repo.base)
+  assert.equal(worktreeCount(repo.root), 1)
+})
+
+// --- review / review-policy --base --------------------------------------------
+
+/** A checkout whose first commit may hold a REVIEW.md, tagged `policy-base`. */
+function policyRepo(sub, committed, extra = {}) {
+  const repo = gitRepo(sub, {
+    'lib/a.mjs': 'a\n',
+    'dist/x.js': 'x\n',
+    ...(committed === null ? {} : { 'REVIEW.md': committed }),
+    ...extra
+  })
+  gitAt(repo.root, 'tag', 'policy-base')
+  return repo
+}
+
+const POLICY_FINDINGS = [
+  { dimension: 'typescript', severity: 'blocker', title: 'lib blocker', file: 'lib/a.mjs' },
+  { dimension: 'typescript', severity: 'blocker', title: 'dist blocker', file: 'dist/x.js' }
+]
+
+/** Two real votes per title: survival is decided by the lists, not by the vote. */
+const realVerdicts = titles =>
+  titles.flatMap(findingTitle => [
+    { findingTitle, isReal: true, refinedSeverity: 'blocker', qualityScore: 9 },
+    { findingTitle, isReal: true, qualityScore: 8 }
+  ])
+
+const reviewArgs = (repo, findings, ...extra) => [
+  'review',
+  '--findings', file(`rb-findings-${repo.root.split('/').pop()}.json`, findings),
+  '--verdicts', file(`rb-verdicts-${repo.root.split('/').pop()}.json`, realVerdicts(findings.map(f => f.title))),
+  '--root', repo.root,
+  ...extra
+]
+
+test('review --base applies the exclusions committed at the ref, not the ones the working tree adds', () => {
+  const repo = policyRepo('rb-lists', '## Do Not Report\n- dist/\n')
+  writeFileSync(join(repo.root, 'REVIEW.md'), '## Do Not Report\n- dist/\n- lib/\n')
+
+  const out = JSON.parse(run([...reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'), '--json']).stdout)
+  assert.deepEqual(out.surviving.map(f => f.title), ['lib blocker'], 'a pull request cannot exclude its own paths')
+  assert.deepEqual(out.droppedByPolicy.map(f => f.title), ['dist blocker'])
+
+  const text = run(reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /differs/i)
+  assert.ok(text.stdout.includes('policy-base'), 'it names the reference whose lists were applied')
+
+  // Without a base, the working tree is read exactly as before.
+  const plain = JSON.parse(run([...reviewArgs(repo, POLICY_FINDINGS), '--json']).stdout)
+  assert.deepEqual(plain.surviving, [], 'the working-tree exclusion applies when no base is given')
+})
+
+test('review --base says nothing about a copy that matches the ref, or differs only in line endings', () => {
+  const same = policyRepo('rb-same', '## Do Not Report\n- dist/\n')
+  const r = run(reviewArgs(same, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(r.code, 0, r.stderr)
+  assert.doesNotMatch(r.stdout, /differs/i)
+  // The absence of a sentence proves nothing on its own: the policy read says it, as a fact.
+  const asked = ['review-policy', '--base', 'policy-base', '--json']
+  assert.equal(JSON.parse(run([...asked, '--root', same.root]).stdout).differsFromBase, false)
+
+  const crlf = policyRepo('rb-crlf', '## Do Not Report\r\n- dist/\r\n')
+  writeFileSync(join(crlf.root, 'REVIEW.md'), '## Do Not Report\n- dist/\n')
+  const c = run(reviewArgs(crlf, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(c.code, 0, c.stderr)
+  assert.doesNotMatch(c.stdout, /differs/i, 'a line-ending difference is not a difference')
+  assert.equal(JSON.parse(run([...asked, '--root', crlf.root]).stdout).differsFromBase, false)
+})
+
+test('review --base with no REVIEW.md at the ref declares no lists, reports no problem, and says the working copy differs', () => {
+  const repo = policyRepo('rb-absent', null)
+  writeFileSync(join(repo.root, 'REVIEW.md'), '## Do Not Report\n- lib/\n')
+  const r = run([...reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.counts.droppedByPolicy, 0, 'the working copy’s exclusion is not applied')
+  assert.deepEqual(out.policyProblems, [])
+  assert.match(run(reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base')).stdout, /differs/i)
+})
+
+test('review --base and review-policy --base refuse a ref that names no commit and a ref that reads as an option', () => {
+  const repo = policyRepo('rb-bad-ref', '## Do Not Report\n- dist/\n')
+  for (const head of [reviewArgs(repo, POLICY_FINDINGS), ['review-policy', '--root', repo.root]]) {
+    const bad = run([...head, '--base', 'no-such-ref-anywhere', '--json'])
+    assert.equal(bad.code, 1, head[0])
+    assert.equal(bad.stdout, '', 'no review result is printed')
+    assert.match(bad.stderr, /no-such-ref-anywhere/)
+
+    const option = run([...head, '--base', '-p', '--json'])
+    assert.equal(option.code, 1, head[0])
+    assert.equal(option.stdout, '')
+    assert.match(option.stderr, /must name a ref/)
+
+    const valueless = run([...head, '--base'])
+    assert.equal(valueless.code, 1, head[0])
+    assert.match(valueless.stderr, /--base needs a ref/)
+  }
+})
+
+const TOOL_GUARDS_SPEC = [
+  '# hooks/tool-guards Specification',
+  '',
+  '## Purpose',
+  '',
+  'Guards.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Every guard SHALL fail open',
+  '',
+  'A guard SHALL allow on anything it cannot establish.',
+  '',
+  '#### Scenario: Happy path — an unknown stage',
+  '',
+  '- **GIVEN** an unknown stage',
+  '- **WHEN** the guard runs',
+  '- **THEN** it allows',
+  ''
+].join('\n')
+
+test('review --base checks a requirement citation at the ref, reports a failed one, and still adjudicates the finding', () => {
+  const repo = policyRepo('rb-citations', null, { 'openspec/specs/hooks/tool-guards/spec.md': TOOL_GUARDS_SPEC })
+  // The working tree gains a requirement the ref does not have.
+  writeFileSync(
+    join(repo.root, 'openspec/specs/hooks/tool-guards/spec.md'),
+    `${TOOL_GUARDS_SPEC}\n### Requirement: Working tree only SHALL not be citable at the ref\n\nText.\n`
+  )
+  const cite = heading => `openspec/specs/hooks/tool-guards/spec.md#${heading}`
+  const findings = [
+    { dimension: 'domain', severity: 'blocker', title: 'cites a real requirement', file: 'lib/a.mjs', requirement: cite('Every guard SHALL fail open') },
+    { dimension: 'domain', severity: 'blocker', title: 'cites a requirement only the working tree has', file: 'lib/a.mjs', requirement: cite('Working tree only SHALL not be citable at the ref') },
+    { dimension: 'domain', severity: 'blocker', title: 'cites outside the living specs', file: 'lib/a.mjs', requirement: 'openspec/changes/x/specs/a/spec.md#A requirement' }
+  ]
+
+  const r = run([...reviewArgs(repo, findings, '--base', 'policy-base'), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(
+    out.anomalies.requirementCitations.map(a => a.title).sort(),
+    ['cites a requirement only the working tree has', 'cites outside the living specs'],
+    'a valid citation is accepted silently'
+  )
+  for (const anomaly of out.anomalies.requirementCitations) {
+    assert.ok(anomaly.requirement && anomaly.problem, JSON.stringify(anomaly))
+  }
+  assert.equal(out.counts.surviving, 3, 'a broken citation never drops a finding')
+  assert.match(run(reviewArgs(repo, findings, '--base', 'policy-base')).stdout, /ANOMALY.*requirement/i)
+
+  // Without a base the citation is checked against the working tree.
+  const plain = JSON.parse(run([...reviewArgs(repo, findings), '--json']).stdout)
+  assert.deepEqual(plain.anomalies.requirementCitations.map(a => a.title), ['cites outside the living specs'])
+})
+
+test('review reports a domain blocker that cites no requirement, still adjudicates it, and stays quiet about a domain warning', () => {
+  const repo = policyRepo('rb-domain-blocker', null)
+  const findings = [
+    { dimension: 'domain', severity: 'blocker', title: 'contradiction with no citation', file: 'lib/a.mjs' },
+    { dimension: 'domain', severity: 'warning', title: 'unspecified behaviour', file: 'lib/a.mjs' }
+  ]
+  const out = JSON.parse(run([...reviewArgs(repo, findings), '--json']).stdout)
+  assert.deepEqual(out.anomalies.requirementCitations.map(a => a.title), ['contradiction with no citation'])
+  assert.match(out.anomalies.requirementCitations[0].problem, /cites no requirement/)
+  assert.equal(out.counts.surviving, 2, 'the blocker is adjudicated, not dropped or re-banded')
+})
+
+test('review-policy --base prints the always-human-review list from the ref beside the exclusions, and the prose from the working tree', () => {
+  const repo = policyRepo(
+    'rp-human',
+    '## Do Not Report\n- dist/\n\n## Always Human Review\n- lib/release/\n- ./.github/workflows\n'
+  )
+  writeFileSync(
+    join(repo.root, 'REVIEW.md'),
+    '## What "Important" means\nData loss only.\n\n## Do Not Report\n- dist/\n\n## Always Human Review\n- docs/\n'
+  )
+
+  const out = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(out.humanPaths, ['lib/release', '.github/workflows'], 'canonical form, read from the ref')
+  assert.deepEqual(out.excludePaths, ['dist'])
+  assert.match(out.prose, /Data loss only/, 'the prose is the working tree’s')
+  assert.equal(out.differsFromBase, true)
+
+  const text = run(['review-policy', '--base', 'policy-base', '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /human-review:.*lib\/release/)
+  assert.ok(text.stdout.includes('policy-base'), text.stdout)
+
+  const working = JSON.parse(run(['review-policy', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(working.humanPaths, ['docs'], 'without a base both lists come from the working tree, as before')
+})
+
+// --- merge-confidence --base: policy.humanPaths ---------------------------------
+
+const said = signal => [signal.reason, ...(signal.evidence || [])].join('\n')
+
+/** The base commit carries `policy`; the head commit adds `changed`. */
+function humanPathsRepo(sub, policy, changed) {
+  const files = Object.fromEntries(changed.map(p => [p, 'export {}\n']))
+  return mergeBaseRepo(sub, files, policy === null ? {} : { 'REVIEW.md': policy })
+}
+
+const humanPathsRun = (repo, changed, ...extra) =>
+  runJson(
+    ['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', changed.join(','), ...extra],
+    0
+  )
+
+test('policy.humanPaths is green when no listed path is touched and the policy is unchanged, and names the ref it read', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-green', '## Always Human Review\n- lib/release/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'green', said(signal))
+  assert.deepEqual(signal.flags, [])
+  assert.ok(
+    said(signal).includes(repo.base) || said(signal).includes(repo.base.slice(0, 7)),
+    `evidence names the reference: ${said(signal)}`
+  )
+})
+
+test('policy.humanPaths is amber, for a person, naming a touched path and the listed path it falls under; the verdict is HUMAN', () => {
+  const changed = ['src/widgets/catalogue.ts', 'lib/release/publish.mjs']
+  const repo = humanPathsRepo('mc-human-touched', '## Always Human Review\n- lib/release/\n', changed)
+  const out = humanPathsRun(repo, changed)
+  const signal = signalIn(out, 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('lib/release/publish.mjs'), said(signal))
+  assert.match(said(signal), /lib\/release(?![\w.]|\/\w)/, `the listed path itself is named: ${said(signal)}`)
+  assert.equal(out.verdict, 'HUMAN')
+})
+
+test('policy.humanPaths is amber naming REVIEW.md when the working copy differs from the base, and run.integrity does not move', () => {
+  const changed = ['src/widgets/catalogue.ts', 'lib/release/publish.mjs']
+  const policy = '## Always Human Review\n- lib/release/\n'
+  const untouched = humanPathsRepo('mc-human-policy-same', policy, changed)
+  const edited = humanPathsRepo('mc-human-policy-edited', policy, changed)
+  writeFileSync(join(edited.root, 'REVIEW.md'), '## Always Human Review\n- docs/\n')
+
+  const signal = signalIn(humanPathsRun(edited, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('REVIEW.md'), said(signal))
+  assert.ok(said(signal).includes('lib/release/publish.mjs'), 'the listed path from the base is still enforced')
+
+  const pick = out => {
+    const { band, kind, reason } = signalIn(out, 'run.integrity')
+    return { band, kind, reason }
+  }
+  assert.deepEqual(pick(humanPathsRun(edited, changed)), pick(humanPathsRun(untouched, changed)))
+})
+
+test('policy.humanPaths is amber naming the problem when the committed section could not be read in full', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-unreadable', '## Always Human Review\n- ../outside\n- lib/release/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('../outside'), said(signal))
+})
+
+test('policy.humanPaths matches on the canonical path: ./lib/release covers lib/release/a.mjs and not lib/releasex/a.mjs', () => {
+  const policy = '## Always Human Review\n- ./lib/release\n'
+  const inside = ['lib/release/a.mjs']
+  const beside = ['lib/releasex/a.mjs']
+  assert.equal(signalIn(humanPathsRun(humanPathsRepo('mc-human-canon-in', policy, inside), inside), 'policy.humanPaths').band, 'amber')
+  const other = signalIn(humanPathsRun(humanPathsRepo('mc-human-canon-out', policy, beside), beside), 'policy.humanPaths')
+  assert.equal(other.band, 'green', said(other))
+})
+
+test('policy.humanPaths is green when the base has no REVIEW.md, and unobserved, for want of a base, without --base', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const absent = humanPathsRepo('mc-human-absent', null, changed)
+  const green = signalIn(humanPathsRun(absent, changed), 'policy.humanPaths')
+  assert.equal(green.band, 'green', said(green))
+
+  const r = run(['merge-confidence', 'add-widget-catalogue', '--root', absent.root, '--changed', changed.join(','), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const none = signalIn(JSON.parse(r.stdout), 'policy.humanPaths')
+  assert.equal(none.band, 'unobserved')
+  assert.match(none.reason, /no --base/)
+})
+
+// --- domain-context -------------------------------------------------------------
+
+const GUARD_COMMIT = 'hooks/guard-commit.mjs'
+
+function writeGraph(root, links) {
+  mkdirSync(join(root, '.claude', 'graph'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'graph', 'graph.json'),
+    JSON.stringify({ graph: { built_at: '2026-01-01T00:00:00Z' }, nodes: [], links })
+  )
+}
+
+const specEdge = (spec, target, weight = 1) => ({
+  source: `openspec:${spec}`,
+  target: `file:${target}`,
+  relation: 'implements_spec',
+  confidence: 'INFERRED',
+  source_file: spec,
+  weight
+})
+
+const TOOL_GUARDS_PATH = 'openspec/specs/hooks/tool-guards/spec.md'
+
+function domainRepo(sub, extra = {}) {
+  return gitRepo(sub, {
+    [TOOL_GUARDS_PATH]: TOOL_GUARDS_SPEC,
+    [GUARD_COMMIT]: 'export {}\n',
+    'lib/other.mjs': 'export {}\n',
+    ...extra
+  })
+}
+
+test('domain-context prints a selected capability, the file that linked it, and the text read at the reference', () => {
+  const repo = domainRepo('dc-selected')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT)])
+  // The working tree gains a requirement the reference does not have.
+  writeFileSync(join(repo.root, TOOL_GUARDS_PATH), `${TOOL_GUARDS_SPEC}\n### Requirement: Working tree only\n\nText SHALL.\n`)
+
+  const r = run(['domain-context', '--changed', GUARD_COMMIT, '--base', repo.sha, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, true)
+  assert.equal(out.capabilities.length, 1)
+  assert.equal(out.capabilities[0].capability, 'hooks/tool-guards')
+  assert.equal(out.capabilities[0].via, 'linked')
+  assert.deepEqual(out.capabilities[0].files, [GUARD_COMMIT])
+  assert.equal(out.ref, repo.sha, 'the reference the text was read from')
+  assert.ok(out.text.includes('Every guard SHALL fail open'), out.text)
+  assert.ok(!out.text.includes('Working tree only'), 'the base is read at the reference, not the working tree')
+
+  const text = run(['domain-context', '--changed', GUARD_COMMIT, '--base', repo.sha, '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.includes('hooks/tool-guards'), text.stdout)
+})
+
+test('domain-context with no graph and nothing declared exits 0 with a spoken skip, naming the working tree as its base', () => {
+  const repo = domainRepo('dc-skipped')
+  const r = run(['domain-context', '--changed', 'lib/other.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, false)
+  assert.match(JSON.stringify(out.skipped), /no graph/)
+  assert.match(JSON.stringify(out), /working tree/i)
+})
+
+test('domain-context with no graph selects what the change declares and says the touched files were not mapped', () => {
+  const repo = domainRepo('dc-declared', {
+    'openspec/changes/tighten-guards/specs/hooks/tool-guards/spec.md': [
+      '## MODIFIED Requirements',
+      '',
+      '### Requirement: Every guard SHALL fail open',
+      '',
+      'A guard SHALL allow on anything it cannot establish, including its own crash.',
+      ''
+    ].join('\n')
+  })
+  const r = run(['domain-context', 'tighten-guards', '--changed', 'lib/unmapped.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, true)
+  assert.equal(out.capabilities[0].capability, 'hooks/tool-guards')
+  assert.equal(out.capabilities[0].via, 'declared')
+  assert.match(JSON.stringify(out.partial), /graph/)
+})
+
+test('domain-context with a graph that links nothing is not selected, not skipped, and records the unlinked paths', () => {
+  const repo = domainRepo('dc-unlinked')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT), specEdge(TOOL_GUARDS_PATH, 'lib/half.mjs', 0.5)])
+  const r = run(['domain-context', '--changed', 'lib/other.mjs,lib/half.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, false, 'a half-weight edge selects nothing')
+  assert.ok(!out.skipped, 'an unlinked file is a gap the audit measures, not a review that degraded')
+  assert.match(JSON.stringify(out.notSelected), /lib\/other\.mjs/)
+})
+
+test('domain-context exits 1 with an empty stdout on a base that names no commit', () => {
+  const repo = domainRepo('dc-bad-ref')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT)])
+  const r = run(['domain-context', '--changed', GUARD_COMMIT, '--base', 'no-such-ref-anywhere', '--root', repo.root, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /no-such-ref-anywhere/)
+})
+
+// --- spec-audit -----------------------------------------------------------------
+
+const AUDIT_ALPHA = [
+  '## Purpose',
+  '',
+  'Alpha.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Alpha SHALL list things',
+  '',
+  'Alpha SHALL list things and SHALL NOT drop one.',
+  '',
+  '#### Scenario: Happy path — lists',
+  '',
+  '- **GIVEN** things',
+  '- **WHEN** listed',
+  '- **THEN** all appear',
+  '',
+  '#### Scenario: Failure — a bad thing',
+  '',
+  '- **GIVEN** a bad thing',
+  '- **WHEN** listed',
+  '- **THEN** it is reported',
+  '',
+  '#### Scenario: Edge case — no things',
+  '',
+  '- **GIVEN** no things',
+  '- **WHEN** listed',
+  '- **THEN** none appear',
+  '',
+  '### Requirement: Alpha SHALL answer',
+  '',
+  'Alpha SHALL answer.',
+  ''
+].join('\n')
+
+const AUDIT_BETA = [
+  '## Purpose',
+  '',
+  'Beta.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Beta SHALL do a thing',
+  '',
+  'Beta SHALL do a thing.',
+  '',
+  '#### Scenario: Happy path — does it',
+  '',
+  '- **GIVEN** x',
+  '- **WHEN** y',
+  '- **THEN** z',
+  ''
+].join('\n')
+
+function auditRepo(sub, specs) {
+  const root = join(dir, sub)
+  mkdirSync(root, { recursive: true })
+  for (const [capability, text] of Object.entries(specs)) {
+    mkdirSync(join(root, 'openspec', 'specs', capability), { recursive: true })
+    writeFileSync(join(root, 'openspec', 'specs', capability, 'spec.md'), text)
+  }
+  return root
+}
+
+test('spec-audit exits 0 with no openspec/specs, and says no living spec exists instead of reporting zeros', () => {
+  const root = join(dir, 'audit-empty')
+  mkdirSync(root, { recursive: true })
+  for (const args of [[], ['--json']]) {
+    const r = run(['spec-audit', '--root', root, ...args])
+    assert.equal(r.code, 0, r.stderr)
+    assert.match(r.stdout, /no living spec/i)
+  }
+  const out = runJson(['spec-audit', '--root', root])
+  assert.equal(out.totals?.requirements ?? null, null, 'absent, not zero')
+  assert.equal(out.totals?.scenarios ?? null, null)
+  assert.deepEqual(out.capabilities ?? [], [])
+})
+
+test('spec-audit exits 0 on a corpus with flagged capabilities, and --json carries per-capability entries and totals', () => {
+  const root = auditRepo('audit-corpus', { 'alpha/one': AUDIT_ALPHA, 'beta/two': AUDIT_BETA })
+  const text = run(['spec-audit', '--root', root])
+  assert.equal(text.code, 0, 'an audit that failed a build would be a gate by accident')
+
+  const r = run(['spec-audit', '--root', root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  const alpha = out.capabilities.find(c => c.capability === 'alpha/one')
+  const beta = out.capabilities.find(c => c.capability === 'beta/two')
+  assert.equal(alpha.requirements, 2)
+  assert.equal(alpha.scenarios, 3)
+  assert.deepEqual(alpha.flags, [], 'one bound line, a Failure scenario and an Edge case scenario')
+  assert.equal(beta.requirements, 1)
+  assert.equal(beta.scenarios, 1)
+  assert.deepEqual([...beta.flags].sort(), ['no-bound', 'no-edge-case', 'no-failure-scenario'])
+  assert.equal(out.totals.requirements, 3)
+  assert.equal(out.totals.scenarios, 4)
+  assert.equal(out.totals.specs, 2)
+  // No graph was built: the link measures are absent with a reason, not zero.
+  assert.match(JSON.stringify(out), /no graph/i)
+})
+
+test('spec-audit names a spec it cannot read, leaves it out of the totals, and still exits 0', { skip: isRoot() }, () => {
+  const root = auditRepo('audit-unreadable', { 'alpha/one': AUDIT_ALPHA, 'beta/two': AUDIT_BETA })
+  const locked = join(root, 'openspec', 'specs', 'beta', 'two', 'spec.md')
+  chmodSync(locked, 0o000)
+  try {
+    const r = run(['spec-audit', '--root', root, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.unreadable.length, 1)
+    assert.ok(out.unreadable[0].path.includes('beta/two'), JSON.stringify(out.unreadable))
+    assert.ok(out.unreadable[0].reason)
+    assert.equal(out.totals.specs, 1, 'the totals say how many specs they cover')
+    assert.equal(out.totals.requirements, 2)
+  } finally {
+    chmodSync(locked, 0o600)
+  }
 })

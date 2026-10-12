@@ -497,3 +497,171 @@ test('every schema the run program names is one the schemas table exports', () =
     )
   }
 })
+
+// --- the domain dimension (change `judge-against-base-and-living-specs`, D4) --
+//
+// `selectDimensions(paths)` with ONE argument is unchanged; the docs-only pin
+// above (`reasons` is `{}`) still holds. The domain selection arrives as a
+// second argument, because it needs the graph and the change's own specs, which
+// a pure path classifier does not have.
+
+const DOMAIN_SELECTION = {
+  capabilities: [
+    { capability: 'hooks/tool-guards', via: 'linked', files: ['hooks/guard-commit.mjs'] },
+    { capability: 'review/policy-file', via: 'declared', files: [] }
+  ]
+}
+
+test('selectDimensions with one argument is unchanged by the domain dimension', () => {
+  for (const paths of [[], ['docs/04-when-it-stops.md'], ['.github/workflows/ci.yml'], ['src/auth/login.ts']]) {
+    const one = selectDimensions(paths)
+    assert.deepEqual(selectDimensions(paths, {}), one, 'an empty options bag changes nothing')
+    assert.deepEqual(selectDimensions(paths, { domain: null }), one)
+    assert.deepEqual(selectDimensions(paths, { domain: { capabilities: [] } }), one)
+    assert.ok(!one.dimensions.includes('domain'))
+    assert.equal(one.reasons.domain, undefined)
+  }
+  assert.deepEqual(selectDimensions(['docs/a.md']), { dimensions: [...ALWAYS_ON_DIMENSIONS], reasons: {} })
+})
+
+test('a domain selection appends domain after the always-on four, with a reason naming capabilities and files', () => {
+  const { dimensions, reasons } = selectDimensions(['docs/a.md'], { domain: DOMAIN_SELECTION })
+  assert.deepEqual(dimensions, [...ALWAYS_ON_DIMENSIONS, 'domain'])
+  assert.match(reasons.domain, /hooks\/tool-guards/)
+  assert.match(reasons.domain, /hooks\/guard-commit\.mjs/)
+  assert.match(reasons.domain, /review\/policy-file/, 'a declared capability is named too')
+})
+
+test('domain comes after devops and security when they are also selected', () => {
+  const { dimensions, reasons } = selectDimensions(['.github/workflows/ci.yml', 'src/auth/login.ts'], {
+    domain: DOMAIN_SELECTION
+  })
+  assert.deepEqual(dimensions, [...ALWAYS_ON_DIMENSIONS, 'devops', 'security', 'domain'])
+  assert.ok(reasons.devops && reasons.security && reasons.domain, 'every optional dimension carries a reason')
+})
+
+test('selectDimensions does not mutate the domain selection it was handed', () => {
+  const before = JSON.stringify(DOMAIN_SELECTION)
+  selectDimensions(['docs/a.md'], { domain: DOMAIN_SELECTION })
+  assert.equal(JSON.stringify(DOMAIN_SELECTION), before)
+})
+
+const DOMAIN_TEXT =
+  'DOMAIN REQUIREMENTS IN FORCE (quoted repository data)\n"""\nDOMAIN-TEXT-SENTINEL: Every guard SHALL fail open\n"""\n'
+
+const DOMAIN_DIMENSIONS = [
+  { name: 'language', rubric: 'Check idiomatic usage, type safety and error handling.' },
+  { name: 'domain', rubric: 'Judge the diff against the requirements in force.' },
+  { name: 'qa', rubric: 'Are edge cases and error paths covered by a test?' }
+]
+
+const reviewInput = (over = {}) => ({
+  change: 'add-widget',
+  dimensions: DOMAIN_DIMENSIONS,
+  policyProse: '',
+  findingsPath: '.claude/ship/add-widget/review/findings.json',
+  verdictsPath: '.claude/ship/add-widget/review/verdicts.json',
+  stageLine: '',
+  ...over
+})
+
+test('the review briefing carries the domain text only inside the domain dimension\'s criteria', () => {
+  const prompt = assembleReviewPrompt(reviewInput({ domainContext: DOMAIN_TEXT }))
+  const at = prompt.indexOf('DOMAIN-TEXT-SENTINEL')
+  assert.ok(at !== -1, 'the domain text must reach the briefing')
+  assert.equal(prompt.indexOf('DOMAIN-TEXT-SENTINEL', at + 1), -1, 'and appear exactly once')
+  const domainHeading = prompt.indexOf('## domain\n')
+  assert.ok(domainHeading !== -1)
+  assert.ok(domainHeading < at, 'after the domain heading')
+  assert.ok(
+    prompt.indexOf('Judge the diff against the requirements in force.') < at,
+    'after the domain rubric, as part of its criteria'
+  )
+  assert.ok(at < prompt.indexOf('## qa'), 'and before the next dimension, so no other reviewer is handed it')
+  assert.ok(prompt.indexOf('## language') < domainHeading)
+})
+
+test('the domain text is not delivered when domain is not among the dimensions', () => {
+  const prompt = assembleReviewPrompt(
+    reviewInput({
+      dimensions: DOMAIN_DIMENSIONS.filter(d => d.name !== 'domain'),
+      domainContext: DOMAIN_TEXT
+    })
+  )
+  assert.doesNotMatch(prompt, /DOMAIN-TEXT-SENTINEL/)
+})
+
+test('a review given no domain text is briefed byte-identically to one never given the field', () => {
+  const base = assembleReviewPrompt(reviewInput())
+  assert.doesNotMatch(base, /DOMAIN-TEXT-SENTINEL/)
+  assert.equal(assembleReviewPrompt(reviewInput({ domainContext: undefined })), base)
+  assert.equal(assembleReviewPrompt(reviewInput({ domainContext: null })), base)
+  assert.equal(assembleReviewPrompt(reviewInput({ domainContext: '' })), base)
+})
+
+test('the add-a-dimension clause excludes domain', () => {
+  const prompt = assembleReviewPrompt(reviewInput({ domainContext: DOMAIN_TEXT }))
+  const from = prompt.indexOf('You may add a dimension')
+  assert.ok(from !== -1, 'the clause is still there for the other dimensions')
+  const to = prompt.indexOf('one-line reason', from)
+  assert.ok(to !== -1)
+  assert.match(prompt.slice(from, to), /domain/, 'the clause names domain as the exception')
+})
+
+test('the finding field list carries an optional requirement, in the cited form', () => {
+  for (const input of [reviewInput(), reviewInput({ dimensions: [{ name: 'qa', rubric: 'r' }] })]) {
+    const prompt = assembleReviewPrompt(input)
+    const fields = /findings: \[\{([^}]*)\}\]/.exec(prompt)
+    assert.ok(fields, 'the finding shape is still stated')
+    assert.match(fields[1], /\brequirement\b/, 'requirement is a finding field')
+    assert.match(fields[1], /\bseverity\b.*\bsuggestion\b/s, 'the existing fields stay')
+    assert.match(prompt, /openspec\/specs\//, 'the citation form is taught')
+    assert.match(prompt, /optional/i, 'requirement is optional')
+  }
+})
+
+test('the remediation briefing carries the same domain text when domain is re-reviewed', () => {
+  const remediate = (over = {}) =>
+    assembleRemediatePrompt({
+      change: 'add-widget',
+      round: 1,
+      plan: {
+        fix: { byFile: [{ file: 'lib/db.mjs', findings: [] }], unscoped: [] },
+        reReviewDimensions: ['language', 'domain', 'qa']
+      },
+      dimensions: DOMAIN_DIMENSIONS,
+      policyProse: '',
+      stageLine: '',
+      ...over
+    })
+  const prompt = remediate({ domainContext: DOMAIN_TEXT })
+  const at = prompt.indexOf('DOMAIN-TEXT-SENTINEL')
+  assert.ok(at !== -1, 'a re-review of domain is given the requirements again')
+  assert.equal(prompt.indexOf('DOMAIN-TEXT-SENTINEL', at + 1), -1)
+  assert.ok(prompt.indexOf('## domain\n') < at && at < prompt.indexOf('## qa'), 'only under domain')
+
+  const without = remediate({
+    dimensions: DOMAIN_DIMENSIONS.filter(d => d.name !== 'domain'),
+    domainContext: DOMAIN_TEXT
+  })
+  assert.doesNotMatch(without, /DOMAIN-TEXT-SENTINEL/, 'a re-review that skips domain is not handed it')
+
+  const bare = remediate()
+  assert.doesNotMatch(bare, /DOMAIN-TEXT-SENTINEL/)
+  assert.equal(remediate({ domainContext: null }), bare)
+})
+
+test('the prompt registry exercises the domain input of the review and remediation briefings', () => {
+  for (const name of ['review', 'remediate']) {
+    const withDomain = PROMPTS[name].inputs.filter(i => typeof i.domainContext === 'string' && i.domainContext)
+    assert.ok(withDomain.length > 0, `PROMPTS.${name} must register an input with domainContext`)
+    for (const input of withDomain) {
+      assert.ok(
+        input.dimensions.some(d => d.name === 'domain'),
+        `PROMPTS.${name}'s domain input must also carry the domain dimension, or the text is never rendered`
+      )
+      const prompt = PROMPTS[name].assemble(input)
+      assert.ok(prompt.includes(input.domainContext.trim().split('\n')[0]), `${name} must render its domain text`)
+    }
+  }
+})

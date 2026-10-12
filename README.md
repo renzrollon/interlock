@@ -138,6 +138,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ev
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change and what it cannot |
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
+| [15 — Merge confidence](docs/15-merge-confidence.md) | Recording a coverage baseline, computing the base on demand, reading the policy from the base, reading a spec audit |
 
 ## Development
 

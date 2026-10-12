@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveReview, formatReview } from '../../lib/review-core.mjs'
-import { TOLERANCE_BAND } from '../../lib/findings.mjs'
+import { TOLERANCE_BAND, FINDING_SCHEMA } from '../../lib/findings.mjs'
 
 const f = (over = {}) => ({
   severity: 'warning',
@@ -518,4 +518,276 @@ test('with no diff supplied the citation shape alone still gates dismissal', () 
 test('formatReview names the refusals so a reader can see the rule fired', () => {
   const r = resolveAgainstDiff([refute('nope')])
   assert.match(formatReview(r), /1 refutation\(s\) cited no evidence/)
+})
+
+// --- requirement citations (change `judge-against-base-and-living-specs`, D4) --
+//
+// A finding may carry `requirement: 'openspec/specs/<capability>/spec.md#<heading>'`.
+// The CLI checks the citation's SHAPE — the path is a canonical `openspec/specs/…/spec.md`,
+// the file was readable at the base, the heading names a requirement in it — and
+// reports a failed check under `anomalies.requirementCitations`. It never decides
+// whether the requirement forbids what the diff does (that is the skeptics' job),
+// and a failed check changes nothing about how the finding is adjudicated.
+//
+// `requirementHeadings` maps each cited spec path (canonical) to that file's
+// requirement keys — heading text with a leading `Requirement:` stripped and
+// whitespace collapsed, case kept — or to `{ unreadable: reason }`.
+
+const SPEC = 'openspec/specs/hooks/tool-guards/spec.md'
+const OTHER_SPEC = 'openspec/specs/hooks/other/spec.md'
+const HEADS = new Map([
+  [SPEC, ['Every guard SHALL fail open', 'A guard SHALL NOT block a commit outside a ship run']],
+  [OTHER_SPEC, { unreadable: 'abc1234:openspec/specs/hooks/other/spec.md is not in the repository' }]
+])
+const cite = (heading, path = SPEC) => `${path}#${heading}`
+
+const domainFinding = (over = {}) => f({ severity: 'blocker', title: 'cited', ...over })
+const raised = (list, dimension = 'domain') => [{ dimension, findings: list }]
+// Two skeptics who both call it real and keep the raised severity (the default
+// verdict refines to `warning`, which would re-band every blocker below).
+const real = (title, refined = 'blocker') => [
+  v({ findingTitle: title, refinedSeverity: refined }),
+  v({ findingTitle: title, refinedSeverity: refined })
+]
+
+const citationsOf = r => r.anomalies.requirementCitations
+
+test('a valid citation reports nothing and the finding survives as it would uncited', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(citationsOf(r), [])
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('a result with no citations carries an empty requirementCitations list', () => {
+  const r = resolveReview([f()], [])
+  assert.deepEqual(citationsOf(r), [])
+  assert.deepEqual(Object.keys(r.anomalies).sort(), ['malformedVerdicts', 'orphanVerdicts', 'requirementCitations'])
+})
+
+test('a citation outside openspec/specs is reported with the check it failed, and the finding is kept', () => {
+  const requirement = cite('A requirement', 'openspec/changes/x/specs/a/spec.md')
+  const r = resolveReview(
+    raised([domainFinding({ title: 'out of tree', file: 'lib/b.ts', requirement })]),
+    real('out of tree'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  const [a] = citationsOf(r)
+  assert.equal(a.dimension, 'domain')
+  assert.equal(a.file, 'lib/b.ts')
+  assert.equal(a.title, 'out of tree')
+  assert.equal(a.requirement, requirement)
+  assert.match(a.problem, /openspec\/specs/)
+  assert.equal(r.counts.surviving, 1, 'a broken citation drops nothing')
+})
+
+test('a citation whose path is not a spec.md is reported', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open', 'openspec/specs/hooks/notes.md') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  assert.match(citationsOf(r)[0].problem, /spec\.md/)
+})
+
+test('a citation naming no heading in the file is reported as naming no requirement', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('A guard SHALL be invented') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  assert.match(citationsOf(r)[0].problem, /no requirement/i)
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('a citation of a file absent from the readable set is reported', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open', 'openspec/specs/hooks/ghost/spec.md') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('a cited file that could not be read is reported as unchecked, with the reason', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Anything', OTHER_SPEC) })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  assert.match(citationsOf(r)[0].problem, /unchecked/i)
+  assert.match(citationsOf(r)[0].problem, /is not in the repository/, 'the reason travels with the report')
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('a ./-spelled path is the same canonical path', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open', './' + SPEC) })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(citationsOf(r), [])
+})
+
+test('heading spellings: extra spaces and a Requirement: prefix resolve, a case difference does not', () => {
+  const r = resolveReview(
+    raised([
+      domainFinding({ title: 'spaced', requirement: cite('Every  guard   SHALL fail open') }),
+      domainFinding({ title: 'prefixed', requirement: cite('Requirement: Every guard SHALL fail open') }),
+      domainFinding({ title: 'cased', requirement: cite('Every guard shall fail open') })
+    ]),
+    [...real('spaced'), ...real('prefixed'), ...real('cased')],
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(
+    citationsOf(r).map(a => a.title),
+    ['cased'],
+    'headings match on whitespace, not on case'
+  )
+  assert.match(citationsOf(r)[0].problem, /no requirement/i)
+  assert.equal(r.counts.surviving, 3, 'none of the three is dropped')
+})
+
+test('a domain blocker that cites nothing is reported, and still survives on its verdicts', () => {
+  const r = resolveReview(
+    raised([domainFinding({ title: 'uncited blocker' })]),
+    real('uncited blocker'),
+    { requirementHeadings: HEADS }
+  )
+  assert.equal(citationsOf(r).length, 1)
+  const [a] = citationsOf(r)
+  assert.equal(a.dimension, 'domain')
+  assert.equal(a.title, 'uncited blocker')
+  assert.match(a.problem, /cites no requirement/i)
+  assert.equal(r.counts.surviving, 1, 'adjudicated, never dropped')
+  assert.equal(r.surviving[0].severity, 'blocker', 'and never re-banded')
+})
+
+test('an uncited domain blocker is reported even when no headings were supplied', () => {
+  const r = resolveReview(raised([domainFinding({ title: 'uncited blocker' })]), real('uncited blocker'))
+  assert.equal(citationsOf(r).length, 1)
+  assert.match(citationsOf(r)[0].problem, /cites no requirement/i)
+})
+
+test('a domain warning that cites nothing is not reported', () => {
+  const r = resolveReview(
+    raised([f({ severity: 'warning', title: 'unspecified behaviour' })]),
+    real('unspecified behaviour', 'warning'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(citationsOf(r), [])
+  assert.equal(r.counts.surviving, 1)
+})
+
+test('a blocker that cites nothing under another dimension is not reported', () => {
+  const r = resolveReview(
+    raised([f({ severity: 'blocker', title: 'plain blocker' })], 'qa'),
+    real('plain blocker'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(citationsOf(r), [])
+})
+
+test('a finding is adjudicated exactly as if it carried no citation', () => {
+  const withCitations = [
+    { dimension: 'domain', findings: [
+      domainFinding({ title: 'good cite', requirement: cite('Every guard SHALL fail open') }),
+      domainFinding({ title: 'bad cite survives', requirement: cite('Not a heading') }),
+      domainFinding({ title: 'bad cite refuted', requirement: cite('Not a heading either') }),
+      domainFinding({ title: 'outside cite', requirement: cite('X', 'openspec/changes/x/specs/a/spec.md') }),
+      f({ severity: 'warning', title: 'weak', requirement: cite('Every guard SHALL fail open') })
+    ] }
+  ]
+  const without = withCitations.map(g => ({
+    ...g,
+    findings: g.findings.map(({ requirement, ...rest }) => rest)
+  }))
+  const verdicts = [
+    ...real('good cite'),
+    ...real('bad cite survives'),
+    v({ findingTitle: 'bad cite refuted', isReal: false }),
+    v({ findingTitle: 'bad cite refuted', isReal: false }),
+    v({ findingTitle: 'outside cite', isReal: true }),
+    v({ findingTitle: 'outside cite', isReal: false }),
+    v({ findingTitle: 'weak', qualityScore: 1 }),
+    v({ findingTitle: 'weak', qualityScore: 1 })
+  ]
+  const a = resolveReview(withCitations, verdicts, { requirementHeadings: HEADS })
+  const b = resolveReview(without, verdicts, { requirementHeadings: HEADS })
+
+  assert.deepEqual(a.counts, b.counts)
+  assert.deepEqual(a.dimensionStats, b.dimensionStats)
+  assert.deepEqual(
+    a.surviving.map(x => [x.title, x.severity]),
+    b.surviving.map(x => [x.title, x.severity])
+  )
+  assert.deepEqual(a.dismissed.map(x => x.title), b.dismissed.map(x => x.title))
+  assert.deepEqual(a.droppedByQuality.map(x => x.title), b.droppedByQuality.map(x => x.title))
+  assert.equal(a.dismissed.length, 1, 'the refuted finding is still dismissed')
+  assert.deepEqual(a.dismissed.map(x => x.title), ['bad cite refuted'])
+  // The three bad citations are reported; the good one is not; the uncited ones carry no report.
+  assert.deepEqual(
+    citationsOf(a).map(x => x.title).sort(),
+    ['bad cite refuted', 'bad cite survives', 'outside cite']
+  )
+})
+
+test('the counts keep their keys when citations are checked', () => {
+  const r = resolveReview(
+    raised([domainFinding({ requirement: cite('Not a heading') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(Object.keys(r.counts).sort(), [
+    'dismissalsRejected',
+    'dismissed',
+    'droppedByPolicy',
+    'droppedByQuality',
+    'raised',
+    'surviving'
+  ])
+})
+
+test('formatReview names a citation problem as an ANOMALY and stays quiet about a valid one', () => {
+  const bad = resolveReview(
+    raised([domainFinding({ title: 'fabricated', requirement: cite('Not a heading') })]),
+    real('fabricated'),
+    { requirementHeadings: HEADS }
+  )
+  assert.match(formatReview(bad), /ANOMALY:.*requirement.*fabricated/is)
+
+  const uncited = resolveReview(raised([domainFinding({ title: 'uncited blocker' })]), real('uncited blocker'))
+  assert.match(formatReview(uncited), /ANOMALY:.*uncited blocker/s)
+
+  const ok = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.doesNotMatch(formatReview(ok), /ANOMALY/)
+})
+
+test('the finding schema carries an optional requirement string', () => {
+  const props = FINDING_SCHEMA.properties.findings.items.properties
+  assert.equal(props.requirement && props.requirement.type, 'string')
+  assert.ok(!FINDING_SCHEMA.properties.findings.items.required.includes('requirement'), 'citing is optional')
+})
+
+test('a requirement field changes none of the survival arithmetic on a finding that was already real', () => {
+  const plain = resolveReview(raised([domainFinding()]), real('cited'))
+  const cited = resolveReview(
+    raised([domainFinding({ requirement: cite('Every guard SHALL fail open') })]),
+    real('cited'),
+    { requirementHeadings: HEADS }
+  )
+  assert.deepEqual(cited.counts, plain.counts)
+  assert.equal(cited.surviving[0].requirement, cite('Every guard SHALL fail open'), 'the citation travels with the finding')
 })

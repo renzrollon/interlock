@@ -1932,6 +1932,27 @@ async function relay(status = 200) {
   }
 }
 
+/**
+ * False, or the reason the relay tests cannot run here. A sandbox that denies
+ * binding loopback is an environment fact, not a result: the tests that need
+ * the relay skip and say so, and any other probe failure skips nothing, so
+ * they still run and fail where the cause is anything else.
+ */
+function loopbackDenied() {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer()" +
+        ".on('error', e => process.exit(e.code === 'EPERM' || e.code === 'EACCES' ? 3 : 1))" +
+        ".listen(0, '127.0.0.1', function () { this.close() })"
+    ],
+    { stdio: 'ignore' }
+  )
+  return probe.status === 3 ? 'this environment denies binding loopback (a sandbox) — rerun outside it' : false
+}
+const LOOPBACK_DENIED = loopbackDenied()
+
 /** A sibling change in the same tree, with every box ticked or none. */
 function siblingChange(root, name, { complete = true } = {}) {
   file(root, `openspec/changes/${name}/proposal.md`, `# ${name}\n\nWhy: because.\n`)
@@ -2008,7 +2029,7 @@ test('a halted close prints no archive reminder — the change is not complete',
   }
 })
 
-test('a close without --notify makes no request, even with a topic configured', async () => {
+test('a close without --notify makes no request, even with a topic configured', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   const { root, change } = repo()
   try {
@@ -2023,7 +2044,7 @@ test('a close without --notify makes no request, even with a topic configured', 
   }
 })
 
-test('a close with --notify posts the summary\'s own first line, at high priority on a halt', async () => {
+test('a close with --notify posts the summary\'s own first line, at high priority on a halt', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   const { root, change } = repo()
   try {
@@ -2053,7 +2074,7 @@ test('a close with --notify posts the summary\'s own first line, at high priorit
   }
 })
 
-test('a rejected push is a banner and a row, and never the exit code', async () => {
+test('a rejected push is a banner and a row, and never the exit code', { skip: LOOPBACK_DENIED }, async () => {
   const forbidden = await relay(403)
   const { root, change } = repo()
   try {
@@ -2070,7 +2091,7 @@ test('a rejected push is a banner and a row, and never the exit code', async () 
   }
 })
 
-test('the topic reaches the relay and nothing else — not the summary, not the trajectory', async () => {
+test('the topic reaches the relay and nothing else — not the summary, not the trajectory', { skip: LOOPBACK_DENIED }, async () => {
   const forbidden = await relay(403)
   const { root, change } = repo()
   const topic = 'secret-topic-abc'
@@ -5985,6 +6006,521 @@ test('a clean close carries an empty banners array, present and not absent', () 
     const closed = run(root, ['run', 'close']).step
     assert.ok(Array.isArray(closed.banners), 'banners is absent')
     assert.deepEqual(closed.banners, [], `a clean run raised: ${JSON.stringify(closed.banners)}`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- judge against the base and the living specs (judge-against-base-and-living-specs) ---
+//
+// Two inputs a review used to read from the working tree are now read from the
+// commit the run started on: the enforced `REVIEW.md` path lists (a change must
+// not be able to edit the copy that is applied to it) and the living
+// requirements the `domain` dimension judges against. The prose a reviewer is
+// handed stays the working tree's, because prose is advice and cannot relax the
+// gate. Everything below drives the real CLI against a real git history, so a
+// "start commit" is a commit, not a stub.
+
+const LIVING_SPEC_PATH = 'openspec/specs/docs/guide/spec.md'
+const REQ_ALPHA = 'The guide SHALL name every command'
+const REQ_BETA = 'The guide SHALL NOT promise unreleased behaviour'
+const ALPHA_COMMITTED = 'ALPHA-COMMITTED'
+const ALPHA_EDITED = 'ALPHA-EDITED'
+const BETA_IN_FORCE = 'BETA-IN-FORCE'
+
+/** A living spec with two requirements; the marker lets a test tell which copy a briefing quoted. */
+const livingSpec = (marker = ALPHA_COMMITTED, extra = '') => `# docs/guide Specification
+
+## Purpose
+
+Keeps the guide honest about the commands it documents.
+
+## Requirements
+
+### Requirement: ${REQ_ALPHA}
+
+The guide SHALL name every command it documents. ${marker}
+
+#### Scenario: Happy path — a command is named
+
+- **GIVEN** a documented command
+- **WHEN** the guide is read
+- **THEN** the command is named
+
+### Requirement: ${REQ_BETA}
+
+The guide SHALL NOT describe behaviour that has not shipped. ${BETA_IN_FORCE}
+
+#### Scenario: Failure — an unreleased flag is not described
+
+- **GIVEN** a flag that has not shipped
+- **WHEN** the guide is read
+- **THEN** the flag is not described
+${extra}`
+
+/** A delta spec modifying ALPHA under a heading that differs from the living one only in internal whitespace. */
+const DELTA_SPEC = `## MODIFIED Requirements
+
+### Requirement: The guide  SHALL name   every command
+
+The guide SHALL name every command it documents, and say where each is run.
+
+#### Scenario: Happy path — a command is named with its location
+
+- **GIVEN** a documented command
+- **WHEN** the guide is read
+- **THEN** the command and where it is run are named
+`
+
+/** A graph whose reliable edges link the living spec to each given file. */
+const graphLinking = (...files) => ({
+  graph: { built_at: '2026-10-12T00:00:00Z' },
+  nodes: [],
+  links: files.map(f => ({
+    relation: 'implements_spec',
+    weight: 1,
+    source: LIVING_SPEC_PATH,
+    source_file: LIVING_SPEC_PATH,
+    target: `file:${f}`
+  }))
+})
+
+const commitAll = (root, message) => {
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  execFileSync('git', ['commit', '-qm', message], { cwd: root })
+}
+const headOf = root => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+const bannersWith = (root, prefix) => manifestOf(root).banners.filter(b => String(b).startsWith(prefix))
+const briefingOf = (root, step) => readFileSync(join(root, step.spawns[0].promptPath), 'utf8')
+
+/**
+ * A repo whose history already holds the inputs the review reads from the start
+ * commit. `graph` is `true` (links README.md), an object (used as written) or
+ * `false`; `declared` adds a delta spec for the living capability.
+ */
+function domainRepo({ graph = true, declared = false, reviewMd = null } = {}) {
+  const r = repo()
+  file(r.root, LIVING_SPEC_PATH, livingSpec())
+  if (graph) file(r.root, GRAPH_PATH, graph === true ? graphLinking('README.md') : graph)
+  if (declared) file(r.root, `openspec/changes/${r.change}/specs/docs/guide/spec.md`, DELTA_SPEC)
+  if (reviewMd !== null) file(r.root, 'REVIEW.md', reviewMd)
+  commitAll(r.root, 'fixtures')
+  return r
+}
+
+/** Like `toTail`, but lets a test rewrite the manifest between `run start` and the review step. */
+function toReview(root, change, flags, over) {
+  const batch = toFirstBatch(root, change, flags)
+  if (over) setManifest(root, over)
+  writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+  return run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+  }).step
+}
+
+/** Write a findings/verdicts pair whose findings all cite the given requirement. */
+function writeCitedReview(root, shape, requirement) {
+  const { findings, verdicts } = reviewFiles(shape)
+  for (const group of findings) for (const f of group.findings) if (requirement) f.requirement = requirement
+  file(root, '.claude/ship/findings.json', findings)
+  file(root, '.claude/ship/verdicts.json', verdicts)
+}
+
+/** Everything under `## domain` and nothing before it carries the marker. */
+function assertUnderDomainOnly(briefing, marker) {
+  const at = briefing.indexOf('\n## domain\n')
+  assert.notEqual(at, -1, 'the briefing has no `## domain` section')
+  assert.ok(briefing.indexOf(marker) > at, `${marker} is not inside the domain section`)
+  assert.ok(!briefing.slice(0, at).includes(marker), `${marker} leaked into another dimension's criteria`)
+  for (const other of ALWAYS_ON) {
+    assert.ok(briefing.indexOf(`\n## ${other}\n`) < at, `${other} must come before domain`)
+  }
+}
+const ALWAYS_ON = ['language', 'architecture', 'qa', 'technical-lead']
+
+// --- run start pins the commit ----------------------------------------------
+
+test('run start records the commit the run started on, and a later commit does not move it', () => {
+  const { root, change } = repo()
+  try {
+    const head = headOf(root)
+    const batch = toFirstBatch(root, change, ['--review'])
+    assert.match(manifestOf(root).startSha, /^[0-9a-f]{40}$/)
+    assert.equal(manifestOf(root).startSha, head)
+
+    execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'later'], { cwd: root })
+    assert.notEqual(headOf(root), head)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.equal(manifestOf(root).startSha, head, 'the pinned base is the commit the run started on, not the current head')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the enforced lists come from the start commit ---------------------------
+
+test('a working copy that adds an exclusion is not applied, and the run says so through the close', () => {
+  const { root, change } = domainRepo({ graph: false, reviewMd: '# Review policy\n\n## Do Not Report\n\n- dist/\n' })
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    // The change edits its own policy so that the file it touched is out of review.
+    file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- dist/\n- README.md\n')
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate', 'the blocker survives: the start commit excluded only dist/')
+    assert.equal(manifestOf(root).review.counts.blockers, 1)
+
+    const banners = bannersWith(root, 'POLICY DIFFERS FROM BASE')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /REVIEW\.md/)
+    assert.ok(banners[0].includes(sha.slice(0, 7)), `the banner must name the start commit: ${banners[0]}`)
+    assert.ok(next.banners.includes(banners[0]), 'the step carries the banner too')
+
+    const closed = run(root, ['run', 'close', '--halt', 'blocker left'], { expectExit: 1 }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]), 'and in the close record')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a working copy that drops an exclusion does not lift it', () => {
+  const { root, change } = domainRepo({ graph: false, reviewMd: '# Review policy\n\n## Do Not Report\n\n- README.md\n' })
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    rmSync(join(root, 'REVIEW.md'))
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final', 'the start commit excluded README.md, so the finding on it is dropped')
+    const banners = bannersWith(root, 'POLICY DIFFERS FROM BASE')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.ok(banners[0].includes(sha.slice(0, 7)))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an unchanged policy applies the start commit\'s exclusions and raises nothing', () => {
+  const policy = '# Review policy\n\n## Do Not Report\n\n- README.md\n'
+  for (const [label, working] of [
+    ['identical', policy],
+    ['line endings only', policy.replace(/\n/g, '\r\n')]
+  ]) {
+    const { root, change } = domainRepo({ graph: false, reviewMd: policy })
+    try {
+      const review = toReview(root, change, ['--review'])
+      file(root, 'REVIEW.md', working)
+      writeReview(root, { blockers: 1 })
+      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(next.action, 'verify-final', `${label}: the exclusion is applied`)
+      assert.deepEqual(bannersWith(root, 'POLICY DIFFERS FROM BASE'), [], `${label}: nothing differs`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('uncommitted prose is still inlined while the start commit\'s lists are applied', () => {
+  const { root, change } = repo()
+  try {
+    // Untracked, so absent at the start commit: it declares no lists there.
+    file(
+      root,
+      'REVIEW.md',
+      '# Review policy\n\n## What "Important" means\n\nIn this repo, a naming nit is a suggestion.\n\n## Do Not Report\n\n- README.md\n'
+    )
+    const review = toReview(root, change, ['--review'])
+    const briefing = briefingOf(root, review)
+    assert.match(briefing, /In this repo, a naming nit is a suggestion\./, 'prose comes from the working tree')
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate', 'the working copy\'s exclusion is not applied: the start commit has no REVIEW.md')
+    assert.equal(bannersWith(root, 'POLICY DIFFERS FROM BASE').length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [], 'a pinned run is not unpinned')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- no start commit ---------------------------------------------------------
+
+test('a run with no start commit reads the working tree and raises REVIEW BASE NOT PINNED exactly once', () => {
+  // null is a repository with no commit to record; absent is a manifest written
+  // before this change. Both must read the same way.
+  for (const startSha of [null, undefined]) {
+    const { root, change } = repo()
+    try {
+      file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- docs/\n')
+      const review = toReview(root, change, ['--review'], { startSha })
+      const afterStep = bannersWith(root, 'REVIEW BASE NOT PINNED')
+      assert.equal(afterStep.length, 1, `${startSha}: raised when the review step is emitted: ${JSON.stringify(manifestOf(root).banners)}`)
+      assert.match(afterStep[0], /REVIEW\.md/, 'names the lists it will read unpinned')
+      assert.doesNotMatch(afterStep[0], /living requirements/i, 'domain does not run here, so it reads none')
+      assert.ok(review.banners.includes(afterStep[0]), 'the review step carries it')
+
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(round1.action, 'remediate')
+      assert.equal(bannersWith(root, 'REVIEW BASE NOT PINNED').length, 1, 'adjudication does not raise it again')
+
+      writeReview(root, { blockers: 1 })
+      run(root, [...round1.then.argv], { results: [{ ok: true }] })
+      assert.equal(bannersWith(root, 'REVIEW BASE NOT PINNED').length, 1, 'nor does a remediation round')
+      assert.deepEqual(bannersWith(root, 'POLICY DIFFERS FROM BASE'), [], 'with no base there is nothing to differ from')
+
+      const closed = run(root, ['run', 'close', '--halt', 'blocker left'], { expectExit: 1 }).step
+      assert.ok(closed.summary.includes(afterStep[0]), 'the banner is in the close summary')
+      assert.ok(closed.banners.includes(afterStep[0]))
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a run with no start commit applies the working copy\'s lists', () => {
+  const { root, change } = repo()
+  try {
+    file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- README.md\n')
+    const review = toReview(root, change, ['--review'], { startSha: null })
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final', 'both the prose and the lists come from the working tree, and the banner says so')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('REVIEW BASE NOT PINNED names the living requirements when the domain dimension runs', () => {
+  const { root, change } = domainRepo()
+  try {
+    toReview(root, change, ['--review'], { startSha: null })
+    const banners = bannersWith(root, 'REVIEW BASE NOT PINNED')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /REVIEW\.md/)
+    assert.match(banners[0], /living requirements/i)
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, null, 'the record says the text came from the working tree')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the domain dimension ----------------------------------------------------
+
+test('a graph linking a changed file to a living spec selects domain, records it, and delivers the text only under ## domain', () => {
+  const { root, change } = domainRepo()
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+
+    assert.deepEqual(dims.selected.slice(0, 5), [...ALWAYS_ON, 'domain'], 'domain follows the always-on four')
+    assert.match(dims.reasons.domain, /docs\/guide/)
+    assert.match(dims.reasons.domain, /README\.md/)
+    assert.deepEqual(dims.domain.capabilities, [{ capability: 'docs/guide', via: 'linked', files: ['README.md'] }])
+    assert.equal(dims.domain.ref, sha, 'read from the start commit')
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'))
+    assert.equal(dims.notSelected, undefined, 'it was selected')
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW'), [])
+    assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [])
+
+    const briefing = briefingOf(root, review)
+    assertUnderDomainOnly(briefing, ALPHA_COMMITTED)
+    assertUnderDomainOnly(briefing, BETA_IN_FORCE)
+    assert.ok(briefing.includes(REQ_ALPHA) && briefing.includes(REQ_BETA), 'whole requirements, with their headings')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the living requirements are read from the start commit, not the edited working copy', () => {
+  const { root, change } = domainRepo()
+  try {
+    // Edited after the run started: a change must not be able to rewrite the
+    // requirement it is judged against.
+    const batch = toFirstBatch(root, change, ['--review'])
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const briefing = briefingOf(root, review)
+    assert.ok(briefing.includes(ALPHA_COMMITTED), 'the committed requirement is quoted')
+    assert.ok(!briefing.includes(ALPHA_EDITED), 'the edited one is not')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('with no start commit the living requirements come from the working tree, and the record says so', () => {
+  const { root, change } = domainRepo()
+  try {
+    const batch = toFirstBatch(root, change, ['--review'])
+    setManifest(root, { startSha: null })
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const briefing = briefingOf(root, review)
+    assert.ok(briefing.includes(ALPHA_EDITED))
+    assert.ok(!briefing.includes(ALPHA_COMMITTED))
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and a declared capability is partial: domain runs, the banner says the files were not mapped, and the superseded requirement is left out', () => {
+  const { root, change } = domainRepo({ graph: false, declared: true })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.ok(dims.selected.includes('domain'))
+    assert.equal(dims.domain.capabilities.length, 1)
+    assert.equal(dims.domain.capabilities[0].capability, 'docs/guide')
+    assert.equal(dims.domain.capabilities[0].via, 'declared')
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'), 'partial is not skipped')
+
+    const banners = bannersWith(root, 'DOMAIN REVIEW PARTIAL')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /not mapped/)
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW SKIPPED'), [])
+    assert.ok(review.banners.includes(banners[0]))
+
+    // The delta modifies ALPHA under a whitespace-different heading: it is
+    // superseded, BETA stays in force, and the change's own heading is listed.
+    assert.ok(JSON.stringify(dims.domain.superseded).includes(REQ_ALPHA), JSON.stringify(dims.domain.superseded))
+    assert.match(JSON.stringify(dims.domain.specifiedByChange).replace(/\s+/g, ' '), /SHALL name every command/)
+    const briefing = briefingOf(root, review)
+    assert.ok(!briefing.includes(ALPHA_COMMITTED), 'a requirement the change modifies is not quoted as in force')
+    assert.ok(briefing.includes(BETA_IN_FORCE))
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and nothing declared skips domain out loud', () => {
+  const { root, change } = domainRepo({ graph: false })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.deepEqual(dims.selected, ALWAYS_ON, 'domain did not run')
+    assert.equal(dims.skipped.length, 1)
+    assert.equal(dims.skipped[0].name, 'domain')
+    assert.match(dims.skipped[0].reason, /no graph/i)
+    assert.equal(dims.domain, undefined, 'no capability was selected')
+
+    const banners = bannersWith(root, 'DOMAIN REVIEW SKIPPED')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /no graph/i)
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [])
+    assert.doesNotMatch(briefingOf(root, review), /\n## domain\n/)
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a graph that links none of the changed paths records why, and raises nothing', () => {
+  const { root, change } = domainRepo({ graph: graphLinking('lib/elsewhere.mjs') })
+  try {
+    toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.deepEqual(dims.selected, ALWAYS_ON)
+    assert.equal(typeof dims.notSelected.reason, 'string')
+    assert.match(dims.notSelected.reason, /reliable edge/i)
+    assert.ok(dims.notSelected.unlinkedPaths.includes('README.md'), JSON.stringify(dims.notSelected))
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'), 'not selected is not skipped')
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW'), [], 'an unlinked file is a gap spec coverage measures, not a degraded review')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- remediation re-review ----------------------------------------------------
+
+test('a remediation re-review of domain carries the same text from the same base', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    const ref = manifestOf(root).reviewDimensions.domain.ref
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+
+    writeCitedReview(root, { blockers: 1, dimension: 'domain' }, `${LIVING_SPEC_PATH}#${REQ_ALPHA}`)
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    assert.deepEqual(round1.spawns.length, 1)
+
+    const prompt = briefingOf(root, round1)
+    assert.ok(prompt.includes(ALPHA_COMMITTED) && prompt.includes(BETA_IN_FORCE), 'the same capabilities\' text')
+    assert.ok(!prompt.includes(ALPHA_EDITED), 'from the same base, not the edited copy')
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, ref, 'the recorded base is unchanged')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation re-review of another dimension carries no domain text', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    writeReview(root, { blockers: 1, dimension: 'language' })
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    const prompt = briefingOf(root, round1)
+    assert.ok(!prompt.includes(ALPHA_COMMITTED) && !prompt.includes(BETA_IN_FORCE))
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- requirement citations ----------------------------------------------------
+
+test('adjudication checks a citation against the start commit\'s spec, reports a failure, and still adjudicates the finding', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    // A requirement that exists only in the working copy: it names no heading at the start commit.
+    const NEW_HEADING = 'The guide SHALL list its commands alphabetically'
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_COMMITTED, `\n### Requirement: ${NEW_HEADING}\n\nThe guide SHALL list its commands alphabetically.\n\n#### Scenario: Happy path — sorted\n\n- **GIVEN** a guide\n- **WHEN** read\n- **THEN** sorted\n`))
+
+    const { findings, verdicts } = reviewFiles({ blockers: 2, dimension: 'domain' })
+    const [first, second] = findings[0].findings
+    first.requirement = `${LIVING_SPEC_PATH}#${NEW_HEADING}`
+    second.requirement = `${LIVING_SPEC_PATH}#${REQ_ALPHA}`
+    file(root, '.claude/ship/findings.json', findings)
+    file(root, '.claude/ship/verdicts.json', verdicts)
+
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate')
+    assert.equal(manifestOf(root).review.counts.blockers, 2, 'both findings are adjudicated as without their citation')
+
+    const reviewed = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    const reported = reviewed.anomalies.requirementCitations
+    assert.equal(reported.length, 1, JSON.stringify(reported))
+    assert.equal(reported[0].dimension, 'domain')
+    assert.equal(reported[0].title, first.title)
+    assert.equal(reported[0].requirement, first.requirement)
+    assert.match(reported[0].problem, /no requirement/i)
   } finally {
     cleanup(root)
   }

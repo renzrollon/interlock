@@ -736,8 +736,54 @@ test('the merge bands are a separate group, not entries of LIMITS, and the posit
   // the group is its own export rather than more LIMITS entries.
   assert.equal(typeof MERGE_BANDS.ceiling, 'object')
   assert.ok(Object.isFrozen(MERGE_BANDS) && Object.isFrozen(MERGE_BANDS.ceiling), 'the published bands are frozen')
-  // No domain-spec cap until the change that brings its reader.
+  // The domain-spec cap bounds a prompt, not a merge threshold: it lives in
+  // LIMITS (below), and the bands never carry it.
   assert.ok(!('maxDomainSpecChars' in MERGE_BANDS))
+})
+
+// --- the domain-spec text cap (spec: review/domain-review; design D4) ---------
+//
+// It bounds the living-requirement text one review prompt carries, beside
+// maxHandoffChars and maxReviewPolicyBytes, so it is a LIMITS entry: the
+// positive-integer invariant at the top of this file covers it, and the
+// sweep above counts a reader for it. Its one reader is the pure module that
+// assembles the text, so a rubric or skill never restates the number.
+
+test('the domain-spec text cap is a positive integer in LIMITS, printed by interlock limits, and not a merge band', () => {
+  assert.ok('maxDomainSpecChars' in LIMITS, 'LIMITS.maxDomainSpecChars is not published')
+  assert.ok(Number.isInteger(LIMITS.maxDomainSpecChars) && LIMITS.maxDomainSpecChars > 0)
+  assert.match(
+    formatLimits(),
+    new RegExp(`^\\s+[^\\n]*domain[^\\n]*\\s+${LIMITS.maxDomainSpecChars}\\s*$`, 'mi'),
+    'interlock limits does not print a domain spec row carrying the cap'
+  )
+  assert.ok(!('maxDomainSpecChars' in MERGE_BANDS), 'the cap bounds a prompt, it is not a merge threshold')
+
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.limits.maxDomainSpecChars, LIMITS.maxDomainSpecChars)
+  assert.ok(!('maxDomainSpecChars' in payload.mergeBands))
+})
+
+test('the domain-spec text cap is read by name under lib/, and the review skill and rubric restate no number for it', () => {
+  const reader = readFileSync(join(ROOT, 'lib', 'prompts', 'domain-context.mjs'), 'utf8')
+  assert.ok(reader.includes('LIMITS.maxDomainSpecChars'), 'lib/prompts/domain-context.mjs does not read the cap')
+  assert.doesNotMatch(
+    reader.replace(/LIMITS\.maxDomainSpecChars/g, ''),
+    /\b12_?000\b/,
+    'the reader restates the cap instead of reading it'
+  )
+  for (const prose of [
+    join(ROOT, 'skills', 'review-code', 'SKILL.md'),
+    join(ROOT, 'skills', 'review-code', 'dimensions', 'domain.md')
+  ]) {
+    if (!existsSync(prose)) continue
+    assert.doesNotMatch(readFileSync(prose, 'utf8'), /\b12_?000\b/, `${prose} restates the domain-spec cap`)
+  }
 })
 
 test('interlock limits --json emits the merge bands under their own top-level key', () => {

@@ -173,7 +173,7 @@ So stopping mid-wave costs the whole rest of that wave. This is one place Interl
 
 Resume also only works **within the same Claude Code session**. If you exit Claude Code while `ship` is running, the next session starts it fresh — no cached results, no partial credit. On a long run, leave the session open.
 
-**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A **`--strict`** run crosses that easily — several waves of up to 8 implementers, four to six review dimensions, two skeptics per blocker and warning, then one fixer per file. Default (lean) ship is implementers plus verify plus commit, and usually stays under the warning. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
+**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A **`--strict`** run crosses that easily — several waves of up to 8 implementers, four to seven review dimensions, two skeptics per blocker and warning, then one fixer per file. Default (lean) ship is implementers plus verify plus commit, and usually stays under the warning. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
 
 The related `workflowSizeGuideline` setting (`/config`, default `medium`) is advice Claude follows when it *writes* a workflow. `ship` ships as a pre-written script, so the guideline should not throttle it — but that is read from how the setting is documented rather than measured, so if you see wave sizes that disagree with `interlock limits`, that would be the first thing to check.
 
@@ -670,6 +670,41 @@ VERIFY BUDGET AT THE PUBLISHED FLOOR: the test profile carries no unit.timeout_m
 ```
 
 Run `/interlock:fix-tests --reconfigure`. After a green full unit run it records `unit.timeout_ms` as that run's wall time, and the next ship derives its budget from it. `interlock verify plan --context inter-wave --json` prints the budget and its `budgetSource` (`profile`, `published` or `flag`) without starting a run. The budget is fixed at start, so editing the profile mid-run changes nothing for that run.
+
+### `POLICY DIFFERS FROM BASE` and `REVIEW BASE NOT PINNED`
+
+Both are about which copy of `REVIEW.md` the review's **enforced** lists were read from. `REVIEW.md` has an advice half (the prose) and an enforced half (the `## Do Not Report` and `## Always Human Review` path lists); [12](./12-repository-review-policy.md) draws that line. A change must not be able to edit the copy of an enforced list that is applied to it, so a ship run reads the lists from the commit the run started on and only the prose from the working tree.
+
+`POLICY DIFFERS FROM BASE` means the working tree's `REVIEW.md` is not the one the run started with, so the two copies disagree and the start commit's lists won:
+
+```
+POLICY DIFFERS FROM BASE: REVIEW.md differs from <sha7>; its Do Not Report paths were read from <sha7>
+```
+
+The run raises it from the review adjudication, so it reaches the close summary. Nothing is wrong with the run. Read it as "an edit to `REVIEW.md` in this change did not take effect for this review": a path you added to `## Do Not Report` still gets reported, and a path you removed is still excluded. If you meant to change the policy, land the `REVIEW.md` edit first and run the review against it; if the edit was incidental, ignore the line. The prose half is read from the working tree either way.
+
+`REVIEW BASE NOT PINNED` means the run had no start commit to read from, so it fell back to the working tree and says which inputs that makes unpinned:
+
+```
+REVIEW BASE NOT PINNED: <reason>; read from the working tree: REVIEW.md lists[, living requirements]
+```
+
+The reason is usually a repository with no commit yet, or a run whose manifest was written before the start commit was recorded (a run resumed across an upgrade). The line names the lists, and the living requirements too when the domain dimension runs, because those are the inputs that are no longer protected from the change under review. It prints once. The review itself still runs; what you lose is the guarantee that the change did not edit its own policy, so read `REVIEW.md` in the diff yourself before trusting a quiet review. The fix is to commit something (or start a fresh run), after which the lists are read from the start commit.
+
+### `DOMAIN REVIEW SKIPPED` and `DOMAIN REVIEW PARTIAL`
+
+The `domain` review dimension judges the diff against the living requirements of the capabilities it touches: contradicting a requirement in force is a blocker, and it must cite the requirement. It is selected only when the run can name those capabilities, from two sources: a capability that a reliable `openspec/specs/` link in the code graph ties to a changed file, and a capability the change declares with a delta spec of its own. When the run cannot, it says so rather than leaving the dimension out silently:
+
+```
+DOMAIN REVIEW SKIPPED: <reason>
+DOMAIN REVIEW PARTIAL: <reason>
+```
+
+`DOMAIN REVIEW SKIPPED` means the dimension did not run. The usual reason is that no graph was built and the change declares no capability, so there was nothing to select from. The other dimensions ran as normal; what is missing is the check against the living specs. The same fact is recorded on the review as a skipped dimension, and the merge verdict reads it as a `domain-skipped` flag that lowers the score without moving the band. Build the graph with `/interlock:bootstrap` (or `interlock-graph build .`) and re-run the review, or run `interlock domain-context --changed <files>` yourself to see what would be selected.
+
+`DOMAIN REVIEW PARTIAL` means the dimension ran on less than it should have. Either there was no graph, so only the capabilities the change declares were selected and a capability linked only through the graph was not, or the specs did not fit the prompt and whole requirements were left out (each omission is counted in the text the reviewer saw and named in the review record, and the size limit is the `domain` row of `interlock limits`). A clean domain review under this banner is not evidence that the omitted requirements are respected. Read the omitted headings in the record and check those against the diff.
+
+Neither banner changes the exit code. A graph that was built but links no changed file to any spec raises neither: that is recorded as "not selected" with the unlinked paths, because an unlinked file is a gap in the specs, not a fault in the review, and the spec audit (`interlock spec-audit`) is where that gap is measured.
 
 ### `E2E FAILED (non-blocking by policy)`
 

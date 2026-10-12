@@ -1,0 +1,39 @@
+diff --git a/lib/a.mjs b/lib/a.mjs
+index 1111111..2222222 100644
+--- a/lib/a.mjs
++++ b/lib/a.mjs
+@@ -9,0 +10,6 @@ export function a() {
++// a comment line
++const one = 1
++const two = 2
++const three = 3
++const four = 4
++// another comment line
+@@ -30,2 +36,0 @@ export function a() {
+-removed one
+-removed two
+@@ -40 +46 @@ export function a() {
+-const old = 0
++const next = 0
+diff --git a/lib/old-name.mjs b/lib/b.mjs
+similarity index 90%
+rename from lib/old-name.mjs
+rename to lib/b.mjs
+index 4444444..5555555 100644
+--- a/lib/old-name.mjs
++++ b/lib/b.mjs
+@@ -3 +3,2 @@ export function b() {
+-const before = 1
++const after = 1
++const extra = 2
+diff --git a/lib/gone.mjs b/lib/gone.mjs
+deleted file mode 100644
+index 6666666..0000000
+--- a/lib/gone.mjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-line 1
+-line 2
+-line 3
+-line 4
+-line 5

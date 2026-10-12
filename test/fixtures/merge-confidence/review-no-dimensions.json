@@ -239,5 +239,13 @@
     "rejectedReports": 0,
     "permissionPrompts": 0,
     "autoModeDenials": 0
+  },
+  "reviewPolicy": {
+    "ref": "origin/main",
+    "humanPaths": [
+      "lib/release"
+    ],
+    "problems": [],
+    "differsFromBase": false
   }
 }

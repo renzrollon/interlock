@@ -1003,3 +1003,39 @@ test('the shared test profile ties timeout_ms to the inter-wave budget in one ro
   )
   assert.ok(together, 'shared/TEST-PROFILE.md must carry timeout_ms and inter-wave in the same row or paragraph')
 })
+
+test('the review-code skill lists the seventh dimension, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
+  // Tokens, not sentences: each is what the skill must still say after a reword.
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+  for (const token of [
+    'interlock domain-context',
+    'dimensions/domain.md',
+    'DOMAIN REVIEW SKIPPED',
+    'list the seven'
+  ]) {
+    assert.ok(skill.includes(token), `skills/review-code/SKILL.md must carry ${token}`)
+  }
+  assert.ok(!skill.includes('list the six'), 'skills/review-code/SKILL.md still lists six dimensions')
+  assert.match(skill, /interlock review-policy [^\n]*--base/, 'the review-policy line must pass --base')
+  assert.match(skill, /interlock review [^\n]*--base/, 'the review line must pass --base')
+  assert.match(skill, /interlock domain-context [^\n]*--base/, 'the domain-context line must pass --base')
+  assert.ok(
+    skill.indexOf('interlock domain-context') < skill.indexOf('Spawn one agent per dimension'),
+    'domain-context must run before the fan-out'
+  )
+
+  // `requirement` in the emit shape: inside the json fence that defines it.
+  const emit = skill.match(/Every dimension agent returns findings in this shape:\s*```json([\s\S]*?)```/)
+  assert.ok(emit, 'the review-code emit shape fence was not found')
+  assert.ok(emit[1].includes('"requirement"'), 'the emit shape must carry the optional requirement field')
+
+  // The brief the table names exists, and a name the table lists resolves to a file.
+  assert.ok(existsSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md')))
+})
+
+test('the domain rubric asks for a requirement citation, names the prohibition keyword, and refuses capabilities it was not given', () => {
+  const rubric = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md'), 'utf8')
+  for (const token of ['requirement', 'SHALL NOT', 'were not given', 'blocker', 'warning']) {
+    assert.ok(rubric.includes(token), `skills/review-code/dimensions/domain.md must carry ${token}`)
+  }
+})
