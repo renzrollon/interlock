@@ -102,8 +102,12 @@
 // run's trajectory, its manifest or its wave state, and no listing or
 // existence check (the hook lists, in Node). It reads at each prompt a person
 // submits, the one event that reaches a module after the preflight wrote, and
-// after the classic session-start event where an engine raises one. A report
-// is known by its own written time, so a re-read changes nothing and the band
+// when one of the two commands is run. It never reads at the classic
+// session-start event: the settings hook that writes the file runs inside that
+// event's chain, and the module's hook there resets the meter and returns the
+// chain's call as it is, so after a boundary the module holds no report until
+// the next prompt (clear-the-plugin-directory-holds design D1). A report is
+// known by its own written time, so a re-read changes nothing and the band
 // stays hidden once hidden; the lines, the hide rule and the card's cap are
 // `lib/preflight-file.mjs`'s.
 //
@@ -906,11 +910,6 @@ function endRunAtBoundary($, input) {
   } catch (err) {
     $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
   }
-}
-
-/** Once the chain beneath has run: the preflight's report, read for every source. */
-async function readPreflightAfterStart($, input) {
-  if (session.interactive) await readPreflight($, str(input.cwd) || session.cwd)
 }
 
 /** One Explore investigator the chain let through (design D5). Never throws. */
@@ -2117,26 +2116,24 @@ export function register(on) {
   // The session boundary (design D4). /clear, /resume and /branch start the
   // session over: the engine empties `$.state`, the launch guard's record with
   // it, and `session.start` does not fire. The meter ends the run it holds on
-  // the same event. A compaction is the same session and the same run, and a
-  // source this cannot read changes nothing. The pane is left open: it redraws
-  // to the no-run text, which is true, and the person dismisses it. Once the
-  // settings hooks beneath have run, the preflight's report is read for every
-  // source (show-preflight-and-interrupted-runs-at-session-start design D5).
-  // The kit raises this event; Claude Code 2.1.291 raises no classic event to
-  // a module, so there the prompt hook above reads the report instead.
+  // the same event, before the chain beneath is called. A compaction is the
+  // same session and the same run, and a source this cannot read changes
+  // nothing. The pane is left open: it redraws to the no-run text, which is
+  // true, and the person dismisses it.
   //
   // Pass the event on unchanged. The hook returns the forward call itself,
-  // continued once: when the chain beneath has resolved, the preflight's
-  // report is read, and the continuation hands back the value that chain
-  // resolved with, as it came. No first message and no permission decision
-  // come from this hook. The meter's reset runs before the chain. A chain
-  // that rejects skips the read, and the rejection goes on as it came.
+  // with nothing bound to it, awaited on it or chained after it, so the
+  // event's result, the session's first message included, is the chain's own
+  // and never this module's (clear-the-plugin-directory-holds design D1).
+  // test/spine/mod-pins.test.mjs holds the hook to that shape.
+  //
+  // The preflight's report is never read here. The settings hook that writes
+  // it runs inside this chain, so a read before the call would draw the
+  // previous session's file, and a read after it needs the chain's promise.
+  // The report is read at a person's prompt, above, and by the two commands.
   on('classic.SessionStart', async (meterSessionApi, meterSessionInput, meterSessionForward) => {
     endRunAtBoundary(meterSessionApi, meterSessionInput)
-    return meterSessionForward(meterSessionInput).then(async started => {
-      await readPreflightAfterStart(meterSessionApi, meterSessionInput)
-      return started
-    })
+    return meterSessionForward(meterSessionInput)
   })
 
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {

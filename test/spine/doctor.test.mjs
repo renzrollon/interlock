@@ -812,7 +812,7 @@ test('the notify row honours a self-hosted server URL, still never the topic', (
   }
 })
 
-test('the notify row treats a plugin topic as configured, and prefers its server', () => {
+test('the notify row ignores the host\'s option variable', () => {
   const dir = tmp()
   try {
     file(dir, '.claude/testing/profile.json', PROFILE)
@@ -823,14 +823,25 @@ test('the notify row treats a plugin topic as configured, and prefers its server
       env: {
         ...opts.env,
         CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'from-plugin',
-        CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example',
-        INTERLOCK_NTFY_URL: 'https://shell.example'
+        CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example'
       }
     })
     const notify = byId(report, 'notify')
-    assert.equal(notify.status, 'ok')
-    assert.match(notify.detail, /https:\/\/plugin\.example/)
-    assert.doesNotMatch(notify.detail, /from-plugin/)
+    assert.equal(notify.status, 'skip')
+    assert.match(notify.detail, /INTERLOCK_NTFY_TOPIC/)
+    assert.match(notify.detail, /ntfy topic/)
+    assert.match(notify.detail, /unattended/)
+    assert.doesNotMatch(JSON.stringify(report), /from-plugin/)
+    assert.doesNotMatch(formatDoctor(report), /from-plugin/)
+
+    // A shell topic beside the option: the server is the shell's or the default, never the option's.
+    const both = diagnose(dir, {
+      ...opts,
+      env: { ...opts.env, INTERLOCK_NTFY_TOPIC: 'a-topic', CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example' }
+    })
+    assert.equal(byId(both, 'notify').status, 'ok')
+    assert.match(byId(both, 'notify').detail, /https:\/\/ntfy\.sh/)
+    assert.doesNotMatch(JSON.stringify(both), /plugin\.example/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

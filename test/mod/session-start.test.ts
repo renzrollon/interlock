@@ -2,8 +2,10 @@
 // (`claude plugin test .`; spec: hooks/ship-meter).
 //
 // The module reads `.claude/ship/preflight.json` at each prompt a person
-// submits, and after the classic session-start event where the engine raises
-// one (the kit does; 2.1.291 raises none to a module, design D5). The test's
+// submits, and never at the classic session-start event: the settings hook
+// that writes the file runs inside that event's chain, and the module's hook
+// returns the chain's call as it is (clear-the-plugin-directory-holds design
+// D1). The kit raises the event; 2.1.291 raises none to a module. The test's
 // own `fs.read` hook stands for the disk: it answers the texts in `w.files` by
 // path and refuses every other path, as a missing file is refused. Every word
 // the band and the panes draw is the fixture's: the doctor's, the hook's or
@@ -122,10 +124,13 @@ test('a failing check and a spoken note draw the band on both surfaces, above th
   }
 })
 
-test('the classic session-start event draws the same band, and resolves as the engine alone would', async ($: any, on: any) => {
+test('the classic session-start event reads nothing and resolves as the engine alone would; the next prompt draws the band', async ($: any, on: any) => {
   const w = world(on, { files: withReport(P.REPORT_FAIL_WARN_NOTE) })
   await start($)
   expect(await $.classic.SessionStart({ source: 'startup', cwd: '/repo' })).toEqual(CLASSIC_BENEATH)
+  expect(w.reads).toEqual([])
+  for (const surface of SURFACES) expect((await band($, surface)).rows).toEqual([])
+  await prompt($)
   expect(w.reads).toEqual([P.PREFLIGHT_PATH])
   for (const surface of SURFACES) {
     const { rows } = await band($, surface)
@@ -263,8 +268,11 @@ test('a report written for a clear shows the band again, and one written for a c
   expect(await $.classic.SessionStart({ source: 'compact', cwd: '/repo' })).toEqual(CLASSIC_BENEATH)
   for (const surface of SURFACES) expect((await band($, surface)).rows).toEqual([])
 
-  // The classic boundary starts the session over, so the same file is this session's report again.
+  // The classic boundary starts the session over and holds no report; the
+  // next prompt reads the same file as this session's report again.
   expect(await $.classic.SessionStart({ source: 'clear', cwd: '/repo' })).toEqual(CLASSIC_BENEATH)
+  for (const surface of SURFACES) expect((await band($, surface)).rows).toEqual([])
+  await prompt($)
   for (const surface of SURFACES) expect((await band($, surface)).rows[0]).toBe('interlock preflight OK (1 warning).')
 })
 

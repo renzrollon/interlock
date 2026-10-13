@@ -18,6 +18,7 @@
     "code-review",
     "knowledge-graph"
   ],
+  "icon": "./assets/icon.png",
   "userConfig": {
     "ntfy_topic": {
       "type": "string",
@@ -41,6 +42,16 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs", "topic", "${user_config.ntfy_topic}"]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs", "url", "${user_config.ntfy_url}"]
           }
         ]
       }
