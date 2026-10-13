@@ -181,6 +181,55 @@ test('a re-run is one entry, read from the run that started last, whichever is l
   assert.equal(ok(pipelineFromGithub(two, {})).input.checks.filter(c => c.name === 'rerun').length, 2)
 })
 
+test('a re-run with no readable start time is not ordered by where it is listed: the least favourable state stands, and a note says so', () => {
+  const source = doc('github-states')
+  const [failed, passed] = source.statusCheckRollup.filter(e => e.name === 'rerun')
+  assert.equal(failed.conclusion, 'FAILURE', 'precondition')
+  assert.equal(passed.conclusion, 'SUCCESS', 'precondition')
+  const read = (rollup, options = { required: ['rerun'] }) =>
+    ok(pipelineFromGithub({ headRefOid: source.headRefOid, statusCheckRollup: rollup }, options))
+  const saysUnordered = notes => notes.some(note => note.includes('"rerun"') && /start time/.test(note))
+
+  // Absent, unparseable, and the platform's zero time are all no start time.
+  for (const noTime of [null, undefined, '', 'not a date', '0001-01-01T00:00:00Z']) {
+    const untimedPass = { ...passed, startedAt: noTime }
+    for (const rollup of [[failed, untimedPass], [untimedPass, failed]]) {
+      const { input, notes } = read(rollup)
+      assert.equal(stateOf(input, 'rerun'), 'fail', `startedAt ${JSON.stringify(noTime)}: a pass with no time hid a failure`)
+      assert.ok(saysUnordered(notes), notes.join(' | '))
+      // A required check in that shape blocks, whichever entry is listed last.
+      const { result, signal } = pipelineSignal(input)
+      assert.equal(signal.band, 'red')
+      assert.equal(result.verdict, 'BLOCK')
+    }
+  }
+
+  // A run that has not started, beside a finished pass, is a result not yet given.
+  const queued = { ...passed, status: 'QUEUED', conclusion: '', startedAt: '0001-01-01T00:00:00Z' }
+  for (const rollup of [[passed, queued], [queued, passed]]) {
+    const { input, notes } = read(rollup)
+    assert.equal(stateOf(input, 'rerun'), 'pending')
+    assert.ok(saysUnordered(notes), notes.join(' | '))
+    assert.notEqual(pipelineSignal(input).result.verdict, 'MERGE')
+  }
+
+  // A timed run later than the failure still does not outrank an untimed failure.
+  const untimedFail = { ...failed, startedAt: null }
+  for (const rollup of [[untimedFail, failed, passed], [passed, untimedFail, failed], [failed, passed, untimedFail]]) {
+    assert.equal(stateOf(read(rollup).input, 'rerun'), 'fail')
+  }
+
+  // Nothing is said where nothing was chosen: runs that agree, a single untimed
+  // run, a pair with both times, and a check the caller left out.
+  assert.ok(!saysUnordered(read([passed, { ...passed, startedAt: null }]).notes))
+  assert.ok(!saysUnordered(read([{ ...passed, startedAt: null }]).notes))
+  assert.ok(!saysUnordered(read([failed, passed]).notes))
+  assert.equal(stateOf(read([failed, passed]).input, 'rerun'), 'pass')
+  const excluded = read([failed, { ...passed, startedAt: null }], { required: ['rerun'], exclude: ['rerun'] })
+  assert.deepEqual(excluded.input.checks, [])
+  assert.ok(!saysUnordered(excluded.notes), excluded.notes.join(' | '))
+})
+
 test('a value that names an inherited property, not a table row, reads pending like any other unknown', () => {
   const base = doc('github-passing')
   const [run] = base.statusCheckRollup

@@ -677,6 +677,15 @@ test('an uncited domain blocker is reported even when no headings were supplied'
   assert.match(citationsOf(r)[0].problem, /cites no requirement/i)
 })
 
+test('an uncited domain blocker is a blocker on the severity the gate reads, whatever its case or spacing', () => {
+  for (const severity of ['BLOCKER', ' blocker ', 'Blocker']) {
+    const r = resolveReview(raised([domainFinding({ title: 'uncited blocker', severity })]), real('uncited blocker'))
+    assert.equal(citationsOf(r).length, 1, `severity ${JSON.stringify(severity)} blocks at the gate and was not reported here`)
+    assert.match(citationsOf(r)[0].problem, /cites no requirement/i)
+    assert.equal(r.counts.surviving, 1, 'adjudicated, never dropped')
+  }
+})
+
 test('a domain warning that cites nothing is not reported', () => {
   const r = resolveReview(
     raised([f({ severity: 'warning', title: 'unspecified behaviour' })]),

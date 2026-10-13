@@ -351,6 +351,8 @@ const EXPECT = {
   'review-incomplete': { 'review.ran': A('evidence') },
   'review-dismissal-rejected': { 'review.adversarial': A('evidence') },
   'review-votes-below-floor': { 'review.adversarial': A('evidence') },
+  // A blocker the vote kept and the quality band removed: no other signal sees it.
+  'review-blocker-dropped-by-quality': { 'review.adversarial': A('person') },
   'verify-halt': { 'verify.suite': R() },
   'typecheck-failed-final': { 'verify.suite': R() },
   'typecheck-no-command': { 'verify.suite': G(['no-typecheck']) },
@@ -415,6 +417,8 @@ const EXPECT = {
   'living-empty': {},
   'living-omitted': { 'conformance.living': G(['requirements-omitted']) },
   'living-cut-to-nothing': { 'conformance.living': G(['requirements-omitted']) },
+  // The flag describes the list, so an amber reading of the answers carries it too.
+  'living-omitted-unconfirmed': { 'conformance.living': { ...A('evidence'), flags: ['requirements-omitted'] } },
   'living-no-handoff': { 'conformance.delta': U(), 'conformance.living': U() },
   'living-not-gathered': { 'conformance.living': U() },
   // The spec-coverage states (design D8).
@@ -643,6 +647,41 @@ test('a refused refutation, and verdicts below the floor, are amber on the adver
   const thin = signalOf(assessMergeConfidence(fixture('review-votes-below-floor')), 'review.adversarial')
   assert.ok(thin.reason.includes('MERGE_BANDS.minVerdictsPerFinding'), thin.reason)
   assert.ok(thin.reason.includes(String(MERGE_BANDS.minVerdictsPerFinding)), thin.reason)
+})
+
+test('a blocker the quality band removed is amber on the adversarial signal, needs a person, and names the finding', () => {
+  const input = fixture('review-blocker-dropped-by-quality')
+  const [dropped] = input.review.droppedByQuality
+  assert.equal(dropped.severity, 'blocker', 'precondition')
+  assert.ok(!input.review.surviving.some(f => f.title === dropped.title), 'precondition: it is not among the surviving')
+  const result = assessMergeConfidence(input)
+  assert.equal(signalOf(result, 'review.blockers').band, 'green', 'precondition: the blockers signal cannot see it')
+  const entry = signalOf(result, 'review.adversarial')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'person')
+  assert.match(entry.reason, /quality band/)
+  assert.ok(said(entry).includes(dropped.title), said(entry))
+  assert.ok(said(entry).includes(dropped.file), said(entry))
+  assert.equal(result.verdict, 'HUMAN')
+
+  // The severity is read as the gate reads it, and one the gate would reject holds too.
+  for (const severity of ['BLOCKER', ' blocker ', 'critical', undefined]) {
+    const odd = fixture('review-blocker-dropped-by-quality')
+    odd.review.droppedByQuality[0].severity = severity
+    assert.equal(signalOf(assessMergeConfidence(odd), 'review.adversarial').band, 'amber', JSON.stringify(severity))
+  }
+  // A warning or a suggestion the band removed is the band doing its job.
+  for (const severity of ['warning', 'suggestion', 'WARNING']) {
+    const weak = fixture('review-blocker-dropped-by-quality')
+    weak.review.droppedByQuality[0].severity = severity
+    const read = assessMergeConfidence(weak)
+    assert.equal(signalOf(read, 'review.adversarial').band, 'green', severity)
+    assert.equal(read.verdict, 'MERGE', severity)
+  }
+  // A review record with no such list has nothing to read, and is not held for it.
+  const absent = fixture('review-blocker-dropped-by-quality')
+  delete absent.review.droppedByQuality
+  assert.equal(signalOf(assessMergeConfidence(absent), 'review.adversarial').band, 'green')
 })
 
 // --- risk ------------------------------------------------------------------------
@@ -1134,6 +1173,41 @@ test('a list the bound cut short is green with requirements-omitted, its evidenc
   assert.equal(cut.verdict, 'MERGE', 'a flag does not move the band')
   assert.ok(cut.score < plain.score, `${cut.score} is not below ${plain.score}`)
   assert.equal(cut.counts.clean, plain.counts.clean - 1)
+})
+
+test('a list the bound cut short carries requirements-omitted and what was left out at an amber reading too, with no-graph beside it', () => {
+  const left = fixture('living-omitted').living.omitted
+  const leftOut = entry => left.every(o => said(entry).includes(o.heading)) && /4 requirement\(s\) asked and 2 left out/.test(said(entry))
+
+  // An unconfirmed requirement.
+  const unconfirmed = livingOf('living-omitted-unconfirmed')
+  assert.equal(unconfirmed.band, 'amber')
+  assert.deepEqual(unconfirmed.flags, ['requirements-omitted'])
+  assert.ok(leftOut(unconfirmed), said(unconfirmed))
+  assert.equal(assessMergeConfidence(fixture('living-omitted-unconfirmed')).verdict, 'HUMAN', 'the flag does not move the band')
+
+  // A short count, and a handoff with no living counts.
+  const short = fixture('living-omitted')
+  short.handoff.requirementsChecked = 3
+  const noCounts = fixture('living-omitted')
+  delete noCounts.handoff.requirementsChecked
+  delete noCounts.handoff.requirementsUnconfirmed
+  for (const input of [short, noCounts]) {
+    const entry = signalOf(assessMergeConfidence(input), 'conformance.living')
+    assert.equal(entry.band, 'amber')
+    assert.deepEqual(entry.flags, ['requirements-omitted'])
+    assert.ok(leftOut(entry), said(entry))
+  }
+
+  // Cut and built without a graph: both flags, whichever band the answers decide.
+  for (const unconfirmedCount of [0, 1]) {
+    const both = fixture('living-omitted')
+    both.living.partial = fixture('living-partial').living.partial
+    both.handoff.requirementsUnconfirmed = unconfirmedCount
+    const entry = signalOf(assessMergeConfidence(both), 'conformance.living')
+    assert.equal(entry.band, unconfirmedCount ? 'amber' : 'green')
+    assert.deepEqual(entry.flags, ['no-graph', 'requirements-omitted'])
+  }
 })
 
 test('a list the bound cut to nothing is green with requirements-omitted, stating none asked and how many were left out', () => {

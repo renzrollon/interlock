@@ -131,7 +131,7 @@ Rationale: the verify planner already separates "not configured" from "budget ex
 
 ### Requirement: The review signals SHALL read the adjudicated review
 
-The review input SHALL be the adjudicated review as the review command or the run's review step writes it. A surviving blocker, or a surviving finding whose severity is outside the published severities, SHALL make the blockers signal (`review.blockers`) red. Surviving warnings above the published cap SHALL make the warnings signal (`review.warnings`) amber, marked as needing a fix. An absent review input SHALL make the ran signal (`review.ran`) amber with the reason that no review ran. A dimension record showing that the review did not complete, that a selected dimension could not run with its rubric, or that a selected dimension is recorded neither as run nor as unable to run, SHALL make the ran signal amber. A review input that records no dimension selection SHALL be green on the ran signal with a flag, because the counts prove a review happened and only the record of its coverage is missing. A dimension record that names the `domain` dimension as skipped for want of a graph SHALL leave the ran signal's band as the rest of the record decides it and SHALL add the `domain-skipped` flag. A review in which a refutation was refused for citing nothing, or in which a surviving blocker or warning had fewer verdicts than the published floor, SHALL be amber on the adversarial signal (`review.adversarial`), marked as needing more evidence.
+The review input SHALL be the adjudicated review as the review command or the run's review step writes it. A surviving blocker, or a surviving finding whose severity is outside the published severities, SHALL make the blockers signal (`review.blockers`) red. Surviving warnings above the published cap SHALL make the warnings signal (`review.warnings`) amber, marked as needing a fix. An absent review input SHALL make the ran signal (`review.ran`) amber with the reason that no review ran. A dimension record showing that the review did not complete, that a selected dimension could not run with its rubric, or that a selected dimension is recorded neither as run nor as unable to run, SHALL make the ran signal amber. A review input that records no dimension selection SHALL be green on the ran signal with a flag, because the counts prove a review happened and only the record of its coverage is missing. A dimension record that names the `domain` dimension as skipped for want of a graph SHALL leave the ran signal's band as the rest of the record decides it and SHALL add the `domain-skipped` flag. A review in which a refutation was refused for citing nothing, or in which a surviving blocker or warning had fewer verdicts than the published floor, SHALL be amber on the adversarial signal (`review.adversarial`), marked as needing more evidence. A review from which the quality band removed a blocker, or a finding whose severity is outside the published severities, SHALL be amber on the adversarial signal, marked as needing a person, with the finding named in the evidence: the skeptics' vote kept it, and it is in no surviving list for the blockers signal to read. A warning or a suggestion the band removed SHALL NOT move the signal, and neither SHALL a review input that carries no list of what the band removed.
 
 #### Scenario: Happy path — a clean adjudicated review is green on every review signal
 
@@ -187,6 +187,13 @@ The review input SHALL be the adjudicated review as the review command or the ru
 - **WHEN** both are assessed
 - **THEN** each reads the adversarial signal amber, marked as needing more evidence
 - **AND** the second's reason names the verdict floor and its published value
+
+#### Scenario: Failure — a blocker the quality band removed holds the verdict for a person
+
+- **GIVEN** a review input with no surviving blocker, whose list of findings removed by the quality band holds one blocker that two skeptics voted real
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers signal is green and the adversarial signal is amber, marked as needing a person, its evidence naming the finding
+- **AND** the verdict is `HUMAN`, and the same input with a warning in the blocker's place reads the adversarial signal green
 
 ### Requirement: The risk signal SHALL be computed over the touched paths and SHALL never be red
 
@@ -597,6 +604,13 @@ Rationale: an unanswered list is not a pass, and the merge verdict is where an u
 - **AND** the second reads it green with no flag
 - **AND** the third reads it green with the `requirements-omitted` flag, its evidence stating four asked and two left out, and scores below the same input with nothing left out
 
+#### Scenario: Edge case — a cut list keeps its flag when the answers read amber
+
+- **GIVEN** a living list of four entries from which the bound left two more out, and a handoff input that checked four and left one unconfirmed
+- **WHEN** the merge confidence is assessed
+- **THEN** the living-conformance signal is amber with the `requirements-omitted` flag
+- **AND** its evidence states four asked and two left out and names both
+
 #### Scenario: Edge case — a list nobody answered, and a list nobody gathered
 
 - **GIVEN** one assessment whose living list holds three entries with no handoff input, and another with no living list at all
@@ -840,7 +854,7 @@ Rationale: a report lists the files the tests loaded. A new source file no test 
 
 ### Requirement: The command SHALL name the commit and the base it assessed, and SHALL print the labels for its verdict
 
-The command's JSON output SHALL carry `head`, an object holding the assessed commit as `sha`, or null when the head could not be read; `base`, an object holding the reference given as `ref` and the merge base the diff was taken from as `sha`, with `sha` null when the reference resolves and its merge base cannot be read, or null when no base was assessed; and `labels`, an object holding `verdict` and `score`, each an object with a `name`, a `color` and a `description`, together with `verdictNames`, the three verdict label names, and `scorePrefix`. The verdict label SHALL be `interlock/merge` for `MERGE`, `interlock/human-review` for `HUMAN` and `interlock/blocked` for `BLOCK`. The score label SHALL be `interlock/score-` followed by the integer score with no padding. The label names SHALL be defined in one place in `lib/merge-confidence.mjs` and SHALL NOT be restated as literals by the command or the skill. The text output SHALL print the two label names on one line.
+The command's JSON output SHALL carry `head`, an object holding the assessed commit as `sha`, or null when the head could not be read; `base`, an object holding the reference given as `ref` and the merge base the diff was taken from as `sha`, with `sha` null when the reference resolves and its merge base cannot be read, or null when no base was assessed; and `labels`, an object holding `verdict` and `score`, each an object with a `name`, a `color` and a `description`, together with `verdictNames`, the three verdict label names, and `scorePrefix`. The verdict label SHALL be `interlock/merge` for `MERGE`, `interlock/human-review` for `HUMAN` and `interlock/blocked` for `BLOCK`. The score label SHALL be `interlock/score-` followed by the integer score with no padding. The label names SHALL be defined in one place in `lib/merge-confidence.mjs` and SHALL NOT be restated as literals by the command or the skill. The text output SHALL print the two label names on one line. Given `--label-names`, the command SHALL print `verdictNames` and `scorePrefix` under `labels` and nothing else, SHALL assess nothing and read no input file and no repository state, and SHALL exit zero, so that a caller whose assessment could not run can still recognise the labels an earlier assessment left; together with `--markdown` it SHALL be a usage error.
 
 Rationale: a label name composed in a skill is a second definition of the verdict's vocabulary; the documentation, the skill and the platform recipes all have to agree with one list.
 

@@ -36,7 +36,7 @@ Rationale: the state of a check decides whether the verdict can read `MERGE`. A 
 
 ### Requirement: A GitHub check's state SHALL be read from a published table, and an unfinished or unknown result SHALL read pending
 
-For a check run, a status other than completed SHALL read `pending`. A completed check run SHALL read `pass` for the conclusion success; `skipped` for neutral and skipped; `fail` for failure, timed out, action required and startup failure; and `pending` for cancelled, stale and any conclusion the table does not name. A commit status SHALL read `pass` for success, `fail` for failure and error, and `pending` otherwise. When the platform reports the same check more than one time (a re-run), the entry SHALL be read from the one that started last. The `sha` SHALL be the head commit the document itself carries, never one read from the local repository. A document whose check list is present and empty SHALL produce an input with no checks; a document with no check list SHALL be refused.
+For a check run, a status other than completed SHALL read `pending`. A completed check run SHALL read `pass` for the conclusion success; `skipped` for neutral and skipped; `fail` for failure, timed out, action required and startup failure; and `pending` for cancelled, stale and any conclusion the table does not name. A commit status SHALL read `pass` for success, `fail` for failure and error, and `pending` otherwise. When the platform reports the same check more than one time (a re-run), the entry SHALL be read from the one that started last. When a start time among them cannot be read (absent, not a date, or the platform's zero time), no run can be called the last: the entry SHALL read the least favourable state among the last timed run and every untimed one, in the order `fail`, `pending`, `skipped`, `pass`, and the command SHALL name the check on standard error. The order the document lists the runs in SHALL NOT decide which is read. The `sha` SHALL be the head commit the document itself carries, never one read from the local repository. A document whose check list is present and empty SHALL produce an input with no checks; a document with no check list SHALL be refused.
 
 Rationale: a cancelled or unknown result is a result the platform did not give. Reading it as a pass would grant a merge on nothing; reading it as a failure would report a defect nobody found.
 
@@ -60,6 +60,13 @@ Rationale: a cancelled or unknown result is a result the platform did not give. 
 - **THEN** the first carries one entry for that check, reading `pass`
 - **AND** the second reads the cancelled check `pending`
 - **AND** the third carries the head commit and no checks
+
+#### Scenario: Failure — a re-run with no start time does not hide a failure
+
+- **GIVEN** a document in which a required check failed with a start time, and a run of the same check passed with none, listed after it
+- **WHEN** the pipeline input is produced
+- **THEN** it carries one entry for that check, reading `fail`, and standard error names the check and says its runs could not be ordered
+- **AND** the merge verdict assessed with that input is `BLOCK`, whichever of the two the document lists last
 
 ### Requirement: Required checks SHALL be named by the caller for GitHub and read from the job for GitLab, and a mistake SHALL NOT turn a reported check green
 

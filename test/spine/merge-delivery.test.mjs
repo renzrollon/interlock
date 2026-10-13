@@ -540,6 +540,48 @@ test('in a directory that is not a repository, head and base are null and the la
   assert.equal(out.labels.score.name, MERGE_LABELS.scorePrefix + String(out.score))
 })
 
+test('--label-names prints how to recognise the labels with no assessment, where every input the assessment needs is unusable', () => {
+  const plain = join(dir, 'mc-label-names')
+  mkdirSync(plain, { recursive: true })
+  const names = { verdictNames: Object.values(MERGE_LABELS.verdicts).map(l => l.name), scorePrefix: MERGE_LABELS.scorePrefix }
+  const at = args =>
+    spawnSync(process.execPath, [BIN, 'merge-confidence', '--root', plain, ...args], {
+      cwd: plain,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(plain) }
+    })
+
+  // Not a repository, a base that names no commit and a pipeline file that does
+  // not exist: each ends the assessment, and none of them is read here.
+  const unusable = ['--base', 'no-such-ref', '--pipeline', join(plain, 'absent.json')]
+  const stopped = at([...unusable, '--json'])
+  assert.equal(stopped.status, 1, 'precondition: the assessment itself cannot run on these inputs')
+  assert.equal(stopped.stdout, '')
+
+  const r = at(['--label-names', ...unusable, '--json'])
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout), { labels: names }, 'the names alone: no verdict, no score, no signal')
+
+  // The same two keys an assessment prints under `labels`, so one rule recognises both.
+  const repo = branchRepo('mc-label-names-assessed')
+  const assessed = JSON.parse(run(assess(repo, '--base', 'target', '--json')).stdout)
+  assert.deepEqual(
+    { verdictNames: assessed.labels.verdictNames, scorePrefix: assessed.labels.scorePrefix },
+    names
+  )
+
+  // The text form names each, a change name after the flag is not swallowed by
+  // it, and with --markdown it is a usage error.
+  const text = at(['--label-names', CHANGE])
+  assert.equal(text.status, 0, text.stderr)
+  for (const name of names.verdictNames) assert.ok(text.stdout.includes(name), text.stdout)
+  assert.ok(text.stdout.includes(names.scorePrefix), text.stdout)
+  const both = at(['--label-names', '--markdown'])
+  assert.equal(both.status, 1)
+  assert.equal(both.stdout, '')
+  assert.ok(both.stderr.includes('--label-names') && both.stderr.includes('--markdown'), both.stderr)
+})
+
 // =============================================================================
 // interlock merge-confidence --markdown (D15)
 // =============================================================================
@@ -649,6 +691,33 @@ test('gh’s document, through interlock pipeline, then merge-confidence with th
   assert.ok(block.stdout.includes('MERGE') && block.stdout.includes(`score ${out.score}`))
   assert.ok(block.stdout.includes(repo.head), 'the block names the commit the JSON names')
   assert.ok(block.stdout.includes(out.labels.verdict.name) && block.stdout.includes(out.labels.score.name))
+})
+
+test('the same chain with a required check that failed is BLOCK, exit 1, and a later pass with no start time does not lift it', () => {
+  const repo = branchRepo('chain-required-fail')
+  const base = fixtureDoc('github-passing')
+  const [first] = base.statusCheckRollup
+  const failed = { ...first, name: 'ci', conclusion: 'FAILURE' }
+  const pipeline = join(repo.root, '.claude', 'ship', 'pipeline.json')
+  const evidence = file('chain-required-fail-evidence.json', runEvidence({ base: repo.base, headSha: repo.head }))
+  const inputs = ['--base', 'target', '--pipeline', pipeline, '--run', evidence]
+
+  const untimedPass = { ...first, name: 'ci', conclusion: 'SUCCESS', startedAt: null }
+  for (const rollup of [[failed], [failed, untimedPass], [untimedPass, failed]]) {
+    const doc = { headRefOid: repo.head, statusCheckRollup: rollup }
+    const produced = run(['pipeline', '--github', '-', '--required', 'ci', '--out', pipeline], { input: JSON.stringify(doc) })
+    assert.equal(produced.code, 0, produced.stderr)
+    assert.deepEqual(readJson(pipeline).checks, [{ name: 'ci', state: 'fail', required: true }])
+    // Said on standard error only where the rule chose between two runs.
+    assert.equal(/"ci".*start time/.test(produced.stderr), rollup.length > 1, produced.stderr)
+
+    const assessed = run(assess(repo, ...inputs, '--json'))
+    assert.equal(assessed.code, 1, 'BLOCK exits 1')
+    const out = JSON.parse(assessed.stdout)
+    assert.equal(out.verdict, 'BLOCK')
+    assert.equal(signalIn(out, 'ci.pipeline').band, 'red')
+    assert.equal(out.labels.verdict.name, MERGE_LABELS.verdicts.BLOCK.name)
+  }
 })
 
 test('the same chain for a head the platform has not seen reads the pipeline unobserved, and is not MERGE', () => {

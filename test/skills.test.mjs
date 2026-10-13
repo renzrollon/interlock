@@ -1079,6 +1079,15 @@ function mrSkillProblems(text) {
     verdictLine === -1 ? 0 : verdictLine + 1
   )
 
+  // A stopped assessment still takes the earlier labels off: the names come from
+  // the command alone, on a line after the first removal the skill shows.
+  const firstRemoval = lineAt(/--remove-label/)
+  need(
+    /^interlock merge-confidence --label-names\b/,
+    'runs `interlock merge-confidence --label-names` after the first --remove-label, for an assessment that stopped',
+    firstRemoval === -1 ? 0 : firstRemoval + 1
+  )
+
   for (const token of [
     '--run .claude/ship/merge-confidence.json',
     '--required',
@@ -1159,6 +1168,12 @@ test('the delivery pins fail on a doctored copy, naming what was dropped', () =>
   const block = lines.findIndex(l => /^interlock merge-confidence [^\n]*--markdown/.test(l))
   const noReread = mrSkillProblems(lines.filter((l, i) => !(i > block && l.includes('headRefOid'))).join('\n'))
   assert.ok(noReread.some(p => p.includes('headRefOid')), noReread.join(' | '))
+
+  // The stopped-assessment removal dropped: a mention in prose is not the command line.
+  const noNames = problemsOf(t =>
+    t.replace(/^interlock merge-confidence --label-names[^\n]*$/m, 'Ask the CLI with --label-names.')
+  )
+  assert.ok(noNames.some(p => p.includes('--label-names')), noNames.join(' | '))
 
   // A prose mention of the pipeline command is not a command line.
   const proseOnly = problemsOf(t => t.replace(/^gh pr view [^\n]*\| interlock pipeline --github -[^\n]*$/m, 'Run gh pr view and interlock pipeline.'))

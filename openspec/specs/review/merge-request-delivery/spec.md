@@ -80,7 +80,7 @@ The skill SHALL obtain the description block from `interlock merge-confidence --
 
 ### Requirement: The skill SHALL apply one verdict label and one score label, after removing their predecessors, and only for the commit that was assessed
 
-The label names SHALL be the ones the command printed under `labels`; the skill SHALL NOT contain or compose a label name. Before applying, the skill SHALL read the merge request's head commit from the platform again. When it equals `head.sha` from the command's output, the skill SHALL remove from the merge request every label it currently carries that is one of `labels.verdictNames` or starts with `labels.scorePrefix`, then add `labels.verdict.name` and `labels.score.name`. When it differs, or `head` is null, the skill SHALL remove those labels, add none, and say that the head moved. The skill SHALL remove and add even when the verdict is unchanged, so the platform records the new assessment. A label that cannot be created or applied SHALL be reported, never passed over. The skill SHALL NOT merge, approve or request changes on a merge request, and SHALL say so.
+The label names SHALL be the ones the command printed under `labels`; the skill SHALL NOT contain or compose a label name. Before applying, the skill SHALL read the merge request's head commit from the platform again. When it equals `head.sha` from the command's output, the skill SHALL remove from the merge request every label it currently carries that is one of `labels.verdictNames` or starts with `labels.scorePrefix`, then add `labels.verdict.name` and `labels.score.name`. When it differs, or `head` is null, the skill SHALL remove those labels, add none, and say that the head moved. When the assessment stopped, there is no `labels` to read: the skill SHALL obtain `labels.verdictNames` and `labels.scorePrefix` from `interlock merge-confidence --label-names`, which assesses nothing, remove every label of the merge request they recognise, add none, and say that the merge request carries no verdict label because the assessment stopped. That command line SHALL be pinned in the skill suite. The skill SHALL remove and add even when the verdict is unchanged, so the platform records the new assessment. A label that cannot be created or applied SHALL be reported, never passed over. The skill SHALL NOT merge, approve or request changes on a merge request, and SHALL say so.
 
 Rationale: a label is a claim about a commit, and the platform keeps a label when new commits arrive. A merge label left on a head nobody assessed is the failure this requirement exists to prevent. What a label means for merging is the platform's policy; the skill's part ends at the label.
 
@@ -95,6 +95,13 @@ Rationale: a label is a claim about a commit, and the platform keeps a label whe
 - **GIVEN** a verdict assessed for one commit, and a platform head that is now another
 - **WHEN** the skill reaches the label step
 - **THEN** it removes the verdict and score labels the merge request carries, adds none, and says the verdict describes a commit that is no longer the head
+
+#### Scenario: Failure — a re-assessment that stops takes the earlier labels off
+
+- **GIVEN** a merge request labelled `interlock/merge` and `interlock/score-93`, and a run of the skill in which `interlock pipeline` exits non-zero
+- **WHEN** the skill reaches the label step
+- **THEN** it removes both labels, adds none, and says the assessment stopped, with the command's reason
+- **AND** the skill's text carries an `interlock merge-confidence --label-names` command line after its first label removal
 
 #### Scenario: Failure — the skill's text carries the re-read and no label name
 

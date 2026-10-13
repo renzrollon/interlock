@@ -153,7 +153,12 @@ import { capabilityOf, parseSpec } from '../lib/spec-text.mjs'
 import { assembleDomainContext, selectDomainCapabilities } from '../lib/prompts/domain-context.mjs'
 import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
-import { assessMergeConfidence, formatMergeConfidence, formatMergeConfidenceMarkdown } from '../lib/merge-confidence.mjs'
+import {
+  assessMergeConfidence,
+  formatMergeConfidence,
+  formatMergeConfidenceMarkdown,
+  mergeLabelNames
+} from '../lib/merge-confidence.mjs'
 import {
   pendingFromGitlabMr,
   pipelineFromGithub,
@@ -604,7 +609,11 @@ pipeline:
                          STARTUP_FAILURE read fail; CANCELLED, STALE and anything
                          else read pending. A commit status reads pass for
                          SUCCESS, fail for FAILURE and ERROR, pending otherwise.
-                         A re-run is read from the run that started last.
+                         A re-run is read from the run that started last. With a
+                         start time among them that cannot be read there is no
+                         last run: the check reads the least favourable state
+                         among them (fail, pending, skipped, pass, in that
+                         order) and stderr says so.
   --required <name>      With --github: mark the check of that exact name as
                          required. Repeatable, and every name is kept. A name
                          that matches no reported check becomes a pending,
@@ -712,6 +721,13 @@ merge-confidence:
                          platform, a review or a ledger supplied renders as a
                          mention, a link or markup. The exit status is what it is
                          without the flag. With --json it exits 1.
+  --label-names          Print how to recognise the labels and assess nothing:
+                         the three verdict label names and the score label
+                         prefix (with --json, "labels": { verdictNames,
+                         scorePrefix }). It reads no input and no repository, so
+                         it answers when an assessment could not run, which is
+                         when a caller has an earlier assessment's labels to
+                         remove and no verdict to read their names from. Exit 0.
   --json carries "head" ({ sha }, or null when the head cannot be read), "base"
   ({ ref, sha }: the reference given and the merge base the diff was taken from,
   sha null when it cannot be read; null with no --base) and "labels" (the verdict
@@ -1212,7 +1228,10 @@ const BOOLEAN_FLAGS = new Set([
   'living',
   // `merge-confidence --markdown`: print the description block. A flag, so it
   // never swallows a change name that follows it.
-  'markdown'
+  'markdown',
+  // `merge-confidence --label-names`: print how to recognise the labels, and
+  // assess nothing.
+  'label-names'
   // `--review`, `--handoff`, `--conformance` and `--strict` are deliberately
   // NOT here. `interlock ready --review <findings.json>` takes a value under
   // the same spelling, and making the name boolean everywhere would silently
@@ -3262,6 +3281,21 @@ async function main() {
       // Two output forms and one stdout: asking for both is a usage error.
       const markdown = flags.markdown === true
       if (markdown && json) die('--markdown and --json cannot be given together: one prints the description block, the other the assessment')
+      // How to recognise the labels, and nothing else. It is asked for when an
+      // assessment stopped: a merge request may still carry the labels of an
+      // earlier one, and there is no verdict to read their names from. So it
+      // reads no file and nothing of the repository, and answers where every
+      // other form of this command would end on the input that stopped it.
+      if (flags['label-names'] === true) {
+        if (markdown) die('--label-names and --markdown cannot be given together: one prints the label names, the other the description block')
+        const labelNames = mergeLabelNames()
+        emit(
+          json,
+          { labels: labelNames },
+          `verdict labels: ${labelNames.verdictNames.join(', ')}\nscore label prefix: ${labelNames.scorePrefix}\n`
+        )
+        break
+      }
       // Every caller file is read FIRST, so an unreadable one ends the command
       // before any assessment and nothing reaches stdout (design D9).
       const review = readMergeInput(flags, 'review')

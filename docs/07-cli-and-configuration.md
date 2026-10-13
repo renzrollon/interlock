@@ -92,6 +92,8 @@ A ship run built with `--conformance` asks the handoff step about the same list,
 
 **`--markdown`** prints the description block for a merge request and nothing else: the verdict line, the commit and the base, what is driving by kind, the flags, the checks excluded from the pipeline input, the two labels, and every signal in a collapsed table. Every reason, evidence line and excluded name is an inline code span, so no name a platform, a review or a ledger supplied renders as a mention, a link or markup. The exit status is what it is without the flag. Together with `--json` it is a usage error: exit 1, nothing on stdout.
 
+**`--label-names`** prints how to recognise the labels and assesses nothing: the three verdict label names and the score label prefix, as `labels: { verdictNames, scorePrefix }` with `--json`. It reads no input and no repository and exits 0, so it answers when an assessment could not run and a caller has an earlier assessment's labels to remove. Together with `--markdown` it is a usage error.
+
 **Exit codes.**
 
 - `0`: the verdict is `MERGE` or `HUMAN`. A change that needs a person is not a failed command, so a CI job that only wants a label does not go red on it.

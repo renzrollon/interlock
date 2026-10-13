@@ -118,7 +118,7 @@ When the first step printed `pipeline <sha>: 0 check(s)` instead, there is no pi
 
 **`--gate-check <name>`** becomes `--exclude "<name>"` on the `--github` or `--gitlab` line, one `--exclude` per name. Exclude only a check the person named with `--gate-check`. A failing check nobody named stays in the input, and the verdict reflects it.
 
-A non-zero exit of `interlock pipeline` stops the assessment: it printed nothing, and it removed any earlier file at the output path, so there is no pipeline input to pass. Report the reason from standard error, write no `## Merge confidence` section and apply no label. The rest of the description is still published.
+A non-zero exit of `interlock pipeline` stops the assessment: it printed nothing, and it removed any earlier file at the output path, so there is no pipeline input to pass. Report the reason from standard error, write no `## Merge confidence` section and apply no label. The rest of the description is still published, and §7b still takes off the labels an earlier assessment left.
 
 ### 4b. The verdict
 
@@ -227,7 +227,7 @@ Updating **replaces the description entirely.** If the existing description cont
 
 ### 7b. The labels
 
-Skip this step when the assessment stopped in §4.
+When the assessment stopped in §4 there is no verdict to apply, and this step still runs: go to **The assessment stopped** below, because there may be a label to take off.
 
 A label is a claim about one commit, and the platform keeps a label when new commits arrive. So read the platform's head **again**, now, and compare it with `head.sha` from §4b:
 
@@ -258,7 +258,15 @@ Leave the removal out when the merge request carries no predecessor.
 
 **The head moved, or `head` is null.** Remove the predecessors and add nothing. Say that the verdict describes a commit that is no longer the head, name both commits, and tell the reader to run the skill again.
 
-**A label that cannot be created or applied is reported**, with the platform's own message and the label's name. Never pass over it, and never say a label was applied that was not.
+**The assessment stopped.** A label an earlier assessment left would go on claiming a verdict that nobody computed for this commit, so it comes off. There is no `labels` from §4b to recognise it by. Ask the command for the names alone. This reads no input and assesses nothing, so it answers when the assessment could not:
+
+```bash
+interlock merge-confidence --label-names --json
+```
+
+It prints `labels.verdictNames` and `labels.scorePrefix`. Read the labels the merge request carries with the platform read above, pick the predecessors the same way, remove them and add nothing. Say that the merge request carries no verdict label because the assessment stopped, and give the reason from §4.
+
+**A label that cannot be created, applied or removed is reported**, with the platform's own message and the label's name. Never pass over it, and never say a label was applied or removed that was not.
 
 ### 7c. The confidence comment
 
