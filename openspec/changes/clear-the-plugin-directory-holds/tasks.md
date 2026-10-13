@@ -102,3 +102,23 @@ Change 'clear-the-plugin-directory-holds' is valid
 Left as found: `docs/assets/DESIGN-PROMPT.md:135` still quotes the doctor's old `notify` skip sentence. It is a verbatim block regenerated from code at a release, not edited by hand, and is not shipped.
 
 Not done here, by design D11: the two by-hand steps above. Nothing in this run shows that a saved option reaches the hook as its argument, or that the directory clears a hold.
+
+## The portal's Validate on `temp/plugin-scan` (design D11 step 2, 2026-10-13)
+
+Branch `temp/plugin-scan` at `c914554`: the `npm pack` of `4f6a7e9`, unpacked, 166 files. The remote branch had been deleted since 2026-10-07 and was pushed again on top of its four earlier scan commits. `release` was left at `a944fe3`.
+
+The report as the owner pasted it, one screenshot. It shows four entries and may not be the whole list: `BUNDLES_BINARIES`, which the unchanged top-level `bin/` raises by rule, is not in it, and neither is any `MOD_*` entry.
+
+| Code | Kind | What it says |
+|---|---|---|
+| `UNREAD_ASSET_REFERENCED` | policy hold, 4 findings | `CHANGELOG.md` names `assets/icon.png`; `CHANGELOG.md` (named by `bin/interlock-ship-acp`) names it; `.claude-plugin/plugin.json` (named by `lib/doctor.mjs`) names it; `shared/TEST-PROFILE.md` (named by `skills/fix-tests/SKILL.md`) names it. Remedy as printed: "If nothing runs the file, leave it as it is and the plugin stays held for review." |
+| `MCP_FORWARDS_CREDENTIAL_ENV` | policy hold, on `plugin.json` | "reads the installer's key (file bin/interlock) and can send data off the machine (file CHANGELOG.md: host)". Remedy as printed: pass a `${user_config.KEY}` value if the two are related; if unrelated, leave them and a reviewer confirms; or remove every part that reads a credential. |
+| `UNKNOWN_KEY_CROSS_TOOL` | warning, `icon` | "The plugin directory reads 'icon' for the listing; Claude Code itself ignores it at load time. No action needed." |
+| `UNKNOWN_KEY` | warning, `types` | Expected. |
+
+What it settles, and what it does not:
+
+- **The `icon` key is the directory's.** Design's second open question is answered by the warning's own text.
+- **The asset hold is not cleared, and this change added three of its four findings.** On 1.5.1 it was one finding, on `shared/TEST-PROFILE.md`. Two of the new ones were the changelog entry quoting the manifest's value, which the package test's old "no shipped text names the file" loop used to forbid and design D8 removed. That is fixed after this scan: the entry no longer spells the path, and `test/spine/package.test.mjs` pins the manifest as the only shipped file that does. The third is the `icon` key itself, reached through `lib/doctor.mjs`, which reads the manifest. `shared/TEST-PROFILE.md` spells neither the path nor the file name, so the scan reaches the image from it some other way; design D11's bisect is still the way to find which.
+- **The credential hold is not cleared by the `${user_config.…}` route.** The reader it names is now `bin/interlock`, which spells no credential variable; it hands the whole environment to the doctor and to `readNotifyConfig`. Which read the scan means is not known.
+- **The session-start hook: not known from this paste.** No `MOD_ANSWERS_PERMISSION` entry is in the screenshot. Whether that is because the hold is gone or because the list was cut is the owner's to confirm.

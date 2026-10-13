@@ -311,6 +311,25 @@ test('the manifest names its listing image, and the image ships as a square png 
   assert.deepEqual(listingImageProblems(manifest, pkg.files), [])
 })
 
+test('the manifest is the only shipped file that spells the listing image\'s path', () => {
+  // The plugin directory's scan raises one finding for each shipped file that
+  // names a bundled image, and for each file that names such a file (its
+  // report on the scan branch, 2026-10-13: a changelog entry that quoted the
+  // manifest's value was two of four). The manifest must name it, because
+  // the directory reads the listing image from `icon`; nothing else may.
+  const manifestPath = '.claude-plugin/plugin.json'
+  const icon = String(readJson(PLUGIN_PATH).icon).replace(/^\.\//, '')
+  const spelled = [icon, icon.split('/').pop()]
+  const named = shippedFiles(ROOT, pkg.files)
+    .map(f => f.path)
+    .filter(path => path !== manifestPath && !IMAGE_OR_FONT.test(path))
+    .filter(path => {
+      const text = readFileSync(join(ROOT, path), 'utf8')
+      return spelled.some(s => text.includes(s))
+    })
+  assert.deepEqual(named, [], `these shipped files name the listing image (${icon}):\n  ${named.join('\n  ')}`)
+})
+
 /** The fewest bytes `pngSize` reads as a complete PNG of this size: the signature, a header chunk and the end chunk. */
 function pngOf(width, height) {
   const buf = Buffer.alloc(45)
