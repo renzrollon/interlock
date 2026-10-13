@@ -133,7 +133,7 @@ is narrow. Not running tests after the fix.
 5. Resumable — a stopped run picks up where it left off
 
 **Flow (review):**
-1. `/interlock:review-code` fans out up to six dimension reviewers (language, architecture, QA, delivery; devops and security when the diff earns them)
+1. `/interlock:review-code` fans out up to seven dimension reviewers (language, architecture, QA, delivery; devops and security when the diff earns them; domain when a touched capability has a living spec)
 2. Two skeptics try to refute every blocker and warning; a dismissal must cite a `file:line` span
 3. Only surviving findings reach you; the report states how many were dismissed
 

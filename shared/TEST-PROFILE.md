@@ -67,11 +67,11 @@ the profile.
 | `single_file` | How to run one file (string with path implied, or template) |
 | `env` | Extra env vars required for a green run (not secrets — names/placeholders only) |
 | `prerequisites` | Human-readable setup steps (dev server, seeded DB, `npx playwright install`, …) |
-| `timeout_ms` | Soft budget for one full suite run; do not raise to mask races |
+| `timeout_ms` | Soft budget for one full suite run; do not raise to mask races. The ship run's inter-wave verify budget is derived from `unit.timeout_ms` (floored at the published budget); `interlock verify plan --context inter-wave --json` prints the result |
 | `coverage.enabled` | Whether a coverage command is known. `false` = not configured (never an error) |
 | `coverage.command` | Full shell command that produces a coverage report (e.g. `npm run coverage`) |
-| `coverage.report_path` | Where the report lands, relative to `unit.cwd` (`coverage/lcov.info`, `coverage/coverage-summary.json`, …) |
-| `coverage.format` | Report format the path holds: `lcov`, `json-summary`, `cobertura`, … |
+| `coverage.report_path` | Where the report lands, relative to `unit.cwd` (`coverage/lcov.info`, `coverage/coverage-summary.json`, …). `interlock verify baseline` and `interlock verify coverage` resolve it under `unit.cwd`, never under the repository root, and a relative path inside an lcov record is resolved against the same directory |
+| `coverage.format` | Report format the path holds: `lcov`, `json-summary`, `cobertura`, … Only `lcov` is read by Interlock's own commands; any other value makes `interlock verify coverage` exit 1 naming the one supported format |
 | `typecheck.command` | Full shell command that type-checks the project (e.g. `npm run typecheck`). `null` = none found; the step is skipped with a reason, never guessed |
 | `lint.command` | Full shell command that lints the project (e.g. `npm run lint`). `null` = none found; the step is skipped with a reason, never guessed |
 | `known_flaky` | Paths or test-name patterns that flip on re-run (recorded, not "fixed") |
@@ -83,6 +83,38 @@ passes `--e2e` **and** `e2e.command` is set.
 `coverage.enabled` also defaults to `false`, and coverage is always **advisory**
 — a missing coverage tool, a failed coverage run, or 0% covered changed lines
 must never fail a gate or turn a green suite red.
+
+### The coverage baseline
+
+The coverage section above says how a project's coverage is produced; the
+**coverage baseline** is a second, separate file that records one figure from it:
+`.claude/testing/coverage-baseline.json`, holding `{ schema, sha, ref, totalPct,
+generatedAt }` for a commit on the default branch. It is not part of
+`profile.json` and no discovery step writes it.
+
+- **Who writes it.** `interlock verify baseline` writes it into the **working
+  root**, from a report the project's coverage command already produced, and
+  refuses (exit 1, previous file untouched) when the report instruments no line.
+  `interlock verify coverage --compute-base` writes it when it measures the merge
+  base itself. Neither the skills nor the ship run write it.
+- **Who reads it.** `interlock verify coverage --base <ref>` reads it as an input
+  to the coverage figures the merge verdict judges (`configured`, `headTotalPct`,
+  `baseTotalPct`, `baseSha`, `baseIsAncestor`, `diffPct` and `changedLines`, with
+  `unreportedFiles` and `unreportedAddedLines` naming the changed source files
+  the report does not list and the lines the diff adds in them): the root's copy first, then
+  the **state home**'s, so a linked worktree finds the one the main checkout
+  holds. It is **never written to the state home**: the state home holds the
+  project's corpora, and an input is read through, not copied there. A baseline
+  is usable only when its commit is an ancestor of `HEAD`.
+- **Not committed by default.** `.claude/testing/` is gitignored, so the baseline
+  travels as a CI cache or, if a project chooses, a committed path passed with
+  `--baseline`. The recipe is in
+  [docs/15 — Merge confidence](https://github.com/renzrollon/interlock/blob/main/docs/15-merge-confidence.md#recording-a-coverage-baseline),
+  linked in full because the published package ships this file and not `docs/`.
+
+The advisory rule above is unchanged: a missing baseline or report leaves the
+coverage signal unobserved, and nothing in the profile or the baseline can fail a
+gate or turn a green suite red.
 
 ---
 
@@ -195,6 +227,11 @@ Anything that needs to run this project's tests reads
 
 - `/interlock:fix-tests` — owns discovery, and is the only skill allowed to
   interview the user to fill a field.
+- `interlock verify baseline` and `interlock verify coverage` — read
+  `coverage.enabled`, `coverage.command`, `coverage.report_path` and
+  `coverage.format`, and `unit.cwd` as the directory the report path is
+  relative to. They run no coverage command except `--compute-base`, and write
+  no profile field.
 - `/interlock:ship` — reads the profile during its test wave and final
   verification. Where the discovery ladder would ask a question, ship leaves the
   field `null` and notes it. **Ship never interviews.**
