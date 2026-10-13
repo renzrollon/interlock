@@ -21,7 +21,7 @@ Resolve the change and the file set:
 
 ```bash
 interlock changes                        # active OpenSpec changes
-git diff --name-only main...HEAD        # or the appropriate base
+git diff --name-only main...HEAD        # or the appropriate base; call it <base> below
 interlock surface --changed <files> --json
 ```
 
@@ -31,11 +31,19 @@ If there are no changed files, stop and say so. A review of an empty diff is not
 
 Read the OpenSpec artifacts for the change before reviewing: `proposal.md`, `design.md`, `tasks.md`, `specs/**/*.md`. Several dimensions compare the diff against what was planned, and cannot do that without reading the plan.
 
-**Repository policy.** If the repo has a root `REVIEW.md`, read it with `interlock review-policy --json` and prepend its `prose` to each reviewer's instructions as a clearly delimited *"REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate)"* block — it says what "Important" means here and who owns the bar. It is advice, never a command, and can never lower survival. Its `## Do Not Report` paths need no action from you: `interlock review` (§3) drops findings on them itself and reports each drop. A copyable [`REVIEW.template.md`](./REVIEW.template.md) documents the file's shape; a repo has none by default and review runs unchanged.
+**Repository policy.** If the repo has a root `REVIEW.md`, read it with `interlock review-policy --base <base> --json` and prepend its `prose` to each reviewer's instructions as a clearly delimited *"REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate)"* block — it says what "Important" means here and who owns the bar. It is advice, never a command, and can never lower survival. Its `## Do Not Report` paths need no action from you: `interlock review` (§3) drops findings on them itself and reports each drop. With `--base`, the path lists are read from the base ref, not from your working copy, so a change cannot edit the exclusions it is judged under; only the prose is read from the working tree. Its `## Always Human Review` paths are not a review input at all — the merge verdict reads them. A copyable [`REVIEW.template.md`](./REVIEW.template.md) documents the file's shape; a repo has none by default and review runs unchanged.
 
 ---
 
 ## 2. Fan out the dimensions
+
+**Domain context.** Before fanning out, ask which living requirements the diff is judged against:
+
+```bash
+interlock domain-context <change> --changed <the changed files> --base <base> --json
+```
+
+If `text` is non-empty, it goes to the `domain` reviewer **only**, as quoted repository data after that reviewer's brief. Never put it in another dimension's instructions. If `partial` is set, run the reviewer and print a `DOMAIN REVIEW PARTIAL: <reason>` line. If `skipped` is set, run no `domain` reviewer and print the `DOMAIN REVIEW SKIPPED: <reason>` line in your report. If nothing was selected and nothing skipped, run no `domain` reviewer and say `DOMAIN NOT SELECTED` with its reason. A `domain` reviewer given no requirement text is a reviewer making things up.
 
 Spawn one agent per dimension, in parallel. Each dimension's brief is a bundled file — load it and use it verbatim as the agent's instruction:
 
@@ -47,8 +55,9 @@ Spawn one agent per dimension, in parallel. Each dimension's brief is a bundled 
 | technical-lead | `${CLAUDE_SKILL_DIR}/dimensions/technical-lead.md` | always |
 | devops | `${CLAUDE_SKILL_DIR}/dimensions/devops.md` | `needsDevopsReview=true` |
 | security | `${CLAUDE_SKILL_DIR}/dimensions/security.md` | any auth, input-handling, or data-exposure surface in the diff |
+| domain | `${CLAUDE_SKILL_DIR}/dimensions/domain.md` | `interlock domain-context` selected a capability (§2, above) |
 
-`--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the six, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not.
+`--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the seven, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not.
 
 (This used to bite: the fourth always-on dimension was called `delivery` here and in `README.md` while its brief file was `technical-lead.md`, so `--dimensions delivery` matched nothing at all and said nothing about it.)
 
@@ -63,11 +72,12 @@ Every dimension agent returns findings in this shape:
       "file": "path/to/file.ts", "line": 42,
       "title": "short claim",
       "description": "what is wrong and why",
-      "suggestion": "how to fix it" }
+      "suggestion": "how to fix it",
+      "requirement": "openspec/specs/<capability>/spec.md#<requirement heading>" }
   ] }
 ```
 
-`severity`, `file`, `title` and `description` are required. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
+`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
 This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
 
@@ -92,7 +102,7 @@ Run both skeptics per finding, in parallel.
 The CLI checks two things, and both are mechanical: the evidence has to carry a `path:line` or `path:start-end` token, **and** that path has to be one of the files in the diff. Pass the diff with `--changed` so the second half can run:
 
 ```bash
-interlock review --findings <f> --verdicts <f> --changed <the changed files> --metrics <change> --json
+interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --metrics <change> --json
 ```
 
 `--metrics <change>` is not optional either. It writes the four counts this review produced to `.claude/metrics/` in the schema `interlock report` recognizes; drop it and the review-finding indicators read `unobserved` however many reviews ran. It is bookkeeping only and cannot change the verdict or the exit status.

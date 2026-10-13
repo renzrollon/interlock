@@ -1,0 +1,13 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": { "built_at": "2026-10-12T00:00:00.000Z" },
+  "nodes": [],
+  "links": [
+    { "relation": "implements_spec", "weight": 1, "source_file": "openspec/specs/hooks/tool-guards/spec.md", "source": "spec:hooks/tool-guards", "target": "file:hooks/guard-commit.mjs" },
+    { "relation": "implements_spec", "weight": 1, "source_file": "openspec/specs/ship/risk-routing/spec.md", "source": "spec:ship/risk-routing", "target": "file:lib/risk.mjs" },
+    { "relation": "implements_spec", "weight": 0.5, "source_file": "openspec/specs/hooks/tool-guards/spec.md", "source": "spec:hooks/tool-guards", "target": "file:hooks/half-weight.mjs" },
+    { "relation": "implements_spec", "weight": 1, "source_file": "openspec/changes/in-flight/specs/hooks/tool-guards/spec.md", "source": "spec:in-flight", "target": "file:lib/in-flight-only.mjs" },
+    { "relation": "imports", "weight": 1, "source_file": "hooks/guard-commit.mjs", "source": "file:hooks/guard-commit.mjs", "target": "file:lib/risk.mjs" }
+  ]
+}

@@ -43,6 +43,7 @@ import {
   laneOutcomes,
   relayStep,
   runClassified,
+  runClose,
   runRecordBatch,
   runRemediated,
   runReviewed
@@ -1932,6 +1933,27 @@ async function relay(status = 200) {
   }
 }
 
+/**
+ * False, or the reason the relay tests cannot run here. A sandbox that denies
+ * binding loopback is an environment fact, not a result: the tests that need
+ * the relay skip and say so, and any other probe failure skips nothing, so
+ * they still run and fail where the cause is anything else.
+ */
+function loopbackDenied() {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer()" +
+        ".on('error', e => process.exit(e.code === 'EPERM' || e.code === 'EACCES' ? 3 : 1))" +
+        ".listen(0, '127.0.0.1', function () { this.close() })"
+    ],
+    { stdio: 'ignore' }
+  )
+  return probe.status === 3 ? 'this environment denies binding loopback (a sandbox) — rerun outside it' : false
+}
+const LOOPBACK_DENIED = loopbackDenied()
+
 /** A sibling change in the same tree, with every box ticked or none. */
 function siblingChange(root, name, { complete = true } = {}) {
   file(root, `openspec/changes/${name}/proposal.md`, `# ${name}\n\nWhy: because.\n`)
@@ -2008,7 +2030,7 @@ test('a halted close prints no archive reminder — the change is not complete',
   }
 })
 
-test('a close without --notify makes no request, even with a topic configured', async () => {
+test('a close without --notify makes no request, even with a topic configured', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   const { root, change } = repo()
   try {
@@ -2023,7 +2045,7 @@ test('a close without --notify makes no request, even with a topic configured', 
   }
 })
 
-test('a close with --notify posts the summary\'s own first line, at high priority on a halt', async () => {
+test('a close with --notify posts the summary\'s own first line, at high priority on a halt', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   const { root, change } = repo()
   try {
@@ -2053,7 +2075,7 @@ test('a close with --notify posts the summary\'s own first line, at high priorit
   }
 })
 
-test('a rejected push is a banner and a row, and never the exit code', async () => {
+test('a rejected push is a banner and a row, and never the exit code', { skip: LOOPBACK_DENIED }, async () => {
   const forbidden = await relay(403)
   const { root, change } = repo()
   try {
@@ -2070,7 +2092,7 @@ test('a rejected push is a banner and a row, and never the exit code', async () 
   }
 })
 
-test('the topic reaches the relay and nothing else — not the summary, not the trajectory', async () => {
+test('the topic reaches the relay and nothing else — not the summary, not the trajectory', { skip: LOOPBACK_DENIED }, async () => {
   const forbidden = await relay(403)
   const { root, change } = repo()
   const topic = 'secret-topic-abc'
@@ -5985,6 +6007,1818 @@ test('a clean close carries an empty banners array, present and not absent', () 
     const closed = run(root, ['run', 'close']).step
     assert.ok(Array.isArray(closed.banners), 'banners is absent')
     assert.deepEqual(closed.banners, [], `a clean run raised: ${JSON.stringify(closed.banners)}`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- judge against the base and the living specs (judge-against-base-and-living-specs) ---
+//
+// Two inputs a review used to read from the working tree are now read from the
+// commit the run started on: the enforced `REVIEW.md` path lists (a change must
+// not be able to edit the copy that is applied to it) and the living
+// requirements the `domain` dimension judges against. The prose a reviewer is
+// handed stays the working tree's, because prose is advice and cannot relax the
+// gate. Everything below drives the real CLI against a real git history, so a
+// "start commit" is a commit, not a stub.
+
+const LIVING_SPEC_PATH = 'openspec/specs/docs/guide/spec.md'
+const REQ_ALPHA = 'The guide SHALL name every command'
+const REQ_BETA = 'The guide SHALL NOT promise unreleased behaviour'
+const ALPHA_COMMITTED = 'ALPHA-COMMITTED'
+const ALPHA_EDITED = 'ALPHA-EDITED'
+const BETA_IN_FORCE = 'BETA-IN-FORCE'
+
+/** A living spec with two requirements; the marker lets a test tell which copy a briefing quoted. */
+const livingSpec = (marker = ALPHA_COMMITTED, extra = '') => `# docs/guide Specification
+
+## Purpose
+
+Keeps the guide honest about the commands it documents.
+
+## Requirements
+
+### Requirement: ${REQ_ALPHA}
+
+The guide SHALL name every command it documents. ${marker}
+
+#### Scenario: Happy path — a command is named
+
+- **GIVEN** a documented command
+- **WHEN** the guide is read
+- **THEN** the command is named
+
+### Requirement: ${REQ_BETA}
+
+The guide SHALL NOT describe behaviour that has not shipped. ${BETA_IN_FORCE}
+
+#### Scenario: Failure — an unreleased flag is not described
+
+- **GIVEN** a flag that has not shipped
+- **WHEN** the guide is read
+- **THEN** the flag is not described
+${extra}`
+
+/** A delta spec modifying ALPHA under a heading that differs from the living one only in internal whitespace. */
+const DELTA_SPEC = `## MODIFIED Requirements
+
+### Requirement: The guide  SHALL name   every command
+
+The guide SHALL name every command it documents, and say where each is run.
+
+#### Scenario: Happy path — a command is named with its location
+
+- **GIVEN** a documented command
+- **WHEN** the guide is read
+- **THEN** the command and where it is run are named
+`
+
+/** A graph whose reliable edges link the living spec to each given file. */
+const graphLinking = (...files) => ({
+  graph: { built_at: '2026-10-12T00:00:00Z' },
+  nodes: [],
+  links: files.map(f => ({
+    relation: 'implements_spec',
+    weight: 1,
+    source: LIVING_SPEC_PATH,
+    source_file: LIVING_SPEC_PATH,
+    target: `file:${f}`
+  }))
+})
+
+const commitAll = (root, message) => {
+  execFileSync('git', ['add', '-A'], { cwd: root })
+  execFileSync('git', ['commit', '-qm', message], { cwd: root })
+}
+const headOf = root => execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+const bannersWith = (root, prefix) => manifestOf(root).banners.filter(b => String(b).startsWith(prefix))
+const briefingOf = (root, step) => readFileSync(join(root, step.spawns[0].promptPath), 'utf8')
+
+/**
+ * A repo whose history already holds the inputs the review reads from the start
+ * commit. `graph` is `true` (links README.md), an object (used as written) or
+ * `false`; `declared` adds a delta spec for the living capability.
+ */
+function domainRepo({ graph = true, declared = false, reviewMd = null } = {}) {
+  const r = repo()
+  file(r.root, LIVING_SPEC_PATH, livingSpec())
+  if (graph) file(r.root, GRAPH_PATH, graph === true ? graphLinking('README.md') : graph)
+  if (declared) file(r.root, `openspec/changes/${r.change}/specs/docs/guide/spec.md`, DELTA_SPEC)
+  if (reviewMd !== null) file(r.root, 'REVIEW.md', reviewMd)
+  commitAll(r.root, 'fixtures')
+  return r
+}
+
+/** Like `toTail`, but lets a test rewrite the manifest between `run start` and the review step. */
+function toReview(root, change, flags, over) {
+  const batch = toFirstBatch(root, change, flags)
+  if (over) setManifest(root, over)
+  writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+  return run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+  }).step
+}
+
+/** Write a findings/verdicts pair whose findings all cite the given requirement. */
+function writeCitedReview(root, shape, requirement) {
+  const { findings, verdicts } = reviewFiles(shape)
+  for (const group of findings) for (const f of group.findings) if (requirement) f.requirement = requirement
+  file(root, '.claude/ship/findings.json', findings)
+  file(root, '.claude/ship/verdicts.json', verdicts)
+}
+
+/** Everything under `## domain` and nothing before it carries the marker. */
+function assertUnderDomainOnly(briefing, marker) {
+  const at = briefing.indexOf('\n## domain\n')
+  assert.notEqual(at, -1, 'the briefing has no `## domain` section')
+  assert.ok(briefing.indexOf(marker) > at, `${marker} is not inside the domain section`)
+  assert.ok(!briefing.slice(0, at).includes(marker), `${marker} leaked into another dimension's criteria`)
+  for (const other of ALWAYS_ON) {
+    assert.ok(briefing.indexOf(`\n## ${other}\n`) < at, `${other} must come before domain`)
+  }
+}
+const ALWAYS_ON = ['language', 'architecture', 'qa', 'technical-lead']
+
+// --- run start pins the commit ----------------------------------------------
+
+test('run start records the commit the run started on, and a later commit does not move it', () => {
+  const { root, change } = repo()
+  try {
+    const head = headOf(root)
+    const batch = toFirstBatch(root, change, ['--review'])
+    assert.match(manifestOf(root).startSha, /^[0-9a-f]{40}$/)
+    assert.equal(manifestOf(root).startSha, head)
+
+    execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'later'], { cwd: root })
+    assert.notEqual(headOf(root), head)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.equal(manifestOf(root).startSha, head, 'the pinned base is the commit the run started on, not the current head')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the enforced lists come from the start commit ---------------------------
+
+test('a working copy that adds an exclusion is not applied, and the run says so through the close', () => {
+  const { root, change } = domainRepo({ graph: false, reviewMd: '# Review policy\n\n## Do Not Report\n\n- dist/\n' })
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    // The change edits its own policy so that the file it touched is out of review.
+    file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- dist/\n- README.md\n')
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate', 'the blocker survives: the start commit excluded only dist/')
+    assert.equal(manifestOf(root).review.counts.blockers, 1)
+
+    const banners = bannersWith(root, 'POLICY DIFFERS FROM BASE')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /REVIEW\.md/)
+    assert.ok(banners[0].includes(sha.slice(0, 7)), `the banner must name the start commit: ${banners[0]}`)
+    assert.ok(next.banners.includes(banners[0]), 'the step carries the banner too')
+
+    const closed = run(root, ['run', 'close', '--halt', 'blocker left'], { expectExit: 1 }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]), 'and in the close record')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a working copy that drops an exclusion does not lift it', () => {
+  const { root, change } = domainRepo({ graph: false, reviewMd: '# Review policy\n\n## Do Not Report\n\n- README.md\n' })
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    rmSync(join(root, 'REVIEW.md'))
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final', 'the start commit excluded README.md, so the finding on it is dropped')
+    const banners = bannersWith(root, 'POLICY DIFFERS FROM BASE')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.ok(banners[0].includes(sha.slice(0, 7)))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an unchanged policy applies the start commit\'s exclusions and raises nothing', () => {
+  const policy = '# Review policy\n\n## Do Not Report\n\n- README.md\n'
+  for (const [label, working] of [
+    ['identical', policy],
+    ['line endings only', policy.replace(/\n/g, '\r\n')]
+  ]) {
+    const { root, change } = domainRepo({ graph: false, reviewMd: policy })
+    try {
+      const review = toReview(root, change, ['--review'])
+      file(root, 'REVIEW.md', working)
+      writeReview(root, { blockers: 1 })
+      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(next.action, 'verify-final', `${label}: the exclusion is applied`)
+      assert.deepEqual(bannersWith(root, 'POLICY DIFFERS FROM BASE'), [], `${label}: nothing differs`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('uncommitted prose is still inlined while the start commit\'s lists are applied', () => {
+  const { root, change } = repo()
+  try {
+    // Untracked, so absent at the start commit: it declares no lists there.
+    file(
+      root,
+      'REVIEW.md',
+      '# Review policy\n\n## What "Important" means\n\nIn this repo, a naming nit is a suggestion.\n\n## Do Not Report\n\n- README.md\n'
+    )
+    const review = toReview(root, change, ['--review'])
+    const briefing = briefingOf(root, review)
+    assert.match(briefing, /In this repo, a naming nit is a suggestion\./, 'prose comes from the working tree')
+
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate', 'the working copy\'s exclusion is not applied: the start commit has no REVIEW.md')
+    assert.equal(bannersWith(root, 'POLICY DIFFERS FROM BASE').length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [], 'a pinned run is not unpinned')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- no start commit ---------------------------------------------------------
+
+test('a run with no start commit reads the working tree and raises REVIEW BASE NOT PINNED exactly once', () => {
+  // null is a repository with no commit to record; absent is a manifest written
+  // before this change. Both must read the same way.
+  for (const startSha of [null, undefined]) {
+    const { root, change } = repo()
+    try {
+      file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- docs/\n')
+      const review = toReview(root, change, ['--review'], { startSha })
+      const afterStep = bannersWith(root, 'REVIEW BASE NOT PINNED')
+      assert.equal(afterStep.length, 1, `${startSha}: raised when the review step is emitted: ${JSON.stringify(manifestOf(root).banners)}`)
+      assert.match(afterStep[0], /REVIEW\.md/, 'names the lists it will read unpinned')
+      assert.doesNotMatch(afterStep[0], /living requirements/i, 'domain does not run here, so it reads none')
+      assert.ok(review.banners.includes(afterStep[0]), 'the review step carries it')
+
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(round1.action, 'remediate')
+      assert.equal(bannersWith(root, 'REVIEW BASE NOT PINNED').length, 1, 'adjudication does not raise it again')
+
+      writeReview(root, { blockers: 1 })
+      run(root, [...round1.then.argv], { results: [{ ok: true }] })
+      assert.equal(bannersWith(root, 'REVIEW BASE NOT PINNED').length, 1, 'nor does a remediation round')
+      assert.deepEqual(bannersWith(root, 'POLICY DIFFERS FROM BASE'), [], 'with no base there is nothing to differ from')
+
+      const closed = run(root, ['run', 'close', '--halt', 'blocker left'], { expectExit: 1 }).step
+      assert.ok(closed.summary.includes(afterStep[0]), 'the banner is in the close summary')
+      assert.ok(closed.banners.includes(afterStep[0]))
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a run with no start commit applies the working copy\'s lists', () => {
+  const { root, change } = repo()
+  try {
+    file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- README.md\n')
+    const review = toReview(root, change, ['--review'], { startSha: null })
+    writeReview(root, { blockers: 1 })
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final', 'both the prose and the lists come from the working tree, and the banner says so')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('REVIEW BASE NOT PINNED names the living requirements when the domain dimension runs', () => {
+  const { root, change } = domainRepo()
+  try {
+    toReview(root, change, ['--review'], { startSha: null })
+    const banners = bannersWith(root, 'REVIEW BASE NOT PINNED')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /REVIEW\.md/)
+    assert.match(banners[0], /living requirements/i)
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, null, 'the record says the text came from the working tree')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the domain dimension ----------------------------------------------------
+
+test('a graph linking a changed file to a living spec selects domain, records it, and delivers the text only under ## domain', () => {
+  const { root, change } = domainRepo()
+  try {
+    const sha = headOf(root)
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+
+    assert.deepEqual(dims.selected.slice(0, 5), [...ALWAYS_ON, 'domain'], 'domain follows the always-on four')
+    assert.match(dims.reasons.domain, /docs\/guide/)
+    assert.match(dims.reasons.domain, /README\.md/)
+    assert.deepEqual(dims.domain.capabilities, [{ capability: 'docs/guide', via: 'linked', files: ['README.md'] }])
+    assert.equal(dims.domain.ref, sha, 'read from the start commit')
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'))
+    assert.equal(dims.notSelected, undefined, 'it was selected')
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW'), [])
+    assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [])
+
+    const briefing = briefingOf(root, review)
+    assertUnderDomainOnly(briefing, ALPHA_COMMITTED)
+    assertUnderDomainOnly(briefing, BETA_IN_FORCE)
+    assert.ok(briefing.includes(REQ_ALPHA) && briefing.includes(REQ_BETA), 'whole requirements, with their headings')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the living requirements are read from the start commit, not the edited working copy', () => {
+  const { root, change } = domainRepo()
+  try {
+    // Edited after the run started: a change must not be able to rewrite the
+    // requirement it is judged against.
+    const batch = toFirstBatch(root, change, ['--review'])
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const briefing = briefingOf(root, review)
+    assert.ok(briefing.includes(ALPHA_COMMITTED), 'the committed requirement is quoted')
+    assert.ok(!briefing.includes(ALPHA_EDITED), 'the edited one is not')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('with no start commit the living requirements come from the working tree, and the record says so', () => {
+  const { root, change } = domainRepo()
+  try {
+    const batch = toFirstBatch(root, change, ['--review'])
+    setManifest(root, { startSha: null })
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const briefing = briefingOf(root, review)
+    assert.ok(briefing.includes(ALPHA_EDITED))
+    assert.ok(!briefing.includes(ALPHA_COMMITTED))
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and a declared capability is partial: domain runs, the banner says the files were not mapped, and the superseded requirement is left out', () => {
+  const { root, change } = domainRepo({ graph: false, declared: true })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.ok(dims.selected.includes('domain'))
+    assert.equal(dims.domain.capabilities.length, 1)
+    assert.equal(dims.domain.capabilities[0].capability, 'docs/guide')
+    assert.equal(dims.domain.capabilities[0].via, 'declared')
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'), 'partial is not skipped')
+
+    const banners = bannersWith(root, 'DOMAIN REVIEW PARTIAL')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /not mapped/)
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW SKIPPED'), [])
+    assert.ok(review.banners.includes(banners[0]))
+
+    // The delta modifies ALPHA under a whitespace-different heading: it is
+    // superseded, BETA stays in force, and the change's own heading is listed.
+    assert.ok(JSON.stringify(dims.domain.superseded).includes(REQ_ALPHA), JSON.stringify(dims.domain.superseded))
+    assert.match(JSON.stringify(dims.domain.specifiedByChange).replace(/\s+/g, ' '), /SHALL name every command/)
+    const briefing = briefingOf(root, review)
+    assert.ok(!briefing.includes(ALPHA_COMMITTED), 'a requirement the change modifies is not quoted as in force')
+    assert.ok(briefing.includes(BETA_IN_FORCE))
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and nothing declared skips domain out loud', () => {
+  const { root, change } = domainRepo({ graph: false })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.deepEqual(dims.selected, ALWAYS_ON, 'domain did not run')
+    assert.equal(dims.skipped.length, 1)
+    assert.equal(dims.skipped[0].name, 'domain')
+    assert.match(dims.skipped[0].reason, /no graph/i)
+    assert.equal(dims.domain, undefined, 'no capability was selected')
+
+    const banners = bannersWith(root, 'DOMAIN REVIEW SKIPPED')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /no graph/i)
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [])
+    assert.doesNotMatch(briefingOf(root, review), /\n## domain\n/)
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
+    assert.ok(closed.banners.includes(banners[0]))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a graph that links none of the changed paths records why, and raises nothing', () => {
+  const { root, change } = domainRepo({ graph: graphLinking('lib/elsewhere.mjs') })
+  try {
+    toReview(root, change, ['--review'])
+    const dims = manifestOf(root).reviewDimensions
+    assert.deepEqual(dims.selected, ALWAYS_ON)
+    assert.equal(typeof dims.notSelected.reason, 'string')
+    assert.match(dims.notSelected.reason, /reliable edge/i)
+    assert.ok(dims.notSelected.unlinkedPaths.includes('README.md'), JSON.stringify(dims.notSelected))
+    assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'), 'not selected is not skipped')
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW'), [], 'an unlinked file is a gap spec coverage measures, not a degraded review')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- remediation re-review ----------------------------------------------------
+
+test('a remediation re-review of domain carries the same text from the same base', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    const ref = manifestOf(root).reviewDimensions.domain.ref
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
+
+    writeCitedReview(root, { blockers: 1, dimension: 'domain' }, `${LIVING_SPEC_PATH}#${REQ_ALPHA}`)
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    assert.deepEqual(round1.spawns.length, 1)
+
+    const prompt = briefingOf(root, round1)
+    assert.ok(prompt.includes(ALPHA_COMMITTED) && prompt.includes(BETA_IN_FORCE), 'the same capabilities\' text')
+    assert.ok(!prompt.includes(ALPHA_EDITED), 'from the same base, not the edited copy')
+    assert.equal(manifestOf(root).reviewDimensions.domain.ref, ref, 'the recorded base is unchanged')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation re-review of another dimension carries no domain text', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    writeReview(root, { blockers: 1, dimension: 'language' })
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    const prompt = briefingOf(root, round1)
+    assert.ok(!prompt.includes(ALPHA_COMMITTED) && !prompt.includes(BETA_IN_FORCE))
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- requirement citations ----------------------------------------------------
+
+test('adjudication checks a citation against the start commit\'s spec, reports a failure, and still adjudicates the finding', () => {
+  const { root, change } = domainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    // A requirement that exists only in the working copy: it names no heading at the start commit.
+    const NEW_HEADING = 'The guide SHALL list its commands alphabetically'
+    file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_COMMITTED, `\n### Requirement: ${NEW_HEADING}\n\nThe guide SHALL list its commands alphabetically.\n\n#### Scenario: Happy path — sorted\n\n- **GIVEN** a guide\n- **WHEN** read\n- **THEN** sorted\n`))
+
+    const { findings, verdicts } = reviewFiles({ blockers: 2, dimension: 'domain' })
+    const [first, second] = findings[0].findings
+    first.requirement = `${LIVING_SPEC_PATH}#${NEW_HEADING}`
+    second.requirement = `${LIVING_SPEC_PATH}#${REQ_ALPHA}`
+    file(root, '.claude/ship/findings.json', findings)
+    file(root, '.claude/ship/verdicts.json', verdicts)
+
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'remediate')
+    assert.equal(manifestOf(root).review.counts.blockers, 2, 'both findings are adjudicated as without their citation')
+
+    const reviewed = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    const reported = reviewed.anomalies.requirementCitations
+    assert.equal(reported.length, 1, JSON.stringify(reported))
+    assert.equal(reported[0].dimension, 'domain')
+    assert.equal(reported[0].title, first.title)
+    assert.equal(reported[0].requirement, first.requirement)
+    assert.match(reported[0].problem, /no requirement/i)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the close states the merge verdict (complete-and-record-the-merge-verdict) ---
+//
+// Everything below is RED until the change is implemented (tasks 2.7 and 2.8).
+// It drives the real CLI against real git history wherever it can; the few
+// in-process calls inject `ctx.deps` stubs exactly where the design says the
+// run reaches the outside world (D1, D3, D17).
+//
+// Contracts these tests fix, where the design names the idea and not the key:
+//
+//   - `manifest.reviewDimensions.unavailable` — selected dimensions whose rubric
+//     could not be read, recorded by the review step (D4).
+//   - `review.json` carries `dimensions: { selected, ran, unavailable, completed,
+//     skipped }`, rewritten by every adjudication (D4).
+//   - `.claude/ship/verify-final.json` is the final verdict itself, with the
+//     run's id beside it as a top-level `runId` (D3, D18).
+//   - the handoff step carries the living entry count as `living`, beside
+//     `scenarios`, and `null` when conformance is off (D5).
+//   - `manifest.handoff` carries `requirementsChecked` and
+//     `requirementsUnconfirmed`, absent and not zero when not reported (D5).
+//   - `.claude/ship/merge-confidence.json` is the evidence file (D9).
+
+const REVIEW_JSON = join('.claude', 'ship', 'review.json')
+const VERIFY_FINAL_JSON = join('.claude', 'ship', 'verify-final.json')
+const EVIDENCE_JSON = join('.claude', 'ship', 'merge-confidence.json')
+const HEADLINE = /^MERGE CONFIDENCE (MERGE|HUMAN|BLOCK) — score \d+/m
+const HAS_VERDICT = /MERGE CONFIDENCE (MERGE|HUMAN|BLOCK) — score/
+
+const jsonAt = (root, rel) => JSON.parse(readFileSync(join(root, rel), 'utf8'))
+const evidenceOf = root => jsonAt(root, EVIDENCE_JSON)
+const signalOf = (assessed, id) => {
+  const found = assessed.signals.find(s => s.id === id)
+  assert.ok(found, `the assessment has no ${id} signal: ${assessed.signals.map(s => s.id).join(', ')}`)
+  return found
+}
+const countOf = (text, needle) => text.split(needle).length - 1
+const outcomeOf = root =>
+  readFileSync(join(root, '.claude', 'learning', 'outcomes.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+    .pop()
+
+/** A repo that ignores its own run state, as every real one does, so a real commit is just the work. */
+function shippedRepo(name = 'add-thing') {
+  const r = repo(name)
+  file(r.root, '.gitignore', '.claude/\n')
+  commitAll(r.root, 'ignore run state')
+  return r
+}
+
+/** Commit what the run changed, for real, and return the commit's sha. */
+function realCommit(root) {
+  commitAll(root, 'ship: add the thing')
+  return headOf(root)
+}
+
+/** The handoff result of a strict run that confirmed everything it was asked. */
+const HANDOFF_OK = {
+  ok: true,
+  manualTestPlan: false,
+  skipReason: 'backend only',
+  scenariosChecked: 0,
+  scenariosUnconfirmed: 0
+}
+
+/** Drive a strict run, clean review and all, to the commit step. */
+function strictToCommit(root, change, handoff = HANDOFF_OK) {
+  const review = toTail(root, change, ['--strict'])
+  assert.equal(review.action, 'review')
+  writeReview(root, { dismissed: 1 })
+  const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+  assert.equal(verified.action, 'verify-final')
+  const handoffStep = run(root, [...verified.then.argv]).step
+  assert.equal(handoffStep.action, 'handoff')
+  const commit = run(root, [...handoffStep.then.argv], { results: [handoff] }).step
+  assert.equal(commit.action, 'commit')
+  return commit
+}
+
+/** Drive a lean run (no review, no handoff) to whatever follows final verification. */
+function leanToCommit(root, change, flags = []) {
+  const verified = toTail(root, change, flags)
+  assert.equal(verified.action, 'verify-final')
+  return run(root, [...verified.then.argv]).step
+}
+
+const closeAt = (root, sha, over = {}) => run(root, ['run', 'close'], { results: [{ ok: true, sha }], ...over })
+
+/** `runClose` in this process, with the given `ctx.deps`, for the seams the CLI does not expose. */
+async function closeInProcess(root, deps, results) {
+  const warnings = []
+  const step = await runClose({ root, warn: message => warnings.push(message), deps }, { results })
+  return { step, warnings }
+}
+
+// --- the review step records unreadable rubrics ------------------------------
+
+/** Run the review step through a plugin copy that lacks one dimension's rubric file. */
+function reviewWithoutRubric(root, change, rubric, flags = ['--review']) {
+  const plugin = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
+  try {
+    cpSync(join(ROOT, 'package.json'), join(plugin, 'package.json'))
+    for (const dir of ['bin', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
+    cpSync(
+      join(ROOT, 'skills', 'review-code', 'dimensions'),
+      join(plugin, 'skills', 'review-code', 'dimensions'),
+      { recursive: true, filter: src => !src.endsWith(`${sep}${rubric}.md`) }
+    )
+    const batch = toFirstBatch(root, change, flags)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    file(
+      root,
+      '.claude/ship/results.json',
+      batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    )
+    return JSON.parse(
+      execFileSync(
+        process.execPath,
+        [join(plugin, 'bin', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
+        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+    )
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+  }
+}
+
+test('the review step records a dimension whose rubric could not be read on the manifest', () => {
+  const { root, change } = repo()
+  try {
+    const step = reviewWithoutRubric(root, change, 'qa')
+    assert.equal(step.action, 'review')
+    assert.deepEqual(manifestOf(root).reviewDimensions.unavailable, ['qa'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review whose rubrics were all readable records no unavailable dimension', () => {
+  const { root, change } = repo()
+  try {
+    toTail(root, change, ['--review'])
+    assert.deepEqual(manifestOf(root).reviewDimensions.unavailable || [], [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- review.json carries the dimension record (D4) ---------------------------
+
+test('run reviewed writes the dimension record: every selected dimension ran when the worker reported ok', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+
+    const manifest = manifestOf(root)
+    const selected = manifest.reviewDimensions.selected
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.ok(dims && typeof dims === 'object', 'review.json carries no dimension record')
+    assert.deepEqual(dims.selected, selected)
+    assert.deepEqual(dims.ran, selected, 'dispatched with its rubric in a review the worker reported complete')
+    assert.deepEqual(dims.unavailable, [])
+    assert.equal(dims.completed, true)
+    // No graph and no declared capability: domain was refused, and the record says so.
+    assert.deepEqual(dims.skipped, manifest.reviewDimensions.skipped)
+    assert.deepEqual(dims.skipped.map(s => s.name), ['domain'])
+    assert.equal(typeof dims.skipped[0].reason, 'string')
+    assert.ok(dims.skipped[0].reason.length > 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the dimension record names an unreadable rubric as unavailable and never as run', () => {
+  const { root, change } = repo()
+  try {
+    const review = reviewWithoutRubric(root, change, 'qa')
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+
+    const selected = manifestOf(root).reviewDimensions.selected
+    assert.ok(selected.includes('qa'), 'qa was selected; only its rubric was unreadable')
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.deepEqual(dims.selected, selected)
+    assert.deepEqual(dims.unavailable, ['qa'])
+    assert.ok(!dims.ran.includes('qa'), 'a dimension without its rubric did not run')
+    assert.deepEqual(dims.ran, selected.filter(d => d !== 'qa'))
+    assert.equal(dims.completed, true)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review whose worker returned nothing usable records completed:false and no dimension as run', () => {
+  for (const reported of [undefined, [{ ok: false, detail: 'the worker died' }]]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeReview(root, { dismissed: 1 })
+      run(root, [...review.then.argv], reported === undefined ? {} : { results: reported })
+
+      const dims = jsonAt(root, REVIEW_JSON).dimensions
+      assert.equal(dims.completed, false, JSON.stringify(dims))
+      assert.deepEqual(dims.ran, [], 'nothing is recorded as run when the review did not complete')
+      assert.ok(dims.selected.length > 0, 'what the CLI selected is still recorded')
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a dimension the reviewer added is recorded as run and not as selected', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeReview(root, { warnings: 1, dimension: 'security' })
+    run(root, [...review.then.argv], {
+      results: [{ ok: true, addedDimensions: [{ name: 'security', reason: 'the diff touches a token path' }] }]
+    })
+
+    const selected = manifestOf(root).reviewDimensions.selected
+    const dims = jsonAt(root, REVIEW_JSON).dimensions
+    assert.ok(!dims.selected.includes('security'), 'the CLI never selected it')
+    assert.deepEqual(dims.selected, selected)
+    assert.ok(dims.ran.includes('security'), 'it ran: the worker said so and its findings were adjudicated')
+    assert.deepEqual([...dims.ran].sort(), [...selected, 'security'].sort())
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation round rewrites review.json with the same dimension record', () => {
+  for (const firstReport of [{ ok: true }, null]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], firstReport ? { results: [firstReport] } : {}).step
+      assert.equal(round1.action, 'remediate')
+      const first = jsonAt(root, REVIEW_JSON).dimensions
+      assert.equal(first.completed, firstReport !== null)
+
+      // The fixer cleared it; the adjudication rewrites the file.
+      writeReview(root, {})
+      run(root, [...round1.then.argv], { results: [{ ok: true }] })
+      const second = jsonAt(root, REVIEW_JSON).dimensions
+      assert.deepEqual(
+        second,
+        first,
+        'the last review record a run leaves must still say which dimensions ran, and whether the review completed'
+      )
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+// --- run judge --context final persists the verdict (D3) ---------------------
+
+test('a final verification the CLI skipped is recorded with the run id and the plan\'s skip list', () => {
+  const { root, change } = repo()
+  try {
+    const verified = toTail(root, change, [])
+    assert.equal(verified.action, 'verify-final')
+    assert.equal(verified.skipped, true, 'the fixture has no test profile, so the CLI skips verification')
+    assert.equal(existsSync(join(root, VERIFY_FINAL_JSON)), false, 'nothing is recorded before the judge')
+    run(root, [...verified.then.argv])
+
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    const plan = jsonAt(root, '.claude/ship/vplan-final.json')
+    assert.equal(written.runId, manifestOf(root).runId)
+    assert.equal(written.context, 'final')
+    assert.ok(plan.skipped.length > 0)
+    assert.deepEqual(written.skipped, plan.skipped, 'one band per reason, read from the same list the planner gave')
+    for (const key of ['unit', 'e2e', 'coverage', 'typecheck']) {
+      assert.equal(written[key], null, `${key} did not run, so it is null and not absent`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a judged final verification is recorded with the run id and the verdict', () => {
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    run(root, [...final.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] }] }]
+    })
+
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    assert.equal(written.runId, manifestOf(root).runId)
+    assert.equal(written.context, 'final')
+    assert.equal(written.halt, false)
+    assert.ok(written.unit && typeof written.unit === 'object', 'the unit result is the verdict the run acted on')
+    assert.equal(written.unit.status, 'green')
+    assert.ok(Array.isArray(written.skipped))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an inter-wave judge writes no final verification record', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.context, 'inter-wave')
+    run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] }] }]
+    })
+    assert.equal(existsSync(join(root, VERIFY_FINAL_JSON)), false)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- the handoff step lists the living requirements (D5) ---------------------
+
+const LIVING_BANNER = 'LIVING CONFORMANCE'
+
+/** A conformance run, driven to the handoff step. */
+function toHandoff(root, change, flags = ['--conformance']) {
+  const verified = toTail(root, change, flags)
+  assert.equal(verified.action, 'verify-final')
+  const handoff = run(root, [...verified.then.argv]).step
+  assert.equal(handoff.action, 'handoff')
+  return handoff
+}
+
+test('a conformance run lists each living requirement in the handoff briefing and carries the count', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 2, 'the step carries the number of living entries')
+    const briefing = briefingOf(root, handoff)
+    assert.match(briefing, /\bL1\b/)
+    assert.match(briefing, /\bL2\b/)
+    assert.doesNotMatch(briefing, /\bL3\b/)
+    assert.ok(briefing.includes(LIVING_SPEC_PATH), 'each entry cites its spec')
+    assert.ok(briefing.includes(REQ_ALPHA) && briefing.includes(REQ_BETA), 'and its heading')
+    assert.ok(!briefing.includes(ALPHA_COMMITTED) && !briefing.includes(BETA_IN_FORCE), 'never the body')
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+    assert.deepEqual((handoff.banners || []).filter(b => b.startsWith(LIVING_BANNER)), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a partial living list is bannered once, on the step and in the close summary', () => {
+  const { root, change } = domainRepo({ graph: false, declared: true })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 1, 'ALPHA is superseded by the change; BETA is in force')
+    const banners = bannersWith(root, `${LIVING_BANNER} PARTIAL`)
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /not mapped/)
+    assert.deepEqual(bannersWith(root, `${LIVING_BANNER} SKIPPED`), [])
+    assert.equal((handoff.banners || []).filter(b => b === banners[0]).length, 1)
+
+    const briefing = briefingOf(root, handoff)
+    assert.ok(briefing.includes(REQ_BETA))
+    assert.ok(!briefing.includes(REQ_ALPHA), 'a requirement the change modifies is not asked about')
+    const at = re => briefing.search(re)
+    assert.ok(at(/\bC1\b/) !== -1 && at(/\bC1\b/) < at(/\bL1\b/), 'the change\'s scenarios come first')
+
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, `${LIVING_BANNER} PARTIAL`), 1, 'once in the summary')
+    assert.equal(closed.banners.filter(b => b.startsWith(`${LIVING_BANNER} PARTIAL`)).length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a living list that could not be selected is bannered as skipped, once', () => {
+  const { root, change } = domainRepo({ graph: false })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.ok(!handoff.living, 'there is nothing to count')
+    const banners = bannersWith(root, `${LIVING_BANNER} SKIPPED`)
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+    assert.match(banners[0], /no graph/i)
+    assert.deepEqual(bannersWith(root, `${LIVING_BANNER} PARTIAL`), [])
+    assert.ok(handoff.banners.includes(banners[0]))
+    assert.ok(!briefingOf(root, handoff).includes(REQ_BETA), 'no list was built')
+
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, `${LIVING_BANNER} SKIPPED`), 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a graph that links none of the changed paths gives an empty living list and raises neither banner', () => {
+  const { root, change } = domainRepo({ graph: graphLinking('lib/elsewhere.mjs') })
+  try {
+    const handoff = toHandoff(root, change)
+    assert.equal(handoff.living, 0, 'an empty list is a list with nothing to confirm')
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+    assert.deepEqual((handoff.banners || []).filter(b => b.startsWith(LIVING_BANNER)), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run that did not ask for conformance builds no living list and its briefing names none', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change, ['--handoff'])
+    assert.ok(handoff.living === null || handoff.living === undefined)
+    const briefing = briefingOf(root, handoff)
+    assert.doesNotMatch(briefing, /\bL1\b/)
+    assert.ok(!briefing.includes(REQ_ALPHA) && !briefing.includes(REQ_BETA))
+    assert.deepEqual(bannersWith(root, LIVING_BANNER), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- run commit records the two requirement counts (D5) ----------------------
+
+test('run commit records the two requirement counts beside the scenario counts, and the summary states them', () => {
+  const { root, change } = domainRepo()
+  try {
+    const handoff = toHandoff(root, change)
+    const commit = run(root, [...handoff.then.argv], {
+      results: [{ ...HANDOFF_OK, requirementsChecked: 2, requirementsUnconfirmed: 1 }]
+    }).step
+    assert.equal(commit.action, 'commit')
+    const recorded = manifestOf(root).handoff
+    assert.equal(recorded.requirementsChecked, 2)
+    assert.equal(recorded.requirementsUnconfirmed, 1)
+    assert.equal(recorded.scenariosChecked, 0, 'the scenario counts are untouched')
+
+    const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.match(closed.summary, /living requirements:[^\n]*\b1\b[^\n]*\b2\b/, 'one confirmed of two checked')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run commit leaves the requirement counts absent, not zero, when the handoff reported none or nothing', () => {
+  const absent = h => h === null || (h.requirementsChecked === undefined && h.requirementsUnconfirmed === undefined)
+  const cases = [
+    ['no usable result', undefined],
+    ['a result without the counts', [{ ok: true, manualTestPlan: false }]],
+    ['counts that are not integers', [{ ok: true, requirementsChecked: '3', requirementsUnconfirmed: 1.5 }]]
+  ]
+  for (const [label, results] of cases) {
+    const { root, change } = domainRepo()
+    try {
+      const handoff = toHandoff(root, change)
+      const commit = run(root, [...handoff.then.argv], results === undefined ? {} : { results }).step
+      const recorded = manifestOf(root).handoff
+      assert.ok(absent(recorded), `${label}: ${JSON.stringify(recorded)}`)
+
+      const closed = run(root, [...commit.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+      assert.doesNotMatch(closed.summary, /living requirements:/, `${label}: no row for a count nobody reported`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+// --- the close assesses merge confidence (D2) --------------------------------
+
+test('a strict run\'s close prints the verdict, records it in the receipt, the outcome and an evidence file', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const startSha = headOf(root)
+    const commit = strictToCommit(root, change)
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+
+    assert.equal(closed.exitCode, 0)
+    assert.match(closed.summary, HEADLINE)
+    assert.match(closed.summary, /assessment: \.claude\/ship\/merge-confidence\.json/)
+    // Between the identity rows and the archive reminder.
+    assert.ok(closed.summary.search(HEADLINE) < closed.summary.indexOf('ARCHIVE PENDING'))
+
+    const file1 = evidenceOf(root)
+    assert.equal(file1.schema, 'interlock.merge-evidence/1')
+    assert.equal(file1.change, change)
+    assert.equal(file1.runId, manifestOf(root).runId)
+    assert.equal(file1.base, startSha)
+    assert.equal(file1.headSha, sha)
+    assert.equal(file1.committed, true)
+    assert.deepEqual(Object.keys(file1.evidence).sort(), ['coverage', 'handoff', 'review', 'run', 'verify'])
+    assert.equal(file1.evidence.run.halted, false)
+    assert.equal(file1.evidence.run.trajectoryComplete, true)
+    assert.equal(file1.evidence.run.leftoverTasks, 0)
+    assert.ok(file1.evidence.review.dimensions, 'the review input carries the dimension record')
+
+    const result = file1.result
+    assert.equal(result.verdict, 'HUMAN')
+    assert.ok(result.driving.some(d => d.id === 'ci.pipeline'), JSON.stringify(result.driving.map(d => d.id)))
+    assert.match(signalOf(result, 'ci.pipeline').reason, /pipeline/i)
+    // What the run observed is read as observed.
+    assert.equal(signalOf(result, 'review.blockers').band, 'green')
+    assert.equal(signalOf(result, 'review.ran').band, 'green')
+    // This harness is a host with no recorder: nothing observed a permission
+    // prompt or an auto-mode denial, and a count nobody made is not a zero
+    // (design D9 of label-and-harden-the-merge-verdict).
+    const integrity = signalOf(result, 'run.integrity')
+    assert.equal(integrity.band, 'unobserved')
+    assert.ok(integrity.reason.includes('permissionPrompts') && integrity.reason.includes('autoModeDenials'), integrity.reason)
+    assert.equal(file1.evidence.run.permissionPrompts, null)
+    assert.equal(file1.evidence.run.autoModeDenials, null)
+    assert.match(signalOf(result, 'verify.suite').reason, /unit was skipped/, 'the skip list the CLI recorded')
+
+    const block = receiptOf(root).mergeConfidence
+    assert.equal(block.verdict, 'HUMAN')
+    assert.equal(block.score, result.score)
+    assert.equal(block.worstBand, result.worstBand)
+    for (const key of ['gating', 'clean']) assert.equal(block.counts[key], result.counts[key], key)
+    for (const [key, value] of Object.entries(block.counts)) assert.equal(value, result.counts[key], key)
+    assert.ok(block.driving.includes('ci.pipeline'))
+    assert.ok(Array.isArray(block.flags))
+    assert.doesNotMatch(JSON.stringify(block), /"reason"|"evidence"/, 'no finding text rides into the trajectory')
+
+    assert.equal(outcomeOf(root).observed.mergeVerdict, 'HUMAN')
+    assert.equal(commit.action, 'commit')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a lean run reads HUMAN and names the review nobody ran', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const commit = leanToCommit(root, change)
+    assert.equal(commit.action, 'commit')
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+
+    assert.match(closed.summary, HEADLINE)
+    const stored = evidenceOf(root)
+    assert.equal(stored.result.verdict, 'HUMAN')
+    assert.ok(stored.result.driving.some(d => d.id === 'review.ran'))
+    assert.match(signalOf(stored.result, 'review.ran').reason, /no review/i)
+    assert.ok(stored.evidence.review == null, 'a lean run adjudicated no review')
+    assert.equal(stored.committed, true)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a lean close in a directory holding an earlier run\'s review and verdict reads neither', () => {
+  const { root, change } = shippedRepo()
+  try {
+    // What an earlier strict run left behind: a clean review with a full
+    // dimension record, and a green final verdict under another run's id.
+    file(root, REVIEW_JSON, {
+      surviving: [],
+      counts: { raised: 0, surviving: 0, blockers: 0 },
+      dimensions: {
+        selected: ['language'],
+        ran: ['language'],
+        unavailable: [],
+        completed: true,
+        skipped: []
+      }
+    })
+    file(root, VERIFY_FINAL_JSON, {
+      runId: 'an-earlier-run',
+      context: 'final',
+      halt: false,
+      unit: { status: 'green', reason: 'green' },
+      typecheck: { ran: true, exitCode: 0, passed: true },
+      e2e: null,
+      coverage: null,
+      skipped: []
+    })
+    leanToCommit(root, change)
+    assert.equal(jsonAt(root, VERIFY_FINAL_JSON).runId, manifestOf(root).runId, 'this run overwrote the verdict')
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const stored = evidenceOf(root)
+    assert.ok(stored.evidence.review == null, 'the earlier review is not this run\'s')
+    const ran = signalOf(stored.result, 'review.ran')
+    assert.equal(ran.band, 'amber')
+    assert.match(ran.reason, /no review/i)
+    assert.equal(signalOf(stored.result, 'review.blockers').band, 'unobserved')
+    // The verification signals read what THIS run recorded: the CLI's skip list.
+    assert.match(signalOf(stored.result, 'verify.suite').reason, /unit was skipped/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a verification record carrying another run\'s id is treated as absent', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    file(root, VERIFY_FINAL_JSON, {
+      runId: 'someone-elses-run',
+      context: 'final',
+      halt: false,
+      unit: { status: 'green', reason: 'green' },
+      typecheck: { ran: true, exitCode: 0, passed: true },
+      e2e: null,
+      coverage: null,
+      skipped: []
+    })
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const stored = evidenceOf(root)
+    assert.ok(stored.evidence.verify == null)
+    const suite = signalOf(stored.result, 'verify.suite')
+    assert.equal(suite.band, 'unobserved')
+    assert.match(suite.reason, /verification verdict/i)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a halted close records no merge confidence: no block, no file, no line', () => {
+  const { root, change } = shippedRepo()
+  try {
+    toTail(root, change, [])
+    const closed = run(root, ['run', 'close', '--halt', 'the test halted it'], { expectExit: 1 }).step
+    assert.equal(closed.action, 'halt')
+    assert.doesNotMatch(closed.summary, HAS_VERDICT)
+    assert.doesNotMatch(closed.summary, /assessment: /)
+    assert.equal(existsSync(join(root, EVIDENCE_JSON)), false)
+    assert.equal(receiptOf(root).mergeConfidence, null, 'absent, never a zero score or a default verdict')
+    assert.ok(outcomeOf(root).observed.mergeVerdict == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run with no recorded start commit reads every base signal unobserved and names the missing commit', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    setManifest(root, { startSha: null })
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.base, null)
+    for (const id of ['diff.shape', 'policy.humanPaths', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      const said = `${signal.reason}\n${signal.evidence.join('\n')}`
+      assert.match(said, /start commit/i, `${id}: ${said}`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run told not to commit reads the diff signals unobserved and its evidence file is not reusable', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const closing = leanToCommit(root, change, ['--no-commit'])
+    assert.equal(closing.action, 'close', 'no commit step was emitted')
+    const closed = run(root, ['run', 'close']).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.committed, false)
+    for (const id of ['diff.shape', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      assert.match(signal.reason, /no commit/i, `${id}: ${signal.reason}`)
+    }
+    // The rest read the working tree's changed paths, which hold this run's edits.
+    assert.match(
+      signalOf(stored.result, 'policy.humanPaths').evidence.join('\n'),
+      /\b[1-9]\d* changed path\(s\)/
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run whose commit step reported failure reads the diff signals unobserved and records committed:false', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const commit = leanToCommit(root, change)
+    assert.equal(commit.action, 'commit')
+    const closed = run(root, [...commit.then.argv], {
+      results: [{ ok: false, detail: 'a pre-commit hook refused it' }]
+    }).step
+    assert.match(closed.summary, HEADLINE)
+
+    const stored = evidenceOf(root)
+    assert.equal(stored.committed, false)
+    for (const id of ['diff.shape', 'spec.coverage']) {
+      const signal = signalOf(stored.result, id)
+      assert.equal(signal.band, 'unobserved', id)
+      assert.match(signal.reason, /no commit/i, `${id}: ${signal.reason}`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- what the close says when a fact, the assessment or the file fails (D1, D17) ---
+
+test('a fact the gather could not read is a banner, and the assessment is still recorded with that signal unobserved', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    // A start commit that has gone: git cannot diff against it.
+    setManifest(root, { startSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' })
+    const sha = realCommit(root)
+    const closed = closeAt(root, sha)
+
+    assert.equal(closed.code, 0, 'a fact the gather could not read changes no exit code')
+    assert.match(closed.step.summary, HEADLINE)
+    const notes = closed.step.banners.filter(b => b.startsWith('MERGE EVIDENCE UNAVAILABLE: '))
+    assert.ok(notes.length > 0, JSON.stringify(closed.step.banners))
+    assert.ok(notes.some(n => /diff/i.test(n)), `no note names the diff: ${JSON.stringify(notes)}`)
+    for (const note of notes) assert.match(note, /^MERGE EVIDENCE UNAVAILABLE: .+ — .+/)
+    assert.equal(signalOf(evidenceOf(root).result, 'diff.shape').band, 'unobserved')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a close given no git functions does not crash: each missing read is a note and an unobserved signal', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const { step } = await closeInProcess(root, {}, [{ ok: true, sha }])
+
+    assert.equal(step.exitCode, 0)
+    assert.match(step.summary, HEADLINE)
+    const notes = step.banners.filter(b => b.startsWith('MERGE EVIDENCE UNAVAILABLE: '))
+    assert.ok(notes.length > 0, JSON.stringify(step.banners))
+    assert.equal(signalOf(evidenceOf(root).result, 'diff.shape').band, 'unobserved')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an assessment that throws is a banner, leaves the block absent, writes no file and changes no exit code', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const { step } = await closeInProcess(
+      root,
+      {
+        gatherMergeEvidence: () => {
+          throw new Error('the gather exploded')
+        }
+      },
+      [{ ok: true, sha }]
+    )
+
+    assert.equal(step.exitCode, 0)
+    assert.ok(
+      step.banners.some(b => /^MERGE CONFIDENCE NOT ASSESSED: .*the gather exploded/.test(b)),
+      JSON.stringify(step.banners)
+    )
+    assert.doesNotMatch(step.summary, HAS_VERDICT)
+    assert.equal(existsSync(join(root, EVIDENCE_JSON)), false)
+    assert.equal(receiptOf(root).mergeConfidence, null)
+    assert.ok(outcomeOf(root).observed.mergeVerdict == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an evidence file that cannot be written is a banner, drops the assessment row and changes no exit code', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    // A directory where the file goes: the write fails whatever the uid.
+    mkdirSync(join(root, EVIDENCE_JSON), { recursive: true })
+    const closed = closeAt(root, sha)
+
+    assert.equal(closed.code, 0)
+    assert.ok(
+      closed.step.banners.some(b => b.startsWith('MERGE CONFIDENCE NOT WRITTEN: ')),
+      JSON.stringify(closed.step.banners)
+    )
+    assert.match(closed.step.summary, HEADLINE, 'the assessment was made and is still printed')
+    assert.doesNotMatch(closed.step.summary, /assessment: /)
+    assert.equal(receiptOf(root).mergeConfidence.verdict, 'HUMAN')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a failed terminal append leaves the run record incomplete, the assessment amber on run.integrity, and exit 1', () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    // A regular file where the trajectory directory goes: every append fails.
+    rmSync(join(root, '.claude', 'ship', 'runs'), { recursive: true, force: true })
+    writeFileSync(join(root, '.claude', 'ship', 'runs'), 'not a directory\n')
+    const closed = closeAt(root, sha, { expectExit: 1 })
+
+    assert.equal(closed.step.exitCode, 1, 'the close\'s own exit code, from the failed write')
+    assert.ok(closed.step.banners.some(b => b.startsWith('TRAJECTORY APPEND FAILED: run-complete')))
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.trajectoryComplete, false)
+    const integrity = signalOf(stored.result, 'run.integrity')
+    assert.equal(integrity.band, 'amber')
+    assert.match(integrity.reason, /trajectory is incomplete/)
+    assert.match(closed.step.summary, HEADLINE)
+    assert.match(closed.step.summary, /needs a person:[^\n]*run\.integrity/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- what the close hands the gather (D1, D2, D3, D13, D15) ------------------
+
+/** A gather stub that records how it was called and returns the run record as the whole input. */
+function recordingGather(calls, { notes = [] } = {}) {
+  return (...args) => {
+    calls.push(args)
+    const given = args[1]
+    return {
+      input: {
+        change: { name: given.change, capabilities: [] },
+        changedPaths: given.changedPaths,
+        headSha: given.headSha,
+        run: given.supplied.run
+      },
+      notes
+    }
+  }
+}
+
+test('the close gathers once, against the start commit, with only what this run observed', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    const startSha = headOf(root)
+    strictToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+
+    assert.equal(calls.length, 1, 'one gather, one assessment')
+    const [gatheredRoot, given] = calls[0]
+    assert.equal(realpathSync(gatheredRoot), realpathSync(root))
+    assert.equal(given.change, change)
+    assert.equal(given.base, startSha, 'the base is the commit the run started on')
+    assert.equal(given.headSha, sha)
+    assert.ok(given.changedPaths.includes('README.md'), 'the commit\'s own touched paths')
+    assert.ok(given.supplied.pipeline == null, 'the run is offline: no pipeline input')
+    assert.ok(given.supplied.review && given.supplied.review.dimensions, 'the review this run adjudicated')
+    assert.equal(given.supplied.verify.context, 'final')
+    assert.equal(given.supplied.handoff.ok, true)
+    assert.ok(given.supplied.coverage == null, 'the verdict carries no coverage result, so none is computed')
+    assert.equal(given.supplied.run.halted, false)
+    assert.equal(given.supplied.run.trajectoryComplete, true)
+    assert.equal(given.supplied.run.leftoverTasks, 0)
+    assert.match(step.summary, HEADLINE)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the close supplies no review the run did not adjudicate, whatever is on disk', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    file(root, REVIEW_JSON, { surviving: [], counts: {}, dimensions: { selected: ['language'], ran: ['language'] } })
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+    assert.ok(calls[0][1].supplied.review == null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('tasks left unticked reach the run record the gather is handed', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    writeFileSync(tasksPath, readFileSync(tasksPath, 'utf8').replace('- [x] 1.2', '- [ ] 1.2'))
+    const sha = realCommit(root)
+    const calls = []
+    await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+    assert.equal(calls[0][1].supplied.run.leftoverTasks, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('coverage is computed against the start commit only when the recorded verdict shows it ran', async () => {
+  const cases = [
+    ['a verdict that carries a coverage result', { status: 'measured' }, { input: { configured: true, changedLines: 80, headTotalPct: 90 } }],
+    ['a verdict that carries none', null, { input: { configured: true } }]
+  ]
+  for (const [label, verdictCoverage, answer] of cases) {
+    const { root, change } = shippedRepo()
+    try {
+      const startSha = headOf(root)
+      leanToCommit(root, change)
+      file(root, VERIFY_FINAL_JSON, { ...jsonAt(root, VERIFY_FINAL_JSON), coverage: verdictCoverage })
+      const sha = realCommit(root)
+      const asked = []
+      const calls = []
+      await closeInProcess(
+        root,
+        {
+          gatherMergeEvidence: recordingGather(calls),
+          coverageInput: (...args) => {
+            asked.push(args)
+            return answer
+          }
+        },
+        [{ ok: true, sha }]
+      )
+
+      if (verdictCoverage) {
+        assert.equal(asked.length, 1, label)
+        assert.ok(JSON.stringify(asked[0]).includes(startSha), `${label}: computed against the start commit`)
+        assert.deepEqual(calls[0][1].supplied.coverage, answer.input, label)
+      } else {
+        assert.equal(asked.length, 0, `${label}: this run's report is not read`)
+        assert.ok(calls[0][1].supplied.coverage == null, label)
+      }
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a coverage computation that gives a reason leaves coverage absent and says why', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    file(root, VERIFY_FINAL_JSON, { ...jsonAt(root, VERIFY_FINAL_JSON), coverage: { status: 'measured' } })
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(
+      root,
+      { gatherMergeEvidence: recordingGather(calls), coverageInput: () => ({ reason: 'no coverage baseline exists' }) },
+      [{ ok: true, sha }]
+    )
+    assert.ok(calls[0][1].supplied.coverage == null)
+    assert.ok(
+      step.banners.some(b => /^MERGE EVIDENCE UNAVAILABLE: .*coverage.* — .*no coverage baseline exists/i.test(b)),
+      JSON.stringify(step.banners)
+    )
+    assert.equal(step.exitCode, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a gather note the stub returns reaches the degradation block as MERGE EVIDENCE UNAVAILABLE', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    const calls = []
+    const { step } = await closeInProcess(
+      root,
+      { gatherMergeEvidence: recordingGather(calls, { notes: ['the diff against the start commit — a shallow clone'] }) },
+      [{ ok: true, sha }]
+    )
+    assert.ok(
+      step.banners.includes('MERGE EVIDENCE UNAVAILABLE: the diff against the start commit — a shallow clone'),
+      JSON.stringify(step.banners)
+    )
+    assert.match(step.summary, /MERGE EVIDENCE UNAVAILABLE: the diff against the start commit — a shallow clone/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a terminal append that fails after the assessment reassesses from the same gather, not a second one', async () => {
+  const { root, change } = shippedRepo()
+  try {
+    leanToCommit(root, change)
+    const sha = realCommit(root)
+    rmSync(join(root, '.claude', 'ship', 'runs'), { recursive: true, force: true })
+    writeFileSync(join(root, '.claude', 'ship', 'runs'), 'not a directory\n')
+    const calls = []
+    const { step } = await closeInProcess(root, { gatherMergeEvidence: recordingGather(calls) }, [{ ok: true, sha }])
+
+    assert.equal(step.exitCode, 1)
+    assert.equal(calls.length, 1, 'the late failure does not re-gather')
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.trajectoryComplete, false)
+    assert.equal(signalOf(stored.result, 'run.integrity').band, 'amber')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// =============================================================================
+// A run adjudicates only what this review wrote, and says what it was not given
+// (label-and-harden-the-merge-verdict, design D9, D10, D20, D24)
+//
+// Shapes pinned here, so the red wave and the green wave agree:
+//
+//   - the review step removes `.claude/ship/findings.json` and `verdicts.json`
+//     when it is first emitted, and only then: `manifest.reviewDimensions` is the
+//     marker, so deriving the step again removes nothing (D24).
+//   - `run reviewed` over a findings file that is absent, unparseable or carries
+//     no findings list records the review as not completed, with a note holding
+//     `no findings list`, and goes on to final verification (D10).
+//   - `run remediated` over such a file keeps the last adjudication's surviving
+//     findings, with a note holding `not re-reviewed`; when `review.json` cannot
+//     be read back either, it halts naming both files (D10).
+//   - a size cut of the domain text is one `DOMAIN REVIEW PARTIAL` banner, naming
+//     how many requirements were left out and `maxDomainSpecChars` (D20).
+// =============================================================================
+
+const FINDINGS_FILE = join('.claude', 'ship', 'findings.json')
+const VERDICTS_FILE = join('.claude', 'ship', 'verdicts.json')
+const notesOf = root => manifestOf(root).notes || []
+const hasNote = (root, token) => notesOf(root).some(note => String(note).includes(token))
+
+test('a strict close given a host record reads run.integrity green: every observation was made', () => {
+  const { root, change } = shippedRepo()
+  try {
+    strictToCommit(root, change)
+    const sha = realCommit(root)
+    const closed = step0(root, ['run', 'close'], {
+      results: [{ ok: true, sha }],
+      hostRecords: [hostRecord('commit')]
+    })
+    assert.equal(closed.exitCode, 0)
+    const stored = evidenceOf(root)
+    assert.equal(stored.evidence.run.permissionPrompts, 0)
+    assert.equal(stored.evidence.run.autoModeDenials, 0)
+    const integrity = signalOf(stored.result, 'run.integrity')
+    assert.equal(integrity.band, 'green', integrity.reason)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the review step removes the work files an earlier run left, and deriving the step again removes nothing', () => {
+  const { root, change } = repo()
+  try {
+    // An earlier run's findings and verdicts, holding no blocker.
+    writeReview(root, { dismissed: 1 })
+    const batch = toFirstBatch(root, change, ['--strict'])
+    assert.ok(existsSync(join(root, FINDINGS_FILE)), 'precondition: nothing before the review step clears the work files')
+    assert.ok(existsSync(join(root, VERDICTS_FILE)))
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    assert.equal(review.action, 'review')
+    assert.ok(!existsSync(join(root, FINDINGS_FILE)), 'the earlier findings are gone before the reviewer starts')
+    assert.ok(!existsSync(join(root, VERDICTS_FILE)), 'and so are the earlier verdicts')
+
+    // The reviewer has started writing. The step is derived again, as a driver
+    // that lost it would ask: nothing this review wrote may be removed.
+    writeReview(root, { blockers: 1 })
+    const findings = read(root, FINDINGS_FILE)
+    const verdicts = read(root, VERDICTS_FILE)
+    setManifest(root, { lastThen: null })
+    const again = run(root, ['run', 'next']).step
+    assert.equal(again.action, 'review')
+    assert.equal(read(root, FINDINGS_FILE), findings)
+    assert.equal(read(root, VERDICTS_FILE), verdicts)
+
+    // And what it wrote is what is adjudicated.
+    const round1 = run(root, [...again.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+  } finally {
+    cleanup(root)
+  }
+})
+
+for (const [label, leave] of [
+  ['writes no findings file', () => {}],
+  ['leaves a findings file that is not JSON', root => file(root, FINDINGS_FILE, '{oops')],
+  ['leaves an object with no findings list', root => file(root, FINDINGS_FILE, { summary: 'nothing to report' })],
+  ['leaves an empty object', root => file(root, FINDINGS_FILE, {})]
+]) {
+  test(`a review step that reports ok and ${label} is recorded as not completed, and the run goes on to final verification`, () => {
+    const { root, change } = repo()
+    try {
+      // An earlier run's clean result must not stand in for this review's.
+      writeReview(root, { dismissed: 1 })
+      const review = toTail(root, change, ['--strict'])
+      assert.equal(review.action, 'review')
+      leave(root)
+      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(next.action, 'verify-final', 'a review that did not complete does not stop the run')
+
+      assert.ok(hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+      const record = jsonAt(root, REVIEW_JSON)
+      assert.equal(record.dimensions.completed, false)
+      assert.deepEqual(record.dimensions.ran, [])
+      assert.deepEqual(record.surviving, [], 'adjudicated as with no findings')
+      assert.equal(record.counts.raised, 0, 'nothing of the earlier run was counted')
+      assert.equal(manifestOf(root).reviewDimensions.completed, false)
+    } finally {
+      cleanup(root)
+    }
+  })
+}
+
+test('a findings file holding an empty list is a completed review that found nothing', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    file(root, FINDINGS_FILE, [])
+    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(next.action, 'verify-final')
+    assert.ok(!hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+    assert.ok(!hasNote(root, 'did not complete'), JSON.stringify(notesOf(root)))
+    const record = jsonAt(root, REVIEW_JSON)
+    assert.equal(record.dimensions.completed, true)
+    assert.ok(record.dimensions.ran.length > 0)
+    assert.deepEqual(record.surviving, [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('at close, a review that wrote no findings reads review.ran amber as not completed, never as a review that found nothing', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verified.action, 'verify-final')
+    const handoffStep = run(root, [...verified.then.argv]).step
+    const commit = run(root, [...handoffStep.then.argv], { results: [HANDOFF_OK] }).step
+    assert.equal(commit.action, 'commit')
+    const sha = realCommit(root)
+    closeAt(root, sha)
+
+    const { result } = evidenceOf(root)
+    const ran = signalOf(result, 'review.ran')
+    assert.equal(ran.band, 'amber')
+    assert.match(ran.reason, /did not complete/)
+    assert.notEqual(result.verdict, 'MERGE')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a remediation round that leaves no findings list keeps the blocker, records the round as not re-reviewed, and the run halts at its verdict', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { blockers: 1 })
+    let step = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    const survivors = jsonAt(root, REVIEW_JSON).surviving
+    assert.equal(survivors.length, 1, 'precondition: the review left one surviving blocker')
+
+    for (let round = 1; round <= LIMITS.remediationRounds; round++) {
+      assert.equal(step.action, 'remediate', `round ${round}`)
+      assert.equal(step.round, round)
+      // The fixer leaves the findings file without a list in it.
+      file(root, FINDINGS_FILE, { fixed: true })
+      step = run(root, [...step.then.argv], { results: [{ ok: true }] }).step
+      assert.ok(hasNote(root, 'not re-reviewed'), JSON.stringify(notesOf(root)))
+      assert.deepEqual(jsonAt(root, REVIEW_JSON).surviving, survivors, 'the last adjudication is left as it is')
+      assert.equal(manifestOf(root).remediation.blockersRemaining, 1, `round ${round} did not clear the blocker`)
+    }
+
+    assert.equal(step.action, 'verdict')
+    const halted = run(root, [...step.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(halted.action, 'halt', 'an unresolved blocker halts the run: it does not commit')
+    assert.match(halted.reason, /blocker/)
+    assert.deepEqual(halted.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+  } finally {
+    cleanup(root)
+  }
+})
+
+for (const [label, spoil] of [
+  ['absent', root => rmSync(join(root, REVIEW_JSON))],
+  ['not JSON', root => file(root, REVIEW_JSON, '{oops')],
+  ['without its surviving list', root => file(root, REVIEW_JSON, { counts: { raised: 1, surviving: 1 } })]
+]) {
+  test(`a round with no findings list and a last adjudication that is ${label} halts naming both files`, () => {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--strict'])
+      writeReview(root, { blockers: 1 })
+      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(round1.action, 'remediate')
+
+      file(root, FINDINGS_FILE, {})
+      spoil(root)
+      const halted = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+      assert.equal(halted.action, 'halt')
+      assert.ok(halted.reason.includes('findings.json') && halted.reason.includes('review.json'), halted.reason)
+      assert.deepEqual(halted.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+    } finally {
+      cleanup(root)
+    }
+  })
+}
+
+// --- a size cut of the domain reviewer's text (D20) ---------------------------
+
+/** A living spec whose requirements cannot all fit the bound, whatever the bound is. */
+function oversizedSpec() {
+  const sentence = 'The guide SHALL keep this sentence as it is written. '
+  const body = sentence.repeat(Math.ceil(LIMITS.maxDomainSpecChars / 2 / sentence.length))
+  const extra = ['one', 'two', 'three', 'four']
+    .map(
+      n =>
+        `\n### Requirement: The guide SHALL carry filler ${n}\n\n${body}\n\n` +
+        `#### Scenario: Happy path — filler ${n} is kept\n\n- **GIVEN** the guide\n- **WHEN** it is read\n- **THEN** filler ${n} is there\n`
+    )
+    .join('')
+  return livingSpec(ALPHA_COMMITTED, extra)
+}
+
+function oversizedDomainRepo({ graph = true, declared = false } = {}) {
+  const r = repo()
+  file(r.root, LIVING_SPEC_PATH, oversizedSpec())
+  if (graph) file(r.root, GRAPH_PATH, graphLinking('README.md'))
+  if (declared) file(r.root, `openspec/changes/${r.change}/specs/docs/guide/spec.md`, DELTA_SPEC)
+  commitAll(r.root, 'fixtures')
+  return r
+}
+
+/** The one banner a cut raises, checked for what it must hold and must not. */
+function cutBannerOf(root) {
+  const omitted = manifestOf(root).reviewDimensions.domain.omitted
+  assert.ok(omitted.length > 0, 'precondition: the bound left requirements out')
+  const banners = bannersWith(root, 'DOMAIN REVIEW PARTIAL')
+  assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
+  assert.ok(banners[0].includes(`${omitted.length} requirement`), banners[0])
+  assert.ok(banners[0].includes('maxDomainSpecChars'), banners[0])
+  assert.ok(!banners[0].includes(String(LIMITS.maxDomainSpecChars)), 'the limit is cited by its key, never restated')
+  return banners[0]
+}
+
+test('a size cut of the domain text raises one DOMAIN REVIEW PARTIAL line, naming the count and the limit by its key, once in the close summary after two rounds', () => {
+  const { root, change } = oversizedDomainRepo()
+  try {
+    const review = toReview(root, change, ['--review'])
+    const banner = cutBannerOf(root)
+    assert.doesNotMatch(banner, /not mapped/, 'a graph was read, so the selection is whole')
+    assert.ok(review.banners.includes(banner))
+
+    // Two rounds: the review, then a fixing round that reviews again.
+    writeReview(root, { blockers: 1 })
+    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(round1.action, 'remediate')
+    writeReview(root, {})
+    run(root, [...round1.then.argv], { results: [{ ok: true }] })
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [banner])
+
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, 'DOMAIN REVIEW PARTIAL'), 1, closed.summary)
+    assert.ok(closed.summary.includes(banner))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a domain text that fits the bound raises no DOMAIN REVIEW PARTIAL banner', () => {
+  const { root, change } = domainRepo()
+  try {
+    toReview(root, change, ['--review'])
+    assert.deepEqual(manifestOf(root).reviewDimensions.domain.omitted, [])
+    assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('no graph and a cut together are still one DOMAIN REVIEW PARTIAL line, and it states both', () => {
+  const { root, change } = oversizedDomainRepo({ graph: false, declared: true })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const banner = cutBannerOf(root)
+    assert.match(banner, /not mapped/, 'the partial selection is stated')
+    assert.ok(review.banners.includes(banner))
+
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(countOf(closed.summary, 'DOMAIN REVIEW PARTIAL'), 1, closed.summary)
   } finally {
     cleanup(root)
   }

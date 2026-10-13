@@ -1,0 +1,35 @@
+{
+  "headRefOid": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "test (18)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/9"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "test (20)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/9"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "validate",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "workflowName": "CI",
+      "startedAt": "2026-10-12T09:00:00Z",
+      "completedAt": "2026-10-12T09:04:00Z",
+      "detailsUrl": "https://github.com/acme/widgets/actions/runs/1/job/8"
+    }
+  ]
+}

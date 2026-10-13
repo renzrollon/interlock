@@ -708,6 +708,76 @@ test('no indicator carries a verdict word', () => {
   }
 })
 
+// --- the report does not read the merge verdict (spec: report/non-gating) ----
+//
+// The verdict is assessed at the close and read in the close summary and by
+// `interlock merge-confidence`. The receipt block and the outcome record carry
+// it for a reader of the corpus, and the report is barred from verdict words, so
+// it must read neither. Asserted as a difference: the same corpus with and
+// without the block yields the same report, and then as an absence in the
+// output, so a future indicator built from the block fails here by name.
+
+const MERGE_BLOCK = {
+  verdict: 'HUMAN',
+  score: 72,
+  worstBand: 'amber',
+  counts: { gating: 17, clean: 14, green: 14, amber: 2, red: 0, unobserved: 1, flagged: 1 },
+  driving: ['risk.class', 'ci.pipeline'],
+  flags: [{ id: 'verify.e2e', flag: 'no-e2e' }]
+}
+
+function mergeCorpus(dir, { withBlock }) {
+  const receipt = withBlock ? { ...RECEIPT, mergeConfidence: MERGE_BLOCK } : { ...RECEIPT }
+  trajectory(dir, 'run-a', [{ type: 'run-start' }, receipt, { type: 'run-complete' }])
+  trajectory(dir, 'run-b', [{ type: 'run-start' }, { ...receipt, halted: true, remediationRounds: 2 }])
+  outcomes(dir, [
+    {
+      schema: 'interlock.outcome/2',
+      ts: '2026-08-21T00:00:00.000Z',
+      change: 'add-widget',
+      mode: 'checkpoint',
+      observed: { receipt: true, ok: true, mergeVerdict: withBlock ? 'HUMAN' : null }
+    }
+  ])
+}
+
+test('a corpus whose receipts carry the merge block yields the same indicators as one without it', () => {
+  const dir = root()
+  try {
+    mergeCorpus(dir, { withBlock: false })
+    const without = buildReport(dir)
+    const withoutText = formatReport(without)
+    mergeCorpus(dir, { withBlock: true })
+    const withBlock = buildReport(dir)
+    assert.deepEqual(withBlock.indicators, without.indicators, 'every indicator and denominator is the same')
+    assert.deepEqual(withBlock, without, 'and nothing else in the payload moved either')
+    assert.equal(formatReport(withBlock), withoutText)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the report text and payload carry no merge verdict or score', () => {
+  const dir = root()
+  try {
+    mergeCorpus(dir, { withBlock: true })
+    const report = buildReport(dir)
+    const text = formatReport(report)
+    const payload = JSON.stringify(report)
+    const html = renderReportHtml(report)
+    for (const [surface, out] of [['text', text], ['payload', payload], ['html', html]]) {
+      assert.doesNotMatch(out, /mergeConfidence|mergeVerdict|MERGE CONFIDENCE|worstBand/, `${surface} names the block`)
+      assert.doesNotMatch(out, /\bHUMAN\b/, `${surface} carries a merge verdict word`)
+      assert.doesNotMatch(out, /driving|risk\.class|no-e2e/, `${surface} carries the block's contents`)
+    }
+    const cli = spawnSync(process.execPath, [BIN, 'report', '--root', dir, '--json'], { encoding: 'utf8' })
+    assert.equal(cli.status, 0)
+    assert.doesNotMatch(cli.stdout, /mergeConfidence|mergeVerdict|\bHUMAN\b|worstBand/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the machine-readable payload declares its schema and that it gates nothing', () => {
   const dir = root()
   try {

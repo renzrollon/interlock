@@ -676,6 +676,69 @@ test('only the unit suite can halt the final verdict', () => {
   assert.deepEqual(VERIFY_CONTEXTS.final.haltingKinds, ['unit'])
 })
 
+// --- the verdict carries the type check's own result (spec: verify) ---------
+//
+// A passing type check used to leave no trace in the verdict, and a failed one
+// at the final gate was visible only as a banner string, so a reader could not
+// tell "passed" from "planned and never reported". The merge verdict reads this
+// field rather than parsing banners. It is additive: no halting set moves.
+
+test('a passing type check is recorded on the verdict', () => {
+  const verdict = judgeVerification(typecheckPlan(), [
+    { kind: 'typecheck', exitCode: 0 },
+    { kind: 'unit', exitCode: 0, failed: 0 }
+  ])
+  assert.deepEqual(verdict.typecheck, { ran: true, exitCode: 0, passed: true })
+})
+
+test('a type check that failed at the final gate is recorded with its exit code, and still neither halts nor loses its banner', () => {
+  const verdict = judgeVerification(typecheckPlan(), [
+    { kind: 'typecheck', exitCode: 2 },
+    { kind: 'unit', exitCode: 0, failed: 0 }
+  ], { context: 'final' })
+  assert.deepEqual(verdict.typecheck, { ran: true, exitCode: 2, passed: false })
+  assert.equal(verdict.halt, false)
+  assert.ok(verdict.banners.includes(BANNERS.typecheckFailed('exit 2')))
+  assert.ok(verdict.banners.some(b => b.startsWith('TYPECHECK FAILED (non-blocking at the final gate)')))
+})
+
+test('a type check that could not run is recorded as not run, with no exit code', () => {
+  const verdict = judgeVerification(typecheckPlan(), [
+    { kind: 'typecheck', ran: false, reason: 'tsc is not installed' },
+    { kind: 'unit', exitCode: 0, failed: 0 }
+  ])
+  assert.deepEqual(verdict.typecheck, { ran: false, exitCode: null, passed: false })
+})
+
+test('the type-check field is present in every context, and a failed one still halts between waves', () => {
+  const verdict = judgeVerification(typecheckPlan(), [
+    { kind: 'typecheck', exitCode: 2 },
+    { kind: 'unit', exitCode: 0, failed: 0 }
+  ], { context: 'inter-wave' })
+  assert.deepEqual(verdict.typecheck, { ran: true, exitCode: 2, passed: false })
+  assert.equal(verdict.halt, true)
+})
+
+test('no type-check result reported leaves the field present and empty, and every other key as it was', () => {
+  const verdict = judgeVerification(typecheckPlan(), [{ kind: 'unit', exitCode: 0, failed: 0 }])
+  assert.ok(Object.prototype.hasOwnProperty.call(verdict, 'typecheck'), 'the field is present')
+  assert.equal(verdict.typecheck, null)
+  assert.deepEqual(Object.keys(verdict).sort(), [
+    'banners',
+    'context',
+    'coverage',
+    'e2e',
+    'halt',
+    'haltingKinds',
+    'reason',
+    'signals',
+    'skipped',
+    'typecheck',
+    'unit'
+  ])
+  assert.equal(verdict.halt, false)
+})
+
 test('the verdict repeats every skip as a printable banner', () => {
   const plan = planVerification(null, { typecheckCommand: 'tsc --noEmit' })
   const verdict = judgeVerification(plan, [{ kind: 'typecheck', exitCode: 0 }])

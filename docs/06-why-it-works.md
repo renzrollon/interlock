@@ -240,7 +240,7 @@ Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `
 
 ## 7. Review: making dismissal expensive
 
-This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — four to six dimensions, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
+This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — four to seven dimensions, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
 
 <p align="center">
   <img src="./assets/strict-complete.png" alt="Example ship --strict summary: nine findings raised, four dismissed by skeptics, two dropped as too weak, three surviving; three fixed; six of six spec scenarios confirmed; a commit." width="800">
@@ -250,7 +250,11 @@ The tail is **emitted by the CLI**, like every other step. `interlock run` decid
 
 ### 7.1 Why adversarial review at all
 
-An unverified review reports everything it notices, so readers learn to skim, and the skimmed review catches nothing. Fan out six dimensions in parallel — language, architecture, QA, technical-lead always; devops when the diff touches deploy or config; security when it touches auth, input handling or data exposure — then put **two independent skeptics on every blocker and warning**. Suggestions pass unverified; they are cheap to ignore and not worth the tokens.
+An unverified review reports everything it notices, so readers learn to skim, and the skimmed review catches nothing. Fan out up to seven dimensions in parallel — language, architecture, QA, technical-lead always; devops when the diff touches deploy or config; security when it touches auth, input handling or data exposure; domain when the change touches a capability whose living requirements it can be judged against — then put **two independent skeptics on every blocker and warning**. Suggestions pass unverified; they are cheap to ignore and not worth the tokens.
+
+The seventh dimension exists because none of the other six is handed what the repository already promised. A diff that breaks a `SHALL NOT` in `openspec/specs/` is caught by a language, architecture or QA reviewer only if one happens to remember it. So the `domain` reviewer is handed the living requirements in force for the capabilities the change touches, and the rule that picks them is code, not a judgement: a capability is selected when a reliable graph edge links a changed file to its living spec, or when the change's own delta specs modify it. The text is whole requirements, the change's superseded ones removed, bounded by a published cap at a requirement boundary, and quoted as data that cannot override the rubric. A bound that decided how much a model reads is a threshold, and thresholds live in the CLI.
+
+The same discipline covers what the reviewer says back. A `domain` blocker is a claim that a requirement in force is contradicted, so it carries a `requirement` citation, and the CLI checks the citation's shape against the spec at the base: a path under `openspec/specs/`, ending in `spec.md`, with a heading that spec has. A citation that fails the check is reported as an anomaly and the finding is still adjudicated, because dropping findings to enforce a rubric would delete real defects with the fabricated ones. A review that could not run the dimension, for want of a graph or of room, says so with a banner and a `domain-skipped` flag the merge verdict reads. It never goes quiet.
 
 ### 7.2 The asymmetry that governs everything
 
@@ -347,7 +351,7 @@ Design notes worth stealing:
 - **The orphan count always ships with its denominator.** "2 files have no spec" is alarming; "2 of 6, in a repo where 34% of source files have one" is informative. Orphan detection skips entirely when no spec links to any file — every file would be unowned, which is the loudest possible way to say nothing.
 - **Absence is never reported as cleanliness.** No graph, no living specs, no changed source files: each is a distinct message, not a pass.
 
-`interlock conformance` is the other half — it enumerates the scenarios a change's delta specs promised so each can be checked against what was built. It emits questions, never verdicts.
+`interlock conformance` is the other half — it enumerates the scenarios a change's delta specs promised so each can be checked against what was built. It emits questions, never verdicts. With `--living` it also lists the living requirements already in force for the capabilities the change touches, chosen and bounded as the `domain` reviewer's are, and the ship run's handoff step asks about them under `--conformance` too. Still questions: the command exits 0 in every case and blocks nothing; an unconfirmed requirement costs something only in the merge verdict, where it holds the change at `HUMAN`.
 
 **Neither blocks.** Every other gating subcommand exits non-zero when it blocks; these two never do. [The Spec Growth Engine](https://arxiv.org/abs/2606.27045) can block a merge on intent/evidence disagreement because its specs are machine-readable contracts with declared dependency edges. `implements_spec` links are regex path-mentions marked `INFERRED`. A blocking gate on that basis would be wrong often enough to be switched off, and a gate everyone disables protects nothing.
 

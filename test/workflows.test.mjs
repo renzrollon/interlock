@@ -4416,6 +4416,19 @@ test('docs/14 exists and is reachable from the entry document', () => {
   assert.match(readme, /docs\/14-evals\.md/, 'the entry document must link the page')
 })
 
+// --- docs/15: merge confidence, reachable ------------------------------------
+
+const MERGE_CONFIDENCE_DOC = join(ROOT, 'docs', '15-merge-confidence.md')
+
+test('docs/15 exists and is reachable from the entry document', () => {
+  // A failure, never a skip, for the reason docs/14's pin gives: an absent page
+  // states nothing to anyone and a skipped test would report the same green.
+  assert.ok(existsSync(MERGE_CONFIDENCE_DOC), 'docs/15-merge-confidence.md must exist — the baseline recipe lives nowhere else')
+
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.match(readme, /docs\/15-merge-confidence\.md/, 'the entry document must link the page')
+})
+
 test('docs/14 states what is checked, by which command, and separates the preflight', () => {
   // Read with whitespace and emphasis flattened: the pin is on the claim, and a
   // line break or a pair of asterisks moving is exactly the reword it must survive.

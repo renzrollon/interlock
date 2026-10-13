@@ -1003,3 +1003,179 @@ test('the shared test profile ties timeout_ms to the inter-wave budget in one ro
   )
   assert.ok(together, 'shared/TEST-PROFILE.md must carry timeout_ms and inter-wave in the same row or paragraph')
 })
+
+test('the review-code skill lists the seventh dimension, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
+  // Tokens, not sentences: each is what the skill must still say after a reword.
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+  for (const token of [
+    'interlock domain-context',
+    'dimensions/domain.md',
+    'DOMAIN REVIEW SKIPPED',
+    'list the seven'
+  ]) {
+    assert.ok(skill.includes(token), `skills/review-code/SKILL.md must carry ${token}`)
+  }
+  assert.ok(!skill.includes('list the six'), 'skills/review-code/SKILL.md still lists six dimensions')
+  assert.match(skill, /interlock review-policy [^\n]*--base/, 'the review-policy line must pass --base')
+  assert.match(skill, /interlock review [^\n]*--base/, 'the review line must pass --base')
+  assert.match(skill, /interlock domain-context [^\n]*--base/, 'the domain-context line must pass --base')
+  assert.ok(
+    skill.indexOf('interlock domain-context') < skill.indexOf('Spawn one agent per dimension'),
+    'domain-context must run before the fan-out'
+  )
+
+  // `requirement` in the emit shape: inside the json fence that defines it.
+  const emit = skill.match(/Every dimension agent returns findings in this shape:\s*```json([\s\S]*?)```/)
+  assert.ok(emit, 'the review-code emit shape fence was not found')
+  assert.ok(emit[1].includes('"requirement"'), 'the emit shape must carry the optional requirement field')
+
+  // The brief the table names exists, and a name the table lists resolves to a file.
+  assert.ok(existsSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md')))
+})
+
+test('the domain rubric asks for a requirement citation, names the prohibition keyword, and refuses capabilities it was not given', () => {
+  const rubric = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md'), 'utf8')
+  for (const token of ['requirement', 'SHALL NOT', 'were not given', 'blocker', 'warning']) {
+    assert.ok(rubric.includes(token), `skills/review-code/dimensions/domain.md must carry ${token}`)
+  }
+})
+
+// --- the mr skill delivers the CLI's verdict (spec: review/merge-request-delivery) ---
+//
+// Tokens and anchored command lines, never sentences. Each pin is something the
+// skill must still carry after a reword, and the check is a function so the
+// suite can show it failing on a doctored copy: a pin that cannot fail holds
+// nothing.
+
+/** Every way a copy of skills/mr/SKILL.md falls short of the delivery pins. */
+function mrSkillProblems(text) {
+  const problems = []
+  const lines = text.split('\n')
+  const lineAt = (pattern, from = 0) => {
+    for (let i = from; i < lines.length; i++) if (pattern.test(lines[i])) return i
+    return -1
+  }
+  const need = (pattern, what, from = 0) => {
+    const at = lineAt(pattern, from)
+    if (at === -1) problems.push(`no line ${what}`)
+    return at
+  }
+
+  // The pipeline input comes from the platform's own document, piped in.
+  need(/^gh pr view [^\n]*headRefOid,statusCheckRollup[^\n]*\| interlock pipeline --github -/, 'pipes `gh pr view … headRefOid,statusCheckRollup` into `interlock pipeline --github -`')
+  const gitlabMr = need(/\| interlock pipeline --gitlab-mr -/, 'pipes the merge request document into `interlock pipeline --gitlab-mr -`')
+  if (gitlabMr !== -1) {
+    need(/\| interlock pipeline --gitlab - [^\n]*--mr/, 'follows `--gitlab-mr` with `interlock pipeline --gitlab - … --mr`', gitlabMr + 1)
+  }
+
+  // The verdict line, then the block line, in that order.
+  const verdictLine = need(
+    /^interlock merge-confidence [^\n]*--base[^\n]*--pipeline[^\n]*--json/,
+    'runs `interlock merge-confidence` with `--base`, `--pipeline` and `--json`'
+  )
+  const blockLine = need(
+    /^interlock merge-confidence [^\n]*--markdown/,
+    'runs `interlock merge-confidence … --markdown` after the verdict line',
+    verdictLine === -1 ? 0 : verdictLine + 1
+  )
+
+  // A stopped assessment still takes the earlier labels off: the names come from
+  // the command alone, on a line after the first removal the skill shows.
+  const firstRemoval = lineAt(/--remove-label/)
+  need(
+    /^interlock merge-confidence --label-names\b/,
+    'runs `interlock merge-confidence --label-names` after the first --remove-label, for an assessment that stopped',
+    firstRemoval === -1 ? 0 : firstRemoval + 1
+  )
+
+  for (const token of [
+    '--run .claude/ship/merge-confidence.json',
+    '--required',
+    '--exclude',
+    '--gate-check',
+    '--confidence-comment',
+    '## Merge confidence',
+    '--remove-label',
+    '--add-label',
+    '--unlabel',
+    'gh label create',
+    'BLOCK',
+    '`verdict`',
+    '`score`',
+    '`driving`',
+    '`flags`',
+    '`labels`',
+    '`head`',
+    'labels.verdictNames',
+    'labels.scorePrefix',
+    'stops the assessment',
+    'never merges'
+  ]) {
+    if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+
+  // The platform's head is read again between the block and the first label.
+  const firstLabel = lineAt(/--add-label/)
+  const reread = blockLine === -1 ? -1 : lineAt(/headRefOid/, blockLine + 1)
+  if (reread === -1 || firstLabel === -1 || reread > firstLabel) {
+    problems.push('no second read of headRefOid after the --markdown line and before the first --add-label')
+  }
+
+  // Pushing is what clears a pipeline input that describes another commit.
+  const paragraphs = text.split(/\n\s*\n/)
+  if (!paragraphs.some(p => p.includes('another commit') && /\bpush\b/.test(p))) {
+    problems.push('no paragraph tells the reader to push when the pipeline describes another commit')
+  }
+
+  // The skill states no confidence of its own and carries no label name.
+  for (const banned of ['confidence level', 'interlock/merge', 'interlock/human-review', 'interlock/blocked', 'interlock/score-']) {
+    if (text.includes(banned)) problems.push(`carries ${banned}`)
+  }
+  return problems
+}
+
+const mrSkill = () => readFileSync(join(SKILLS_DIR, 'mr', 'SKILL.md'), 'utf8')
+
+test('the mr skill obtains the verdict, the block and the labels from the CLI, and satisfies every delivery pin', () => {
+  assert.deepEqual(mrSkillProblems(mrSkill()), [])
+  const fm = parseFrontmatter(mrSkill())
+  assert.equal(fm.values['disable-model-invocation'], 'true', 'mr applies labels on a platform: a person invokes it')
+  for (const flag of ['--confidence-comment', '--gate-check']) {
+    assert.ok(fm.values['argument-hint'].includes(flag), `argument-hint must carry ${flag}`)
+  }
+})
+
+test('the delivery pins fail on a doctored copy, naming what was dropped', () => {
+  const shipped = mrSkill()
+  const problemsOf = edit => mrSkillProblems(edit(shipped))
+
+  // A self-assessed confidence, in a sentence.
+  const selfAssessed = problemsOf(t => `${t}\nState your confidence level honestly.\n`)
+  assert.ok(selfAssessed.some(p => p.includes('confidence level')), selfAssessed.join(' | '))
+
+  // `--json` dropped from the verdict line is not satisfied by the words appearing in prose.
+  const noJson = problemsOf(t =>
+    t.replace(/^(interlock merge-confidence [^\n]*--pipeline[^\n]*?) --json([^\n]*)$/m, '$1$2') + '\nPass --json to read it.\n'
+  )
+  assert.ok(noJson.some(p => p.includes('--json')), noJson.join(' | '))
+
+  // A label name written into the skill.
+  const named = problemsOf(t => `${t}\nApply interlock/merge when the verdict allows.\n`)
+  assert.ok(named.some(p => p.includes('interlock/merge')), named.join(' | '))
+
+  // The re-read of the platform's head removed.
+  const lines = shipped.split('\n')
+  const block = lines.findIndex(l => /^interlock merge-confidence [^\n]*--markdown/.test(l))
+  const noReread = mrSkillProblems(lines.filter((l, i) => !(i > block && l.includes('headRefOid'))).join('\n'))
+  assert.ok(noReread.some(p => p.includes('headRefOid')), noReread.join(' | '))
+
+  // The stopped-assessment removal dropped: a mention in prose is not the command line.
+  const noNames = problemsOf(t =>
+    t.replace(/^interlock merge-confidence --label-names[^\n]*$/m, 'Ask the CLI with --label-names.')
+  )
+  assert.ok(noNames.some(p => p.includes('--label-names')), noNames.join(' | '))
+
+  // A prose mention of the pipeline command is not a command line.
+  const proseOnly = problemsOf(t => t.replace(/^gh pr view [^\n]*\| interlock pipeline --github -[^\n]*$/m, 'Run gh pr view and interlock pipeline.'))
+  assert.ok(proseOnly.some(p => p.includes('--github')), proseOnly.join(' | '))
+})

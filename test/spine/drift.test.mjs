@@ -19,6 +19,9 @@ import {
   detectUnarchived,
   formatDrift
 } from '../../lib/drift.mjs'
+// New exports are reached through the namespace so a missing one fails its own
+// tests and leaves the existing ones above running.
+import * as driftModule from '../../lib/drift.mjs'
 
 function repo() {
   return mkdtempSync(join(tmpdir(), 'interlock-drift-'))
@@ -427,5 +430,123 @@ test('hasFindings is true on a broken reference alone', () => {
   graph(root, [specLink('openspec/specs/auth/spec.md', 'lib/auth.ts')])
   const report = analyzeDrift(root, { exists: () => false, lastCommit: () => null })
   assert.equal(report.hasFindings, true)
+  rmSync(root, { recursive: true, force: true })
+})
+
+// --- the reliable-edge reader, shared with domain selection and the spec audit --
+
+/** One edge of every kind `specToFiles` must keep or drop, in a known order. */
+function mixedLinks() {
+  return [
+    specLink('openspec/specs/a/spec.md', 'lib/one.mjs'), // kept
+    specLink('openspec/specs/a/spec.md', 'lib/guess.mjs', 0.5), // symbol guess: dropped
+    specLink('openspec/changes/x/specs/a/spec.md', 'lib/two.mjs'), // in-flight change: dropped
+    { ...specLink('openspec/specs/b/spec.md', 'lib/three.mjs'), relation: 'mentions' }, // wrong relation: dropped
+    { ...specLink('openspec/specs/b/spec.md', 'lib/four.mjs'), target: 'symbol:Four' }, // not a file: dropped
+    { ...specLink('openspec/specs/b/spec.md', 'x'), target: 'file:' }, // empty file: dropped
+    specLink('openspec/specs/b/spec.md', 'lib/five.mjs'), // kept
+    { relation: 'implements_spec', weight: 1 } // malformed: dropped
+  ]
+}
+
+test('livingSpecEdges keeps weight-1 implements_spec edges from living specs to files, in order', () => {
+  const links = mixedLinks()
+  const edges = driftModule.livingSpecEdges({ links })
+  assert.deepEqual(edges, [links[0], links[6]])
+})
+
+test('livingSpecEdges returns the links themselves, not copies', () => {
+  const links = mixedLinks()
+  const [first] = driftModule.livingSpecEdges({ links })
+  assert.equal(first, links[0])
+})
+
+test('livingSpecEdges is empty for a graph with no links, never a throw', () => {
+  assert.deepEqual(driftModule.livingSpecEdges({ links: [] }), [])
+  assert.deepEqual(driftModule.livingSpecEdges({ links: null }), [])
+  assert.deepEqual(driftModule.livingSpecEdges(null), [])
+  assert.deepEqual(driftModule.livingSpecEdges({}), [])
+})
+
+test('livingSpecEdges returns exactly the edges detectStaleSpecs checks', () => {
+  const root = repo()
+  const links = mixedLinks()
+  graph(root, links)
+  // Every cited file is reported missing, so `broken` lists each edge the
+  // staleness check read — and it must be the same set the shared reader names.
+  const report = detectStaleSpecs(root, { lastCommit: () => null, exists: () => false })
+  const fromStale = report.broken.map(b => `${b.spec}|${b.file}`).sort()
+  const fromReader = driftModule
+    .livingSpecEdges({ links })
+    .map(l => `${l.source_file}|${l.target.slice('file:'.length)}`)
+    .sort()
+  assert.deepEqual(fromStale, fromReader)
+  assert.equal(fromReader.length, 2)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('detectOrphans and detectStaleSpecs behave as before over the shared reader', () => {
+  const root = repo()
+  graph(root, mixedLinks(), { nodes: ['lib/one.mjs', 'lib/five.mjs', 'lib/other.mjs'].map(fileNode) })
+  const stale = detectStaleSpecs(root, { lastCommit: () => null, exists: path => path === 'lib/one.mjs' })
+  assert.deepEqual(stale.broken, [{ spec: 'openspec/specs/b/spec.md', file: 'lib/five.mjs' }])
+  assert.equal(stale.indexed, 2)
+  const orphans = detectOrphans(root, ['lib/one.mjs', 'lib/other.mjs'])
+  assert.deepEqual(orphans.orphans, ['lib/other.mjs'])
+  rmSync(root, { recursive: true, force: true })
+})
+
+// --- readGraphAt -------------------------------------------------------------
+
+test('readGraphAt reads a graph at the path it is given', () => {
+  const root = repo()
+  const at = join(root, 'elsewhere', 'graph.json')
+  mkdirSync(join(root, 'elsewhere'), { recursive: true })
+  const links = [specLink('openspec/specs/a/spec.md', 'lib/one.mjs')]
+  writeFileSync(
+    at,
+    JSON.stringify({ graph: { built_at: '2026-02-03T04:05:06Z' }, nodes: [fileNode('lib/one.mjs')], links })
+  )
+  const read = driftModule.readGraphAt(at)
+  assert.deepEqual(read.links, links)
+  assert.deepEqual(read.nodes, [fileNode('lib/one.mjs')])
+  assert.equal(read.builtAt, '2026-02-03T04:05:06Z')
+  assert.equal(read.reason, null)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('readGraphAt feeds livingSpecEdges directly', () => {
+  const root = repo()
+  const at = join(root, 'g.json')
+  writeFileSync(at, JSON.stringify({ nodes: [], links: mixedLinks() }))
+  assert.equal(driftModule.livingSpecEdges(driftModule.readGraphAt(at)).length, 2)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('readGraphAt says why a graph is missing, with no links rather than empty ones', () => {
+  const root = repo()
+  const read = driftModule.readGraphAt(join(root, 'nope', 'graph.json'))
+  assert.equal(read.links, null)
+  assert.match(read.reason, /no graph/i)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('readGraphAt says why an unreadable graph is unreadable', () => {
+  const root = repo()
+  const at = join(root, 'graph.json')
+  writeFileSync(at, '{ not json')
+  const read = driftModule.readGraphAt(at)
+  assert.equal(read.links, null)
+  assert.match(read.reason, /could not be read/)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('readGraphAt says so when the graph has no links array', () => {
+  const root = repo()
+  const at = join(root, 'graph.json')
+  writeFileSync(at, JSON.stringify({ nodes: [] }))
+  const read = driftModule.readGraphAt(at)
+  assert.equal(read.links, null)
+  assert.match(read.reason, /no links array/)
   rmSync(root, { recursive: true, force: true })
 })

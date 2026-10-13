@@ -1,0 +1,11 @@
+diff --git a/lib/a.mjs b/lib/a.mjs
+index 1111111..2222222 100644
+--- a/lib/a.mjs
++++ b/lib/a.mjs
+@@ -9,0 +10,6 @@ export function a() {
++// a comment line the report does not instrument
++const one = 1
++const two = 2
++const three = 3
++const four = 4
++// another comment line

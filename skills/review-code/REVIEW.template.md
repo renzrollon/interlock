@@ -21,6 +21,20 @@ owner: <name or role, e.g. "Priya (platform)">
       is never asked to honor it, because a path exclusion a model can ignore is
       not an exclusion.
 
+    - The `## Always Human Review` path list is ENFORCED by the merge verdict
+      (`interlock merge-confidence --base <ref>`): a change touching a listed
+      path can never read as ready to merge without a person. It is not a review
+      input; no reviewer is told about it.
+
+    - Both path lists are read from the BASE ref when `--base` is given, never
+      from the working copy being judged, so a change cannot edit the list it is
+      held to. The prose is read from the working copy.
+
+    - The two path-list sections at the end are shipped EMPTY: their guidance
+      and examples sit inside single-line HTML comments, which the parser
+      skips, so a copied template parses with no problem. Add real entries as
+      `- path` list items beneath the comments, one per line.
+
   A malformed file is reported (in `interlock review` output and via
   `interlock review-policy`) and the run proceeds under default policy — a typo
   never silently changes or blocks a review. Unknown `##` sections are ignored.
@@ -40,10 +54,14 @@ third-party and are reviewed upstream, not here."
 
 ## Do Not Report
 
-Repo-relative paths (files or directories) that are out of review scope.
-Findings under these paths are dropped by the CLI before the quality band is
-applied. Matching is on the canonical path and is case-sensitive, mirroring the
-filesystem — `dist`, `./dist`, and `dist/` are the same rule; `DIST` is not.
+<!-- Repo-relative paths (files or directories) that are out of review scope. -->
+<!-- Findings under these paths are dropped by the CLI before the quality band is applied. -->
+<!-- Matching is on the canonical path and is case-sensitive, mirroring the filesystem: `dist`, `./dist`, and `dist/` are the same rule; `DIST` is not. -->
+<!-- Example entries, one per line, as list items: dist/ and vendor/ -->
 
-- dist/
-- vendor/
+## Always Human Review
+
+<!-- Repo-relative paths (files or directories) where a change must reach a person before it merges. -->
+<!-- The merge verdict reads this list and marks any change under a listed path as needing a human. It never changes which findings survive review. -->
+<!-- Matching is on the canonical path, as for Do Not Report. Use it for what an unreviewed mistake costs most: migrations, auth, release workflows, this file. -->
+<!-- Example entries, one per line, as list items: migrations/ and .github/workflows/ -->

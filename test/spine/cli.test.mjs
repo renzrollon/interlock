@@ -16,7 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS } from '../../lib/limits.mjs'
+import { LIMITS, MERGE_BANDS } from '../../lib/limits.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
 
@@ -220,7 +220,12 @@ test('USAGE documents every subcommand this file exercises', () => {
     'interlock wave-state record-verify',
     'interlock wave-state replan',
     'interlock tasks tick',
-    'interlock tasks coverage'
+    'interlock tasks coverage',
+    'interlock merge-confidence',
+    'interlock verify baseline',
+    'interlock verify coverage',
+    'interlock domain-context',
+    'interlock spec-audit'
   ]) {
     assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
   }
@@ -2571,6 +2576,27 @@ async function relay(status = 200) {
   }
 }
 
+/**
+ * False, or the reason the relay tests cannot run here. A sandbox that denies
+ * binding loopback is an environment fact, not a result: the tests that need
+ * the relay skip and say so, and any other probe failure skips nothing, so
+ * they still run and fail where the cause is anything else.
+ */
+function loopbackDenied() {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "require('node:net').createServer()" +
+        ".on('error', e => process.exit(e.code === 'EPERM' || e.code === 'EACCES' ? 3 : 1))" +
+        ".listen(0, '127.0.0.1', function () { this.close() })"
+    ],
+    { stdio: 'ignore' }
+  )
+  return probe.status === 3 ? 'this environment denies binding loopback (a sandbox) — rerun outside it' : false
+}
+const LOOPBACK_DENIED = loopbackDenied()
+
 /** Read back a `Title` header — a headline travels RFC 2047 encoded. */
 function decodeTitle(value) {
   const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
@@ -2591,7 +2617,7 @@ test('notify --json emits { sent, reason } whether or not a push was attempted',
   assert.match(parsed.reason, /not configured/)
 })
 
-test('notify checkpoint posts the spec checkpoint title at default priority', async () => {
+test('notify checkpoint posts the spec checkpoint title at default priority', { skip: LOOPBACK_DENIED }, async () => {
   const stub = await relay()
   try {
     const r = run(['notify', 'checkpoint', 'add-thing'], {
@@ -2610,7 +2636,7 @@ test('notify checkpoint posts the spec checkpoint title at default priority', as
   }
 })
 
-test('a notify a person invoked directly exits 1 when the relay refused it', async () => {
+test('a notify a person invoked directly exits 1 when the relay refused it', { skip: LOOPBACK_DENIED }, async () => {
   const broken = await relay(500)
   try {
     const r = run(['notify', '--title', 'a title', '--body', 'a body'], {
@@ -2860,4 +2886,1605 @@ test('run-log show --format draws the run and keeps every exit code', async () =
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+// --- merge-confidence (spec: review/merge-confidence — command contract) ------
+//
+// The module is covered at its own level against one fixture per signal state.
+// What only the binary can get wrong is the wiring: which flag reads which file,
+// that an unreadable file dies before anything is printed, that the head commit
+// and the scenario count come from the repository rather than the caller, and
+// that the exit status follows the verdict — BLOCK is 1, HUMAN is 0, and
+// --require-merge makes anything but MERGE a 1.
+
+const CALLER_INPUT_SIGNALS = {
+  'review.blockers': '--review',
+  'review.warnings': '--review',
+  'review.adversarial': '--review',
+  'verify.suite': '--verify',
+  'verify.e2e': '--verify',
+  'verify.coverage': '--coverage',
+  'ci.pipeline': '--pipeline',
+  'diff.shape': '--base'
+}
+
+const SCENARIO_COUNT = 5
+
+/** The one change's files: delta specs carrying SCENARIO_COUNT scenarios. */
+function widgetChangeFiles() {
+  const scenarios = Array.from(
+    { length: SCENARIO_COUNT },
+    (_, i) => `#### Scenario: case ${i + 1}\n\n- **GIVEN** a catalogue\n- **WHEN** it renders\n- **THEN** it lists case ${i + 1}\n`
+  ).join('\n')
+  return {
+    'openspec/changes/add-widget-catalogue/proposal.md': '## Why\n\nList the widgets a shop sells in one catalogue view.\n',
+    'openspec/changes/add-widget-catalogue/design.md': '## Decisions\n\nD1. The catalogue reads the existing widget store.\n',
+    'openspec/changes/add-widget-catalogue/tasks.md': '- [ ] 1.1 Render the catalogue\n',
+    'openspec/changes/add-widget-catalogue/decisions.md': [
+      '# Decisions — add-widget-catalogue',
+      '',
+      '| id | question | class | resolution | evidence |',
+      '|----|----|----|----|----|',
+      '| D1 | Read the existing store or add one? | agent_resolved | read the existing store | design.md:3 |',
+      ''
+    ].join('\n'),
+    'openspec/changes/add-widget-catalogue/specs/widgets/catalogue/spec.md':
+      `## ADDED Requirements\n\n### Requirement: The catalogue lists widgets\n\nThe catalogue SHALL list every widget.\n\n${scenarios}`
+  }
+}
+
+let mergeRepo = null
+/** A git checkout holding the change and its source in one commit. */
+function mergeConfidenceRepo() {
+  if (mergeRepo) return mergeRepo
+  mergeRepo = gitRepo('merge-confidence-repo', {
+    ...widgetChangeFiles(),
+    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n'
+  })
+  return mergeRepo
+}
+
+/**
+ * A checkout whose first commit holds only the change's artifacts and whose
+ * second adds `headFiles`, so `--base <base>` has a real diff to read.
+ */
+function mergeBaseRepo(sub, headFiles, baseExtra = {}) {
+  const repo = gitRepo(sub, { ...widgetChangeFiles(), ...baseExtra })
+  for (const [rel, body] of Object.entries(headFiles)) {
+    mkdirSync(dirname(join(repo.root, rel)), { recursive: true })
+    writeFileSync(join(repo.root, rel), body)
+  }
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'Test',
+    GIT_AUTHOR_EMAIL: 'test@example.invalid',
+    GIT_COMMITTER_NAME: 'Test',
+    GIT_COMMITTER_EMAIL: 'test@example.invalid'
+  }
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env })
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'head'])
+  return { root: repo.root, base: repo.sha, sha: git(['rev-parse', 'HEAD']).stdout.trim() }
+}
+
+const greenFixture = () =>
+  JSON.parse(readFileSync(new URL('../fixtures/merge-confidence/all-observable-green.json', import.meta.url), 'utf8'))
+
+const mergeArgs = (...extra) => [
+  'merge-confidence',
+  'add-widget-catalogue',
+  '--root',
+  mergeConfidenceRepo().root,
+  ...extra,
+  '--changed',
+  'src/widgets/catalogue.ts'
+]
+const signalIn = (out, id) => out.signals.find(s => s.id === id)
+
+test('merge-confidence --json carries the verdict, the score, the worst band, every signal, what drives it, the counts and the flags', () => {
+  const out = runJson(mergeArgs())
+  for (const key of ['verdict', 'score', 'worstBand', 'signals', 'driving', 'counts', 'flags']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(out, key), `--json is missing "${key}"`)
+  }
+  assert.equal(out.change, 'add-widget-catalogue')
+  assert.ok(Number.isInteger(out.score))
+})
+
+test('merge-confidence with only changed paths reads HUMAN, every caller-input signal unobserved, and exits 0', () => {
+  const repo = mergeConfidenceRepo()
+  const r = run(['merge-confidence', '--root', repo.root, '--changed', 'src/widgets/catalogue.ts', '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'HUMAN')
+  for (const [id, flag] of Object.entries(CALLER_INPUT_SIGNALS)) {
+    const entry = signalIn(out, id)
+    assert.equal(entry.band, 'unobserved', `${id}: ${entry.reason}`)
+    assert.ok(entry.reason.includes(flag), `${id} does not name ${flag}: ${entry.reason}`)
+    assert.match(entry.reason, /not given/, id)
+  }
+  // The repository's own facts are still read: the single change resolves.
+  assert.equal(out.change, 'add-widget-catalogue')
+  assert.equal(signalIn(out, 'decisions.open').band, 'green', signalIn(out, 'decisions.open').reason)
+})
+
+test('merge-confidence exits 1 on a review with a surviving blocker', () => {
+  const review = file('mc-review-blocker.json', {
+    surviving: [
+      {
+        dimension: 'typescript',
+        severity: 'blocker',
+        title: 'unchecked null deref on an empty store',
+        file: 'src/widgets/catalogue.ts',
+        votes: { real: 2, notReal: 0, uncited: 0, total: 2 }
+      }
+    ],
+    counts: { raised: 1, droppedByPolicy: 0, dismissed: 0, droppedByQuality: 0, surviving: 1, dismissalsRejected: 0 }
+  })
+  const out = runJson(mergeArgs('--review', review), 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+  assert.equal(run(mergeArgs('--review', review)).code, 1, 'the exit is the verdict with or without --json')
+})
+
+test('HUMAN exits 0, and exits 1 under --require-merge', () => {
+  const plain = run(mergeArgs('--json'))
+  assert.equal(plain.code, 0, plain.stderr)
+  assert.equal(JSON.parse(plain.stdout).verdict, 'HUMAN')
+  const required = run(mergeArgs('--require-merge', '--json'))
+  assert.equal(required.code, 1)
+  assert.equal(JSON.parse(required.stdout).verdict, 'HUMAN', 'the verdict is still printed; only the exit changes')
+})
+
+test('a --review file that is not JSON exits 1 with nothing on stdout and the file named on stderr', () => {
+  const broken = file('mc-review-broken.json', '{ "surviving": [')
+  const r = run(mergeArgs('--review', broken, '--json'))
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '', 'no verdict may be printed for input that could not be read')
+  assert.ok(r.stderr.includes(broken), r.stderr)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+
+  const missing = join(dir, 'mc-no-such-review.json')
+  const absent = run(mergeArgs('--review', missing, '--json'))
+  assert.equal(absent.code, 1)
+  assert.equal(absent.stdout, '')
+  assert.ok(absent.stderr.includes(missing), absent.stderr)
+})
+
+test('a --pipeline file for another commit is unobserved; one for HEAD is read', () => {
+  const repo = mergeConfidenceRepo()
+  const checks = [{ name: 'unit', state: 'pass', required: true }]
+  const stale = file('mc-pipeline-stale.json', { sha: '0'.repeat(40), checks })
+  const staleOut = runJson(mergeArgs('--pipeline', stale))
+  assert.equal(signalIn(staleOut, 'ci.pipeline').band, 'unobserved')
+  assert.match(signalIn(staleOut, 'ci.pipeline').reason, /another commit/)
+
+  const head = file('mc-pipeline-head.json', { sha: repo.sha, checks })
+  assert.equal(signalIn(runJson(mergeArgs('--pipeline', head)), 'ci.pipeline').band, 'green', 'HEAD comes from the repository')
+})
+
+test('a --handoff file that states a smaller denominator is amber, naming the change’s own scenario count', () => {
+  const handoff = file('mc-handoff-short.json', { scenariosChecked: 3, scenariosUnconfirmed: 0, verdictsRequired: 3 })
+  const entry = signalIn(runJson(mergeArgs('--handoff', handoff)), 'conformance.delta')
+  assert.equal(entry.band, 'amber')
+  assert.ok(entry.reason.includes(`3 of ${SCENARIO_COUNT}`), entry.reason)
+
+  const full = file('mc-handoff-full.json', { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 })
+  assert.equal(signalIn(runJson(mergeArgs('--handoff', full)), 'conformance.delta').band, 'green')
+})
+
+test('--base reads the diff shape from git, and a base git cannot diff dies with nothing on stdout', () => {
+  // HEAD as the base diffs empty by construction: unobserved, never a small diff.
+  const head = signalIn(runJson(mergeArgs('--base', 'HEAD')), 'diff.shape')
+  assert.equal(head.band, 'unobserved', head.reason)
+  assert.match(head.reason, /descendant/)
+
+  const bad = run(mergeArgs('--base', 'no-such-ref-anywhere', '--json'))
+  assert.equal(bad.code, 1)
+  assert.equal(bad.stdout, '')
+  assert.match(bad.stderr, /no-such-ref-anywhere/)
+
+  const option = run(mergeArgs('--base', '-p', '--json'))
+  assert.equal(option.code, 1, 'a base that reads as an option is refused, never handed to git')
+  assert.equal(option.stdout, '')
+  assert.match(option.stderr, /must name a ref/)
+})
+
+test('--base assesses every path git reports, naming on stderr the ones --changed left out', () => {
+  const repo = mergeBaseRepo('merge-confidence-base-unnamed', {
+    'src/widgets/catalogue.ts': 'export const catalogue = () => []\n',
+    'src/payments/charge.ts': 'export const charge = () => 0\n'
+  })
+  const r = run([
+    'merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base,
+    '--changed', 'src/widgets/catalogue.ts', '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /were not in --changed/)
+  assert.ok(r.stderr.includes('src/payments/charge.ts'), r.stderr)
+  const out = JSON.parse(r.stdout)
+  const diff = signalIn(out, 'diff.shape')
+  assert.equal(diff.band, 'green', diff.reason)
+  assert.ok(diff.evidence.some(line => /2 changed file/.test(line)), diff.evidence.join('\n'))
+  const risk = signalIn(out, 'risk.class')
+  assert.equal(risk.band, 'amber', 'the payments path --changed omitted still reaches the risk classifier')
+  assert.ok(risk.evidence.some(line => line.includes('payments')), risk.evidence.join('\n'))
+})
+
+/** The widget change's delta spec, rewritten so it mentions `path` — the rule the graph applies, read from text. */
+const widgetSpecNaming = path => {
+  const key = 'openspec/changes/add-widget-catalogue/specs/widgets/catalogue/spec.md'
+  return {
+    [key]: widgetChangeFiles()[key].replace(
+      'The catalogue SHALL list every widget.',
+      `The catalogue SHALL list every widget, rendered by \`${path}\`.`
+    )
+  }
+}
+
+const WIDGET_SOURCE = 'src/widgets/catalogue.ts'
+
+/** A base + head checkout whose head adds WIDGET_SOURCE and whose delta spec names it. */
+const namedWidgetRepo = sub => mergeBaseRepo(sub, { [WIDGET_SOURCE]: 'export const catalogue = () => []\n' }, widgetSpecNaming(WIDGET_SOURCE))
+
+const baseArgs = repo => ['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', WIDGET_SOURCE]
+
+test('a full set of hand-given inputs on a clean change reads HUMAN, held only by the run record no hand run has, and exits 0', () => {
+  const repo = namedWidgetRepo('merge-confidence-base-full')
+  const green = greenFixture()
+  const r = run([
+    ...baseArgs(repo),
+    '--review', file('mc-full-review.json', green.review),
+    '--verify', file('mc-full-verify.json', green.verify),
+    '--handoff', file('mc-full-handoff.json', { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 }),
+    '--pipeline', file('mc-full-pipeline.json', { ...green.pipeline, sha: repo.sha }),
+    '--coverage', file('mc-full-coverage.json', green.coverage),
+    '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'HUMAN')
+  // Neither signal that used to be producer-less is among what drives it: the
+  // living list and the spec-coverage facts are gathered from the repository.
+  // `policy.humanPaths` is not either: with a base it reads the policy
+  // committed there, and this base lists no changed path.
+  assert.deepEqual(
+    out.driving.map(d => d.id).sort(),
+    ['run.integrity'],
+    JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2)
+  )
+  assert.equal(signalIn(out, 'run.integrity').band, 'unobserved')
+  for (const id of [
+    'verify.suite', 'verify.e2e', 'verify.coverage', 'ci.pipeline', 'diff.shape', 'review.ran', 'policy.humanPaths',
+    'spec.coverage', 'conformance.living'
+  ]) {
+    assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
+  }
+  assert.doesNotMatch(r.stdout, /no input to this version can read MERGE|until .* lands/)
+})
+
+// --- spec.coverage through the binary: text only, no graph --------------------------
+
+test('spec.coverage is amber, needing a fix, for an added source file no spec names, in a repository with no graph', () => {
+  const repo = mergeBaseRepo('mc-speccov-unnamed', { [WIDGET_SOURCE]: 'export const catalogue = () => []\n' })
+  assert.equal(existsSync(join(repo.root, '.claude', 'graph')), false, 'this fixture has no graph')
+  const out = runJson(baseArgs(repo))
+  const signal = signalIn(out, 'spec.coverage')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'finding', 'a missing mention is a fix, not a question for a person')
+  assert.ok(said(signal).includes(WIDGET_SOURCE), said(signal))
+  assert.equal(out.verdict, 'HUMAN')
+})
+
+test('spec.coverage is green when a delta spec of the change names the added file, in a repository with no graph', () => {
+  const repo = namedWidgetRepo('mc-speccov-named')
+  assert.equal(existsSync(join(repo.root, '.claude', 'graph')), false, 'this fixture has no graph')
+  const signal = signalIn(runJson(baseArgs(repo)), 'spec.coverage')
+  assert.equal(signal.band, 'green', said(signal))
+  assert.deepEqual(signal.flags, [])
+})
+
+test('spec.coverage ignores an added test file and an added document, so only source files can leave it amber', () => {
+  const repo = mergeBaseRepo('mc-speccov-not-source', {
+    'test/widgets/catalogue.test.ts': 'export {}\n',
+    'docs/widgets.md': '# Widgets\n'
+  })
+  const signal = signalIn(
+    runJson(['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', 'test/widgets/catalogue.test.ts,docs/widgets.md']),
+    'spec.coverage'
+  )
+  assert.equal(signal.band, 'green', said(signal))
+})
+
+test('spec.coverage is unobserved, for want of a base, when --base is not given', () => {
+  const repo = mergeConfidenceRepo()
+  const r = run(['merge-confidence', '--root', repo.root, '--changed', WIDGET_SOURCE, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const signal = signalIn(JSON.parse(r.stdout), 'spec.coverage')
+  assert.equal(signal.band, 'unobserved')
+  assert.match(signal.reason, /base/)
+})
+
+// --- merge-confidence --run: the evidence file a ship run's close writes -------------
+
+const RUN_EVIDENCE_SCHEMA = 'interlock.merge-evidence/1'
+
+/** What a clean, reviewed run's close would have written for `repo`'s head commit. */
+function runEvidence(repo, over = {}) {
+  const green = greenFixture()
+  const { evidence = {}, ...top } = over
+  return {
+    schema: RUN_EVIDENCE_SCHEMA,
+    change: 'add-widget-catalogue',
+    runId: 'run-fixture-1',
+    base: repo.base,
+    headSha: repo.sha,
+    committed: true,
+    evidence: {
+      review: green.review,
+      verify: green.verify,
+      handoff: { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0 },
+      coverage: green.coverage,
+      run: {
+        halted: false,
+        trajectoryComplete: true,
+        stageMarkerGaps: 0,
+        rejectedReports: 0,
+        permissionPrompts: 0,
+        autoModeDenials: 0,
+        leftoverTasks: 0
+      },
+      ...evidence
+    },
+    result: null,
+    ...top
+  }
+}
+
+const SURVIVING_BLOCKER = {
+  dimension: 'typescript',
+  severity: 'blocker',
+  title: 'unchecked null deref on an empty store',
+  file: WIDGET_SOURCE,
+  votes: { real: 2, notReal: 0, uncited: 0, total: 2 }
+}
+
+const pipelineFor = repo => file(`mc-run-pipeline-${repo.sha.slice(0, 7)}.json`, { ...greenFixture().pipeline, sha: repo.sha })
+
+test('--run supplies the review, verification, handoff, coverage and run record, and with a passing pipeline the verdict is MERGE and the exit 0', () => {
+  const repo = namedWidgetRepo('mc-run-merge')
+  const evidence = file('mc-run-merge-evidence.json', runEvidence(repo))
+  const r = run([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.verdict, 'MERGE', JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2))
+  assert.deepEqual(out.driving, [], 'nothing stands between this change and MERGE')
+  for (const id of ['review.ran', 'review.blockers', 'verify.suite', 'verify.coverage', 'conformance.delta', 'run.integrity', 'spec.coverage', 'ci.pipeline']) {
+    assert.equal(signalIn(out, id).band, 'green', `${id}: ${signalIn(out, id).reason}`)
+  }
+  assert.equal(r.stderr.includes('another commit'), false, 'a usable file is not complained about')
+  assert.equal(run([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo), '--require-merge']).code, 0, 'MERGE satisfies --require-merge')
+})
+
+test('--run without a pipeline reads HUMAN, held by ci.pipeline alone, and exits 0', () => {
+  const repo = namedWidgetRepo('mc-run-no-pipeline')
+  const out = runJson([...baseArgs(repo), '--run', file('mc-run-no-pipeline-evidence.json', runEvidence(repo))])
+  assert.equal(out.verdict, 'HUMAN')
+  assert.deepEqual(out.driving.map(d => d.id), ['ci.pipeline'])
+})
+
+for (const [label, over, expected] of [
+  ['another commit', { headSha: '0'.repeat(40) }, run => [/another commit/, new RegExp(run.sha.slice(0, 7)), /0000000/]],
+  ['no commit made', { committed: false }, () => [/commit/i]],
+  ['another change', { change: 'some-other-change' }, () => [/some-other-change/, /add-widget-catalogue/]],
+  ['another schema', { schema: 'interlock.something-else/9' }, () => [/schema/i]]
+]) {
+  test(`a --run file for ${label} is refused on stderr, and nothing is taken from it`, () => {
+    const repo = namedWidgetRepo(`mc-run-refused-${label.replace(/\W+/g, '-')}`)
+    const evidence = file(`mc-run-refused-${label.replace(/\W+/g, '-')}.json`, runEvidence(repo, over))
+    const r = run([...baseArgs(repo), '--run', evidence, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    for (const pattern of expected(repo)) assert.match(r.stderr, pattern)
+    const out = JSON.parse(r.stdout)
+    for (const id of ['review.blockers', 'verify.suite', 'run.integrity']) {
+      assert.equal(signalIn(out, id).band, 'unobserved', `${id} took something from a refused file: ${signalIn(out, id).reason}`)
+    }
+    // With no file, review.ran is amber because no review ran; a refused file leaves it there.
+    assert.equal(signalIn(out, 'review.ran').band, 'amber', signalIn(out, 'review.ran').reason)
+    assert.match(signalIn(out, 'review.ran').reason, /no review ran/i)
+    assert.equal(out.verdict, 'HUMAN')
+  })
+}
+
+test('an explicit --review replaces the evidence file’s review, and the file’s other entries still stand', () => {
+  const repo = namedWidgetRepo('mc-run-override')
+  const evidence = file('mc-run-override-evidence.json', runEvidence(repo))
+  const blocked = file('mc-run-override-review.json', {
+    surviving: [SURVIVING_BLOCKER],
+    counts: { raised: 1, droppedByPolicy: 0, dismissed: 0, droppedByQuality: 0, surviving: 1, dismissalsRejected: 0 }
+  })
+  const out = runJson([...baseArgs(repo), '--run', evidence, '--review', blocked], 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+  assert.equal(signalIn(out, 'verify.suite').band, 'green', 'the verification still comes from the file')
+  assert.equal(signalIn(out, 'run.integrity').band, 'green', 'so does the run record')
+})
+
+test('a recorded MERGE over a surviving blocker still reads BLOCK, because the file’s result is never read', () => {
+  const repo = namedWidgetRepo('mc-run-recorded-merge')
+  const green = greenFixture()
+  const evidence = file(
+    'mc-run-recorded-merge-evidence.json',
+    runEvidence(repo, {
+      evidence: {
+        review: { ...green.review, surviving: [SURVIVING_BLOCKER], counts: { ...green.review.counts, surviving: 1 } }
+      },
+      result: { verdict: 'MERGE', score: 100, worstBand: 'green', driving: [] }
+    })
+  )
+  const out = runJson([...baseArgs(repo), '--run', evidence, '--pipeline', pipelineFor(repo)], 1)
+  assert.equal(out.verdict, 'BLOCK')
+  assert.equal(signalIn(out, 'review.blockers').band, 'red')
+})
+
+test('an unparseable or missing --run file exits 1 with nothing on stdout and the file named on stderr', () => {
+  const repo = namedWidgetRepo('mc-run-unreadable')
+  const broken = file('mc-run-broken.json', '{ "schema": ')
+  const r = run([...baseArgs(repo), '--run', broken, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '', 'no verdict may be printed for input that could not be read')
+  assert.ok(r.stderr.includes(broken), r.stderr)
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+
+  const missing = join(dir, 'mc-run-no-such-evidence.json')
+  const absent = run([...baseArgs(repo), '--run', missing, '--json'])
+  assert.equal(absent.code, 1)
+  assert.equal(absent.stdout, '')
+  assert.ok(absent.stderr.includes(missing), absent.stderr)
+})
+
+// --- conformance --living ---------------------------------------------------------------
+
+const LIVING_BODY_MARKER = 'LIVING-BODY-MARKER-4471'
+
+/** A living spec with three requirements, each carrying a body the list must not echo. */
+const LIVING_WIDGETS_SPEC = [
+  '# widgets/catalogue Specification',
+  '',
+  '## Purpose',
+  '',
+  'The shop catalogue.',
+  '',
+  '## Requirements',
+  '',
+  ...['The store SHALL keep widgets', 'Prices SHALL be whole cents', 'A widget SHALL have one name'].flatMap(title => [
+    `### Requirement: ${title}`,
+    '',
+    `${title}. ${LIVING_BODY_MARKER}`,
+    '',
+    '#### Scenario: Happy path — holds',
+    '',
+    '- **GIVEN** a widget',
+    '- **WHEN** it is stored',
+    '- **THEN** the rule holds',
+    ''
+  ])
+].join('\n')
+
+const LIVING_SPEC_PATH = 'openspec/specs/widgets/catalogue/spec.md'
+const livingHeadingLine = title => LIVING_WIDGETS_SPEC.split('\n').findIndex(l => l === `### Requirement: ${title}`) + 1
+
+/**
+ * The base commit holds the change and a living spec of three requirements; the
+ * head adds the widget source and a fourth requirement to the working-tree spec,
+ * so a list read from the base differs from one read from the working tree.
+ */
+function livingRepo(sub, headExtra = {}) {
+  return mergeBaseRepo(
+    sub,
+    {
+      [WIDGET_SOURCE]: 'export const catalogue = () => []\n',
+      [LIVING_SPEC_PATH]: `${LIVING_WIDGETS_SPEC}\n### Requirement: Added at the head only\n\nHead text.\n`,
+      ...headExtra
+    },
+    { [LIVING_SPEC_PATH]: LIVING_WIDGETS_SPEC }
+  )
+}
+
+test('conformance --living lists the delta scenarios C, then the living requirements L, names the base it read, and blocks nothing', () => {
+  const repo = livingRepo('cf-living-text')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base])
+  assert.equal(r.code, 0, r.stderr)
+  const text = r.stdout
+  for (const id of ['C1', 'C2', 'C3', 'C4', 'C5', 'L1', 'L2', 'L3']) assert.match(text, new RegExp(`\\b${id}\\b`), `${id} is listed`)
+  assert.ok(text.indexOf('C5') < text.indexOf('L1'), 'the living entries follow the scenarios')
+  assert.doesNotMatch(text, /\bL4\b/, 'the requirement the head added is not in the base')
+  assert.ok(text.includes('The store SHALL keep widgets'), text)
+  assert.ok(text.includes(`${LIVING_SPEC_PATH}:${livingHeadingLine('The store SHALL keep widgets')}`), text)
+  assert.ok(!text.includes(LIVING_BODY_MARKER), 'a requirement body is read at the cited line, never echoed')
+  assert.ok(text.includes(repo.base) || text.includes(repo.base.slice(0, 7)), `the source of the living text is named: ${text}`)
+  assert.match(text, /Nothing here blocks/)
+})
+
+test('conformance --living reads the working tree when no base is named, and says so', () => {
+  const repo = livingRepo('cf-living-tree')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living'])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /\bL4\b/, 'the working tree carries the fourth requirement')
+  assert.match(r.stdout, /working tree/i)
+})
+
+test('conformance --living --json carries the living entries, their count, what the bound left out, and the partial reason', () => {
+  const repo = livingRepo('cf-living-json')
+  const out = runJson(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base])
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+  assert.deepEqual(out.scenarios.map(s => s.id), ['C1', 'C2', 'C3', 'C4', 'C5'])
+  const living = out.living
+  assert.ok(living && typeof living === 'object', 'the living block is on the checklist')
+  assert.deepEqual(living.requirements.map(e => e.id), ['L1', 'L2', 'L3'])
+  assert.equal(living.requirementsRequired, 3, 'the count is the list’s own')
+  assert.deepEqual(living.omitted, [])
+  assert.ok(String(living.source).includes(repo.base) || String(living.source).includes(repo.base.slice(0, 7)), living.source)
+  const first = living.requirements[0]
+  assert.equal(first.capability, 'widgets/catalogue')
+  assert.equal(first.artifact, LIVING_SPEC_PATH)
+  assert.equal(first.line, livingHeadingLine('The store SHALL keep widgets'))
+  assert.equal(first.title, 'The store SHALL keep widgets')
+  assert.ok(!JSON.stringify(out).includes(LIVING_BODY_MARKER), 'no entry carries a requirement body')
+  // No graph, one declared capability: built from the declaration, and said so.
+  assert.match(String(living.partial), /graph/)
+  assert.ok(!living.skipped)
+})
+
+test('conformance --living with nothing to select is a spoken skip, and the scenarios are still listed', () => {
+  const repo = mergeBaseRepo('cf-living-skipped', { [WIDGET_SOURCE]: 'export {}\n' })
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', repo.base, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.match(String(out.living.skipped), /graph/)
+  assert.deepEqual(out.living.requirements ?? [], [])
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+})
+
+test('conformance --living with a base that names no commit reports the list as not built and still exits 0 with the scenarios', () => {
+  const repo = livingRepo('cf-living-bad-ref')
+  const r = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', 'no-such-ref-anywhere'])
+  assert.equal(r.code, 0, r.stderr)
+  for (const id of ['C1', 'C5']) assert.match(r.stdout, new RegExp(`\\b${id}\\b`), `${id} is still listed`)
+  assert.doesNotMatch(r.stdout, /\bL1\b/)
+  assert.match(r.stdout, /not built/i)
+  assert.ok(r.stdout.includes('no-such-ref-anywhere'), 'the reference is named')
+
+  const json = run(['conformance', 'add-widget-catalogue', '--root', repo.root, '--living', '--base', 'no-such-ref-anywhere', '--json'])
+  assert.equal(json.code, 0, json.stderr)
+  const out = JSON.parse(json.stdout)
+  assert.equal(out.scenarios.length, SCENARIO_COUNT)
+  assert.deepEqual(out.living.requirements ?? [], [])
+  assert.ok(JSON.stringify(out.living).includes('no-such-ref-anywhere'), JSON.stringify(out.living))
+})
+
+test('conformance without --living prints what it printed before: no living entry, count or reason, whatever else is given', () => {
+  const repo = livingRepo('cf-living-off')
+  const keys = ['change', 'changedFiles', 'outsideSpecs', 'reason', 'scenarios', 'skipped', 'verdictsRequired']
+  for (const extra of [[], ['--base', repo.base]]) {
+    const out = runJson(['conformance', 'add-widget-catalogue', '--root', repo.root, ...extra])
+    assert.deepEqual(Object.keys(out).sort(), keys, `the checklist is field for field what it was (${extra.join(' ') || 'no extras'})`)
+    const text = run(['conformance', 'add-widget-catalogue', '--root', repo.root, ...extra])
+    assert.equal(text.code, 0, text.stderr)
+    assert.doesNotMatch(text.stdout, /\bL\d+\b|living/i)
+    assert.match(text.stdout, /Nothing here blocks/)
+  }
+})
+
+// --- merge-confidence reads the living list and the handoff's requirement counts ---------
+
+test('conformance.living is green for every listed requirement confirmed, and amber for a short, an unconfirmed or an absent count', () => {
+  const repo = livingRepo('mc-living-counts')
+  const read = counts =>
+    signalIn(
+      runJson([...baseArgs(repo), '--handoff', file(`mc-living-${JSON.stringify(counts).length}-${Object.keys(counts).join('')}.json`, { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 0, ...counts })]),
+      'conformance.living'
+    )
+
+  const confirmed = read({ requirementsChecked: 3, requirementsUnconfirmed: 0 })
+  assert.equal(confirmed.band, 'green', said(confirmed))
+  assert.ok(confirmed.flags.includes('no-graph'), 'built from a declaration alone, and flagged')
+
+  const short = read({ requirementsChecked: 2, requirementsUnconfirmed: 0, requirementsRequired: 2 })
+  assert.equal(short.band, 'amber', 'a count the handoff states for itself does not shrink the command’s own')
+  assert.ok(said(short).includes('3'), said(short))
+
+  assert.equal(read({ requirementsChecked: 3, requirementsUnconfirmed: 1 }).band, 'amber')
+  assert.equal(read({}).band, 'amber', 'a list with no counts reported is not confirmed')
+
+  const none = signalIn(runJson(baseArgs(repo)), 'conformance.living')
+  assert.equal(none.band, 'unobserved', 'with no handoff at all there is nothing to read the list against')
+})
+
+// --- USAGE ---------------------------------------------------------------------------
+
+test('USAGE names --living and --run, and no longer says that no input can read MERGE', () => {
+  const { stdout } = run(['--help'])
+  const between = (from, to) => {
+    const start = stdout.indexOf(from)
+    assert.notEqual(start, -1, `USAGE is missing "${from}"`)
+    const end = stdout.indexOf(to, start + from.length)
+    return stdout.slice(start, end === -1 ? undefined : end)
+  }
+  const conformance = between('  interlock conformance', '  interlock domain-context')
+  assert.ok(conformance.includes('--living'), conformance)
+  assert.ok(conformance.includes('--base'), conformance)
+  const mergeConfidence = between('  interlock merge-confidence', '  interlock report')
+  assert.ok(mergeConfidence.includes('--run'), mergeConfidence)
+  assert.doesNotMatch(stdout, /no input\s+to this version can read MERGE/)
+  assert.doesNotMatch(stdout, /read unobserved until their producer lands/)
+  // The detail text still tells a reader what an exit of 1 means.
+  assert.match(stdout, /Exit 1 alone does not tell the two apart/)
+})
+
+test('limits --json carries the merge bands as their own group, ceiling table included', () => {
+  const out = runJson(['limits'])
+  assert.deepEqual(out.mergeBands, JSON.parse(JSON.stringify(MERGE_BANDS)))
+  assert.deepEqual(out.mergeBands.ceiling, { ...MERGE_BANDS.ceiling })
+  assert.equal(out.limits.maxWarningsForMerge, undefined, 'the merge bands are not entries of the iteration-count limits')
+})
+
+// --- judge-against-base-and-living-specs: the four new commands and the --base flag --
+//
+// What only the binary can get wrong: which ref a list is read from, that an
+// unresolvable ref or a bad baseline ends the command with nothing on stdout,
+// that a temporary worktree never outlives the command, and that the verdict's
+// new signals are fed from the repository. The pure modules carry their own
+// tests (coverage, spec-text, spec-audit, domain-context, review-policy); a
+// fixture here is only as large as the wiring needs.
+//
+// Several JSON field names below (`capabilities`, `via`, `totals`, `flags`,
+// `unreadable`, `humanPaths`, `differsFromBase`, `anomalies.requirementCitations`)
+// are this file's statement of the CLI contract, taken from the change's design.
+
+const GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'Test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'Test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid'
+}
+
+function gitAt(root, ...args) {
+  return spawnSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, ...GIT_IDENTITY } })
+}
+
+/** Write `files` into a checkout and commit them; returns the new commit. */
+function commitFiles(root, files, message = 'next') {
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true })
+    writeFileSync(join(root, rel), body)
+  }
+  gitAt(root, 'add', '-A')
+  gitAt(root, 'commit', '-q', '-m', message)
+  return gitAt(root, 'rev-parse', 'HEAD').stdout.trim()
+}
+
+/** `git worktree list` rows: one means only the main checkout exists. */
+const worktreeCount = root =>
+  gitAt(root, 'worktree', 'list', '--porcelain').stdout.split('\n').filter(l => l.startsWith('worktree ')).length
+
+/** An lcov record instrumenting lines 1..n with the given hit counts. */
+const lcovRecord = (path, hits) =>
+  `SF:${path}\n` +
+  hits.map((h, i) => `DA:${i + 1},${h}`).join('\n') +
+  `\nLF:${hits.length}\nLH:${hits.filter(h => h > 0).length}\nend_of_record\n`
+
+// --- verify baseline / verify coverage ----------------------------------------
+
+const COVERAGE_ON = { enabled: true, command: 'node cov.mjs', report_path: 'coverage/lcov.info', format: 'lcov' }
+const BASELINE_PATH = '.claude/testing/coverage-baseline.json'
+// Seven lines, the last unhit: 6 of 7 is 85.7. The diff below adds lines 4 to 7,
+// three of them hit: 75 over 4 changed lines.
+const HEAD_HITS = [1, 1, 1, 1, 1, 1, 0]
+
+/** Base commit with a three-line lib/a.mjs; the head commit grows it to seven lines. */
+function coverageRepo(sub, baseFiles = {}) {
+  const repo = gitRepo(sub, { 'lib/a.mjs': 'a1\na2\na3\n', ...baseFiles })
+  const head = commitFiles(repo.root, { 'lib/a.mjs': 'a1\na2\na3\na4\na5\na6\na7\n' })
+  return { root: repo.root, base: repo.sha, head }
+}
+
+function writeProfile(root, coverage) {
+  mkdirSync(join(root, '.claude', 'testing'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'testing', 'profile.json'),
+    JSON.stringify({ version: 1, unit: { command: 'npm test', cwd: '.' }, coverage })
+  )
+}
+
+function writeHeadReport(root, hits = HEAD_HITS) {
+  mkdirSync(join(root, 'coverage'), { recursive: true })
+  writeFileSync(join(root, 'coverage', 'lcov.info'), lcovRecord('lib/a.mjs', hits))
+}
+
+function writeBaseline(root, over = {}) {
+  mkdirSync(join(root, '.claude', 'testing'), { recursive: true })
+  writeFileSync(
+    join(root, BASELINE_PATH),
+    JSON.stringify({
+      schema: 'interlock.coverage-baseline/1',
+      sha: over.sha,
+      ref: 'main',
+      totalPct: 80,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      ...over
+    })
+  )
+}
+
+/** A coverage command committed at the base: it writes a 50 percent report where it runs. */
+const covScript = ({ exit = 0, marker = null } = {}) =>
+  [
+    "import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs'",
+    marker ? `appendFileSync(${JSON.stringify(marker)}, 'ran\\n')` : '',
+    "mkdirSync('coverage', { recursive: true })",
+    "writeFileSync('coverage/lcov.info', 'SF:lib/a.mjs\\nLF:10\\nLH:5\\nend_of_record\\n')",
+    `process.exit(${exit})`
+  ].join('\n') + '\n'
+
+const COVERAGE_INPUT_FIELDS = [
+  'baseIsAncestor', 'baseSha', 'baseTotalPct', 'changedLines', 'configured', 'diffPct', 'headTotalPct',
+  'unreportedAddedLines', 'unreportedFiles'
+]
+
+test('verify baseline records the total of a report on this commit, and refuses a report with none', () => {
+  const repo = coverageRepo('cov-baseline-repo')
+  const report = file('cov-baseline-report.lcov', lcovRecord('lib/a.mjs', [1, 1, 1, 1, 0]))
+  const ok = run(['verify', 'baseline', '--report', report, '--root', repo.root])
+  assert.equal(ok.code, 0, ok.stderr)
+  const target = join(repo.root, BASELINE_PATH)
+  const written = JSON.parse(readFileSync(target, 'utf8'))
+  assert.equal(written.schema, 'interlock.coverage-baseline/1')
+  assert.equal(written.sha, repo.head, 'the commit the report was taken on')
+  assert.equal(written.ref, 'main', 'the branch it was taken on')
+  assert.equal(written.totalPct, 80)
+  assert.ok(!Number.isNaN(Date.parse(written.generatedAt)), `generatedAt: ${written.generatedAt}`)
+
+  // No instrumented line, and no report at all: exit 1, the previous file untouched.
+  const before = readFileSync(target, 'utf8')
+  const noTotal = file('cov-baseline-empty.lcov', 'SF:lib/a.mjs\nend_of_record\n')
+  const refused = run(['verify', 'baseline', '--report', noTotal, '--root', repo.root])
+  assert.equal(refused.code, 1)
+  assert.match(refused.stderr, /total/i)
+  assert.equal(readFileSync(target, 'utf8'), before, 'a refused write leaves the previous baseline in place')
+
+  const missing = join(dir, 'cov-baseline-no-such.lcov')
+  const unreadable = run(['verify', 'baseline', '--report', missing, '--root', repo.root])
+  assert.equal(unreadable.code, 1)
+  assert.ok(unreadable.stderr.includes(missing), unreadable.stderr)
+  assert.equal(readFileSync(target, 'utf8'), before)
+
+  // A named path is written instead of the default one.
+  const custom = join(dir, 'cov-baseline-custom.json')
+  const named = run(['verify', 'baseline', '--report', report, '--baseline', custom, '--root', repo.root])
+  assert.equal(named.code, 0, named.stderr)
+  assert.equal(JSON.parse(readFileSync(custom, 'utf8')).totalPct, 80)
+  assert.equal(readFileSync(target, 'utf8'), before, 'the default path is not touched when another is named')
+})
+
+test('verify coverage prints configured: false, and nothing else, when the profile declares no coverage', () => {
+  let n = 0
+  for (const coverage of [
+    { ...COVERAGE_ON, enabled: false },
+    { ...COVERAGE_ON, command: null }
+  ]) {
+    const repo = coverageRepo(`cov-unconfigured-${n++}`)
+    writeProfile(repo.root, coverage)
+    const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+    assert.equal(out.configured, false, JSON.stringify(coverage))
+    for (const key of ['headTotalPct', 'baseTotalPct', 'baseSha', 'diffPct', 'changedLines']) {
+      assert.equal(out[key], null, `${key} is absent, not a measured figure`)
+    }
+  }
+})
+
+test('verify coverage exits 1 with an empty stdout for a missing report, an unsupported format and a corrupt baseline', () => {
+  const missing = coverageRepo('cov-missing-report')
+  writeProfile(missing.root, COVERAGE_ON)
+  const noReport = run(['verify', 'coverage', '--base', missing.base, '--root', missing.root, '--json'])
+  assert.equal(noReport.code, 1)
+  assert.equal(noReport.stdout, '', 'the verdict reads an unproduced input as unobserved, never as clean')
+  assert.ok(noReport.stderr.includes('coverage/lcov.info'), noReport.stderr)
+  assert.match(noReport.stderr, /coverage command/)
+
+  const xml = coverageRepo('cov-unsupported-format')
+  writeProfile(xml.root, { ...COVERAGE_ON, report_path: 'coverage/cobertura.xml', format: 'cobertura' })
+  mkdirSync(join(xml.root, 'coverage'), { recursive: true })
+  writeFileSync(join(xml.root, 'coverage', 'cobertura.xml'), '<coverage/>\n')
+  const unsupported = run(['verify', 'coverage', '--base', xml.base, '--root', xml.root, '--json'])
+  assert.equal(unsupported.code, 1)
+  assert.equal(unsupported.stdout, '')
+  assert.ok(unsupported.stderr.includes('coverage/cobertura.xml'), unsupported.stderr)
+  assert.match(unsupported.stderr, /lcov/, 'it names the one supported format')
+
+  let n = 0
+  for (const corrupt of [{ schema: undefined }, { totalPct: 101 }, { totalPct: 'high' }]) {
+    const repo = coverageRepo(`cov-corrupt-baseline-${n++}`)
+    writeProfile(repo.root, COVERAGE_ON)
+    writeHeadReport(repo.root)
+    writeBaseline(repo.root, { sha: repo.base, ...corrupt })
+    const r = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root, '--json'])
+    assert.equal(r.code, 1, JSON.stringify(corrupt))
+    assert.equal(r.stdout, '', 'a corrupt baseline is never read as no baseline')
+    assert.ok(r.stderr.includes('coverage-baseline.json'), r.stderr)
+  }
+})
+
+test('verify coverage dies without --base, and on a ref that names no commit', () => {
+  const repo = coverageRepo('cov-needs-base')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const none = run(['verify', 'coverage', '--root', repo.root, '--json'])
+  assert.equal(none.code, 1)
+  assert.equal(none.stdout, '', 'the diff is the base: without it the reader would be handed changedLines: null')
+  assert.match(none.stderr, /--base/)
+  assert.match(none.stderr, /required/)
+
+  const bad = run(['verify', 'coverage', '--base', 'no-such-ref-anywhere', '--root', repo.root, '--json'])
+  assert.equal(bad.code, 1)
+  assert.equal(bad.stdout, '')
+  assert.match(bad.stderr, /no-such-ref-anywhere/)
+})
+
+test('verify coverage prints exactly the nine fields the merge verdict reads, from the report, the baseline and the diff', () => {
+  const repo = coverageRepo('cov-happy')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  writeBaseline(repo.root, { sha: repo.base })
+  const r = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(Object.keys(out).sort(), COVERAGE_INPUT_FIELDS, 'figures only: no band, no verdict')
+  assert.deepEqual(out, {
+    configured: true,
+    headTotalPct: 85.7,
+    baseTotalPct: 80,
+    baseSha: repo.base,
+    baseIsAncestor: true,
+    diffPct: 75,
+    changedLines: 4,
+    // Every changed source file is in the report: an empty list, stated.
+    unreportedFiles: [],
+    unreportedAddedLines: 0
+  })
+})
+
+// A changed source file the report holds no record for (design D13 of
+// label-and-harden-the-merge-verdict). The head commit adds both files; the
+// report still lists lib/a.mjs alone.
+test('verify coverage names a new source file the report does not list, with its added lines, and leaves the figures alone', () => {
+  const repo = coverageRepo('cov-unreported')
+  const forty = Array.from({ length: 40 }, (_, i) => `export const line${i} = ${i}`).join('\n') + '\n'
+  commitFiles(repo.root, { 'lib/fresh.mjs': forty, 'test/fresh.test.mjs': "import '../lib/fresh.mjs'\n", 'docs/fresh.md': '# fresh\n' })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.deepEqual(Object.keys(out).sort(), COVERAGE_INPUT_FIELDS)
+  assert.deepEqual(out.unreportedFiles, ['lib/fresh.mjs'], 'the source file only: a test and a document are never listed')
+  assert.equal(out.unreportedAddedLines, 40)
+  // What the report did measure is what it was without that file.
+  assert.equal(out.diffPct, 75)
+  assert.equal(out.changedLines, 4)
+
+  // The text form says it too.
+  const text = run(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.includes('lib/fresh.mjs'), text.stdout)
+})
+
+test('verify coverage lists no test file the report lacks, and prints both unreported fields as null with no coverage configured', () => {
+  const repo = coverageRepo('cov-unreported-test-only')
+  commitFiles(repo.root, { 'test/fresh.test.mjs': 'export {}\n' })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.deepEqual(out.unreportedFiles, [])
+  assert.equal(out.unreportedAddedLines, 0)
+
+  const bare = coverageRepo('cov-unreported-not-configured')
+  commitFiles(bare.root, { 'lib/fresh.mjs': 'export {}\n' })
+  const none = runJson(['verify', 'coverage', '--base', bare.base, '--root', bare.root])
+  assert.deepEqual(Object.keys(none).sort(), COVERAGE_INPUT_FIELDS)
+  assert.equal(none.configured, false)
+  assert.equal(none.unreportedFiles, null)
+  assert.equal(none.unreportedAddedLines, null)
+})
+
+test('verify coverage with no baseline anywhere leaves every base field empty and still judges the changed lines', () => {
+  const repo = coverageRepo('cov-no-baseline')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(out.configured, true)
+  assert.equal(out.headTotalPct, 85.7)
+  assert.equal(out.diffPct, 75)
+  assert.equal(out.changedLines, 4)
+  assert.equal(out.baseTotalPct, null)
+  assert.equal(out.baseSha, null)
+  assert.ok(out.baseIsAncestor === null || out.baseIsAncestor === false, `baseIsAncestor: ${out.baseIsAncestor}`)
+})
+
+test('verify coverage reports whether the baseline commit is an ancestor of HEAD, whatever its age, from the repository', () => {
+  const repo = coverageRepo('cov-ancestry')
+  // A sibling branch the head does not descend from.
+  gitAt(repo.root, 'checkout', '-q', '-b', 'sibling', repo.base)
+  const sibling = commitFiles(repo.root, { 'lib/sibling.mjs': 's\n' })
+  gitAt(repo.root, 'checkout', '-q', 'main')
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  writeBaseline(repo.root, { sha: repo.base })
+  const onHistory = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(onHistory.baseSha, repo.base)
+  assert.equal(onHistory.baseIsAncestor, true)
+
+  writeBaseline(repo.root, { sha: sibling })
+  const elsewhere = runJson(['verify', 'coverage', '--base', repo.base, '--root', repo.root])
+  assert.equal(elsewhere.baseSha, sibling, 'the baseline is still named, so the verdict can say why it is unobserved')
+  assert.equal(elsewhere.baseIsAncestor, false)
+})
+
+test('verify coverage --compute-base records a baseline for the merge base and leaves no worktree behind', () => {
+  const repo = coverageRepo('cov-compute-base', { 'cov.mjs': covScript() })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const r = run(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.baseTotalPct, 50, 'the coverage command ran on the merge base, not on the head')
+  assert.equal(out.baseSha, repo.base)
+  assert.equal(out.baseIsAncestor, true)
+  assert.match(r.stderr, /baseline/i, 'it says it recorded one')
+
+  const recorded = JSON.parse(readFileSync(join(repo.root, BASELINE_PATH), 'utf8'))
+  assert.equal(recorded.sha, repo.base)
+  assert.equal(recorded.totalPct, 50)
+  assert.equal(worktreeCount(repo.root), 1, gitAt(repo.root, 'worktree', 'list').stdout)
+})
+
+test('verify coverage --compute-base exits 1 naming the command and its status, and cleans up after a failing run', () => {
+  const repo = coverageRepo('cov-compute-base-fails', { 'cov.mjs': covScript({ exit: 3 }) })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+
+  const r = run(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.ok(r.stderr.includes('node cov.mjs'), r.stderr)
+  assert.match(r.stderr, /\b3\b/, 'the exit status')
+  assert.equal(worktreeCount(repo.root), 1, 'the worktree is removed whether the command passed or not')
+  assert.equal(existsSync(join(repo.root, BASELINE_PATH)), false, 'a failed measurement records nothing')
+})
+
+test('verify coverage --compute-base creates no worktree and runs no command when a usable baseline exists', () => {
+  const marker = join(dir, 'cov-compute-marker.txt')
+  const repo = coverageRepo('cov-compute-base-usable', { 'cov.mjs': covScript({ marker }) })
+  writeProfile(repo.root, COVERAGE_ON)
+  writeHeadReport(repo.root)
+  writeBaseline(repo.root, { sha: repo.base, totalPct: 80 })
+
+  const out = runJson(['verify', 'coverage', '--base', repo.base, '--compute-base', '--root', repo.root])
+  assert.equal(existsSync(marker), false, 'the coverage command ran')
+  assert.equal(out.baseTotalPct, 80, 'the existing baseline is the base figure')
+  assert.equal(out.baseSha, repo.base)
+  assert.equal(worktreeCount(repo.root), 1)
+})
+
+// --- review / review-policy --base --------------------------------------------
+
+/** A checkout whose first commit may hold a REVIEW.md, tagged `policy-base`. */
+function policyRepo(sub, committed, extra = {}) {
+  const repo = gitRepo(sub, {
+    'lib/a.mjs': 'a\n',
+    'dist/x.js': 'x\n',
+    ...(committed === null ? {} : { 'REVIEW.md': committed }),
+    ...extra
+  })
+  gitAt(repo.root, 'tag', 'policy-base')
+  return repo
+}
+
+const POLICY_FINDINGS = [
+  { dimension: 'typescript', severity: 'blocker', title: 'lib blocker', file: 'lib/a.mjs' },
+  { dimension: 'typescript', severity: 'blocker', title: 'dist blocker', file: 'dist/x.js' }
+]
+
+/** Two real votes per title: survival is decided by the lists, not by the vote. */
+const realVerdicts = titles =>
+  titles.flatMap(findingTitle => [
+    { findingTitle, isReal: true, refinedSeverity: 'blocker', qualityScore: 9 },
+    { findingTitle, isReal: true, qualityScore: 8 }
+  ])
+
+const reviewArgs = (repo, findings, ...extra) => [
+  'review',
+  '--findings', file(`rb-findings-${repo.root.split('/').pop()}.json`, findings),
+  '--verdicts', file(`rb-verdicts-${repo.root.split('/').pop()}.json`, realVerdicts(findings.map(f => f.title))),
+  '--root', repo.root,
+  ...extra
+]
+
+test('review --base applies the exclusions committed at the ref, not the ones the working tree adds', () => {
+  const repo = policyRepo('rb-lists', '## Do Not Report\n- dist/\n')
+  writeFileSync(join(repo.root, 'REVIEW.md'), '## Do Not Report\n- dist/\n- lib/\n')
+
+  const out = JSON.parse(run([...reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'), '--json']).stdout)
+  assert.deepEqual(out.surviving.map(f => f.title), ['lib blocker'], 'a pull request cannot exclude its own paths')
+  assert.deepEqual(out.droppedByPolicy.map(f => f.title), ['dist blocker'])
+
+  const text = run(reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /differs/i)
+  assert.ok(text.stdout.includes('policy-base'), 'it names the reference whose lists were applied')
+
+  // Without a base, the working tree is read exactly as before.
+  const plain = JSON.parse(run([...reviewArgs(repo, POLICY_FINDINGS), '--json']).stdout)
+  assert.deepEqual(plain.surviving, [], 'the working-tree exclusion applies when no base is given')
+})
+
+test('review --base says nothing about a copy that matches the ref, or differs only in line endings', () => {
+  const same = policyRepo('rb-same', '## Do Not Report\n- dist/\n')
+  const r = run(reviewArgs(same, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(r.code, 0, r.stderr)
+  assert.doesNotMatch(r.stdout, /differs/i)
+  // The absence of a sentence proves nothing on its own: the policy read says it, as a fact.
+  const asked = ['review-policy', '--base', 'policy-base', '--json']
+  assert.equal(JSON.parse(run([...asked, '--root', same.root]).stdout).differsFromBase, false)
+
+  const crlf = policyRepo('rb-crlf', '## Do Not Report\r\n- dist/\r\n')
+  writeFileSync(join(crlf.root, 'REVIEW.md'), '## Do Not Report\n- dist/\n')
+  const c = run(reviewArgs(crlf, POLICY_FINDINGS, '--base', 'policy-base'))
+  assert.equal(c.code, 0, c.stderr)
+  assert.doesNotMatch(c.stdout, /differs/i, 'a line-ending difference is not a difference')
+  assert.equal(JSON.parse(run([...asked, '--root', crlf.root]).stdout).differsFromBase, false)
+})
+
+test('review --base with no REVIEW.md at the ref declares no lists, reports no problem, and says the working copy differs', () => {
+  const repo = policyRepo('rb-absent', null)
+  writeFileSync(join(repo.root, 'REVIEW.md'), '## Do Not Report\n- lib/\n')
+  const r = run([...reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base'), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.counts.droppedByPolicy, 0, 'the working copy’s exclusion is not applied')
+  assert.deepEqual(out.policyProblems, [])
+  assert.match(run(reviewArgs(repo, POLICY_FINDINGS, '--base', 'policy-base')).stdout, /differs/i)
+})
+
+test('review --base and review-policy --base refuse a ref that names no commit and a ref that reads as an option', () => {
+  const repo = policyRepo('rb-bad-ref', '## Do Not Report\n- dist/\n')
+  for (const head of [reviewArgs(repo, POLICY_FINDINGS), ['review-policy', '--root', repo.root]]) {
+    const bad = run([...head, '--base', 'no-such-ref-anywhere', '--json'])
+    assert.equal(bad.code, 1, head[0])
+    assert.equal(bad.stdout, '', 'no review result is printed')
+    assert.match(bad.stderr, /no-such-ref-anywhere/)
+
+    const option = run([...head, '--base', '-p', '--json'])
+    assert.equal(option.code, 1, head[0])
+    assert.equal(option.stdout, '')
+    assert.match(option.stderr, /must name a ref/)
+
+    const valueless = run([...head, '--base'])
+    assert.equal(valueless.code, 1, head[0])
+    assert.match(valueless.stderr, /--base needs a ref/)
+  }
+})
+
+const TOOL_GUARDS_SPEC = [
+  '# hooks/tool-guards Specification',
+  '',
+  '## Purpose',
+  '',
+  'Guards.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Every guard SHALL fail open',
+  '',
+  'A guard SHALL allow on anything it cannot establish.',
+  '',
+  '#### Scenario: Happy path — an unknown stage',
+  '',
+  '- **GIVEN** an unknown stage',
+  '- **WHEN** the guard runs',
+  '- **THEN** it allows',
+  ''
+].join('\n')
+
+test('review --base checks a requirement citation at the ref, reports a failed one, and still adjudicates the finding', () => {
+  const repo = policyRepo('rb-citations', null, { 'openspec/specs/hooks/tool-guards/spec.md': TOOL_GUARDS_SPEC })
+  // The working tree gains a requirement the ref does not have.
+  writeFileSync(
+    join(repo.root, 'openspec/specs/hooks/tool-guards/spec.md'),
+    `${TOOL_GUARDS_SPEC}\n### Requirement: Working tree only SHALL not be citable at the ref\n\nText.\n`
+  )
+  const cite = heading => `openspec/specs/hooks/tool-guards/spec.md#${heading}`
+  const findings = [
+    { dimension: 'domain', severity: 'blocker', title: 'cites a real requirement', file: 'lib/a.mjs', requirement: cite('Every guard SHALL fail open') },
+    { dimension: 'domain', severity: 'blocker', title: 'cites a requirement only the working tree has', file: 'lib/a.mjs', requirement: cite('Working tree only SHALL not be citable at the ref') },
+    { dimension: 'domain', severity: 'blocker', title: 'cites outside the living specs', file: 'lib/a.mjs', requirement: 'openspec/changes/x/specs/a/spec.md#A requirement' }
+  ]
+
+  const r = run([...reviewArgs(repo, findings, '--base', 'policy-base'), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(
+    out.anomalies.requirementCitations.map(a => a.title).sort(),
+    ['cites a requirement only the working tree has', 'cites outside the living specs'],
+    'a valid citation is accepted silently'
+  )
+  for (const anomaly of out.anomalies.requirementCitations) {
+    assert.ok(anomaly.requirement && anomaly.problem, JSON.stringify(anomaly))
+  }
+  assert.equal(out.counts.surviving, 3, 'a broken citation never drops a finding')
+  assert.match(run(reviewArgs(repo, findings, '--base', 'policy-base')).stdout, /ANOMALY.*requirement/i)
+
+  // Without a base the citation is checked against the working tree.
+  const plain = JSON.parse(run([...reviewArgs(repo, findings), '--json']).stdout)
+  assert.deepEqual(plain.anomalies.requirementCitations.map(a => a.title), ['cites outside the living specs'])
+})
+
+test('review reports a domain blocker that cites no requirement, still adjudicates it, and stays quiet about a domain warning', () => {
+  const repo = policyRepo('rb-domain-blocker', null)
+  const findings = [
+    { dimension: 'domain', severity: 'blocker', title: 'contradiction with no citation', file: 'lib/a.mjs' },
+    { dimension: 'domain', severity: 'warning', title: 'unspecified behaviour', file: 'lib/a.mjs' }
+  ]
+  const out = JSON.parse(run([...reviewArgs(repo, findings), '--json']).stdout)
+  assert.deepEqual(out.anomalies.requirementCitations.map(a => a.title), ['contradiction with no citation'])
+  assert.match(out.anomalies.requirementCitations[0].problem, /cites no requirement/)
+  assert.equal(out.counts.surviving, 2, 'the blocker is adjudicated, not dropped or re-banded')
+})
+
+test('review-policy --base prints the always-human-review list from the ref beside the exclusions, and the prose from the working tree', () => {
+  const repo = policyRepo(
+    'rp-human',
+    '## Do Not Report\n- dist/\n\n## Always Human Review\n- lib/release/\n- ./.github/workflows\n'
+  )
+  writeFileSync(
+    join(repo.root, 'REVIEW.md'),
+    '## What "Important" means\nData loss only.\n\n## Do Not Report\n- dist/\n\n## Always Human Review\n- docs/\n'
+  )
+
+  const out = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(out.humanPaths, ['lib/release', '.github/workflows'], 'canonical form, read from the ref')
+  assert.deepEqual(out.excludePaths, ['dist'])
+  assert.match(out.prose, /Data loss only/, 'the prose is the working tree’s')
+  assert.equal(out.differsFromBase, true)
+
+  const text = run(['review-policy', '--base', 'policy-base', '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /human-review:.*lib\/release/)
+  assert.ok(text.stdout.includes('policy-base'), text.stdout)
+
+  const working = JSON.parse(run(['review-policy', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(working.humanPaths, ['docs'], 'without a base both lists come from the working tree, as before')
+})
+
+// --- merge-confidence --base: policy.humanPaths ---------------------------------
+
+const said = signal => [signal.reason, ...(signal.evidence || [])].join('\n')
+
+/** The base commit carries `policy`; the head commit adds `changed`. */
+function humanPathsRepo(sub, policy, changed) {
+  const files = Object.fromEntries(changed.map(p => [p, 'export {}\n']))
+  return mergeBaseRepo(sub, files, policy === null ? {} : { 'REVIEW.md': policy })
+}
+
+const humanPathsRun = (repo, changed, ...extra) =>
+  runJson(
+    ['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--changed', changed.join(','), ...extra],
+    0
+  )
+
+test('policy.humanPaths is green when no listed path is touched and the policy is unchanged, and names the ref it read', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-green', '## Always Human Review\n- lib/release/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'green', said(signal))
+  assert.deepEqual(signal.flags, [])
+  assert.ok(
+    said(signal).includes(repo.base) || said(signal).includes(repo.base.slice(0, 7)),
+    `evidence names the reference: ${said(signal)}`
+  )
+})
+
+test('policy.humanPaths is amber, for a person, naming a touched path and the listed path it falls under; the verdict is HUMAN', () => {
+  const changed = ['src/widgets/catalogue.ts', 'lib/release/publish.mjs']
+  const repo = humanPathsRepo('mc-human-touched', '## Always Human Review\n- lib/release/\n', changed)
+  const out = humanPathsRun(repo, changed)
+  const signal = signalIn(out, 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('lib/release/publish.mjs'), said(signal))
+  assert.match(said(signal), /lib\/release(?![\w.]|\/\w)/, `the listed path itself is named: ${said(signal)}`)
+  assert.equal(out.verdict, 'HUMAN')
+})
+
+test('policy.humanPaths is amber naming REVIEW.md when the working copy differs from the base, and run.integrity does not move', () => {
+  const changed = ['src/widgets/catalogue.ts', 'lib/release/publish.mjs']
+  const policy = '## Always Human Review\n- lib/release/\n'
+  const untouched = humanPathsRepo('mc-human-policy-same', policy, changed)
+  const edited = humanPathsRepo('mc-human-policy-edited', policy, changed)
+  writeFileSync(join(edited.root, 'REVIEW.md'), '## Always Human Review\n- docs/\n')
+
+  const signal = signalIn(humanPathsRun(edited, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('REVIEW.md'), said(signal))
+  assert.ok(said(signal).includes('lib/release/publish.mjs'), 'the listed path from the base is still enforced')
+
+  const pick = out => {
+    const { band, kind, reason } = signalIn(out, 'run.integrity')
+    return { band, kind, reason }
+  }
+  assert.deepEqual(pick(humanPathsRun(edited, changed)), pick(humanPathsRun(untouched, changed)))
+})
+
+test('policy.humanPaths is amber naming the problem when the committed section could not be read in full', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-unreadable', '## Always Human Review\n- ../outside\n- lib/release/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('../outside'), said(signal))
+})
+
+test('policy.humanPaths matches on the canonical path: ./lib/release covers lib/release/a.mjs and not lib/releasex/a.mjs', () => {
+  const policy = '## Always Human Review\n- ./lib/release\n'
+  const inside = ['lib/release/a.mjs']
+  const beside = ['lib/releasex/a.mjs']
+  assert.equal(signalIn(humanPathsRun(humanPathsRepo('mc-human-canon-in', policy, inside), inside), 'policy.humanPaths').band, 'amber')
+  const other = signalIn(humanPathsRun(humanPathsRepo('mc-human-canon-out', policy, beside), beside), 'policy.humanPaths')
+  assert.equal(other.band, 'green', said(other))
+})
+
+test('policy.humanPaths is green when the base has no REVIEW.md, and unobserved, for want of a base, without --base', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const absent = humanPathsRepo('mc-human-absent', null, changed)
+  const green = signalIn(humanPathsRun(absent, changed), 'policy.humanPaths')
+  assert.equal(green.band, 'green', said(green))
+
+  const r = run(['merge-confidence', 'add-widget-catalogue', '--root', absent.root, '--changed', changed.join(','), '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const none = signalIn(JSON.parse(r.stdout), 'policy.humanPaths')
+  assert.equal(none.band, 'unobserved')
+  assert.match(none.reason, /no --base/)
+})
+
+// --- domain-context -------------------------------------------------------------
+
+const GUARD_COMMIT = 'hooks/guard-commit.mjs'
+
+function writeGraph(root, links) {
+  mkdirSync(join(root, '.claude', 'graph'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'graph', 'graph.json'),
+    JSON.stringify({ graph: { built_at: '2026-01-01T00:00:00Z' }, nodes: [], links })
+  )
+}
+
+const specEdge = (spec, target, weight = 1) => ({
+  source: `openspec:${spec}`,
+  target: `file:${target}`,
+  relation: 'implements_spec',
+  confidence: 'INFERRED',
+  source_file: spec,
+  weight
+})
+
+const TOOL_GUARDS_PATH = 'openspec/specs/hooks/tool-guards/spec.md'
+
+function domainRepo(sub, extra = {}) {
+  return gitRepo(sub, {
+    [TOOL_GUARDS_PATH]: TOOL_GUARDS_SPEC,
+    [GUARD_COMMIT]: 'export {}\n',
+    'lib/other.mjs': 'export {}\n',
+    ...extra
+  })
+}
+
+test('domain-context prints a selected capability, the file that linked it, and the text read at the reference', () => {
+  const repo = domainRepo('dc-selected')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT)])
+  // The working tree gains a requirement the reference does not have.
+  writeFileSync(join(repo.root, TOOL_GUARDS_PATH), `${TOOL_GUARDS_SPEC}\n### Requirement: Working tree only\n\nText SHALL.\n`)
+
+  const r = run(['domain-context', '--changed', GUARD_COMMIT, '--base', repo.sha, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, true)
+  assert.equal(out.capabilities.length, 1)
+  assert.equal(out.capabilities[0].capability, 'hooks/tool-guards')
+  assert.equal(out.capabilities[0].via, 'linked')
+  assert.deepEqual(out.capabilities[0].files, [GUARD_COMMIT])
+  assert.equal(out.ref, repo.sha, 'the reference the text was read from')
+  assert.ok(out.text.includes('Every guard SHALL fail open'), out.text)
+  assert.ok(!out.text.includes('Working tree only'), 'the base is read at the reference, not the working tree')
+
+  const text = run(['domain-context', '--changed', GUARD_COMMIT, '--base', repo.sha, '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.includes('hooks/tool-guards'), text.stdout)
+})
+
+test('domain-context with no graph and nothing declared exits 0 with a spoken skip, naming the working tree as its base', () => {
+  const repo = domainRepo('dc-skipped')
+  const r = run(['domain-context', '--changed', 'lib/other.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, false)
+  assert.match(JSON.stringify(out.skipped), /no graph/)
+  assert.match(JSON.stringify(out), /working tree/i)
+})
+
+test('domain-context with no graph selects what the change declares and says the touched files were not mapped', () => {
+  const repo = domainRepo('dc-declared', {
+    'openspec/changes/tighten-guards/specs/hooks/tool-guards/spec.md': [
+      '## MODIFIED Requirements',
+      '',
+      '### Requirement: Every guard SHALL fail open',
+      '',
+      'A guard SHALL allow on anything it cannot establish, including its own crash.',
+      ''
+    ].join('\n')
+  })
+  const r = run(['domain-context', 'tighten-guards', '--changed', 'lib/unmapped.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, true)
+  assert.equal(out.capabilities[0].capability, 'hooks/tool-guards')
+  assert.equal(out.capabilities[0].via, 'declared')
+  assert.match(JSON.stringify(out.partial), /graph/)
+})
+
+test('domain-context with a graph that links nothing is not selected, not skipped, and records the unlinked paths', () => {
+  const repo = domainRepo('dc-unlinked')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT), specEdge(TOOL_GUARDS_PATH, 'lib/half.mjs', 0.5)])
+  const r = run(['domain-context', '--changed', 'lib/other.mjs,lib/half.mjs', '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, false, 'a half-weight edge selects nothing')
+  assert.ok(!out.skipped, 'an unlinked file is a gap the audit measures, not a review that degraded')
+  assert.match(JSON.stringify(out.notSelected), /lib\/other\.mjs/)
+})
+
+test('domain-context exits 1 with an empty stdout on a base that names no commit', () => {
+  const repo = domainRepo('dc-bad-ref')
+  writeGraph(repo.root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT)])
+  const r = run(['domain-context', '--changed', GUARD_COMMIT, '--base', 'no-such-ref-anywhere', '--root', repo.root, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /no-such-ref-anywhere/)
+})
+
+// --- spec-audit -----------------------------------------------------------------
+
+const AUDIT_ALPHA = [
+  '## Purpose',
+  '',
+  'Alpha.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Alpha SHALL list things',
+  '',
+  'Alpha SHALL list things and SHALL NOT drop one.',
+  '',
+  '#### Scenario: Happy path — lists',
+  '',
+  '- **GIVEN** things',
+  '- **WHEN** listed',
+  '- **THEN** all appear',
+  '',
+  '#### Scenario: Failure — a bad thing',
+  '',
+  '- **GIVEN** a bad thing',
+  '- **WHEN** listed',
+  '- **THEN** it is reported',
+  '',
+  '#### Scenario: Edge case — no things',
+  '',
+  '- **GIVEN** no things',
+  '- **WHEN** listed',
+  '- **THEN** none appear',
+  '',
+  '### Requirement: Alpha SHALL answer',
+  '',
+  'Alpha SHALL answer.',
+  ''
+].join('\n')
+
+const AUDIT_BETA = [
+  '## Purpose',
+  '',
+  'Beta.',
+  '',
+  '## Requirements',
+  '',
+  '### Requirement: Beta SHALL do a thing',
+  '',
+  'Beta SHALL do a thing.',
+  '',
+  '#### Scenario: Happy path — does it',
+  '',
+  '- **GIVEN** x',
+  '- **WHEN** y',
+  '- **THEN** z',
+  ''
+].join('\n')
+
+function auditRepo(sub, specs) {
+  const root = join(dir, sub)
+  mkdirSync(root, { recursive: true })
+  for (const [capability, text] of Object.entries(specs)) {
+    mkdirSync(join(root, 'openspec', 'specs', capability), { recursive: true })
+    writeFileSync(join(root, 'openspec', 'specs', capability, 'spec.md'), text)
+  }
+  return root
+}
+
+test('spec-audit exits 0 with no openspec/specs, and says no living spec exists instead of reporting zeros', () => {
+  const root = join(dir, 'audit-empty')
+  mkdirSync(root, { recursive: true })
+  for (const args of [[], ['--json']]) {
+    const r = run(['spec-audit', '--root', root, ...args])
+    assert.equal(r.code, 0, r.stderr)
+    assert.match(r.stdout, /no living spec/i)
+  }
+  const out = runJson(['spec-audit', '--root', root])
+  assert.equal(out.totals?.requirements ?? null, null, 'absent, not zero')
+  assert.equal(out.totals?.scenarios ?? null, null)
+  assert.deepEqual(out.capabilities ?? [], [])
+})
+
+test('spec-audit exits 0 on a corpus with flagged capabilities, and --json carries per-capability entries and totals', () => {
+  const root = auditRepo('audit-corpus', { 'alpha/one': AUDIT_ALPHA, 'beta/two': AUDIT_BETA })
+  const text = run(['spec-audit', '--root', root])
+  assert.equal(text.code, 0, 'an audit that failed a build would be a gate by accident')
+
+  const r = run(['spec-audit', '--root', root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  const alpha = out.capabilities.find(c => c.capability === 'alpha/one')
+  const beta = out.capabilities.find(c => c.capability === 'beta/two')
+  assert.equal(alpha.requirements, 2)
+  assert.equal(alpha.scenarios, 3)
+  assert.deepEqual(alpha.flags, [], 'one bound line, a Failure scenario and an Edge case scenario')
+  assert.equal(beta.requirements, 1)
+  assert.equal(beta.scenarios, 1)
+  assert.deepEqual([...beta.flags].sort(), ['no-bound', 'no-edge-case', 'no-failure-scenario'])
+  assert.equal(out.totals.requirements, 3)
+  assert.equal(out.totals.scenarios, 4)
+  assert.equal(out.totals.specs, 2)
+  // No graph was built: the link measures are absent with a reason, not zero.
+  assert.match(JSON.stringify(out), /no graph/i)
+})
+
+test('spec-audit names a spec it cannot read, leaves it out of the totals, and still exits 0', { skip: isRoot() }, () => {
+  const root = auditRepo('audit-unreadable', { 'alpha/one': AUDIT_ALPHA, 'beta/two': AUDIT_BETA })
+  const locked = join(root, 'openspec', 'specs', 'beta', 'two', 'spec.md')
+  chmodSync(locked, 0o000)
+  try {
+    const r = run(['spec-audit', '--root', root, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.unreadable.length, 1)
+    assert.ok(out.unreadable[0].path.includes('beta/two'), JSON.stringify(out.unreadable))
+    assert.ok(out.unreadable[0].reason)
+    assert.equal(out.totals.specs, 1, 'the totals say how many specs they cover')
+    assert.equal(out.totals.requirements, 2)
+  } finally {
+    chmodSync(locked, 0o600)
+  }
+})
+
+// =============================================================================
+// A findings input with no findings list (label-and-harden-the-merge-verdict,
+// design D10): `gate`, `review` and `remediate` exit 1 with the reason on
+// stderr and nothing on stdout, as they do for a file they cannot read.
+// =============================================================================
+
+const LISTED_BLOCKER = {
+  dimension: 'language',
+  severity: 'blocker',
+  file: 'lib/a.mjs',
+  title: 'the loop drops the last row',
+  description: 'off by one in the loop bound'
+}
+
+for (const [label, argv] of [
+  ['gate', path => ['gate', '--findings', path]],
+  ['review', path => ['review', '--findings', path, '--verdicts', file('nfl-verdicts.json', [])]],
+  ['remediate', path => ['remediate', '--findings', path]]
+]) {
+  test(`${label} refuses an input that carries no findings list: exit 1, the reason on stderr, nothing on stdout`, () => {
+    for (const [name, body] of [
+      ['empty-object', {}],
+      ['other-keys', { summary: 'nothing to report', counts: { blocker: 0 } }],
+      ['a-number', 7],
+      // `file` writes a string as it is, so the JSON string is spelt with its quotes.
+      ['a-string', '"clean"']
+    ]) {
+      const path = file(`nfl-${label}-${name}.json`, body)
+      for (const json of [[], ['--json']]) {
+        const r = run([...argv(path), ...json])
+        assert.equal(r.code, 1, `${label} ${name} ${json.join('')}: ${r.stdout}`)
+        assert.equal(r.stdout, '', `${label} ${name}: stdout must be empty`)
+        assert.ok(r.stderr.includes('no findings list'), r.stderr)
+      }
+    }
+  })
+}
+
+test('gate handed the record interlock review --json prints blocks on its surviving blocker and lists it', () => {
+  const findings = file('nfl-record-findings.json', [{ dimension: 'language', findings: [LISTED_BLOCKER] }])
+  const verdicts = file('nfl-record-verdicts.json', [])
+  const reviewed = run(['review', '--findings', findings, '--verdicts', verdicts, '--json'])
+  assert.equal(reviewed.code, 0, reviewed.stderr)
+  const record = JSON.parse(reviewed.stdout)
+  assert.equal(record.surviving.length, 1, 'precondition: the review left one surviving blocker')
+  assert.ok(!Array.isArray(record.findings), 'precondition: the record carries no findings key')
+
+  const recordPath = file('nfl-record.json', record)
+  const gated = run(['gate', '--findings', recordPath])
+  assert.equal(gated.code, 1)
+  assert.match(gated.stdout, /GATE BLOCKED/)
+  assert.ok(gated.stdout.includes(LISTED_BLOCKER.title), gated.stdout)
+
+  // The remediation plan reads the same list.
+  const planned = runJson(['remediate', '--findings', recordPath])
+  assert.equal(planned.counts.blockers, 1)
+})
+
+test('an empty list, and a record whose surviving list is empty, each pass the gate with zero findings', () => {
+  for (const [name, body] of [['list', []], ['record', { surviving: [], dismissed: [LISTED_BLOCKER], counts: { raised: 1, surviving: 0 } }]]) {
+    const out = runJson(['gate', '--findings', file(`nfl-empty-${name}.json`, body)])
+    assert.equal(out.passed, true, name)
+    assert.equal(out.total, 0, name)
+  }
+  // And nothing to fix is still a plan, exit 0.
+  assert.equal(run(['remediate', '--findings', file('nfl-empty-plan.json', [])]).code, 0)
+  assert.equal(run(['review', '--findings', file('nfl-empty-review.json', []), '--verdicts', file('nfl-empty-verdicts.json', [])]).code, 0)
+})
+
+// =============================================================================
+// A glob-shaped item in an enforced list, at the merge verdict (design D11).
+// The base commit holds the REVIEW.md, so its lists are the ones applied.
+// =============================================================================
+
+test('an always-human-review item src/** reads policy.humanPaths amber, for a person, naming the item', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-pattern', '## Always Human Review\n- src/**\n', changed)
+  const out = humanPathsRun(repo, changed)
+  const signal = signalIn(out, 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.equal(signal.kind, 'person')
+  assert.ok(said(signal).includes('"src/**"'), said(signal))
+  assert.ok(said(signal).includes('Always Human Review'), said(signal))
+  assert.notEqual(out.verdict, 'MERGE')
+})
+
+test('a do-not-report item docs/*.md is reported by review-policy and leaves policy.humanPaths green', () => {
+  const changed = ['src/widgets/catalogue.ts']
+  const repo = humanPathsRepo('mc-human-pattern-other-list', '## Do Not Report\n- docs/*.md\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'green', said(signal))
+
+  const policy = runJson(['review-policy', '--root', repo.root, '--base', repo.base])
+  assert.deepEqual(policy.excludePaths, [])
+  assert.ok(policy.problems.some(p => p.includes('"Do Not Report" item "docs/*.md"')), policy.problems.join(' | '))
+})
+
+test('an always-human-review item app/[id]/ is a path: a file under it is amber by the path, and nothing is reported as a pattern', () => {
+  const changed = ['app/[id]/page.tsx']
+  const repo = humanPathsRepo('mc-human-brackets', '## Always Human Review\n- app/[id]/\n', changed)
+  const signal = signalIn(humanPathsRun(repo, changed), 'policy.humanPaths')
+  assert.equal(signal.band, 'amber', said(signal))
+  assert.ok(said(signal).includes('app/[id]/page.tsx'), said(signal))
+  assert.doesNotMatch(said(signal), /directory prefix/)
 })

@@ -1,0 +1,23 @@
+{
+  "id": 9001,
+  "sha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "ref": "feature/catalogue",
+  "status": "failed",
+  "jobs": [
+    {
+      "name": "job-a",
+      "status": "success",
+      "allow_failure": false
+    },
+    {
+      "name": "job-b",
+      "status": "failed",
+      "allow_failure": true
+    },
+    {
+      "name": "job-c",
+      "status": "failed",
+      "allow_failure": false
+    }
+  ]
+}

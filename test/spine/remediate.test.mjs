@@ -388,3 +388,25 @@ test('formatRemediationPlan flags unlabelled findings instead of an empty dimens
   const out = formatRemediationPlan(planRemediation([f({ severity: 'blocker' })]))
   assert.match(out, /re-review dimensions: \(unlabelled/)
 })
+
+// --- a review record as the input (design D10 of label-and-harden-the-merge-verdict) ---
+
+test('a review record is planned from its surviving list, which is the list it was always meant to plan from', () => {
+  const record = {
+    surviving: [f({ title: 'crash on empty input' }), f({ severity: 'suggestion', title: 'rename' })],
+    dismissed: [f({ title: 'verified away' })],
+    counts: { raised: 3, dismissed: 1, surviving: 2 }
+  }
+  const plan = planRemediation(record)
+  assert.deepEqual(titles(plan), ['crash on empty input'])
+  assert.deepEqual(plan.deferred.map(d => d.title), ['rename'])
+  assert.equal(plan.counts.blockers, 1)
+  assert.equal(plan.counts.fixing, 1)
+})
+
+test('a record whose surviving list is empty plans nothing to fix', () => {
+  const plan = planRemediation({ surviving: [] })
+  assert.deepEqual(titles(plan), [])
+  assert.equal(plan.counts.blockers, 0)
+  assert.equal(plan.halt, false)
+})

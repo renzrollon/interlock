@@ -15,23 +15,62 @@ it.
 
 ## The split: advice vs. enforced
 
-`REVIEW.md` has exactly two consumers, one per trust level.
+`REVIEW.md` has exactly three consumers, one per part of the file, and they sit at two trust levels.
 
-| Part of the file | Consumer | Trust | Effect |
-|---|---|---|---|
-| **Prose** — `## Owner` / front-matter `owner:`, `## What "Important" means`, `## Exclusions rationale` | the reviewer prompt | **advice** | reviewers read it as repository context; it can never lower survival |
-| **`## Do Not Report` paths** | `interlock review` (the CLI) | **enforced** | findings whose file lies under a listed path are dropped before the band is applied |
+| Part of the file | Consumer | Trust | Effect | Read from |
+|---|---|---|---|---|
+| **Prose** — `## Owner` / front-matter `owner:`, `## What "Important" means`, `## Exclusions rationale` | the reviewer prompt | **advice** | reviewers read it as repository context; it can never lower survival | the working tree |
+| **`## Do Not Report` paths** | `interlock review` (the CLI) | **enforced** | findings whose file lies under a listed path are dropped before the band is applied | the base ref (`--base`), or the run's start commit; the working tree when neither exists |
+| **`## Always Human Review` paths** | `interlock merge-confidence` (the CLI), and no other consumer | **enforced** | a change that touches a listed path, or edits `REVIEW.md` itself, reads amber on the `policy.humanPaths` signal and needs a person | the base ref (`--base`); unobserved without one |
 
-The line that keeps this on-thesis: **a model is never handed the path list as
+The line that keeps this on-thesis: **a model is never handed a path list as
 something to honor.** A path exclusion a model can choose to ignore is not an
-exclusion. The list is data the deterministic CLI applies; the prose is advice a
-reviewer follows.
+exclusion. The lists are data the deterministic CLI applies; the prose is advice a
+reviewer follows. That is also why the always-human-review list is consumed by
+the merge verdict alone: no reviewer prompt carries it, no review drops or
+re-bands a finding because of it, and `interlock review` reads and ignores it. It
+cannot make a review stricter or looser. It can only make the verdict ask for a
+person.
+
+### Where each part is read from, and why
+
+The two path lists are enforced, so a change must not be able to edit the copy
+that is applied to it. A pull request that adds `src/legacy/` to `## Do Not
+Report` would otherwise quiet the review of exactly the paths it touches, and one
+that deleted a path from `## Always Human Review` would remove the person from the
+decision about its own change. So the lists are read from a **base**:
+
+- **`interlock review --base <ref>`** and **`interlock review-policy --base <ref>`**
+  read both lists from the commit at the ref. `merge-confidence --base` reads the
+  always-human-review list from the base **tip**, as GitHub reads `CODEOWNERS`
+  from the base branch. A branch that predates a policy change reads amber on
+  the signal until it is rebased, which is the safe direction: reading the merge
+  base instead would let a stale branch apply a policy the base has since
+  tightened.
+- **A ship run** records the commit it started on and reads the lists from it,
+  not from the working tree, so an edit the run itself makes to `REVIEW.md`
+  cannot reach its own review.
+- **The prose is read from the working tree.** It is advice and can never relax
+  the gate, and an uncommitted edit to it reaching the reviewer is the behaviour
+  that lets a person tune a review before committing.
+
+A working copy that differs from the base is **said**, never silently resolved:
+`review-policy --base` prints `differsFromBase`, a ship run raises `POLICY DIFFERS
+FROM BASE` ([04](./04-when-it-stops.md#policy-differs-from-base-and-review-base-not-pinned)),
+and `merge-confidence` reads `policy.humanPaths` amber naming `REVIEW.md`. Any
+edit to the policy therefore reaches a person. With no base to read from, every
+command falls back to the working tree as before, and a run says so with `REVIEW
+BASE NOT PINNED`.
 
 ### What `REVIEW.md` can change
 
 - **Scope** — declare paths (`dist/`, `vendor/`, generated code) that are out of
   review entirely. The CLI drops findings on them and reports each drop with the
   excluding path.
+- **Who must look** — declare paths (`auth/`, `migrations/`, a payments
+  directory) a person must see before the change merges. The merge verdict names
+  each touched path and does not read `MERGE` while one is touched; the
+  deterministic checks around it are unchanged.
 - **Advice** — the local definition of "Important", the rationale for the
   exclusions, and the name of the person or role who owns the review bar. This is
   injected into every reviewer's prompt, clearly delimited as repository policy.
@@ -42,7 +81,9 @@ reviewer follows.
   like a threshold (`nitCap:`, `minQuality:`, `band:`) is **reported as not an
   accepted field and ignored**, never adopted. A file that could edit the band
   would relocate the gate into markdown a careless edit — or a model — can talk
-  past, which is the one thing this change refuses to allow.
+  past, which is the one thing this change refuses to allow. This holds in both
+  path sections: a list item shaped like a threshold (`- nitCap: 0`) is reported
+  and not read as a path.
 - **Survival arithmetic.** Exclusions shrink the *input* set (findings on excluded
   paths never reach the skeptics), but the band and nit cap applied to what
   remains are identical to a run with no `REVIEW.md`. Exclusions lower the volume,
@@ -58,12 +99,15 @@ reviewer follows.
   prose still injects even if the exclusions block is broken, and vice-versa. A
   typo in a policy file must never block a ship run — but it must be visible, so
   "my exclusions aren't working" is diagnosable rather than mysterious.
-- Only the **repository root** `REVIEW.md` is read. A file in a subdirectory is
-  not policy.
+- Only the **repository root** `REVIEW.md` is read, from the working tree for the
+  prose and from the base ref or the run's start commit for the two lists. A file
+  in a subdirectory is not policy. A base that has no `REVIEW.md` is the empty
+  list, so a policy added by the change under review is not applied to that same
+  change.
 
 ## Path matching
 
-Exclusions match on the **canonical path form** and are **case-sensitive**,
+Both path lists (`## Do Not Report` and `## Always Human Review`) use the same rules. They match on the **canonical path form** and are **case-sensitive**,
 mirroring the default filesystem:
 
 - `dist`, `./dist`, and `dist/` are the same rule and all exclude `dist/bundle.js`.
@@ -72,13 +116,31 @@ mirroring the default filesystem:
   folding case would drop files the filesystem treats as distinct.
 - A path that cannot be placed inside the repo (absolute, escaping the root)
   excludes nothing and is reported.
+- **The lists hold paths and directory prefixes, never patterns.** An item that
+  holds `*` or `?`, such as `src/**` or `docs/*.md`, is **reported as a problem
+  and added to neither list**. The problem names the section it was found in and
+  the item, and says that only a path or a directory prefix is read. Read as a
+  literal path a pattern matches no file, so `- src/**` under `## Always Human
+  Review` used to list nothing and say nothing, and every path under it read as
+  not needing a person. List the directory instead: `src/` covers every file
+  under it. Square brackets and braces are characters a real path may hold (a
+  route directory such as `app/[id]/`), so they are read as part of the path.
+  At the merge verdict a pattern in the always-human-review section committed
+  at the base reads `policy.humanPaths` amber, needing a person, like any other
+  problem in that section; the same item under `## Do Not Report` is reported
+  wherever policy problems are and does not move that signal
+  ([15](15-merge-confidence.md#always-human-review-paths-and-why-they-are-read-from-the-base)).
 
 ## Try it
 
 ```bash
 interlock review-policy --json        # what the CLI parsed from your REVIEW.md
-interlock review --findings f.json --verdicts v.json --changed <files> --json
+interlock review-policy --base origin/main --json
+#   → both lists read from the ref, plus listsFrom and differsFromBase
+interlock review --findings f.json --verdicts v.json --changed <files> --base origin/main --json
 #   → the JSON carries droppedByPolicy (with excluding paths) and policyProblems
+interlock merge-confidence --changed <files> --base origin/main --json
+#   → the policy.humanPaths signal: green, or amber naming each touched path
 ```
 
 Copy [`skills/review-code/REVIEW.template.md`](../skills/review-code/REVIEW.template.md)

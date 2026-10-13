@@ -38,6 +38,8 @@ A task SHALL be marked complete only when the run **recorded** it as succeeded. 
 
 Consequently a task the run recorded as failed, or as not attempted, MUST NOT be marked complete. Marking such a task is a more serious defect than failing to mark a succeeded one, because an unticked success is visible to the next reader and a ticked failure is not — it presents unimplemented work as finished.
 
+A task recorded as succeeded whose handoff report was rejected is a succeeded task for this purpose. It SHALL be marked complete, and the run SHALL say that its report was rejected, so the mark is never the only thing a reader is told about it.
+
 #### Scenario: Happy path — succeeded task ids are marked and confirmed
 
 - **GIVEN** a batch in which three tasks succeeded and the run recorded all three as succeeded
@@ -53,7 +55,7 @@ Consequently a task the run recorded as failed, or as not attempted, MUST NOT be
 
 #### Scenario: Failure — a task the run recorded as failed is not marked
 
-- **GIVEN** a task whose agent reported success but whose result the state machine recorded as failed, because its handoff packet carried a status outside the accepted set
+- **GIVEN** a task whose agent reported success but whose result the state machine recorded as failed, because its lane's result omitted an outcome for a task the lane was given
 - **WHEN** the run reaches its completion recording
 - **THEN** that task's id is not among the ids marked complete
 - **AND** its checkbox is left unchecked, so the task is still visible as outstanding work
@@ -71,6 +73,13 @@ Consequently a task the run recorded as failed, or as not attempted, MUST NOT be
 - **WHEN** the run records completion for that batch
 - **THEN** the not-attempted task is not marked complete
 - **AND** it is not reported as a failure either, so the run's failure budget is unchanged by it
+
+#### Scenario: Edge case — a task whose report was rejected is marked, and the run says so
+
+- **GIVEN** a task whose agent reported success with a handoff packet carrying a status outside the accepted set, which the state machine recorded as succeeded with a rejected report
+- **WHEN** the run reaches its completion recording
+- **THEN** that task's id is among the ids marked complete
+- **AND** the run names the task and the rejection reason in a banner, so the mark does not stand alone
 
 ### Requirement: The summary SHALL name every degradation the run accepted
 

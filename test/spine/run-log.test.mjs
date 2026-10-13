@@ -1561,3 +1561,189 @@ test('the inter-wave verify budget on a receipt is carried', () => {
   const record = JSON.parse(lines(r.path)[0])
   assert.deepEqual(record.verifyBudget, { ms: 480000, source: 'profile' })
 })
+
+// --- the merge-confidence block on the receipt (design D11) -------------------
+//
+// The block is the verdict and its shape. It is built field by field from a
+// source that, at the close, is a whole assessment carrying a reason and an
+// evidence line per signal, and those can quote a finding's title and the file
+// it names. The whitelist is what keeps them out of a file future agents read.
+
+const MERGE_BLOCK = {
+  verdict: 'HUMAN',
+  score: 72,
+  worstBand: 'amber',
+  counts: { gating: 17, clean: 14, green: 14, amber: 2, red: 0, unobserved: 1, flagged: 1 },
+  driving: ['risk.class', 'ci.pipeline'],
+  flags: [{ id: 'verify.e2e', flag: 'no-e2e' }]
+}
+
+test('a receipt copies the merge-confidence block field by field', () => {
+  const r = appendRunLogEvent(tmp, fullReceipt({ mergeConfidence: MERGE_BLOCK }))
+  assert.equal(r.written, true)
+  const record = JSON.parse(lines(r.path)[0])
+  assert.deepEqual(record.mergeConfidence, MERGE_BLOCK)
+  assert.deepEqual(Object.keys(record.mergeConfidence).sort(), [
+    'counts',
+    'driving',
+    'flags',
+    'score',
+    'verdict',
+    'worstBand'
+  ])
+})
+
+test('a receipt with no merge-confidence block records it as null, never a zero score or a verdict', () => {
+  const absent = JSON.parse(lines(appendRunLogEvent(tmp, fullReceipt()).path)[0])
+  assert.equal(absent.mergeConfidence, null)
+  assert.ok(Object.prototype.hasOwnProperty.call(absent, 'mergeConfidence'), 'the key is written, with null')
+  for (const mergeConfidence of [undefined, null, 'HUMAN', 72, ['HUMAN'], true]) {
+    const record = JSON.parse(lines(appendRunLogEvent(tmp, fullReceipt({ mergeConfidence })).path).at(-1))
+    assert.equal(record.mergeConfidence, null, JSON.stringify(mergeConfidence))
+  }
+})
+
+test('a verdict outside the three published words is dropped, not copied', () => {
+  for (const verdict of ['SHIP', 'merge', 'Human', 'BLOCKED', '', 'MERGE; rm -rf', 7, null, undefined, {}]) {
+    const r = appendRunLogEvent(tmp, fullReceipt({ mergeConfidence: { ...MERGE_BLOCK, verdict } }))
+    const record = JSON.parse(lines(r.path).at(-1))
+    const block = record.mergeConfidence
+    assert.ok(block === null || block.verdict === null, `verdict ${JSON.stringify(verdict)} must not survive`)
+    if (typeof verdict === 'string' && verdict) assert.doesNotMatch(JSON.stringify(block), new RegExp(verdict.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
+  for (const verdict of ['MERGE', 'HUMAN', 'BLOCK']) {
+    const r = appendRunLogEvent(tmp, fullReceipt({ mergeConfidence: { ...MERGE_BLOCK, verdict } }))
+    assert.equal(JSON.parse(lines(r.path).at(-1)).mergeConfidence.verdict, verdict)
+  }
+})
+
+test('a reason or an evidence key handed in beside the block is never copied', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      mergeConfidence: {
+        ...MERGE_BLOCK,
+        reason: 'SECRET-REASON a finding title',
+        reasons: ['SECRET-REASONS'],
+        evidence: ['SECRET-EVIDENCE a file path'],
+        signals: [{ id: 'risk.class', reason: 'SECRET-SIGNAL-REASON', evidence: ['SECRET-SIGNAL-EVIDENCE'] }],
+        range: { band: 'amber', floor: 40, ceiling: 79 },
+        // Nested in the entries the block does keep.
+        flags: [{ id: 'verify.e2e', flag: 'no-e2e', reason: 'SECRET-FLAG-REASON', evidence: ['SECRET-FLAG-EVIDENCE'] }],
+        counts: { ...MERGE_BLOCK.counts, reason: 'SECRET-COUNT-REASON' }
+      },
+      // And at the top of the receipt, where the fat assessment itself might land.
+      reason: 'SECRET-TOP-REASON',
+      evidence: ['SECRET-TOP-EVIDENCE']
+    })
+  )
+  const record = JSON.parse(lines(r.path)[0])
+  const raw = lines(r.path)[0]
+  assert.doesNotMatch(raw, /SECRET/, 'no reason or evidence text reaches the trajectory')
+  assert.deepEqual(Object.keys(record.mergeConfidence).sort(), [
+    'counts',
+    'driving',
+    'flags',
+    'score',
+    'verdict',
+    'worstBand'
+  ])
+  assert.deepEqual(Object.keys(record.mergeConfidence.flags[0]).sort(), ['flag', 'id'])
+  for (const key of ['reason', 'reasons', 'evidence', 'signals', 'range']) {
+    assert.equal(record[key], undefined, `${key} is not a receipt field`)
+    assert.equal(record.mergeConfidence[key], undefined, `${key} is not a block field`)
+  }
+  assert.equal(record.mergeConfidence.counts.reason, undefined)
+})
+
+test('the block\'s numbers are counts or null, and its strings are bounded', () => {
+  const r = appendRunLogEvent(
+    tmp,
+    fullReceipt({
+      mergeConfidence: {
+        verdict: 'BLOCK',
+        score: 'seventy',
+        worstBand: 'x'.repeat(5000),
+        counts: { gating: -1, clean: 'many', green: NaN, amber: 2, red: 1.9 },
+        driving: ['risk.class', 'y'.repeat(5000), 42, null, ''],
+        flags: [{ id: 'z'.repeat(5000), flag: 'no-e2e' }, 'not-an-entry', null, { flag: 'orphan' }]
+      }
+    })
+  )
+  const block = JSON.parse(lines(r.path)[0]).mergeConfidence
+  assert.equal(block.score, null, 'a malformed score is unknown, never a number nobody measured')
+  assert.equal(block.counts.gating, null)
+  assert.equal(block.counts.clean, null)
+  assert.equal(block.counts.green, null)
+  assert.equal(block.counts.amber, 2)
+  assert.equal(block.counts.red, 1)
+  assert.ok(block.worstBand === null || block.worstBand.length <= MAX_TEXT)
+  assert.ok(block.driving.every(id => typeof id === 'string' && id.length <= MAX_TEXT))
+  assert.ok(block.driving.includes('risk.class'))
+  assert.ok(block.flags.every(f => typeof f.id === 'string' && f.id.length <= MAX_TEXT && typeof f.flag === 'string'))
+  assert.ok(Array.isArray(block.driving) && Array.isArray(block.flags))
+})
+
+test('the run-receipt key set is pinned, and gains mergeConfidence', () => {
+  // The same field set however thin the input, and this is that set. A field
+  // added to the whitelist without being named here is a change nobody decided.
+  const thin = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt' })
+  const record = JSON.parse(lines(thin.path)[0])
+  assert.deepEqual(Object.keys(record).sort(), [
+    'autoModeDenials',
+    'cacheCreationInputTokens',
+    'cacheReadInputTokens',
+    'capExhaustedVerifications',
+    'change',
+    'commit',
+    'committed',
+    'degradations',
+    'haltReason',
+    'halted',
+    'host',
+    'lanesStoppedByHost',
+    'leftoverTaskIds',
+    'mergeConfidence',
+    'modelSubstitutions',
+    'outputTokens',
+    'permissionPrompts',
+    'planFingerprint',
+    'planReason',
+    'planReused',
+    'planStatus',
+    'predictedPaths',
+    'predictedPathsComplete',
+    'predictedPathsReason',
+    'predictedPathsTruncated',
+    'remediationRounds',
+    'reviewBlockers',
+    'reviewRaised',
+    'reviewSurviving',
+    'reviewWarnings',
+    'runId',
+    'schema',
+    'schemaResultsMissing',
+    'seq',
+    'skippedVerifications',
+    'spend',
+    'stateHome',
+    'surface',
+    'toolsDeniedInLanes',
+    'touchedPaths',
+    'touchedPathsReason',
+    'touchedPathsTruncated',
+    'ts',
+    'type',
+    'unresolvedErrors',
+    'verifyBudget',
+    'waves'
+  ])
+  assert.equal(record.mergeConfidence, null)
+})
+
+test('a trajectory written before the block existed still reads, checks and lists as it did', () => {
+  plantPreChange(tmp)
+  const read = readRunLog(tmp, 'run-pre')
+  assert.equal(read.records[6].mergeConfidence, undefined, 'an old receipt is not rewritten to say null')
+  assert.deepEqual(checkRunLog(tmp, 'run-pre'), { ok: true, runId: 'run-pre', problems: [], events: 8 })
+})

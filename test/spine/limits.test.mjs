@@ -18,6 +18,7 @@ import {
   EFFORT,
   LANE_CAPS,
   SOLO,
+  MERGE_BANDS,
   clampParallel,
   formatLimits
 } from '../../lib/limits.mjs'
@@ -280,7 +281,11 @@ test('every cap the limits surface prints is read by the code path it governs', 
     // The effort table joins once a published effort was found unread: the verify
     // effort was printed while every verify spawn ran at the host's default.
     // `byTier` counts as one cap, on the terms `LANE_CAPS.byTier` does.
-    { name: 'EFFORT', caps: EFFORT, tokens: cap => [`EFFORT.${cap}`] }
+    { name: 'EFFORT', caps: EFFORT, tokens: cap => [`EFFORT.${cap}`] },
+    // The merge verdict's thresholds join on the same terms (spec:
+    // ship/cap-authority, merge-band group). `ceiling` counts as one cap, as
+    // `LANE_CAPS.byTier` does; `mergeBands` is the field `limits --json` emits.
+    { name: 'MERGE_BANDS', caps: MERGE_BANDS, tokens: cap => [`MERGE_BANDS.${cap}`, `mergeBands.${cap}`] }
   ]
   const unread = []
   for (const group of groups) {
@@ -687,4 +692,107 @@ test('the inter-wave verify budget is published as a floor, in prose and in --js
   assert.ok(body.includes('LIMITS.interWaveVerifyBudgetMs'), 'the floor is read by name')
   assert.ok(body.includes('LIMITS.interWaveVerifications'), 'the verification count is read by name')
   assert.doesNotMatch(body, /\b(?:60_?000|60|3)\b/, 'no numeric literal restates either constant')
+})
+
+// --- the merge bands (spec: ship/cap-authority — merge-band group) ------------
+//
+// The thresholds the merge verdict applies are one group of their own: printed
+// by `interlock limits`, emitted as `mergeBands` by `--json`, and swept for a
+// reader above on the same terms as every other group. They are not entries of
+// LIMITS, so the positive-integer invariant at the top of this file never sees
+// the nested ceiling table.
+
+test('interlock limits prints every merge band: one row per ceiling and one per threshold', () => {
+  const text = formatLimits()
+  const escape = label => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const rows = [
+    ['merge band ceiling: green', MERGE_BANDS.ceiling.green],
+    ['merge band ceiling: amber (also unobserved)', MERGE_BANDS.ceiling.amber],
+    ['merge band ceiling: red', MERGE_BANDS.ceiling.red],
+    ['merge: max surviving warnings', MERGE_BANDS.maxWarningsForMerge],
+    ['merge: min skeptic verdicts per finding', MERGE_BANDS.minVerdictsPerFinding],
+    ['merge: max coverage decline (points)', MERGE_BANDS.maxCoverageDeclinePts],
+    ['merge: patch coverage floor (%, no baseline)', MERGE_BANDS.patchCoverageFloorPct],
+    ['merge: min changed lines to judge coverage', MERGE_BANDS.minChangedLinesForCoverage],
+    ['merge: max changed lines', MERGE_BANDS.maxChangedLinesForMerge],
+    ['merge: max changed files', MERGE_BANDS.maxChangedFilesForMerge]
+  ]
+  for (const [label, value] of rows) {
+    assert.match(text, new RegExp(`^\\s+${escape(label)}\\s+${value}\\s*$`, 'm'), `interlock limits does not print "${label}"`)
+  }
+  // Every ceiling and every threshold has its row: a band added to the group
+  // without a printed row fails here, naming it.
+  for (const band of Object.keys(MERGE_BANDS.ceiling)) {
+    assert.match(text, new RegExp(`merge band ceiling: ${band}\\b`), `no printed row for the ${band} ceiling`)
+  }
+  assert.equal(rows.length, Object.keys(MERGE_BANDS.ceiling).length + Object.keys(MERGE_BANDS).length - 1)
+})
+
+test('the merge bands are a separate group, not entries of LIMITS, and the positive-integer invariant stays over LIMITS alone', () => {
+  for (const key of Object.keys(MERGE_BANDS)) {
+    assert.ok(!(key in LIMITS), `MERGE_BANDS.${key} leaked into LIMITS`)
+  }
+  // The ceiling table is exactly what the invariant would refuse, which is why
+  // the group is its own export rather than more LIMITS entries.
+  assert.equal(typeof MERGE_BANDS.ceiling, 'object')
+  assert.ok(Object.isFrozen(MERGE_BANDS) && Object.isFrozen(MERGE_BANDS.ceiling), 'the published bands are frozen')
+  // The domain-spec cap bounds a prompt, not a merge threshold: it lives in
+  // LIMITS (below), and the bands never carry it.
+  assert.ok(!('maxDomainSpecChars' in MERGE_BANDS))
+})
+
+// --- the domain-spec text cap (spec: review/domain-review; design D4) ---------
+//
+// It bounds the living-requirement text one review prompt carries, beside
+// maxHandoffChars and maxReviewPolicyBytes, so it is a LIMITS entry: the
+// positive-integer invariant at the top of this file covers it, and the
+// sweep above counts a reader for it. Its one reader is the pure module that
+// assembles the text, so a rubric or skill never restates the number.
+
+test('the domain-spec text cap is a positive integer in LIMITS, printed by interlock limits, and not a merge band', () => {
+  assert.ok('maxDomainSpecChars' in LIMITS, 'LIMITS.maxDomainSpecChars is not published')
+  assert.ok(Number.isInteger(LIMITS.maxDomainSpecChars) && LIMITS.maxDomainSpecChars > 0)
+  assert.match(
+    formatLimits(),
+    new RegExp(`^\\s+[^\\n]*domain[^\\n]*\\s+${LIMITS.maxDomainSpecChars}\\s*$`, 'mi'),
+    'interlock limits does not print a domain spec row carrying the cap'
+  )
+  assert.ok(!('maxDomainSpecChars' in MERGE_BANDS), 'the cap bounds a prompt, it is not a merge threshold')
+
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.limits.maxDomainSpecChars, LIMITS.maxDomainSpecChars)
+  assert.ok(!('maxDomainSpecChars' in payload.mergeBands))
+})
+
+test('the domain-spec text cap is read by name under lib/, and the review skill and rubric restate no number for it', () => {
+  const reader = readFileSync(join(ROOT, 'lib', 'prompts', 'domain-context.mjs'), 'utf8')
+  assert.ok(reader.includes('LIMITS.maxDomainSpecChars'), 'lib/prompts/domain-context.mjs does not read the cap')
+  assert.doesNotMatch(
+    reader.replace(/LIMITS\.maxDomainSpecChars/g, ''),
+    /\b12_?000\b/,
+    'the reader restates the cap instead of reading it'
+  )
+  for (const prose of [
+    join(ROOT, 'skills', 'review-code', 'SKILL.md'),
+    join(ROOT, 'skills', 'review-code', 'dimensions', 'domain.md')
+  ]) {
+    if (!existsSync(prose)) continue
+    assert.doesNotMatch(readFileSync(prose, 'utf8'), /\b12_?000\b/, `${prose} restates the domain-spec cap`)
+  }
+})
+
+test('interlock limits --json emits the merge bands under their own top-level key', () => {
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const payload = JSON.parse(run.stdout)
+  assert.deepEqual(payload.mergeBands, JSON.parse(JSON.stringify(MERGE_BANDS)))
+  assert.equal(payload.limits.ceiling, undefined)
 })
