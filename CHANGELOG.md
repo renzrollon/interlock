@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.6.0 — 2026-10-13
+
 ### Added
 
 - **A merge verdict and score, computed by the CLI (`lib/merge-confidence.mjs`).** `assessMergeConfidence` takes the facts a review and a run already produce and returns `MERGE`, `HUMAN` or `BLOCK`, a score, and one entry per registered signal with its band (`green`, `amber`, `red`, `unobserved`), its flags, its evidence and its reason. The verdict is the worst band over the gating signals, and an unobserved signal ranks as amber. A flag lowers the score and never moves a band. The score sits inside the worst band's range, so a red never outscores an amber. Signals live in one frozen registry (`SIGNALS`, seventeen gating signals and the informational `plan.fidelity`) and flags in one published list (`FLAGS`); `combineSignals` is the formula and names no signal. The module is pure.
