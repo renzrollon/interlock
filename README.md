@@ -13,9 +13,7 @@
 </p>
 <p align="center"><sub>One real run, cut to 34 s. <code>spec</code> asks one question, writes 11 specs and 12 tasks, then stops. <code>ship</code> runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.</sub></p>
 <p align="center"><code>12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</code></p>
-<!-- The uncut, captioned 2:34 of the same run is not in git. Once it is a release asset, uncomment:
-<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.4.2/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
--->
+<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
 
 ```bash
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
@@ -58,7 +56,7 @@ interlock doctor          # preflight: prints the exact allowlist an unattended 
 | `/interlock:spec "<idea>"` | Idea → explored, reviewed, implementation-ready change. Asks you what the repo cannot answer, then stops | skill |
 | **You read the spec** | The checkpoint. [Ten minutes, with a checklist](docs/02-the-checkpoint.md) | you |
 | `/interlock:ship` | Reviewed change → waves (parallel batches of file-disjoint tasks) → your test suite → commit. No review by default; `--strict` adds adversarial review and handoff artifacts. `--solo` / `--waves` force the shape | **workflow** |
-| `/interlock:mr` | Change → merge request | skill |
+| `/interlock:mr` | Change → merge request, with the CLI's merge-confidence verdict in the description and as labels. It never merges | skill |
 
 <p align="center">
   <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
@@ -79,7 +77,7 @@ Decisions that have a correct answer are moved out of prose and into code, one a
 
 - **Thresholds are code.** Wave order, the parallel-agent cap, the remediation round budget, the review quality band: each is an `interlock` subcommand with an exit code, not markdown a model can talk itself past. [Every subcommand →](docs/07-cli-and-configuration.md)
 - **Parallel agents cannot overwrite each other.** The planner separates tasks that would touch the same file; with `--isolate-waves`, every parallel task runs in its own git worktree and a collision is a named halt, never a lost write.
-- **Reviews you can actually read.** On `--strict`, up to six review dimensions run in parallel, then two skeptics attack every finding. A dismissal must cite a `file:line` in the diff or it dismisses nothing. You see only what survived, and how many did not. [How and why →](docs/06-why-it-works.md)
+- **Reviews you can actually read.** On `--strict`, up to seven review dimensions run in parallel (the seventh, `domain`, when the change touches a capability that has a living spec), then two skeptics attack every finding. A dismissal must cite a `file:line` in the diff or it dismisses nothing. You see only what survived, and how many did not. [How and why →](docs/06-why-it-works.md)
 - **A guard, not a request.** During remediation an agent cannot edit a test, tick a task box, or commit outside the commit stage. They are `PreToolUse` hooks, inert outside a run. [The guards →](docs/13-the-guards.md)
 - **Specs that don't quietly rot.** `interlock drift` reports unarchived changes, specs citing missing files, and code no spec describes. Each at its own confidence level, and it never blocks. [OpenSpec vs Interlock →](docs/03-openspec-vs-interlock.md)
 - **Degradation is spoken, never silent.** A missing graph, an overridden model, a failed push, a host that cannot report tokens: each is a named banner in the summary. [When it stops →](docs/04-when-it-stops.md)
@@ -118,7 +116,7 @@ Three zero-dependency Node binaries land on your `PATH`, and they work without t
 | `interlock-graph` | A local, deterministic code knowledge graph. No vector store, no network |
 | `interlock-run` | The experimental runner above |
 
-Everything runs without a model and without the network, with one exception: an opt-in push for a run that stops while nobody is watching. `run close --notify` sends the close summary's first line, the change name and the run id; the spec checkpoint sends the change name; an `interlock notify` you type sends the title and body you give it. The request goes to the [ntfy](https://ntfy.sh) server named by `INTERLOCK_NTFY_URL`, the public `https://ntfy.sh` by default, under the topic you chose in the plugin's `ntfy topic` option or in `INTERLOCK_NTFY_TOPIC`. Session start copies a set option into the session's environment when the variable is not already set, because the CLI call that pushes is not a hook and the option reaches hooks only. No account, key or token goes with the request: the topic is the only thing in it that identifies you, so treat it as a secret. With no topic set, no request is ever made. Interlock makes no other request. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value, and the vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs. Reference and every environment variable: [07 — CLI and configuration](docs/07-cli-and-configuration.md).
+Everything runs without a model and without the network, with one exception: an opt-in push for a run that stops while nobody is watching. `run close --notify` sends the close summary's first line, the change name and the run id; the spec checkpoint sends the change name; an `interlock notify` you type sends the title and body you give it. The request goes to the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL`, the public `https://ntfy.sh` by default, under the topic you chose in the plugin's `ntfy topic` option or in `INTERLOCK_NTFY_TOPIC`. Each option has a session-start hook of its own, which the host runs only when that option is saved; the hook writes the matching variable into the session's environment for the session's commands, unless you already set it, because the CLI call that pushes is not a hook and an option reaches hooks only. No account, key or token goes with the request: the topic is the only thing in it that identifies you, so treat it as a secret. With no topic set, no request is ever made. Interlock makes no other request. `/interlock:mr` has the model run `gh`, `glab` and `git fetch` under your own sign-in to read and write a merge request; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value, and the vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs. Reference and every environment variable: [07 — CLI and configuration](docs/07-cli-and-configuration.md).
 
 ## Docs
 
@@ -140,6 +138,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ev
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change and what it cannot |
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
+| [15 — Merge confidence](docs/15-merge-confidence.md) | What the merge verdict reads, signal by signal and flag by flag; how it reaches a merge request (the pipeline input, the description block, the labels, three platform recipes and how far a label can be trusted); recording a coverage baseline, computing the base on demand, reading the policy from the base, reading a spec audit |
 
 ## Development
 
