@@ -209,6 +209,88 @@ test('the renamed-parameter pin names a read through the handle and a forward fe
   assert.deepEqual(renamedHookReach(pane), ['command.run: paneHost is read through (paneHost[)'])
 })
 
+const SESSION_START = 'classic.SessionStart'
+
+/** What a hook that returns the forward call and nothing else never spells. */
+const CONTINUATION_TOKENS = Object.freeze([
+  ['.then(', /\.then\(/],
+  ['.finally(', /\.finally\(/],
+  ['await', /\bawait\s/],
+  ['const', /\bconst\s/],
+  ['let', /\blet\s/]
+])
+
+/**
+ * What the classic session-start hook returns, when that is anything but the
+ * forward call on the hook's own input (clear-the-plugin-directory-holds
+ * design D2).
+ *
+ * The event's result carries the session's first message, and the plugin
+ * directory holds a version whose hook it cannot read as leaving that message
+ * alone. No local command reproduces that reading, so the one shape the
+ * directory names is read off the source here: a single return, of the forward
+ * called with the input, with nothing bound to the call, awaited on it or
+ * chained after it. The parameter names are read from the hook's own
+ * signature, so a rename does not break the pin. Each problem names the event
+ * and the shape found.
+ */
+export function sessionStartReturnProblems(source) {
+  const body = hookBody(source, SESSION_START)
+  if (!body) return [`${SESSION_START}: the module hooks no such event`]
+  const name = String.raw`[A-Za-z_]\w*`
+  const head = body.match(
+    new RegExp(
+      String.raw`^on\(\s*'classic\.SessionStart'\s*,\s*(?:async\s+)?\(\s*(${name})\s*,\s*(${name})\s*,\s*(${name})\s*\)\s*=>\s*\{`
+    )
+  )
+  if (!head) return [`${SESSION_START}: the hook does not name its three parameters`]
+  const [, , input, forward] = head
+  const lines = []
+  for (const line of body.slice(head[0].length).split('\n')) {
+    const text = line.trim()
+    if (text === '})') break
+    if (text && !text.startsWith('//')) lines.push(text)
+  }
+  const code = lines.join('\n')
+  const wanted = `return ${forward}(${input})`
+  const problems = []
+  const returns = (code.match(/\breturn\b/g) || []).length
+  if (returns !== 1) problems.push(`${SESSION_START}: the hook holds ${returns} return statements, not one`)
+  for (const line of lines.filter(l => /\breturn\b/.test(l))) {
+    if (line !== wanted) problems.push(`${SESSION_START}: the return is not ${wanted} alone (${line})`)
+  }
+  for (const [token, spelled] of CONTINUATION_TOKENS) {
+    if (spelled.test(code)) problems.push(`${SESSION_START}: the hook spells ${token}`)
+  }
+  const forwards = (code.match(new RegExp(String.raw`\b${forward}\b`, 'g')) || []).length
+  if (forwards !== 1) problems.push(`${SESSION_START}: ${forward} occurs ${forwards} times, not once`)
+  return problems
+}
+
+test('the classic session-start hook returns the forward call and nothing else', () => {
+  const problems = sessionStartReturnProblems(readFileSync(moduleEntry(), 'utf8'))
+  assert.deepEqual(problems, [], problems.join('\n'))
+})
+
+test('the session-start return pin names a continuation, an awaited variable, an object of its own and no return', () => {
+  const hook = lines =>
+    ["on('classic.SessionStart', async (api, input, forward) => {", '  endRunAtBoundary(api, input)', ...lines, '})', '', "on('ui.render', () => {})", ''].join('\n')
+  // A comment is not the hook's code: a continuation named in one is not found.
+  assert.deepEqual(sessionStartReturnProblems(hook(['  // never forward(input).then(…) here', '  return forward(input)'])), [])
+  const named = (lines, ...tokens) => {
+    const problems = sessionStartReturnProblems(hook(lines))
+    for (const token of tokens) {
+      assert.ok(problems.some(p => p.startsWith(`${SESSION_START}: `) && p.includes(token)), `${token} is not named in:\n${problems.join('\n')}`)
+    }
+  }
+  named(['  return forward(input).then(async started => {', '    await read(api, input)', '    return started', '  })'], 'spells .then(', 'not return forward(input) alone', '2 return statements')
+  named(['  return forward(input).finally(() => read(api, input))'], 'spells .finally(', 'not return forward(input) alone (return forward(input).finally(')
+  named(['  const started = await forward(input)', '  await read(api, input)', '  return started'], 'spells await', 'spells const', 'not return forward(input) alone (return started)')
+  named(['  return {}'], 'not return forward(input) alone (return {})', 'forward occurs 0 times')
+  named(['  forward(input)'], '0 return statements')
+  assert.deepEqual(sessionStartReturnProblems("on('session.start', () => {})\n"), [`${SESSION_START}: the module hooks no such event`])
+})
+
 test('the launch guard\'s calls are the clock and its state read and write, and nothing more', () => {
   const meter = ALLOWED_CALLS.filter(c => !GUARD_CALLS.includes(c))
   assert.equal(meter.length + GUARD_CALLS.length, ALLOWED_CALLS.length, 'the allow-list repeats an entry')

@@ -239,20 +239,199 @@ test('package.json, plugin.json and marketplace.json carry one version', () => {
   )
 })
 
-test('the listing image is a square png on the path the directory discovers, and no shipped text names that file', () => {
-  const icon = join(ROOT, 'assets', 'icon.png')
-  const buf = readFileSync(icon)
-  assert.equal(buf.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'assets/icon.png is not a png')
-  const width = buf.readUInt32BE(16)
-  const height = buf.readUInt32BE(20)
-  assert.equal(width, height, 'the listing image must be square')
-  assert.ok(width >= 512 && width <= 2048, `listing image is ${width}px; the directory wants 512 to 2048`)
-  assert.ok(pkg.files.includes('assets'), '"files" does not ship assets/')
-  assert.equal(readJson(PLUGIN_PATH).icon, undefined, 'plugin.json must not name the image; the directory finds assets/icon.png itself')
-  const shippedText = ['CHANGELOG.md', 'package.json', '.claude-plugin/plugin.json', 'shared/TEST-PROFILE.md']
-  for (const rel of shippedText) {
-    assert.equal(readFileSync(join(ROOT, rel), 'utf8').includes('icon.png'), false, `${rel} names the listing image`)
+/** What the directory's size limit leaves alone: images and fonts. */
+const IMAGE_OR_FONT = /\.(png|jpe?g|gif|webp|svg|ttf|otf|woff2?)$/i
+const IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i
+
+/**
+ * Every file `npm pack` would ship from `root`, with its size: the `files`
+ * whitelist walked as the closure tests read it, and the three npm always
+ * ships. Finder's own `.DS_Store` is npm's to leave out, and is left out here.
+ */
+function shippedFiles(root, files) {
+  const paths = new Set()
+  for (const entry of [...files, 'package.json', 'README.md', 'LICENSE']) {
+    const e = entry.replace(/^\.\//, '').replace(/\/$/, '')
+    const stat = statSync(join(root, e), { throwIfNoEntry: false })
+    if (stat?.isFile()) paths.add(e)
+    else if (stat?.isDirectory()) for (const abs of walk(join(root, e))) paths.add(relative(root, abs).split(sep).join('/'))
   }
+  return [...paths]
+    .filter(path => !path.endsWith('.DS_Store'))
+    .sort()
+    .map(path => ({ path, bytes: statSync(join(root, path)).size }))
+}
+
+// The pixel bounds of a listing image, as the directory states them.
+const ICON_MIN_PX = 512
+const ICON_MAX_PX = 2048
+
+/** The width and height a complete PNG declares, or why the bytes are not one. */
+function pngSize(buf) {
+  if (buf.length < 45 || buf.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return { reason: 'is not a png' }
+  if (buf.subarray(12, 16).toString('latin1') !== 'IHDR') return { reason: 'is a png with no header chunk' }
+  if (buf.subarray(-8, -4).toString('latin1') !== 'IEND') return { reason: 'is a png cut short: it does not end in IEND' }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+
+/**
+ * What is wrong with the manifest's listing image (clear-the-plugin-directory-
+ * holds design D8; spec: distribution/npm-package). The plugin directory reads
+ * the image from the manifest's `icon`, so the key names a path that begins
+ * `./`, that `files` covers, and that is a complete, square PNG inside the
+ * pixel bounds. A bundled image nothing declares is named too.
+ */
+function listingImageProblems(manifest, files, root = ROOT) {
+  const icon = manifest.icon
+  if (typeof icon !== 'string' || !icon) {
+    const images = shippedFiles(root, files).map(f => f.path).filter(path => IMAGE.test(path))
+    return images.length
+      ? images.map(path => `the bundle ships an image the manifest does not declare under "icon": ${path}`)
+      : ['the manifest declares no "icon"']
+  }
+  if (!icon.startsWith('./')) return [`the manifest's "icon" is ${JSON.stringify(icon)}, which does not begin ./`]
+  const path = icon.slice(2)
+  if (!coveredBy(files, path)) return [`${path} (named by the manifest's "icon") ships in no "files" entry`]
+  let buf
+  try {
+    buf = readFileSync(join(root, path))
+  } catch (err) {
+    return [`${path} (named by the manifest's "icon") cannot be read: ${err.message}`]
+  }
+  const { reason, width, height } = pngSize(buf)
+  if (reason) return [`${path} ${reason}`]
+  if (width !== height) return [`${path} is ${width} by ${height} pixels; the listing image must be square`]
+  if (width < ICON_MIN_PX || width > ICON_MAX_PX) return [`${path} is ${width}px; the directory wants ${ICON_MIN_PX} to ${ICON_MAX_PX}`]
+  return []
+}
+
+test('the manifest names its listing image, and the image ships as a square png inside the directory\'s bounds', () => {
+  const manifest = readJson(PLUGIN_PATH)
+  assert.equal(typeof manifest.icon, 'string', 'plugin.json names no "icon": the directory reads the listing image from that key')
+  assert.deepEqual(listingImageProblems(manifest, pkg.files), [])
+})
+
+test('the manifest is the only shipped file that spells the listing image\'s path', () => {
+  // The plugin directory's scan raises one finding for each shipped file that
+  // names a bundled image, and for each file that names such a file (its
+  // report on the scan branch, 2026-10-13: a changelog entry that quoted the
+  // manifest's value was two of four). The manifest must name it, because
+  // the directory reads the listing image from `icon`; nothing else may.
+  const manifestPath = '.claude-plugin/plugin.json'
+  const icon = String(readJson(PLUGIN_PATH).icon).replace(/^\.\//, '')
+  const spelled = [icon, icon.split('/').pop()]
+  const named = shippedFiles(ROOT, pkg.files)
+    .map(f => f.path)
+    .filter(path => path !== manifestPath && !IMAGE_OR_FONT.test(path))
+    .filter(path => {
+      const text = readFileSync(join(ROOT, path), 'utf8')
+      return spelled.some(s => text.includes(s))
+    })
+  assert.deepEqual(named, [], `these shipped files name the listing image (${icon}):\n  ${named.join('\n  ')}`)
+})
+
+/** The fewest bytes `pngSize` reads as a complete PNG of this size: the signature, a header chunk and the end chunk. */
+function pngOf(width, height) {
+  const buf = Buffer.alloc(45)
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(buf, 0)
+  buf.writeUInt32BE(13, 8)
+  buf.write('IHDR', 12, 'latin1')
+  buf.writeUInt32BE(width, 16)
+  buf.writeUInt32BE(height, 20)
+  buf.write('IEND', 37, 'latin1')
+  return buf
+}
+
+test('an absent key, an uncovered path, a value without ./ and an image that is not square are each named', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-listing-image-'))
+  try {
+    mkdirSync(join(dir, 'assets'))
+    writeFileSync(join(dir, 'package.json'), '{}')
+    writeFileSync(join(dir, 'assets', 'icon.png'), pngOf(512, 512))
+    writeFileSync(join(dir, 'assets', 'wide.png'), pngOf(512, 256))
+    writeFileSync(join(dir, 'assets', 'small.png'), pngOf(256, 256))
+    writeFileSync(join(dir, 'assets', 'cut.png'), pngOf(512, 512).subarray(0, 40))
+    writeFileSync(join(dir, 'assets', 'text.png'), 'not an image\n'.repeat(8))
+    const declared = { name: 'p', icon: './assets/icon.png' }
+    assert.deepEqual(listingImageProblems(declared, ['assets', 'lib'], dir), [])
+    assert.deepEqual(listingImageProblems(declared, ['lib', 'hooks'], dir), [
+      'assets/icon.png (named by the manifest\'s "icon") ships in no "files" entry'
+    ])
+    const undeclared = listingImageProblems({ name: 'p' }, ['assets'], dir)
+    assert.ok(
+      undeclared.includes('the bundle ships an image the manifest does not declare under "icon": assets/icon.png'),
+      undeclared.join('\n')
+    )
+    assert.deepEqual(listingImageProblems({ name: 'p' }, ['lib'], dir), ['the manifest declares no "icon"'])
+    assert.deepEqual(listingImageProblems({ name: 'p', icon: 'assets/icon.png' }, ['assets'], dir), [
+      'the manifest\'s "icon" is "assets/icon.png", which does not begin ./'
+    ])
+    assert.deepEqual(listingImageProblems({ name: 'p', icon: './assets/wide.png' }, ['assets'], dir), [
+      'assets/wide.png is 512 by 256 pixels; the listing image must be square'
+    ])
+    assert.deepEqual(listingImageProblems({ name: 'p', icon: './assets/small.png' }, ['assets'], dir), [
+      'assets/small.png is 256px; the directory wants 512 to 2048'
+    ])
+    assert.deepEqual(listingImageProblems({ name: 'p', icon: './assets/cut.png' }, ['assets'], dir), ['assets/cut.png is not a png'])
+    assert.deepEqual(listingImageProblems({ name: 'p', icon: './assets/text.png' }, ['assets'], dir), ['assets/text.png is not a png'])
+    assert.match(listingImageProblems({ name: 'p', icon: './assets/gone.png' }, ['assets'], dir)[0], /^assets\/gone\.png .* cannot be read: /)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The plugin directory's two file limits, from its pre-submission checklist
+// (claude.com/docs/plugins/pre-submission-checklist): a version is held for a
+// reviewer when a file that is not an image or a font reaches 256 KiB, or when
+// the bundle holds more than 512 files. They are the directory's numbers, not
+// caps of a run, so they are recorded here and not in lib/limits.mjs
+// (clear-the-plugin-directory-holds design D9).
+const DIRECTORY_FILE_BYTES = 262144
+const DIRECTORY_FILE_COUNT = 512
+
+/** Each shipped file at or over the size limit, with its size, and the count when it is over. */
+function bundleLimitProblems(entries) {
+  const problems = entries
+    .filter(e => !IMAGE_OR_FONT.test(e.path) && e.bytes >= DIRECTORY_FILE_BYTES)
+    .map(e => `${e.path} is ${e.bytes} bytes; a shipped file that is not an image or a font must be under ${DIRECTORY_FILE_BYTES}`)
+  if (entries.length > DIRECTORY_FILE_COUNT) {
+    problems.push(`the bundle holds ${entries.length} files; the directory's limit is ${DIRECTORY_FILE_COUNT}`)
+  }
+  return problems
+}
+
+test('the bundle stays inside the plugin directory\'s file limits', () => {
+  const shipped = shippedFiles(ROOT, pkg.files)
+  assert.ok(shipped.length > 0, 'the "files" whitelist covers no file')
+  const problems = bundleLimitProblems(shipped)
+  assert.deepEqual(problems, [], `the directory holds a version for a reviewer on:\n  ${problems.join('\n  ')}`)
+})
+
+test('the limits pin names a text file at the limit and a count over it, and leaves an image alone', () => {
+  const few = [
+    { path: 'lib/under.mjs', bytes: DIRECTORY_FILE_BYTES - 1 },
+    { path: 'lib/at.mjs', bytes: DIRECTORY_FILE_BYTES },
+    { path: 'lib/over.mjs', bytes: DIRECTORY_FILE_BYTES + 1 },
+    { path: 'assets/large.png', bytes: 300000 },
+    { path: 'assets/face.woff2', bytes: 300000 }
+  ]
+  assert.deepEqual(bundleLimitProblems(few), [
+    'lib/at.mjs is 262144 bytes; a shipped file that is not an image or a font must be under 262144',
+    'lib/over.mjs is 262145 bytes; a shipped file that is not an image or a font must be under 262144'
+  ])
+  const many = n => Array.from({ length: n }, (_, i) => ({ path: `skills/s${i}/SKILL.md`, bytes: 10 }))
+  assert.deepEqual(bundleLimitProblems(many(DIRECTORY_FILE_COUNT)), [])
+  assert.deepEqual(bundleLimitProblems(many(DIRECTORY_FILE_COUNT + 1)), ["the bundle holds 513 files; the directory's limit is 512"])
+})
+
+test('no shipped file names the host\'s option variables', () => {
+  // An option reaches a hook as the argument the manifest passes, and the
+  // session's commands as the shell variable that hook exports (design D6).
+  const PREFIX = 'CLAUDE_PLUGIN_OPTION_'
+  const named = shippedFiles(ROOT, pkg.files)
+    .map(f => f.path)
+    .filter(path => readFileSync(join(ROOT, path)).includes(PREFIX))
+  assert.deepEqual(named, [], `these shipped files spell ${PREFIX}:\n  ${named.join('\n  ')}`)
 })
 
 // A `String.replace` whose replacement contained `$`` spliced this file's

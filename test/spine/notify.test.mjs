@@ -10,8 +10,6 @@ import assert from 'node:assert/strict'
 import {
   NOTIFY_TOPIC_ENV,
   NOTIFY_URL_ENV,
-  NOTIFY_TOPIC_OPTION,
-  NOTIFY_URL_OPTION,
   DEFAULT_NTFY_URL,
   readNotifyConfig,
   composeCloseMessage,
@@ -26,23 +24,26 @@ import { LIMITS } from '../../lib/limits.mjs'
 // readNotifyConfig
 // ---------------------------------------------------------------------------
 
-test('readNotifyConfig prefers a plugin option over the shell variable, and names the one that is invalid', () => {
+test('readNotifyConfig reads the two shell variables and ignores the host\'s option variables', () => {
+  // The host's own names for a plugin option, spelled here and in no shipped
+  // file: an option reaches the push as the shell variable its hook exported
+  // (clear-the-plugin-directory-holds design D6).
+  const OPTION_TOPIC = 'CLAUDE_PLUGIN_OPTION_NTFY_TOPIC'
+  const OPTION_URL = 'CLAUDE_PLUGIN_OPTION_NTFY_URL'
+  assert.deepEqual(readNotifyConfig({ [OPTION_TOPIC]: 'from-plugin', [OPTION_URL]: 'https://plugin.example' }), { topic: null })
   assert.deepEqual(
     readNotifyConfig({
-      [NOTIFY_TOPIC_OPTION]: 'from-plugin',
+      [OPTION_TOPIC]: 'from-plugin',
       [NOTIFY_TOPIC_ENV]: 'from-shell',
-      [NOTIFY_URL_OPTION]: 'https://plugin.example',
+      [OPTION_URL]: 'https://plugin.example',
       [NOTIFY_URL_ENV]: 'https://shell.example'
     }),
-    { topic: 'from-plugin', url: 'https://plugin.example' }
+    { topic: 'from-shell', url: 'https://shell.example' }
   )
+  assert.deepEqual(readNotifyConfig({ [NOTIFY_TOPIC_ENV]: 'has space', [OPTION_TOPIC]: 'from-plugin' }), { invalid: NOTIFY_TOPIC_ENV })
   assert.deepEqual(
-    readNotifyConfig({ [NOTIFY_TOPIC_OPTION]: 'has space', [NOTIFY_TOPIC_ENV]: 'from-shell' }),
-    { invalid: NOTIFY_TOPIC_OPTION }
-  )
-  assert.deepEqual(
-    readNotifyConfig({ [NOTIFY_TOPIC_ENV]: 'from-shell', [NOTIFY_URL_OPTION]: 'not a url' }),
-    { invalid: NOTIFY_URL_OPTION }
+    readNotifyConfig({ [NOTIFY_TOPIC_ENV]: 'from-shell', [NOTIFY_URL_ENV]: 'not a url', [OPTION_URL]: 'https://plugin.example' }),
+    { invalid: NOTIFY_URL_ENV }
   )
 })
 

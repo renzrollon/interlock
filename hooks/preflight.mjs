@@ -40,9 +40,14 @@
 // on stderr. Every other repository gets no file, no directory, and exactly
 // the output it got before. The file is outcome-class: losing it costs the
 // band, never the session.
+//
+// It reads and writes nothing for the push. A plugin option reaches the
+// session's commands through a hook of its own, `hooks/notify-option.mjs`,
+// which the host runs only for an option the person saved; the manifest's
+// entry for this hook names no option, so it runs for everyone.
 
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -283,48 +288,7 @@ function report(message) {
   process.stdout.write(JSON.stringify(out) + '\n')
 }
 
-/** A single-quoted shell word. A value with a newline or a NUL is refused. */
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-function publishable(value) {
-  return typeof value === 'string' && value.trim() && !/[\0\r\n]/.test(value)
-}
-
-/**
- * Copy a plugin option into the session so `interlock notify` can see it.
- *
- * The host injects `userConfig` into hook processes only. A ship run's notify
- * call is not a hook, so without this copy a topic typed into the plugin
- * options would never reach the CLI. An operator who already provided the
- * shell variable keeps that value. Nothing is printed, and a failure here
- * does not change the preflight.
- */
-function publishNotifyOptions() {
-  const file = process.env.CLAUDE_ENV_FILE
-  if (typeof file !== 'string' || !file) return
-  const lines = []
-  const topic = process.env.CLAUDE_PLUGIN_OPTION_NTFY_TOPIC
-  const url = process.env.CLAUDE_PLUGIN_OPTION_NTFY_URL
-  if (publishable(topic) && !publishable(process.env.INTERLOCK_NTFY_TOPIC)) {
-    lines.push(`export INTERLOCK_NTFY_TOPIC=${shellQuote(topic.trim())}`)
-  }
-  if (publishable(url) && !publishable(process.env.INTERLOCK_NTFY_URL)) {
-    lines.push(`export INTERLOCK_NTFY_URL=${shellQuote(url.trim())}`)
-  }
-  if (!lines.length) return
-  appendFileSync(file, lines.join('\n') + '\n')
-}
-
 try {
-  try {
-    publishNotifyOptions()
-  } catch (err) {
-    process.stderr.write(
-      `interlock preflight could not publish notify options (ignored): ${(err && err.message) || err}\n`
-    )
-  }
   const cwd = process.cwd()
   const source = await sessionSource()
   const { message, stateHome, surface, doctor } = run()
