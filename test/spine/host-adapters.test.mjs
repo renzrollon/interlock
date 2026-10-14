@@ -1329,6 +1329,22 @@ function startRunner(root, change, command) {
   return { child, exited, waitFor }
 }
 
+/** Resolve once `path` exists, or reject after `ms`. */
+function waitForPath(path, ms = 30000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const timer = setInterval(() => {
+      if (existsSync(path)) {
+        clearInterval(timer)
+        resolve()
+      } else if (Date.now() - started > ms) {
+        clearInterval(timer)
+        reject(new Error(`${path} never appeared`))
+      }
+    }, 10)
+  })
+}
+
 /** Every trajectory event the run wrote. */
 function eventsOf(root) {
   const dir = join(root, '.claude', 'ship', 'runs')
@@ -1364,6 +1380,10 @@ test('a second signal during the close starts no second close', async () => {
     const runner = startRunner(root, change, shipCommand(['--fixture-delay=4000']))
     await runner.waitFor(/run-batch: tasks? 1\.\d/)
     runner.child.kill('SIGINT')
+    // Two signals sent back to back can be handled in either order, because the
+    // kernel may hand them to two of the runner's threads at once. So the second
+    // waits for the close the first started, which writes the host banners first.
+    await waitForPath(join(root, '.claude', 'ship', 'host-banners.json'))
     runner.child.kill('SIGTERM')
     const { code, stdout } = await runner.exited
     assert.notEqual(code, 0)
