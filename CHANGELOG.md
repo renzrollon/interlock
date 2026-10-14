@@ -7,6 +7,20 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.6.1 — 2026-10-14
+
+### Changed
+
+- **BREAKING: an inter-wave check never halts the run.** A checkpoint still red after its targeted fix attempts used to halt the run with the halt kind `inter-wave-verify` when the verdict said the errors block the next wave. The state machine no longer emits that kind. The errors are recorded on the run state with the verdict beside them, the step carries `INTER-WAVE CHECKS UNRESOLVED` naming the wave, the error count and the attempts, and every implementer briefing of the next wave gets a `STILL FAILING AFTER WAVE <n>` section listing at most ten errors, each cut to 300 characters. A briefing that follows no unresolved wave is byte-identical to before. A checkpoint whose verify agent reported no result for a planned check is recorded as a skipped verification (`VERIFICATION SKIPPED`) instead of halting. The final verification is unchanged: a red or unverified final suite still stops the run before it commits. A reader that matched `inter-wave-verify` on a halt will not see it again.
+- **A task whose dependency did not complete is skipped, not dispatched.** When a batch is recorded, every task not yet dispatched whose `dependsOn` reaches a task that failed, was left not attempted after its lane stopped, or was already skipped, directly or transitively, is taken out of the run. It stays unchecked in `tasks.md`, counts toward no failure halt, and is named in `DEPENDENTS SKIPPED: <id> (needs <ids>), …`. A wave left empty is removed, so no checkpoint is spent on it. The run state carries `skippedDependents`, and the run summary and `interlock wave-state` list them. The task-failure halt (more than two recorded failures) is unchanged.
+
+### Fixed
+
+- **A relay that ran its command before writing its input can no longer record the previous batch's results.** Every `run` step now carries `seq`, one more than the last step emitted in the same checkout and continuing across runs, and `seq` rides the relay whitelist. The Workflow driver writes each input as `{"answers": <seq>, "value": <payload>}`, and `--results`, `--host-banners` and `--host-observed` refuse an envelope that answers any step but the current one (for `run close`, any step outside the current run) with exit 1 and nothing recorded. A bare payload, which `interlock-run` and a hand-run call write, is read as before.
+- **An unreadable relay copy is recovered before the run halts.** The driver reads the CLI's own record back through a read-only relay — `.claude/ship/last-step.json`, or `.claude/ship/last-close.json`, which `run close` now writes — and continues from it when its `seq` shows the call took effect, relays the call once more when it did not, and relays a lost `run start` once more. Only then does it halt, and the reason now quotes the first 200 characters of what the relay copied. The relay is told to make its writes before it runs anything, to run its command once, and never to rerun a non-zero exit.
+- **A briefing acknowledgement one character off no longer fails a lane's finished work.** The reported hash is trimmed, lowercased and stripped of a leading `sha256=`. One that matches exactly, or is at least 16 hex characters whose first 16 match, is accepted and recorded with the briefing's own hash; an inexact match raises `BRIEFING ACK INEXACT`. A missing, shorter or different hash still fails closed with `BRIEFING NOT ACKNOWLEDGED`.
+- **`interlock-run`: a signal starts the only close.** A SIGINT or SIGTERM that landed while a CLI call was in flight started the close, and the call, once it returned, carried the loop on to its own — two closes racing, the loser's summary printed when it finished first. Once a signal has started the close, the loop's CLI calls now never settle, and the process exits through that close.
+
 ## 1.6.0 — 2026-10-13
 
 ### Added
