@@ -528,6 +528,37 @@ test('preflight: a clean doctor exits 0 with one confirming line, not a wall of 
   }
 })
 
+/** The closer line of a preflight whose doctor fails exactly these check ids. */
+function closerFor(ids) {
+  const root = tmpRoot()
+  try {
+    const checks = ids.map(id => ({ id, status: 'fail', detail: `${id} failed`, fix: `fix ${id}` }))
+    const path = stubBin(root, { stdout: JSON.stringify({ ok: false, checks, counts: { fail: ids.length } }), code: 1 })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path })
+    assert.equal(r.code, 0)
+    return r.context.split('\n').pop()
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test('preflight: a ship-only failure holds back ship alone, not spec or bootstrap', () => {
+  // A repo specs long before its first /interlock:fix-tests; a missing test
+  // profile or allowlist rule must not read as a reason to delay authoring.
+  const closer = closerFor(['test-profile', 'permissions', 'git'])
+  assert.match(closer, /before \/interlock:ship\.$/)
+  assert.doesNotMatch(closer, /\/interlock:spec|\/interlock:bootstrap/)
+})
+
+test('preflight: an openspec or binaries failure names spec and bootstrap as well as ship', () => {
+  for (const id of ['openspec', 'binaries']) {
+    const closer = closerFor(['test-profile', id])
+    assert.match(closer, /\/interlock:spec/, `${id} stops spec`)
+    assert.match(closer, /\/interlock:bootstrap/, `${id} stops bootstrap`)
+    assert.match(closer, /\/interlock:ship/)
+  }
+})
+
 test('preflight: a failing doctor still exits 0 and names the check and its fix', () => {
   // The REAL bundled doctor against an empty root, so this is the production
   // failure path rather than a stub agreeing with itself: no test profile and
@@ -541,8 +572,7 @@ test('preflight: a failing doctor still exits 0 and names the check and its fix'
     assert.match(r.context, /\[FAIL\] test-profile:/)
     assert.match(r.context, /fix: /, 'the doctor\'s fix string is what makes the report actionable')
     assert.match(r.context, /The session still starts/)
-    assert.match(r.context, /\/interlock:spec/, 'the closer must name spec, which needs the openspec CLI')
-    assert.match(r.context, /\/interlock:bootstrap/, 'the closer must name bootstrap, which needs the openspec CLI')
+    assert.match(r.context, /before [^\n]*\/interlock:ship\./)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

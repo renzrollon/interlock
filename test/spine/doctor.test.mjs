@@ -522,6 +522,22 @@ test('openspec absent with no project at all fails; absent with a project only w
   }
 })
 
+test('an openspec on PATH whose version probe does not run warns instead of ok', () => {
+  // spec and bootstrap stop at this same probe; a doctor that said ok here would
+  // contradict the skill (OpenSpec on a Node older than its floor, a broken shim).
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const row = byId(diagnose(dir, { ...baseOpts(dir), probeVersion: () => null }), 'openspec')
+    assert.equal(row.status, 'warn')
+    assert.match(row.detail, /did not run/)
+    assert.match(row.fix, /20\.19\.0/)
+    assert.ok(!row.fix.includes(OPENSPEC_INSTALL), 'an installed CLI that does not run is not fixed by reinstalling it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the openspec CLI without an initialised project warns', () => {
   const dir = tmp()
   try {

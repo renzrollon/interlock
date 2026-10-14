@@ -579,6 +579,9 @@ test('spec, bootstrap and dispatch probe the openspec CLI before the first comma
     assert.ok(probe < needs, `${dir} probes the CLI after ${first} — the stop must come first`)
     assert.ok(text.includes('command not found'), `${dir} must say what a missing CLI looks like`)
     assert.ok(text.includes(OPENSPEC_INSTALL), `${dir} must quote the doctor's install command: ${OPENSPEC_INSTALL}`)
+    // An installed CLI that crashes (Node below OpenSpec's floor) is not a
+    // missing one, and reinstalling @latest does not fix it.
+    assert.ok(text.includes('does not run'), `${dir} must tell an installed-but-failing CLI apart from a missing one`)
     if (installGuard) {
       assert.ok(text.includes('20.19.0'), `${dir} must name OpenSpec's Node floor`)
       assert.match(text, /(?:do not|never)[^.]{0,40}install/i, `${dir} must forbid installing the CLI itself`)

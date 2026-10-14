@@ -38,7 +38,12 @@ This skill writes specifications. It does not write code. By default it does not
 openspec --version
 ```
 
-If it prints `command not found` or exits non-zero, **stop here**: before asking for intent, before explore, before `openspec new change`, before any Write. Say in one line that the openspec CLI is missing, give the install command `npm install -g @fission-ai/openspec@latest` (Node.js 20.19.0 or newer), and point at `interlock doctor` for the full preflight. Do not install it yourself, and do not scaffold `openspec/changes/<name>/` by hand — the CLI owns those formats. `--no-explore` and `--brief` do not skip this step.
+If it does not print a version, **stop here**: before asking for intent, before explore, before `openspec new change`, before any Write — every later step calls the CLI.
+
+- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line and give the install command `npm install -g @fission-ai/openspec@latest`, or the project's own package manager if it pins openspec.
+- Any other error: the CLI is installed but does not run. Do not call it missing and do not offer the install line. Quote its error; the usual cause is a Node.js older than OpenSpec's floor, 20.19.0.
+
+Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, and do not scaffold `openspec/changes/<name>/` by hand — the CLI owns those formats. `--no-explore` and `--brief` do not skip this step.
 
 ---
 
