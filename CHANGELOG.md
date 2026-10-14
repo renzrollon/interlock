@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.6.1 — 2026-10-14
+
 ### Changed
 
 - **BREAKING: an inter-wave check never halts the run.** A checkpoint still red after its targeted fix attempts used to halt the run with the halt kind `inter-wave-verify` when the verdict said the errors block the next wave. The state machine no longer emits that kind. The errors are recorded on the run state with the verdict beside them, the step carries `INTER-WAVE CHECKS UNRESOLVED` naming the wave, the error count and the attempts, and every implementer briefing of the next wave gets a `STILL FAILING AFTER WAVE <n>` section listing at most ten errors, each cut to 300 characters. A briefing that follows no unresolved wave is byte-identical to before. A checkpoint whose verify agent reported no result for a planned check is recorded as a skipped verification (`VERIFICATION SKIPPED`) instead of halting. The final verification is unchanged: a red or unverified final suite still stops the run before it commits. A reader that matched `inter-wave-verify` on a halt will not see it again.
