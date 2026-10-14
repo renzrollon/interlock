@@ -149,9 +149,11 @@ const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
 const WORK = '.claude/ship'
 const RESULTS = `${WORK}/results.json`
 // Where the CLI keeps the exact bytes it last printed (LAST_STEP_PATH in
-// lib/run.mjs). Named here only so a halt can point a reader at it; this script
-// cannot read a file.
+// lib/run.mjs), and the close's own copy (LAST_CLOSE_PATH). This script cannot
+// read a file, so when a relay's copy is lost it asks a second relay to read
+// the record back, and a halt points a reader at it.
 const LAST_STEP = `${WORK}/last-step.json`
+const LAST_CLOSE = `${WORK}/last-close.json`
 
 // The runtime caps a run at 1000 agents. This is that ceiling, named so nobody
 // mistakes it for policy: it is NOT a bound on the loop, and it is deliberately
@@ -162,10 +164,10 @@ const RUNAWAY_BACKSTOP = 1000
 
 // Briefings are delivered BY REFERENCE (design D2). The CLI writes each one to a
 // file whose first line carries its sha256; this script hands the worker the
-// path and requires the hash back. A result whose `briefing` is absent or
-// differs is treated as a null result — the task fails closed with a named
-// reason. (A missing handoff packet no longer does: that task stays done and its
-// report is rejected.)
+// path and requires the hash back. A result whose `briefing` is absent, or does
+// not match the hash in its first 16 characters, is treated as a null result —
+// the task fails closed with a named reason. (A missing handoff packet no longer
+// does: that task stays done and its report is rejected.)
 //
 // This text is plumbing, not policy: it names a file and a field and says
 // nothing whatsoever about the work. It is pinned against
@@ -272,6 +274,10 @@ let resolvedChange = changeArg || '(unresolved)'
 // it had been a 23 KB step retyped with two brackets missing was to dig the
 // relay's transcript out by hand.
 let relayFailure = ''
+// The `seq` of the last step this script read. Every input it writes after that
+// names it, so a file left by an earlier call is refused by the CLI rather than
+// recorded; and a lost copy is recovered by comparing it with the CLI's record.
+let lastSeq = null
 
 /** A control-plane ping: mechanical, cheap, and never asked to decide anything. */
 const ping = (name, prompt, schema) => agent(prompt, { label: name, schema, ...pingExtra })
@@ -316,15 +322,28 @@ async function spawnOne(s) {
   // exists to catch. So it is a null result with a named reason, which the
   // recorder already treats as a failed task, rather than a warning beside a
   // result that gets counted.
-  const ack = typeof result.briefing === 'string' ? result.briefing.trim() : ''
-  if (ack !== s.promptSha256) {
+  //
+  // Sixteen matching hex characters are the acknowledgement; the rest is a
+  // model retyping 64 characters, which drops one often enough to have failed a
+  // finished wave. The result is recorded with the full hash either way.
+  const ack =
+    typeof result.briefing === 'string' ? result.briefing.trim().toLowerCase().replace(/^sha256=/, '') : ''
+  const expected = String(s.promptSha256).toLowerCase()
+  const exact = ack === expected
+  if (!exact && !(/^[0-9a-f]{16,}$/.test(ack) && ack.slice(0, 16) === expected.slice(0, 16))) {
     banners.push(
       `BRIEFING NOT ACKNOWLEDGED: ${s.label} reported ${ack || '(nothing)'} for a briefing whose ` +
         `sha256 is ${s.promptSha256} — the step is recorded as failed rather than trusted`
     )
     return null
   }
-  return result
+  if (!exact) {
+    banners.push(
+      `BRIEFING ACK INEXACT: ${s.label} reported ${ack.length} characters whose first 16 match the ` +
+        `briefing's sha256 — accepted`
+    )
+  }
+  return { ...result, briefing: s.promptSha256 }
 }
 
 /** Spawn everything a step names, in parallel. */
@@ -334,21 +353,95 @@ async function spawnAll(step) {
   return await pipeline(spawns, s => spawnOne(s))
 }
 
+const RELAY_SCHEMA = {
+  type: 'object',
+  properties: { cliStdout: { type: 'string' }, action: { type: 'string' } }
+}
+
+const COPY_RULES =
+  `Copy that command's stdout into this result verbatim as cliStdout, and copy its "action" ` +
+  `field into action. Never invent either, never summarize, and never adjust a value: a step ` +
+  `edited in transit is indistinguishable afterwards from the step the CLI emitted.\n`
+
+/**
+ * One relay of one command line, and the step its copy parses to — or why it
+ * does not, with the copy itself so a halt can quote it.
+ */
+async function relayOnce(name, command, writes) {
+  const writeLines = writes
+    .map(w => `Write this JSON to ${w.path} exactly as given:\n${JSON.stringify(w.value)}`)
+    .join('\n\n')
+  const relayed = await ping(
+    name,
+    `You are a mechanical relay for one command. Do not interpret it, and do not do the work it ` +
+      `describes.\n\n` +
+      (writeLines
+        ? `${writeLines}\n\n` +
+          `Make every write above before you run anything. If the Write tool refuses because the ` +
+          `file has not been read yet, Read the file and write it again.\n\n`
+        : '') +
+      `Then run exactly:\n  ${command}\n\n` +
+      `Run it once. ` +
+      COPY_RULES +
+      `A non-zero exit is still a result — copy whatever it printed, and do not run the command again.`,
+    RELAY_SCHEMA
+  )
+  return readCopy(relayed)
+}
+
+/** A relay that only reads a file the CLI wrote. It cannot change the run. */
+async function readRecord(name, path) {
+  const relayed = await ping(
+    name,
+    `You are a mechanical relay for one read. Change nothing.\n\n` +
+      `Run exactly:\n  cat ${path}\n\n` +
+      COPY_RULES,
+    RELAY_SCHEMA
+  )
+  return readCopy(relayed)
+}
+
+function readCopy(relayed) {
+  if (!relayed) return { problem: 'the relay returned nothing', copy: '' }
+  if (typeof relayed.cliStdout !== 'string') return { problem: 'the relay returned no cliStdout', copy: '' }
+  const copy = relayed.cliStdout
+  try {
+    const parsed = JSON.parse(relayed.cliStdout)
+    if (parsed && typeof parsed.action === 'string') return { step: parsed }
+    return { problem: `${copy.length} relayed chars parsed but carry no "action"`, copy }
+  } catch (err) {
+    // stdout was not JSON. Nothing is inferred from the copy itself; what is
+    // kept is WHY — V8's message carries the failing position when it has one —
+    // and the copy, so the halt says what broke instead of that something did.
+    return {
+      problem: `${copy.length} relayed chars do not parse as JSON (${(err && err.message) || String(err)})`,
+      copy
+    }
+  }
+}
+
 /**
  * Run one `interlock` command and return the step it printed.
  *
  * The script has no shell, so this is a ping that writes whatever files the
  * command reads, runs the argv and copies stdout. `cliStdout` is the record:
- * a step is read from the CLI's own bytes, never from a field a model retyped,
- * and a relay that produced neither is a loud stop rather than a guess at what
- * the CLI decided.
+ * a step is read from the CLI's own bytes, never from a field a model retyped.
+ *
+ * A copy that does not parse is not yet a stop. The CLI kept its own bytes, and
+ * their `seq` says what happened: one past the last step read means the call
+ * took effect and only the copy was lost; the last step read means it never
+ * took effect (a refused input, a refused sequence, a relay that gave up), so
+ * it is relayed once more. Anything else is a loud stop rather than a guess at
+ * what the CLI decided. `run start` has no earlier step to compare with and is
+ * relayed once more.
  */
 async function cli(argv, results, extraWrites = []) {
   const label = `cli-${++steps}`
-  const writes = [...(results === undefined ? [] : [{ path: RESULTS, value: results }]), ...extraWrites]
-  const writeLines = writes
-    .map(w => `Write this JSON to ${w.path} exactly as given:\n${JSON.stringify(w.value)}`)
-    .join('\n\n')
+  const subcommand = argv.slice(0, 2).join(' ')
+  const answers = Number.isInteger(lastSeq) ? lastSeq : null
+  const writes = [...(results === undefined ? [] : [{ path: RESULTS, value: results }]), ...extraWrites].map(w =>
+    answers === null ? w : { path: w.path, value: { answers, value: w.value } }
+  )
   // Quoted, because an argv token can hold a whole sentence: a halt reason is
   // one argument and reads as several the moment it is joined with spaces. The
   // relay runs a command line, so the quoting has to happen where the command
@@ -356,45 +449,43 @@ async function cli(argv, results, extraWrites = []) {
   const quote = a => (/[^\w@%+=:,./-]/.test(String(a)) ? `'${String(a).replace(/'/g, `'\\''`)}'` : String(a))
   const command =
     `interlock ${argv.map(quote).join(' ')}${results === undefined ? '' : ` --results ${RESULTS}`} --json`
+  const accept = step => {
+    if (Number.isInteger(step.seq)) lastSeq = step.seq
+    return step
+  }
   // Shown with the subcommand it relays (`cli-12 · run next`), so a stalled
   // relay can be read off the progress view; `label` stays what errors name.
-  const relayed = await ping(
-    `${label} · ${argv.slice(0, 2).join(' ')}`,
-    `You are a mechanical relay for one command. Do not interpret it, and do not do the work it ` +
-      `describes.\n\n` +
-      (writeLines ? `${writeLines}\n\n` : '') +
-      `Then run exactly:\n  ${command}\n\n` +
-      `Copy that command's stdout into this result verbatim as cliStdout, and copy its "action" ` +
-      `field into action. Never invent either, never summarize, and never adjust a value: a step ` +
-      `edited in transit is indistinguishable afterwards from the step the CLI emitted.\n` +
-      `A non-zero exit is still a result — copy whatever it printed.`,
-    {
-      type: 'object',
-      properties: { cliStdout: { type: 'string' }, action: { type: 'string' } }
-    }
-  )
-  let problem
-  if (!relayed) {
-    problem = 'the relay returned nothing'
-  } else if (typeof relayed.cliStdout !== 'string') {
-    problem = 'the relay returned no cliStdout'
-  } else {
-    try {
-      const parsed = JSON.parse(relayed.cliStdout)
-      if (parsed && typeof parsed.action === 'string') return parsed
-      problem = `${relayed.cliStdout.length} relayed chars parsed but carry no "action"`
-    } catch (err) {
-      // stdout was not JSON. Nothing is inferred from that: the caller stops.
-      // What is kept is WHY — V8's message carries the failing position when it
-      // has one — so the halt says what broke instead of that something did.
-      problem =
-        `${relayed.cliStdout.length} relayed chars do not parse as JSON ` +
-        `(${(err && err.message) || String(err)})`
+  const first = await relayOnce(`${label} · ${subcommand}`, command, writes)
+  if (first.step) return accept(first.step)
+
+  const record = isClose(argv) ? LAST_CLOSE : LAST_STEP
+  let recovery = ''
+  if (subcommand === 'run start') {
+    const again = await relayOnce(`${label} · ${subcommand} · again`, command, writes)
+    if (again.step) return accept(again.step)
+    recovery = `; relayed again: ${again.problem}`
+  } else if (answers !== null) {
+    const read = await readRecord(`${label} · recover`, record)
+    const seq = read.step && Number.isInteger(read.step.seq) ? read.step.seq : null
+    if (seq !== null && (isClose(argv) ? seq > answers : seq === answers + 1)) return accept(read.step)
+    if (seq !== null && seq === answers) {
+      const again = await relayOnce(`${label} · ${subcommand} · again`, command, writes)
+      if (again.step) return accept(again.step)
+      recovery = `; the call had not taken effect, and relaying it again failed too: ${again.problem}`
+    } else {
+      recovery =
+        seq === null
+          ? `; ${record} could not be read back either (${read.problem})`
+          : `; ${record} holds step ${seq}, which is not the step after ${answers}`
     }
   }
+  const flat = first.copy.replace(/\s+/g, ' ').trim()
+  const quoted = flat
+    ? `; the relay copied "${flat.slice(0, 200)}${flat.length > 200 ? '…' : ''}"`
+    : '; the relay copied nothing'
   relayFailure =
-    `${label} (interlock ${argv.slice(0, 2).join(' ')}): ${problem} — ` +
-    `the CLI's own bytes are in ${LAST_STEP}`
+    `${label} (interlock ${subcommand}): ${first.problem}${recovery}${quoted} — ` +
+    `the CLI's own bytes are in ${record}`
   return null
 }
 

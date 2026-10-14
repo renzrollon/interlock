@@ -1702,16 +1702,43 @@ test('a failed check buys exactly LIMITS.interWaveFixAttempts fix attempts', () 
   assert.ok(state.warnings.some(w => w.includes('unresolved')), 'continuing must warn')
 })
 
-test('the same unresolved errors halt when the caller says they block the next wave', () => {
-  const { trace, state } = drive(createRunState(simplePlan([1, 2])), {
+test('unresolved errors the caller says block the next wave are carried to it, and never halt', () => {
+  const { trace, state, actions } = drive(createRunState(simplePlan([1, 2])), {
     onVerify: () => ({ ok: false, errors: ['tsc: broken'], blocksNextWave: true })
   })
-  const halt = trace.at(-1)
-  assert.equal(halt.action, 'halt')
-  assert.equal(halt.kind, HALT_INTER_WAVE_VERIFY)
-  assert.match(halt.reason, /block/)
-  assert.equal(state.unresolved[0].blockedNextWave, true)
-  assert.ok(!state.warnings.some(w => w.includes('continuing')), 'a halt is not a warning')
+  assert.equal(actions.at(-1), 'done', 'an inter-wave checkpoint stops nothing')
+  assert.equal(state.halt, null)
+  assert.ok(!actions.includes('halt'))
+  assert.ok(!trace.some(s => s.kind === HALT_INTER_WAVE_VERIFY), 'the kind is no longer emitted')
+  assert.equal(state.unresolved[0].blockedNextWave, true, 'the verdict is still recorded')
+  assert.ok(
+    state.warnings.some(w => /wave 1: 1 unresolved error\(s\).*continuing.*although the verdict reported they block it/.test(w)),
+    JSON.stringify(state.warnings)
+  )
+  const batches = trace.filter(s => s.action === 'run-batch')
+  assert.equal('unresolvedChecks' in batches[0], false, 'the first wave follows nothing')
+  assert.deepEqual(batches[1].unresolvedChecks, { wave: 1, waveKind: 'impl', errors: ['tsc: broken'] })
+  assert.match(formatRunState(state), /unresolved after wave 1: 1 error\(s\) after \d+ fix attempts, carried to the next wave/)
+})
+
+test('unresolved checks reach the wave right after theirs only, bounded at ten errors of 300 characters', () => {
+  const long = 'x'.repeat(2000)
+  const errors = [long, ...Array.from({ length: 13 }, (_, i) => `error ${i + 2}`)]
+  let verified = 0
+  const { trace } = drive(createRunState(simplePlan([1, 2, 3])), {
+    onVerify: () => {
+      verified += 1
+      return verified <= 1 + LIMITS.interWaveFixAttempts ? { ok: false, errors } : { ok: true }
+    }
+  })
+  const batches = trace.filter(s => s.action === 'run-batch')
+  assert.equal(batches.length, 3)
+  const carried = batches[1].unresolvedChecks
+  assert.equal(carried.errors.length, 10)
+  assert.equal(carried.omitted, 4)
+  assert.ok(carried.errors.every(e => e.length <= 300), 'every carried error is cut to 300 characters')
+  assert.ok(carried.errors[0].endsWith('…'))
+  assert.equal('unresolvedChecks' in batches[2], false, 'wave 3 follows a wave that passed')
 })
 
 test('a check that passes after a fix attempt clears the budget for the next wave', () => {
@@ -1917,6 +1944,114 @@ test('a failed task keeps its own reason and files no rejected report', () => {
   assert.equal(after.failures[0].error, 'could not resolve the build')
   assert.deepEqual(after.rejectedReports ?? [], [])
   assert.deepEqual(after.completed, [])
+})
+
+// --- a task built on work that is not there is skipped (spec: waves) --------
+
+const failing = ids => step => ({
+  tasks: stepTasks(step).map(t => (ids.includes(t.id) ? { id: t.id, ok: false, error: 'gave up' } : okTask(t.id)))
+})
+const dispatched = trace =>
+  trace.filter(s => s.action === 'run-batch' || s.action === 'test-wave').flatMap(s => stepTasks(s).map(t => t.id))
+
+test('the direct and transitive dependents of a failed task are skipped, and a wave left empty is never entered', () => {
+  const tasks = [
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/c.ts'], dependsOn: ['1.1'] }),
+    task({ id: '2.2', group: 2, paths: ['src/d.ts'] }),
+    task({ id: '3.1', group: 3, paths: ['src/e.ts'], dependsOn: ['2.1'] }),
+    task({ id: '3.2', group: 3, paths: ['src/f.ts'], dependsOn: ['2.1'] })
+  ]
+  const start = createRunState(planOf(tasks, { maxTasksPerAgent: 1 }))
+  assert.equal(start.waves.length, 3, 'fixture: three waves')
+  assert.deepEqual(start.skippedDependents, [])
+
+  const afterFirst = recordBatchResult(start, failing(['1.1'])(nextStep(start)))
+  assert.deepEqual(afterFirst.skippedDependents, [
+    { id: '2.1', wave: 2, waveKind: 'impl', blockedBy: ['1.1'] },
+    { id: '3.1', wave: 3, waveKind: 'impl', blockedBy: ['2.1'] },
+    { id: '3.2', wave: 3, waveKind: 'impl', blockedBy: ['2.1'] }
+  ])
+  assert.equal(afterFirst.failures.length, 1, 'a skipped task is not a failure')
+  assert.equal(afterFirst.waves.length, 2, 'wave 3 held nothing else, so it is gone')
+  assert.equal(afterFirst.waves[1].taskCount, 1)
+  assert.match(formatRunState(afterFirst), /skipped 3\.1 in wave 3: needs 2\.1 \(not counted as a failure\)/)
+
+  const { trace, state } = drive(afterFirst)
+  assert.deepEqual(dispatched(trace), ['2.2'])
+  assert.deepEqual(trace.map(s => s.action), ['verify', 'run-batch', 'done'], 'no checkpoint is spent on wave 3')
+  assert.equal(state.halt, null)
+  assert.deepEqual(trace.at(-1).summary.skippedDependents.map(s => s.id), ['2.1', '3.1', '3.2'])
+})
+
+test('a dependent waiting in a later batch of the same wave is skipped before it is dispatched', () => {
+  const tasks = [
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '1.3', group: 1, paths: ['src/c.ts'], dependsOn: ['1.1'] }),
+    task({ id: '2.1', group: 2, paths: ['src/d.ts'] }),
+    task({ id: '2.2', group: 2, paths: ['src/e.ts'] })
+  ]
+  const start = createRunState(planOf(tasks, { maxTasksPerAgent: 1 }))
+  assert.equal(placementOf(start, '1.3').batch, 1, 'fixture: 1.3 waits for a later batch')
+
+  const after = recordBatchResult(start, failing(['1.1'])(nextStep(start)))
+  assert.deepEqual(after.skippedDependents.map(s => s.id), ['1.3'])
+  assert.equal(after.waves[0].batches.length, 1, 'the batch 1.3 sat in alone is gone')
+  assert.equal(nextStep(after).action, 'verify', 'the wave is finished, not waiting on 1.3')
+})
+
+test('skipped dependents are not counted toward the failure halt', () => {
+  const tasks = [
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/c.ts'], dependsOn: ['1.1'] }),
+    task({ id: '2.2', group: 2, paths: ['src/d.ts'], dependsOn: ['1.2'] }),
+    task({ id: '2.3', group: 2, paths: ['src/e.ts'], dependsOn: ['1.1', '1.2'] }),
+    task({ id: '3.1', group: 3, paths: ['src/f.ts'] }),
+    task({ id: '3.2', group: 3, paths: ['src/g.ts'] })
+  ]
+  assert.equal(LIMITS.taskFailureHalt, 2, 'fixture: two failures sit at the cap')
+  const start = createRunState(planOf(tasks, { maxTasksPerAgent: 1 }))
+  const after = recordBatchResult(start, failing(['1.1', '1.2'])(nextStep(start)))
+  assert.equal(after.halt, null)
+  assert.equal(after.failures.length, 2)
+  assert.deepEqual(after.skippedDependents.find(s => s.id === '2.3').blockedBy, ['1.1', '1.2'])
+
+  const { trace, state } = drive(after)
+  assert.deepEqual(dispatched(trace), ['3.1', '3.2'], 'three skipped tasks did not push the run over its cap')
+  assert.equal(state.halt, null)
+})
+
+test('a task left unattempted blocks its dependents the way a failed one does', () => {
+  const start = createRunState(planOf([
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/c.ts'], dependsOn: ['1.2'] }),
+    task({ id: '2.2', group: 2, paths: ['src/d.ts'] })
+  ], { maxTasksPerAgent: 1 }))
+  const after = recordBatchResult(start, { tasks: [okTask('1.1')] })
+  assert.equal(after.failures.length, 0, 'nobody ran 1.2, so nothing failed')
+  assert.deepEqual(after.skippedDependents, [{ id: '2.1', wave: 2, waveKind: 'impl', blockedBy: ['1.2'] }])
+})
+
+test('a state written before skipped dependents existed is initialized, and its dependents are still skipped', () => {
+  const fresh = createRunState(planOf([
+    task({ id: '1.1', group: 1, paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, paths: ['src/b.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/c.ts'], dependsOn: ['1.1'] }),
+    task({ id: '2.2', group: 2, paths: ['src/d.ts'] })
+  ], { maxTasksPerAgent: 1 }))
+  const older = { ...fresh }
+  delete older.skippedDependents
+
+  const clean = recordBatchResult(older, allOk(nextStep(older)))
+  assert.deepEqual(clean.skippedDependents, [], 'the key is initialized, not left absent')
+  assert.equal(clean.waves[1].taskCount, 2, 'a run with no failure loses nothing')
+
+  const failed = recordBatchResult(older, failing(['1.1'])(nextStep(older)))
+  assert.deepEqual(failed.skippedDependents.map(s => s.id), ['2.1'])
 })
 
 test('a packet of exactly LIMITS.maxHandoffChars is stored unchanged; one more is rejected', () => {
@@ -2702,9 +2837,8 @@ test('test-wave failures count towards the same halt accounting', () => {
 })
 
 test('every halt carries a non-empty reason the caller cannot read as advice', () => {
-  const blocked = drive(createRunState(simplePlan([1, 2])), {
-    onVerify: () => ({ ok: false, blocksNextWave: true })
-  })
+  // The task-failure cap is the state machine's one halt: an unresolved
+  // inter-wave check is carried forward instead.
   const doomed = Array.from({ length: LIMITS.taskFailureHalt + 1 }, (_, i) =>
     task({ id: `1.${i + 1}`, group: 1 })
   )
@@ -2712,7 +2846,7 @@ test('every halt carries a non-empty reason the caller cannot read as advice', (
     onBatch: step => ({ tasks: stepTasks(step).map(t => ({ id: t.id, ok: false })) }),
     onVerify: () => ({ ok: true })
   })
-  for (const { trace, state } of [blocked, failed]) {
+  for (const { trace, state } of [failed]) {
     const halt = trace.at(-1)
     assert.equal(halt.action, 'halt')
     assert.equal(typeof halt.reason, 'string')

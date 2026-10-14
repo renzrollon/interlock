@@ -322,6 +322,23 @@ function commandIn(prompt) {
   return out
 }
 
+/** The file a read-only relay prompt names, or null when it names none. */
+function recordIn(prompt) {
+  const m = /^Run exactly:\n {2}cat (\S+)$/m.exec(prompt)
+  return m ? m[1] : null
+}
+
+/**
+ * The payload a relay was asked to write, out of the `{ answers, value }`
+ * envelope the script wraps it in once it has read a step.
+ */
+export function payloadOf(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Number.isInteger(value.answers) &&
+    Object.keys(value).length === 2 && 'value' in value
+    ? value.value
+    : value
+}
+
 /** The writes a relay prompt asks for, in order. */
 function writesIn(prompt) {
   const out = []
@@ -480,6 +497,10 @@ export async function runShip(opts = {}) {
     const text = String(prompt)
 
     // A relay: perform its writes, run its command for real, hand back stdout.
+    // A call's recovery read and its second relay share its label (`cli-4 ·
+    // recover`), so a relay fixture answers every copy made for that call, and
+    // `n` says which one this is.
+    const relayFixture = Object.prototype.hasOwnProperty.call(responses, label) ? responses[label] : undefined
     const argv = commandIn(text)
     if (argv) {
       prompts.push({ label, title, prompt: text, model: options.model, relay: true, ...effortOf(options) })
@@ -487,24 +508,50 @@ export async function runShip(opts = {}) {
       // is written and nothing runs, and the script sees exactly what agent()
       // returns in that case. It is the only way a fixture can reach the
       // "could not be read" path, since every other relay runs the CLI for real.
-      if (Object.prototype.hasOwnProperty.call(responses, label) && responses[label] === null) return null
-      for (const w of writesIn(text)) {
-        const dest = join(root, w.path)
-        mkdirSync(dirname(dest), { recursive: true })
-        writeFileSync(dest, JSON.stringify(w.value, null, 2) + '\n')
+      if (relayFixture === null) return null
+      const performWrites = () => {
+        for (const w of writesIn(text)) {
+          const dest = join(root, w.path)
+          mkdirSync(dirname(dest), { recursive: true })
+          writeFileSync(dest, JSON.stringify(w.value, null, 2) + '\n')
+        }
       }
-      commands.push(argv)
       // `commandIn` already captured everything AFTER the binary name, and
       // `runCli` invokes bin/interlock itself — so this is the subcommand and
       // its flags, passed through whole.
       // `env` reaches the CLI the way a session's environment reaches the
       // relay's shell: `run start` reads the host's routing variables itself.
-      const result = await runCli(argv, { cwd: root, ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}) })
+      const runIt = async () => {
+        commands.push(argv)
+        return await runCli(argv, { cwd: root, ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}) })
+      }
+      // A relay canned as `{ relay(io, n) }` misuses its tools the way a model
+      // can — runs before it writes, runs twice, gives up — and returns what it
+      // copied. `io` is `{ write, run, put }`: the writes the prompt asked for,
+      // the command, and a file of the fixture's own (a stale leftover).
+      if (relayFixture && typeof relayFixture === 'object' && typeof relayFixture.relay === 'function') {
+        return { cliStdout: await relayFixture.relay({ write: performWrites, run: runIt, put: write }, n) }
+      }
+      performWrites()
+      const result = await runIt()
       // A relay canned as a function is a relay that ran the command for real
       // and then retyped its stdout badly — the failure that halted the jumphour
       // run. The CLI's own effects have happened; only the copy is wrong.
-      const retype = Object.prototype.hasOwnProperty.call(responses, label) ? responses[label] : undefined
-      return { cliStdout: typeof retype === 'function' ? retype(result.stdout) : result.stdout }
+      return { cliStdout: typeof relayFixture === 'function' ? relayFixture(result.stdout, n) : result.stdout }
+    }
+
+    // A read-only relay: the CLI's record of a step, read back after a lost copy.
+    const record = recordIn(text)
+    if (record) {
+      prompts.push({ label, title, prompt: text, model: options.model, relay: true, ...effortOf(options) })
+      if (relayFixture === null) return null
+      let stdout = ''
+      try {
+        stdout = readFileSync(join(root, record), 'utf8')
+      } catch {
+        stdout = ''
+      }
+      return { cliStdout: typeof relayFixture === 'function' ? relayFixture(stdout, n) : stdout }
     }
 
     // A worker: record the briefing it was pointed at, and answer with the
@@ -524,7 +571,9 @@ export async function runShip(opts = {}) {
       // The acknowledgement the script requires back. Supplied by default so an
       // ordinary run exercises the work rather than the guard — and NOT
       // overridden when a fixture states its own, which is how the fail-closed
-      // direction is reachable at all.
+      // direction is reachable at all. A fixture's `briefing` may be a function
+      // of the real hash, for an acknowledgement that is almost right.
+      if (body && typeof body.briefing === 'function') return { ...body, briefing: body.briefing(bootstrap.sha) }
       return Object.prototype.hasOwnProperty.call(body || {}, 'briefing')
         ? body
         : { ...(body || {}), briefing: bootstrap.sha }

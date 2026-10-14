@@ -258,6 +258,108 @@ test('a lean run walks start → classify → batch → verify → commit → cl
   }
 })
 
+// --- step numbers and the inputs that answer them (spec: ship/run-program) ---
+
+const shipFile = (root, name) => JSON.parse(readFileSync(join(root, '.claude/ship', name), 'utf8'))
+
+test('every step carries the next seq in its root, across runs, and the close keeps its own copy', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = run(root, [...started.then.argv]).step
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+    assert.deepEqual([started.seq, batch.seq, recorded.seq, judged.seq], [1, 2, 3, 4])
+    assert.equal(manifestOf(root).seqStart, 1)
+
+    const closed = run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(closed.seq, 5)
+    assert.equal(shipFile(root, 'last-close.json').seq, 5, 'the close is recoverable from its own copy')
+    assert.equal(shipFile(root, 'last-step.json').seq, 4, 'the close leaves the step a halt points at')
+
+    const again = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(again.seq, 6, 'a new run continues the count, so an old file answers none of its steps')
+    assert.equal(manifestOf(root).seqStart, 6)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a --results envelope written for an earlier step is refused before anything is recorded', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    assert.equal(batch.seq, 2)
+    const ids = batch.lanes.map(lane => lane.map(t => t.id))
+    const payload = ids.map(laneOk)
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    const trajectory = join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`)
+    const before = ['.claude/ship/state.json', '.claude/ship/run.json'].map(p => readFileSync(join(root, p), 'utf8'))
+    const tasksBefore = readFileSync(tasksPath, 'utf8')
+    const trajectoryBefore = readFileSync(trajectory, 'utf8')
+
+    const stale = runCapturing(root, ['run', 'record-batch'], {
+      results: { answers: 1, value: payload },
+      expectExit: 1
+    })
+    assert.equal(stale.step, null, 'a refusal prints no step')
+    assert.match(
+      stale.stderr,
+      /stale input: --results \.claude\/ship\/results\.json answers step 1, the run is at step 2/
+    )
+    assert.deepEqual(
+      ['.claude/ship/state.json', '.claude/ship/run.json'].map(p => readFileSync(join(root, p), 'utf8')),
+      before,
+      'the refusal changed the run state or the manifest'
+    )
+    assert.equal(readFileSync(tasksPath, 'utf8'), tasksBefore)
+    assert.equal(readFileSync(trajectory, 'utf8'), trajectoryBefore)
+
+    const recorded = run(root, ['run', 'record-batch'], { results: { answers: 2, value: payload } }).step
+    assert.equal(recorded.seq, 3)
+    assert.deepEqual(recorded.recorded.ok.sort(), ids.flat().sort())
+    assert.match(readFileSync(tasksPath, 'utf8'), /- \[x\] 1\.1/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a bare --results input is read as before, with no check against seq', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const recorded = run(root, ['run', 'record-batch'], {
+      results: batch.lanes.map(lane => laneOk(lane.map(t => t.id)))
+    }).step
+    assert.equal(recorded.recorded.failed.length, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the close takes an envelope from any step of its run and refuses one from before it', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    assert.equal(manifestOf(root).seq, 2)
+    file(root, '.claude/ship/host-banners.json', { answers: 0, value: ['HOST NOTE: stale'] })
+    const stale = runCapturing(root, ['run', 'close', '--host-banners', '.claude/ship/host-banners.json'], {
+      expectExit: 1
+    })
+    assert.match(stale.stderr, /--host-banners \.claude\/ship\/host-banners\.json answers step 0, this run's steps are 1–2/)
+
+    file(root, '.claude/ship/host-banners.json', { answers: 1, value: ['HOST NOTE: one behind'] })
+    const { step } = run(root, ['run', 'close', '--host-banners', '.claude/ship/host-banners.json'])
+    assert.match(step.summary, /HOST NOTE: one behind/, 'a driver one step behind the CLI can still close')
+    assert.equal(step.seq, 3)
+  } finally {
+    cleanup(root)
+  }
+})
+
 // --- every continuation names a real subcommand -----------------------------
 
 test('every then.argv a run emits names a subcommand bin/interlock dispatches', () => {
@@ -2705,15 +2807,15 @@ function verifiableRepo(classified = THREE_GROUPS) {
   return { root, change, batch: run(root, [...started.then.argv]).step }
 }
 
-/** Report every lane in `batch` as ok, having really touched a source file. */
-function completeBatch(root, batch) {
+/** Report every lane in `batch` as ok, having really touched a source file, except the `failed` ids. */
+function completeBatch(root, batch, failed = []) {
   assert.equal(batch.action, 'run-batch', 'completeBatch was handed something that dispatches no lanes')
   for (const task of batch.lanes.flat()) {
     file(root, srcOf(task.id), `export const v = '${task.id}'\n`)
   }
   return run(root, [...batch.then.argv], {
     results: batch.spawns.map((_, i) => ({
-      tasks: batch.lanes[i].map(t => ({
+      tasks: batch.lanes[i].map(t => failed.includes(t.id) ? { id: t.id, outcome: 'failed', error: 'could not build' } : ({
         id: t.id,
         outcome: 'ok',
         filesChanged: [srcOf(t.id)],
@@ -2752,6 +2854,87 @@ test('a red inter-wave check briefs its retry with the attempt number and what f
     // agent re-runs the same commands with no statement of what was red.
     assert.match(prompt, /unit suite is red/)
     assert.doesNotMatch(prompt, /first failure/, 'the do-not-repair clause is exactly wrong on a retry')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- an inter-wave checkpoint stops nothing (spec: waves) --------------------
+
+test('an inter-wave check still red after its fix attempts hands the next wave its errors, and the run goes on', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    let step = completeBatch(root, batch)
+    for (let i = 0; i <= LIMITS.interWaveFixAttempts; i++) {
+      assert.equal(step.action, 'verify')
+      step = run(root, [...step.then.argv], {
+        results: [{ results: [{ kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['boom'] }] }]
+      }).step
+    }
+    assert.equal(step.action, 'run-batch', `the run halted instead: ${step.reason}`)
+    assert.ok(
+      step.banners.includes(
+        `INTER-WAVE CHECKS UNRESOLVED: wave 1 — 1 error(s) still failing after ${LIMITS.interWaveFixAttempts} fix ` +
+          'attempt(s); the run continues, the next wave is told what is failing, and the final verification still ' +
+          'gates the commit'
+      ),
+      JSON.stringify(step.banners)
+    )
+    const prompt = step.spawns[0].prompt
+    assert.match(prompt, /STILL FAILING AFTER WAVE 1 \(its checks were not fixed in the attempts allowed; the run went on\):/)
+    assert.match(prompt, /unit suite is red/)
+    const state = JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+    assert.equal(state.halt, null)
+    assert.equal(state.unresolved.length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an inter-wave check nobody reported on is skipped, and the next wave runs', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    const next = run(root, [...verify.then.argv], { results: [null] }).step
+    assert.equal(next.action, 'run-batch', `the run halted instead: ${next.reason}`)
+    assert.ok(
+      next.banners.some(b => /^VERIFICATION SKIPPED: reason=verification reported no result for unit — the checkpoint is skipped/.test(b)),
+      JSON.stringify(next.banners)
+    )
+    const state = JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+    assert.match(state.skippedVerifications.at(-1).reason, /no result for unit/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a failed task takes its dependents out of the run, and record-batch names them', () => {
+  const edges = { '2.1': ['1.2'], '3.1': ['2.1'] }
+  const { root, change, batch } = verifiableRepo({
+    tasks: THREE_GROUPS.tasks.map(t => (edges[t.id] ? { ...t, dependsOn: edges[t.id] } : t))
+  })
+  try {
+    assert.deepEqual(batch.lanes.flat().map(t => t.id), ['1.1', '1.2'], 'fixture: 1.2 is the last task dispatched')
+    const verify = completeBatch(root, batch, ['1.2'])
+    assert.ok(
+      verify.banners.includes(
+        'DEPENDENTS SKIPPED: 2.1 (needs 1.2), 3.1 (needs 2.1) — not attempted, not counted as failures, ' +
+          'and still unchecked in tasks.md'
+      ),
+      JSON.stringify(verify.banners)
+    )
+    assert.equal(verify.action, 'verify')
+    const next = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    assert.deepEqual(next.lanes.map(l => l.map(t => t.id)), [['2.2']])
+    const tasks = readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8')
+    assert.match(tasks, /- \[x\] 1\.1 /)
+    assert.match(tasks, /- \[ \] 2\.1 /)
+    assert.match(tasks, /- \[ \] 3\.1 /)
+    const tally = manifestOf(root).waves.find(w => w.wave === 1)
+    assert.deepEqual(tally.failedIds, ['1.2'], 'one failure, however many it blocked')
   } finally {
     cleanup(root)
   }
@@ -3122,6 +3305,7 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     'wave',
     'reason',
     'pingModel',
+    'seq',
     'waveIndex',
     'batchIndex',
     'batchCount',
@@ -3181,7 +3365,7 @@ test('on the Workflow host a run step is printed slim, and its exact bytes are k
 // these cases and nothing else in this file.
 
 const RUN_STEP_SCHEMA = 'interlock.run-step/1'
-const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel']
+const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel', 'seq']
 const summaryModule = () => import('../../lib/plan-summary.mjs')
 const stateOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
 const planOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))

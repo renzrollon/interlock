@@ -396,3 +396,25 @@ test('an empty or absent previousRejectedReports leaves the prompt unchanged', (
     base
   )
 })
+
+// --- checks the previous wave left failing (spec: waves — unresolved checks) ---
+
+test('checks the previous wave left failing are named after the previous-wave blocks', () => {
+  const prompt = assembleFromSource({
+    ...forTier(2),
+    previousHandoffs: [handoff()],
+    unresolvedChecks: { wave: 2, waveKind: 'impl', errors: ['tsc: Foo is not assignable to Bar\n  at a.ts:3'], omitted: 4 }
+  })
+  assert.match(prompt, /STILL FAILING AFTER WAVE 2 \(its checks were not fixed in the attempts allowed; the run went on\):/)
+  assert.match(prompt, /- tsc: Foo is not assignable to Bar\n {2}at a\.ts:3\n- \(4 more not shown\)/)
+  assert.match(prompt, /The rest are not yours to fix/)
+  assert.ok(prompt.indexOf('PREVIOUS WAVE') < prompt.indexOf('STILL FAILING'), 'after the report it builds on')
+  assert.ok(prompt.indexOf('STILL FAILING') < prompt.indexOf('HANDOFF'))
+})
+
+test('no unresolved checks, or none with text, leaves the prompt byte-identical', () => {
+  const base = assembleFromSource({ ...forTier(3), previousHandoffs: [handoff()] })
+  for (const unresolvedChecks of [undefined, null, { wave: 1, errors: [] }, { wave: 1, errors: ['  '] }]) {
+    assert.equal(assembleFromSource({ ...forTier(3), previousHandoffs: [handoff()], unresolvedChecks }), base)
+  }
+})

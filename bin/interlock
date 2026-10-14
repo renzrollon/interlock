@@ -48,10 +48,12 @@ import {
 import {
   CLASSIFIED_PATH,
   GRAPH_FILE_PATH,
+  LAST_CLOSE_PATH,
   LAST_STEP_PATH,
   MANIFEST_PATH,
   STATE_PATH,
   VERIFY_TIMINGS_PATH,
+  answeredInput,
   checkSequence,
   locateInput,
   readManifest,
@@ -67,6 +69,7 @@ import {
   runReviewed,
   runStart,
   runVerifyFinal,
+  stampStep,
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
@@ -1465,13 +1468,32 @@ function emitRunStep(json, root, step, text, { relay = false } = {}) {
   }
   const shaped = relay ? relayStep(readManifest(root), step) : step
   const out = JSON.stringify(shaped, null, 2) + '\n'
-  try {
-    mkdirSync(join(root, dirname(LAST_STEP_PATH)), { recursive: true })
-    writeFileSync(join(root, LAST_STEP_PATH), out)
-  } catch (err) {
-    process.stderr.write(`interlock: ${LAST_STEP_PATH} not written: ${(err && err.message) || err}\n`)
-  }
+  keepStepCopy(root, LAST_STEP_PATH, out)
   process.stdout.write(out)
+}
+
+/**
+ * The close as `emitRunStep` prints a step, kept at LAST_CLOSE_PATH rather than
+ * LAST_STEP_PATH: the close is how a driver recovers a garbled close relay, and
+ * the step a halt points at must survive it.
+ */
+function emitCloseStep(json, root, step) {
+  if (!json) {
+    process.stdout.write(step.summary + '\n')
+    return
+  }
+  const out = JSON.stringify(step, null, 2) + '\n'
+  keepStepCopy(root, LAST_CLOSE_PATH, out)
+  process.stdout.write(out)
+}
+
+function keepStepCopy(root, path, out) {
+  try {
+    mkdirSync(join(root, dirname(path)), { recursive: true })
+    writeFileSync(join(root, path), out)
+  } catch (err) {
+    process.stderr.write(`interlock: ${path} not written: ${(err && err.message) || err}\n`)
+  }
 }
 
 /**
@@ -4487,18 +4509,29 @@ async function main() {
       // receipt, no outcome record and no terminal event. A run nobody can
       // reconstruct is the failure this trajectory exists to prevent; a
       // mis-sequenced close is not.
+      const runManifest = sub === 'start' ? null : readManifest(root)
       if (sub !== 'start' && sub !== 'close') {
-        const manifest = readManifest(root)
-        if (manifest) {
+        if (runManifest) {
           // The RAW argv, not the parsed positionals: a step's continuation
           // names its flags (`--classified <path>`, `--context inter-wave`) and
           // those are part of what the program asked for.
-          const problem = checkSequence(manifest, argv)
+          const problem = checkSequence(runManifest, argv)
           if (problem) die(problem)
         }
       }
+      // A driver's input may name the step it answers (`answeredInput`). One
+      // written for any other call is refused here, before a subcommand has
+      // read anything into the run, so the refusal changes nothing.
+      const readRunInput = (value, what) => {
+        const answered = answeredInput(runManifest, readInput(value, what), {
+          what: `${what.split(' ')[0]} ${value === '-' ? '(stdin)' : value}`,
+          close: sub === 'close'
+        })
+        if (answered.problem) die(answered.problem)
+        return answered.value
+      }
 
-      const results = flags.results ? readInput(flags.results, '--results <file|->') : []
+      const results = flags.results ? readRunInput(flags.results, '--results <file|->') : []
       const resultList = Array.isArray(results) ? results : [results]
       // The host's own observation of each spawn, beside the agents' results and
       // never inside them: a result is the agent's report, a host record is what
@@ -4625,10 +4658,10 @@ async function main() {
         step = runNext(ctx)
       } else if (sub === 'close') {
         const hostBanners = flags['host-banners']
-          ? readInput(flags['host-banners'], '--host-banners <file|->')
+          ? readRunInput(flags['host-banners'], '--host-banners <file|->')
           : []
         const hostObserved = flags['host-observed']
-          ? readInput(flags['host-observed'], '--host-observed <file|->')
+          ? readRunInput(flags['host-observed'], '--host-observed <file|->')
           : null
         step = await runClose(ctx, {
           results: resultList,
@@ -4638,10 +4671,10 @@ async function main() {
           hostRecords,
           notify: flags.notify === true
         })
-        // Printed plainly, and NOT copied to LAST_STEP_PATH: a halted run closes
-        // through here, and overwriting the file would replace the very step the
-        // halt reason points a reader at with the close's own summary.
-        emit(json, step, step.summary + '\n')
+        // NOT copied to LAST_STEP_PATH: a halted run closes through here, and
+        // overwriting the file would replace the very step the halt reason
+        // points a reader at with the close's own summary.
+        emitCloseStep(json, root, stampStep(root, step))
         if (step.exitCode !== 0) process.exit(step.exitCode)
         break
       } else {
@@ -4651,7 +4684,7 @@ async function main() {
         )
       }
 
-      emitRunStep(json, root, step, formatRunStep(step), { relay: true })
+      emitRunStep(json, root, stampStep(root, step), formatRunStep(step), { relay: true })
       // A halt step still exits 0: its `then` is the close, and a driver that
       // stopped here would leave the run with no receipt and no terminal event.
       // `run close` is the call that carries the non-zero exit.

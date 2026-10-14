@@ -1883,10 +1883,12 @@ test('a relay that produced no readable step stops the run rather than guessing'
   // An invented action used to be a relay miss the script recovered from by
   // re-reading the state under a new label. There is nothing to invent now: a
   // step is the CLI's own JSON, and either it parsed or it did not. What
-  // matters is that neither outcome is a guess — an unreadable relay is a halt
-  // that closes, with the reason named.
+  // matters is that neither outcome is a guess — a lost copy is recovered only
+  // from the CLI's own record, by its seq, and otherwise it is a halt that
+  // closes, with the reason named.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  assert.match(text, /stdout was not JSON\. Nothing is inferred from that: the caller stops/)
+  assert.match(text, /stdout was not JSON\. Nothing is inferred from the copy itself/)
+  assert.match(text, /seq === answers \+ 1/, 'a record is accepted only as the step after the last one read')
   assert.match(text, /the run program returned no step — the CLI relay could not be read/)
   // And a run that can no longer read its program still records a receipt.
   const stopAt = text.indexOf('async function stop(reason)')
@@ -2546,6 +2548,62 @@ test('a worker that does not acknowledge its briefing fails the task, closed', a
   }
 })
 
+test('a worker whose acknowledgement dropped a character is accepted, and the summary says so', async () => {
+  // The beta-rabbitdeploy halt: a lane finished three tasks and reported its
+  // 64-character hash with the last character missing.
+  const lane = [laneTask('1.1')]
+  const { output, root } = await runShip({
+    keepRepo: true,
+    classified: { tasks: lane },
+    responses: {
+      '1.1': () => ({ id: '1.1', ok: true, handoff: laneHandoff('1.1'), briefing: sha => sha.slice(0, 63) })
+    }
+  })
+  try {
+    assert.deepEqual(ticked(root), ['1.1'], 'the task is recorded on its own outcome')
+    assert.match(output, /BRIEFING ACK INEXACT: 1\.1 reported 63 characters whose first 16 match the briefing's sha256 — accepted/)
+    assert.doesNotMatch(output, /BRIEFING NOT ACKNOWLEDGED/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an acknowledgement in another case or with a sha256= prefix is exact', async () => {
+  const lane = [laneTask('1.1')]
+  const { output, root } = await runShip({
+    keepRepo: true,
+    classified: { tasks: lane },
+    responses: {
+      '1.1': () => ({ id: '1.1', ok: true, handoff: laneHandoff('1.1'), briefing: sha => `sha256=${sha.toUpperCase()}` })
+    }
+  })
+  try {
+    assert.deepEqual(ticked(root), ['1.1'])
+    assert.doesNotMatch(output, /BRIEFING ACK INEXACT|BRIEFING NOT ACKNOWLEDGED/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('fifteen characters, or a slip inside the first sixteen, still fail closed', async () => {
+  const flip = c => (c === '0' ? '1' : '0')
+  for (const briefing of [sha => sha.slice(0, 15), sha => sha.slice(0, 3) + flip(sha[3]) + sha.slice(4)]) {
+    const lane = [laneTask('1.1')]
+    const { output, root } = await runShip({
+      keepRepo: true,
+      classified: { tasks: lane },
+      responses: { '1.1': () => ({ id: '1.1', ok: true, handoff: laneHandoff('1.1'), briefing }) }
+    })
+    try {
+      assert.deepEqual(ticked(root), [])
+      assert.match(output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/)
+      assert.doesNotMatch(output, /BRIEFING ACK INEXACT/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
 test('a one-task lane keeps the pre-lane label, schema and result shape', async () => {
   const lane = [laneTask('1.1')]
   const { calls, prompts, root } = await runLane(lane, {
@@ -3008,6 +3066,8 @@ test('a relay whose copy does not parse halts with the reason, not just the fact
   const { output, root } = await runShip({
     keepRepo: true,
     responses: {
+      // Every copy made for cli-2 — its relay and the read of last-step.json
+      // that tries to recover it — is retyped the same broken way.
       'cli-2': stdout => stdout.replace('"action"', '"action" "')
     }
   })
@@ -3017,11 +3077,105 @@ test('a relay whose copy does not parse halts with the reason, not just the fact
     assert.match(output, /RELAY UNREADABLE/, 'and it is a banner, so it reaches the degradation block')
     assert.match(output, /cli-2 \(interlock run classified\)/, 'naming which relay and which subcommand')
     assert.match(output, /\d+ relayed chars do not parse as JSON/, 'how much was copied, and that it broke')
+    assert.match(output, /could not be read back either/, 'and that the record could not rescue it')
+    assert.match(output, /the relay copied "\{ "schema"/, 'quoting what the relay copied')
     assert.match(output, /last-step\.json/, 'and where the CLI\'s own bytes are')
     // The file the halt names still holds the step that failed to relay — the
     // close that recorded the halt ran after it and must not have replaced it.
     const kept = JSON.parse(readFileSync(join(root, '.claude/ship/last-step.json'), 'utf8'))
     assert.equal(kept.action, 'run-batch')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- relay recovery (spec: ship/run-program — step numbers and relayed inputs) ---
+
+const relayCommands = (commands, sub) => commands.filter(argv => argv[0] === 'run' && argv[1] === sub).length
+
+test('a garbled copy is recovered from last-step.json and the run goes on', async () => {
+  const { output, prompts } = await runShip({
+    responses: { 'cli-3': (stdout, n) => (n === 1 ? stdout.slice(0, 40) : stdout) }
+  })
+  assert.match(output, /SHIP COMPLETE/, output)
+  assert.doesNotMatch(output, /RELAY UNREADABLE/)
+  assert.ok(prompts.some(p => p.title === 'cli-3 · recover'), 'the record is read by a relay of its own')
+})
+
+test('a relay that ran its command before writing is refused, and the call is relayed again', async () => {
+  // The beta-rabbitdeploy halt: the Write was refused, the relay ran the
+  // command anyway, and the CLI recorded the previous step's results.
+  const { output, commands } = await runShip({
+    responses: {
+      'cli-3': {
+        relay: async (io, n) => {
+          if (n === 1) {
+            io.put('.claude/ship/results.json', { answers: 1, value: [{ tasks: [] }] })
+            const refused = await io.run()
+            return refused.stdout
+          }
+          io.write()
+          return (await io.run()).stdout
+        }
+      }
+    }
+  })
+  assert.match(output, /SHIP COMPLETE/, output)
+  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/, 'the batch was recorded from the right file')
+  assert.equal(relayCommands(commands, 'record-batch'), 2, 'run once refused, then once more')
+})
+
+test('a relay that reran a call that took effect is recovered, and the batch is recorded once', async () => {
+  // The other half of the same halt: the second run was refused and the relay
+  // copied the refusal in place of the step.
+  const { output, commands } = await runShip({
+    responses: {
+      'cli-3': {
+        relay: async (io, n) => {
+          if (n !== 1) throw new Error('only the first relay of cli-3 should run anything')
+          io.write()
+          await io.run()
+          const rerun = await io.run()
+          return rerun.stdout || rerun.stderr
+        }
+      }
+    }
+  })
+  assert.match(output, /SHIP COMPLETE/, output)
+  assert.match(output, /wave 1 \(run-batch\): 1 ok, 0 failed/)
+  assert.equal(relayCommands(commands, 'record-batch'), 2)
+})
+
+test('a call that never took effect is relayed once more', async () => {
+  const { output, commands } = await runShip({
+    responses: {
+      'cli-3': {
+        relay: async (io, n) => {
+          if (n === 1) return ''
+          io.write()
+          return (await io.run()).stdout
+        }
+      }
+    }
+  })
+  assert.match(output, /SHIP COMPLETE/, output)
+  assert.equal(relayCommands(commands, 'record-batch'), 1)
+})
+
+test('a run start whose copy was lost is relayed once more', async () => {
+  const { output } = await runShip({ responses: { 'cli-1': (stdout, n) => (n === 1 ? '' : stdout) } })
+  assert.match(output, /SHIP COMPLETE/, output)
+})
+
+test('a garbled close is recovered from last-close.json, not closed twice', async () => {
+  const { output, commands, root } = await runShip({
+    keepRepo: true,
+    responses: { 'cli-5': (stdout, n) => (n === 1 ? stdout.slice(0, 40) : stdout) }
+  })
+  try {
+    assert.equal(relayCommands(commands, 'close'), 1, `${commands.map(a => a.slice(0, 2).join(' ')).join(', ')}`)
+    assert.match(output, /SHIP COMPLETE/, output)
+    assert.equal(trajectory(root).filter(e => e.type === 'run-receipt').length, 1)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -3659,10 +3813,11 @@ test('a run of three waves records three wave figures and one run total', async 
 })
 
 test('a verification-only span records its measured delta, not an assumed zero', async () => {
-  // A red inter-wave verify halts the run before wave 2's batch ever spawns —
+  // Wave 1's batch closes one span and its inter-wave verify closes a second,
   // so wave 1's recorded figure is either one mark's worth (if the verify
   // step's own turns were assumed free) or two (if they were measured). Two is
-  // the only value a real inter-wave verify can produce.
+  // the only value a real inter-wave verify can produce. The verify agent here
+  // reports no result, which skips the checkpoint and lets wave 2 dispatch.
   const perRead = 500
   const waves = [waveGroup('1', 1), waveGroup('2', 2)]
   const { root } = await runShip({
@@ -3680,12 +3835,14 @@ test('a verification-only span records its measured delta, not an assumed zero',
   })
   try {
     const receipt = receiptFrom(root)
-    assert.deepEqual(receipt.spend.map(s => s.wave), ['1'], 'wave 2 never dispatched a batch')
+    const first = receipt.spend.find(s => s.wave === '1')
+    assert.ok(first, `no wave 1 figure: ${JSON.stringify(receipt.spend)}`)
     assert.equal(
-      receipt.spend[0].outputTokens,
+      first.outputTokens,
       perRead * 2,
       'a span with no implementer is not a span with no cost — the verify step added its own delta'
     )
+    assert.ok(receipt.spend.some(s => s.wave === '2'), 'an unverified checkpoint does not stop wave 2')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
