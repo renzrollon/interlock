@@ -7,6 +7,12 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## 1.6.2 — 2026-10-14
+
+### Fixed
+
+- **A missing openspec CLI is named at the first command, with the install line.** `/interlock:spec`, `/interlock:bootstrap` and `/interlock:dispatch` now run `openspec --version` first and, when it prints no version, stop before any exploration or writing. `command not found` is reported as a missing CLI with `npm install -g @fission-ai/openspec@latest`; any other error is reported as a CLI that is installed but does not run (usually Node.js older than 20.19.0), with its error and no install line. Dispatch no longer reads the missing CLI as an empty project and routes it to bootstrap. `interlock doctor`'s no-CLI fix text spells that command (`OPENSPEC_INSTALL` in `lib/doctor.mjs`), and the doctor now warns when `openspec` is on PATH but its version probe does not run, instead of reporting ok. The session-start closer names `/interlock:spec` and `/interlock:bootstrap` alongside `/interlock:ship` only when an `openspec` or `binaries` check fails; a missing test profile or allowlist rule still holds back ship alone.
+
 ## 1.6.1 — 2026-10-14
 
 ### Changed

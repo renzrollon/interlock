@@ -53,6 +53,9 @@ import { fileURLToPath } from 'node:url'
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
+/** Doctor check ids whose failure stops /interlock:spec and /interlock:bootstrap, not just ship. */
+const AUTHORING_CHECKS = new Set(['openspec', 'binaries'])
+
 /** Prefer the bundled binary (always present next to this hook), fall back to PATH. */
 function interlockBin() {
   const bundled = join(PLUGIN_ROOT, 'bin', 'interlock')
@@ -145,7 +148,12 @@ function run() {
       for (const line of rest) lines.push(`          ${line.trim()}`)
     }
   }
-  lines.push('The session still starts — apply the fixes above before /interlock:ship.')
+  // Only a failure spec and bootstrap cannot run past holds them back too: a
+  // missing test profile or allowlist rule is normal before the first ship.
+  const holdsAuthoring = failures.some(c => AUTHORING_CHECKS.has(c.id))
+  lines.push(
+    `The session still starts — apply the fixes above before ${holdsAuthoring ? '/interlock:spec, /interlock:bootstrap or /interlock:ship' : '/interlock:ship'}.`
+  )
   return { message: lines.join('\n'), stateHome, surface, doctor: verdict }
 }
 

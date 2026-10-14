@@ -27,6 +27,17 @@ This is archaeology, not design. Every spec you write describes behavior that ex
 ## 0. Pre-flight
 
 ```bash
+openspec --version
+```
+
+If it does not print a version, **stop here**, before `openspec init`, before `interlock-graph build`, before spawning any explorer or writing any file — even when `openspec/config.yaml` already exists, because the specs this skill writes are only done once `openspec validate` passes.
+
+- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line and give the install command `npm install -g @fission-ai/openspec@latest`, or the project's own package manager if it pins openspec.
+- Any other error: the CLI is installed but does not run. Do not call it missing and do not offer the install line. Quote its error; the usual cause is a Node.js older than OpenSpec's floor, 20.19.0.
+
+Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, and do not hand-write `openspec/config.yaml` or `openspec/specs/` — the CLI owns those formats.
+
+```bash
 # Initialize OpenSpec if this repo has never been initialized.
 # `openspec init` creates openspec/config.yaml, so its absence is the real signal.
 test -f openspec/config.yaml || openspec init --tools claude

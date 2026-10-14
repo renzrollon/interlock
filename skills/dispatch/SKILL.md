@@ -18,6 +18,7 @@ Run these **in one turn**, joined with `;` not `&&` — you want every answer re
 
 ```bash
 git branch --show-current; git status --short; git log --oneline -5
+openspec --version
 openspec list --json 2>/dev/null
 interlock changes 2>/dev/null
 ls -t .claude/handoff/explore-*.md 2>/dev/null | head -3
@@ -65,6 +66,7 @@ The gap between `spec` and `ship` is deliberate. Never bridge it automatically �
 
 **Prerequisite checks before routing:**
 
+- `openspec --version` printed no version — say so before routing. On `command not found` (or the shell's equivalent) the CLI is missing: give the install command `npm install -g @fission-ai/openspec@latest`. On any other error it is installed but does not run (usually a Node.js older than 20.19.0): quote the error, not the install line. Either way an empty `openspec list` here is the CLI, not an empty project, and `spec` and `bootstrap` both stop at their first command until it runs. `ship` still reads artifacts from disk.
 - Routing to `ship` — run `interlock validate <change>` first. Not ready means route to `spec`, not ship. If a ship workflow already returned in this conversation, leftover boxes are a report, not a retry.
 - Routing to `spec` with no explore brief and a question that spans subsystems — run `explore` first.
 - Routing to anything that reads the graph when `.claude/graph/` is absent — offer to build it once.
