@@ -541,6 +541,8 @@ test('preflight: a failing doctor still exits 0 and names the check and its fix'
     assert.match(r.context, /\[FAIL\] test-profile:/)
     assert.match(r.context, /fix: /, 'the doctor\'s fix string is what makes the report actionable')
     assert.match(r.context, /The session still starts/)
+    assert.match(r.context, /\/interlock:spec/, 'the closer must name spec, which needs the openspec CLI')
+    assert.match(r.context, /\/interlock:bootstrap/, 'the closer must name bootstrap, which needs the openspec CLI')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

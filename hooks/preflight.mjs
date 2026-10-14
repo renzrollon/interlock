@@ -145,7 +145,7 @@ function run() {
       for (const line of rest) lines.push(`          ${line.trim()}`)
     }
   }
-  lines.push('The session still starts — apply the fixes above before /interlock:ship.')
+  lines.push('The session still starts — apply the fixes above before /interlock:spec, /interlock:bootstrap or /interlock:ship.')
   return { message: lines.join('\n'), stateHome, surface, doctor: verdict }
 }
 

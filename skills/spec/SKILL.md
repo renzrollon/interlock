@@ -32,6 +32,16 @@ This skill writes specifications. It does not write code. By default it does not
 
 ---
 
+## 0. Pre-flight: the openspec CLI
+
+```bash
+openspec --version
+```
+
+If it prints `command not found` or exits non-zero, **stop here**: before asking for intent, before explore, before `openspec new change`, before any Write. Say in one line that the openspec CLI is missing, give the install command `npm install -g @fission-ai/openspec@latest` (Node.js 20.19.0 or newer), and point at `interlock doctor` for the full preflight. Do not install it yourself, and do not scaffold `openspec/changes/<name>/` by hand — the CLI owns those formats. `--no-explore` and `--brief` do not skip this step.
+
+---
+
 ## 1. Establish intent
 
 If the request is not clear enough to name a change, ask — open-ended, no preset options:

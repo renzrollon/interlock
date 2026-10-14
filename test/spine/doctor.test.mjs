@@ -46,6 +46,7 @@ import {
   REQUIRED_COMMANDS,
   HOST_READ_ONLY,
   IGNORED_INSTRUCTION_SPANS,
+  OPENSPEC_INSTALL,
   PROMPT_CACHE_MAIN_KEY,
   PROMPT_CACHE_MIN_HOST_VERSION,
   PROMPT_CACHE_SUBAGENT_KEY,
@@ -507,11 +508,15 @@ test('openspec absent with no project at all fails; absent with a project only w
   const dir = tmp()
   try {
     const noOpenSpec = { PATH: '' }
-    assert.equal(byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec').status, 'fail')
+    const noProject = byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec')
+    assert.equal(noProject.status, 'fail')
+    assert.ok(noProject.fix.includes(OPENSPEC_INSTALL), `the fail fix must spell the install command; got ${noProject.fix}`)
+    assert.match(noProject.fix, /openspec init/)
     file(dir, 'openspec/config.yaml', 'project: test\n')
     const withProject = byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec')
     assert.equal(withProject.status, 'warn')
     assert.match(withProject.detail, /ship reads artifacts from disk/)
+    assert.ok(withProject.fix.includes(OPENSPEC_INSTALL), `the warn fix must spell the install command; got ${withProject.fix}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

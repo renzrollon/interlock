@@ -20,7 +20,7 @@ const FAIL_MESSAGE = [
   '  [FAIL] permissions: Bash(interlock:*) is not allowlisted',
   '     fix: add "Bash(interlock:*)" to permissions.allow',
   '          in .claude/settings.json',
-  'The session still starts — apply the fixes above before /interlock:ship.'
+  'The session still starts — apply the fixes above before /interlock:spec, /interlock:bootstrap or /interlock:ship.'
 ].join('\n')
 
 const base = over => ({

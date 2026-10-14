@@ -23,6 +23,8 @@ npm install -g @fission-ai/openspec@latest
 cd your-project && openspec init
 ```
 
+If you skip this step, `/interlock:spec`, `/interlock:bootstrap` and `/interlock:dispatch` stop at their first command with this install line, and `interlock doctor` reports it.
+
 OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them ([03](./03-openspec-vs-interlock.md)).
 
 Then the plugin:

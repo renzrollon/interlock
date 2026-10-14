@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { RED_SECTION_MARKER } from '../lib/artifacts.mjs'
+import { OPENSPEC_INSTALL } from '../lib/doctor.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILLS_DIR = join(ROOT, 'skills')
@@ -555,6 +556,37 @@ test('bootstrap declares the permission its corpus-persistence step needs, narro
     /Bash\(git \*\)/,
     'the grant must stay narrowed to the check-ignore verb — the step uses no other git command'
   )
+})
+
+test('spec, bootstrap and dispatch probe the openspec CLI before the first command that needs it', () => {
+  // A person who skipped the install docs has no `openspec` on PATH. Without a
+  // probe, spec asks for intent and explores before dying at `openspec new
+  // change`, bootstrap dies at `openspec init`, and dispatch reads the absent
+  // CLI as an empty project and routes a fresh repo to a skill that dies. The
+  // probe must come first, name the missing CLI, and quote the doctor's install
+  // command — the one spelling, held here against lib/doctor.mjs.
+  const cases = [
+    { dir: 'spec', first: /^openspec new change /m, installGuard: true },
+    { dir: 'bootstrap', first: /openspec init/, installGuard: true },
+    { dir: 'dispatch', first: /^openspec list/m, installGuard: false }
+  ]
+  for (const { dir, first, installGuard } of cases) {
+    const text = readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8')
+    const probe = text.search(/^openspec --version$/m)
+    const needs = text.search(first)
+    assert.ok(probe >= 0, `${dir} must probe the CLI with a bare \`openspec --version\` line`)
+    assert.ok(needs >= 0, `${dir}: the first command that needs the CLI moved; update this pin`)
+    assert.ok(probe < needs, `${dir} probes the CLI after ${first} — the stop must come first`)
+    assert.ok(text.includes('command not found'), `${dir} must say what a missing CLI looks like`)
+    assert.ok(text.includes(OPENSPEC_INSTALL), `${dir} must quote the doctor's install command: ${OPENSPEC_INSTALL}`)
+    if (installGuard) {
+      assert.ok(text.includes('20.19.0'), `${dir} must name OpenSpec's Node floor`)
+      assert.match(text, /(?:do not|never)[^.]{0,40}install/i, `${dir} must forbid installing the CLI itself`)
+    }
+    const fm = parseFrontmatter(text)
+    assert.match(fm.values['allowed-tools'] || '', /Bash\(openspec \*\)/,
+      `${dir}'s allowed-tools must admit the \`openspec --version\` probe`)
+  }
 })
 
 test('bootstrap carries an explicit no-write instruction for .gitignore', () => {
