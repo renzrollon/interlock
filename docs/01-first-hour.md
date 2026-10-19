@@ -44,7 +44,7 @@ Worth two minutes before your first `ship`. Workflow agents inherit your own per
   <img src="./assets/doctor.png" alt="Example output of interlock doctor: nine checks, one FAIL on the missing test profile with the command that fixes it, and the permission allowlist reported as complete." width="800">
 </p>
 
-Run `interlock doctor` — it prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names.
+The plugin already runs this check when each session starts, and prints `interlock preflight OK` or each problem with its fix. For the full report, run `interlock doctor` from the Claude Code prompt as `! interlock doctor`. The plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. It prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names.
 
 ## Step 1 — Onboard the repo (once)
 

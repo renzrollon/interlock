@@ -15,7 +15,7 @@
 <p align="center"><code>12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</code></p>
 <p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
 
-```bash
+```text
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
                            # ← you read it. The only place a human is required.
 /interlock:ship            # parallel agents implement → your tests pass → commit. Nobody is asked.
@@ -27,36 +27,60 @@
 
 ## Install
 
-Interlock is a [Claude Code](https://claude.com/claude-code) plugin layered on [OpenSpec](https://github.com/Fission-AI/OpenSpec), which owns the spec format. It needs Claude Code **v2.1.154+** with dynamic workflows enabled, the `openspec` CLI, and Node.js ≥ 18. The full requirements table is in [the first hour](docs/01-first-hour.md#before-you-start).
+Interlock is a [Claude Code](https://claude.com/claude-code) plugin layered on [OpenSpec](https://github.com/Fission-AI/OpenSpec), which owns the spec format. You need:
+
+| | |
+|---|---|
+| Claude Code **v2.1.154+** with dynamic workflows enabled | `/interlock:ship` runs as a [workflow](https://code.claude.com/docs/en/workflows). If workflows are turned off, by your settings, an org policy or a Pro plan that has not enabled them in `/config`, the command exists but the run cannot start |
+| Node.js **20.19+** | OpenSpec needs 20.19+. Interlock's own CLIs need only 18 |
+| A git repository with code in it | Bootstrap describes what already exists |
+
+The full table, including two environment variables that must stay unset, is in [the first hour](docs/01-first-hour.md#before-you-start).
+
+**1. Install the OpenSpec CLI.** In your terminal, once per machine:
 
 ```bash
-npm install -g @fission-ai/openspec@latest   # OpenSpec first
-cd your-project && openspec init
+npm install -g @fission-ai/openspec@latest
+openspec --version        # prints a version when it worked
 ```
 
-```bash
+**2. Install the plugin.** In Claude Code, once per machine:
+
+```text
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
 ```
 
-Then, once per repo. The plugin puts the `interlock` CLI on your `PATH`:
+**3. Onboard your project.** Start a new session in the project from your terminal (`cd your-project && claude`), then in Claude Code, once per repo:
 
-```bash
-interlock doctor          # preflight: prints the exact allowlist an unattended run needs
-/interlock:bootstrap      # reads the code, writes what it learned, builds the graph agents navigate
+```text
+/interlock:bootstrap
 ```
 
-`doctor` exits 1 on anything that would stop a zero-touch run and prints the settings snippet that fixes it. The plugin runs it at every session start too. Your first shipped change, step by step: **[01 — The first hour](docs/01-first-hour.md)**.
+Bootstrap runs `openspec init` if the repo has never been initialized. It reads your code, asks you to confirm the list of features it found, then writes one spec per feature describing what the code does today, and builds the graph agents navigate by. It never changes source code.
+
+**4. Read the first line of each session.** Every time a session starts in your project, the plugin checks that an unattended run could finish and prints either `interlock preflight OK` or a list of problems, each with its fix. The most common problem is a command your permission settings do not allow yet. During `ship` nobody is there to approve a prompt, so the run would stop at it. `/permissions` is the quickest way to add what the check names.
+
+> **`interlock doctor` is optional.** The session-start check *is* `interlock doctor`, run for you. Run it yourself only for the full report, which includes a ready-to-paste settings snippet that allowlists every command a run needs:
+>
+> ```text
+> ! interlock doctor
+> ```
+>
+> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)). It exits 1 when it finds something that would stop a zero-touch run.
+
+Your first shipped change, step by step: **[01 — The first hour](docs/01-first-hour.md)**.
 
 ## The flow
 
-| | | |
+| Step | What happens | Where |
 |---|---|---|
-| `/interlock:bootstrap` | Onboard a repo — once | skill |
-| `/interlock:spec "<idea>"` | Idea → explored, reviewed, implementation-ready change. Asks you what the repo cannot answer, then stops | skill |
+| `/interlock:bootstrap` | Onboard a repo, once | Claude Code (skill) |
+| `/interlock:spec "<idea>"` | Idea → explored, reviewed, implementation-ready change. Asks you what the repo cannot answer, then stops having written only specs | Claude Code (skill) |
 | **You read the spec** | The checkpoint. [Ten minutes, with a checklist](docs/02-the-checkpoint.md) | you |
-| `/interlock:ship` | Reviewed change → waves (parallel batches of file-disjoint tasks) → your test suite → commit. No review by default; `--strict` adds adversarial review and handoff artifacts. `--solo` / `--waves` force the shape | **workflow** |
-| `/interlock:mr` | Change → merge request, with the CLI's merge-confidence verdict in the description and as labels. It never merges | skill |
+| `/interlock:ship` | Reviewed change → waves (parallel batches of tasks that touch different files) → your test suite → one commit. `--solo` / `--waves` force the shape | Claude Code (**workflow**) |
+| `/interlock:mr` | *Optional.* Change → merge request, with the merge-confidence verdict. [See below](#optional-review-gates-and-merge-requests) | Claude Code (skill) |
+| `openspec archive <change>` | After it merges: fold the change into the living specs, so the next spec plans against what is now true | terminal |
 
 <p align="center">
   <img src="docs/assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, you read the spec, ship, and optionally mr. Two commands, one human checkpoint." width="900">
@@ -70,6 +94,33 @@ interlock doctor          # preflight: prints the exact allowlist an unattended 
 <p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
 
 **You can watch it.** On Claude Code 2.1.287 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
+
+## Optional: review gates and merge requests
+
+Default `ship` stops at a green suite and a commit. None of the layers below is needed for your first change. Add them once the basic loop works for you.
+
+| Add | What it does | Read |
+|---|---|---|
+| `/interlock:ship --review` | An adversarial code review before the commit. Up to seven review dimensions run in parallel, then two skeptics attack every finding, and only what survives reaches you | [06 — Why it works](docs/06-why-it-works.md) |
+| `/interlock:ship --strict` | The review, plus handoff artifacts (a manual test plan when UI changed, a walkthrough of the commit) and a conformance check of the diff against the spec's scenarios | [01](docs/01-first-hour.md#step-4--ship-it) |
+| `/interlock:mr` | Opens or updates the merge request on GitHub or GitLab, using the `gh` or `glab` you are signed in to. The CLI's merge-confidence verdict, `MERGE`, `HUMAN` or `BLOCK`, goes on the labels and in the description, which also says what would lift it. It never merges or approves | [15 — Merge confidence](docs/15-merge-confidence.md) |
+| `interlock merge-confidence --require-merge` in CI | The same verdict as a required check: it exits 1 unless the verdict is `MERGE`. It re-reads the evidence a ship run left and runs no review of its own, so it needs some setup first | [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |
+| `REVIEW.md` | Your repo's own review policy: paths that are out of review scope, and paths that always need a human | [12 — Repository review policy](docs/12-repository-review-policy.md) |
+
+## Words you will see
+
+| | |
+|---|---|
+| **Change** | One unit of work: a folder under `openspec/changes/<name>/` holding `proposal.md`, `design.md`, `tasks.md` and delta specs |
+| **Delta spec** | The behaviour a change adds or alters, written as Given/When/Then scenarios |
+| **Living spec** | `openspec/specs/`: what the system does today. Archiving a change folds its delta specs in |
+| **Checkpoint** | Your read of the spec, between `spec` and `ship`. The one step a human must do |
+| **Skill** | Instructions Claude follows in the conversation. It can ask you questions |
+| **Workflow** | A script the Claude Code runtime executes. It cannot ask you anything |
+| **Wave** / **lane** | A wave is a batch of tasks that run in parallel; a lane is one agent's slot in it |
+| **Halt** | `ship` stopped, said what finished and what it needs from you. [04](docs/04-when-it-stops.md) decodes each one |
+
+Every term, defined from the ground up: [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md).
 
 ## Why this and not a folder of prompts
 
@@ -116,11 +167,19 @@ Three zero-dependency Node binaries land on your `PATH`, and they work without t
 | `interlock-graph` | A local, deterministic code knowledge graph. No vector store, no network |
 | `interlock-run` | The experimental runner above |
 
-Everything runs without a model and without the network, with one exception: an opt-in push for a run that stops while nobody is watching. `run close --notify` sends the close summary's first line, the change name and the run id; the spec checkpoint sends the change name; an `interlock notify` you type sends the title and body you give it. The request goes to the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL`, the public `https://ntfy.sh` by default, under the topic you chose in the plugin's `ntfy topic` option or in `INTERLOCK_NTFY_TOPIC`. Each option has a session-start hook of its own, which the host runs only when that option is saved; the hook writes the matching variable into the session's environment for the session's commands, unless you already set it, because the CLI call that pushes is not a hook and an option reaches hooks only. No account, key or token goes with the request: the topic is the only thing in it that identifies you, so treat it as a secret. With no topic set, no request is ever made. Interlock makes no other request. `/interlock:mr` has the model run `gh`, `glab` and `git fetch` under your own sign-in to read and write a merge request; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value, and the vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs. Reference and every environment variable: [07 — CLI and configuration](docs/07-cli-and-configuration.md).
+Everything runs without a model and without the network, with one opt-in exception: a push notification for a run that stops while nobody is watching.
+
+- **What is sent.** `run close --notify` sends the close summary's first line, the change name and the run id. The spec checkpoint sends the change name. An `interlock notify` you type sends the title and body you give it.
+- **Where it goes.** To the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL` (the public `https://ntfy.sh` by default), under the topic you chose in the plugin's `ntfy topic` option or in `INTERLOCK_NTFY_TOPIC`. With no topic set, no request is ever made.
+- **What identifies you.** No account, key or token goes with the request. The topic is the only thing in it that identifies you, so treat it as a secret.
+- **How an option reaches the CLI.** The CLI call that pushes is not a hook, and a plugin option reaches hooks only. So each option has a session-start hook of its own, which the host runs only when that option is saved, and it writes the matching variable into the session's environment unless you already set it.
+- **Requests that belong to other tools.** `/interlock:mr` has the model run `gh`, `glab` and `git fetch` under your own sign-in to read and write a merge request; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
+
+Interlock makes no other request. Reference and every environment variable: [07 — CLI and configuration](docs/07-cli-and-configuration.md).
 
 ## Docs
 
-New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ever prompted a coding agent? **[09](docs/09-from-prompt-to-workflow.md)** defines every term once, ending at why `ship` is a script and not a prompt.
+New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and keep [04 — When it stops](docs/04-when-it-stops.md) open during your first `ship`. Only ever prompted a coding agent? **[09](docs/09-from-prompt-to-workflow.md)** defines every term once, ending at why `ship` is a script and not a prompt.
 
 | | |
 |---|---|
@@ -138,7 +197,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**. Only ev
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change and what it cannot |
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
-| [15 — Merge confidence](docs/15-merge-confidence.md) | What the merge verdict reads, signal by signal and flag by flag; how it reaches a merge request (the pipeline input, the description block, the labels, three platform recipes and how far a label can be trusted); recording a coverage baseline, computing the base on demand, reading the policy from the base, reading a spec audit |
+| [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a merge request or a CI job |
 
 ## Development
 
