@@ -276,13 +276,19 @@ test('a report written for a clear shows the band again, and one written for a c
   for (const surface of SURFACES) expect((await band($, surface)).rows[0]).toBe('interlock preflight OK (1 warning).')
 })
 
-test('/interlock-handoff renders the newest card as markdown and names a card it cannot read', async ($: any, on: any) => {
+test('cards alone draw no band; /interlock-handoff renders the newest as markdown and names a card it cannot read', async ($: any, on: any) => {
   const w = world(on, { files: new Map([...withReport(P.REPORT_WITH_CARD), [P.CARD_PATH, P.CARD_TEXT]]) })
   await start($)
   await prompt($)
   for (const surface of SURFACES) {
-    const { rows } = await band($, surface)
-    expect(rows).toContain(`${P.CARD_PATH} · add-foo · run r-1 · written ${P.CARD_WRITTEN_AT} — /interlock-handoff`)
+    const { rows, beneath, hide: control } = await band($, surface)
+    expect(rows).toEqual([])
+    expect(control).toBeUndefined()
+    expect(beneath).toBe(true)
+    const ui = await pane($, surface, 'interlock-preflight')
+    expect(await ui.find({ text: `${P.CARD_PATH} · add-foo · run r-1 · written ${P.CARD_WRITTEN_AT}` })).toBeDefined()
+    expect(await ui.find({ text: `${P.SECOND_CARD_PATH} · add-bar · run r-2 · written 2026-10-05T10:00:00.000Z` })).toBeDefined()
+    await ui.unmount()
   }
   expect(await $.command.run({ command: 'interlock-handoff', args: '' })).toEqual({})
   expect(w.opens).toEqual(['interlock-handoff'])

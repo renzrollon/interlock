@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **A halt resume card no longer puts the band above the prompt.** The band drew whenever a card of an open change was on disk, and a card stays there until its change is archived, so every session start in that repository showed it, each card as an absolute path, until the next `Hide`. The band now draws only for a `fail` or `warn` check, a preflight that could not run or be parsed, or an interrupted run spoken at that session start, and it never lists a card. `/interlock-preflight` still lists every card and `/interlock-handoff` still renders them; the preflight still records them in `.claude/ship/preflight.json`, and nothing marks, moves or deletes one.
+
 ## 1.6.2 — 2026-10-14
 
 ### Fixed

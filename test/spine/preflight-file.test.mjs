@@ -148,12 +148,26 @@ test('readPreflightReport names each of its four problems and accepts the builde
   assert.deepEqual(read.report, report)
 })
 
-test('an all-ok report draws nothing', () => {
+test('an all-ok report draws nothing, whatever cards it lists', () => {
   assert.equal(shouldDraw(allOk()), false)
   assert.deepEqual(bandLines(allOk()), [])
+
+  const carded = allOk({
+    cards: {
+      listed: [
+        card('/repo/.claude/handoff/ship-add-foo-r-1.md', '2026-10-06T10:00:00.000Z'),
+        card('/repo/.claude/handoff/ship-add-bar-r-2.md', '2026-10-05T10:00:00.000Z', 'add-bar', 'r-2')
+      ],
+      archived: 0,
+      unreadable: [],
+      lookedIn: ['/repo/.claude/handoff']
+    }
+  })
+  assert.equal(shouldDraw(carded), false, 'a card stays until its change is archived; it must not hold the band')
+  assert.deepEqual(bandLines(carded), [])
 })
 
-test('each trigger alone draws the band, in the doctor\'s, the hook\'s and the card\'s own words', () => {
+test('each trigger alone draws the band, in the doctor\'s and the hook\'s own words', () => {
   const written = 'preflight written 2026-10-07T08:00:00.000Z · /interlock-preflight'
   const fail = allOk({
     message: 'interlock preflight found issues that can stall an unattended ship run:\n  [FAIL] permissions: not allowlisted',
@@ -180,27 +194,16 @@ test('each trigger alone draws the band, in the doctor\'s, the hook\'s and the c
 
   const note = allOk({ notes: { spoken: [{ runId: 'r-1', change: 'add-foo', stage: 'verify', banner: BANNER, marked: true, marks: [] }], unreadable: [] } })
   assert.deepEqual(bandLines(note), ['interlock preflight OK.', BANNER, written])
-
-  const carded = allOk({ cards: { listed: [card('/repo/.claude/handoff/ship-add-foo-r-1.md', '2026-10-06T10:00:00.000Z')], archived: 0, unreadable: [], lookedIn: [] } })
-  assert.deepEqual(bandLines(carded), [
-    'interlock preflight OK.',
-    '/repo/.claude/handoff/ship-add-foo-r-1.md · add-foo · run r-1 · written 2026-10-06T10:00:00.000Z — /interlock-handoff',
-    written
-  ])
 })
 
-test('the band orders its lines: message, checks, notes, cards, then the written line', () => {
+test('the band orders its lines: message, checks, notes, then the written line, and lists no card', () => {
   const r = allOk({
     message: 'm',
     doctor: { ran: true, parsed: true, ok: false, counts: null, checks: [check('warn', 'a', 'da'), check('fail', 'b', 'db')] },
     notes: { spoken: [{ runId: 'r-1', banner: BANNER, marked: true, marks: [] }], unreadable: [] },
     cards: { listed: [card('/c1', '2026-10-01T00:00:00.000Z'), card('/c2', '2026-10-02T00:00:00.000Z', 'add-bar', 'r-2')], archived: 0, unreadable: [], lookedIn: [] }
   })
-  const lines = bandLines(r)
-  assert.deepEqual(lines.slice(0, 4), ['m', 'warn a: da', 'fail b: db', BANNER])
-  assert.match(lines[4], /^\/c2 · add-bar · run r-2/, 'newest card first')
-  assert.match(lines[5], /^\/c1 · add-foo · run r-1/)
-  assert.match(lines[6], /^preflight written /)
+  assert.deepEqual(bandLines(r), ['m', 'warn a: da', 'fail b: db', BANNER, 'preflight written 2026-10-07T08:00:00.000Z · /interlock-preflight'])
 })
 
 test('the preflight pane carries the message, every check with its fix lines, the notes with their marks, and the cards', () => {
