@@ -1,7 +1,7 @@
 {
   "name": "interlock",
   "displayName": "Interlock",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "description": "Spec-driven development for Claude Code, layered on OpenSpec. You read one spec; parallel agents ship it to a tested commit.",
   "author": {
     "name": "Carl Rollon",

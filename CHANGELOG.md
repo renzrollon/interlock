@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-21
+
 ### Added
 
 - **A checkpoint advisor.** After a clean artifact review, `/interlock:spec` spawns the read-only `interlock:advisor` agent once on a brief the CLI assembles (`interlock advisor <change> --brief`). The draft is validated and rendered by code (`--check`, exit 0 once the change resolves) to `openspec/changes/<change>/advisor.md`, and a consult that did not run is written down the same way. Nothing gates on the file and the advisor never writes `decisions.md`. `interlock advisor --verdict --labels <dir>` tallies the ten Spec Range eval cases' human labels against caps in `interlock limits`. The spec meter shows the advisor result, its questions, the consult spawn and a `waiting on you` line.
