@@ -8059,6 +8059,31 @@ test('run reviewed appends a compound note per surviving specGap finding and car
   }
 })
 
+test('a resumed run whose notes are already in the table still names the table to the commit brief', async () => {
+  // The first attempt appended its rows, then halted before the manifest kept
+  // notesPath. On resume every row dedupes as skipped; the rows' source is this
+  // run's id, so the table is still the run's to commit.
+  const { renderNotes } = await import('../../lib/notes.mjs')
+  for (const [label, own] of [['own run', true], ['another run', false]]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      const source = own ? manifestOf(root).runId : 'run-from-elsewhere'
+      assert.ok(source, 'the run has an id before review')
+      file(root, NOTES_TABLE, renderNotes([1, 2].map(n => ({
+        id: `N${n}`, date: '2026-10-20', change, file: 'README.md', surprise: 's', rule: `fix warning ${n}`, source
+      }))))
+      writeGapReview(root, [true, true])
+      const { code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+      assert.equal(code, 0)
+      const expected = own ? NOTES_TABLE : null
+      assert.equal(manifestOf(root).notesPath ?? null, expected, `${label}: notesPath`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
 test('run reviewed with no specGap survivor writes no table and carries no notesPath', () => {
   const { root, change } = repo()
   try {

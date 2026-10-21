@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs. Use when starting a new feature, refactor, or bug fix.
+description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs and the checkpoint advisor's advisor.md. Use when starting a new feature, refactor, or bug fix.
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
 argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd]"
@@ -246,7 +246,7 @@ A clean gate credits `explore` and `spec` too; a blocker resets them. That is wh
 
 ## 5a. Consult: the checkpoint advisor
 
-Run this only on the clean-gate path, after `interlock autonomy clean review-artifacts explore spec`. A blocked gate halts before it and never consults.
+Run this only on the clean-gate path, after `interlock autonomy clean review-artifacts explore spec`. A blocked gate halts before it and never consults. The `Agent` tool is granted for this one spawn and nothing else.
 
 Assemble the brief with the CLI, passing the findings file the review wrote:
 
@@ -268,7 +268,7 @@ If the brief failed, the spawn errored, no reply came back, or the Write failed,
 interlock advisor "<name>" --check --failed "<reason>" --json
 ```
 
-When that line exits non-zero, report its first output line as the reason and continue to §6.
+`--check` exits 0 whenever the change resolves; a draft it cannot read, or an `advisor.md` it cannot write, comes back as `status: "did-not-run"` with a `reason`. When either line exits non-zero, report its first output line (the `error` field under `--json`, an `interlock:` line on stderr without it) as the reason and continue to §6.
 
 The consult is never retried. It never writes `decisions.md`: a question becomes a ledger row only when a human adds it. `advisor.md` is never edited by hand.
 

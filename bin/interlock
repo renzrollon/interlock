@@ -327,8 +327,12 @@ Usage:
                   [--findings <f>]          under .claude/metrics and print its path
   interlock advisor [change] --check <draft|->
                                             Validate the consult's JSON draft by code
-                                            and write the change's advisor.md. Always
-                                            exits 0 (advice, never a gate)
+                                            and write the change's advisor.md. Exits 0
+                                            once the change resolves: a missing or
+                                            unreadable draft, or an advisor.md that
+                                            cannot be written, is reported as a
+                                            consult that did not run (advice, never
+                                            a gate)
   interlock advisor [change] --check --failed "<reason>"
                                             Write advisor.md as a consult that did not run
   interlock advisor --verdict               Tally the Spec Range human labels against
@@ -347,8 +351,9 @@ Usage:
                                             No model, no network. Exit code is
                                             the verdict (1=regression,
                                             2=no signal, 3=configuration).
-                                            --eval-dir <dir> joins each typeless
-                                            grader's type from graders/<name>.md
+                                            --eval-dir <dir> (the evals root)
+                                            joins each typeless grader's type from
+                                            <dir>/<case>/graders/<name>.md
   interlock evals capture --run <id> --out <dir>
                         [--task <id>]      Emit an eval-case skeleton from a
                                             recorded run trajectory, with its
@@ -2327,7 +2332,9 @@ function findingsListOf(input) {
 function advisorBrief(root, name, flags, json) {
   const info = inspectChange(root, name)
   const index = headingIndex(info.path)
-  const text = file => readOr(join(info.path, file)) ?? ''
+  // An artifact that cannot be read reaches the brief as undefined, which it
+  // renders as `<file>: absent` rather than as an empty quoted block.
+  const text = file => readOr(join(info.path, file))
   let findings = null
   if (flags.findings !== undefined) {
     try {
@@ -2342,7 +2349,7 @@ function advisorBrief(root, name, flags, json) {
   if (raw !== undefined) {
     const table = parseNotes(raw)
     if (!table.parseable) notes = { unreadable: table.problems.map(p => p.reason).join('; ') || 'no readable table' }
-    else notes = { ...matchNotes(table.rows, specMentionedPaths(text('tasks.md'))), unreadableRows: table.problems.length }
+    else notes = { ...matchNotes(table.rows, specMentionedPaths(text('tasks.md') ?? '')), unreadableRows: table.problems.length }
   }
   const iso = isoNow()
   const rel = join('.claude', 'metrics', `advisor-brief-${name}-${fileStamp(iso)}.md`)
@@ -2378,10 +2385,21 @@ function advisorCheck(root, name, flags, json) {
   const iso = isoNow()
   let result
   let briefPath
+  // Once the change resolves, every path exits 0: a draft that is missing or
+  // unreadable is written down as a consult that did not run, never an exit.
+  let raw
   if (flags.failed !== undefined) {
     result = { status: 'did-not-run', reason: flags.failed === true ? '' : String(flags.failed) }
+  } else if (flags.check === true) {
+    result = { status: 'did-not-run', reason: 'no draft given to --check' }
   } else {
-    const raw = readRawInput(flags.check, '--check <draft|->')
+    try {
+      raw = flags.check === '-' ? readStdin() : readFileSync(String(flags.check), 'utf8')
+    } catch (err) {
+      result = { status: 'did-not-run', reason: `draft unreadable: ${err.message}` }
+    }
+  }
+  if (result === undefined) {
     let draft
     try {
       draft = JSON.parse(raw)
@@ -2399,12 +2417,18 @@ function advisorCheck(root, name, flags, json) {
   }
   const reason = result.status === 'drafted' ? undefined : String(result.reason ?? '').trim() || 'no reason given'
   const body = reason === undefined ? renderAdvisor(result, { change: name, stamp: iso, briefPath }) : didNotRun(reason, { change: name, stamp: iso })
+  const path = `openspec/changes/${name}/advisor.md`
   try {
     writeFileSync(join(info.path, 'advisor.md'), body)
   } catch (err) {
-    die(err.message)
+    // Spoken like `noteWrite`'s banner: the consult is advice, so a file that
+    // could not be written is a reason to report, never an exit code.
+    const why = `advisor.md not written: ${err.message}`
+    const line = `advisor: did not run: ${why}`
+    emit(json, { step: 'check', change: name, status: 'did-not-run', reason: why, questions: [], dropped: 0, risks: 0, written: false, path }, line + '\n')
+    if (json) process.stderr.write(line + '\n')
+    return
   }
-  const path = `openspec/changes/${name}/advisor.md`
   const out = {
     step: 'check',
     change: name,
@@ -4143,7 +4167,10 @@ async function main() {
         break
       }
       if (flags.brief === undefined && flags.check === undefined) die('advisor requires --brief, --check or --verdict')
-      const name = requireChange(root, requestedName(positional, flags), json)
+      // `--brief` takes no value, so `advisor --brief <change>` hands the name
+      // to the flag; read it back as the change when no positional names one.
+      const asName = typeof flags.brief === 'string' && !requestedName(positional, flags) ? flags.brief : undefined
+      const name = requireChange(root, asName ?? requestedName(positional, flags), json)
       if (flags.brief !== undefined) advisorBrief(root, name, flags, json)
       else advisorCheck(root, name, flags, json)
       break

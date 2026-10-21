@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 
 import { RED_SECTION_MARKER } from '../lib/artifacts.mjs'
 import { OPENSPEC_INSTALL } from '../lib/doctor.mjs'
+import { writeOf } from '../lib/spec-meter.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILLS_DIR = join(ROOT, 'skills')
@@ -822,6 +823,20 @@ test('the spec skill reads the advisor lines by field, never retries the consult
   assert.match(fm.values['allowed-tools'] || '', /\bAgent\b/, `${where}'s allowed-tools must admit Agent for the consult`)
 })
 
+test('the spec skill keeps the consult on the clean-gate path, names its draft as the meter reads it, and hands the advisor off', () => {
+  const where = 'skills/spec/SKILL.md'
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  for (const token of ['clean-gate', 'The advisor:', '`Agent`']) {
+    assert.ok(text.includes(token), `${where} no longer names ${token}`)
+  }
+  // The meter keys a draft write on this exact shape (writeOf in
+  // lib/spec-meter.mjs). Instantiate the skill's template and ask the meter.
+  const template = text.match(/\.claude\/metrics\/advisor-<name>-<YYYYMMDD-HHMMSS>\.json/)
+  assert.ok(template, `${where} no longer names the draft path .claude/metrics/advisor-<name>-<YYYYMMDD-HHMMSS>.json`)
+  const path = template[0].replace('<name>', 'add-x').replace('<YYYYMMDD-HHMMSS>', '20261021-120000')
+  assert.deepEqual(writeOf(path), { kind: 'draft', change: 'add-x', path }, `the meter no longer reads ${path} as a draft`)
+})
+
 test('the review-code skill shows specGap in its emit shape and derives notes after the gate', () => {
   const where = 'skills/review-code/SKILL.md'
   const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
@@ -840,6 +855,9 @@ test('the review-code skill shows specGap in its emit shape and derives notes af
   assert.ok(gate !== -1, `${where} §4 no longer runs the gate line`)
   assert.ok(derive !== -1, `${where} §4 must run \`interlock note derive --findings\` on a command line`)
   assert.ok(gate < derive, `${where} §4 must derive notes after the gate line`)
+  for (const token of ['COMPOUND NOTES NOT WRITTEN', 'do not retry']) {
+    assert.ok(s4.includes(token), `${where} §4 no longer names ${token}`)
+  }
 })
 
 test('only the domain and technical-lead briefs tell a reviewer to set specGap', () => {

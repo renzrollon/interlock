@@ -4667,6 +4667,56 @@ test('advisor --check --failed names the candidates and exits non-zero for a cha
   assert.equal(existsSync(join(root, 'openspec', 'changes', 'add-the-thin', 'advisor.md')), false)
 })
 
+test('advisor --check records a consult that did not run, exit 0, for a draft that is missing or unreadable', () => {
+  const { root, change, changeDir } = advisorRepo('check-no-draft')
+  const bare = runJsonAt(root, ['advisor', change, '--check'])
+  assert.equal(bare.status, 'did-not-run')
+  assert.equal(bare.reason, 'no draft given to --check')
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: no draft given to --check'))
+
+  const missing = runJsonAt(root, ['advisor', change, '--check', join(root, 'no-such-draft.json')])
+  assert.equal(missing.status, 'did-not-run')
+  assert.match(missing.reason, /^draft unreadable: .*ENOENT/)
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: draft unreadable: '))
+})
+
+test('advisor --check speaks an advisor.md it cannot write as a consult that did not run, and exits 0', () => {
+  // advisor.md is a directory, so the write fails under any uid.
+  const { root, change, changeDir } = advisorRepo('check-unwritable')
+  mkdirSync(join(changeDir, 'advisor.md'))
+  for (const flags of [['--failed', 'agent spawn errored'], [join(root, 'no-such-draft.json')]]) {
+    const text = runAt(root, ['advisor', change, '--check', ...flags])
+    assert.equal(text.code, 0, text.stderr)
+    assert.match(text.stdout.split('\n')[0], /^advisor: did not run: advisor\.md not written: \S/, text.stdout)
+
+    const r = runAt(root, ['advisor', change, '--check', ...flags, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.status, 'did-not-run')
+    assert.equal(out.written, false)
+    assert.match(out.reason, /^advisor\.md not written: \S/)
+    assert.match(r.stderr, /^advisor: did not run: advisor\.md not written: /m)
+  }
+})
+
+test('advisor --brief <change> with the flag first reads the name as the change', () => {
+  // A second change, so an unnamed request cannot resolve to the only one.
+  const { root, change } = advisorRepo('brief-flag-first')
+  advisorRepo('brief-flag-first', 'add-another-thing')
+  const out = runJsonAt(root, ['advisor', '--brief', change])
+  assert.equal(out.step, 'brief')
+  assert.equal(out.change, change)
+})
+
+test('advisor --brief says a missing artifact is absent instead of quoting an empty block', () => {
+  const { root, change, changeDir } = advisorRepo('brief-absent-design')
+  rmSync(join(changeDir, 'design.md'))
+  const out = runJsonAt(root, ['advisor', change, '--brief'])
+  const brief = readFileSync(abs(root, out.path), 'utf8')
+  assert.ok(brief.includes('### design.md\n\ndesign.md: absent'), 'design.md is named absent')
+  assert.ok(!brief.includes('proposal.md: absent'), 'a present artifact is quoted, not named absent')
+})
+
 test('advisor --verdict --labels prints the verdict step and exits 0', () => {
   const evalsDir = join(dir, 'advisor-verdict-evals')
   const label = (kase, grader, name, value) => {
