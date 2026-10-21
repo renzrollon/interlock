@@ -16,6 +16,18 @@
 # already on npm — which is how the branch is first created, and how plugin
 # users are rolled back to an earlier release.
 #
+# A Release run is followed only when it is a tag push in this repository, from
+# release.yml. `workflow_run` names its upstream by `name:` alone, so a fork's
+# pull request can add a workflow called Release, and its branch name would
+# otherwise choose which published version this branch rolls back to.
+#
+# Two jobs, so nothing installed at a floating version runs where the write
+# token lives. `validate` fetches the tarball and runs `claude plugin validate`
+# with a read-only token; `bundle` holds `contents: write` and runs only git, tar
+# and node. The tarball crosses as a run artifact, and `bundle` checks it against
+# the integrity `validate` recorded before the Claude Code CLI was installed, so
+# the bytes pushed are the bytes the registry served.
+#
 # `.github/workflows/` is gitignored: this file is tracked only because it was
 # force-added, and `test/spine/package.test.mjs` fails if that stops being true.
 
@@ -36,17 +48,26 @@ concurrency:
   group: plugin-bundle
   cancel-in-progress: false
 
+env:
+  PACKAGE: '@renzrollon/interlock'
+
 jobs:
-  bundle:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+  validate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.path == '.github/workflows/release.yml')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      PACKAGE: '@renzrollon/interlock'
-      BRANCH: release
+      contents: read
+    # Every output is set before the Claude Code CLI is installed.
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      file: ${{ steps.tarball.outputs.file }}
+      integrity: ${{ steps.tarball.outputs.integrity }}
     steps:
-      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -96,7 +117,17 @@ jobs:
             exit 1
           fi
           echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+
+      # Before the CLI install, so what `bundle` receives was handed over while
+      # nothing installed at a floating version had run.
+      - name: Hand the tarball to the bundle job
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-bundle-tarball
+          path: ${{ runner.temp }}/${{ steps.tarball.outputs.file }}
+          if-no-files-found: error
 
       # What the directory scans is the bundle, not the repository, so the
       # bundle is what gets validated.
@@ -107,11 +138,47 @@ jobs:
           ROOT: ${{ steps.tarball.outputs.root }}
         run: claude plugin validate "$ROOT" --strict
 
+  bundle:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      BRANCH: release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-bundle-tarball
+          path: ${{ runner.temp }}/handed
+
+      # The artifact is reachable by every step of `validate`, the CLI install
+      # included; the integrity was recorded before it ran. A mismatch fails
+      # here and the branch is unchanged.
+      - name: Check the tarball is the one the registry served
+        id: tarball
+        env:
+          FILE: ${{ needs.validate.outputs.file }}
+          INTEGRITY: ${{ needs.validate.outputs.integrity }}
+        run: |
+          tgz="$RUNNER_TEMP/handed/$FILE"
+          actual=$(node -e 'const { createHash } = require("node:crypto"); process.stdout.write("sha512-" + createHash("sha512").update(require("node:fs").readFileSync(process.argv[1])).digest("base64"))' "$tgz")
+          if [ "$actual" != "$INTEGRITY" ]; then
+            echo "::error::$FILE does not match the integrity the registry reported ($INTEGRITY, got $actual); the release branch is unchanged"
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$tgz" -C "$RUNNER_TEMP/unpacked"
+          echo "root=$RUNNER_TEMP/unpacked/package" >> "$GITHUB_OUTPUT"
+
       - name: Commit the bundle to the release branch
         env:
-          VERSION: ${{ steps.version.outputs.value }}
+          VERSION: ${{ needs.validate.outputs.version }}
           ROOT: ${{ steps.tarball.outputs.root }}
-          INTEGRITY: ${{ steps.tarball.outputs.integrity }}
+          INTEGRITY: ${{ needs.validate.outputs.integrity }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

@@ -49,6 +49,11 @@ concurrency:
   group: evals-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Written down rather than inherited from the repository default, so a change to
+# that setting cannot widen what a job holding the model credential can do.
+permissions:
+  contents: read
+
 jobs:
   smoke:
     name: Smoke evals (pull request)

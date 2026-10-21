@@ -36,8 +36,12 @@ jobs:
       # Node 22 ships npm 10.x, which can sign provenance but cannot exchange
       # the OIDC identity for a publish credential — so the PUT arrives
       # unauthenticated and the registry returns E404. Upgrade before publish.
+      # An exact version, never @latest: this job holds the identity that mints
+      # a publish credential, so nothing it runs is chosen at run time. 12.2.0
+      # was npm's `latest` when 1.7.0 published through this step; it needs
+      # Node ^22.22.2, which setup-node's '22' resolves above.
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@12.2.0
       # No dependencies to install — the whole toolchain is stdlib Node.
       - name: Test
         run: npm test

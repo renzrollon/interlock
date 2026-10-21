@@ -7,6 +7,12 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Security
+
+- **A fork's pull request can no longer roll the `release` branch back.** `plugin-bundle.yml` and `pages.yml` follow a run of the workflow named `Release`, and `workflow_run` matches on that name alone. A fork could add a workflow called Release, name its branch after an old tag, and the bundle job would mirror that published version onto the branch plugin users install. Both now act only on a tag push in this repository, from `release.yml`.
+- **No job holding a write token installs anything at a version chosen at run time.** The bundle job is split: `validate` installs the Claude Code CLI and validates the tarball with a read-only token, and `bundle` pushes after checking the tarball it received against the integrity the registry reported before that install. The release job pins `npm@12.2.0` instead of `npm@latest`. `ci.yml`, `evals.yml` and `ship-outcome-eval.yml` now state `contents: read` rather than inheriting the repository default. `test/spine/github-workflows.test.mjs` holds every tracked workflow to these rules, and fails if any job but the bundle job gains `contents: write`.
+- **A briefing is always written inside `.claude/ship/briefings/`.** Its file name came from the spawn label, and a lane's label is built from task ids the planner returned, which nothing checks. A label carrying a separator or a leading dot is now cleaned and suffixed with a short hash of itself; every label the program mints is unchanged.
+
 ## [1.7.0] - 2026-10-21
 
 ### Added

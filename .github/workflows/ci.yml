@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Written down rather than inherited from the repository default, so a change to
+# that setting cannot widen what these jobs can do.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

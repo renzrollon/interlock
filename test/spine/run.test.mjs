@@ -27,7 +27,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
-import { join, dirname, sep } from 'node:path'
+import { basename, join, dirname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EFFORT, LIMITS } from '../../lib/limits.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
@@ -35,6 +35,7 @@ import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
 import {
   BRIEFING_HEADER,
+  BRIEFINGS_DIR,
   LAST_STEP_PATH,
   RELAY_STEP_FIELDS,
   decideHostEnvironment,
@@ -46,7 +47,8 @@ import {
   runClose,
   runRecordBatch,
   runRemediated,
-  runReviewed
+  runReviewed,
+  writeBriefing
 } from '../../lib/run.mjs'
 import { stagePath, writeStage } from '../../lib/ship-stage.mjs'
 import {
@@ -515,6 +517,27 @@ test('a lane spawn is shown under a title but keyed, briefed and recorded by its
     assert.equal(header, BRIEFING_HEADER('1.1', lane.promptSha256))
   } finally {
     cleanup(root)
+  }
+})
+
+test('a briefing stays inside the briefings directory whatever its label carries', () => {
+  // A lane's label is built from planner-returned task ids, and nothing
+  // upstream checks their shape.
+  const root = mkdtempSync(join(tmpdir(), 'interlock-briefing-name-'))
+  try {
+    for (const label of ['1.1', '1.1+2', 'plan-waves', 'remediate-1']) {
+      assert.equal(writeBriefing(root, label, 'x').promptPath, join(BRIEFINGS_DIR, `${label}.md`), `${label} was renamed`)
+    }
+    const hostile = ['../../escape', '/abs/escape', '..', '.hidden', 'a/b', 'a\\b']
+    const written = hostile.map(label => writeBriefing(root, label, label).promptPath)
+    for (const [i, path] of written.entries()) {
+      assert.equal(dirname(join(root, path)), join(root, BRIEFINGS_DIR), `${hostile[i]} was written at ${path}`)
+      assert.ok(!basename(path).startsWith('.'), `${hostile[i]} was written as a hidden file: ${path}`)
+    }
+    assert.equal(new Set(written).size, written.length, `two labels that clean alike shared one file: ${written.join(', ')}`)
+    assert.ok(!existsSync(join(root, 'escape.md')), 'a label climbed out of the briefings directory')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })
 
