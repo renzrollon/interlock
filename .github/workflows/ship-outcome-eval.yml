@@ -106,7 +106,7 @@ jobs:
       # what they keep — see the header.
       - name: Upload the appended rows
         if: always() && steps.cred.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ship-outcome-eval
           path: evals/history/ship-outcomes.jsonl

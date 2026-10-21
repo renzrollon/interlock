@@ -59,9 +59,11 @@ jobs:
       # forward, and a warning annotation on the run says so.
       - name: Downloads badge
         run: node scripts/npm-downloads.mjs --out site/badges/downloads.json
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      # Leaves dotfiles out of the artifact since v4. site/.nojekyll is one, and
+      # nothing reads it: a deploy from Actions never runs Jekyll.
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
