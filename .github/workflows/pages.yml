@@ -6,6 +6,13 @@ name: Pages
 # One-time setup, in the repository settings: Pages → Source → "GitHub Actions".
 # Until that is set this workflow's deploy step fails with a Pages error rather
 # than skipping, so a misconfiguration is visible, not silent.
+#
+# Every deploy also writes badges/downloads.json, the all-time npm downloads
+# the README's badge reads (scripts/npm-downloads.mjs). A deploy rebuilds the
+# whole site, so the file is regenerated each time or it disappears. It runs
+# after each successful Release too, so the figure moves with every version.
+# `workflow_run`, not a tag trigger: it runs on the default branch, which the
+# github-pages environment allows; a tag ref would be refused.
 
 on:
   push:
@@ -13,6 +20,10 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+      - 'scripts/npm-downloads.mjs'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -26,12 +37,20 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # Never fails the deploy: an unreadable npm carries the live count
+      # forward, and a warning annotation on the run says so.
+      - name: Downloads badge
+        run: node scripts/npm-downloads.mjs --out site/badges/downloads.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

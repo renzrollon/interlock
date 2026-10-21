@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 342" width="1120" height="342" role="img" aria-labelledby="t d">
+<title id="t">The Interlock flow</title>
+<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint.</desc>
+<style>
+svg { --text:#151a21; --soft:#475161; --muted:#5f6978; --divider:#dde2e8; --border:#c3cad4; --strong:#838d9b; --accent:#1d5bd6; --on-accent:#ffffff; --surface-2:#edf1f5; }
+text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sans { font-family: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif; }
+.eyebrow { font-size: 13px; font-weight: 600; fill: var(--accent); }
+.hair { stroke: var(--divider); stroke-width: 1; }
+.panel { fill: none; stroke: var(--border); stroke-width: 1; }
+.node { fill: none; stroke: var(--border); stroke-width: 1; }
+.node.core { stroke: var(--text); stroke-width: 1.5; }
+.node.stop { fill: var(--accent); stroke: var(--accent); }
+.name { font-size: 14px; font-weight: 500; fill: var(--soft); }
+.name.core { font-weight: 600; fill: var(--text); }
+.title { font-size: 18px; font-weight: 600; fill: var(--on-accent); }
+.tagbox { fill: var(--surface-2); stroke: var(--surface-2); stroke-width: 1; }
+.tagbox.wf { fill: none; stroke: var(--accent); }
+.tag { font-size: 12px; font-weight: 500; fill: var(--soft); }
+.tag.wf { fill: var(--accent); }
+.line { font-size: 12.5px; fill: var(--muted); }
+.line.on { fill: var(--on-accent); opacity: .9; }
+.arrow { font-size: 14px; fill: var(--strong); }
+.back { fill: none; stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; }
+.backhead { fill: var(--accent); }
+.backlabel { font-size: 12.5px; fill: var(--accent); }
+.desc { font-size: 13.5px; fill: var(--soft); }
+.desc.on { fill: var(--on-accent); }
+.who { font-weight: 600; fill: var(--text); }
+.foot { font-size: 14px; font-weight: 500; fill: var(--text); }
+.dim { font-weight: 400; fill: var(--soft); }
+.cur { opacity: 0; animation: slot 18s linear infinite; }
+.ring { fill: none; stroke: var(--accent); stroke-width: 2; }
+@keyframes slot { 0% { opacity: 0 } 1.2% { opacity: 1 } 15.47% { opacity: 1 } 16.67% { opacity: 0 } 100% { opacity: 0 } }
+.s0 { animation-delay: -0s; }
+.s1 { animation-delay: -15s; }
+.s2 { animation-delay: -12s; }
+.s3 { animation-delay: -9s; }
+.s4 { animation-delay: -6s; }
+.s5 { animation-delay: -3s; }
+@media (prefers-reduced-motion: reduce) { .cur { animation: none; } .cur.s2 { opacity: 1; } }
+</style>
+<text class="eyebrow sans" x="17" y="13">Once per repo</text>
+<line class="hair" x1="123.2" y1="9.5" x2="158.02" y2="9.5"/>
+<text class="eyebrow sans" x="182.02" y="13">Every change</text>
+<line class="hair" x1="280.82" y1="9.5" x2="794.11" y2="9.5"/>
+<text class="eyebrow sans" x="818.11" y="13">When you want it</text>
+<line class="hair" x1="946.51" y1="9.5" x2="1103" y2="9.5"/>
+<rect class="panel" x="0.5" y="28.5" width="1119" height="190" rx="4"/>
+<path class="back" d="M300.1,55.5 H267.14 V71"/>
+<path class="back" d="M454.6,55.5 H487.57 V77"/>
+<path class="backhead" d="M262.64,71 L271.64,71 L267.14,77 Z"/>
+<text class="backlabel" x="377.35" y="59.5" text-anchor="middle">wrong idea? re-spec</text>
+<rect class="node once" x="17.5" y="77.5" width="140.02" height="95" rx="4"/>
+<rect class="ring cur s0" x="14" y="74" width="147.02" height="102" rx="6"/>
+<text class="name" x="87.51" y="130" text-anchor="middle">bootstrap</text>
+<text class="line" x="87.51" y="197" text-anchor="middle">code → specs → graph</text>
+<text class="arrow" x="170.02" y="130" text-anchor="middle">→</text>
+<rect class="node core" x="182.77" y="77.75" width="167.73" height="94.5" rx="4"/>
+<rect class="ring cur s1" x="179.02" y="74" width="175.23" height="102" rx="6"/>
+<text class="name core" x="220.84" y="130">spec</text>
+<rect class="tagbox" x="262.94" y="115.5" width="49" height="19" rx="3"/>
+<text class="tag" x="287.44" y="129.2" text-anchor="middle">skill</text>
+<text class="line" x="266.64" y="197" text-anchor="middle">explore → write → review</text>
+<text class="arrow" x="363.25" y="130" text-anchor="middle">→</text>
+<rect class="node stop" x="375.75" y="77.5" width="224.64" height="95" rx="4"/>
+<rect class="ring cur s2" x="372.25" y="74" width="231.64" height="102" rx="6"/>
+<text class="title sans" x="488.07" y="119.5" text-anchor="middle">You read the spec.</text>
+<text class="line on" x="488.07" y="143" text-anchor="middle">ten minutes · advisor.md</text>
+<text class="arrow" x="612.88" y="130" text-anchor="middle">→</text>
+<rect class="node core" x="625.63" y="77.75" width="167.73" height="94.5" rx="4"/>
+<rect class="ring cur s3" x="621.88" y="74" width="175.23" height="102" rx="6"/>
+<text class="name core" x="652.9" y="130">ship</text>
+<rect class="tagbox wf" x="695" y="115.5" width="70.6" height="19" rx="3"/>
+<text class="tag wf" x="730.3" y="129.2" text-anchor="middle">workflow</text>
+<text class="line" x="709.5" y="197" text-anchor="middle">waves → verify → commit</text>
+<text class="arrow" x="806.11" y="130" text-anchor="middle">→</text>
+<rect class="node optional" x="818.61" y="77.5" width="118.87" height="95" rx="4"/>
+<rect class="ring cur s4" x="815.11" y="74" width="125.87" height="102" rx="6"/>
+<text class="name" x="878.04" y="130" text-anchor="middle">mr</text>
+<text class="line" x="878.04" y="197" text-anchor="middle">PR with verdict</text>
+<text class="arrow" x="949.98" y="130" text-anchor="middle">→</text>
+<rect class="node optional" x="962.48" y="77.5" width="140.02" height="95" rx="4"/>
+<rect class="ring cur s5" x="958.98" y="74" width="147.02" height="102" rx="6"/>
+<text class="name" x="1032.49" y="130" text-anchor="middle">archive</text>
+<text class="line" x="1032.49" y="197" text-anchor="middle">update living specs</text>
+<line class="hair" x1="0" y1="239.5" x2="1120" y2="239.5"/>
+<text class="desc cur s0" x="0" y="266"><tspan class="who">bootstrap</tspan><tspan dx="10">Once per repo. Reads the code, writes one spec per existing feature, builds the graph. Never edits source.</tspan></text>
+<text class="desc cur s1" x="0" y="266"><tspan class="who">spec</tspan><tspan dx="10">Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs.</tspan></text>
+<text class="desc cur s2" x="0" y="266"><tspan class="who">You read the spec.</tspan><tspan dx="10">Four files, one question each, plus advisor.md. The only required stop. Wrong idea? Re-spec.</tspan></text>
+<text class="desc cur s3" x="0" y="266"><tspan class="who">ship</tspan><tspan dx="10">Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one.</tspan></text>
+<text class="desc cur s4" x="0" y="266"><tspan class="who">mr</tspan><tspan dx="10">Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.</tspan></text>
+<text class="desc cur s5" x="0" y="266"><tspan class="who">archive</tspan><tspan dx="10">After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.</tspan></text>
+<text class="foot" x="0" y="331">ship is a workflow, so there is nobody to ask.<tspan class="dim" dx="8.4">Everything a human decides is settled at the checkpoint, before ship starts.</tspan></text>
+</svg>

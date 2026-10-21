@@ -96,7 +96,12 @@ Or, in the compressed form: **the script holds the loop, the CLI holds the rules
 You now have six words you did not have on the first page. The two commands you actually type mean something specific.
 
 <p align="center">
-  <img src="./assets/interlock-flow-wide.png" alt="Interlock flow: bootstrap once, then spec, then you read the spec, then ship, then mr" width="900">
+  <picture>
+    <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/flow-narrow-dark.svg">
+    <source media="(max-width: 600px)" srcset="./assets/flow-narrow-light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/flow-dark.svg">
+    <img src="./assets/flow-light.svg" alt="The Interlock flow: bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint." width="1120">
+  </picture>
 </p>
 
 `/interlock:spec` is a **skill**. It can ask you questions — about what you actually want, about a dependency version it refuses to guess at — because a skill runs inside a conversation and there is a person on the other end of it.

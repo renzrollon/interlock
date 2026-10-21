@@ -40,7 +40,7 @@ docs/notes/compound.md.tmp
 #Copilot
 .github/agents/
 .github/prompts/
-.github/workflows/
+.github/workflows/copilot-setup-steps.yml
 .github/skills/
 
 # Backups produced by installers/tooling

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 1129" width="360" height="1129" role="img" aria-labelledby="t d">
+<title id="t">The Interlock flow</title>
+<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint.</desc>
+<style>
+svg { --text:#151a21; --soft:#475161; --muted:#5f6978; --divider:#dde2e8; --border:#c3cad4; --strong:#838d9b; --accent:#1d5bd6; --on-accent:#ffffff; --surface-2:#edf1f5; }
+text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sans { font-family: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif; }
+.eyebrow { font-size: 13px; font-weight: 600; fill: var(--accent); }
+.hair { stroke: var(--divider); stroke-width: 1; }
+.panel { fill: none; stroke: var(--border); stroke-width: 1; }
+.node { fill: none; stroke: var(--border); stroke-width: 1; }
+.node.core { stroke: var(--text); stroke-width: 1.5; }
+.node.stop { fill: var(--accent); stroke: var(--accent); }
+.name { font-size: 14px; font-weight: 500; fill: var(--soft); }
+.name.core { font-weight: 600; fill: var(--text); }
+.title { font-size: 18px; font-weight: 600; fill: var(--on-accent); }
+.tagbox { fill: var(--surface-2); stroke: var(--surface-2); stroke-width: 1; }
+.tagbox.wf { fill: none; stroke: var(--accent); }
+.tag { font-size: 12px; font-weight: 500; fill: var(--soft); }
+.tag.wf { fill: var(--accent); }
+.line { font-size: 12.5px; fill: var(--muted); }
+.line.on { fill: var(--on-accent); opacity: .9; }
+.arrow { font-size: 14px; fill: var(--strong); }
+.back { fill: none; stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; }
+.backhead { fill: var(--accent); }
+.backlabel { font-size: 12.5px; fill: var(--accent); }
+.desc { font-size: 13.5px; fill: var(--soft); }
+.desc.on { fill: var(--on-accent); }
+.who { font-weight: 600; fill: var(--text); }
+.foot { font-size: 14px; font-weight: 500; fill: var(--text); }
+.dim { font-weight: 400; fill: var(--soft); }
+</style>
+<text class="eyebrow sans" x="0" y="13">Once per repo</text>
+<line class="hair" x1="106.2" y1="9.5" x2="360" y2="9.5"/>
+<rect class="node once" x="0.5" y="26.5" width="359" height="144.55" rx="4"/>
+<text class="name" x="17" y="56">bootstrap</text>
+<text class="line" x="17" y="80.5">code → specs → graph</text>
+<text class="desc" x="17" y="106.75">Once per repo. Reads the code, writes</text>
+<text class="desc" x="17" y="128.35">one spec per existing feature, builds</text>
+<text class="desc" x="17" y="149.95">the graph. Never edits source.</text>
+<text class="eyebrow sans" x="0" y="204.55">Every change</text>
+<line class="hair" x1="98.8" y1="201.05" x2="360" y2="201.05"/>
+<rect class="node core" x="0.75" y="218.3" width="358.5" height="144.05" rx="4"/>
+<text class="name core" x="17" y="247.55">spec</text>
+<rect class="tagbox" x="59.1" y="233.05" width="49" height="19" rx="3"/>
+<text class="tag" x="83.6" y="246.75" text-anchor="middle">skill</text>
+<text class="line" x="17" y="272.05">explore → write → review</text>
+<text class="desc" x="17" y="298.3">Explores the repo, writes proposal,</text>
+<text class="desc" x="17" y="319.9">design, tasks and delta specs, reviews</text>
+<text class="desc" x="17" y="341.5">them, then stops. Nothing but specs.</text>
+<rect class="node stop" x="0.5" y="371.6" width="359" height="147.95" rx="4"/>
+<text class="title sans" x="17" y="403.6">You read the spec.</text>
+<text class="line on" x="17" y="429">ten minutes · advisor.md</text>
+<text class="desc on" x="17" y="455.25">Four files, one question each, plus</text>
+<text class="desc on" x="17" y="476.85">advisor.md. The only required stop.</text>
+<text class="desc on" x="17" y="498.45">Wrong idea? Re-spec.</text>
+<rect class="node core" x="0.75" y="528.8" width="358.5" height="144.05" rx="4"/>
+<text class="name core" x="17" y="558.05">ship</text>
+<rect class="tagbox wf" x="59.1" y="543.55" width="70.6" height="19" rx="3"/>
+<text class="tag wf" x="94.4" y="557.25" text-anchor="middle">workflow</text>
+<text class="line" x="17" y="582.55">waves → verify → commit</text>
+<text class="desc" x="17" y="608.8">Parallel agents in waves, your suite,</text>
+<text class="desc" x="17" y="630.4">one commit. A workflow has no channel</text>
+<text class="desc" x="17" y="652">for a question, so it never asks one.</text>
+<text class="eyebrow sans" x="0" y="706.6">When you want it</text>
+<line class="hair" x1="128.4" y1="703.1" x2="360" y2="703.1"/>
+<rect class="node optional" x="0.5" y="720.1" width="359" height="144.55" rx="4"/>
+<text class="name" x="17" y="749.6">mr</text>
+<text class="line" x="17" y="774.1">PR with verdict</text>
+<text class="desc" x="17" y="800.35">Opens or updates the PR or MR with the</text>
+<text class="desc" x="17" y="821.95">MERGE / HUMAN / BLOCK verdict in the</text>
+<text class="desc" x="17" y="843.55">description and labels. Never merges.</text>
+<rect class="node optional" x="0.5" y="873.65" width="359" height="144.55" rx="4"/>
+<text class="name" x="17" y="903.15">archive</text>
+<text class="line" x="17" y="927.65">update living specs</text>
+<text class="desc" x="17" y="953.9">After the merge: fold the delta specs</text>
+<text class="desc" x="17" y="975.5">into the living specs, so the next spec</text>
+<text class="desc" x="17" y="997.1">plans against what is now true.</text>
+<text class="foot" x="0" y="1053.7">ship is a workflow, so there is nobody to</text>
+<text class="foot" x="0" y="1074.7">ask.</text>
+<text class="foot dim" x="0" y="1095.7">Everything a human decides is settled at</text>
+<text class="foot dim" x="0" y="1116.7">the checkpoint, before ship starts.</text>
+</svg>
