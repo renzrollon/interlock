@@ -84,3 +84,37 @@ Two schema-mapping gaps are likewise unpinned, and are **not** guessed at:
 
 Both wait for a fixture that exercises them. Guessing a mapping without one is
 how the `id` / `runs` misread landed in the first place.
+
+## `spec-range-2026-10-21.json`
+
+The first results file with judged (`llm`) graders, and the first run of a Spec
+Range case through the harness. Produced by `scripts/advisor-e2e.mjs`
+(`docs/14-evals.md`, "Running the advisor end to end").
+
+### Which run produced it
+
+- Command: `node scripts/host-probe.mjs --mode eval --plugin-dir <rsync'd plugin> --case spec-range-collapse-singleton --max-cost-usd 2.45 --allow-tool Bash --allow-tool Write`,
+  which runs `claude plugin eval <plugin> --case spec-range-collapse-singleton --scaffold --trust-plugin --runs 1 --ablation none --no-publish --keep-temp --max-cost-usd 2.45 --allow-tools Bash Write …`
+- Harness: `claude` 2.1.306, results `schemaVersion: 1`
+- Run: 2026-10-21 · `costUsd` 0.5304095 · `partial: false` · one case, one run, with arm only
+- Outcome: `advisor-written`, `check-ran` and `consult-spawned` (one `interlock:advisor` spawn) passed; both judges (`matches-label`, `answered-already`) failed 3 votes to 0.
+
+### What was removed (removal only, never rewriting)
+
+Everything the smoke fixture drops, plus three fields this run carried that the smoke run did not:
+
+- `cases[].promptMarkdown` and `cases[].arms.<arm>[].tracePath`, as above.
+- `cases[].arms.<arm>[].graders[].evidence`: the judge's trace excerpt, about 70 KB of session transcript holding hook and session ids.
+- `suite.root` and `suite.plugins[].path`: the runner's scratch directory.
+
+Every scoring field is kept as the harness wrote it.
+
+### What it pins
+
+- **`llm` as judged** (`test/spine/evals-triage.test.mjs`). Before PR #20 this file would have triaged as a regression, exit 1. It now triages as `variance` on the two judges, exit 0. That closes the first gap listed for the smoke fixture.
+- **`withOnly` under `--ablation none`.** The with-only `consult-spawned` grader is written `withOnly: false, scored: true`, so in this mode it is part of the score. Triage now excludes a grader written `scored: false`. The harness documents that a with-only grader under `--ablation with-without` is an indicator outside the score. **No with-without file exists yet**, so the `scored: false` branch is pinned only by a hand-built case.
+
+### What two earlier runs on the same day showed (not committed)
+
+- **With no `--allow-tools`** (the CI full job's command as of PR #20), the harness printed a `cannot pass with the granted tools` advisory for `check-ran` (Bash) and `advisor-written` (Write) before the run. Bash and Write are operator-gated, and a case's `allowed_tools` alone does not grant them. The run scored 0 and triage read a regression.
+- **With only `--allow-tools "Bash(interlock:*)" Write`**, the session ran in don't-ask mode. The model's `interlock advisor … --brief --json; echo "exit=$?"` did not match the pattern and was denied. The case's own failure path (`--check --failed`) was denied the same way. A pattern grant does not survive the model's own command style.

@@ -238,9 +238,11 @@ from a figure, which this page and [11](11-the-indicators.md) refuse.
 
 ```bash
 export CLAUDE_CODE_WALNUT_SPIRE=1          # early-access enablement — env only, never committed
-claude plugin eval . --tag smoke --no-publish --json evals-results.json
+claude plugin eval . --tag smoke --trust-plugin --allow-tools Bash --no-publish --json evals-results.json
 interlock evals triage --results evals-results.json   # regression / variance / no signal — exit code is the verdict
 ```
+
+- **Trust and tool grants are part of the command.** With `--json`, or with no terminal, the harness refuses a plugin directory you have not trusted before any case runs; `--trust-plugin` answers for it. Bash, Write, Edit and WebFetch are operator-gated: a case's `allowed_tools` alone does not grant them, and a grader that needs a withheld tool cannot pass. Grant what the cases you run list, as both CI jobs do (`test/evals.test.mjs` pins the set).
 
 - **Enablement is a local prerequisite.** `claude plugin eval` is early-access and does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set *in the environment*. Do not commit it to `.claude/settings.json` — a committed value produces a suite that looks configured and does not run.
 - **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
@@ -281,6 +283,20 @@ archived ledger.
 - **No threshold lives here.** How many labels the verdict needs, and the
   match and repeat bounds it applies, are caps in `interlock limits`; read them
   there.
+
+#### Running the advisor end to end, on demand
+
+`scripts/advisor-e2e.mjs` runs the consult for real, once, by hand. It is development tooling that never ships, and it never launches `claude` itself. It prepares a scratch run, prints the two metered commands for `scripts/host-probe.mjs`, then reads what they left behind:
+
+```bash
+node scripts/advisor-e2e.mjs setup --out "$TMPDIR/adv"     # plugin copy, logger mod, seeded scratch repo, prompt
+# run the two host-probe commands it prints: a headless consult, then the case through `--mode eval`
+node scripts/advisor-e2e.mjs verify --out "$TMPDIR/adv"    # PASS/FAIL per fact; exit 1 names what failed
+```
+
+- **What it answers.** The probe half checks that the engine raised one `agent.spawn` for `interlock:advisor` with a string model (what the spec meter's consult counter keys on), that the draft landed where the meter reads it, and that `advisor.md` was written. The eval half runs the Spec Range case with the full job's flags (`--scaffold` included). It then triages the real results file with `--eval-dir evals`, scales the run's cost to the Spec Range share of the full job against the ceiling in `interlock limits`, and lists every grader field the harness wrote.
+- **It is paid for once.** `--mode eval` refuses to start without `--max-cost-usd`. `verify --write-fixtures` turns the run into scrubbed fixtures (`test/fixtures/mod/agent-spawn-advisor.json` and a results file under `test/fixtures/evals/`), and from then on `npm test` and `claude plugin test` re-check those for free. A fixture that would still name a local path is not written, and the output says so.
+- **The probe never touches this repository.** The session's `--plugin-dir` is an rsync'd copy, so the `tsconfig.json` and `types/` a plugin-dir session writes land in the copy.
 
 ### Transcript, outcome, process
 

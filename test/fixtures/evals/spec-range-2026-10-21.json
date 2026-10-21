@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.306",
+  "startedAt": "2026-10-21T06:48:36.550Z",
+  "durationSeconds": 102,
+  "costUsd": 0.5304095,
+  "partial": false,
+  "suite": {
+    "ablation": "none",
+    "caseFilter": "spec-range-collapse-singleton",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": [
+      {
+        "name": "interlock",
+        "version": "1.6.3"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "spec-range-collapse-singleton",
+      "dir": "evals/spec-range-collapse-singleton",
+      "source": "mixed",
+      "runsPerCase": 1,
+      "timeoutSeconds": 1200,
+      "maxTurns": 20,
+      "graders": [
+        {
+          "name": "advisor-written",
+          "type": "file_exists",
+          "weight": 1,
+          "config": {
+            "path": "openspec/changes/collapse-singleton-waves/advisor.md",
+            "exists": true
+          }
+        },
+        {
+          "name": "answered-already",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The trace shows the agent reading openspec/changes/collapse-singleton-waves/proposal.md,\ndesign.md and tasks.md, then running\n`interlock advisor \"collapse-singleton-waves\" --check ... --json`, whose output lists the\nkept questions under \"questions\".\n\nPASS when at most half of the kept questions are answered in so many words\nby proposal.md, design.md or tasks.md as read in the trace. FAIL when more\nthan half restate something those artifacts already answer, or when the\ntrace shows no check output listing kept questions.\n",
+          "config": {
+            "criteria": "The trace shows the agent reading openspec/changes/collapse-singleton-waves/proposal.md,\ndesign.md and tasks.md, then running\n`interlock advisor \"collapse-singleton-waves\" --check ... --json`, whose output lists the\nkept questions under \"questions\".\n\nPASS when at most half of the kept questions are answered in so many words\nby proposal.md, design.md or tasks.md as read in the trace. FAIL when more\nthan half restate something those artifacts already answer, or when the\ntrace shows no check output listing kept questions.\n",
+            "focus": "trace"
+          }
+        },
+        {
+          "name": "check-ran",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Bash",
+            "input_match": "interlock advisor .* --check",
+            "min": 1
+          }
+        },
+        {
+          "name": "consult-spawned",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "interlock:advisor",
+            "min": 1,
+            "max": 1,
+            "arm": "with-only"
+          }
+        },
+        {
+          "name": "matches-label",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The file is the advisor.md the checkpoint consult rendered for the OpenSpec\nchange \"collapse-singleton-waves\". A human reviewing this change had to answer the\nfollowing question, recorded as row D2 of its decision ledger:\n\n  Fold only same-path singletons, fold every 1-task impl wave, or add dependsOn?\n\nPASS when at least one question kept under \"## Questions for the human\" asks\nthe same thing as the human's question, or asks a question whose answer\nwould settle it. FAIL when none does, when the table reads \"none\", or when\nthe file records that the consult did not run.\n",
+          "config": {
+            "criteria": "The file is the advisor.md the checkpoint consult rendered for the OpenSpec\nchange \"collapse-singleton-waves\". A human reviewing this change had to answer the\nfollowing question, recorded as row D2 of its decision ledger:\n\n  Fold only same-path singletons, fold every 1-task impl wave, or add dependsOn?\n\nPASS when at least one question kept under \"## Questions for the human\" asks\nthe same thing as the human's question, or asks a question whose answer\nwould settle it. FAIL when none does, when the table reads \"none\", or when\nthe file records that the consult did not run.\n",
+            "focus": {
+              "source": "file",
+              "path": "openspec/changes/collapse-singleton-waves/advisor.md"
+            }
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0.6,
+            "passed": false,
+            "turns": 9,
+            "costUsd": 0.5304095,
+            "judgeCostUsd": 0.009764500000000004,
+            "durationSeconds": 102,
+            "startedAt": "2026-10-21T06:48:36.626Z",
+            "error": null,
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "advisor-written",
+                "passed": true,
+                "weight": 1,
+                "explanation": "openspec/changes/collapse-singleton-waves/advisor.md exists as expected",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "answered-already",
+                "passed": false,
+                "weight": 1,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ]
+              },
+              {
+                "name": "check-ran",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Bash called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "consult-spawned",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..1)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "matches-label",
+                "passed": false,
+                "weight": 1,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0.6,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 1,
+    "casesPassed": 0,
+    "overallScore": 0.6,
+    "overallPassRate": 0
+  }
+}

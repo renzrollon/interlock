@@ -9,7 +9,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -300,6 +301,82 @@ test('appendNotes with zero rows creates no file', () => {
     assert.equal(result.appended, 0)
     assert.equal(result.skipped, 0)
     assert.equal(existsSync(join(root, NOTES_PATH)), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- concurrent writers ------------------------------------------------------
+//
+// `interlock note add` and a ship review's adjudication can append to the same
+// checkout's table at once (PR #20 review). Each read-modify-write must see the
+// rows the other wrote, or a row is lost and an id is handed out twice.
+
+const BIN = join(ROOT, 'bin', 'interlock')
+
+/** Run `interlock note add` as its own process; resolves with its exit and output. */
+function noteAdd(root, n) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, [
+      BIN, 'note', 'add', '--root', root, '--json',
+      '--change', 'add-x', '--file', `lib/f${n}.mjs`, '--surprise', `surprise ${n}.`, '--rule', `Rule ${n}.`
+    ], { cwd: root })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', d => { stdout += d })
+    child.stderr.on('data', d => { stderr += d })
+    child.on('close', code => resolve({ code, stdout, stderr }))
+  })
+}
+
+test('concurrent note add processes land every row once, with unique ids', async () => {
+  const root = tempRoot()
+  try {
+    const writers = 12
+    const results = await Promise.all(Array.from({ length: writers }, (_, n) => noteAdd(root, n)))
+    for (const r of results) {
+      assert.equal(r.code, 0, r.stderr)
+      assert.equal(JSON.parse(r.stdout).appended, 1, r.stdout)
+    }
+    const table = parseNotes(readFileSync(join(root, NOTES_PATH), 'utf8'))
+    assert.equal(table.parseable, true)
+    assert.deepEqual(table.problems, [])
+    assert.deepEqual(table.rows.map(r => r.file).sort(), Array.from({ length: writers }, (_, n) => `lib/f${n}.mjs`).sort())
+    assert.deepEqual(table.rows.map(r => r.id).sort(), Array.from({ length: writers }, (_, n) => `N${n + 1}`).sort())
+    assert.deepEqual(readdirSync(dirname(join(root, NOTES_PATH))), ['compound.md'], 'no lock or staging file is left behind')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('appendNotes refuses, naming the lock, while another writer holds a fresh lock', () => {
+  const root = tempRoot()
+  try {
+    const path = seed(root, table([row('N1', 'lib/a.mjs', 'R.')]))
+    const before = readFileSync(path, 'utf8')
+    writeFileSync(`${path}.lock`, '')
+    assert.throws(
+      () => appendNotes(root, [row(undefined, 'lib/b.mjs', 'R2.')], { date: '2026-10-21', lockWaitMs: 50 }),
+      /docs\/notes\/compound\.md is locked by another writer/
+    )
+    assert.equal(readFileSync(path, 'utf8'), before, 'a refused append changes no byte')
+    assert.equal(existsSync(`${path}.lock`), true, "another writer's lock is left where it was")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('appendNotes breaks a stale lock and appends', () => {
+  const root = tempRoot()
+  try {
+    const path = seed(root, table([row('N1', 'lib/a.mjs', 'R.')]))
+    writeFileSync(`${path}.lock`, '')
+    const old = new Date(Date.now() - 10 * 60 * 1000)
+    utimesSync(`${path}.lock`, old, old)
+    const result = appendNotes(root, [row(undefined, 'lib/b.mjs', 'R2.')], { date: '2026-10-21', lockWaitMs: 50 })
+    assert.equal(result.appended, 1)
+    assert.match(readFileSync(path, 'utf8'), /^\| N2 \| 2026-10-19 \| add-x \| lib\/b\.mjs \|/m)
+    assert.equal(existsSync(`${path}.lock`), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -388,6 +388,11 @@ test('an absent key, an uncovered path, a value without ./ and an image that is 
 // (clear-the-plugin-directory-holds design D9).
 const DIRECTORY_FILE_BYTES = 262144
 const DIRECTORY_FILE_COUNT = 512
+// A warning zone below the size limit, so the file that is about to reach it
+// fails here one release early instead of holding a version at submission.
+// bin/interlock sat about 16 KB under the limit when PR #20's review raised it
+// (M3), which is why the advisor and note handlers moved to lib/advisor-cli.mjs.
+const DIRECTORY_HEADROOM_BYTES = 16384
 
 /** Each shipped file at or over the size limit, with its size, and the count when it is over. */
 function bundleLimitProblems(entries) {
@@ -422,6 +427,27 @@ test('the limits pin names a text file at the limit and a count over it, and lea
   const many = n => Array.from({ length: n }, (_, i) => ({ path: `skills/s${i}/SKILL.md`, bytes: 10 }))
   assert.deepEqual(bundleLimitProblems(many(DIRECTORY_FILE_COUNT)), [])
   assert.deepEqual(bundleLimitProblems(many(DIRECTORY_FILE_COUNT + 1)), ["the bundle holds 513 files; the directory's limit is 512"])
+})
+
+/** Each shipped text file inside the headroom below the size limit, with how much is left. */
+function headroomProblems(entries) {
+  return entries
+    .filter(e => !IMAGE_OR_FONT.test(e.path) && e.bytes > DIRECTORY_FILE_BYTES - DIRECTORY_HEADROOM_BYTES)
+    .map(e => `${e.path} is ${e.bytes} bytes, ${DIRECTORY_FILE_BYTES - e.bytes} under the ${DIRECTORY_FILE_BYTES}-byte limit; move code out before it holds a version`)
+}
+
+test('every shipped text file keeps the headroom below the directory\'s size limit', () => {
+  const problems = headroomProblems(shippedFiles(ROOT, pkg.files))
+  assert.deepEqual(problems, [], `inside the warning zone:\n  ${problems.join('\n  ')}`)
+})
+
+test('the headroom pin names a file inside the zone and leaves the edge and an image alone', () => {
+  const edge = DIRECTORY_FILE_BYTES - DIRECTORY_HEADROOM_BYTES
+  assert.deepEqual(headroomProblems([
+    { path: 'bin/edge', bytes: edge },
+    { path: 'bin/inside', bytes: edge + 1 },
+    { path: 'assets/large.png', bytes: 300000 }
+  ]), [`bin/inside is ${edge + 1} bytes, ${DIRECTORY_HEADROOM_BYTES - 1} under the 262144-byte limit; move code out before it holds a version`])
 })
 
 test('no shipped file names the host\'s option variables', () => {

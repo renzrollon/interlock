@@ -271,6 +271,41 @@ test("the committed harness results join every grader's type from the case, so n
   assert.doesNotMatch(formatTriage(r), /type unknown/)
 })
 
+test('the committed 2026-10-21 Spec Range results file triages its judged-only dip as variance, exit 0', () => {
+  // The first real results file with `llm` graders (scripts/advisor-e2e.mjs, harness
+  // 2.1.306, --ablation none, Bash and Write granted). Every deterministic grader
+  // passed; both judges failed on the one run. Before PR #20 `llm` read as
+  // deterministic and this was a regression, exit 1.
+  const fixture = fileURLToPath(new URL('../fixtures/evals/spec-range-2026-10-21.json', import.meta.url))
+  const results = JSON.parse(readFileSync(fixture, 'utf8'))
+  const r = triage(results)
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.cases.length, 1)
+  const kase = r.cases[0]
+  assert.equal(kase.id, 'spec-range-collapse-singleton')
+  assert.equal(kase.classification, 'variance')
+  assert.deepEqual([...kase.graders].sort(), ['answered-already', 'matches-label'])
+  assert.equal(kase.untyped, undefined, 'every trial grader joins its type from the case list')
+  // Under --ablation none the harness scores the with-only consult indicator.
+  const consult = results.cases[0].arms.with[0].graders.find(g => g.name === 'consult-spawned')
+  assert.deepEqual({ withOnly: consult.withOnly, scored: consult.scored }, { withOnly: false, scored: true })
+})
+
+test('a grader the harness left out of the score never makes a regression', () => {
+  // Every trial grader carries `scored`; under --ablation with-without a with-only
+  // grader is a plugin-fired indicator, not part of the score (claude plugin eval --help).
+  const r = triage({
+    cases: [{ name: 'c', graders: [{ name: 'consult-spawned', type: 'tool_used' }, { name: 'written', type: 'file_exists' }], arms: { with: [{ graders: [{ name: 'consult-spawned', passed: false, withOnly: true, scored: false }, { name: 'written', passed: true, withOnly: false, scored: true }] }] } }]
+  })
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.cases[0].classification, 'pass')
+  const scoredFail = triage({
+    cases: [{ name: 'c', graders: [{ name: 'written', type: 'file_exists' }], arms: { with: [{ graders: [{ name: 'written', passed: false, withOnly: false, scored: true }] }] } }]
+  })
+  assert.equal(scoredFail.verdict, 'regression', 'a scored deterministic failure still is one')
+})
+
 test('a legacy judged alias still classifies as judged', () => {
   const r = triage({ cases: [{ id: 'c', runs: [run({ name: 'meaning', type: 'semantic', passed: false })] }] })
   assert.equal(r.cases[0].classification, 'variance')

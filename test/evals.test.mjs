@@ -826,3 +826,41 @@ test('the full eval job seeds fixtures with --scaffold and the smoke job does no
   assert.ok(evalLine('full').includes('--scaffold'), "the full job's claude plugin eval line must pass --scaffold")
   assert.ok(!evalLine('smoke').includes('--scaffold'), "the smoke job's claude plugin eval line must not pass --scaffold")
 })
+
+test('each eval job grants exactly the gated tools its cases list, so no grader is unwinnable', () => {
+  // Bash, Write, Edit and WebFetch are operator-gated in `claude plugin eval`: a
+  // case's allowed_tools alone does not grant them, the harness withholds them
+  // from the model, and a grader that needs one cannot pass. A 2.1.306 run of a
+  // Spec Range case with no --allow-tools printed that advisory and scored 0
+  // (test/fixtures/evals/README.md, spec-range-2026-10-21.json).
+  const GATED = ['Bash', 'Edit', 'WebFetch', 'Write']
+  const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8')
+  const jobBody = job => {
+    const start = yml.search(new RegExp(`^  ${job}:\\s*$`, 'm'))
+    const rest = yml.slice(start + 1)
+    const end = rest.search(/^  [\w-]+:\s*$/m)
+    return end === -1 ? rest : rest.slice(0, end)
+  }
+  const granted = job => {
+    const lines = jobBody(job).split('\n')
+    const at = lines.findIndex(l => l.includes('claude plugin eval'))
+    const out = [lines[at]]
+    for (let i = at; lines[i].trimEnd().endsWith('\\') && i + 1 < lines.length; i++) out.push(lines[i + 1])
+    const m = out.join(' ').replace(/\\\s*/g, ' ').match(/--allow-tools((?:\s+(?!--)\S+)+)/)
+    return m ? m[1].trim().split(/\s+/).sort() : []
+  }
+  const declared = cases.filter(k => existsSync(join(k.dir, 'case.yaml'))).map(k => {
+    const text = readFileSync(join(k.dir, 'case.yaml'), 'utf8')
+    const list = re => ((text.match(re) || [])[1] || '').split(',').map(s => s.trim()).filter(Boolean)
+    return { name: k.name, tags: list(/^\s*tags:\s*\[([^\]]*)\]/m), tools: list(/^\s*allowed_tools:\s*\[([^\]]*)\]/m) }
+  })
+  assert.ok(declared.length >= 8 && declared.every(k => k.tools.length), 'every case.yaml was read with its allowed_tools')
+  const needed = subset => [...new Set(subset.flatMap(k => k.tools.filter(t => GATED.includes(t))))].sort()
+  const smokeCases = declared.filter(k => k.tags.includes('smoke'))
+  assert.ok(smokeCases.length > 0, 'the smoke tag selects at least one case')
+  assert.deepEqual(granted('smoke'), needed(smokeCases), 'the smoke job must grant the gated tools its smoke cases list')
+  assert.deepEqual(granted('full'), needed(declared), 'the full job must grant the gated tools every case lists')
+  // With no terminal (CI, or --json) an untrusted plugin directory is refused
+  // before any case runs; a fresh checkout is never trusted (2.1.306).
+  for (const job of ['smoke', 'full']) assert.match(jobBody(job), /claude plugin eval[^\n]*\\\n(?:\s+--?[^\n]*\\\n)*\s+--trust-plugin\b/, `the ${job} job must pass --trust-plugin`)
+})

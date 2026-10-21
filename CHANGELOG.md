@@ -13,6 +13,16 @@ this project adheres to Semantic Versioning 2.0.0.
 - **Compound notes.** A review finding may carry an optional `specGap: true`; the domain and technical-lead reviewers set it for a requirement no spec stated. `interlock note derive|add|match` keep a table at `docs/notes/compound.md`, both adjudicators append to it (a failure is spoken as `COMPOUND NOTES NOT WRITTEN`, never an exit code), and the next spec's brief is shown the rows that name a file its tasks touch.
 - `interlock evals triage --eval-dir <dir>` joins grader types from the case definitions so the first judged graders are classified correctly.
 
+### Fixed
+
+- **Two writers to `docs/notes/compound.md` no longer lose each other's rows.** A ship review's adjudication and `interlock note add` on the same checkout each read the whole table and rewrote it, so a concurrent append was lost and an id could be handed out twice (12 concurrent `note add` processes landed 9 rows). Each append now reads, numbers and writes under an exclusive lock file, staging the table and renaming it into place. A lock still held past a short wait is spoken as `COMPOUND NOTES NOT WRITTEN`, never an exit code; a lock left by a writer that died is broken.
+- **Eval triage no longer counts a grader the harness left out of the score.** A trial grader written `scored: false` (a with-only indicator under `--ablation with-without`) is excluded, as the harness itself excludes it.
+- **The CI eval jobs can run their cases.** Both jobs now pass `--trust-plugin`, because without a terminal `claude plugin eval` refuses an untrusted directory before any case runs. They also grant the operator-gated tools their cases list (`--allow-tools Bash` for smoke, `Bash Edit Write` for the full job). Without the grant the harness withholds those tools, and no Spec Range case could pass `check-ran` or `advisor-written`. `test/evals.test.mjs` derives the grant from the cases and pins it.
+
+### Changed
+
+- The `interlock advisor` and `interlock note` handlers moved from `bin/interlock` to `lib/advisor-cli.mjs` (no behaviour change), and a test now fails any shipped file within 16 KiB of the plugin directory's 256 KiB per-file limit.
+
 ## 1.6.3 — 2026-10-19
 
 ### Changed
