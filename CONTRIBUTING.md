@@ -23,7 +23,13 @@ claude --plugin-dir .         # load it without installing
 - **A prose instruction nobody asserts silently stops running.** When you add an instruction to a skill, pin it in `test/skills.test.mjs` — and assert tokens, not sentences.
 - **Degradation is spoken, never silent.** If a path degrades, say so in the output.
 
-Changes to this repository go through its own loop: `/interlock:spec`, read the spec, `/interlock:ship`. See [.claude/CLAUDE.md](./.claude/CLAUDE.md) for the full set of things to get right.
+See [.claude/CLAUDE.md](./.claude/CLAUDE.md) for the full set of things to get right.
+
+## Pull requests
+
+**Every pull request carries an OpenSpec change.** Changes to this repository go through its own loop: `/interlock:spec`, read the spec, `/interlock:ship`. The pull request includes the change under `openspec/changes/<name>/` — proposal, design, tasks and delta specs — or, once archived, under `openspec/changes/archive/`, and names it in the description. A pull request without one is sent back for a change before it is reviewed: the spec is what the diff is reviewed against.
+
+Create the change through the OpenSpec CLI (`openspec new change`), not by hand, and run `openspec validate <name>` before you open the pull request.
 
 ## Model evals
 
