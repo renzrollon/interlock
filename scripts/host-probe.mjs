@@ -20,6 +20,11 @@
 //   tty        the same session interactively, inside a detached tmux
 //              session; the prompt is typed, the screen captured until it
 //              settles, then the session is killed
+//   eval       claude plugin eval <plugin-dir> --scaffold ... with a required
+//              cost ceiling: the full eval job's flags for one case glob, so
+//              a metered case can be run on demand (scripts/advisor-e2e.mjs);
+//              results.json, report.html and the harness's own results
+//              directory land in --out
 //
 // Outputs land in --out (default $TMPDIR/interlock-host-probe/<stamp>):
 // stdout.txt, stderr.txt (or screen.txt for tty) and meta.json.
@@ -29,17 +34,24 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { isAbsolute, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 
-export const MODES = ['validate', 'headless', 'tty']
+export const MODES = ['validate', 'headless', 'tty', 'eval']
+export const ABLATIONS = ['none', 'with-without']
 const DEFAULT_TIMEOUT_S = 180
 const MAX_TIMEOUT_S = 900
+// One eval case may take its own timeout_seconds (a Spec Range case allows
+// 1200) plus the judge, so eval mode gets a longer ceiling of its own.
+const DEFAULT_EVAL_TIMEOUT_S = 1800
+const MAX_EVAL_TIMEOUT_S = 3600
 
-const USAGE = `usage: host-probe.mjs --mode validate|headless|tty --bin <abs path to claude>
+const USAGE = `usage: host-probe.mjs --mode validate|headless|tty|eval --bin <abs path to claude>
        [--plugin-dir <dir>]... [--prompt <text> | --prompt-file <file>]
        [--cwd <dir>] [--model <id>] [--allow-tool <tool>]... [--max-turns <n>]
-       [--timeout <seconds>] [--settle <seconds>] [--out <dir>] [--dry-run]`
+       [--timeout <seconds>] [--settle <seconds>] [--out <dir>] [--dry-run]
+  eval: --max-cost-usd <usd> [--case <glob>] [--runs <n>] [--ablation none|with-without]
+        [--no-trust-plugin]   (drop --trust-plugin, as the CI full job runs)`
 
 export function parseArgs(argv) {
-  const o = { pluginDirs: [], allowTools: [], dryRun: false }
+  const o = { pluginDirs: [], allowTools: [], dryRun: false, trustPlugin: true }
   const need = (i, flag) => {
     if (i + 1 >= argv.length) throw new Error(`${flag} needs a value`)
     return argv[i + 1]
@@ -60,6 +72,11 @@ export function parseArgs(argv) {
       case '--settle': o.settle = Number(need(i, a)); i++; break
       case '--out': o.out = need(i, a); i++; break
       case '--dry-run': o.dryRun = true; break
+      case '--case': o.case = need(i, a); i++; break
+      case '--runs': o.runs = Number(need(i, a)); i++; break
+      case '--ablation': o.ablation = need(i, a); i++; break
+      case '--max-cost-usd': o.maxCostUsd = Number(need(i, a)); i++; break
+      case '--no-trust-plugin': o.trustPlugin = false; break
       case '-h': case '--help': o.help = true; break
       default: throw new Error(`unknown argument: ${a}`)
     }
@@ -74,18 +91,48 @@ export function plan(o, { env = process.env, now = new Date(), exists = existsSy
   if (!exists(o.bin)) throw new Error(`--bin not found: ${o.bin}`)
   const pluginDirs = o.pluginDirs.map(d => resolve(d))
   for (const d of pluginDirs) if (!exists(d)) throw new Error(`--plugin-dir not found: ${d}`)
-  if (o.mode === 'validate' && pluginDirs.length !== 1) throw new Error('validate takes exactly one --plugin-dir')
+  if ((o.mode === 'validate' || o.mode === 'eval') && pluginDirs.length !== 1) throw new Error(`${o.mode} takes exactly one --plugin-dir`)
   if (o.prompt !== undefined && o.promptFile !== undefined) throw new Error('give --prompt or --prompt-file, not both')
   const prompt = o.promptFile !== undefined ? readFileSync(o.promptFile, 'utf8') : o.prompt
-  if (o.mode !== 'validate' && !prompt) throw new Error(`${o.mode} needs --prompt or --prompt-file`)
-  const timeout = o.timeout ?? DEFAULT_TIMEOUT_S
-  if (!(timeout > 0 && timeout <= MAX_TIMEOUT_S)) throw new Error(`--timeout must be in (0, ${MAX_TIMEOUT_S}]`)
+  if ((o.mode === 'headless' || o.mode === 'tty') && !prompt) throw new Error(`${o.mode} needs --prompt or --prompt-file`)
+  const evalMode = o.mode === 'eval'
+  if (evalMode) {
+    // A metered run without a ceiling is the one mistake this mode exists to rule out.
+    if (!(o.maxCostUsd > 0)) throw new Error('eval needs --max-cost-usd <usd> greater than 0')
+    if (o.runs !== undefined && !(Number.isInteger(o.runs) && o.runs > 0)) throw new Error('--runs must be a positive integer')
+    if (o.ablation !== undefined && !ABLATIONS.includes(o.ablation)) throw new Error(`--ablation must be one of ${ABLATIONS.join(', ')}`)
+  }
+  const maxTimeout = evalMode ? MAX_EVAL_TIMEOUT_S : MAX_TIMEOUT_S
+  const timeout = o.timeout ?? (evalMode ? DEFAULT_EVAL_TIMEOUT_S : DEFAULT_TIMEOUT_S)
+  if (!(timeout > 0 && timeout <= maxTimeout)) throw new Error(`--timeout must be in (0, ${maxTimeout}]`)
   const settle = o.settle ?? 20
   if (!(settle > 0 && settle < timeout)) throw new Error('--settle must be positive and below --timeout')
+
+  const stamp = now.toISOString().replace(/[:.]/g, '-')
+  const out = resolve(o.out ?? join(env.TMPDIR || tmpdir(), 'interlock-host-probe', `${o.mode}-${stamp}`))
 
   let args
   if (o.mode === 'validate') {
     args = ['plugin', 'validate', pluginDirs[0], '--strict']
+  } else if (evalMode) {
+    // The full eval job's flags (.github/workflows/evals.yml), one case glob at
+    // a time. --keep-temp leaves the scaffolded workspace for inspection.
+    args = ['plugin', 'eval', pluginDirs[0]]
+    if (o.case !== undefined) args.push('--case', o.case)
+    args.push(
+      '--scaffold',
+      ...(o.trustPlugin ? ['--trust-plugin'] : []),
+      '--runs', String(o.runs ?? 1),
+      '--ablation', o.ablation ?? 'none',
+      '--no-publish',
+      '--keep-temp',
+      '--max-cost-usd', String(o.maxCostUsd),
+      '--output-dir', join(out, 'results'),
+      '--report', join(out, 'report.html'),
+      '--json', join(out, 'results.json')
+    )
+    if (o.allowTools.length) args.push('--allow-tools', ...o.allowTools)
+    if (o.model !== undefined) args.push('--model', o.model)
   } else {
     args = pluginDirs.flatMap(d => ['--plugin-dir', d])
     if (o.allowTools.length) args.push('--allowedTools', o.allowTools.join(','))
@@ -100,9 +147,9 @@ export function plan(o, { env = process.env, now = new Date(), exists = existsSy
     USER: env.USER,
     PATH: '/usr/bin:/bin',
     TERM: env.TERM && env.TERM !== 'dumb' ? env.TERM : 'xterm-256color',
+    // The eval harness is gated behind this flag (the eval workflow sets it too).
+    ...(evalMode ? { CLAUDE_CODE_WALNUT_SPIRE: '1' } : {}),
   }
-  const stamp = now.toISOString().replace(/[:.]/g, '-')
-  const out = resolve(o.out ?? join(env.TMPDIR || tmpdir(), 'interlock-host-probe', `${o.mode}-${stamp}`))
   // `exec "$0" "$@"` runs the binary with its argv untouched by the shell.
   const shell = ['/bin/zsh', '-l', '-c', 'exec "$0" "$@"', o.bin, ...args]
   return {

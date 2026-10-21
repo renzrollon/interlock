@@ -1,0 +1,11 @@
+A `## N.` boundary here is a **dependency boundary**: groups run in order, tasks in one group are independent and may run in parallel. Sequential same-file work is one checkbox. 1.1 and 1.2 edit disjoint files on purpose so they can share a wave.
+
+## 1. Planner cap and authoring feed
+
+- [x] 1.1 In `lib/waves.mjs`, fold every 1-task implementation wave onto the previous implementation wave as later batches (D2); emit `folded[]` and warnings; compute `waveCount`, `formatPlan`, `projectedWaveLoopAgents`, and the effectively-serial warning from the collapsed list (D1, D5). Change `adoptWave` to split batches wider than `maxParallel` without flattening and re-packing (D3). Name the fold next to `serialized` in `docs/06-why-it-works.md` §5.2.
+- [x] 1.2 Insert the `### Task shape for ship` block from design.md D6 into `skills/spec/SKILL.md` under `## 3. Generate artifacts, CLI-driven` (after Gates while generating, before 3a). Put the same three sentences in `openspec/config.yaml` `rules.tasks`. Add the same-file-staircase warning to `skills/review-artifacts/SKILL.md` task-quality and `docs/02-the-checkpoint.md`. Reword classifier rule 3 in `workflows/ship.js` so a new group is only a later numbered section. Do not edit `.claude/skills/openspec-propose/SKILL.md` (D6).
+
+## 2. Tests
+
+- [x] 2.1 In `test/spine/waves.test.mjs`, give `simplePlan` two disjoint-path tasks per listed group so N groups stay N waves. Cover: six 1-task groups → one wave of six batches with `folded` entries; a 1-task group after a 2-task group folds on; two 2-task groups stay two waves; test wave does not fold; `wave-state create` does not pull a folded disjoint-path later batch into batch 0; a collapsed 10-task staircase does not warn effectively serial; projected record pings follow collapsed waves. Update any other `waveCount` fixture that assumed one task per group is one wave (D1 sweep), including `test/spine/cli.test.mjs` if it does.
+- [x] 2.2 Extend `test/workflows.test.mjs` so the suite fails when `skills/spec/SKILL.md` lacks a `Task shape for ship` heading or omits `sequential same-file work is one checkbox`, when `openspec/config.yaml` task rules omit that phrase, or when the assembled `plan-waves` prompt still increments `group` for a later same-file slice. Do not assert on `.claude/skills/openspec-propose/SKILL.md`.

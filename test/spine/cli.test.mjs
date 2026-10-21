@@ -4488,3 +4488,419 @@ test('an always-human-review item app/[id]/ is a path: a file under it is amber 
   assert.ok(said(signal).includes('app/[id]/page.tsx'), said(signal))
   assert.doesNotMatch(said(signal), /directory prefix/)
 })
+
+// =============================================================================
+// advisor, note, evals triage --eval-dir: the checkpoint consult's CLI brackets
+// (change add-checkpoint-advisor). The model sits between two of these lines;
+// every cap, citation check and file write is the CLI's, so the wiring is what
+// these tests pin — the shapes the spec skill and the spec meter read by name.
+// =============================================================================
+
+/** A repo root holding one change with the four artifact kinds. */
+function advisorRepo(label, change = 'add-the-thing', over = {}) {
+  const root = join(dir, `advisor-${label}`)
+  const changeDir = join(root, 'openspec', 'changes', change)
+  mkdirSync(join(changeDir, 'specs', 'demo'), { recursive: true })
+  writeFileSync(join(changeDir, 'proposal.md'), over.proposal ?? '# Add the thing\n\n## Why\n\nBecause.\n\n## What Changes\n\nA thing.\n')
+  writeFileSync(join(changeDir, 'design.md'), over.design ?? '# Design\n\n## Decisions\n\nD1: reuse the helper.\n')
+  writeFileSync(
+    join(changeDir, 'tasks.md'),
+    over.tasks ?? '## 1. Failing tests first\n\n- [ ] 1.1 Edit `lib/a.mjs`\n\n## 2. Make it green\n\n- [ ] 2.1 Wire `lib/c.mjs`\n'
+  )
+  writeFileSync(join(changeDir, 'specs', 'demo', 'spec.md'), '## ADDED Requirements\n\n### Requirement: The thing SHALL hold\n')
+  if (over.decisions) writeFileSync(join(changeDir, 'decisions.md'), over.decisions)
+  return { root, change, changeDir }
+}
+
+/** Run inside a repo root, with `--root` pinned so nothing reaches the live tree. */
+function runAt(root, args, opts = {}) {
+  return run([...args, '--root', root], { cwd: root, ...opts })
+}
+
+function runJsonAt(root, args, expectedCode = 0) {
+  const r = runAt(root, [...args, '--json'])
+  assert.equal(r.code, expectedCode, `expected exit ${expectedCode}, got ${r.code}: ${r.stderr}${r.stdout}`)
+  let parsed
+  assert.doesNotThrow(() => {
+    parsed = JSON.parse(r.stdout)
+  }, `--json did not emit parseable JSON for: ${args.join(' ')}\n${r.stdout}`)
+  return parsed
+}
+
+const abs = (root, p) => (p.startsWith('/') ? p : join(root, p))
+
+const NOTES_HEADER =
+  '# Compound notes\n\n| id | date | change | file | surprise | rule | source |\n' +
+  '|----|------|--------|------|----------|------|--------|\n'
+
+test('USAGE documents the advisor and note subcommands and the triage --eval-dir flag', () => {
+  const { stdout } = run(['--help'])
+  for (const name of ['interlock advisor', 'interlock note', '--eval-dir']) {
+    assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
+  }
+})
+
+test('advisor --brief --json writes the brief under .claude/metrics and prints the brief step', () => {
+  const { root, change } = advisorRepo('brief-happy')
+  const findings = file('advisor-brief-findings.json', [
+    { dimension: 'qa', severity: 'warning', title: 'the empty case is untested', file: 'tasks.md' }
+  ])
+  const out = runJsonAt(root, ['advisor', change, '--brief', '--findings', findings])
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['change', 'chars', 'findings', 'notes', 'omitted', 'overrun', 'path', 'step'],
+    JSON.stringify(out)
+  )
+  assert.equal(out.step, 'brief')
+  assert.equal(out.change, change)
+  assert.deepEqual(out.omitted, [])
+  assert.equal(out.overrun, 0)
+  assert.equal(out.findings, 1)
+  assert.equal(out.notes, 0, 'no compound-notes table exists in this repo')
+  assert.match(out.path, new RegExp(`\\.claude/metrics/advisor-brief-${change}-\\d{8}-\\d{6}\\.md$`))
+  const brief = readFileSync(abs(root, out.path), 'utf8')
+  assert.equal(out.chars, brief.length, 'chars is the written brief\'s size')
+  assert.ok(brief.includes('the empty case is untested'), 'the finding is listed as already raised')
+  assert.ok(brief.includes('ledger: absent'), 'no decisions.md was written')
+  assert.ok(brief.includes('compound notes: none matched'))
+})
+
+test('advisor --brief exits 0 and says the findings are unreadable when --findings names a missing file', () => {
+  const { root, change } = advisorRepo('brief-missing-findings')
+  const out = runJsonAt(root, ['advisor', change, '--brief', '--findings', join(root, 'no-such-findings.json')])
+  assert.equal(out.step, 'brief')
+  assert.equal(out.findings, 0)
+  const brief = readFileSync(abs(root, out.path), 'utf8')
+  assert.ok(brief.includes('review findings: unreadable'), brief.slice(0, 400))
+
+  const bare = runJsonAt(root, ['advisor', change, '--brief'])
+  assert.ok(readFileSync(abs(root, bare.path), 'utf8').includes('review findings: none given'))
+})
+
+test('advisor --brief exits non-zero with the write error first and no path when the brief cannot be written', () => {
+  // `.claude/metrics` is a regular file, so the write fails under any uid —
+  // no chmod, no root skip.
+  const { root, change } = advisorRepo('brief-unwritable')
+  mkdirSync(join(root, '.claude'), { recursive: true })
+  writeFileSync(join(root, '.claude', 'metrics'), 'not a directory\n')
+  for (const json of [[], ['--json']]) {
+    const r = runAt(root, ['advisor', change, '--brief', ...json])
+    assert.notEqual(r.code, 0, `a brief that was not written must not exit 0 (${json.join('')})`)
+    const first = (r.stderr + r.stdout).trim().split('\n')[0]
+    assert.match(first, /EEXIST|ENOTDIR|not a directory|exists/i, `first output line: ${first}`)
+    assert.doesNotMatch(r.stdout, /"path"/, 'no path is printed for a brief that does not exist')
+  }
+})
+
+test('advisor --check --json validates the draft, writes advisor.md and leaves the draft where it was', () => {
+  const { root, change, changeDir } = advisorRepo('check-happy')
+  const draftPath = join(root, '.claude', 'metrics', `advisor-${change}-20261019-121000.json`)
+  const draft = JSON.stringify({
+    questions: [
+      { id: 'Q9', question: 'Which package name is published?', why: 'the proposal names two', cite: 'design.md#Decisions' },
+      { question: 'Who owns the label step?', why: 'no task names one', cite: 'tasks.md#1. Failing tests first' }
+    ],
+    risks: [{ task: '1.1', kind: 'vague-task', note: 'edit what, exactly?' }]
+  })
+  mkdirSync(dirname(draftPath), { recursive: true })
+  writeFileSync(draftPath, draft)
+
+  const out = runJsonAt(root, ['advisor', change, '--check', draftPath])
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['change', 'dropped', 'path', 'questions', 'risks', 'status', 'step'],
+    JSON.stringify(out)
+  )
+  assert.equal(out.step, 'check')
+  assert.equal(out.change, change)
+  assert.equal(out.status, 'drafted')
+  assert.deepEqual(out.questions, [
+    { id: 'Q1', question: 'Which package name is published?' },
+    { id: 'Q2', question: 'Who owns the label step?' }
+  ], 'ids are positional; the draft\'s own id is ignored')
+  assert.equal(out.dropped, 0)
+  assert.equal(out.risks, 1)
+  assert.equal(out.path, `openspec/changes/${change}/advisor.md`)
+
+  const md = readFileSync(join(changeDir, 'advisor.md'), 'utf8')
+  for (const heading of ['## Questions for the human', '## Risks', '## Dropped']) {
+    assert.ok(md.includes(heading), `advisor.md is missing ${heading}`)
+  }
+  assert.equal(readFileSync(draftPath, 'utf8'), draft, 'the draft is kept, byte for byte')
+})
+
+test('advisor --check exits 0 on a draft that is not JSON and writes a consult that did not run', () => {
+  const { root, change, changeDir } = advisorRepo('check-not-json')
+  const draftPath = join(root, '.claude', 'metrics', `advisor-${change}-20261019-121500.json`)
+  mkdirSync(dirname(draftPath), { recursive: true })
+  writeFileSync(draftPath, 'I am sorry, I could not produce the questions.\n')
+
+  const out = runJsonAt(root, ['advisor', change, '--check', draftPath])
+  assert.equal(out.step, 'check')
+  assert.equal(out.status, 'did-not-run')
+  assert.equal(out.reason, 'draft is not a JSON object')
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: draft is not a JSON object'))
+  assert.ok(existsSync(draftPath), 'the draft is left where it was')
+})
+
+test('advisor --check --failed writes the did-not-run stanza and exits 0', () => {
+  const { root, change, changeDir } = advisorRepo('check-failed')
+  const out = runJsonAt(root, ['advisor', change, '--check', '--failed', 'agent spawn errored'])
+  assert.deepEqual(out, {
+    step: 'check',
+    change,
+    status: 'did-not-run',
+    reason: 'agent spawn errored',
+    questions: [],
+    dropped: 0,
+    risks: 0,
+    path: `openspec/changes/${change}/advisor.md`
+  })
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: agent spawn errored'))
+})
+
+test('advisor --check --failed names the candidates and exits non-zero for a change that does not resolve', () => {
+  const { root } = advisorRepo('check-failed-unresolved')
+  const out = runJsonAt(root, ['advisor', 'add-the-thin', '--check', '--failed', 'agent spawn errored'], 1)
+  assert.equal(typeof out.error, 'string')
+  assert.deepEqual(out.candidates, ['add-the-thing'])
+  assert.equal(existsSync(join(root, 'openspec', 'changes', 'add-the-thin', 'advisor.md')), false)
+})
+
+test('advisor --check records a consult that did not run, exit 0, for a draft that is missing or unreadable', () => {
+  const { root, change, changeDir } = advisorRepo('check-no-draft')
+  const bare = runJsonAt(root, ['advisor', change, '--check'])
+  assert.equal(bare.status, 'did-not-run')
+  assert.equal(bare.reason, 'no draft given to --check')
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: no draft given to --check'))
+
+  const missing = runJsonAt(root, ['advisor', change, '--check', join(root, 'no-such-draft.json')])
+  assert.equal(missing.status, 'did-not-run')
+  assert.match(missing.reason, /^draft unreadable: .*ENOENT/)
+  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: draft unreadable: '))
+})
+
+test('advisor --check speaks an advisor.md it cannot write as a consult that did not run, and exits 0', () => {
+  // advisor.md is a directory, so the write fails under any uid.
+  const { root, change, changeDir } = advisorRepo('check-unwritable')
+  mkdirSync(join(changeDir, 'advisor.md'))
+  for (const flags of [['--failed', 'agent spawn errored'], [join(root, 'no-such-draft.json')]]) {
+    const text = runAt(root, ['advisor', change, '--check', ...flags])
+    assert.equal(text.code, 0, text.stderr)
+    assert.match(text.stdout.split('\n')[0], /^advisor: did not run: advisor\.md not written: \S/, text.stdout)
+
+    const r = runAt(root, ['advisor', change, '--check', ...flags, '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.status, 'did-not-run')
+    assert.equal(out.written, false)
+    assert.match(out.reason, /^advisor\.md not written: \S/)
+    assert.match(r.stderr, /^advisor: did not run: advisor\.md not written: /m)
+  }
+})
+
+test('advisor --brief <change> with the flag first reads the name as the change', () => {
+  // A second change, so an unnamed request cannot resolve to the only one.
+  const { root, change } = advisorRepo('brief-flag-first')
+  advisorRepo('brief-flag-first', 'add-another-thing')
+  const out = runJsonAt(root, ['advisor', '--brief', change])
+  assert.equal(out.step, 'brief')
+  assert.equal(out.change, change)
+})
+
+test('advisor --brief says a missing artifact is absent instead of quoting an empty block', () => {
+  const { root, change, changeDir } = advisorRepo('brief-absent-design')
+  rmSync(join(changeDir, 'design.md'))
+  const out = runJsonAt(root, ['advisor', change, '--brief'])
+  const brief = readFileSync(abs(root, out.path), 'utf8')
+  assert.ok(brief.includes('### design.md\n\ndesign.md: absent'), 'design.md is named absent')
+  assert.ok(!brief.includes('proposal.md: absent'), 'a present artifact is quoted, not named absent')
+})
+
+test('advisor --verdict --labels prints the verdict step and exits 0', () => {
+  const evalsDir = join(dir, 'advisor-verdict-evals')
+  const label = (kase, grader, name, value) => {
+    const p = join(evalsDir, kase, 'calibration', grader, `${name}.md`)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, `---\ntranscript: ${name}\ngrader: ${grader}\nlabel: ${value}\n---\n\nhand label\n`)
+  }
+  for (const kase of ['spec-range-a', 'spec-range-b']) {
+    label(kase, 'matches-label', 't1', 'pass')
+    label(kase, 'answered-already', 't1', 'pass')
+  }
+  const r = run(['advisor', '--verdict', '--labels', evalsDir, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    ['caps', 'labelled', 'matches', 'problems', 'repeats', 'step', 'verdict'],
+    JSON.stringify(out)
+  )
+  assert.equal(out.step, 'verdict')
+  assert.equal(out.labelled, 2)
+  assert.equal(out.matches, 2)
+  assert.equal(out.repeats, 0)
+  assert.equal(out.verdict, `INSUFFICIENT LABELS (2 of ${LIMITS.advisorVerdictMinLabels})`)
+  assert.deepEqual(out.caps, {
+    minLabels: LIMITS.advisorVerdictMinLabels,
+    keepMinMatches: LIMITS.advisorKeepMinMatches,
+    repeatMaxPercent: LIMITS.advisorRepeatMaxPercent
+  })
+  assert.ok(Array.isArray(out.problems))
+})
+
+// --- note: the compound-notes table --------------------------------------------
+
+test('note add appends one row with the next free id and skips the same row twice', () => {
+  const { root } = advisorRepo('note-add')
+  const args = [
+    'note', 'add', '--change', 'add-x', '--file', 'lib/a.mjs',
+    '--surprise', 'a sibling reader was missed', '--rule', 'Name every reader of the raw form.'
+  ]
+  const first = runJsonAt(root, args)
+  assert.equal(first.appended, 1)
+  assert.equal(first.skipped, 0)
+  assert.equal(first.path, 'docs/notes/compound.md')
+  const table = readFileSync(join(root, 'docs', 'notes', 'compound.md'), 'utf8')
+  assert.ok(table.startsWith('# Compound notes'), table)
+  assert.match(table, /^\| N1 \|/m)
+
+  const again = runJsonAt(root, args)
+  assert.equal(again.appended, 0)
+  assert.equal(again.skipped, 1)
+  assert.equal(readFileSync(join(root, 'docs', 'notes', 'compound.md'), 'utf8'), table, 'a skipped row changes no byte')
+})
+
+test('note derive appends one row per specGap finding and refuses an input with no findings list', () => {
+  const { root } = advisorRepo('note-derive')
+  const findings = file('note-derive-findings.json', [
+    { dimension: 'domain', severity: 'warning', file: 'lib/a.mjs', title: 'the raw form has a second reader', description: 'lib/b.mjs reads it too. It was missed.', suggestion: 'Name every reader of the raw form.', specGap: true },
+    { dimension: 'domain', severity: 'warning', file: 'lib/b.mjs', title: 'not a gap', description: 'x', specGap: false },
+    { dimension: 'qa', severity: 'suggestion', file: 'lib/c.mjs', title: 'no field', description: 'y' }
+  ])
+  const out = runJsonAt(root, ['note', 'derive', '--findings', findings, '--change', 'add-x'])
+  assert.equal(out.appended, 1)
+  assert.equal(out.skipped, 0)
+  const table = readFileSync(join(root, 'docs', 'notes', 'compound.md'), 'utf8')
+  assert.ok(table.includes('Name every reader of the raw form.'))
+  assert.ok(!table.includes('not a gap'))
+
+  const none = file('note-derive-nfl.json', { summary: 'nothing to report' })
+  for (const json of [[], ['--json']]) {
+    const r = runAt(root, ['note', 'derive', '--findings', none, '--change', 'add-x', ...json])
+    assert.equal(r.code, 1, r.stdout)
+    assert.equal(r.stdout, '')
+    assert.ok(r.stderr.includes('no findings list'), r.stderr)
+  }
+})
+
+test('note derive with no specGap survivor appends nothing and creates no file', () => {
+  const { root } = advisorRepo('note-derive-none')
+  const findings = file('note-derive-none.json', [
+    { dimension: 'qa', severity: 'suggestion', file: 'lib/c.mjs', title: 'no field', description: 'y' }
+  ])
+  const out = runJsonAt(root, ['note', 'derive', '--findings', findings, '--change', 'add-x'])
+  assert.equal(out.appended, 0)
+  assert.equal(out.skipped, 0)
+  assert.equal(existsSync(join(root, 'docs', 'notes', 'compound.md')), false)
+})
+
+test('note derive prints COMPOUND NOTES NOT WRITTEN and exits 0 when the table\'s directory is read-only', { skip: isRoot() }, () => {
+  const { root } = advisorRepo('note-derive-readonly')
+  const notesDir = join(root, 'docs', 'notes')
+  mkdirSync(notesDir, { recursive: true })
+  const findings = file('note-derive-ro.json', [
+    { dimension: 'domain', severity: 'warning', file: 'lib/a.mjs', title: 'gap', description: 'd.', suggestion: 'Do r.', specGap: true }
+  ])
+  chmodSync(notesDir, 0o500)
+  try {
+    const text = runAt(root, ['note', 'derive', '--findings', findings, '--change', 'add-x'])
+    assert.equal(text.code, 0, text.stderr)
+    assert.match(text.stdout.split('\n')[0], /^COMPOUND NOTES NOT WRITTEN: \S/, text.stdout)
+
+    const json = runAt(root, ['note', 'derive', '--findings', findings, '--change', 'add-x', '--json'])
+    assert.equal(json.code, 0, json.stderr)
+    assert.ok((json.stdout + json.stderr).includes('COMPOUND NOTES NOT WRITTEN: '), json.stdout + json.stderr)
+    assert.equal(existsSync(join(notesDir, 'compound.md')), false)
+  } finally {
+    chmodSync(notesDir, 0o700)
+  }
+})
+
+test('note match prints the rows whose file the change\'s tasks name, plus any --paths, with the omitted count', () => {
+  const { root, change } = advisorRepo('note-match')
+  mkdirSync(join(root, 'docs', 'notes'), { recursive: true })
+  writeFileSync(
+    join(root, 'docs', 'notes', 'compound.md'),
+    NOTES_HEADER +
+      '| N1 | 2026-10-19 | add-x | lib/a.mjs | s1 | Do one. | run-1 |\n' +
+      '| N2 | 2026-10-19 | add-x | lib/b.mjs | s2 | Do two. | run-1 |\n' +
+      '| N3 | 2026-10-19 | add-y | lib/z.mjs | s3 | Do three. | run-2 |\n'
+  )
+  const out = runJsonAt(root, ['note', 'match', change])
+  assert.deepEqual(Object.keys(out).sort(), ['change', 'omitted', 'rows'], JSON.stringify(out))
+  assert.equal(out.change, change)
+  assert.deepEqual(out.rows.map(r => r.id), ['N1'], 'tasks.md names lib/a.mjs only')
+  assert.equal(out.omitted, 0)
+
+  const widened = runJsonAt(root, ['note', 'match', change, '--paths', 'lib/b.mjs'])
+  assert.deepEqual(widened.rows.map(r => r.id), ['N1', 'N2'], 'table order, tasks paths and --paths together')
+})
+
+// --- evals triage --eval-dir: joining a typeless trial grader's type -----------
+
+test('evals triage joins a typeless grader\'s type from graders/<name>.md under --eval-dir and names an untypable one', () => {
+  const results = file('triage-typeless.json', {
+    cases: [
+      {
+        name: 'spec-range-x',
+        runs: [{ graders: [{ name: 'matches-label', passed: false }, { name: 'check-ran', passed: true }] }]
+      }
+    ]
+  })
+  const evalsDir = join(dir, 'triage-eval-dir')
+  for (const [name, type] of [['matches-label', 'llm'], ['check-ran', 'tool_used']]) {
+    const p = join(evalsDir, 'spec-range-x', 'graders', `${name}.md`)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, `---\ntype: ${type}\n---\n\nbody\n`)
+  }
+
+  const bare = run(['evals', 'triage', '--results', results])
+  assert.equal(bare.code, 1, 'with no type to join, the dip reads as deterministic')
+  assert.ok(bare.stdout.includes('matches-label'), bare.stdout)
+  assert.ok(bare.stdout.includes('type unknown, treated as deterministic'), bare.stdout)
+
+  const joined = run(['evals', 'triage', '--results', results, '--eval-dir', evalsDir])
+  assert.equal(joined.code, 0, `a single judged dip is variance: ${joined.stdout}`)
+  assert.ok(!joined.stdout.includes('type unknown'), joined.stdout)
+
+  const untypable = file('triage-untypable.json', {
+    cases: [{ name: 'spec-range-x', runs: [{ graders: [{ name: 'mystery', passed: false }] }] }]
+  })
+  const named = run(['evals', 'triage', '--results', untypable, '--eval-dir', evalsDir])
+  assert.equal(named.code, 1)
+  assert.ok(named.stdout.includes('mystery'), named.stdout)
+  assert.ok(named.stdout.includes('type unknown, treated as deterministic'), named.stdout)
+})
+
+// --- limits: the six advisor caps -------------------------------------------
+
+test('limits carries the six advisor caps by name in text and JSON', () => {
+  const names = [
+    'maxAdvisorQuestions',
+    'maxAdvisorBriefChars',
+    'maxAdvisorNoteRows',
+    'advisorKeepMinMatches',
+    'advisorRepeatMaxPercent',
+    'advisorVerdictMinLabels'
+  ]
+  const out = runJson(['limits'])
+  for (const name of names) {
+    assert.equal(typeof out.limits[name], 'number', `limits --json is missing ${name}`)
+    assert.equal(out.limits[name], LIMITS[name])
+  }
+  const text = run(['limits'])
+  assert.equal(text.code, 0)
+  const advisorRows = text.stdout.split('\n').filter(l => /advisor/i.test(l))
+  assert.ok(advisorRows.length >= names.length, `expected a text row per advisor cap:\n${text.stdout}`)
+})

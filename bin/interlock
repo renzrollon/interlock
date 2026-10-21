@@ -152,7 +152,7 @@ import {
   unreportedChangedSource,
   validateBaseline
 } from '../lib/coverage.mjs'
-import { capabilityOf, parseSpec } from '../lib/spec-text.mjs'
+import { capabilityOf, parseSpec, specMentionedPaths } from '../lib/spec-text.mjs'
 import { assembleDomainContext, selectDomainCapabilities } from '../lib/prompts/domain-context.mjs'
 import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
@@ -186,8 +186,9 @@ import { buildReport, formatReport } from '../lib/report.mjs'
 import { renderReportHtml } from '../lib/report-html.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
+import { advisorBrief, advisorCheck, advisorVerdict, noteCommand } from '../lib/advisor-cli.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
-import { calibrate, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
+import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
 import { promote, formatPromotion } from '../lib/evals-promote.mjs'
 import { readTouchedPaths, readPredictedPaths, formatPathSet } from '../lib/run-paths.mjs'
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
@@ -320,11 +321,37 @@ Usage:
                                            (a real path collision or a lane whose
                                            worktree could not be located) — never
                                            auto-resolves, never applies a guess
+  interlock advisor [change] --brief       Assemble the checkpoint consult's brief
+                  [--findings <f>]          under .claude/metrics and print its path
+  interlock advisor [change] --check <draft|->
+                                            Validate the consult's JSON draft by code
+                                            and write the change's advisor.md. Exits 0
+                                            once the change resolves: a missing or
+                                            unreadable draft, or an advisor.md that
+                                            cannot be written, is reported as a
+                                            consult that did not run (advice, never
+                                            a gate)
+  interlock advisor [change] --check --failed "<reason>"
+                                            Write advisor.md as a consult that did not run
+  interlock advisor --verdict               Tally the Spec Range human labels against
+                  [--labels <dir>]          the advisor caps: KEEP, KILL or
+                                            INSUFFICIENT LABELS. Always exits 0
+  interlock note add --change <c> --file <f> --surprise "<s>" --rule "<r>"
+                                            Append one row to the compound-notes table
+  interlock note derive --findings <f> --change <c>
+                                            Append a row per specGap finding. A write
+                                            failure is spoken, never an exit code
+  interlock note match <change> [--paths a,b]
+                                            Print the notes whose file the change's
+                                            tasks (or --paths) name
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
                                             No model, no network. Exit code is
                                             the verdict (1=regression,
-                                            2=no signal, 3=configuration)
+                                            2=no signal, 3=configuration).
+                                            --eval-dir <dir> (the evals root)
+                                            joins each typeless grader's type from
+                                            <dir>/<case>/graders/<name>.md
   interlock evals capture --run <id> --out <dir>
                         [--task <id>]      Emit an eval-case skeleton from a
                                             recorded run trajectory, with its
@@ -2281,6 +2308,10 @@ function requireChange(root, requested, json) {
   )
 }
 
+// The entry file's output and exit helpers, for the subcommands that live in
+// lib/advisor-cli.mjs: one stdout shape, one exit path, one stdin read.
+const cliIo = { emit, die, requireChange, readFindingsInput, readStdin, splitPaths }
+
 // risk.mjs is pure and takes artifact TEXT, so the filesystem read belongs here.
 function readChangeArtifacts(root, change) {
   const info = inspectChange(root, change)
@@ -3560,7 +3591,10 @@ async function main() {
       const sub = positional[1]
       if (sub === 'triage') {
         const results = readInput(flags.results, '--results')
-        const verdict = triage(results)
+        const verdict = triage(
+          results,
+          typeof flags['eval-dir'] === 'string' ? { graderTypes: readGraderTypes(flags['eval-dir']) } : undefined
+        )
         emit(json, verdict, formatTriage(verdict))
         if (verdict.exitCode) process.exit(verdict.exitCode)
       } else if (sub === 'capture') {
@@ -3936,6 +3970,25 @@ async function main() {
       if (summary.blocking) process.exit(1)
       break
     }
+
+    case 'advisor': {
+      if (flags.verdict) {
+        advisorVerdict(cliIo, root, flags, json)
+        break
+      }
+      if (flags.brief === undefined && flags.check === undefined) die('advisor requires --brief, --check or --verdict')
+      // `--brief` takes no value, so `advisor --brief <change>` hands the name
+      // to the flag; read it back as the change when no positional names one.
+      const asName = typeof flags.brief === 'string' && !requestedName(positional, flags) ? flags.brief : undefined
+      const name = requireChange(root, asName ?? requestedName(positional, flags), json)
+      if (flags.brief !== undefined) advisorBrief(cliIo, root, name, flags, json)
+      else advisorCheck(cliIo, root, name, flags, json)
+      break
+    }
+
+    case 'note':
+      noteCommand(cliIo, root, positional, flags, json)
+      break
 
     case 'ready': {
       const name = requireChange(root, requestedName(positional, flags), json)

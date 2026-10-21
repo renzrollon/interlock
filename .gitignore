@@ -30,6 +30,10 @@ __pycache__/
 .claude/ship/
 .claude/skills/
 
+# Compound-notes writer's transient lock and staging file (lib/notes.mjs)
+docs/notes/compound.md.lock
+docs/notes/compound.md.tmp
+
 # Cursor IDE
 .cursor/
 

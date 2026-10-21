@@ -73,11 +73,12 @@ Every dimension agent returns findings in this shape:
       "title": "short claim",
       "description": "what is wrong and why",
       "suggestion": "how to fix it",
-      "requirement": "openspec/specs/<capability>/spec.md#<requirement heading>" }
+      "requirement": "openspec/specs/<capability>/spec.md#<requirement heading>",
+      "specGap": true }
   ] }
 ```
 
-`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
+`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
 This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
 
@@ -143,6 +144,12 @@ Record the outcome:
 ```bash
 interlock autonomy record review-code --blockers <n>   # or --blockers 0 when clean
 ```
+
+```bash
+interlock note derive --findings <survivors.json> --change <name> --json
+```
+
+This appends one row per survivor with `specGap: true` to `docs/notes/compound.md`. It never changes the gate. If it prints a `COMPOUND NOTES NOT WRITTEN` line, report that line and do not retry.
 
 A blocker here also resets `ship` via transitive blame — the gate blames whoever produced the bad code.
 

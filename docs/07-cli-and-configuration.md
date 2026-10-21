@@ -251,6 +251,7 @@ The same module draws an `/interlock:spec` run on a mods host, in a terminal and
 | `gate PASS`, `gate BLOCKED (blocker <n> · warning <n>)` | `interlock gate … --json`, with `metrics not written` when the CLI says so |
 | `autonomy record`, `autonomy clean` | the two `interlock autonomy` lines, by their command word only |
 | `ready true`, `ready false (blockers <n>)` | `interlock ready … --json` on the `--continue` path |
+| `advisor brief (omitted <n>)`, `advisor <n> questions (dropped <n>)`, `advisor did not run` | `interlock advisor … --brief` and `--check --json` |
 | `checkpoint` | `interlock notify checkpoint` |
 
 A keyed line that printed no JSON, or JSON without the fields the line names, reads `<line> (unparsed)`. Its first line of output goes on the pane, and the debug log gets one line naming the reason. A name the CLI could not resolve reads `<line>: change not resolved`. The meter reads a keyed line that begins a command, or one between `&&`, `||` or `;` in a chained command. The lines it reads by their argv alone (`openspec new change`, `interlock autonomy`, `interlock notify checkpoint`) count from any position. A line whose output it reads counts when it is the only such line in the command. Two of them in one command are both shown as unparsed (`compound command`), because their output cannot be told apart. A line run in another form, such as behind a `cd …` with no separator or through a variable, is not read and stays `not run yet`.
@@ -261,6 +262,8 @@ A keyed line that printed no JSON, or JSON without the fields the line names, re
 - the artifact table exactly as the last `openspec status --json` printed it (`id · status · outputPath`, with `applyRequires`)
 - `explore: <n> investigators spawned` and the brief's path
 - the drift, ledger, validate, gate and readiness results by their JSON field names, or `not run yet`
+- the advisor result, one line per drafted question (`Q<n> · <question>`), and `consult spawned <time>` or `consult: not spawned`, counted from the `interlock:advisor` spawn
+- `waiting on you: advisor questions <n> · needs_human <n>`, the two counts in the CLI's words, or `not run yet` for either
 - the last autonomy command
 - a `writes` section: each artifact file written through the Write or Edit tool, with its count and last time, and the findings file's path
 - `last activity <time>`
@@ -272,6 +275,14 @@ Writes and spawns are counts. A file written since the last status call has no s
 **Three ends.** At `interlock notify checkpoint` the run stops at its checkpoint. The status line keeps reading `checkpoint`, because the checkpoint waits for you, and later keyed lines change nothing. An accepted ship launch hands the one status line to the ship meter before the ship run goes live, so the two lines never show together, and the spec pane keeps the readiness result. `/clear`, `/resume` and `/branch` end the spec run with the ship run. A compaction does not.
 
 **What it never says:** no `quiet <n> min`, because spec waits on you by design. No `complete`: OpenSpec's own roll-up is not read. No `ready to ship`, no autonomy level or count, no threshold, and no tick from a file being present. It writes nothing and reads no file. Nothing draws in a `-p` session, the SDK or a runner lane. How it stays observe-only is in [13](./13-the-guards.md#the-ship-meter).
+
+### The checkpoint consult: `interlock advisor` and `interlock note`
+
+`interlock advisor <change> --brief [--findings <file>]` assembles the consult's brief under `.claude/metrics/advisor-brief-<change>-<stamp>.md` and prints its path. `interlock advisor <change> --check <draft|->` validates the model's JSON draft by code (citations resolved, ids assigned by position, caps from `interlock limits`) and writes `openspec/changes/<change>/advisor.md`; `--check --failed "<reason>"` writes it as a consult that did not run. `--check` exits 0 once the change resolves: a missing or unreadable draft, or an `advisor.md` that cannot be written, is reported as a consult that did not run, because the consult is advice and nothing gates on it. Only a change name that does not resolve exits 1. A missing artifact reaches the brief as `<file>: absent`, not as an empty block. `interlock advisor --verdict [--labels <dir>]` tallies the Spec Range human labels against the advisor caps and prints `KEEP`, `KILL` or `INSUFFICIENT LABELS`, also exit 0. [02](./02-the-checkpoint.md#the-advisors-questions-advisormd) says what the file is.
+
+`interlock note add --change <c> --file <f> --surprise "<s>" --rule "<r>"` appends a row to `docs/notes/compound.md`. `note derive --findings <file> --change <c>` appends one row per surviving finding carrying `specGap: true`, skipping a row whose change, file and rule already exist; a write failure is spoken as `COMPOUND NOTES NOT WRITTEN` and never changes the exit code. `note match <change> [--paths a,b]` prints the notes whose file the change's tasks (or `--paths`) name.
+
+`interlock evals triage --results <file> --eval-dir <dir>` joins each typeless grader's type from `<dir>/<case>/graders/<name>.md`, so judged graders are classified as judged. `<dir>` is the evals root, not one case: pointed at a case, it finds no types and every typeless grader is reported as `type unknown, treated as deterministic`. Without the flag the types are read from the results alone.
 
 ### Where the loop itself lives
 

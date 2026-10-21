@@ -132,7 +132,7 @@ test('specLines keeps each keyed segment of a compound line, in order', () => {
     ['drift']
   )
   assert.deepEqual(specLines('npm test && git status'), [])
-  assert.deepEqual(TEXT_KINDS, ['status', 'drift', 'ledger', 'validate', 'gate', 'ready'])
+  assert.deepEqual(TEXT_KINDS, ['status', 'drift', 'ledger', 'validate', 'gate', 'advisor', 'ready'])
 })
 
 test('changeOf takes the name from the argv first, then from the JSON, and never from a placeholder', () => {
@@ -394,6 +394,249 @@ test('lib/spec-meter.mjs imports nothing, spells no engine call and never reads 
   assert.doesNotMatch(source, /\bimport\(/)
   assert.ok(!source.includes('$.'), 'the pure module spells an engine call')
   assert.doesNotMatch(source, /complete/i)
+})
+
+// --- the advisor line (add-checkpoint-advisor D9, D21) ----------------------
+//
+// The checkpoint consult is bracketed by `interlock advisor … --json` lines.
+// The meter keys on them like any other text kind: it reads `step`, and by
+// step the fields the CLI printed, never the file the check wrote, and it
+// shows the `--verdict` step unparsed so no KEEP or KILL reaches either surface.
+
+/** A Bash result as the engine raises it, with `emit`'s pretty-printed JSON as stdout. */
+const bashResult = value => {
+  const stdout = typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`
+  return { result: { stdout, stderr: '', interrupted: false }, text: stdout }
+}
+
+const BRIEF_LINE = 'interlock advisor "add-the-thing" --brief --findings .claude/metrics/review-artifacts-add-the-thing-20261006-121500.json --json'
+const CHECK_LINE = 'interlock advisor "add-the-thing" --check .claude/metrics/advisor-add-the-thing-20261006-122000.json --json'
+const FAILED_LINE = 'interlock advisor "add-the-thing" --check --failed "agent spawn errored" --json'
+const VERDICT_LINE = 'interlock advisor --verdict --labels evals --json'
+const BRIEF_PATH = '.claude/metrics/advisor-brief-add-the-thing-20261006-121900.md'
+const DRAFT_PATH = '.claude/metrics/advisor-add-the-thing-20261006-122000.json'
+
+const briefResult = (omitted = []) =>
+  bashResult({ step: 'brief', change: 'add-the-thing', path: BRIEF_PATH, chars: 41234, omitted, overrun: 0, notes: 2, findings: 1 })
+
+const checkResult = (n, extra = {}) =>
+  bashResult({
+    step: 'check',
+    change: 'add-the-thing',
+    status: 'drafted',
+    questions: Array.from({ length: n }, (_, i) => ({ id: `Q${i + 1}`, question: `Question number ${i + 1}?` })),
+    dropped: 2,
+    risks: 3,
+    path: 'openspec/changes/add-the-thing/advisor.md',
+    ...extra
+  })
+
+const failedResult = reason =>
+  bashResult({
+    step: 'check',
+    change: 'add-the-thing',
+    status: 'did-not-run',
+    reason,
+    questions: [],
+    dropped: 0,
+    risks: 0,
+    path: 'openspec/changes/add-the-thing/advisor.md'
+  })
+
+test('lineKind classifies the brief, check, failed and verdict lines as advisor, and nothing that merely resembles them', () => {
+  for (const command of [BRIEF_LINE, CHECK_LINE, FAILED_LINE, VERDICT_LINE, 'interlock advisor "add-the-thing" --brief --json', 'interlock advisor x --check - --json']) {
+    assert.equal(lineKind(command), 'advisor', command)
+  }
+  // Keyed on the command words, not `--json`, so a line on older skill text is shown unparsed rather than ignored.
+  assert.equal(lineKind('interlock advisor "add-the-thing" --check d.json'), 'advisor')
+  for (const command of ['interlock advisory x', 'interlock advisorx --brief', '"interlock" advisor x --brief --json', 'interlock note derive --findings f --change x --json']) {
+    assert.equal(lineKind(command), null, command)
+  }
+})
+
+test('advisor sits after the autonomy entries and before ready in KEYED_LINES, and between gate and ready in TEXT_KINDS', () => {
+  const kinds = KEYED_LINES.map(k => k.kind)
+  const advisor = kinds.indexOf('advisor')
+  assert.ok(advisor !== -1, 'KEYED_LINES has no advisor entry')
+  assert.equal(kinds.lastIndexOf('advisor'), advisor, 'advisor appears in KEYED_LINES more than once')
+  assert.deepEqual(KEYED_LINES[advisor].words, ['interlock', 'advisor'])
+  assert.equal(kinds[advisor - 1], 'autonomy', 'advisor must follow the last autonomy entry')
+  assert.equal(kinds[advisor + 1], 'ready', 'advisor must precede ready')
+  assert.equal(TEXT_KINDS.indexOf('advisor'), TEXT_KINDS.indexOf('gate') + 1)
+  assert.equal(TEXT_KINDS.indexOf('ready'), TEXT_KINDS.indexOf('advisor') + 1)
+})
+
+test('changeOf reads an advisor line\'s change from positional 2, and the --verdict form names none', () => {
+  assert.equal(changeOf('advisor', BRIEF_LINE, null), 'add-the-thing')
+  assert.equal(changeOf('advisor', CHECK_LINE, null), 'add-the-thing')
+  assert.equal(changeOf('advisor', FAILED_LINE, null), 'add-the-thing')
+  assert.equal(changeOf('advisor', "interlock advisor add-the-thing --brief --json", null), 'add-the-thing')
+  assert.equal(changeOf('advisor', VERDICT_LINE, null), null)
+  assert.equal(changeOf('advisor', VERDICT_LINE, { step: 'verdict', verdict: 'KEEP' }), null)
+  assert.equal(changeOf('advisor', 'interlock advisor "<name>" --brief --json', null), null)
+  assert.equal(readResult('advisor', VERDICT_LINE, bashResult({ step: 'verdict', verdict: 'KEEP', labelled: 10, matches: 5, repeats: 2, caps: {}, problems: [] })).name, null)
+})
+
+test('readResult reads the brief step by path and omitted count, and the check step by status, questions, dropped and risks', () => {
+  assert.deepEqual(readResult('advisor', BRIEF_LINE, briefResult()), {
+    kind: 'advisor',
+    step: 'brief',
+    path: BRIEF_PATH,
+    omitted: 0,
+    name: 'add-the-thing'
+  })
+  assert.equal(readResult('advisor', BRIEF_LINE, briefResult(['notes', 'specs/a/spec.md'])).omitted, 2)
+
+  assert.deepEqual(readResult('advisor', CHECK_LINE, checkResult(2)), {
+    kind: 'advisor',
+    step: 'check',
+    status: 'drafted',
+    questions: [
+      { id: 'Q1', question: 'Question number 1?' },
+      { id: 'Q2', question: 'Question number 2?' }
+    ],
+    dropped: 2,
+    risks: 3,
+    name: 'add-the-thing'
+  })
+
+  const failed = readResult('advisor', FAILED_LINE, failedResult('agent spawn errored'))
+  assert.equal(failed.step, 'check')
+  assert.equal(failed.status, 'did-not-run')
+  assert.equal(failed.reason, 'agent spawn errored')
+  assert.deepEqual(failed.questions, [])
+  assert.equal(failed.name, 'add-the-thing')
+})
+
+test('an advisor line that lacks its fields, is not JSON, or prints an unknown step is unparsed and never a verdict', () => {
+  assert.equal(readResult('advisor', BRIEF_LINE, bashResult({ change: 'add-the-thing' })).reason, 'fields missing: step')
+  assert.equal(readResult('advisor', CHECK_LINE, bashResult('advisor.md written\n')).reason, 'output not JSON')
+
+  const verdict = readResult(
+    'advisor',
+    VERDICT_LINE,
+    bashResult({ step: 'verdict', verdict: 'KEEP', labelled: 10, matches: 5, repeats: 2, caps: { minLabels: 10, keepMinMatches: 3, repeatMaxPercent: 50 }, problems: [] })
+  )
+  assert.equal(typeof verdict.unparsed, 'string', 'the verdict step must be read as unparsed')
+  assert.equal(verdict.reason, 'step verdict is not read')
+  assert.equal(stageText(verdict), 'advisor (unparsed)')
+
+  const spec = freshSpec()
+  spec.phase = 'live'
+  spec.current = 'add-the-thing'
+  spec.order = ['add-the-thing']
+  spec.changes.set('add-the-thing', { advisor: verdict })
+  spec.stage = verdict
+  assert.equal(specStatusText(spec), 'interlock spec: add-the-thing · advisor (unparsed)')
+  const lines = specPaneLines(spec)
+  const advisorLine = lines.find(l => l.key === 'spec-advisor')?.text
+  assert.match(advisorLine, /^advisor: not read \(step verdict is not read\)/)
+  for (const l of lines) assert.doesNotMatch(l.text, /\bKEEP\b|\bKILL\b/, l.text)
+  assert.doesNotMatch(specStatusText(spec), /\bKEEP\b|\bKILL\b/)
+})
+
+test('an advisor line on a change that does not resolve reads error and candidates, as ledger and validate do', () => {
+  const unresolved = readResult(
+    'advisor',
+    'interlock advisor "add-the-thin" --brief --json',
+    bashResult({ error: 'change "add-the-thin" not found', candidates: ['add-the-thing'] })
+  )
+  assert.deepEqual(unresolved.candidates, ['add-the-thing'])
+  assert.match(unresolved.error, /not found/)
+  assert.equal(stageText(unresolved), 'advisor: change not resolved (candidates 1)')
+
+  const spec = freshSpec()
+  spec.phase = 'live'
+  spec.current = 'add-the-thin'
+  spec.changes.set('add-the-thin', { advisor: unresolved })
+  assert.equal(specPaneLines(spec).find(l => l.key === 'spec-advisor')?.text, 'advisor: change not resolved · candidates add-the-thing')
+})
+
+test('stageText says each advisor step in the CLI\'s words', () => {
+  assert.equal(stageText(readResult('advisor', BRIEF_LINE, briefResult())), 'advisor brief (omitted 0)')
+  assert.equal(stageText(readResult('advisor', BRIEF_LINE, briefResult(['notes']))), 'advisor brief (omitted 1)')
+  assert.equal(stageText(readResult('advisor', CHECK_LINE, checkResult(7))), 'advisor 7 questions (dropped 2)')
+  assert.equal(stageText(readResult('advisor', FAILED_LINE, failedResult('agent spawn errored'))), 'advisor did not run')
+})
+
+test('writeOf files the advisor draft by its change, and not the brief', () => {
+  assert.deepEqual(writeOf(DRAFT_PATH), { kind: 'draft', change: 'add-the-thing', path: DRAFT_PATH })
+  assert.deepEqual(writeOf(`/repo/${DRAFT_PATH}`), { kind: 'draft', change: 'add-the-thing', path: `/repo/${DRAFT_PATH}` })
+  assert.equal(writeOf(BRIEF_PATH), null, 'the CLI writes the brief; it is not a draft')
+  assert.equal(writeOf('.claude/metrics/advisor-add-the-thing.json'), null)
+  // The findings file keeps its own kind beside the draft's.
+  assert.equal(writeOf('.claude/metrics/review-artifacts-add-the-thing-20261006-121500.json').kind, 'findings')
+})
+
+/** The happy path's record after the consult: a spawn, the draft write and a check step of four questions. */
+function consultedSpec() {
+  const spec = liveSpec()
+  const slot = spec.changes.get('add-the-thing')
+  slot.advisor = readResult('advisor', CHECK_LINE, checkResult(4))
+  spec.consult = { spawned: 1, at: Date.parse('2026-10-06T12:19:30Z') }
+  spec.drafts.set('add-the-thing', DRAFT_PATH)
+  spec.stage = slot.advisor
+  return spec
+}
+
+test('freshSpec holds an unspawned consult and no draft paths', () => {
+  const spec = freshSpec()
+  assert.deepEqual(spec.consult, { spawned: 0, at: null })
+  assert.ok(spec.drafts instanceof Map)
+  assert.equal(spec.drafts.size, 0)
+})
+
+test('the pane draws the advisor line, its questions by id, the consult, the draft and what the human is waiting on', () => {
+  const spec = consultedSpec()
+  assert.equal(specStatusText(spec), 'interlock spec: add-the-thing · advisor 4 questions (dropped 2)')
+  const lines = specPaneLines(spec)
+  const by = key => lines.find(l => l.key === key)?.text
+  assert.equal(by('spec-advisor'), 'advisor: drafted · questions 4 · dropped 2 · risks 3')
+  for (let i = 1; i <= 4; i++) assert.equal(by(`spec-advisor-q-Q${i}`), `Q${i} · Question number ${i}?`)
+  assert.equal(by('spec-advisor-q-Q5'), undefined)
+  assert.equal(by('spec-consult'), 'consult spawned 2026-10-06T12:19:30.000Z')
+  assert.equal(by('spec-draft'), `draft file: ${DRAFT_PATH}`)
+  assert.equal(by('spec-waiting'), 'waiting on you: advisor questions 4 · needs_human 2')
+  assert.equal(by('spec-findings'), 'findings file: .claude/metrics/review-artifacts-add-the-thing-20261006-121500.json')
+  assert.equal(new Set(lines.map(l => l.key)).size, lines.length, 'a key repeats')
+  for (const l of lines) assert.doesNotMatch(l.text, /complete|✓|✔/i, l.text)
+  const keys = lines.map(l => l.key)
+  assert.ok(keys.indexOf('spec-advisor') < keys.indexOf('spec-advisor-q-Q1'), 'the question rows follow the advisor line')
+})
+
+test('the pane draws a brief step by its path, and a consult that did not run with its reason', () => {
+  const spec = liveSpec()
+  spec.changes.get('add-the-thing').advisor = readResult('advisor', BRIEF_LINE, briefResult())
+  const brief = specPaneLines(spec)
+  const by = key => brief.find(l => l.key === key)?.text
+  assert.equal(by('spec-advisor'), `advisor brief: ${BRIEF_PATH} (omitted 0)`)
+  // The questions part is the last check step's: a brief step is not one.
+  assert.equal(by('spec-waiting'), 'waiting on you: advisor questions not run yet · needs_human 2')
+  assert.equal(by('spec-consult'), 'consult: not spawned')
+  assert.equal(by('spec-draft'), undefined)
+
+  spec.changes.get('add-the-thing').advisor = readResult('advisor', FAILED_LINE, failedResult('agent spawn errored'))
+  const failed = specPaneLines(spec)
+  const at = key => failed.find(l => l.key === key)?.text
+  assert.equal(at('spec-advisor'), 'advisor: did-not-run · questions 0 · dropped 0 · risks 0 · reason agent spawn errored')
+  assert.equal(at('spec-waiting'), 'waiting on you: advisor questions 0 · needs_human 2')
+  assert.ok(!failed.some(l => l.key.startsWith('spec-advisor-q-')), 'a consult that did not run has no question rows')
+})
+
+test('before any line crossed, the advisor, consult and waiting lines say so', () => {
+  const unnamed = freshSpec()
+  unnamed.phase = 'live'
+  const lines = specPaneLines(unnamed)
+  const by = key => lines.find(l => l.key === key)?.text
+  assert.equal(by('spec-advisor'), 'advisor: not run yet')
+  assert.equal(by('spec-consult'), 'consult: not spawned')
+  assert.equal(by('spec-waiting'), 'waiting on you: advisor questions not run yet · needs_human not run yet')
+  assert.ok(!lines.some(l => l.key.startsWith('spec-advisor-q-')))
+  for (const l of lines) assert.doesNotMatch(l.text, /complete/i, l.text)
+
+  // A ledger line crossed and no check step: only the advisor part is unknown.
+  const ledgerOnly = liveSpec()
+  assert.equal(specPaneLines(ledgerOnly).find(l => l.key === 'spec-waiting')?.text, 'waiting on you: advisor questions not run yet · needs_human 2')
 })
 
 // --- the skill-lines pin (D10) ----------------------------------------------

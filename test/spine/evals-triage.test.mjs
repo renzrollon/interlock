@@ -192,3 +192,140 @@ test('the verdict is reproducible from the same input', () => {
   const input = { cases: [{ id: 'c', runs: [run(det('a', false)), run(judge('b', false))] }] }
   assert.deepEqual(triage(input), triage(input))
 })
+
+// --- one judged-type set, and the type join (spec: evals/triage) --------------
+//
+// The harness writes a trial grader as `{ name, passed }` with no `type`; the
+// type lives on the case's own grader list. Without the join, the suite's first
+// `llm` grader is classed as deterministic and its single-run dip reads as a
+// regression.
+
+const trial = (name, passed) => ({ name, passed })
+
+test("a typeless trial grader takes its type from the case's grader list", () => {
+  const r = triage({
+    cases: [
+      {
+        name: 'spec-range-publish-npm',
+        graders: [{ name: 'matches-label', type: 'llm' }, { name: 'check-ran', type: 'tool_used' }],
+        arms: { with: [run(trial('matches-label', false), trial('check-ran', true))] }
+      }
+    ]
+  })
+  assert.equal(r.cases[0].classification, 'variance')
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.exitCode, EXIT.pass)
+  assert.doesNotMatch(formatTriage(r), /type unknown/)
+})
+
+test("a baseline grader joined from the case's list is judged too", () => {
+  const r = triage({
+    cases: [
+      {
+        name: 'c',
+        graders: [{ name: 'beats-baseline', type: 'baseline' }],
+        arms: { with: [run(trial('beats-baseline', false))] }
+      }
+    ]
+  })
+  assert.equal(r.cases[0].classification, 'variance')
+})
+
+test('a typeless trial grader with no case list takes its type from the graderTypes map', () => {
+  const results = {
+    cases: [{ name: 'spec-range-publish-npm', arms: { with: [run(trial('matches-label', false))] } }]
+  }
+  const r = triage(results, { graderTypes: { 'spec-range-publish-npm': { 'matches-label': 'llm' } } })
+  assert.equal(r.cases[0].classification, 'variance')
+  assert.equal(r.exitCode, EXIT.pass)
+})
+
+test("the case's grader list wins over the graderTypes map", () => {
+  const results = {
+    cases: [
+      {
+        name: 'c',
+        graders: [{ name: 'g', type: 'tool_used' }],
+        arms: { with: [run(trial('g', false))] }
+      }
+    ]
+  }
+  const r = triage(results, { graderTypes: { c: { g: 'llm' } } })
+  assert.equal(r.cases[0].classification, 'regression')
+})
+
+test('an untypable grader is treated as deterministic, and the output says so by name', () => {
+  const results = { cases: [{ name: 'c', arms: { with: [run(trial('matches-label', false))] } }] }
+  const r = triage(results)
+  assert.equal(r.cases[0].classification, 'regression')
+  assert.equal(r.exitCode, EXIT.regression)
+  const line = formatTriage(r)
+    .split('\n')
+    .find(l => l.includes('matches-label') && l.includes('type unknown, treated as deterministic'))
+  assert.ok(line, 'the output must name matches-label as `type unknown, treated as deterministic`')
+})
+
+test("the committed harness results join every grader's type from the case, so none is unknown", () => {
+  const fixture = fileURLToPath(new URL('../fixtures/evals/smoke-2026-09-04.json', import.meta.url))
+  const r = triage(JSON.parse(readFileSync(fixture, 'utf8')))
+  assert.doesNotMatch(formatTriage(r), /type unknown/)
+})
+
+test('the committed 2026-10-21 Spec Range results file triages its judged-only dip as variance, exit 0', () => {
+  // The first real results file with `llm` graders (scripts/advisor-e2e.mjs, harness
+  // 2.1.306, --ablation none, Bash and Write granted). Every deterministic grader
+  // passed; both judges failed on the one run. Before PR #20 `llm` read as
+  // deterministic and this was a regression, exit 1.
+  const fixture = fileURLToPath(new URL('../fixtures/evals/spec-range-2026-10-21.json', import.meta.url))
+  const results = JSON.parse(readFileSync(fixture, 'utf8'))
+  const r = triage(results)
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.exitCode, 0)
+  assert.equal(r.cases.length, 1)
+  const kase = r.cases[0]
+  assert.equal(kase.id, 'spec-range-collapse-singleton')
+  assert.equal(kase.classification, 'variance')
+  assert.deepEqual([...kase.graders].sort(), ['answered-already', 'matches-label'])
+  assert.equal(kase.untyped, undefined, 'every trial grader joins its type from the case list')
+  // Under --ablation none the harness scores the with-only consult indicator.
+  const consult = results.cases[0].arms.with[0].graders.find(g => g.name === 'consult-spawned')
+  assert.deepEqual({ withOnly: consult.withOnly, scored: consult.scored }, { withOnly: false, scored: true })
+})
+
+test('a grader the harness left out of the score never makes a regression', () => {
+  // Every trial grader carries `scored`; under --ablation with-without a with-only
+  // grader is a plugin-fired indicator, not part of the score (claude plugin eval --help).
+  const r = triage({
+    cases: [{ name: 'c', graders: [{ name: 'consult-spawned', type: 'tool_used' }, { name: 'written', type: 'file_exists' }], arms: { with: [{ graders: [{ name: 'consult-spawned', passed: false, withOnly: true, scored: false }, { name: 'written', passed: true, withOnly: false, scored: true }] }] } }]
+  })
+  assert.equal(r.verdict, 'pass')
+  assert.equal(r.cases[0].classification, 'pass')
+  const scoredFail = triage({
+    cases: [{ name: 'c', graders: [{ name: 'written', type: 'file_exists' }], arms: { with: [{ graders: [{ name: 'written', passed: false, withOnly: false, scored: true }] }] } }]
+  })
+  assert.equal(scoredFail.verdict, 'regression', 'a scored deterministic failure still is one')
+})
+
+test('a legacy judged alias still classifies as judged', () => {
+  const r = triage({ cases: [{ id: 'c', runs: [run({ name: 'meaning', type: 'semantic', passed: false })] }] })
+  assert.equal(r.cases[0].classification, 'variance')
+})
+
+test('triage reads the shared judged set, spells none of its own, and imports no node: module', async () => {
+  const { JUDGED_GRADER_TYPES, isJudgedType } = await import('../../lib/evals-types.mjs')
+  for (const type of ['llm', 'baseline', 'judge', 'judged', 'model-judge', 'llm-judge', 'semantic']) {
+    assert.ok(JUDGED_GRADER_TYPES.has(type), `JUDGED_GRADER_TYPES must carry ${type}`)
+    assert.equal(isJudgedType(type), true)
+  }
+  for (const type of ['tool_used', 'regex', 'file_exists', 'tool_order', 'pattern']) {
+    assert.equal(isJudgedType(type), false, `${type} is deterministic`)
+  }
+  const src = readFileSync(new URL('../../lib/evals-triage.mjs', import.meta.url), 'utf8')
+  assert.match(src, /import\s*\{[^}]*\bJUDGED_GRADER_TYPES\b[^}]*\}\s*from\s*['"]\.\/evals-types\.mjs['"]/)
+  assert.doesNotMatch(src, /from\s*['"]node:/, 'lib/evals-triage.mjs reads no file and imports no node: module')
+  assert.doesNotMatch(
+    src,
+    /new Set\(\s*\[[^\]]*['"](?:llm|baseline|judge|judged|model-judge|llm-judge|semantic)['"]/,
+    'lib/evals-triage.mjs must not spell its own judged set'
+  )
+})

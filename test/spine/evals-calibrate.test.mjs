@@ -6,6 +6,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { calibrate, formatCalibration } from '../../lib/evals-calibrate.mjs'
 
 /** A results file with one case, one judged grader, and one run per transcript. */
@@ -179,4 +182,49 @@ test('the report classifies nothing', () => {
   const text = formatCalibration(calibrate({ labels, results }))
   assert.doesNotMatch(text, /\b(fails? calibration|passes calibration|acceptable|unacceptable)\b/i)
   assert.match(text, /classifies nothing/)
+})
+
+// --- one judged-type set, and the grader-type reader (spec: evals/triage) -----
+
+test('calibrate reads the shared judged set, and spells none of its own', async () => {
+  const { JUDGED_GRADER_TYPES } = await import('../../lib/evals-types.mjs')
+  const src = readFileSync(new URL('../../lib/evals-calibrate.mjs', import.meta.url), 'utf8')
+  assert.match(src, /import\s*\{[^}]*\bJUDGED_GRADER_TYPES\b[^}]*\}\s*from\s*['"]\.\/evals-types\.mjs['"]/)
+  assert.doesNotMatch(
+    src,
+    /new Set\(\s*\[[^\]]*['"](?:llm|baseline|judge|judged|model-judge|llm-judge|semantic)['"]/,
+    'lib/evals-calibrate.mjs must not spell its own judged set'
+  )
+  // Every type in the shared set is a calibration subject — including the
+  // aliases calibrate's own list once lacked.
+  for (const type of JUDGED_GRADER_TYPES) {
+    const results = {
+      cases: [{ id: 'c', runs: [{ transcript: 't1', graders: [{ name: 'g', type, passed: true }] }] }]
+    }
+    const report = calibrate({ labels: [], results })
+    assert.equal(report.graders.length, 1, `a ${type} grader must be calibrated`)
+  }
+})
+
+test('readGraderTypes maps each case grader to its frontmatter type, and leaves an untyped one out', async () => {
+  const { readGraderTypes } = await import('../../lib/evals-calibrate.mjs')
+  assert.equal(typeof readGraderTypes, 'function', 'lib/evals-calibrate.mjs must export readGraderTypes')
+  const dir = mkdtempSync(join(tmpdir(), 'grader-types-'))
+  try {
+    const grader = (kase, name, body) => {
+      mkdirSync(join(dir, kase, 'graders'), { recursive: true })
+      writeFileSync(join(dir, kase, 'graders', `${name}.md`), body)
+    }
+    grader('spec-range-publish-npm', 'matches-label', '---\ntype: llm\n---\nJudge the file.\n')
+    grader('spec-range-publish-npm', 'check-ran', '---\ntype: tool_used\ntool: Bash\n---\n')
+    grader('spec-range-publish-npm', 'untyped', '---\nweight: 1\n---\n')
+    grader('skill-routing', 'routes-to-ship', '---\ntype: "tool_used"\n---\n')
+    mkdirSync(join(dir, 'results'))
+    assert.deepEqual(readGraderTypes(dir), {
+      'skill-routing': { 'routes-to-ship': 'tool_used' },
+      'spec-range-publish-npm': { 'matches-label': 'llm', 'check-ran': 'tool_used' }
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

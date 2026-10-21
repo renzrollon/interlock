@@ -99,10 +99,17 @@ jobs:
           # One run, no ablation arm — the fast per-change signal. Report kept
           # local (--no-publish, design D10); an unattended job has nobody to
           # consent to publishing to an external account.
+          # --trust-plugin: with no terminal the harness refuses an untrusted
+          # plugin directory before any case runs, and a CI checkout is never
+          # trusted. --allow-tools grants the operator-gated tools the smoke
+          # cases list in allowed_tools; the harness withholds them otherwise,
+          # and a grader that needs one cannot pass (test/evals.test.mjs pins both).
           claude plugin eval . \
             --tag smoke \
             --runs 1 \
             --ablation none \
+            --trust-plugin \
+            --allow-tools Bash \
             --no-publish \
             --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \
             --report evals-report.html \
@@ -183,8 +190,17 @@ jobs:
           # each case's own `runs` value: the per-case values were chosen for
           # the fast per-change subset, and the scheduled arm is the one off the
           # critical path that can afford repetition (design D3).
+          # --scaffold runs each case's context.scaffold_script, which the
+          # Spec Range cases need to seed their frozen change folder; the
+          # smoke job seeds nothing and does not pass it. --allow-tools grants the
+          # operator-gated tools the cases list in allowed_tools: without Bash and
+          # Write no Spec Range case can pass check-ran or advisor-written
+          # (test/fixtures/evals/README.md); test/evals.test.mjs pins the set.
           claude plugin eval . \
             --ablation with-without \
+            --scaffold \
+            --trust-plugin \
+            --allow-tools Bash Edit Write \
             --runs "${{ steps.caps.outputs.runs }}" \
             --no-publish \
             --max-cost-usd "${{ steps.caps.outputs.ceiling }}" \

@@ -15,6 +15,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import * as F from '../fixtures/mod/steps.mjs'
 import * as R from '../fixtures/mod/spec-run.mjs'
+import * as A from '../fixtures/mod/advisor-run.mjs'
 
 const PLUGIN = 'interlock'
 const PANE = 'interlock-spec'
@@ -114,6 +115,8 @@ function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
   on('tool.call', { tool: 'Write' }, write)
   on('agent.spawn', (_$: any, e: any) => {
     w.spawned.push(e.subagentType)
+    // The advisor spawn resolves as the live capture did (scripts/advisor-e2e.mjs).
+    if (e.subagentType === A.SPAWN_ADVISOR.input.subagentType) return A.SPAWN_ADVISOR.resolved
     return { model: 'claude-opus-5-5', agentId: `x${w.spawned.length}` }
   })
   on('tool.call', { tool: 'Workflow' }, (_$: any, e: any) =>
@@ -141,6 +144,7 @@ const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', command })
 const write = ($: any, file_path?: string) => $.tool.call({ tool: 'Write', ...(file_path === undefined ? {} : { file_path }), content: 'x' })
 const explore = ($: any, n: number) =>
   Promise.all(Array.from({ length: n }, (_, i) => $.agent.spawn({ ...R.SPAWN_EXPLORE.input, description: `investigator ${i}` })))
+const consult = ($: any, input: Record<string, unknown> = A.SPAWN_ADVISOR.input) => $.agent.spawn(input)
 const launch = ($: any, input: Record<string, unknown> = { name: 'interlock:ship', args: { change: C } }) =>
   $.tool.call({ tool: 'Workflow', ...input })
 const specLogs = (w: World) => w.logs.filter(l => l.to === 'debug' && SPEC_DEBUG.test(l.text))
@@ -311,6 +315,27 @@ test('explore\'s spawns and brief, two artifact writes and the findings file are
     expect(lines.get('spec-last-activity')).toMatch(/^last activity 2026-10-07T/)
     expect(all).not.toMatch(/complete|✓|✔/i)
   }
+})
+
+test('the captured advisor spawn counts one consult, and the engine\'s resolution passes through unchanged', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await happyPath($)
+  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toBe('consult: not spawned')
+  const resolved = await consult($)
+  expect(resolved).toEqual(A.SPAWN_ADVISOR.resolved)
+  expect(w.spawned).toEqual(['interlock:advisor'])
+  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toMatch(/^consult spawned 2026-10-07T/)
+})
+
+test('a spawn of any other type, the bare agent name included, leaves the consult unspawned', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await happyPath($)
+  await consult($, { ...A.SPAWN_ADVISOR.input, subagentType: 'advisor' })
+  await consult($, { ...A.SPAWN_ADVISOR.input, subagentType: 'general-purpose' })
+  expect(w.spawned).toEqual(['advisor', 'general-purpose'])
+  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toBe('consult: not spawned')
 })
 
 test('an unasked open the engine declines raises one toast naming the command, and an errored write is not counted', async ($: any, on: any) => {

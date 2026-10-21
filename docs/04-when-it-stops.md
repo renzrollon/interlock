@@ -306,6 +306,12 @@ The close could not write its own `agent-result`, `run-receipt`, `run-halt` or `
 
 This is the opposite side of this repository's deliberately split corpus-loss semantics from [`RESUME CARD NOT WRITTEN`](#resume-card-not-written) below. The trajectory is the evidence; losing a line means the run cannot be replayed, so it moves the exit code. The outcome corpus, the review metrics and the resume card are all pointers to evidence written elsewhere, so losing them is reported and never fatal. `interlock doctor` marks `.claude/ship/runs` and `.claude/ship/spill` `fatal: true` and `.claude/learning`, `.claude/metrics` and the other outcome-class directories not, for the same reason. A run in a linked worktree keeps both sides of the split: its trajectory append in the main checkout is still fatal, and its outcome and metrics writes there still only report.
 
+### `COMPOUND NOTES NOT WRITTEN`
+
+Only when a review's surviving findings carried `specGap: true` and the notes could not be appended to `docs/notes/compound.md` — a read-only directory, a full disk, or a table whose header no one can find. The degradation block carries `COMPOUND NOTES NOT WRITTEN: <reason>` with the reason the filesystem or the parser gave, and the commit briefing then names no notes table, because none was touched.
+
+The exit code never moves because of it. The table is a convenience layered on findings the review already recorded, so this is the outcome-corpus side of the split loss semantics, not the trajectory's. Fix the cause and run `interlock note derive --findings <survivors.json> --change <name>` to append what the run could not.
+
 ### `RESUME CARD NOT WRITTEN`
 
 Only on a halt, and only when the [halt resume card](#reading-a-ship-halted-run) could not be written — a read-only checkout, a full disk, a `.claude/` nothing can create a directory under. The degradation block carries `RESUME CARD NOT WRITTEN: <reason>` with the reason the filesystem gave, and the `resume card:` row is then absent, so a halt that left no card cannot be mistaken for one whose card you simply have not found.

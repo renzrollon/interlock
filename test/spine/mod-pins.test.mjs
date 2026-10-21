@@ -586,6 +586,21 @@ test('the kit\'s spec-run fixtures are the payloads captured from the host', asy
   assert.equal(mirror.SPAWN_EXPLORE.input.subagentType, 'Explore')
 })
 
+test('the advisor spawn mirror equals its live capture, typed as the consult counter reads it', async () => {
+  // Captured by scripts/advisor-e2e.mjs (PR #20's open consult-counter item):
+  // the meter counts a spawn only when subagentType is 'interlock:advisor' and
+  // the engine resolved a string model (hooks/mod.mjs noteSpawn).
+  const { SPAWN_ADVISOR } = await import('../fixtures/mod/advisor-run.mjs')
+  const { _provenance, ...payload } = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'mod', 'agent-spawn-advisor.json'), 'utf8'))
+  assert.match(_provenance.capturedWith, /^claude \d+\.\d+\.\d+ /, 'the capture names the binary that produced it')
+  assert.match(_provenance.change, /advisor-e2e live capture/)
+  assert.deepEqual(SPAWN_ADVISOR, payload)
+  assert.equal(SPAWN_ADVISOR.input.subagentType, 'interlock:advisor')
+  assert.equal(typeof SPAWN_ADVISOR.resolved.model, 'string')
+  const mod = readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8')
+  assert.ok(mod.includes("input.subagentType === 'interlock:advisor'"), 'the counter still keys on the captured subagentType')
+})
+
 test('npm test collects *.test.mjs only, so the mod\'s .test.ts never reaches Node', () => {
   const { scripts } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
   const patterns = [...scripts.test.matchAll(/-name\s+'([^']+)'/g)].map(m => m[1])

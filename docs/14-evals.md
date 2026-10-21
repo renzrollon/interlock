@@ -238,9 +238,11 @@ from a figure, which this page and [11](11-the-indicators.md) refuse.
 
 ```bash
 export CLAUDE_CODE_WALNUT_SPIRE=1          # early-access enablement — env only, never committed
-claude plugin eval . --tag smoke --no-publish --json evals-results.json
+claude plugin eval . --tag smoke --trust-plugin --allow-tools Bash --no-publish --json evals-results.json
 interlock evals triage --results evals-results.json   # regression / variance / no signal — exit code is the verdict
 ```
+
+- **Trust and tool grants are part of the command.** With `--json`, or with no terminal, the harness refuses a plugin directory you have not trusted before any case runs; `--trust-plugin` answers for it. Bash, Write, Edit and WebFetch are operator-gated: a case's `allowed_tools` alone does not grant them, and a grader that needs a withheld tool cannot pass. Grant what the cases you run list, as both CI jobs do (`test/evals.test.mjs` pins the set).
 
 - **Enablement is a local prerequisite.** `claude plugin eval` is early-access and does nothing until `CLAUDE_CODE_WALNUT_SPIRE=1` is set *in the environment*. Do not commit it to `.claude/settings.json` — a committed value produces a suite that looks configured and does not run.
 - **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
@@ -248,6 +250,53 @@ interlock evals triage --results evals-results.json   # regression / variance / 
 - **CI skips until access is provisioned.** The eval job (`.github/workflows/evals.yml`) skips fork pull requests and skips cleanly when no model credential is present, so the suite lands and is maintained before paid access exists.
 
 The cases each encode a reproduced failure: tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication. Each case cites the failure it encodes.
+
+### Spec Range — measuring the checkpoint advisor
+
+The Spec Range cases (`evals/spec-range-*/`) measure the checkpoint consult the
+spec skill runs before it hands off (see [02 — The checkpoint](02-the-checkpoint.md)).
+Each one seeds a frozen copy of an archived change folder — its proposal,
+design, tasks and delta specs, without the decision ledger, because the ledger
+carries the answer — and runs the consult on it. `label.md` in each case holds
+the question a human actually had to answer for that change, copied from the
+archived ledger.
+
+- **Seeding needs `--scaffold`.** Each case places its fixture through
+  `context.scaffold_script`, which the harness runs only under `--scaffold`.
+  The scheduled full job passes it; the smoke job does not, and these cases
+  carry no `smoke` tag. A run without it starts in an empty workspace, writes
+  no `advisor.md`, and fails `advisor-written` — the absence is how the report
+  shows the run was unseeded rather than the advisor wrong.
+- **What is graded.** Deterministically: that `advisor.md` was written, that
+  the `interlock advisor … --check` line ran, and (as a with-only indicator)
+  that `interlock:advisor` was spawned once. By a judge: `matches-label`,
+  whether a kept question asks the human's question or one whose answer would
+  settle it, and `answered-already`, whether the kept questions merely restate
+  what the artifacts already answer.
+- **The labels are the kill criterion's data.** Human labels for those two
+  judged graders, stored under `evals/spec-range-*/calibration/` in the
+  [calibration layout](../evals/CALIBRATION-LAYOUT.md), are what
+  `interlock advisor --verdict --labels evals` tallies into keep, kill or
+  insufficient labels. Until they exist the graders are named in
+  `evals/CALIBRATION-DEFERRALS.md` and the verdict says the labels are
+  insufficient.
+- **No threshold lives here.** How many labels the verdict needs, and the
+  match and repeat bounds it applies, are caps in `interlock limits`; read them
+  there.
+
+#### Running the advisor end to end, on demand
+
+`scripts/advisor-e2e.mjs` runs the consult for real, once, by hand. It is development tooling that never ships, and it never launches `claude` itself. It prepares a scratch run, prints the two metered commands for `scripts/host-probe.mjs`, then reads what they left behind:
+
+```bash
+node scripts/advisor-e2e.mjs setup --out "$TMPDIR/adv"     # plugin copy, logger mod, seeded scratch repo, prompt
+# run the two host-probe commands it prints: a headless consult, then the case through `--mode eval`
+node scripts/advisor-e2e.mjs verify --out "$TMPDIR/adv"    # PASS/FAIL per fact; exit 1 names what failed
+```
+
+- **What it answers.** The probe half checks that the engine raised one `agent.spawn` for `interlock:advisor` with a string model (what the spec meter's consult counter keys on), that the draft landed where the meter reads it, and that `advisor.md` was written. The eval half runs the Spec Range case with the full job's flags (`--scaffold` included). It then triages the real results file with `--eval-dir evals`, scales the run's cost to the Spec Range share of the full job against the ceiling in `interlock limits`, and lists every grader field the harness wrote.
+- **It is paid for once.** `--mode eval` refuses to start without `--max-cost-usd`. `verify --write-fixtures` turns the run into scrubbed fixtures (`test/fixtures/mod/agent-spawn-advisor.json` and a results file under `test/fixtures/evals/`), and from then on `npm test` and `claude plugin test` re-check those for free. A fixture that would still name a local path is not written, and the output says so.
+- **The probe never touches this repository.** The session's `--plugin-dir` is an rsync'd copy, so the `tsconfig.json` and `types/` a plugin-dir session writes land in the copy.
 
 ### Transcript, outcome, process
 
