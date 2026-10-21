@@ -390,3 +390,36 @@ test('the shape reader stays total: an input with no list is not thrown on, it i
     assert.doesNotThrow(() => applyToleranceBand(input))
   }
 })
+
+// --- specGap: an advisory field the gate never reads ------------------------
+
+test('the finding schema carries an optional boolean specGap', () => {
+  const items = findingsModule.FINDING_SCHEMA.properties.findings.items
+  assert.equal(items.properties.specGap && items.properties.specGap.type, 'boolean')
+  assert.match(items.properties.specGap.description || '', /requirement no spec stated/)
+  assert.ok(!items.required.includes('specGap'), 'specGap is optional')
+})
+
+test('the gate returns the same passed, blockers and malformed for every value of specGap', () => {
+  const set = gap => {
+    const extra = gap === undefined ? {} : { specGap: gap }
+    return [
+      f({ severity: 'warning', title: 'gap warning', ...extra }),
+      f({ severity: 'blocker', file: 'lib/b.ts', title: 'real blocker' }),
+      f({ severity: 'suggestion', title: 'idea' })
+    ]
+  }
+  const pick = g => ({
+    passed: g.passed,
+    blockers: g.blockers.map(b => `${b.file}:${b.title}`),
+    malformed: g.malformed.map(m => `${m.file}:${m.title}`)
+  })
+  const absent = pick(evaluateGate(set(undefined)))
+  for (const value of [true, false, 'yes']) {
+    assert.deepEqual(pick(evaluateGate(set(value))), absent, `specGap: ${JSON.stringify(value)}`)
+  }
+  // And a gate that passes stays passing with a typo on the advisory field.
+  const clean = [f({ specGap: 'yes' })]
+  assert.equal(evaluateGate(clean).passed, true)
+  assert.deepEqual(evaluateGate(clean).malformed, [])
+})

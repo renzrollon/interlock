@@ -4,7 +4,7 @@ description: Take a rough intent to a reviewed, implementation-ready OpenSpec ch
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
 argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd]"
-allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
+allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep Agent AskUserQuestion
 metadata:
   type: planning
   outputs:
@@ -244,6 +244,36 @@ A clean gate credits `explore` and `spec` too; a blocker resets them. That is wh
 
 ---
 
+## 5a. Consult: the checkpoint advisor
+
+Run this only on the clean-gate path, after `interlock autonomy clean review-artifacts explore spec`. A blocked gate halts before it and never consults.
+
+Assemble the brief with the CLI, passing the findings file the review wrote:
+
+```bash
+interlock advisor "<name>" --brief --findings <findings path> --json
+```
+
+Read `path` from the output with `step: "brief"`; the check line prints `step: "check"`. Then make one Agent tool call with `subagent_type: "interlock:advisor"` whose prompt names that path and nothing else. Write the agent's reply, verbatim, to `.claude/metrics/advisor-<name>-<YYYYMMDD-HHMMSS>.json`, then check it:
+
+```bash
+interlock advisor "<name>" --check <that path> --json
+```
+
+Read `status`, `questions` and `dropped` from the output; its `step` field tells the check from the brief. The CLI writes `openspec/changes/<name>/advisor.md`.
+
+If the brief failed, the spawn errored, no reply came back, or the Write failed, record that instead:
+
+```bash
+interlock advisor "<name>" --check --failed "<reason>" --json
+```
+
+When that line exits non-zero, report its first output line as the reason and continue to §6.
+
+The consult is never retried. It never writes `decisions.md`: a question becomes a ledger row only when a human adds it. `advisor.md` is never edited by hand.
+
+---
+
 ## 6. Hand off to the human
 
 This is where the default run ends. Close with:
@@ -254,6 +284,7 @@ This is where the default run ends. Close with:
 - Task count, and the wave shape if it is obvious
 - The task shape, and — **when it is TDD** — that ship will run section 1's failing tests first and skip that wave's check, so nobody is told whether the suite was genuinely red. Ask the reviewer to confirm the leading tests actually fail against the current code; a test that passes before the implementation exists pins nothing.
 - Anything the artifact review flagged below blocker severity
+- The advisor: its `status`, its question count and ids, and the `advisor.md` path, or `did not run` with the reason
 
 Then say plainly: **review the spec, and run `/interlock:ship` when it looks right.**
 

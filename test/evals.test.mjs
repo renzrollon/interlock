@@ -31,6 +31,7 @@ import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EXPECTED_PROMPT_LABELS } from './helpers/ship-harness.mjs'
+import { LIMITS } from '../lib/limits.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const EVALS_DIR = join(ROOT, 'evals')
@@ -45,7 +46,25 @@ const KNOWN_GRADER_TYPES = new Set([
 // Judged graders call a model to reach a verdict, so their failures carry
 // run-to-run variance. A `smoke` case is one triage trusts on a single run, so
 // it must use only deterministic graders.
-const JUDGED_GRADER_TYPES = new Set(['llm', 'baseline'])
+//
+// The set is the one triage and calibrate read, `JUDGED_GRADER_TYPES` in
+// lib/evals-types.mjs, intersected with the types this harness knows: the
+// shared set also carries triage's legacy aliases, which no grader file may
+// declare. It is imported dynamically so that, while the module is missing, the
+// rest of this file still loads; the tests that need the set say they were
+// skipped and one test fails naming the import, rather than any falling back
+// to a list spelled here.
+let SHARED_JUDGED = null
+let SHARED_JUDGED_ERROR = null
+try {
+  ;({ JUDGED_GRADER_TYPES: SHARED_JUDGED } = await import('../lib/evals-types.mjs'))
+} catch (err) {
+  SHARED_JUDGED_ERROR = err
+}
+const JUDGED_GRADER_TYPES = new Set([...(SHARED_JUDGED || [])].filter(t => KNOWN_GRADER_TYPES.has(t)))
+const JUDGED_UNAVAILABLE = SHARED_JUDGED
+  ? false
+  : `lib/evals-types.mjs did not load (${SHARED_JUDGED_ERROR?.message}); the judged set is unknown`
 
 // Directories the case suite must not live inside — placing a case under a
 // declared plugin component would shadow it and trip the harness's
@@ -74,6 +93,16 @@ const EXPECTED_CASES = [
   'lane-partial-failure',
   'skill-routing',
   'skill-routing-explore',
+  'spec-range-add-report-dashboard',
+  'spec-range-collapse-singleton',
+  'spec-range-dispatch-effort',
+  'spec-range-harden-substantive-gates',
+  'spec-range-harden-unattended',
+  'spec-range-judge-against-base',
+  'spec-range-label-merge-verdict',
+  'spec-range-merge-confidence',
+  'spec-range-prompt-cache-cost',
+  'spec-range-publish-npm',
   'tier-read-scope',
   'tier-read-scope-full',
   'trampoline-halt',
@@ -318,7 +347,7 @@ for (const kase of cases) {
     )
   })
 
-  test(`${kase.name}: if tagged smoke, uses only deterministic graders`, () => {
+  test(`${kase.name}: if tagged smoke, uses only deterministic graders`, { skip: JUDGED_UNAVAILABLE }, () => {
     const text = readFileSync(caseYaml, 'utf8')
     if (!readTags(text).has('smoke')) return
     const gradersDir = join(kase.dir, 'graders')
@@ -432,7 +461,7 @@ function readDeferrals() {
   return out
 }
 
-test('every judged grader has a calibration set or a recorded deferral', () => {
+test('every judged grader has a calibration set or a recorded deferral', { skip: JUDGED_UNAVAILABLE }, () => {
   const deferred = new Set(readDeferrals().map(d => d.grader))
   const uncovered = judgedGraders().filter(g => !hasCalibrationSet(g) && !deferred.has(g))
   assert.deepEqual(
@@ -445,7 +474,7 @@ test('every judged grader has a calibration set or a recorded deferral', () => {
   )
 })
 
-test('a deferral entry carries a reason and cannot outlive what it describes', () => {
+test('a deferral entry carries a reason and cannot outlive what it describes', { skip: JUDGED_UNAVAILABLE }, () => {
   const deferrals = readDeferrals()
   if (!existsSync(DEFERRALS_FILE)) return
   const judged = new Set(judgedGraders())
@@ -589,4 +618,211 @@ test('every surface a case declares in exercises: resolves', () => {
     [],
     `these declared surfaces do not exist: ${unresolved.join('; ')}`
   )
+})
+
+// --- one judged-type set (spec: evals/triage) --------------------------------
+
+test('the judged grader types are the shared set, and the harness knows two of them', () => {
+  assert.ok(SHARED_JUDGED, `lib/evals-types.mjs must export JUDGED_GRADER_TYPES: ${SHARED_JUDGED_ERROR?.message}`)
+  assert.deepEqual(
+    [...JUDGED_GRADER_TYPES].sort(),
+    ['baseline', 'llm'],
+    'JUDGED_GRADER_TYPES intersected with the known grader types must be exactly llm and baseline'
+  )
+})
+
+// --- Spec Range (spec: evals/spec-range) --------------------------------------
+//
+// Ten cases, one per archived change whose ledger carried a question a human had
+// to answer. Each seeds a frozen copy of that change folder WITHOUT its ledger:
+// a fixture that kept `decisions.md` carries the answer, and cannot test whether
+// the advisor asks the question.
+
+const SPEC_RANGE = [
+  ['harden-substantive-gates', 'harden-substantive-gates', 'D11'],
+  ['add-report-dashboard', 'add-report-dashboard', 'D11'],
+  ['publish-npm', 'publish-interlock-as-npm-package', 'P1'],
+  ['harden-unattended', 'harden-unattended-ship-runs', 'D6'],
+  ['label-merge-verdict', 'label-and-harden-the-merge-verdict', 'D1'],
+  ['collapse-singleton', 'collapse-singleton-waves', 'D2'],
+  ['prompt-cache-cost', 'surface-prompt-cache-cost', 'D8'],
+  ['dispatch-effort', 'dispatch-published-effort', 'D14'],
+  ['judge-against-base', 'judge-against-base-and-living-specs', 'D3'],
+  ['merge-confidence', 'add-merge-confidence-gate', 'D8']
+]
+
+const FIXTURE_ENTRIES = new Set(['proposal.md', 'design.md', 'tasks.md', 'specs'])
+
+/** `key: value` lines of a label.md, top-level, as written. */
+function readLabelFields(text) {
+  const out = {}
+  for (const line of text.split('\n')) {
+    const m = /^(change|row|source|question):\s*(.*)$/.exec(line)
+    if (m && !(m[1] in out)) out[m[1]] = m[2].trim()
+  }
+  return out
+}
+
+function walk(dir) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name)
+    out.push(abs)
+    if (entry.isDirectory()) out.push(...walk(abs))
+  }
+  return out
+}
+
+test('Spec Range: every slug in the table is pinned in EXPECTED_CASES', () => {
+  for (const [slug] of SPEC_RANGE) {
+    assert.ok(EXPECTED_CASES.includes(`spec-range-${slug}`), `EXPECTED_CASES must list spec-range-${slug}`)
+  }
+})
+
+for (const [slug, change, row] of SPEC_RANGE) {
+  const name = `spec-range-${slug}`
+  const dir = join(EVALS_DIR, name)
+
+  test(`${name}: case.yaml runs once, seeds by scaffold, exercises the advisor and is not smoke`, () => {
+    const yamlPath = join(dir, 'case.yaml')
+    assert.ok(existsSync(yamlPath), `${name}: evals/${name}/case.yaml is missing`)
+    const text = readFileSync(yamlPath, 'utf8')
+    assert.ok(readTopLevel(text, 'schema_version'), `${name}: case.yaml does not pin schema_version`)
+    assert.equal(readTopLevel(text, 'runs'), '1', `${name}: case.yaml must set runs: 1`)
+    assert.ok((readTopLevel(text, 'provenance') || '').includes(change), `${name}: provenance must name ${change}`)
+    const exercises = readExercises(text)
+    for (const surface of ['agents/advisor.md', 'skills/spec/SKILL.md']) {
+      assert.ok(exercises.includes(surface), `${name}: exercises: must name ${surface}`)
+    }
+    assert.ok(!readTags(text).has('smoke'), `${name}: a Spec Range case runs in the full job only, never smoke`)
+
+    const tools = /^\s+allowed_tools:\s*\[([^\]]*)\]/m.exec(text)
+    assert.ok(tools, `${name}: execution.allowed_tools is not set`)
+    assert.deepEqual(
+      tools[1].split(',').map(t => t.trim()).sort(),
+      ['Agent', 'Bash', 'Glob', 'Grep', 'Read', 'Write'],
+      `${name}: allowed_tools must be [Agent, Bash, Read, Glob, Grep, Write]`
+    )
+
+    const script = /^\s+scaffold_script:\s*(\S+)\s*$/m.exec(text)
+    assert.ok(script, `${name}: context.scaffold_script is not set`)
+    const scriptPath = join(dir, script[1].replace(/['"]/g, ''))
+    assert.ok(existsSync(scriptPath), `${name}: scaffold script ${script[1]} does not exist`)
+    assert.ok(statSync(scriptPath).mode & 0o111, `${name}: scaffold script ${script[1]} is not executable`)
+  })
+
+  test(`${name}: the fixture holds ${change} without its ledger and nothing but the four artifact kinds`, () => {
+    const changes = join(dir, 'fixture', 'openspec', 'changes')
+    assert.ok(existsSync(changes), `${name}: fixture/openspec/changes/ is missing`)
+    const folders = readdirSync(changes)
+    assert.deepEqual(folders, [change], `${name}: the fixture must hold exactly ${change}, named without a date prefix`)
+    const folder = join(changes, change)
+    const extra = readdirSync(folder).filter(f => !FIXTURE_ENTRIES.has(f))
+    assert.deepEqual(extra, [], `${name}: the fixture carries files the four artifact kinds do not: ${extra.join(', ')}`)
+    for (const required of FIXTURE_ENTRIES) {
+      assert.ok(existsSync(join(folder, required)), `${name}: the fixture is missing ${required}`)
+    }
+    const leaked = walk(join(dir, 'fixture')).filter(p => /(?:^|\/)(decisions|advisor)\.md$/.test(p))
+    assert.deepEqual(
+      leaked.map(p => p.slice(ROOT.length + 1)),
+      [],
+      `${name}: a fixture that carries the ledger or an advisor file carries the answer`
+    )
+  })
+
+  test(`${name}: label.md cites the archived row and its question is the matches-label grader's`, () => {
+    const labelPath = join(dir, 'label.md')
+    assert.ok(existsSync(labelPath), `${name}: label.md is missing`)
+    const fields = readLabelFields(readFileSync(labelPath, 'utf8'))
+    for (const key of ['change', 'row', 'source', 'question']) {
+      assert.ok(fields[key], `${name}: label.md carries no ${key}: line`)
+    }
+    assert.equal(fields.change, change, `${name}: label.md change: must be ${change}`)
+    assert.equal(fields.row, row, `${name}: label.md row: must be ${row}`)
+    assert.match(fields.source, /decisions\.md:\d+/, `${name}: label.md source: must name the archived decisions.md and line`)
+    const grader = join(dir, 'graders', 'matches-label.md')
+    assert.ok(existsSync(grader), `${name}: graders/matches-label.md is missing`)
+    assert.ok(
+      readFileSync(grader, 'utf8').includes(fields.question),
+      `${name}: the label's question must appear in graders/matches-label.md`
+    )
+  })
+
+  test(`${name}: carries the five graders by type`, () => {
+    const expected = {
+      'advisor-written': 'file_exists',
+      'consult-spawned': 'tool_used',
+      'check-ran': 'tool_used',
+      'matches-label': 'llm',
+      'answered-already': 'llm'
+    }
+    for (const [grader, type] of Object.entries(expected)) {
+      const path = join(dir, 'graders', `${grader}.md`)
+      assert.ok(existsSync(path), `${name}: graders/${grader}.md is missing`)
+      assert.equal(readGraderType(readFileSync(path, 'utf8')), type, `${name}/${grader} must be ${type}`)
+    }
+    const written = readFileSync(join(dir, 'graders', 'advisor-written.md'), 'utf8')
+    assert.ok(written.includes(`openspec/changes/${change}/advisor.md`), `${name}/advisor-written must name the advisor file`)
+    const spawned = readFileSync(join(dir, 'graders', 'consult-spawned.md'), 'utf8')
+    assert.ok(spawned.includes('interlock:advisor'), `${name}/consult-spawned must match interlock:advisor`)
+    assert.match(spawned, /^arm:\s*with-only/m, `${name}/consult-spawned must be arm: with-only`)
+    assert.match(spawned, /^max:\s*1\b/m, `${name}/consult-spawned must cap the spawn at one`)
+    const check = readFileSync(join(dir, 'graders', 'check-ran.md'), 'utf8')
+    assert.ok(check.includes('--check'), `${name}/check-ran must match the --check line`)
+  })
+}
+
+// --- the page names Spec Range and never its caps (spec: evals/spec-range) ----
+
+const ADVISOR_CAPS = [
+  'maxAdvisorQuestions',
+  'maxAdvisorBriefChars',
+  'maxAdvisorNoteRows',
+  'advisorKeepMinMatches',
+  'advisorRepeatMaxPercent',
+  'advisorVerdictMinLabels'
+]
+
+test('docs/14 has a Spec Range section naming the verdict, interlock limits and --scaffold, and no cap', () => {
+  const page = readFileSync(join(ROOT, 'docs', '14-evals.md'), 'utf8')
+  const heading = /^#{2,4} [^\n]*Spec Range[^\n]*$/m.exec(page)
+  assert.ok(heading, 'docs/14-evals.md carries no heading naming Spec Range')
+  const after = page.slice(heading.index + heading[0].length)
+  const next = after.search(/^## /m)
+  const section = heading[0] + (next === -1 ? after : after.slice(0, next))
+  for (const token of ['interlock advisor --verdict', 'interlock limits', '--scaffold']) {
+    assert.ok(section.includes(token), `docs/14-evals.md's Spec Range section must name ${token}`)
+  }
+  for (const cap of ADVISOR_CAPS) {
+    assert.ok(!section.includes(cap), `docs/14-evals.md's Spec Range section states ${cap}; name interlock limits instead`)
+    const value = LIMITS[cap]
+    assert.equal(typeof value, 'number', `LIMITS.${cap} is not defined`)
+    for (const spelling of new Set([String(value), value.toLocaleString('en-US'), String(value).replace(/\B(?=(\d{3})+$)/g, '_')])) {
+      assert.doesNotMatch(
+        section,
+        new RegExp(`(?<![\\w.])${spelling}(?![\\w.])`),
+        `docs/14-evals.md's Spec Range section states ${cap} (${spelling}); name interlock limits instead`
+      )
+    }
+  }
+})
+
+test('the full eval job seeds fixtures with --scaffold and the smoke job does not', () => {
+  const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8')
+  // The `claude plugin eval` invocation of one job, with its `\` continuations.
+  function evalLine(job) {
+    const start = yml.search(new RegExp(`^  ${job}:\\s*$`, 'm'))
+    assert.ok(start !== -1, `evals.yml has no ${job} job`)
+    const rest = yml.slice(start + 1)
+    const end = rest.search(/^  [\w-]+:\s*$/m)
+    const body = end === -1 ? rest : rest.slice(0, end)
+    const lines = body.split('\n')
+    const at = lines.findIndex(l => l.includes('claude plugin eval'))
+    assert.ok(at !== -1, `the ${job} job runs no claude plugin eval`)
+    const out = [lines[at]]
+    for (let i = at; lines[i].trimEnd().endsWith('\\') && i + 1 < lines.length; i++) out.push(lines[i + 1])
+    return out.join('\n')
+  }
+  assert.ok(evalLine('full').includes('--scaffold'), "the full job's claude plugin eval line must pass --scaffold")
+  assert.ok(!evalLine('smoke').includes('--scaffold'), "the smoke job's claude plugin eval line must not pass --scaffold")
 })

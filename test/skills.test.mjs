@@ -781,6 +781,13 @@ test('the lines an observer of the spec flow keys on are pinned, in the flow\'s 
     ['/interlock:review-artifacts', /\/interlock:review-artifacts/],
     ['interlock autonomy record review-artifacts --blockers', /^interlock autonomy record review-artifacts --blockers/m],
     ['interlock autonomy clean review-artifacts explore spec', /^interlock autonomy clean review-artifacts explore spec$/m],
+    // The consult (§5a). The check pin excludes `--failed` and the failed pin
+    // requires it, so each check-shaped line satisfies exactly one pin and a
+    // dropped `--json` on either fails that pin by name.
+    ['interlock advisor … --brief … --json', /^interlock advisor [^\n]*--brief[^\n]*--json$/m],
+    ['subagent_type: "interlock:advisor"', /subagent_type: "interlock:advisor"/],
+    ['interlock advisor … --check … --json', /^interlock advisor (?![^\n]*--failed)[^\n]*--check[^\n]*--json$/m],
+    ['interlock advisor … --check --failed … --json', /^interlock advisor [^\n]*--check --failed[^\n]*--json$/m],
     ['interlock notify checkpoint', /^interlock notify checkpoint /m],
     ['GOAL MET', /GOAL MET: interlock spec stopped at the checkpoint/]
   ]
@@ -796,6 +803,67 @@ test('the lines an observer of the spec flow keys on are pinned, in the flow\'s 
       `${where}: \`${chain[i - 1][0]}\` must come before \`${chain[i][0]}\``
     )
   }
+})
+
+test('the spec skill reads the advisor lines by field, never retries the consult, and leaves the ledger alone', () => {
+  // Tokens, not sentences: what the consult section must still say after a
+  // reword. The fields are the ones an observer and the hand-off read.
+  const where = 'skills/spec/SKILL.md'
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  for (const token of ['`step`', '`status`', '`questions`', '`dropped`', 'never retried', 'first output line']) {
+    assert.ok(text.includes(token), `${where} no longer names ${token} in its consult section`)
+  }
+  assert.match(
+    text,
+    /never writes[^.\n]{0,40}decisions\.md/,
+    `${where} must say the consult never writes decisions.md`
+  )
+  const fm = parseFrontmatter(text)
+  assert.match(fm.values['allowed-tools'] || '', /\bAgent\b/, `${where}'s allowed-tools must admit Agent for the consult`)
+})
+
+test('the review-code skill shows specGap in its emit shape and derives notes after the gate', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+  const s2 = skill.slice(skill.indexOf('## 2. '), skill.indexOf('## 3. '))
+  const emit = s2.match(/```json([\s\S]*?)```/)
+  assert.ok(emit, `${where} §2's emit shape fence was not found`)
+  assert.ok(emit[1].includes('"specGap"'), `${where} §2's emit shape must carry the optional specGap field`)
+  assert.ok(
+    s2.split('\n').some(line => /optional/.test(line) && line.includes('specGap')),
+    `${where} §2's optional-field sentence must name specGap`
+  )
+
+  const s4 = skill.slice(skill.indexOf('## 4. '), skill.indexOf('## 5. '))
+  const gate = s4.search(/^interlock gate --findings /m)
+  const derive = s4.search(/^interlock note derive --findings [^\n]*/m)
+  assert.ok(gate !== -1, `${where} §4 no longer runs the gate line`)
+  assert.ok(derive !== -1, `${where} §4 must run \`interlock note derive --findings\` on a command line`)
+  assert.ok(gate < derive, `${where} §4 must derive notes after the gate line`)
+})
+
+test('only the domain and technical-lead briefs tell a reviewer to set specGap', () => {
+  const dir = join(SKILLS_DIR, 'review-code', 'dimensions')
+  for (const file of readdirSync(dir).filter(f => f.endsWith('.md')).sort()) {
+    const text = readFileSync(join(dir, file), 'utf8')
+    if (file === 'domain.md' || file === 'technical-lead.md') {
+      assert.ok(text.includes('specGap'), `skills/review-code/dimensions/${file} must say when to set specGap`)
+    } else {
+      assert.ok(!text.includes('specGap'), `skills/review-code/dimensions/${file} must not mention specGap`)
+    }
+  }
+})
+
+test('the evals skill still names llm and baseline as the two grader types that call a judge', () => {
+  // A fourth spelling of the judged set: it classifies nothing, but it is
+  // pinned beside JUDGED_GRADER_TYPES so the prose cannot drift from it.
+  const text = readFileSync(join(SKILLS_DIR, 'evals', 'SKILL.md'), 'utf8')
+  assert.match(text, /call a judge[\s\S]{0,20}`llm`,?\s+`baseline`/, 'skills/evals/SKILL.md must name `llm` and `baseline` as the judge-calling types')
+})
+
+test('no skill prose names a model: the advisor model is declared in agents/advisor.md alone', () => {
+  const offenders = filesUnder(SKILLS_DIR, '').filter(f => readFileSync(f, 'utf8').includes('opus'))
+  assert.deepEqual(offenders.map(f => f.slice(ROOT.length + 1)), [], 'files under skills/ name `opus`')
 })
 
 test('ship trampoline forbids a second Workflow call after the first returns', () => {

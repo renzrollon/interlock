@@ -1743,6 +1743,31 @@ test('no NEW degradation banner ships without a docs/04 section', () => {
   )
 })
 
+test('review adjudication appends compound notes after the review metrics, and a lost note is a documented banner', () => {
+  // The notes sit with the outcome corpus and the review metrics, not with the
+  // trajectory: a failed append is spoken and never fatal. The ratchet above
+  // admits no undocumented banner, so the section is pinned here by name too —
+  // a run.mjs that raised the banner before docs/04 had it would fail both.
+  const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+
+  const start = run.indexOf('function adjudicateReview(')
+  assert.ok(start >= 0, 'lib/run.mjs has no adjudicateReview')
+  const body = run.slice(start, run.indexOf('\n}\n', start))
+  const metricsAt = body.indexOf('writeReviewMetrics(')
+  const deriveAt = body.indexOf('deriveNotes(')
+  assert.ok(metricsAt >= 0, 'adjudicateReview no longer writes the review metrics')
+  assert.ok(deriveAt >= 0 && body.includes('appendNotes('), 'adjudicateReview derives and appends no compound notes')
+  assert.ok(metricsAt < deriveAt, 'notes are derived after the review metrics are written')
+  assert.match(body, /COMPOUND NOTES NOT WRITTEN: /, 'a failed append is a banner raised in the adjudication')
+  assert.doesNotMatch(body, /process\.exit|exitCode/, 'and never touches the exit code')
+
+  assert.match(run, /notesPath/, 'the appended table is carried onto the manifest as notesPath')
+  assert.match(run, /assembleCommitPrompt\(\{[^)]*notesPath/s, 'the commit brief is handed the touched table')
+
+  assert.match(docs, /^### .*`?COMPOUND NOTES NOT WRITTEN`?/m, 'docs/04 carries a section for the banner')
+})
+
 test('succeeded tasks are ticked by the CLI, from what it recorded', () => {
   // No agent ticks a box, and none is asked to: the run ticks the ids its own
   // record-batch adjudicated as ok. A box ticked from a claim is how

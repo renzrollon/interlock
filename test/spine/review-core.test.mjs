@@ -565,7 +565,7 @@ test('a valid citation reports nothing and the finding survives as it would unci
 test('a result with no citations carries an empty requirementCitations list', () => {
   const r = resolveReview([f()], [])
   assert.deepEqual(citationsOf(r), [])
-  assert.deepEqual(Object.keys(r.anomalies).sort(), ['malformedVerdicts', 'orphanVerdicts', 'requirementCitations'])
+  assert.deepEqual(Object.keys(r.anomalies).sort(), ['malformedVerdicts', 'orphanVerdicts', 'requirementCitations', 'specGapShape'])
 })
 
 test('a citation outside openspec/specs is reported with the check it failed, and the finding is kept', () => {
@@ -799,4 +799,54 @@ test('a requirement field changes none of the survival arithmetic on a finding t
   )
   assert.deepEqual(cited.counts, plain.counts)
   assert.equal(cited.surviving[0].requirement, cite('Every guard SHALL fail open'), 'the citation travels with the finding')
+})
+
+// --- specGap: shape-checked, never a verdict --------------------------------
+
+test('the finding schema lists specGap as an optional boolean beside requirement', () => {
+  const items = FINDING_SCHEMA.properties.findings.items
+  assert.equal(items.properties.specGap && items.properties.specGap.type, 'boolean')
+  assert.ok(!items.required.includes('specGap'))
+})
+
+test('a boolean specGap passes through resolveReview unchanged', () => {
+  const r = resolveReview(
+    raised([f({ title: 'gap', specGap: true }), f({ title: 'no gap', file: 'lib/b.ts', specGap: false })], 'domain'),
+    [...real('gap', 'warning'), ...real('no gap', 'warning')]
+  )
+  const byTitle = Object.fromEntries(r.surviving.map(x => [x.title, x]))
+  assert.equal(byTitle.gap.specGap, true)
+  assert.equal(byTitle['no gap'].specGap, false)
+  assert.deepEqual(r.anomalies.specGapShape, [])
+})
+
+test('a non-boolean specGap is a non-blocking anomaly: the finding is kept and the field read as absent', () => {
+  const r = resolveReview(raised([f({ title: 'typo', specGap: 'yes' })], 'domain'), real('typo', 'warning'))
+  assert.equal(r.counts.surviving, 1, 'the finding is kept')
+  assert.equal(r.surviving[0].title, 'typo')
+  assert.equal(r.surviving[0].specGap, undefined, 'the field is read as absent')
+  assert.ok(Array.isArray(r.anomalies.specGapShape))
+  assert.equal(r.anomalies.specGapShape.length, 1)
+  const [a] = r.anomalies.specGapShape
+  assert.equal(a.title, 'typo')
+  assert.equal(a.file, 'lib/a.ts')
+  assert.match(a.problem, /specGap is not a boolean/)
+  assert.match(JSON.stringify(a), /string/, 'the value’s type is named')
+  // It sits beside the citation check and does not displace it.
+  assert.deepEqual(r.anomalies.requirementCitations, [])
+})
+
+test('formatReview names a specGap shape problem as an ANOMALY and is quiet for a boolean', () => {
+  const bad = resolveReview(raised([f({ title: 'typo', specGap: 7 })], 'domain'), real('typo', 'warning'))
+  assert.match(formatReview(bad), /ANOMALY:.*typo.*specGap is not a boolean/s)
+  const ok = resolveReview(raised([f({ title: 'fine', specGap: true })], 'domain'), real('fine', 'warning'))
+  assert.doesNotMatch(formatReview(ok), /specGap/)
+})
+
+test('specGap changes none of the survival arithmetic', () => {
+  const counts = gap => {
+    const extra = gap === undefined ? {} : { specGap: gap }
+    return resolveReview(raised([f({ title: 'x', ...extra })], 'domain'), real('x', 'warning')).counts
+  }
+  for (const value of [true, false, 'yes']) assert.deepEqual(counts(value), counts(undefined))
 })

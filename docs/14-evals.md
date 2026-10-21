@@ -249,6 +249,39 @@ interlock evals triage --results evals-results.json   # regression / variance / 
 
 The cases each encode a reproduced failure: tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication. Each case cites the failure it encodes.
 
+### Spec Range — measuring the checkpoint advisor
+
+The Spec Range cases (`evals/spec-range-*/`) measure the checkpoint consult the
+spec skill runs before it hands off (see [02 — The checkpoint](02-the-checkpoint.md)).
+Each one seeds a frozen copy of an archived change folder — its proposal,
+design, tasks and delta specs, without the decision ledger, because the ledger
+carries the answer — and runs the consult on it. `label.md` in each case holds
+the question a human actually had to answer for that change, copied from the
+archived ledger.
+
+- **Seeding needs `--scaffold`.** Each case places its fixture through
+  `context.scaffold_script`, which the harness runs only under `--scaffold`.
+  The scheduled full job passes it; the smoke job does not, and these cases
+  carry no `smoke` tag. A run without it starts in an empty workspace, writes
+  no `advisor.md`, and fails `advisor-written` — the absence is how the report
+  shows the run was unseeded rather than the advisor wrong.
+- **What is graded.** Deterministically: that `advisor.md` was written, that
+  the `interlock advisor … --check` line ran, and (as a with-only indicator)
+  that `interlock:advisor` was spawned once. By a judge: `matches-label`,
+  whether a kept question asks the human's question or one whose answer would
+  settle it, and `answered-already`, whether the kept questions merely restate
+  what the artifacts already answer.
+- **The labels are the kill criterion's data.** Human labels for those two
+  judged graders, stored under `evals/spec-range-*/calibration/` in the
+  [calibration layout](../evals/CALIBRATION-LAYOUT.md), are what
+  `interlock advisor --verdict --labels evals` tallies into keep, kill or
+  insufficient labels. Until they exist the graders are named in
+  `evals/CALIBRATION-DEFERRALS.md` and the verdict says the labels are
+  insufficient.
+- **No threshold lives here.** How many labels the verdict needs, and the
+  match and repeat bounds it applies, are caps in `interlock limits`; read them
+  there.
+
 ### Transcript, outcome, process
 
 Three measurements, not one with three names:

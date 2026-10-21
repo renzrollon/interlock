@@ -8007,3 +8007,90 @@ test('no graph and a cut together are still one DOMAIN REVIEW PARTIAL line, and 
     cleanup(root)
   }
 })
+
+// --- compound notes from review adjudication ---------------------------------
+//
+// After the review metrics are written, the adjudication derives one note per
+// surviving `specGap: true` finding and appends it to docs/notes/compound.md.
+// The append is non-fatal and spoken: a failure is a banner, never an exit code,
+// and the commit brief names the table only when a note was appended.
+
+const NOTES_TABLE = 'docs/notes/compound.md'
+
+function writeGapReview(root, gaps) {
+  const { findings, verdicts } = reviewFiles({ warnings: gaps.length })
+  findings[0].findings.forEach((f, i) => {
+    // A distinct rule per finding: appendNotes skips a row whose change, file
+    // and rule repeat one already written, even within the same batch.
+    f.suggestion = `fix ${f.title}`
+    if (gaps[i] !== undefined) f.specGap = gaps[i]
+  })
+  file(root, '.claude/ship/findings.json', findings)
+  file(root, '.claude/ship/verdicts.json', verdicts)
+}
+
+test('run reviewed appends a compound note per surviving specGap finding and carries the table onto the manifest', async () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeGapReview(root, [true, true, false, undefined])
+    const { step, code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+    assert.equal(code, 0)
+
+    const manifest = manifestOf(root)
+    assert.equal(manifest.notesPath, NOTES_TABLE, 'the appended table is carried onto the manifest')
+    const tablePath = join(root, NOTES_TABLE)
+    assert.ok(existsSync(tablePath), 'the note table was not written')
+    const { parseNotes } = await import('../../lib/notes.mjs')
+    const parsed = parseNotes(readFileSync(tablePath, 'utf8'))
+    assert.deepEqual(parsed.problems, [])
+    assert.equal(parsed.rows.length, 2, 'one row per specGap: true survivor, none for false or absent')
+    assert.deepEqual(parsed.rows.map(r => r.rule), ['fix warning 1', 'fix warning 2'], 'the rule is the finding’s suggestion')
+    for (const row of parsed.rows) {
+      assert.equal(row.change, change)
+      assert.equal(row.file, 'README.md')
+      assert.ok(manifest.runId, 'the run has an id to cite')
+      assert.equal(row.source, manifest.runId, 'the source is the run id')
+    }
+    const banners = [...(step.banners || []), ...(manifest.banners || [])]
+    assert.ok(!banners.some(b => typeof b === 'string' && b.startsWith('COMPOUND NOTES NOT WRITTEN')), JSON.stringify(banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run reviewed with no specGap survivor writes no table and carries no notesPath', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeGapReview(root, [false, undefined])
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    assert.ok(!existsSync(join(root, NOTES_TABLE)), 'no note was derived, so no file is created')
+    assert.equal(manifestOf(root).notesPath ?? null, null)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a note table that cannot be written is a COMPOUND NOTES NOT WRITTEN banner and leaves the exit code alone', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    // `docs/notes` is a file, so nothing can be created beneath it.
+    file(root, 'docs/notes', 'not a directory\n')
+    writeGapReview(root, [true])
+    const { step, code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+    assert.equal(code, 0, 'a lost note never changes the exit code')
+    assert.notEqual(step.action, 'halt', 'a lost note never halts the run')
+
+    const manifest = manifestOf(root)
+    const banners = [...(step.banners || []), ...(manifest.banners || [])]
+    assert.ok(
+      banners.some(b => typeof b === 'string' && /^COMPOUND NOTES NOT WRITTEN: \S/.test(b)),
+      `the lost note is named with its reason: ${JSON.stringify(banners)}`
+    )
+    assert.equal(manifest.notesPath ?? null, null, 'the commit brief must name no note table')
+  } finally {
+    cleanup(root)
+  }
+})

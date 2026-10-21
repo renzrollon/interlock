@@ -1,0 +1,65 @@
+# Spec Range: collapse-singleton-waves, ledger row D2.
+#
+# One of the ten cases that measure the checkpoint consult (design D10, D11,
+# D17). The fixture is the archived change folder WITHOUT its decisions.md:
+# the ledger carries the answer, so a fixture that kept it could not test
+# whether the advisor asks the question. label.md holds the question a human
+# actually had to answer, row D2 at openspec/changes/archive/2026-08-23-collapse-singleton-waves/decisions.md:6.
+#
+# The fixture is placed by fixture.sh, which runs only under --scaffold. A run
+# without it starts in an empty workspace: the brief line names no change, no
+# advisor.md is written, and advisor-written fails, which is how the report
+# shows the run was unseeded rather than the advisor wrong.
+#
+# Graders: advisor-written and check-ran are the deterministic floor; a run
+# that drafts questions in its own prose fails check-ran. consult-spawned is an
+# arm: with-only indicator. matches-label and answered-already are judged, and
+# their human labels are what `interlock advisor --verdict` tallies; each is
+# named in evals/CALIBRATION-DEFERRALS.md until a transcript exists to label.
+#
+# SMOKE TAG: deliberately absent. The case carries judged graders and spends an
+# opus consult, so it runs in the scheduled full job only.
+schema_version: "1.0"
+name: spec-range-collapse-singleton
+provenance: "openspec/changes/archive/2026-08-23-collapse-singleton-waves/decisions.md:6 (row D2, agent_resolved: collapse-singleton-waves); agents/advisor.md; skills/spec/SKILL.md"
+exercises: ["agents/advisor.md", "skills/spec/SKILL.md"]
+runs: 1
+context:
+  scaffold_script: fixture.sh
+execution:
+  prompt: |
+    The OpenSpec change "collapse-singleton-waves" in this workspace has passed its artifact
+    review with no blockers. Run the checkpoint consult for it as the interlock
+    spec skill's step 5a is written.
+
+    1. Read openspec/changes/collapse-singleton-waves/proposal.md, design.md and tasks.md:
+       the spec session that wrote them would hold them in context.
+    2. Assemble the brief. This change has no review findings file, so pass
+       no --findings:
+
+         interlock advisor "collapse-singleton-waves" --brief --json
+
+       Read `path` from the output with `step: "brief"`.
+    3. Make one Agent tool call with subagent_type "interlock:advisor" whose
+       prompt names that path and nothing else.
+    4. Write the agent's reply, verbatim, to
+       .claude/metrics/advisor-collapse-singleton-waves-<YYYYMMDD-HHMMSS>.json
+    5. Check it:
+
+         interlock advisor "collapse-singleton-waves" --check <that path> --json
+
+       If the brief failed, the spawn errored, no reply came back, or the
+       Write failed, run this instead:
+
+         interlock advisor "collapse-singleton-waves" --check --failed "<reason>" --json
+
+       When that line exits non-zero, report its first output line as the
+       reason.
+    6. Report the `status`, the question ids and the `dropped` count the
+       check printed.
+
+    The consult is never retried. Do not write decisions.md, and do not edit
+    advisor.md by hand.
+  max_turns: 20
+  timeout_seconds: 1200
+  allowed_tools: [Agent, Bash, Read, Glob, Grep, Write]

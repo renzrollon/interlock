@@ -825,3 +825,59 @@ test('the verdict briefing fixes and re-reviews nothing, so it asks for no file'
   const prompt = assembleVerdictPrompt({ change: 'add-widget', round: 3 })
   assert.ok(!prompt.includes(EMPTY_LIST))
 })
+
+// --- the checkpoint advisor's brief and the compound-notes table -------------
+//
+// The brief assembler is a registered entry like every other, so the
+// determinism and no-mutation loops above cover it; the tests below pin that the
+// entry exists and is the module's own export, so a brief assembled outside the
+// registry cannot pass for a covered one.
+
+test('the advisor brief assembler is registered as PROMPTS.advisor', async () => {
+  const entry = PROMPTS.advisor
+  assert.ok(entry, 'PROMPTS.advisor is not registered')
+  assert.equal(entry.module, 'advisor.mjs')
+  const mod = await import('../../lib/prompts/advisor.mjs')
+  assert.equal(typeof mod.assembleBrief, 'function')
+  assert.equal(entry.assemble, mod.assembleBrief, 'the registry must hold the module’s own assembleBrief')
+  assert.ok(Array.isArray(entry.inputs) && entry.inputs.length > 0, 'PROMPTS.advisor registers no input')
+})
+
+test('the registered advisor assembler yields the same bytes for the same input', () => {
+  const entry = PROMPTS.advisor
+  assert.ok(entry, 'PROMPTS.advisor is not registered')
+  for (const [i, input] of entry.inputs.entries()) {
+    const first = entry.assemble(input)
+    assert.equal(typeof first, 'string')
+    // A structural copy is the same input: nothing outside it (a clock, a cwd)
+    // may reach the bytes.
+    assert.equal(entry.assemble(JSON.parse(JSON.stringify(input))), first, `advisor[${i}] is not a function of its input`)
+  }
+})
+
+test('the commit briefing names the compound-notes table as touched only when the manifest carries it', () => {
+  const withNotes = assembleCommitPrompt({ change: 'add-widget', stageIndex: 3, notesPath: 'docs/notes/compound.md' })
+  assert.match(withNotes, /docs\/notes\/compound\.md/)
+  assert.match(withNotes, /touched/)
+  // The existing rule still holds; no new staging rule is added beside it.
+  assert.match(withNotes, /never `git add -A`, never amend, never push/)
+
+  const without = assembleCommitPrompt({ change: 'add-widget', stageIndex: 3 })
+  assert.doesNotMatch(without, /compound\.md|docs\/notes/)
+  const nulled = assembleCommitPrompt({ change: 'add-widget', stageIndex: 3, notesPath: null })
+  assert.equal(nulled, without, 'an absent and a null notesPath assemble the same briefing')
+})
+
+test('PROMPTS.commit registers an input with notesPath and one without', () => {
+  const inputs = PROMPTS.commit.inputs
+  assert.ok(inputs.some(i => typeof i.notesPath === 'string' && i.notesPath), 'no commit input carries notesPath')
+  assert.ok(inputs.some(i => !i.notesPath), 'no commit input leaves notesPath out')
+})
+
+test('the review briefing’s finding shape lists specGap as an optional field', () => {
+  const prompt = PROMPTS.review.assemble(PROMPTS.review.inputs[0])
+  const shape = prompt.match(/findings: \[\{([^\]]*)\}\]/)
+  assert.ok(shape, 'the review briefing shows no finding shape')
+  assert.match(shape[1], /\bspecGap\b/, 'the finding shape does not list specGap')
+  assert.match(prompt, /`specGap` is optional/)
+})
