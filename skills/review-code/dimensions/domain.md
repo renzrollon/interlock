@@ -18,4 +18,6 @@ What you must not do:
 - Do not invent a requirement, paraphrase one into something stronger, or cite a heading from memory. Quote what you were given.
 - Do not report style, structure, naming or tests of unrelated behaviour. Those belong to the other dimensions.
 
+Set `specGap: true` on a finding only when its root cause is a requirement that neither the living specs nor the change's delta specs stated. Leave it absent otherwise.
+
 Be specific. Name the requirement, name the line of the diff that contradicts it, and say what the system now does instead.

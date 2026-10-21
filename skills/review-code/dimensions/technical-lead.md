@@ -17,3 +17,5 @@ Review for:
 - **Test sufficiency** — cross-reference the specs' GIVEN/WHEN/THEN scenarios against the test files. Check tests in the diff first, then the existing suite. Happy-path gaps are blockers; failure and edge-case gaps are warnings.
 
 See `${CLAUDE_PLUGIN_ROOT}/shared/INVARIANT-SWEEP.md` for the full sweep procedure.
+
+- **Spec gap flag** — set `specGap: true` on a finding only when its root cause is a requirement that neither the living specs nor the change's delta specs stated. Leave it absent otherwise.

@@ -679,6 +679,7 @@ async function fileWrite($, path) {
       files.set(w.file, { count: (before ? before.count : 0) + 1, at: now === null && before ? before.at : now })
     } else if (w.kind === 'brief') spec.explore.brief = w.path
     else if (w.kind === 'findings') spec.findings.set(w.change, w.path)
+    else if (w.kind === 'draft') spec.drafts.set(w.change, w.path)
     if (now !== null) spec.lastActivityAt = now
     $.ui.invalidate('ui.render')
   } catch (err) {
@@ -698,6 +699,10 @@ async function noteSpawn($, input, spawned) {
   // An Explore investigator the chain let through (observe-the-spec-run-live design D5).
   if (specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string') {
     await countInvestigator($)
+  }
+  // The checkpoint advisor the chain let through (add-checkpoint-advisor).
+  if (specWatching() && input && input.subagentType === 'interlock:advisor' && spawned && typeof spawned.model === 'string') {
+    await countConsult($)
   }
   return spawned
 }
@@ -909,6 +914,18 @@ function endRunAtBoundary($, input) {
     $.ui.log(`interlock meter: ${boundary} started the session over; ${what}`, { to: 'debug' })
   } catch (err) {
     $.ui.log(`interlock meter: the session boundary was not applied: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/** One checkpoint advisor spawn the chain let through. Never throws. */
+async function countConsult($) {
+  try {
+    spec.consult.spawned++
+    const now = await specStamp($)
+    if (now !== null) spec.consult.at = now
+    redrawSpec($)
+  } catch (err) {
+    $.ui.log(`interlock spec: an advisor spawn was not counted: ${messageOf(err)}`, { to: 'debug' })
   }
 }
 
