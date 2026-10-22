@@ -860,6 +860,69 @@ test('the review-code skill shows specGap in its emit shape and derives notes af
   }
 })
 
+test('the review-code skill runs the findings advisor only with --advisor, in a 4a section between the note line and the report', () => {
+  // add-review-findings-advisor D11, D13. Tokens and command-line shapes, not
+  // sentences: each is what the section must still say after a reword. The
+  // order is asserted because the consult reads the review's output and the
+  // gate has already decided by then; moving it earlier would let it look like
+  // part of the verdict.
+  const where = 'skills/review-code/SKILL.md'
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+
+  // The flag is named where the skill lists its flags: the argument hint or a table row.
+  const hint = (parseFrontmatter(skill).values['argument-hint'] || '')
+  const named = /--advisor(?![-\w])/.test(hint) || /^\|[^\n]*`--advisor`[^\n]*\|/m.test(skill)
+  assert.ok(named, `${where} must name --advisor in its argument hint or its flag table`)
+
+  assert.equal(skill.split(/^## 4a\. /m).length, 2, `${where} must carry exactly one \`## 4a. \` section`)
+  const from = skill.indexOf('## 4a. ')
+  const to = skill.indexOf('## 5. ')
+  assert.ok(from !== -1 && to !== -1 && from < to, `${where}: \`## 4a. \` must sit before \`## 5. \``)
+  assert.ok(skill.indexOf('## 4. ') < from, `${where}: \`## 4a. \` must follow \`## 4. \``)
+
+  const derive = skill.search(/^interlock note derive --findings [^\n]*/m)
+  assert.ok(derive !== -1 && derive < from, `${where}: \`## 4a. \` must come after the \`interlock note derive\` line`)
+
+  const s4a = skill.slice(from, to)
+  const chain = [
+    ['--advisor-brief', /--advisor-brief/],
+    ['subagent_type: "interlock:review-advisor"', /subagent_type: "interlock:review-advisor"/],
+    ['interlock review-advisor "<change>" --check - --json', /^interlock review-advisor "<change>" --check - --json$/m],
+    ['interlock review-advisor … --check --failed', /^interlock review-advisor [^\n]*--check --failed[^\n]*$/m]
+  ]
+  const positions = chain.map(([name, pattern]) => {
+    const at = s4a.search(pattern)
+    assert.ok(at !== -1, `${where} §4a no longer carries \`${name}\``)
+    return at
+  })
+  for (let i = 1; i < chain.length; i++) {
+    assert.ok(positions[i - 1] < positions[i], `${where} §4a: \`${chain[i - 1][0]}\` must come before \`${chain[i][0]}\``)
+  }
+  // The check line is a fenced command, and the check-shaped lines are told apart:
+  // the first excludes `--failed`, so a dropped `--failed` fails by name.
+  assert.match(s4a, /```[a-z]*\ninterlock review-advisor "<change>" --check - --json\n```/, `${where} §4a must fence the --check - line`)
+  assert.match(s4a, /```[a-z]*\ninterlock review-advisor [^\n]*--check --failed[^\n]*\n```/, `${where} §4a must fence the --check --failed line`)
+
+  for (const token of ['never retried', 'no change folder']) {
+    assert.ok(s4a.includes(token), `${where} §4a no longer names ${token}`)
+  }
+
+  // §5 reports the consult by the file it wrote.
+  const s5 = skill.slice(to)
+  assert.ok(s5.includes('review-advisor.md'), `${where} §5 must name review-advisor.md`)
+
+  // The review line keeps the bookkeeping flag and --base.
+  assert.match(skill, /interlock review [^\n]*--metrics/, `${where} lost --metrics on the review line`)
+  assert.match(skill, /interlock review [^\n]*--base/, `${where} lost --base on the review line`)
+})
+
+test('review-code names none of the findings advisor\'s caps', () => {
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+  for (const token of ['maxReviewAdvisorFlags', 'maxReviewAdvisorBriefChars', 'reviewAdvisorVerdictMinLabels', 'reviewAdvisorKeepMinMatches']) {
+    assert.ok(!skill.includes(token), `skills/review-code/SKILL.md names the cap ${token}: caps live in interlock limits`)
+  }
+})
+
 test('only the domain and technical-lead briefs tell a reviewer to set specGap', () => {
   const dir = join(SKILLS_DIR, 'review-code', 'dimensions')
   for (const file of readdirSync(dir).filter(f => f.endsWith('.md')).sort()) {

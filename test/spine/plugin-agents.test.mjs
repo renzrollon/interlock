@@ -179,3 +179,41 @@ test('agents/advisor.md is a slim, read-only consult agent declared once, with a
   assert.match(fm.description, /brief/, 'agents/advisor.md: the description must name the brief it is spawned with')
   assert.doesNotMatch(text, /Never invoke/i, 'agents/advisor.md must not carry a `Never invoke` clause anywhere')
 })
+
+test('agents/review-advisor.md is a slim, read-only consult agent for review-code, with a positive-only description', () => {
+  // The review-findings advisor (add-review-findings-advisor design D3). It is
+  // the checkpoint advisor's seat at a second skill, so its frontmatter is the
+  // same shape under its own name: a separate agent type keeps the spec meter's
+  // consult count honest while a spec run is live. Its model is named here and
+  // in no skill prose, and it carries no `Never invoke` clause because its one
+  // spawn site is review-code's own session turn.
+  const file = join(ROOT, 'agents', 'review-advisor.md')
+  assert.ok(existsSync(file), 'agents/review-advisor.md is missing')
+  const text = readFileSync(file, 'utf8')
+  const fm = parseFrontmatter(text)
+  assert.ok(fm, 'agents/review-advisor.md must have YAML frontmatter')
+  assert.equal(fm.name, 'review-advisor')
+  assert.equal(fm.model, 'opus')
+
+  const tools = splitList(fm.tools)
+  assert.deepEqual(tools, ['Read'], 'agents/review-advisor.md: Read is its only tool')
+  assertSlim(tools, 'agents/review-advisor.md')
+
+  const denied = splitList(fm.disallowedTools)
+  for (const need of ['Skill', 'Agent', 'Bash', 'Write', 'Edit', 'mcp__*']) {
+    assert.ok(denied.includes(need), `agents/review-advisor.md: disallowedTools must include ${need}`)
+  }
+  assert.ok(!Object.prototype.hasOwnProperty.call(fm, 'effort'), 'agents/review-advisor.md must not declare an effort')
+
+  assert.ok(typeof fm.description === 'string' && fm.description.length > 0, 'agents/review-advisor.md: description is missing')
+  assert.ok(!fm.description.includes('\n'), 'agents/review-advisor.md: the description must be one line')
+  assert.match(fm.description, /consult step/, 'agents/review-advisor.md: the description must name review-code\'s consult step')
+  assert.match(fm.description, /brief/, 'agents/review-advisor.md: the description must name the brief it is spawned with')
+  assert.doesNotMatch(text, /Never invoke/i, 'agents/review-advisor.md must not carry a `Never invoke` clause anywhere')
+})
+
+test('agents/review-advisor.md is a different agent type from the checkpoint advisor', () => {
+  const review = parseFrontmatter(readFileSync(join(ROOT, 'agents', 'review-advisor.md'), 'utf8')) || {}
+  const spec = parseFrontmatter(readFileSync(join(ROOT, 'agents', 'advisor.md'), 'utf8')) || {}
+  assert.notEqual(review.name, spec.name)
+})

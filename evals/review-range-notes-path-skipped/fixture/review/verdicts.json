@@ -1,0 +1,62 @@
+[
+  {
+    "findingTitle": "A resumed run whose compound notes dedupe as skipped never names compound.md to the commit",
+    "file": "lib/run.mjs",
+    "isReal": false,
+    "confidence": 0.8,
+    "reasoning": "The commit prompt reads manifest.notesPath, and the manifest persists across a resume, so the path the first attempt recorded is still there when the resumed run reaches the commit.",
+    "evidence": "lib/run.mjs:4236-4240",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "A resumed run whose compound notes dedupe as skipped never names compound.md to the commit",
+    "file": "lib/run.mjs",
+    "isReal": false,
+    "confidence": 0.75,
+    "reasoning": "Compound notes are bookkeeping: a lost note is spoken as a banner and never fatal, and nothing here touches the exit code. A path that goes unnamed is the designed degradation, not a defect.",
+    "evidence": "lib/run.mjs:2211-2222",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "A throw from deriveNotes aborts the review adjudication",
+    "file": "lib/run.mjs",
+    "isReal": false,
+    "confidence": 0.95,
+    "reasoning": "The derive and append sit in a try/catch that turns any throw into a COMPOUND NOTES NOT WRITTEN banner; adjudication continues.",
+    "evidence": "lib/run.mjs:2214-2222",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "A throw from deriveNotes aborts the review adjudication",
+    "file": "lib/run.mjs",
+    "isReal": false,
+    "confidence": 0.9,
+    "reasoning": "The catch pushes a banner and falls through to the return.",
+    "evidence": "lib/run.mjs:2220-2221",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "Recorded policy banners are matched on their prefix up to the first colon",
+    "file": "lib/run.mjs",
+    "isReal": true,
+    "confidence": 0.65,
+    "reasoning": "The filter compares b.slice(0, b.indexOf(':') + 1), so any two banners with the same prefix are treated as one.",
+    "evidence": "lib/run.mjs:2203-2206",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "Recorded policy banners are matched on their prefix up to the first colon",
+    "file": "lib/run.mjs",
+    "isReal": true,
+    "confidence": 0.6,
+    "reasoning": "Prefix matching hides a changed banner; low impact, but real.",
+    "evidence": "lib/run.mjs:2204-2205",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  }
+]

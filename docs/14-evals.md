@@ -298,6 +298,51 @@ node scripts/advisor-e2e.mjs verify --out "$TMPDIR/adv"    # PASS/FAIL per fact;
 - **It is paid for once.** `--mode eval` refuses to start without `--max-cost-usd`. `verify --write-fixtures` turns the run into scrubbed fixtures (`test/fixtures/mod/agent-spawn-advisor.json` and a results file under `test/fixtures/evals/`), and from then on `npm test` and `claude plugin test` re-check those for free. A fixture that would still name a local path is not written, and the output says so.
 - **The probe never touches this repository.** The session's `--plugin-dir` is an rsync'd copy, so the `tsconfig.json` and `types/` a plugin-dir session writes land in the copy.
 
+### Review Range — measuring the findings advisor
+
+The Review Range cases (`evals/review-range-*/`) measure the opt-in findings
+consult that `/interlock:review-code --advisor` runs after its gate. Each one
+plants a real bug, taken from a later `fix(...)` commit, as a finding the
+skeptics dismissed on a weak citation: a `path:line` that resolves to the
+changed file and passes the evidence gate, but points at code that does not
+decide the defect. The fixture holds the buggy file as it stood before the fix,
+a short `proposal.md` for the change, and the planted `review/findings.json` and
+`review/verdicts.json`. Beside the real bug sit a decoy the skeptics dismissed
+correctly and a finding that survived. `label.md` names the fix commit, the
+buggy `path:line` and the title of the dismissed finding a human would want
+doubted.
+
+- **Seeding needs `--scaffold`.** Each case places its fixture through
+  `context.scaffold_script`, which the harness runs only under `--scaffold`.
+  The scheduled full job passes it; these cases carry no `smoke` tag. A run
+  without it finds no review to resolve, the check records a consult that did
+  not run, and `check-drafted` fails, which is how the report shows the run was
+  unseeded rather than the advisor wrong.
+- **No Write is granted.** The case runs the review line with
+  `--advisor-brief`, spawns `interlock:review-advisor` once, and pipes the reply
+  to `interlock review-advisor <change> --check -`, which persists the draft and
+  renders `review-advisor.md` itself.
+- **What is graded.** Deterministically: that the check printed a drafted
+  result (`check-drafted`; a did-not-run check fails it), that the
+  `interlock review-advisor … --check` line ran, and (as a with-only indicator)
+  that `interlock:review-advisor` was spawned once. By a judge: `matches-label`,
+  whether a kept `dismissal-doubt` flag targets the dismissal `label.md` names,
+  and `repeats-survivor`, whether the kept flags merely restate what survived.
+- **The structural suite keeps the plant honest.** `test/evals.test.mjs` runs
+  `interlock review` over every fixture, so an edit that turns the planted bug
+  into a survivor fails it, and compares the fixture's copy of the buggy file
+  with the fix commit's, so a fixture cannot carry the fix.
+- **The labels are the kill criterion's data.** Human labels for the two judged
+  graders, stored under `evals/review-range-*/calibration/` in the
+  [calibration layout](../evals/CALIBRATION-LAYOUT.md), are what
+  `interlock review-advisor --verdict --labels evals` tallies into keep, kill or
+  insufficient labels. Until they exist the graders are named in
+  `evals/CALIBRATION-DEFERRALS.md` and the verdict says the labels are
+  insufficient. The cases gate nothing.
+- **No threshold lives here.** How many labels the verdict needs, the bounds
+  it applies, and the consult's flag and brief caps are caps in
+  `interlock limits`; read them there.
+
 ### Transcript, outcome, process
 
 Three measurements, not one with three names:

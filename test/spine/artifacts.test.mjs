@@ -2,7 +2,9 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import {
   RED_SECTION_MARKER,
   detectRedSection,
@@ -414,5 +416,125 @@ test('validate on a folder holding only advisor.md names the three missing artif
     assert.doesNotMatch(JSON.stringify(r), /advisor\.md/)
   } finally {
     rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+// --- review-advisor.md is read by no gate ---------------------------------
+//
+// The review-findings advisor writes `openspec/changes/<change>/review-advisor.md`
+// (add-review-findings-advisor D8). It is advice for the human, so the decisions
+// of every command that could plausibly read a change folder must be the same
+// bytes with and without it, and none of them may name it. The file below
+// carries a `dismissal-doubt` over a dismissed finding on purpose: a reader
+// that started honouring it would revive that finding, move a severity or add
+// a compound note, and the pair of outputs would differ.
+
+const REVIEW_ADVISOR_MD = [
+  `# Review advisor — ${ADVISOR_CHANGE}`,
+  '',
+  'drafted 2026-10-22T10:10:10Z from .claude/metrics/review-advisor-brief-add-widget-20261022-101000.md',
+  '',
+  '## Flags',
+  '',
+  '| id | kind | targets | why | check |',
+  '|----|----|----|----|----|',
+  '| F1 | dismissal-doubt | D1 (Widget list renders stale values) | both skeptics cite a line that does not decide the defect | read lib/widget.mjs:12 against the finding |',
+  '| F2 | uncovered | lib/widget.mjs | no dimension engaged this file | read the file once |',
+  '',
+  '## Dropped',
+  '',
+  'none',
+  '',
+  'This file is advisory: no gate reads it; a flag becomes a finding only when a person re-runs the review.',
+  ''
+].join('\n')
+
+const REVIEW_FINDING = {
+  file: 'lib/widget.mjs',
+  line: 12,
+  severity: 'warning',
+  title: 'Widget list renders stale values',
+  description: 'The list is built once and never refreshed.',
+  suggestion: 'Rebuild it on each render.',
+  dimension: 'language',
+  qualityScore: 8,
+  specGap: true
+}
+
+/** Every command that reads a change folder or a review, run once in a fresh checkout. */
+function reviewAdvisorDecisions(withFile) {
+  const { repo, dir } = seedAdvisorChange(ADVISOR_FILES)
+  try {
+    if (withFile) writeFileSync(join(dir, 'review-advisor.md'), REVIEW_ADVISOR_MD)
+    const findings = join(repo, 'findings.json')
+    writeFileSync(findings, JSON.stringify([REVIEW_FINDING]))
+    const bin = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+    const out = {}
+    const lines = {
+      gate: ['gate', '--findings', findings, '--root', repo, '--json'],
+      autonomyRecord: ['autonomy', 'record', 'review-code', '--blockers', '0', '--root', repo, '--json'],
+      noteDerive: ['note', 'derive', '--findings', findings, '--change', ADVISOR_CHANGE, '--root', repo, '--json'],
+      ready: ['ready', ADVISOR_CHANGE, '--findings', findings, '--root', repo, '--json'],
+      validate: ['validate', ADVISOR_CHANGE, '--root', repo, '--json'],
+      ledger: ['ledger', ADVISOR_CHANGE, '--root', repo, '--json'],
+      mergeConfidence: ['merge-confidence', ADVISOR_CHANGE, '--root', repo, '--changed', 'lib/widget.mjs', '--json']
+    }
+    for (const [name, argv] of Object.entries(lines)) {
+      const r = spawnSync(process.execPath, [bin, ...argv], { cwd: repo, encoding: 'utf8', input: '' })
+      assert.equal(r.error, undefined, `${name}: spawn failed`)
+      // The checkout's own path is the only thing that legitimately differs between the two runs.
+      out[name] = JSON.stringify({ code: r.status, stdout: r.stdout, stderr: r.stderr }).split(repo).join('<root>')
+    }
+    return out
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+}
+
+test('gate, autonomy record, note derive, ready, validate, ledger and merge-confidence are byte-identical with and without review-advisor.md', () => {
+  const without = reviewAdvisorDecisions(false)
+  const withFile = reviewAdvisorDecisions(true)
+  assert.deepEqual(Object.keys(without), [
+    'gate',
+    'autonomyRecord',
+    'noteDerive',
+    'ready',
+    'validate',
+    'ledger',
+    'mergeConfidence'
+  ])
+  for (const key of Object.keys(without)) {
+    assert.equal(withFile[key], without[key], `${key} changed when review-advisor.md was added`)
+    assert.doesNotMatch(withFile[key], /review-advisor/, `${key} names review-advisor`)
+  }
+})
+
+test('validate on a folder holding only review-advisor.md names the three missing artifacts and never review-advisor.md', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'interlock-rv-only-'))
+  try {
+    const dir = join(repo, 'openspec', 'changes', 'odd')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'review-advisor.md'), REVIEW_ADVISOR_MD)
+    const r = inspectChange(repo, 'odd')
+    assert.equal(r.ready, false)
+    assert.deepEqual([...r.missing].sort(), ['design.md', 'proposal.md', 'tasks.md'])
+    assert.doesNotMatch(JSON.stringify(r), /review-advisor/)
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('the lib modules the gate decisions run through never name review-advisor.md', () => {
+  // The module-level half of the pin above: the file is named in the change
+  // folder by the consult's CLI and by nothing a decision reads.
+  const lib = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'lib')
+  for (const name of ['artifacts.mjs', 'ready.mjs', 'ledger.mjs', 'gate.mjs', 'autonomy.mjs', 'notes.mjs', 'merge-confidence.mjs']) {
+    let text
+    try {
+      text = readFileSync(join(lib, name), 'utf8')
+    } catch {
+      continue
+    }
+    assert.doesNotMatch(text, /review-advisor/, `lib/${name} names review-advisor`)
   }
 })

@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **An opt-in findings advisor for `/interlock:review-code`.** With `--advisor`, after the gate, the read-only `interlock:review-advisor` agent is spawned once on a brief `interlock review --advisor-brief <change>` assembles. `interlock review-advisor <change> --check -` persists the reply, validates its flags by code against ids the CLI assigned (`dismissal-doubt`, `shared-root-cause`, `uncovered`) and writes `openspec/changes/<change>/review-advisor.md`; a consult that did not run is written down the same way. It raises only: the gate, autonomy and merge verdict never read the file.
+
 ### Security
 
 - **A fork's pull request can no longer roll the `release` branch back.** `plugin-bundle.yml` and `pages.yml` follow a run of the workflow named `Release`, and `workflow_run` matches on that name alone. A fork could add a workflow called Release, name its branch after an old tag, and the bundle job would mirror that published version onto the branch plugin users install. Both now act only on a tag push in this repository, from `release.yml`.

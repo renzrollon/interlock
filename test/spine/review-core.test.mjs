@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveReview, formatReview } from '../../lib/review-core.mjs'
+import * as reviewCore from '../../lib/review-core.mjs'
 import { TOLERANCE_BAND, FINDING_SCHEMA } from '../../lib/findings.mjs'
 
 const f = (over = {}) => ({
@@ -849,4 +850,236 @@ test('specGap changes none of the survival arithmetic', () => {
     return resolveReview(raised([f({ title: 'x', ...extra })], 'domain'), real('x', 'warning')).counts
   }
   for (const value of [true, false, 'yes']) assert.deepEqual(counts(value), counts(undefined))
+})
+
+// --- verdictsFor: the join the review-findings advisor's brief reuses ------
+//
+// `verdictsFor` exposes the title-plus-file join `resolveReview` already does
+// privately, so the advisor's brief prints the same verdicts that decided a
+// dismissal. It is reached through the namespace so the file's older tests keep
+// running while the export does not exist yet.
+//
+// See add-review-findings-advisor design.md D2.
+
+const verdictsFor = (...args) => reviewCore.verdictsFor(...args)
+
+test('verdictsFor returns the file-qualified verdict set when one exists', () => {
+  const qualified = [v({ findingTitle: 'shared', file: 'lib/b.ts' }), v({ findingTitle: 'shared', file: 'lib/b.ts', isReal: false })]
+  const titleOnly = v({ findingTitle: 'shared' })
+  const other = v({ findingTitle: 'shared', file: 'lib/c.ts' })
+  const got = verdictsFor(f({ title: 'shared', file: 'lib/b.ts' }), [titleOnly, qualified[0], other, qualified[1]])
+  assert.deepEqual(got, qualified, 'the title-only and other-file verdicts are not part of the set')
+  assert.equal(got[0], qualified[0], 'the verdict objects themselves, in input order')
+})
+
+test('verdictsFor falls back to the title-only set when no verdict names the finding’s file', () => {
+  const titleOnly = [v({ findingTitle: 'shared' }), v({ findingTitle: 'shared', isReal: false })]
+  const elsewhere = v({ findingTitle: 'shared', file: 'lib/c.ts' })
+  assert.deepEqual(verdictsFor(f({ title: 'shared', file: 'lib/b.ts' }), [elsewhere, ...titleOnly]), titleOnly)
+})
+
+test('verdictsFor falls back to the title-only set for a finding with no file', () => {
+  const titleOnly = v({ findingTitle: 'shared' })
+  assert.deepEqual(verdictsFor(f({ title: 'shared', file: undefined }), [titleOnly, v({ findingTitle: 'shared', file: 'lib/b.ts' })]), [titleOnly])
+})
+
+test('verdictsFor returns an empty array when nothing adjudicates the finding', () => {
+  assert.deepEqual(verdictsFor(f({ title: 'lonely' }), [v({ findingTitle: 'other' })]), [])
+  assert.deepEqual(verdictsFor(f({ title: 'lonely' }), []), [])
+  assert.deepEqual(verdictsFor(f({ title: 'lonely' }), undefined), [])
+  assert.deepEqual(verdictsFor(f({ title: 'lonely' }), null), [])
+  assert.deepEqual(verdictsFor({ file: 'lib/a.ts' }, [v()]), [], 'a finding with no title has no verdicts')
+  assert.deepEqual(verdictsFor(null, [v()]), [])
+})
+
+test('verdictsFor trims the file on both sides of the join', () => {
+  const qualified = v({ findingTitle: 'shared', file: '  lib/b.ts ' })
+  const titleOnly = v({ findingTitle: 'shared' })
+  assert.deepEqual(verdictsFor(f({ title: 'shared', file: 'lib/b.ts   ' }), [titleOnly, qualified]), [qualified])
+})
+
+test('verdictsFor skips malformed verdict entries rather than throwing', () => {
+  const good = v({ findingTitle: 'x' })
+  assert.deepEqual(verdictsFor(f({ title: 'x' }), [null, 'text', { isReal: true }, { findingTitle: 7 }, good]), [good])
+})
+
+test('verdictsFor agrees with the verdicts resolveReview counted for each dismissal', () => {
+  const findings = [f({ title: 'dup', file: 'lib/b.ts' }), f({ title: 'dup', file: 'lib/c.ts' })]
+  const verdicts = [
+    v({ findingTitle: 'dup', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'dup', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'dup' })
+  ]
+  const r = resolveReview(findings, verdicts)
+  for (const d of r.dismissed) assert.equal(verdictsFor(d, verdicts).length, d.votes.total)
+  for (const s of r.surviving) assert.equal(verdictsFor(s, verdicts).length, s.votes.total)
+})
+
+// --- resolveReview's output does not move when the join is exported ---------
+//
+// Captured from the tree before `verdictsFor` was added: a survivor refined up,
+// a file-qualified dismissal beside a same-titled survivor, a title-only
+// dismissal, a quality drop, a policy drop and an orphan verdict. No consumer of
+// the review JSON may see a new field.
+
+const BEFORE_VERDICTS_FOR = JSON.parse(String.raw`{
+  "surviving": [
+    {
+      "severity": "blocker",
+      "file": "lib/a.ts",
+      "title": "kept",
+      "description": "because",
+      "dimension": "typescript",
+      "votes": {
+        "real": 2,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 2
+      },
+      "qualityScores": [
+        4,
+        4
+      ],
+      "originalSeverity": "warning"
+    },
+    {
+      "severity": "warning",
+      "file": "lib/c.ts",
+      "title": "shared title",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 1,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 1
+      },
+      "qualityScores": [
+        4
+      ]
+    }
+  ],
+  "dismissed": [
+    {
+      "severity": "warning",
+      "file": "lib/b.ts",
+      "title": "shared title",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 0,
+        "notReal": 2,
+        "uncited": 0,
+        "total": 2
+      }
+    },
+    {
+      "severity": "warning",
+      "file": "lib/d.ts",
+      "title": "title only dismissed",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 0,
+        "notReal": 2,
+        "uncited": 0,
+        "total": 2
+      }
+    }
+  ],
+  "droppedByQuality": [
+    {
+      "severity": "warning",
+      "file": "lib/e.ts",
+      "title": "too vague",
+      "description": "because",
+      "dimension": "typescript",
+      "votes": {
+        "real": 2,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 2
+      },
+      "qualityScores": [
+        1,
+        1
+      ]
+    }
+  ],
+  "droppedByPolicy": [
+    {
+      "severity": "warning",
+      "file": "dist/x.js",
+      "title": "generated",
+      "description": "because",
+      "dimension": "devops",
+      "excludedBy": "dist"
+    }
+  ],
+  "counts": {
+    "raised": 6,
+    "droppedByPolicy": 1,
+    "dismissed": 2,
+    "droppedByQuality": 1,
+    "surviving": 2,
+    "dismissalsRejected": 0
+  },
+  "dimensionStats": {
+    "typescript": {
+      "raised": 2,
+      "surviving": 1
+    },
+    "qa": {
+      "raised": 3,
+      "surviving": 1
+    }
+  },
+  "anomalies": {
+    "orphanVerdicts": [
+      {
+        "findingTitle": "nobody raised this",
+        "isReal": true,
+        "confidence": 0.9,
+        "reasoning": "checked it",
+        "evidence": "lib/a.ts:41-58",
+        "refinedSeverity": "warning",
+        "qualityScore": 4,
+        "severityScore": 3
+      }
+    ],
+    "malformedVerdicts": [],
+    "requirementCitations": [],
+    "specGapShape": []
+  }
+}`)
+
+test('resolveReview’s output is deep-equal to its output before verdictsFor was exported', () => {
+  const findings = [
+    f({ title: 'kept', dimension: 'typescript' }),
+    f({ title: 'shared title', file: 'lib/b.ts', dimension: 'qa' }),
+    f({ title: 'shared title', file: 'lib/c.ts', dimension: 'qa' }),
+    f({ title: 'title only dismissed', file: 'lib/d.ts', dimension: 'qa' }),
+    f({ title: 'too vague', file: 'lib/e.ts', dimension: 'typescript' }),
+    f({ title: 'generated', file: 'dist/x.js', dimension: 'devops' })
+  ]
+  const verdicts = [
+    v({ findingTitle: 'kept' }),
+    v({ findingTitle: 'kept', refinedSeverity: 'blocker' }),
+    v({ findingTitle: 'shared title', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'shared title', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'shared title' }),
+    v({ findingTitle: 'title only dismissed', isReal: false }),
+    v({ findingTitle: 'title only dismissed', isReal: false }),
+    v({ findingTitle: 'too vague', qualityScore: 1 }),
+    v({ findingTitle: 'too vague', qualityScore: 1 }),
+    v({ findingTitle: 'nobody raised this' })
+  ]
+  const r = resolveReview(findings, verdicts, {
+    changedPaths: ['lib/a.ts', 'lib/b.ts', 'lib/c.ts', 'lib/d.ts', 'lib/e.ts'],
+    excludePaths: ['dist']
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(r)), BEFORE_VERDICTS_FOR)
+  assert.deepEqual(Object.keys(r).sort(), ['anomalies', 'counts', 'dimensionStats', 'dismissed', 'droppedByPolicy', 'droppedByQuality', 'surviving'])
+  for (const d of r.dismissed) assert.deepEqual(Object.keys(d.votes).sort(), ['notReal', 'real', 'total', 'uncited'])
+  assert.ok(r.dismissed.every(d => !('verdicts' in d)), 'a dismissed record gained a verdicts field')
 })

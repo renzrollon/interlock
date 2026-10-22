@@ -405,7 +405,7 @@ Bad `tasks.md` becomes bad parallel code. Vague phrases (`update accordingly`, `
 ### Reviews
 
 - **Artifact review** catches wrong shape before waves. Treat blockers as "the spec is wrong," not as nits to silence.
-- **Code review** (`--review` / `--strict` / `/interlock:review-code`) is calibrated for *you* to read survivors. Dismissed and dropped-by-quality counts are the evidence the report is worth line-by-line attention. A high `dismissalsRejected` means skeptics asserted without reading.
+- **Code review** (`--review` / `--strict` / `/interlock:review-code`) is calibrated for *you* to read survivors. Dismissed and dropped-by-quality counts are the evidence the report is worth line-by-line attention. A high `dismissalsRejected` means skeptics asserted without reading. `/interlock:review-code --advisor` adds an opt-in consult after the gate: a read-only `review-advisor` agent may flag a dismissal it doubts, survivors with one root cause, or an uncovered changed path, written to `review-advisor.md` in the change folder. It raises only and never changes the gate ([07](./07-cli-and-configuration.md)).
 - False consensus is the multi-agent default ([arXiv:2608.18167](https://arxiv.org/abs/2608.18167)). Interlock's tie-keeps and uncited-refutation rules are the counter. They only run if you opt in.
 
 ### Tests

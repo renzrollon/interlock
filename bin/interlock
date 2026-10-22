@@ -187,6 +187,7 @@ import { renderReportHtml } from '../lib/report-html.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { advisorBrief, advisorCheck, advisorVerdict, noteCommand } from '../lib/advisor-cli.mjs'
+import { reviewAdvisorBrief, reviewAdvisorCheck, reviewAdvisorVerdict } from '../lib/review-advisor-cli.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
 import { promote, formatPromotion } from '../lib/evals-promote.mjs'
@@ -336,6 +337,15 @@ Usage:
   interlock advisor --verdict               Tally the Spec Range human labels against
                   [--labels <dir>]          the advisor caps: KEEP, KILL or
                                             INSUFFICIENT LABELS. Always exits 0
+  interlock review-advisor <change> --check <draft|->
+                                            Validate the review consult's JSON draft by
+                                            code and write the change's review-advisor.md.
+                                            Exits 0 once the change resolves
+  interlock review-advisor <change> --check --failed "<reason>"
+                                            Write review-advisor.md as a consult that did not run
+  interlock review-advisor --verdict [--labels <dir>]
+                                            Tally the Review Range human labels: KEEP,
+                                            KILL or INSUFFICIENT LABELS. Always exits 0
   interlock note add --change <c> --file <f> --surprise "<s>" --rule "<r>"
                                             Append one row to the compound-notes table
   interlock note derive --findings <f> --change <c>
@@ -816,6 +826,9 @@ remediate:
 review:
   --findings <file>      Findings raised by the review dimensions. "-" for stdin.
   --verdicts <file>      Flat JSON array of skeptic verdicts. "-" for stdin.
+  --advisor-brief <change>  Also write the review consult's brief and id index
+                         under .claude/metrics. A failure warns and never
+                         changes the exit code.
   --metrics <change>     Also append the counts to .claude/metrics/ under this
                          change name. A metrics failure prints its reason and is
                          never fatal — the exit code is unaffected.
@@ -3729,6 +3742,14 @@ async function main() {
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
+      // The consult's brief is bookkeeping too: it warns and keeps the exit code.
+      let advisorBrief = null
+      if (flags['advisor-brief'] !== undefined) {
+        if (flags['advisor-brief'] === true) die('--advisor-brief requires a change name')
+        advisorBrief = reviewAdvisorBrief(cliIo, root, String(flags['advisor-brief']), result, verdicts, changedPaths, flags)
+        if (!advisorBrief.written) warn(`advisor brief not written: ${advisorBrief.reason}`)
+      }
+
       const policyProblems = policy.problems.length
         ? `  policy: ${policy.problems.length} problem(s) in REVIEW.md\n` +
           policy.problems.map(p => `    - ${p}`).join('\n') + '\n'
@@ -3743,10 +3764,11 @@ async function main() {
         formatReview(result) +
         policyDiffers +
         policyProblems +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
+        (advisorBrief ? `  advisor brief: ${advisorBrief.written ? advisorBrief.path : `not written (${advisorBrief.reason})`}\n` : '')
       emit(
         json,
-        { ...result, policyProblems: policy.problems, ...(policyBase ? { policyBase } : {}), ...(metrics ? { metrics } : {}) },
+        { ...result, policyProblems: policy.problems, ...(policyBase ? { policyBase } : {}), ...(metrics ? { metrics } : {}), ...(advisorBrief ? { advisorBrief } : {}) },
         text
       )
       break
@@ -3983,6 +4005,13 @@ async function main() {
       const name = requireChange(root, asName ?? requestedName(positional, flags), json)
       if (flags.brief !== undefined) advisorBrief(cliIo, root, name, flags, json)
       else advisorCheck(cliIo, root, name, flags, json)
+      break
+    }
+
+    case 'review-advisor': {
+      if (flags.verdict) reviewAdvisorVerdict(cliIo, root, flags, json)
+      else if (flags.check === undefined) die('review-advisor requires --check or --verdict')
+      else reviewAdvisorCheck(cliIo, root, requireChange(root, requestedName(positional, flags), json), flags, json)
       break
     }
 

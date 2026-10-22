@@ -1,0 +1,36 @@
+[
+  {
+    "dimension": "language",
+    "findings": [
+      {
+        "severity": "warning",
+        "file": "lib/preflight-file.mjs",
+        "line": 138,
+        "title": "orderCards throws on a card with no writtenAt",
+        "description": "orderCards sorts on Date.parse(card.writtenAt), and a card written without a time has writtenAt null, so the comparison yields NaN and the sort throws or scrambles the band.",
+        "suggestion": "Treat a missing time as oldest."
+      },
+      {
+        "severity": "suggestion",
+        "file": "lib/preflight-file.mjs",
+        "line": 113,
+        "title": "readPreflightReport refuses a report stamped with a newer schema instead of reading its known fields",
+        "description": "readPreflightReport rejects any report whose schema is not exactly interlock.preflight/1, so a report written by a newer hook draws nothing at all, though every field this reader knows is still present.",
+        "suggestion": "Accept a newer minor stamp and read the known fields, saying the stamp is newer."
+      }
+    ]
+  },
+  {
+    "dimension": "architecture",
+    "findings": [
+      {
+        "severity": "warning",
+        "file": "lib/preflight-file.mjs",
+        "line": 126,
+        "title": "Any listed halt resume card holds the session-start band",
+        "description": "shouldDraw returns true whenever report.cards.listed is non-empty. A halt resume card stays on disk until its change is archived, so one halted run draws the AbovePrompt band at every session start, with nothing failing and nothing for the person to fix there; the band stops meaning that something needs attention.",
+        "suggestion": "Draw the band only for a fail or warn check, a doctor that did not run or parse, or a spoken note; leave cards to the two panes."
+      }
+    ]
+  }
+]

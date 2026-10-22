@@ -1,0 +1,62 @@
+[
+  {
+    "findingTitle": "checkOpenSpec fails a configured project whose openspec CLI is missing",
+    "file": "lib/doctor.mjs",
+    "isReal": false,
+    "confidence": 0.95,
+    "reasoning": "A configured project with no CLI returns warn, not fail, and the detail says ship reads artifacts from disk. Only the no-CLI, no-project case at 600 fails.",
+    "evidence": "lib/doctor.mjs:594-598",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "checkOpenSpec fails a configured project whose openspec CLI is missing",
+    "file": "lib/doctor.mjs",
+    "isReal": false,
+    "confidence": 0.9,
+    "reasoning": "The fail branch requires both no CLI and no openspec/ project; the finding's case takes the warn branch.",
+    "evidence": "lib/doctor.mjs:594-600",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "probeVersion discards stderr, so a failed probe's error never reaches the evidence",
+    "file": "lib/doctor.mjs",
+    "isReal": true,
+    "confidence": 0.7,
+    "reasoning": "stdio is ['ignore', 'pipe', 'ignore'] and every failure collapses to null, so the evidence cannot carry the error.",
+    "evidence": "lib/doctor.mjs:306-316",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "probeVersion discards stderr, so a failed probe's error never reaches the evidence",
+    "file": "lib/doctor.mjs",
+    "isReal": true,
+    "confidence": 0.65,
+    "reasoning": "stderr is ignored outright; capturing its first line is cheap and non-gating.",
+    "evidence": "lib/doctor.mjs:310",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "doctor reports openspec ok when its version probe returns nothing",
+    "file": "lib/doctor.mjs",
+    "isReal": false,
+    "confidence": 0.8,
+    "reasoning": "probeVersion is documented as best-effort and non-gating: presence decides, and the version is only what the report says out loud. Every failure mode collapses to null by design, so an empty probe is not a defect.",
+    "evidence": "lib/doctor.mjs:301-317",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "doctor reports openspec ok when its version probe returns nothing",
+    "file": "lib/doctor.mjs",
+    "isReal": false,
+    "confidence": 0.75,
+    "reasoning": "The empty probe is not silent: the evidence line reads 'version probe returned nothing', so the report already tells the reader the probe failed.",
+    "evidence": "lib/doctor.mjs:579-581",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  }
+]

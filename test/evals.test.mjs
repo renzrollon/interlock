@@ -91,6 +91,12 @@ const EXPECTED_CASES = [
   'evidence-locator',
   'handoff-status-enum',
   'lane-partial-failure',
+  'review-range-advisor-check-exits',
+  'review-range-briefing-label-path',
+  'review-range-doctor-openspec-probe',
+  'review-range-halt-card-band',
+  'review-range-notes-path-skipped',
+  'review-range-preflight-closer',
   'skill-routing',
   'skill-routing-explore',
   'spec-range-add-report-dashboard',
@@ -802,6 +808,289 @@ test('docs/14 has a Spec Range section naming the verdict, interlock limits and 
         section,
         new RegExp(`(?<![\\w.])${spelling}(?![\\w.])`),
         `docs/14-evals.md's Spec Range section states ${cap} (${spelling}); name interlock limits instead`
+      )
+    }
+  }
+})
+
+// --- Review Range (spec: evals/review-range) ----------------------------------
+//
+// Six cases, one per fix commit whose bug a later `fix(...)` repaired. Each
+// seeds the pre-fix file beside a planted review in which the real bug was
+// dismissed on a citation that resolves to a changed file but does not address
+// the defect. The structural block below runs `interlock review` over every
+// fixture, so a fixture edit cannot quietly turn the planted bug into a
+// survivor, and compares the fixture's copy of the buggy file with the fix
+// commit's, so a fixture cannot quietly carry the fix.
+
+const REVIEW_RANGE = [
+  'briefing-label-path',
+  'doctor-openspec-probe',
+  'preflight-closer',
+  'advisor-check-exits',
+  'notes-path-skipped',
+  'halt-card-band'
+]
+
+const REVIEW_LABEL_KEYS = ['fix', 'introduced', 'file', 'dismissed', 'bug']
+
+/** `key: value` lines of a Review Range label.md, first occurrence wins. */
+function readReviewLabel(text) {
+  const out = {}
+  for (const line of text.split('\n')) {
+    const m = /^(fix|introduced|file|dismissed|bug):\s*(.*)$/.exec(line)
+    if (m && !(m[1] in out)) out[m[1]] = m[2].trim()
+  }
+  return out
+}
+
+/** The frontmatter block of a grader file, as text. */
+function graderFront(text) {
+  const m = /^---\n([\s\S]*?)\n---/.exec(text)
+  return m ? m[1] : ''
+}
+
+/** A scalar frontmatter field, unquoted. YAML single quotes escape a quote by doubling it. */
+function graderField(front, key) {
+  const m = new RegExp(`^${key}:[ \\t]*(.+)$`, 'm').exec(front)
+  if (!m) return null
+  const raw = m[1].trim()
+  if (raw.startsWith("'") && raw.endsWith("'") && raw.length >= 2) return raw.slice(1, -1).replace(/''/g, "'")
+  if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) return raw.slice(1, -1)
+  return raw
+}
+
+test('Review Range: every slug in the table is pinned in EXPECTED_CASES', () => {
+  for (const slug of REVIEW_RANGE) {
+    assert.ok(EXPECTED_CASES.includes(`review-range-${slug}`), `EXPECTED_CASES must list review-range-${slug}`)
+  }
+})
+
+for (const slug of REVIEW_RANGE) {
+  const name = `review-range-${slug}`
+  const dir = join(EVALS_DIR, name)
+  const fixture = join(dir, 'fixture')
+  const labelPath = join(dir, 'label.md')
+
+  const label = () => {
+    assert.ok(existsSync(labelPath), `${name}: label.md is missing`)
+    return readReviewLabel(readFileSync(labelPath, 'utf8'))
+  }
+  // The files the planted review is about: everything in the fixture that is
+  // not the review input or the change folder.
+  const changedFiles = () => {
+    assert.ok(existsSync(fixture), `${name}: fixture/ is missing`)
+    return walk(fixture)
+      .filter(p => statSync(p).isFile())
+      .map(p => p.slice(fixture.length + 1))
+      .filter(p => !p.startsWith('review/') && !p.startsWith('openspec/'))
+  }
+
+  test(`${name}: case.yaml runs once, names the fix, exercises the review advisor, grants no Write and is not smoke`, () => {
+    const yamlPath = join(dir, 'case.yaml')
+    assert.ok(existsSync(yamlPath), `${name}: evals/${name}/case.yaml is missing`)
+    const text = readFileSync(yamlPath, 'utf8')
+    assert.ok(readTopLevel(text, 'schema_version'), `${name}: case.yaml does not pin schema_version`)
+    assert.equal(readTopLevel(text, 'runs'), '1', `${name}: case.yaml must set runs: 1`)
+    const fixSha = (label().fix || '').split(/\s+/)[0]
+    assert.match(fixSha, /^[0-9a-f]{7,40}$/, `${name}: label.md fix: must start with the fix commit's short sha`)
+    assert.ok((readTopLevel(text, 'provenance') || '').includes(fixSha), `${name}: provenance must name the fix commit ${fixSha}`)
+    const exercises = readExercises(text)
+    for (const surface of ['agents/review-advisor.md', 'skills/review-code/SKILL.md']) {
+      assert.ok(exercises.includes(surface), `${name}: exercises: must name ${surface}`)
+    }
+    assert.ok(!readTags(text).has('smoke'), `${name}: a Review Range case runs in the full job only, never smoke`)
+
+    const tools = /^\s+allowed_tools:\s*\[([^\]]*)\]/m.exec(text)
+    assert.ok(tools, `${name}: execution.allowed_tools is not set`)
+    assert.deepEqual(
+      tools[1].split(',').map(t => t.trim()).sort(),
+      ['Agent', 'Bash', 'Glob', 'Grep', 'Read'],
+      `${name}: allowed_tools must be [Agent, Bash, Read, Glob, Grep] with no Write, because the check reads the draft from standard input`
+    )
+
+    const script = /^\s+scaffold_script:\s*(\S+)\s*$/m.exec(text)
+    assert.ok(script, `${name}: context.scaffold_script is not set`)
+    const scriptPath = join(dir, script[1].replace(/['"]/g, ''))
+    assert.ok(existsSync(scriptPath), `${name}: scaffold script ${script[1]} does not exist`)
+    assert.ok(statSync(scriptPath).mode & 0o111, `${name}: scaffold script ${script[1]} is not executable`)
+    assert.ok(existsSync(join(dir, 'fixture.sh')), `${name}: fixture.sh is missing`)
+    assert.ok(statSync(join(dir, 'fixture.sh')).mode & 0o111, `${name}: fixture.sh is not executable`)
+  })
+
+  test(`${name}: the fixture holds the two review files and the proposal, and no review-advisor.md`, () => {
+    assert.ok(existsSync(fixture), `${name}: fixture/ is missing`)
+    for (const rel of ['review/findings.json', 'review/verdicts.json', `openspec/changes/${slug}/proposal.md`]) {
+      assert.ok(existsSync(join(fixture, rel)), `${name}: the fixture is missing ${rel}`)
+    }
+    const leaked = walk(fixture).filter(p => /(?:^|\/)review-advisor\.md$/.test(p))
+    assert.deepEqual(
+      leaked.map(p => p.slice(ROOT.length + 1)),
+      [],
+      `${name}: a fixture that carries a review-advisor.md carries the answer`
+    )
+    assert.ok(changedFiles().length >= 1, `${name}: the fixture holds no changed file beside the review input`)
+  })
+
+  test(`${name}: label.md carries fix, introduced, file, dismissed and bug`, () => {
+    const fields = label()
+    for (const key of REVIEW_LABEL_KEYS) {
+      assert.ok(fields[key], `${name}: label.md carries no ${key}: line`)
+    }
+    assert.match(fields.file, /^\S+:\d+$/, `${name}: label.md file: must be path:line`)
+  })
+
+  test(`${name}: interlock review over the fixture dismisses the labelled finding and leaves a survivor`, () => {
+    const fields = label()
+    assert.ok(fields.dismissed, `${name}: label.md carries no dismissed: line`)
+    for (const rel of ['review/findings.json', 'review/verdicts.json']) {
+      assert.ok(existsSync(join(fixture, rel)), `${name}: the fixture is missing ${rel}`)
+    }
+    const changed = changedFiles()
+    assert.ok(changed.length >= 1, `${name}: the fixture holds no changed file`)
+    // cwd is the fixture, so the repo's own REVIEW.md excludes nothing from it.
+    const run = spawnSync(
+      process.execPath,
+      [
+        join(ROOT, 'bin', 'interlock'), 'review',
+        '--findings', 'review/findings.json',
+        '--verdicts', 'review/verdicts.json',
+        '--changed', changed.join(','),
+        '--json'
+      ],
+      { cwd: fixture, encoding: 'utf8' }
+    )
+    assert.equal(run.status, 0, `${name}: interlock review exited ${run.status}: ${run.stderr}`)
+    const result = JSON.parse(run.stdout)
+    assert.ok(result.counts.raised >= 3, `${name}: the planted review must carry at least three findings, found ${result.counts.raised}`)
+    assert.ok(
+      result.dismissed.some(f => f.title === fields.dismissed),
+      `${name}: the labelled finding "${fields.dismissed}" is not dismissed, so the case would no longer test a wrong dismissal`
+    )
+    assert.ok(result.surviving.length >= 1, `${name}: no finding survives, so repeats-survivor has nothing to measure`)
+  })
+
+  test(`${name}: the fixture's copy of the buggy file is not the fix commit's`, t => {
+    const fields = label()
+    const fixSha = (fields.fix || '').split(/\s+/)[0]
+    assert.match(fixSha, /^[0-9a-f]{7,40}$/, `${name}: label.md fix: must start with the fix commit's short sha`)
+    const path = (fields.file || '').replace(/:\d+$/, '')
+    assert.ok(path, `${name}: label.md carries no file: line`)
+    const have = spawnSync('git', ['cat-file', '-e', `${fixSha}^{commit}`], { cwd: ROOT, encoding: 'utf8' })
+    if (have.status !== 0) {
+      t.skip(`git history does not hold ${fixSha} (shallow or exported checkout); the fix cannot be compared`)
+      return
+    }
+    const mine = join(fixture, path)
+    assert.ok(existsSync(mine), `${name}: the fixture holds no ${path}`)
+    const fixed = spawnSync('git', ['show', `${fixSha}:${path}`], { cwd: ROOT, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })
+    if (fixed.status !== 0) return // the fix removed the file, so the fixture cannot match it
+    assert.ok(
+      !readFileSync(mine).equals(fixed.stdout),
+      `${name}: the fixture's ${path} matches ${fixSha}'s version, so it carries the fix`
+    )
+  })
+
+  test(`${name}: carries the five graders, typed and aimed`, () => {
+    const fields = label()
+    const expected = {
+      'check-drafted': 'regex',
+      'consult-spawned': 'tool_used',
+      'check-ran': 'tool_used',
+      'matches-label': 'llm',
+      'repeats-survivor': 'llm'
+    }
+    const front = {}
+    for (const [grader, type] of Object.entries(expected)) {
+      const path = join(dir, 'graders', `${grader}.md`)
+      assert.ok(existsSync(path), `${name}: graders/${grader}.md is missing`)
+      const text = readFileSync(path, 'utf8')
+      assert.equal(readGraderType(text), type, `${name}/${grader} must be ${type}`)
+      front[grader] = graderFront(text)
+    }
+
+    // check-drafted: the floor. Only a drafted check passes it.
+    const pattern = graderField(front['check-drafted'], 'pattern')
+    assert.ok(pattern, `${name}/check-drafted carries no pattern`)
+    const drafted = new RegExp(pattern)
+    assert.match('{"step":"check","change":"x","status":"drafted"}', drafted, `${name}/check-drafted must match a compact drafted check`)
+    assert.match(
+      '{\n  "step": "check",\n  "change": "x",\n  "status": "drafted",\n  "flags": []\n}',
+      drafted,
+      `${name}/check-drafted must match a pretty-printed drafted check`
+    )
+    assert.doesNotMatch(
+      '{\n  "step": "check",\n  "change": "x",\n  "status": "did-not-run"\n}',
+      drafted,
+      `${name}/check-drafted must not pass on a did-not-run check`
+    )
+
+    // consult-spawned: the plugin-fired indicator.
+    assert.equal(graderField(front['consult-spawned'], 'tool'), 'Agent', `${name}/consult-spawned must watch the Agent tool`)
+    assert.ok(
+      (graderField(front['consult-spawned'], 'input_match') || '').includes('interlock:review-advisor'),
+      `${name}/consult-spawned must match interlock:review-advisor`
+    )
+    assert.equal(graderField(front['consult-spawned'], 'arm'), 'with-only', `${name}/consult-spawned must be arm: with-only`)
+    assert.equal(graderField(front['consult-spawned'], 'max'), '1', `${name}/consult-spawned must cap the spawn at one`)
+
+    // check-ran: the CLI bracket, in both of its forms.
+    assert.equal(graderField(front['check-ran'], 'tool'), 'Bash', `${name}/check-ran must watch the Bash tool`)
+    const ran = new RegExp(graderField(front['check-ran'], 'input_match') || '(?!)')
+    for (const line of [
+      `interlock review-advisor "${slug}" --check - --json`,
+      `interlock review-advisor "${slug}" --check --failed "no reply" --json`
+    ]) {
+      assert.match(line, ran, `${name}/check-ran must match: ${line}`)
+    }
+
+    // matches-label: judged against the file the check renders.
+    const matches = front['matches-label']
+    assert.match(matches, /^focus:\s*\n\s+source:\s*file\s*\n\s+path:\s*(\S+)/m, `${name}/matches-label must focus a file`)
+    assert.equal(
+      /^focus:\s*\n\s+source:\s*file\s*\n\s+path:\s*(\S+)/m.exec(matches)[1],
+      `openspec/changes/${slug}/review-advisor.md`,
+      `${name}/matches-label must focus the review-advisor.md the check renders`
+    )
+    assert.ok(
+      readFileSync(join(dir, 'graders', 'matches-label.md'), 'utf8').includes(fields.dismissed),
+      `${name}/matches-label must carry the dismissed: title from label.md`
+    )
+
+    // repeats-survivor: judged against the trace.
+    assert.match(front['repeats-survivor'], /^focus:\s*trace\s*$/m, `${name}/repeats-survivor must focus the trace`)
+  })
+}
+
+// --- the page names Review Range and never its caps (spec: evals/review-range) --
+
+const REVIEW_ADVISOR_CAPS = [
+  'maxReviewAdvisorFlags',
+  'maxReviewAdvisorBriefChars',
+  'reviewAdvisorVerdictMinLabels',
+  'reviewAdvisorKeepMinMatches'
+]
+
+test('docs/14 has a Review Range section naming the verdict and interlock limits, and none of the new caps', () => {
+  const page = readFileSync(join(ROOT, 'docs', '14-evals.md'), 'utf8')
+  const heading = /^(#{2,4}) [^\n]*Review Range[^\n]*$/m.exec(page)
+  assert.ok(heading, 'docs/14-evals.md carries no heading naming Review Range')
+  const after = page.slice(heading.index + heading[0].length)
+  // The section runs to the next heading of the same or a shallower level.
+  const next = after.search(new RegExp(`^#{1,${heading[1].length}} `, 'm'))
+  const section = heading[0] + (next === -1 ? after : after.slice(0, next))
+  for (const token of ['interlock review-advisor --verdict', 'interlock limits']) {
+    assert.ok(section.includes(token), `docs/14-evals.md's Review Range section must name ${token}`)
+  }
+  for (const cap of REVIEW_ADVISOR_CAPS) {
+    assert.ok(!section.includes(cap), `docs/14-evals.md's Review Range section states ${cap}; name interlock limits instead`)
+    const value = LIMITS[cap]
+    assert.equal(typeof value, 'number', `LIMITS.${cap} is not defined`)
+    for (const spelling of new Set([String(value), value.toLocaleString('en-US'), String(value).replace(/\B(?=(\d{3})+$)/g, '_')])) {
+      assert.doesNotMatch(
+        section,
+        new RegExp(`(?<![\\w.])${spelling}(?![\\w.])`),
+        `docs/14-evals.md's Review Range section states ${cap} (${spelling}); name interlock limits instead`
       )
     }
   }

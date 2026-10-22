@@ -1,0 +1,36 @@
+[
+  {
+    "dimension": "language",
+    "findings": [
+      {
+        "severity": "warning",
+        "file": "hooks/preflight.mjs",
+        "line": 101,
+        "title": "Unparseable doctor output crashes the SessionStart hook",
+        "description": "The hook JSON.parses the doctor output, and a doctor that prints anything but JSON throws out of run(), so the SessionStart hook crashes instead of starting the session.",
+        "suggestion": "Catch the parse and fall back to a one-line message."
+      },
+      {
+        "severity": "suggestion",
+        "file": "hooks/preflight.mjs",
+        "line": 145,
+        "title": "Multi-line fix text loses its indentation in the preflight block",
+        "description": "Each continuation line of a multi-line fix is trimmed before it is re-indented, so a fix whose lines are nested (a command under a step) prints flat and the nesting is lost.",
+        "suggestion": "Strip only the fix's common leading indent, not each line's own."
+      }
+    ]
+  },
+  {
+    "dimension": "tech-lead",
+    "findings": [
+      {
+        "severity": "warning",
+        "file": "hooks/preflight.mjs",
+        "line": 148,
+        "title": "The preflight closer warns users off spec and bootstrap when only ship is blocked",
+        "description": "The closer line is a constant: whatever check failed, it tells the person to apply the fixes before /interlock:spec, /interlock:bootstrap or /interlock:ship. A test-profile, allowlist or git failure blocks only an unattended ship, and spec and bootstrap run past it, so a fresh install is told it cannot author a change when it can.",
+        "suggestion": "Name spec and bootstrap only when an openspec or binaries check is among the failures; otherwise name ship alone."
+      }
+    ]
+  }
+]

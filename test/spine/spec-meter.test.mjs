@@ -687,3 +687,45 @@ test('the spec skill\'s keyed lines run in KEYED_LINES\' order', () => {
     )
   }
 })
+
+// --- a review consult is not a spec consult (add-review-findings-advisor D3) ---
+//
+// The review-findings advisor is a second seat for the same kind of agent. The
+// meter counts spec consults, so a review consult in a session that still holds
+// a live spec run must change nothing it draws. The agent type is the guard on
+// the spawn side; the whole-word match and the draft regex are the guard on the
+// line and write side. Each is pinned so a later meter edit cannot start
+// counting review consults without failing here by name.
+
+const REVIEW_ADVISOR_LINES = [
+  'interlock review-advisor x --check - --json',
+  'interlock review-advisor "add-the-thing" --check - --json',
+  'interlock review-advisor "add-the-thing" --check --failed "spawn errored" --json',
+  'interlock review-advisor --verdict --labels evals --json'
+]
+
+test('lineKind gives no advisor kind, and no kind at all, to an interlock review-advisor line', () => {
+  for (const command of REVIEW_ADVISOR_LINES) {
+    assert.equal(lineKind(command), null, command)
+  }
+  // The checkpoint advisor's own line keeps its kind beside them.
+  assert.equal(lineKind('interlock advisor x --check - --json'), 'advisor')
+})
+
+test('writeOf files a review-advisor draft, brief and index as no draft', () => {
+  const draft = '.claude/metrics/review-advisor-x-20261022-101010.json'
+  assert.equal(writeOf(draft), null)
+  assert.equal(writeOf(`/repo/${draft}`), null)
+  assert.equal(writeOf('.claude/metrics/review-advisor-brief-x-20261022-101010.md'), null)
+  assert.equal(writeOf('.claude/metrics/review-advisor-brief-x-20261022-101010.json'), null)
+  // The review's own findings and the checkpoint draft keep their kinds.
+  assert.equal(writeOf('.claude/metrics/advisor-x-20261022-101010.json').kind, 'draft')
+})
+
+test('the meter spells the checkpoint advisor\'s agent type alone: no review-advisor in the pure rules or the spawn gate', () => {
+  const mod = readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8')
+  const rules = readFileSync(join(ROOT, 'lib', 'spec-meter.mjs'), 'utf8')
+  assert.match(mod, /input\.subagentType === 'interlock:advisor'/, 'hooks/mod.mjs no longer gates the consult count on interlock:advisor')
+  assert.doesNotMatch(mod, /review-advisor/, 'hooks/mod.mjs names review-advisor: a review consult would reach the spec meter')
+  assert.doesNotMatch(rules, /review-advisor/, 'lib/spec-meter.mjs names review-advisor')
+})

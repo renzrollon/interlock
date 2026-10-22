@@ -1,0 +1,62 @@
+[
+  {
+    "findingTitle": "Unparseable doctor output crashes the SessionStart hook",
+    "file": "hooks/preflight.mjs",
+    "isReal": false,
+    "confidence": 0.95,
+    "reasoning": "The parse is in a try/catch, and a null or non-object result returns the \"could not be parsed; skipping\" message with parsed: false.",
+    "evidence": "hooks/preflight.mjs:100-112",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "Unparseable doctor output crashes the SessionStart hook",
+    "file": "hooks/preflight.mjs",
+    "isReal": false,
+    "confidence": 0.9,
+    "reasoning": "Unparseable output returns early with a message; nothing throws.",
+    "evidence": "hooks/preflight.mjs:105-111",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "Multi-line fix text loses its indentation in the preflight block",
+    "file": "hooks/preflight.mjs",
+    "isReal": true,
+    "confidence": 0.7,
+    "reasoning": "line.trim() strips each continuation line's own indent before the fixed one is added.",
+    "evidence": "hooks/preflight.mjs:143-145",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "Multi-line fix text loses its indentation in the preflight block",
+    "file": "hooks/preflight.mjs",
+    "isReal": true,
+    "confidence": 0.6,
+    "reasoning": "Nested fix lines print flat; cosmetic but real.",
+    "evidence": "hooks/preflight.mjs:145",
+    "refinedSeverity": "suggestion",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "The preflight closer warns users off spec and bootstrap when only ship is blocked",
+    "file": "hooks/preflight.mjs",
+    "isReal": false,
+    "confidence": 0.8,
+    "reasoning": "The block opens with 'issues that can stall an unattended ship run' and prints each failing check with its own fix, so the reader sees which check failed and what it blocks. The closer is a summary line, not a claim about each command.",
+    "evidence": "hooks/preflight.mjs:139-147",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "The preflight closer warns users off spec and bootstrap when only ship is blocked",
+    "file": "hooks/preflight.mjs",
+    "isReal": false,
+    "confidence": 0.75,
+    "reasoning": "Only fail-status checks reach the closer; anything less returns the quiet OK line. A missing test profile is a first-ship condition, not a failure, so a fresh install never sees this closer.",
+    "evidence": "hooks/preflight.mjs:127-137",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  }
+]

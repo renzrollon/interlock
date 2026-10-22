@@ -1,0 +1,62 @@
+[
+  {
+    "findingTitle": "advisor --check exits non-zero instead of recording a consult that did not run",
+    "file": "bin/interlock",
+    "isReal": false,
+    "confidence": 0.8,
+    "reasoning": "The non-zero exit is requireChange's: the advisor case resolves the change before either handler runs, and an unresolved change exits 1 with candidates by design. Every path the dispatch reaches after that hands off to advisorCheck, which renders a did-not-run stanza for a failed consult.",
+    "evidence": "bin/interlock:4140-4149",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "advisor --check exits non-zero instead of recording a consult that did not run",
+    "file": "bin/interlock",
+    "isReal": false,
+    "confidence": 0.75,
+    "reasoning": "advisorCheck already has a did-not-run path: a draft that does not parse falls to checkDraft with undefined and comes back as did-not-run, and --failed writes the stanza directly. The exit the finding describes is the unresolved-change exit, which is the documented contract.",
+    "evidence": "bin/interlock:2381-2391",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 3
+  },
+  {
+    "findingTitle": "An empty --failed reason renders a blank did-not-run stanza",
+    "file": "bin/interlock",
+    "isReal": false,
+    "confidence": 0.95,
+    "reasoning": "The reason is trimmed and an empty one becomes 'no reason given' before didNotRun is called, so the stanza always carries a reason.",
+    "evidence": "bin/interlock:2400-2401",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "An empty --failed reason renders a blank did-not-run stanza",
+    "file": "bin/interlock",
+    "isReal": false,
+    "confidence": 0.9,
+    "reasoning": "String(result.reason ?? '').trim() || 'no reason given' covers both an empty and a whitespace-only reason.",
+    "evidence": "bin/interlock:2400",
+    "refinedSeverity": "dismiss",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "advisor --brief <change> reads a flag-first change name as the flag's value",
+    "file": "bin/interlock",
+    "isReal": true,
+    "confidence": 0.85,
+    "reasoning": "The advisor case passes requestedName(positional, flags) to requireChange and never looks at flags.brief, so a name the parser bound to --brief is lost.",
+    "evidence": "bin/interlock:4145-4146",
+    "refinedSeverity": "warning",
+    "qualityScore": 4
+  },
+  {
+    "findingTitle": "advisor --brief <change> reads a flag-first change name as the flag's value",
+    "file": "bin/interlock",
+    "isReal": true,
+    "confidence": 0.8,
+    "reasoning": "Reproduced by reading the dispatch: with the name after --brief, positional is empty and requireChange gets no name.",
+    "evidence": "bin/interlock:4146",
+    "refinedSeverity": "warning",
+    "qualityScore": 4
+  }
+]
