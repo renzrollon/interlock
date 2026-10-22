@@ -1154,6 +1154,25 @@ test('the review-code skill lists the seventh dimension, runs domain-context bef
   assert.ok(existsSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md')))
 })
 
+test('the devops rubric checks CI triggers, token scope, floating installs, untrusted expressions and action bumps', () => {
+  // `interlock surface` routes CI configuration to this dimension; without these
+  // the reviewer it routes to asks only about environment and dependencies.
+  const rubric = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'devops.md'), 'utf8')
+  for (const token of [
+    'workflow_run',
+    'pull_request_target',
+    'head_repository',
+    'permissions:',
+    '@latest',
+    'npx',
+    'github.event',
+    'env:',
+    'runs.using'
+  ]) {
+    assert.ok(rubric.includes(token), `skills/review-code/dimensions/devops.md must carry ${token}`)
+  }
+})
+
 test('the domain rubric asks for a requirement citation, names the prohibition keyword, and refuses capabilities it was not given', () => {
   const rubric = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md'), 'utf8')
   for (const token of ['requirement', 'SHALL NOT', 'were not given', 'blocker', 'warning']) {

@@ -13,6 +13,10 @@ this project adheres to Semantic Versioning 2.0.0.
 - **No job holding a write token installs anything at a version chosen at run time.** The bundle job is split: `validate` installs the Claude Code CLI and validates the tarball with a read-only token, and `bundle` pushes after checking the tarball it received against the integrity the registry reported before that install. The release job pins `npm@12.2.0` instead of `npm@latest`. `ci.yml`, `evals.yml` and `ship-outcome-eval.yml` now state `contents: read` rather than inheriting the repository default. `test/spine/github-workflows.test.mjs` holds every tracked workflow to these rules, and fails if any job but the bundle job gains `contents: write`.
 - **A briefing is always written inside `.claude/ship/briefings/`.** Its file name came from the spawn label, and a lane's label is built from task ids the planner returned, which nothing checks. A label carrying a separator or a leading dot is now cleaned and suffixed with a short hash of itself; every label the program mints is unchanged.
 
+### Changed
+
+- **The devops review dimension now reviews CI pipelines.** `interlock surface` already routed CI configuration to it, but its rubric asked only about environment, dependencies, routes and build health. It now checks that a `workflow_run`, `pull_request_target` or `issue_comment` trigger verifies who started it; that every workflow states `permissions:`; that no job holding a write scope installs at a floating version; that `${{ github.event.* }}` reaches a script only through `env:`; and that an action bumped across a major has its runtime and release notes read. A change that relies on a repository setting no diff shows says so. `test/skills.test.mjs` pins the terms.
+
 ## [1.7.0] - 2026-10-21
 
 ### Added
