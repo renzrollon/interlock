@@ -1,0 +1,41 @@
+name: Feature request
+description: Something Interlock should do that it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Changes to Interlock go through its own loop. An accepted request becomes an OpenSpec change (proposal, design, tasks and delta specs) before any code is written, so the most useful request describes the problem, not a patch.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were doing, and where Interlock got in the way or fell short. A real run or repository is worth more than a hypothetical one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: intent
+    attributes:
+      label: The intent
+      description: What you would want, phrased the way you would give it to `/interlock:spec`.
+      placeholder: "Let a repository set its own inter-wave verify budget from its measured suite runtime."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you use today, or other ways it could work.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: The kind of repository (language, size, test runtime), the host, and links to related issues.
+    validations:
+      required: false

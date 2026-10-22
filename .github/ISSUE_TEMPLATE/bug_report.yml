@@ -1,0 +1,86 @@
+name: Bug report
+description: A CLI, hook, guard or gate that did the wrong thing, crashed, or exited with the wrong code.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing this. If an agent in a run did something it was told not to, use **Run misbehaved** instead; that report needs a run id, not a stack trace.
+
+        Suspected security problem? Do not file it here. See [SECURITY.md](https://github.com/renzrollon/interlock/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including the exact output and exit code if there was one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command or slash command you ran, for example `/interlock:ship`, `interlock waves --plan …` or `interlock-graph build`, and anything about the repository it ran in that matters.
+      placeholder: |
+        1. In a repository with …
+        2. Run …
+        3. See …
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: interlock doctor
+      description: |
+        Run `interlock doctor` in the repository where it happened and paste the whole output. It prints the plugin, Node and Claude Code versions. It never prints your notify topic, but it does print local paths: redact any you would rather not share.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      description: "`/interlock:ship` runs inside Claude Code; `interlock-run --host <id>` runs on the host you name."
+      options:
+        - Inside Claude Code (/interlock:ship, /interlock:spec, or a CLI in the session)
+        - interlock-run --host claude
+        - interlock-run --host acp
+        - interlock-run --host codex
+        - interlock-run --host qwen
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: openspec
+    attributes:
+      label: OpenSpec version
+      description: The output of `openspec --version`.
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.5, Ubuntu 24.04, Windows 11 (WSL2)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched the existing issues and this is not one of them.
+          required: true

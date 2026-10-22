@@ -1,0 +1,71 @@
+name: Run misbehaved
+description: An agent in a spec or ship run did something it was told not to, or produced a value outside the set it was given.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A raw transcript is not the useful report here. A **case skeleton** is: it cites the recorded run and the events your claim rests on, so the failure can be replayed and turned into a regression case. [docs/14 — How to file a failure](https://github.com/renzrollon/interlock/blob/main/docs/14-evals.md#how-to-file-a-failure) walks through it. In short:
+
+        ```bash
+        interlock run-log list                                   # find the run id
+        interlock evals capture --run <runId> --out drafts/case  # write the skeleton
+        ```
+
+        Add `--task <id>` to narrow it to one task. Capture marks everything it derived rather than read with `CONFIRM`; resolve those against the run before you paste it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What the agent did
+      description: What it did, and the instruction or declared set it went against.
+    validations:
+      required: true
+
+  - type: input
+    id: run-id
+    attributes:
+      label: Run id
+      description: From `interlock run-log list`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: skeleton
+    attributes:
+      label: Case skeleton
+      description: The files `interlock evals capture` wrote, or why it refused (it refuses a run that cannot be reconstructed, and says why). Check the pasted text for anything private first.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: interlock doctor
+      description: Run `interlock doctor` and paste the output. It never prints your notify topic, but it does print local paths.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host
+      options:
+        - Inside Claude Code (/interlock:ship, /interlock:spec, or a CLI in the session)
+        - interlock-run --host claude
+        - interlock-run --host acp
+        - interlock-run --host codex
+        - interlock-run --host qwen
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The model the misbehaving agent ran on, if you know it.
+    validations:
+      required: false

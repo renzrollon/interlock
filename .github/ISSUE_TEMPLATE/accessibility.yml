@@ -1,0 +1,110 @@
+name: Accessibility barrier
+description: Something in Interlock's terminal output, docs, landing site or demo media that is hard or impossible to use with how you work.
+labels: ["accessibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Share as much as you are comfortable with; a partial report is still useful, and you can describe what you experienced in your own words. You never need to tell us about a disability to report a barrier.
+
+        If this form is itself hard to use, email carl.rollon@gmail.com instead. [ACCESSIBILITY.md](https://github.com/renzrollon/interlock/blob/main/ACCESSIBILITY.md) says what happens next.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where it happened
+      options:
+        - Terminal output (the interlock CLIs, or messages inside a Claude Code session)
+        - The docs (README or docs/ on GitHub or npm)
+        - The landing site (renzrollon.github.io/interlock)
+        - The demo GIF or video
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: The barrier, in a sentence or two.
+      placeholder: "The wave board is read out as rows of line characters, so I cannot tell which tasks are in which wave."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran or the page you were on, and what you did. A screenshot or recording helps but is never required; you can drag one in here.
+      placeholder: |
+        1. Run `interlock waves --plan … --format board`
+        2. Read the output with …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity (confirmed or adjusted during triage)
+      description: |
+        How much does it stop you?
+        - **Critical:** you cannot complete a core task at all.
+        - **Serious:** you can, but only with real difficulty or a workaround.
+        - **Moderate:** annoying or inconsistent, but it does not stop you.
+        - **Minor:** small, with little effect on getting the task done.
+      options:
+        - Critical
+        - Serious
+        - Moderate
+        - Minor
+      default: 2
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "macOS 15.5, Windows 11, Ubuntu 24.04"
+    validations:
+      required: false
+
+  - type: input
+    id: client
+    attributes:
+      label: Terminal or browser, and version
+      placeholder: "Terminal.app, iTerm2 3.5, Windows Terminal, VS Code's terminal, Firefox 140"
+    validations:
+      required: false
+
+  - type: input
+    id: assistive-tech
+    attributes:
+      label: Assistive technology and version
+      description: If you used any, which one and which version.
+      placeholder: "VoiceOver (macOS 15.5), NVDA 2025.1, JAWS 2025, screen magnifier at 400%"
+    validations:
+      required: false
+
+  - type: input
+    id: wcag
+    attributes:
+      label: Related WCAG criteria (optional)
+      description: If you know which [WCAG](https://www.w3.org/TR/WCAG22/) success criteria this relates to. Do not worry if you are not sure.
+      placeholder: "1.1.1 Non-text Content, 2.4.7 Focus Visible"
+    validations:
+      required: false

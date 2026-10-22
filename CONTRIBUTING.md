@@ -29,7 +29,14 @@ See [.claude/CLAUDE.md](./.claude/CLAUDE.md) for the full set of things to get r
 
 **Every pull request carries an OpenSpec change.** Changes to this repository go through its own loop: `/interlock:spec`, read the spec, `/interlock:ship`. The pull request includes the change under `openspec/changes/<name>/` — proposal, design, tasks and delta specs — or, once archived, under `openspec/changes/archive/`, and names it in the description. A pull request without one is sent back for a change before it is reviewed: the spec is what the diff is reviewed against.
 
-Create the change through the OpenSpec CLI (`openspec new change`), not by hand, and run `openspec validate <name>` before you open the pull request.
+Create the change through the OpenSpec CLI (`openspec new change`), not by hand, and run `openspec validate <name>` before you open the pull request. The [pull request template](./.github/pull_request_template.md) asks for the change's name and the `npm test` output.
+
+## Issues, conduct and security
+
+- **Issues** start from a form: a bug, a run that misbehaved, a feature request or an accessibility barrier. Questions go to [Discussions](https://github.com/renzrollon/interlock/discussions).
+- **Security vulnerabilities never go in a public issue.** Report them privately, as [SECURITY.md](./SECURITY.md) describes.
+- **Accessibility**: what Interlock aims for, its known limitations and how a barrier is handled are in [ACCESSIBILITY.md](./ACCESSIBILITY.md).
+- Everyone taking part follows the [code of conduct](./CODE_OF_CONDUCT.md).
 
 ## Model evals
 
