@@ -391,7 +391,7 @@ const DIRECTORY_FILE_COUNT = 512
 // A warning zone below the size limit, so the file that is about to reach it
 // fails here one release early instead of holding a version at submission.
 // bin/interlock sat about 16 KB under the limit when PR #20's review raised it
-// (M3), which is why the advisor and note handlers moved to lib/advisor-cli.mjs.
+// (M3), which is why the note handlers moved out of it (now lib/note-cli.mjs).
 const DIRECTORY_HEADROOM_BYTES = 16384
 
 /** Each shipped file at or over the size limit, with its size, and the count when it is over. */

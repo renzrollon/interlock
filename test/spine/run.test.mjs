@@ -995,6 +995,73 @@ test('run close records the autonomy outcome for a strict run and nothing for a 
   }
 })
 
+test('a strict close whose ladder file is unreadable says so and still records the run once the file is moved aside', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    file(root, '.claude/autonomy.json', '{ not json')
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD UNREADABLE:') && b.includes('counters restarted')),
+      `the ladder's own warning reaches the close: ${JSON.stringify(closed.banners)}`
+    )
+    assert.ok(!startsWithAny(closed.banners, 'AUTONOMY RECORD NOT WRITTEN'), 'it was written, after the move')
+    assert.match(closed.summary, /AUTONOMY RECORD UNREADABLE/, 'and the summary says so')
+    assert.deepEqual(manifestOf(root).autonomy, { path: 'review-code', blockers: 0 })
+    const ladder = JSON.parse(readFileSync(join(root, '.claude', 'autonomy.json'), 'utf8'))
+    assert.equal(ladder['review-code'].runs, 1)
+    assert.ok(
+      readdirSync(join(root, '.claude')).some(name => name.startsWith('autonomy.json.unreadable-')),
+      'the unreadable file was kept aside, not destroyed'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a strict close that could not write the ladder says AUTONOMY RECORD NOT WRITTEN and claims no record', {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root ignores directory modes' : false
+}, () => {
+  const { root, change } = repo()
+  const dotClaude = join(root, '.claude')
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    file(root, '.claude/autonomy.json', '{ not json')
+    for (const dir of ['learning', 'metrics', 'handoff']) mkdirSync(join(dotClaude, dir), { recursive: true })
+    // `.claude` cannot take a new entry, so the unreadable file cannot be moved
+    // aside; the ladder leaves it where it is and records nothing.
+    chmodSync(dotClaude, 0o500)
+    let closed
+    try {
+      closed = runAny(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    } finally {
+      chmodSync(dotClaude, 0o700)
+    }
+    assert.ok(closed, 'the close printed a step')
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD UNREADABLE:') && b.includes('this run was not recorded')),
+      `the ladder's warning reaches the close: ${JSON.stringify(closed.banners)}`
+    )
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD NOT WRITTEN:') && b.includes('could not be moved aside')),
+      `and the close says nothing was written: ${JSON.stringify(closed.banners)}`
+    )
+    assert.equal(manifestOf(root).autonomy ?? null, null, 'the manifest does not claim a record that was not written')
+    assert.equal(readFileSync(join(dotClaude, 'autonomy.json'), 'utf8'), '{ not json', 'the unreadable file was left alone')
+  } finally {
+    try {
+      chmodSync(dotClaude, 0o700)
+    } catch {
+      // already restored
+    }
+    cleanup(root)
+  }
+})
+
 test('the commit briefing of a strict run carries no autonomy instruction', () => {
   const { root, change } = repo()
   try {
@@ -4922,9 +4989,10 @@ const USAGE_BY_SPAWN = [
  * the dispatched spawns it recorded. Each lane result carries seven output
  * tokens, so the output figures the join must leave alone are known.
  */
-function workflowThroughWaves() {
+function workflowThroughWaves({ setup, env: extraEnv } = {}) {
   const { root, change } = repo('add-thing', { tasks: JOIN_TASKS })
-  const env = workflowEnv()
+  if (setup) setup(root)
+  const env = workflowEnv({ env: extraEnv })
   let step = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, [], JOIN_CLASSIFIED, { env })
   for (let guard = 0; step.action !== 'verify-final'; guard++) {
     assert.ok(guard < 12, 'the walk did not reach the final verification')
@@ -4948,7 +5016,12 @@ function workflowThroughWaves() {
 }
 
 /** One agent file, in the shape the SubagentStop recorder writes (lib/agent-usage.mjs). */
-function plantAgent(root, runId, agentId, { sha = null, models = ['claude-sonnet-5-5'], usage = null, turns = 3 } = {}) {
+function plantAgent(
+  root,
+  runId,
+  agentId,
+  { sha = null, models = ['claude-sonnet-5-5'], usage = null, turns = 3, advisorConsults } = {}
+) {
   return file(root, `.claude/ship/agent-usage/${runId}/${agentId}.json`, {
     schema: 'interlock.agent-usage/1',
     agentId,
@@ -4959,15 +5032,25 @@ function plantAgent(root, runId, agentId, { sha = null, models = ['claude-sonnet
     models,
     turns,
     usage,
+    // Absent unless given: a record written before the field existed carries none.
+    ...(advisorConsults !== undefined ? { advisorConsults } : {}),
     transcript: { path: `/home/user/.claude/projects/-home-user-repo/agent-${agentId}.jsonl`, parsed: true, reason: null }
   })
 }
 
 /** One agent file per briefed spawn, keyed by its sha, except the dispatch indices in `skip`. */
-function plantJoined(run, { skip = [], models = () => ['claude-sonnet-5-5'], usage = i => USAGE_BY_SPAWN[i] } = {}) {
+function plantJoined(
+  run,
+  { skip = [], models = () => ['claude-sonnet-5-5'], usage = i => USAGE_BY_SPAWN[i], advisor = () => undefined } = {}
+) {
   run.briefed.forEach((spawned, i) => {
     if (skip.includes(i)) return
-    plantAgent(run.root, run.runId, `agent-${i}`, { sha: spawned.sha, models: models(spawned, i), usage: usage(i) })
+    plantAgent(run.root, run.runId, `agent-${i}`, {
+      sha: spawned.sha,
+      models: models(spawned, i),
+      usage: usage(i),
+      advisorConsults: advisor(i)
+    })
   })
 }
 
@@ -8283,6 +8366,156 @@ test('every run subcommand but start and close refuses a closed run', () => {
   }
 })
 
+// --- a closed run is closed once -------------------------------------------
+
+/** Walk a lean run to its clean close and return the close step. */
+function closeLeanRun(root, change) {
+  const batch = toFirstBatch(root, change)
+  const recorded = run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+  }).step
+  const judged = run(root, [...recorded.then.argv]).step
+  return run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+}
+
+const trajectoryLines = (root, runId) =>
+  readFileSync(join(root, '.claude/ship/runs', `${runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+
+const outcomeRows = root =>
+  readFileSync(join(root, '.claude', 'learning', 'outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+
+test("following a closed run's refusal to its close writes nothing and keeps the original close", () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    assert.equal(closed.action, 'complete')
+    const manifest = manifestOf(root)
+    assert.ok(manifest.closedAt, 'the run closed')
+    const runId = manifest.runId
+
+    // A driver that called the wrong subcommand is handed the D15 refusal, whose
+    // continuation is a close. It obeys.
+    const refusal = runAny(root, ['run', 'next']).step
+    assert.equal(refusal.action, 'halt')
+    assert.deepEqual(refusal.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+    const events = trajectoryLines(root, runId)
+    assert.equal(events.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(events.filter(e => e.type === 'run-halt').length, 0)
+
+    const followed = runAny(root, [...refusal.then.argv])
+    assert.equal(followed.code, 0, 'the clean close keeps its exit code')
+    assert.equal(followed.step.action, 'complete', 'a clean run is not re-listed as halted')
+    assert.equal(followed.step.exitCode, 0)
+    assert.equal(followed.step.summary, closed.summary, 'the close on record is what comes back')
+
+    assert.deepEqual(shipSnapshot(root), before, 'the follow-up close wrote into .claude/ship')
+    const after = trajectoryLines(root, runId)
+    assert.equal(after.length, events.length, 'no event was appended to the trajectory')
+    assert.equal(after.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(after.filter(e => e.type === 'run-halt').length, 0)
+    assert.deepEqual(outcomeRows(root), outcomesBefore, 'the outcomes corpus gained no row')
+    assert.equal(outcomesBefore.length, 1)
+    const again = manifestOf(root)
+    assert.equal(again.closedAt, manifest.closedAt)
+    assert.equal(again.halted ?? null, null, 'the reason the refusal supplied was not recorded')
+    assert.equal(again.seq, manifest.seq, 'the replay was not numbered')
+    assert.equal(run(root, ['run-log', 'check', '--run-id', runId], { expectExit: 0 }).code, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a close that halted the run keeps its reason when the run is closed again', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    const first = run(root, ['run', 'close', '--halt', 'task-failures'], { expectExit: 1 }).step
+    assert.equal(first.action, 'halt')
+    const manifest = manifestOf(root)
+    assert.equal(manifest.halted, 'task-failures')
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+
+    const refusal = runAny(root, ['run', 'next']).step
+    const followed = runAny(root, [...refusal.then.argv])
+    assert.equal(followed.code, 1, 'the original close exited 1 and so does its replay')
+    assert.equal(followed.step.exitCode, 1)
+    assert.match(followed.step.summary, /task-failures/)
+    assert.doesNotMatch(followed.step.summary, new RegExp(refusal.reason.slice(0, 30)))
+
+    assert.deepEqual(shipSnapshot(root), before)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+    assert.equal(manifestOf(root).halted, 'task-failures', 'the original halt reason is kept')
+    assert.equal(manifestOf(root).closedAt, manifest.closedAt)
+    const events = trajectoryLines(root, manifest.runId)
+    assert.equal(events.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(events.filter(e => e.type === 'run-halt').length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a second plain run close on a closed run writes nothing', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const before = shipSnapshot(root)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const outcomesBefore = outcomeRows(root)
+
+    const second = run(root, ['run', 'close']).step
+    assert.equal(second.action, 'complete')
+    assert.equal(second.exitCode, 0)
+    assert.equal(second.summary, closed.summary)
+    assert.deepEqual(shipSnapshot(root), before)
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a closed run whose close copy is lost says so, records nothing, and does not read as success', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const manifest = manifestOf(root)
+    rmSync(join(root, '.claude/ship/last-close.json'))
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+
+    const replay = runAny(root, ['run', 'close'])
+    assert.equal(replay.step.exitCode, 1, 'an unknown original exit code is not reported as success')
+    assert.equal(replay.code, 1)
+    assert.ok(
+      bannersOf(replay.step).some(b => b.startsWith('CLOSE ALREADY RECORDED:') && b.includes(manifest.closedAt)),
+      JSON.stringify(replay.step.banners)
+    )
+    assert.ok(startsWithAny(bannersOf(replay.step), 'ORIGINAL CLOSE UNAVAILABLE:'))
+    assert.match(replay.step.summary, /already closed at/)
+    assert.ok(replay.step.summary.includes(manifest.closedAt))
+    assert.notEqual(replay.step.summary, closed.summary)
+
+    // The only thing the CLI may write is the copy of this very output.
+    const after = shipSnapshot(root, [join('.claude', 'ship', 'last-close.json')])
+    for (const [path, body] of Object.entries(before)) assert.equal(after[path], body, path)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+    assert.equal(manifestOf(root).closedAt, manifest.closedAt)
+    assert.equal(
+      trajectoryLines(root, manifest.runId).filter(e => e.type === 'run-receipt').length,
+      1
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('run start after a halted run begins a new run as before', () => {
   const { root, change } = repo()
   try {
@@ -8436,6 +8669,65 @@ test('run start halts naming an invalid test profile before any step is emitted'
   }
 })
 
+test('run start halts naming a test profile that exists but does not parse, as the doctor fails it', () => {
+  const { root, change } = repo()
+  try {
+    const broken = '{"version": 1, "unit": {"command": "node --test", '
+    file(root, PROFILE_PATH, broken)
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes(PROFILE_PATH), `the halt names the profile path: ${step.reason}`)
+    assert.match(step.reason, /does not parse: .+/, 'the halt carries the parse error')
+    assert.equal(step.spawns.length, 0, 'no planner was spawned over an unparseable profile')
+    assert.equal(readFileSync(join(root, PROFILE_PATH), 'utf8'), broken, 'the profile was left as it was')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start halts on a profile that holds the JSON literal null, and still starts with no profile at all', () => {
+  const nullProfile = repo()
+  try {
+    file(nullProfile.root, PROFILE_PATH, 'null')
+    const { step } = runAny(nullProfile.root, ['run', 'start', '--change', nullProfile.change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.match(step.reason, /holds null/)
+  } finally {
+    cleanup(nullProfile.root)
+  }
+  const absent = repo()
+  try {
+    assert.equal(existsSync(join(absent.root, PROFILE_PATH)), false)
+    const { step } = runAny(absent.root, ['run', 'start', '--change', absent.change])
+    assert.equal(step.action, 'classify', 'an absent profile is not this check')
+  } finally {
+    cleanup(absent.root)
+  }
+})
+
+test('a profile made unparseable between classify and record-batch halts the record with nothing recorded', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+    })
+    const batch = toFirstBatch(root, change)
+    file(root, PROFILE_PATH, '{ not json')
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    const tasksBefore = readFileSync(tasksPath, 'utf8')
+    const { step } = runAny(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.match(step.reason, /does not parse/)
+    assert.ok(step.reason.includes('profile.json'))
+    assert.equal(readFileSync(tasksPath, 'utf8'), tasksBefore, 'a task was ticked')
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('a profile made invalid between classify and record-batch halts the record with nothing recorded', () => {
   const { root, change } = repo()
   try {
@@ -8584,6 +8876,13 @@ test('--plugin-root naming a different version raises CLI VERSION SKEW with both
     assert.equal(manifest.cli.version, PKG_VERSION)
     assert.equal(manifest.plugin.version, '0.0.1')
     assert.ok([plugin, realpathSync(plugin)].includes(manifest.plugin.root), JSON.stringify(manifest.plugin))
+    assert.equal(
+      banner,
+      `CLI VERSION SKEW: this run's interlock is ${PKG_VERSION} (${realpathSync(BIN)}), the plugin is ` +
+        `0.0.1 (${manifest.plugin.root}) — install the matching CLI (npm i -g @renzrollon/interlock@0.0.1) ` +
+        'or expect behaviour the plugin does not describe',
+      'the skew banner is pinned in full, not only by its parts'
+    )
   } finally {
     rmSync(plugin, { recursive: true, force: true })
     cleanup(root)
@@ -8610,8 +8909,218 @@ test('--plugin-root naming a directory with no readable plugin manifest raises n
     const started = run(root, ['run', 'start', '--change', change, '--plugin-root', empty]).step
     assert.equal(started.action, 'classify')
     assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false, JSON.stringify(started.banners))
+    // The check that could not run is spoken, with the path it looked at, never passed over.
+    const recordedRoot = manifestOf(root).plugin.root
+    assert.ok([empty, realpathSync(empty)].includes(recordedRoot), recordedRoot)
+    assert.deepEqual(
+      bannersOf(started).filter(b => typeof b === 'string' && b.startsWith('PLUGIN VERSION UNREADABLE')),
+      [
+        `PLUGIN VERSION UNREADABLE: no version in ${join(recordedRoot, '.claude-plugin', 'plugin.json')} — ` +
+          'whether this interlock matches the plugin was not checked'
+      ],
+      JSON.stringify(started.banners)
+    )
   } finally {
     rmSync(empty, { recursive: true, force: true })
     cleanup(root)
   }
+})
+
+// --- Claude Code's advisor tool, recorded at start and counted at close -------
+//
+// (replace-subagent-advisors-with-advisor-tool: "Where the run speaks",
+// "Briefings ask for no consult", "Counting consults".) The tool is the user's to
+// turn on; the run reads whether it is, says so, and counts what it can see.
+
+/** A fresh HOME with no settings, so a developer's own `~/.claude/settings.json` cannot move a result. */
+function emptyHome() {
+  return mkdtempSync(join(tmpdir(), 'interlock-home-'))
+}
+
+const advisorNotesOf = notes => (notes || []).filter(n => /^ADVISOR /.test(String(n)))
+
+/** `run start --host workflow` with the given project settings text (or none), returning the manifest. */
+function startWithProjectSettings(settingsText, env = {}) {
+  const home = emptyHome()
+  const { root, change } = repo()
+  try {
+    if (settingsText !== undefined) file(root, '.claude/settings.json', settingsText)
+    startWorkflow(root, change, { env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined, ...env } })
+    return manifestOf(root)
+  } finally {
+    cleanup(root)
+    cleanup(home)
+  }
+}
+
+test('run start records a configured advisor on the manifest and speaks it as a note, never a banner', () => {
+  const manifest = startWithProjectSettings({ advisorModel: 'opus' })
+  assert.deepEqual(manifest.hostEnv.advisor, { scopes: ['project'], unreadable: [], disabled: false })
+  const notes = advisorNotesOf(manifest.notes)
+  assert.equal(notes.length, 1, JSON.stringify(manifest.notes))
+  assert.match(notes[0], /^ADVISOR CONFIGURED \(project\): /)
+  assert.match(notes[0], /consults are counted per lane/)
+  assert.match(notes[0], /the advice is not recorded/)
+  assert.match(notes[0], /its spend is not established/)
+  assert.ok(!manifest.banners.some(b => /ADVISOR/.test(b)), 'an operator\'s choice is not a degradation')
+  assert.ok(!JSON.stringify(manifest.hostEnv).includes('opus'), 'the configured value is never recorded')
+})
+
+test('run start says the advisor is disabled when the environment turns the tool off', () => {
+  const manifest = startWithProjectSettings({ advisorModel: 'opus' }, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: '1' })
+  assert.equal(manifest.hostEnv.advisor.disabled, true)
+  assert.deepEqual(advisorNotesOf(manifest.notes), [
+    'ADVISOR DISABLED: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, so advisorModel in project is ignored'
+  ])
+})
+
+test('run start names an unreadable settings file and carries on', () => {
+  const manifest = startWithProjectSettings('{ not json')
+  assert.deepEqual(manifest.hostEnv.advisor.scopes, [])
+  assert.equal(manifest.hostEnv.advisor.unreadable.length, 1)
+  assert.equal(manifest.hostEnv.advisor.unreadable[0].scope, 'project')
+  const notes = advisorNotesOf(manifest.notes)
+  assert.equal(notes.length, 1, JSON.stringify(manifest.notes))
+  assert.match(notes[0], /^ADVISOR CONFIGURATION NOT READ: project settings \(/)
+})
+
+test('run start says nothing about an advisor that is not set, and records the empty observation', () => {
+  for (const settings of [undefined, { model: 'sonnet' }]) {
+    const manifest = startWithProjectSettings(settings)
+    assert.deepEqual(manifest.hostEnv.advisor, { scopes: [], unreadable: [], disabled: false })
+    assert.deepEqual(advisorNotesOf(manifest.notes), [])
+  }
+})
+
+test('decideHostEnvironment appends advisor notes from the recorded observation and none without one', () => {
+  const base = observeClaudeEnv({}, { version: '2.1.288', cpuCount: 4 })
+  assert.deepEqual(advisorNotesOf(decideHostEnvironment(base).notes), [])
+  const configured = decideHostEnvironment({ ...base, advisor: { scopes: ['user', 'project'], unreadable: [], disabled: false } })
+  assert.match(advisorNotesOf(configured.notes)[0], /^ADVISOR CONFIGURED \(user, project\): .*counted per lane/)
+  const disabled = decideHostEnvironment({ ...base, advisor: { scopes: ['user'], unreadable: [], disabled: true } })
+  assert.match(advisorNotesOf(disabled.notes)[0], /^ADVISOR DISABLED: /)
+  const unreadable = decideHostEnvironment({
+    ...base,
+    advisor: { scopes: [], unreadable: [{ scope: 'local', reason: 'EACCES' }], disabled: false }
+  })
+  assert.deepEqual(advisorNotesOf(unreadable.notes), ['ADVISOR CONFIGURATION NOT READ: local settings (EACCES)'])
+  assert.equal(decideHostEnvironment(base).banners.length, decideHostEnvironment({ ...base, advisor: configured }).banners.length)
+})
+
+/**
+ * The implementer lanes and the remediation lane of one strict Workflow-host run,
+ * as the briefings the program wrote for them. Everything that could differ
+ * between two runs of the same change other than the advisor is held fixed.
+ */
+function strictBriefings(configured) {
+  const home = emptyHome()
+  const { root, change } = repo()
+  const env = workflowEnv({ env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined } })
+  try {
+    if (configured) file(root, '.claude/settings.json', { advisorModel: 'opus' })
+    const batch = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, ['--strict'], CLASSIFIED, { env })
+    assert.equal(batch.action, 'run-batch')
+    assert.equal(
+      manifestOf(root).hostEnv.advisor.scopes.length > 0,
+      configured,
+      'the manifest records what the fixture configured'
+    )
+    const grab = spawns =>
+      spawns.map(sp => ({
+        kind: sp.kind,
+        label: sp.label,
+        promptSha256: sp.promptSha256,
+        prompt: sp.prompt,
+        file: readFileSync(join(root, sp.promptPath), 'utf8').split(root).join('<root>')
+      }))
+    const implementers = grab(batch.spawns)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = step0(root, [...batch.then.argv], {
+      results: pendingLanes(root).map(lane => laneOk(lane.map(t => t.id))),
+      env
+    })
+    assert.equal(review.action, 'review')
+    writeReview(root, { blockers: 1 })
+    const remediate = step0(root, [...review.then.argv], { results: [{ ok: true }], env })
+    assert.equal(remediate.action, 'remediate')
+    return { implementers, remediation: grab(remediate.spawns) }
+  } finally {
+    cleanup(root)
+    cleanup(home)
+  }
+}
+
+test('a configured run emits byte-identical implementer and remediation briefings, with equal bootstrap hashes', () => {
+  const plain = strictBriefings(false)
+  const configured = strictBriefings(true)
+  assert.ok(plain.implementers.length >= 1 && plain.remediation.length === 1)
+  assert.deepEqual(configured.implementers, plain.implementers)
+  assert.deepEqual(configured.remediation, plain.remediation)
+  for (const lane of [...plain.implementers, ...plain.remediation]) {
+    assert.match(lane.promptSha256, /^[0-9a-f]{64}$/)
+    assert.doesNotMatch(lane.file, /advisor/i, 'no briefing asks a lane to consult an advisor')
+  }
+})
+
+const configure = root => file(root, '.claude/settings.json', { advisorModel: 'opus' })
+const lineOf = summary => (summary.match(/^ {2}advisor consults: .*$/m) || [null])[0]
+const walk = (configured, plant) => {
+  const home = emptyHome()
+  const r = workflowThroughWaves({
+    setup: configured ? configure : undefined,
+    env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined }
+  })
+  try {
+    plantJoined(r, plant)
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, closed.stderr)
+    return closed.step
+  } finally {
+    cleanup(r.root)
+    cleanup(home)
+  }
+}
+
+test('the close sums consults over the lanes and says how many lanes', () => {
+  const step = walk(true, { advisor: i => [1, 2, 0][i] })
+  assert.equal(lineOf(step.summary), '  advisor consults: 3 across 3 lanes')
+  assert.deepEqual(step.advisorConsults, { count: 3, lanes: 3, unrecorded: 0 })
+})
+
+test('an unconfigured run that consulted anyway still prints the count', () => {
+  const step = walk(false, { advisor: i => [0, 0, 4][i] })
+  assert.equal(lineOf(step.summary), '  advisor consults: 4 across 3 lanes')
+  assert.deepEqual(step.advisorConsults, { count: 4, lanes: 3, unrecorded: 0 })
+})
+
+test('a lane with no recorded transcript makes the count not established, never zero', () => {
+  const step = walk(true, { skip: [1], advisor: () => 0 })
+  assert.equal(lineOf(step.summary), '  advisor consults: not established (1 of 3 lanes unrecorded)')
+  assert.deepEqual(step.advisorConsults, { count: null, lanes: 3, unrecorded: 1 })
+  assert.doesNotMatch(step.summary, /advisor consults: 0/)
+})
+
+test('a lane whose transcript did not parse, or whose record predates the field, is unrecorded', () => {
+  const unparsed = walk(true, { advisor: i => (i === 0 ? null : 2) })
+  assert.equal(lineOf(unparsed.summary), '  advisor consults: not established (1 of 3 lanes unrecorded)')
+  assert.deepEqual(unparsed.advisorConsults, { count: null, lanes: 3, unrecorded: 1 })
+  const old = walk(true, { advisor: () => undefined })
+  assert.equal(lineOf(old.summary), '  advisor consults: not established (3 of 3 lanes unrecorded)')
+  assert.deepEqual(old.advisorConsults, { count: null, lanes: 3, unrecorded: 3 })
+})
+
+test('every lane parsed and no consult recognized is not established, never 0', () => {
+  const step = walk(true, { advisor: () => 0 })
+  assert.equal(lineOf(step.summary), '  advisor consults: not established (none recognized in 3 lanes)')
+  assert.deepEqual(step.advisorConsults, { count: null, lanes: 3, unrecorded: 0 })
+  assert.doesNotMatch(step.summary, /advisor consults: 0/)
+})
+
+test('an unconfigured run with no consults carries no advisor line and no field', () => {
+  const step = walk(false, { advisor: () => 0 })
+  assert.equal(lineOf(step.summary), null)
+  assert.ok(!('advisorConsults' in step), JSON.stringify(Object.keys(step)))
+  const unrecorded = walk(false, { skip: [0] })
+  assert.equal(lineOf(unrecorded.summary), null)
+  assert.ok(!('advisorConsults' in unrecorded))
 })

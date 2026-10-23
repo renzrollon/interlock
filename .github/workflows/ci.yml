@@ -149,6 +149,37 @@ jobs:
           mkdir -p "$RUNNER_TEMP/smoke"
           node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
 
+  # The `main: required CI` ruleset requires a check named `validate-plugin` and
+  # one named `cli-smoke`; it lives on GitHub, not here. The matrices above
+  # report as `validate-plugin (latest)`, `cli-smoke (macos-latest)` and so on,
+  # and nothing reports the bare names, so these two gates do: each passes only
+  # when every leg of its matrix passed. `always()` keeps a failed or cancelled
+  # leg from skipping the gate, because a skipped required check reads as
+  # passing. Renaming a job or a leg leaves the gates' names alone;
+  # test/spine/github-workflows.test.mjs pins that every required name is
+  # reported.
+  validate-plugin-gate:
+    name: validate-plugin
+    needs: validate-plugin
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every engine leg passed
+        run: |
+          echo "validate-plugin legs: ${{ needs.validate-plugin.result }}"
+          test "${{ needs.validate-plugin.result }}" = success
+
+  cli-smoke-gate:
+    name: cli-smoke
+    needs: cli-smoke
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every platform leg passed
+        run: |
+          echo "cli-smoke legs: ${{ needs.cli-smoke.result }}"
+          test "${{ needs.cli-smoke.result }}" = success
+
   # The release installed OVER the previous one. A user who runs `npm i -g` on
   # top of last month's install gets whatever the two leave together, which no
   # fresh-prefix smoke sees. Install the previous release first, prove it runs,
@@ -186,19 +217,31 @@ jobs:
           mkdir -p "$RUNNER_TEMP/smoke"
           node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
           # The doctor's other rows depend on what the runner has installed, so
-          # only the one this job is about can fail it: the CLI on PATH must not
-          # be older than the plugin it came with.
-          PATH="$RUNNER_TEMP/prefix/bin:$PATH" interlock doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          # only the one this job is about can fail it: the CLI on PATH must be
+          # the version of the plugin it came with, this checkout. The plugin
+          # root is given as a plugin session gives it; by name alone the row has
+          # no plugin to compare with and skips, which proves nothing here.
+          PATH="$RUNNER_TEMP/prefix/bin:$PATH" CLAUDE_PLUGIN_ROOT="$GITHUB_WORKSPACE" interlock doctor --json > "$RUNNER_TEMP/doctor.json" || true
           node -e '
             const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
             const row = d.checks.find(c => c.id === "cli-version");
             console.log("cli-version:", row ? row.status + " - " + row.detail : "no row");
-            if (!row || row.status === "fail") process.exit(1);
+            if (!row || row.status !== "ok") process.exit(1);
           ' "$RUNNER_TEMP/doctor.json"
+      # The case branches on what the previous CLI reports, so it holds before
+      # and after the release that began reporting versions. A name pattern that
+      # matches nothing still exits 0, so the step also requires the case's own
+      # `ok` line, without a SKIP: renaming the case fails here, not silently.
       - name: Skew harness against the previous release's CLI
         env:
           INTERLOCK_HARNESS_BIN: ${{ runner.temp }}/previous/bin/interlock
-        run: node --test --test-name-pattern 'previous release CLI' test/workflows.test.mjs
+          SKEW_CASE: the current ship.js against the previous release CLI closes, and names how that CLI differs from the plugin
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap --test-name-pattern "$SKEW_CASE" test/workflows.test.mjs | tee "$RUNNER_TEMP/skew.tap"
+          if ! sed -n 's/^ok [0-9]* - //p' "$RUNNER_TEMP/skew.tap" | grep -Fxq "$SKEW_CASE"; then
+            echo "the skew case did not run and pass: $SKEW_CASE"; exit 1
+          fi
 
   # The outcome eval's model-free prepare path. Ordinary CI runs it so a broken
   # fixture, a failed copy or an isolation refusal fails the build here, on every

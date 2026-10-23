@@ -44,6 +44,7 @@ import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
 import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
 import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
 import { cliVersion } from '../lib/version.mjs'
+import { advisorBanners } from '../lib/host/advisor-banners.mjs'
 
 const WORK = '.claude/ship'
 
@@ -357,6 +358,11 @@ if (claudeBinary) {
       `exempted path, see docs/04-when-it-stops.md`
   )
 }
+// The advisor tool is Claude Code's own and only the user turns it on. This
+// host does not count consults per lane, so the note says they are not counted;
+// a host that is not the Claude binary has no advisor and gets no note. A
+// settings file that does not read is named by the note, never skipped quietly.
+if (claudeBinary) banners.push(...advisorBanners(root, process.env))
 // The Claude CLI's effort variable outranks `--effort` and every per-agent
 // effort, so while it is set the plan's effort is not in effect. It means
 // nothing to a host that is not the Claude binary (D22). It is the operator's

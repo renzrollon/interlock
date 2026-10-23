@@ -66,7 +66,7 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <rect class="node stop" x="375.75" y="77.5" width="224.64" height="95" rx="4"/>
 <rect class="ring cur s2" x="372.25" y="74" width="231.64" height="102" rx="6"/>
 <text class="title sans" x="488.07" y="119.5" text-anchor="middle">You read the spec.</text>
-<text class="line on" x="488.07" y="143" text-anchor="middle">ten minutes · advisor.md</text>
+<text class="line on" x="488.07" y="143" text-anchor="middle">ten minutes · four files</text>
 <text class="arrow" x="612.88" y="130" text-anchor="middle">→</text>
 <rect class="node core" x="625.63" y="77.75" width="167.73" height="94.5" rx="4"/>
 <rect class="ring cur s3" x="621.88" y="74" width="175.23" height="102" rx="6"/>
@@ -87,7 +87,7 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <line class="hair" x1="0" y1="239.5" x2="1120" y2="239.5"/>
 <text class="desc cur s0" x="0" y="266"><tspan class="who">bootstrap</tspan><tspan dx="10">Once per repo. Reads the code, writes one spec per existing feature, builds the graph. Never edits source.</tspan></text>
 <text class="desc cur s1" x="0" y="266"><tspan class="who">spec</tspan><tspan dx="10">Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs.</tspan></text>
-<text class="desc cur s2" x="0" y="266"><tspan class="who">You read the spec.</tspan><tspan dx="10">Four files, one question each, plus advisor.md. The only required stop. Wrong idea? Re-spec.</tspan></text>
+<text class="desc cur s2" x="0" y="266"><tspan class="who">You read the spec.</tspan><tspan dx="10">Four files, one question each. The only required stop. Wrong idea? Re-spec.</tspan></text>
 <text class="desc cur s3" x="0" y="266"><tspan class="who">ship</tspan><tspan dx="10">Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one.</tspan></text>
 <text class="desc cur s4" x="0" y="266"><tspan class="who">mr</tspan><tspan dx="10">Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.</tspan></text>
 <text class="desc cur s5" x="0" y="266"><tspan class="who">archive</tspan><tspan dx="10">After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.</tspan></text>

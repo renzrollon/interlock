@@ -16,7 +16,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -94,6 +94,33 @@ test('the smoke exits 1 when the binary directory holds no interlock', () => {
   } finally {
     rmSync(empty, { recursive: true, force: true })
   }
+})
+
+test('the smoke still runs when reached through a symlinked path', () => {
+  // macOS's /tmp is a link to /private/tmp: a guard comparing the path as given
+  // with the module's own path skipped main and exited 0 with no output at all.
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-smoke-link-'))
+  try {
+    const link = join(dir, 'postinstall-smoke.mjs')
+    symlinkSync(SCRIPT, link)
+    const r = spawnSync(process.execPath, [link], { cwd: REPO, encoding: 'utf8', timeout: 30_000 })
+    assert.equal(r.error, undefined)
+    assert.equal(r.status, 1, `run with no arguments through a link, the smoke must print its usage and exit 1:\n${r.stdout}\n${r.stderr}`)
+    assert.match(r.stderr, /usage: node scripts\/postinstall-smoke\.mjs <binDir> <repoRoot> <scratchDir>/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the doctor entry runs with the plugin root of the package under test', async () => {
+  // Run by name, the doctor has no plugin to compare the CLI with and its
+  // cli-version row skips, which the entry's check would read as a failure.
+  const entry = (await inventory()).find(e => e.bin === 'interlock' && e.argv[0] === 'doctor' && e.argv.includes('--json'))
+  assert.ok(entry, 'no doctor --json entry')
+  assert.equal(typeof entry.env, 'function', 'the doctor entry must derive its environment from the run')
+  assert.deepEqual(entry.env({ binPackage: '/prefix/lib/node_modules/@renzrollon/interlock' }), {
+    CLAUDE_PLUGIN_ROOT: '/prefix/lib/node_modules/@renzrollon/interlock'
+  })
 })
 
 // --- the inventory ----------------------------------------------------------------------

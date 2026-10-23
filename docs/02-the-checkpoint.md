@@ -70,14 +70,6 @@ Delta specs are the acceptance criteria. Each requirement should carry concrete 
 
 **Looks wrong:** "should work correctly"; a scenario that names a function instead of an observable outcome; a happy path with no failure path.
 
-## The advisor's questions: `advisor.md`
-
-After the artifact review passes and the gate is clean, `/interlock:spec` spends one consult on a stronger, read-only model, the `interlock:advisor` agent. It reads a brief the CLI assembled from the four artifacts, the findings file and any compound notes that name a file the tasks touch, and it replies with questions a person would have to answer and risks it sees in the plan. Code validates the reply: every question must cite a heading that exists, the numbering is assigned by position, and the caps are the ones `interlock limits` prints. What survives is written to `openspec/changes/<change>/advisor.md`; what was dropped is listed there with the reason. A consult that did not run, for any reason, is written down the same way. It is never retried.
-
-Nothing gates on `advisor.md`. `interlock ready`, `interlock ledger` and `interlock validate` give the same answer with or without it, and `/interlock:ship` does not read it. It is advice to the reader at this checkpoint, not a verdict.
-
-A question becomes a ledger row only when you write it. If one is worth keeping, add it to `decisions.md` as a `needs_human` row, or answer it there; the closing line of `advisor.md` says so. The advisor never writes the ledger itself, because the ledger is your record of what needed a person and `interlock ready` blocks on it. The spec meter shows the questions and a `waiting on you` line beside the ledger's count.
-
 ## Two cheap machine checks
 
 Neither replaces reading, but both are fast and catch structural problems before you spend attention on content:

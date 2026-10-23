@@ -264,6 +264,12 @@ Nothing here needs action unless the default surprises you. The run goes on.
 
 The `interlock` your shell found is not the release the plugin is. `interlock run start` raises **`CLI VERSION SKEW: this run's interlock is <x> (<path>), the plugin is <y> (<root>)`** when `/interlock:ship` told it where the plugin is and the versions differ, and the session-start preflight and `interlock doctor` raise the same words from their `cli-version` row. **`CLI VERSION UNKNOWN: the interlock on PATH predates version reporting (older than 1.8.0) — run interlock doctor`** is the workflow driver's, printed when the start step carries no version at all: a CLI that old cannot say what it is. Either way, bring the CLI to the plugin's version: [16](./16-upgrading.md#bring-the-cli-to-the-plugins-version). The cost of ignoring it is that arguments the plugin passes may be dropped by the older CLI. **`PLUGIN VERSION UNREADABLE: no version in <root>/.claude-plugin/plugin.json`** is `run start` saying it could not read the plugin's version from the root it was given, so the comparison did not run.
 
+### `CLOSE ALREADY RECORDED` and `ORIGINAL CLOSE UNAVAILABLE`
+
+A run closes once. When a driver calls `interlock run close` on a run that already closed, which it does when it obeys the refusal of some other call against that finished run, the CLI writes nothing: no second receipt, no second outcome row, no second terminal event, and the original halt reason stays. It prints the close it kept in `.claude/ship/last-close.json`, with that close's own exit code, and the run stays as it was.
+
+If that copy is missing, unreadable or another run's, the CLI cannot print the original close. It says so: **`CLOSE ALREADY RECORDED: run <id> was already closed at <time> — this close recorded nothing`** and **`ORIGINAL CLOSE UNAVAILABLE: <reason>; its summary and exit code cannot be shown, so this one exits 1`**. The run's receipt is still in its trajectory: `interlock run-log show <id>`.
+
 ### `GRAPH UNAVAILABLE` and `GRAPH FROM MAIN CHECKOUT`
 
 The code knowledge graph is not usable. `/interlock:bootstrap` reports it when the build errors or indexes nothing. A ship run reports it from `interlock run start`, on either host, when neither the working root nor the [state home](#corpora-in-main-checkout-and-corpora-in-state-home) has a `.claude/graph/graph.json`:

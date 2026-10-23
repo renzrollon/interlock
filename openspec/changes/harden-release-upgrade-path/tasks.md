@@ -112,12 +112,12 @@
   - **Missing version.** A start step without `cliVersion` adds the host banner `CLI VERSION UNKNOWN: the interlock on PATH predates version reporting (older than 1.8.0) — run interlock doctor`.
   - **Unreadable start.** The `RELAY UNREADABLE` reason for an unreadable `run start` gains the `interlock --version` sentence.
   - **Unchanged.** The bare `interlock` relay command is unchanged.
-- [ ] 2.11 `evals/ship/run.mjs`, `lib/eval-history.mjs` (only if `appendShipOutcome` needs a field it does not accept) and `evals/history/README.md`, per design D30. Its test reads the versions 2.5 and 2.6 record. (spec: evals/local-grading — both requirements)
+- [x] 2.11 `evals/ship/run.mjs`, `lib/eval-history.mjs` (only if `appendShipOutcome` needs a field it does not accept) and `evals/history/README.md`, per design D30. Its test reads the versions 2.5 and 2.6 record. (spec: evals/local-grading — both requirements)
   - **Form.** `--grade-root`, `--change`, `--baseline-commit`, `--fixture-id`, `--run-id`, `--baseline-counts`, with `--history-root`, `--no-history` and `--json` as today. It goes into the `unknown flag` parser and the usage text.
   - **Grading.** `gradeArm` with arm `loop`, then an append with host, version, model and `evalAgent` as D30's table gives.
   - **Refusals.** Refuse to append without a recorded version. Without `--baseline-counts`, not-weakened is recorded `unobserved`.
   - **README.** The README gains the local row's provenance.
-- [ ] 2.12 `scripts/postinstall-smoke.mjs` (new), per design D21. `<binDir> <repoRoot> <scratchDir>`; exports `INVENTORY` of `{ bin, argv, codes, keys, check? }`; prints PASS/FAIL rows; exits 1 on any failure. Contents:
+- [x] 2.12 `scripts/postinstall-smoke.mjs` (new), per design D21. `<binDir> <repoRoot> <scratchDir>`; exports `INVENTORY` of `{ bin, argv, codes, keys, check? }`; prints PASS/FAIL rows; exits 1 on any failure. Contents:
   - review §5c's list, plus the two extensions §5c names;
   - `--version`, `tasks tick <change>`, an unknown-flag refusal (exit 2) and `-h` after a subcommand;
   - `doctor --json` run with `PATH` led by `<binDir>`, so `cli-version` resolves to the installed copy.
@@ -152,7 +152,7 @@
 
 ## 3. Final verification (needs §1 and §2)
 
-- [ ] 3.1 Run and report each of the following:
+- [x] 3.1 Run and report each of the following:
   - `npm test`, pasting the summary;
   - `npm run validate`;
   - `openspec validate harden-release-upgrade-path --strict`;

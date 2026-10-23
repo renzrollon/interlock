@@ -30,6 +30,9 @@ The `!` runs the command from the Claude Code prompt, so it resolves `interlock`
 | newer than the plugin | `warn` | A mismatch worth saying. No subcommand a skill calls has been removed, so it is not a known break. |
 | the same version, or the plugin's own `bin/` | `ok` | Nothing to do. |
 | not on `PATH` at all | `skip`: `interlock is not on PATH; the bundled binary runs` | Whether that is a problem is the `binaries` row's call. |
+| an npm copy, with no plugin to compare it with | `skip`: `the doctor ran outside a plugin session, so there was no plugin to compare …` | The doctor found no plugin root: none passed, no `CLAUDE_PLUGIN_ROOT`, and no plugin `bin/` later on `PATH`. Run it from the Claude Code prompt, or set `CLAUDE_PLUGIN_ROOT` to the plugin's directory. |
+
+The plugin the row compares with is, in order: `CLAUDE_PLUGIN_ROOT` when it is set, then the first plugin `bin/` on `PATH` that is not the npm copy itself. The plugin puts that `bin/` on the `PATH` of Claude Code's shell, so `! interlock doctor` finds it even when a global copy comes first. A copy run by name from a plain terminal has neither, and says so rather than comparing itself with itself. A copy older than the plugin's release may have no such row at all; the session-start preflight still catches it, because it runs the plugin's own bundled `bin/interlock doctor`.
 
 A CLI that answers `--version` with `Unknown command` predates version reporting and is read as older than the plugin. The row's `evidence` in `.claude/ship/preflight.json` carries the resolved path and both versions.
 
@@ -84,7 +87,7 @@ A halted run can still be picked up from its resume card; [04](./04-when-it-stop
 
 **The graph.** The graph's `manifest.json` records the schema version, the extractor, and a hash of every OpenSpec and memory file the overlays read. `interlock-graph update` rebuilds, with the reason printed, when the manifest predates those records, when the schema or extractor differs, or when an overlay file was added, removed or changed. Nothing is reported as up to date that was built by something else.
 
-**The autonomy record.** An `autonomy.json` that exists but cannot be read is moved to `autonomy.json.unreadable-<ISO time>` before fresh counters are written. `interlock autonomy record` and `autonomy clean` print `AUTONOMY RECORD UNREADABLE: <path> moved to <new path>; counters restarted` on stderr, and under `warnings` with `--json`. The exit code stays 0. An absent record is an empty one, as it was.
+**The autonomy record.** An `autonomy.json` that exists but cannot be read is moved to `autonomy.json.unreadable-<ISO time>` before fresh counters are written. `interlock autonomy record` and `autonomy clean` print `AUTONOMY RECORD UNREADABLE: <path> moved to <new path>; counters restarted` on stderr, and under `warnings` with `--json` (for `clean`, on each row of the array it prints). The exit code stays 0. An absent record is an empty one, as it was.
 
 ## What the CLI now refuses
 
@@ -97,6 +100,16 @@ interlock: unknown flag --strcit for interlock run start (CLI 1.8.0)
 It prints that subcommand's usage lines and exits **2**. With `--json` it also prints `{ "error", "unknownFlag", "subcommand", "cliVersion" }` on stdout, so a refusal that crossed the workflow relay is quoted in the halt instead of vanishing. Exit 1 keeps meaning a blocked verdict for `gate`, `ready`, `ledger`, `validate` and `run-log check`; a typo is never mistaken for one. An unknown subcommand still exits 1.
 
 If a script of yours passed a flag the CLI used to ignore, it fails with exit 2 naming the flag. Remove the flag. `-h` or `--help` after any subcommand prints that subcommand's usage and exits 0 without running it, and `interlock tasks tick <change> --ids <ids>` reads the change from the positional, as `run start` does.
+
+## The subagent advisors are removed
+
+The 1.7.0 checkpoint advisor and the opt-in review advisor are gone, so these commands now fail as unknown subcommands or flags, exit 1 or 2, and write nothing:
+
+- `interlock advisor` (`--brief`, `--check`, `--verdict`) and the `advisor.md` file it wrote beside a change's specs. A script that ran `interlock advisor <change> --brief` must drop the line; an `advisor.md` already in a change folder is left alone and nothing reads it.
+- `interlock review-advisor`, `interlock review --advisor-brief` and `/interlock:review-code --advisor`, with the `review-advisor.md` file.
+- The `interlock:advisor` and `interlock:review-advisor` agents, and the Spec Range and Review Range eval cases.
+
+What replaces them is Claude Code's own advisor tool, which only you can turn on. `interlock doctor` has an `advisor` row that says whether it is configured, a ship run says so at start, and the Workflow close counts consults ([07](./07-cli-and-configuration.md#claude-codes-advisor-tool)). `interlock limits` no longer prints the advisor caps, and the note-match cap `maxAdvisorNoteRows` is now `maxNoteMatchRows` with the same value.
 
 ## Evals no longer run on a schedule
 

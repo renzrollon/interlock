@@ -826,33 +826,11 @@ test('the verdict briefing fixes and re-reviews nothing, so it asks for no file'
   assert.ok(!prompt.includes(EMPTY_LIST))
 })
 
-// --- the checkpoint advisor's brief and the compound-notes table -------------
-//
-// The brief assembler is a registered entry like every other, so the
-// determinism and no-mutation loops above cover it; the tests below pin that the
-// entry exists and is the module's own export, so a brief assembled outside the
-// registry cannot pass for a covered one.
+// --- the compound-notes table ------------------------------------------------
 
-test('the advisor brief assembler is registered as PROMPTS.advisor', async () => {
-  const entry = PROMPTS.advisor
-  assert.ok(entry, 'PROMPTS.advisor is not registered')
-  assert.equal(entry.module, 'advisor.mjs')
-  const mod = await import('../../lib/prompts/advisor.mjs')
-  assert.equal(typeof mod.assembleBrief, 'function')
-  assert.equal(entry.assemble, mod.assembleBrief, 'the registry must hold the module’s own assembleBrief')
-  assert.ok(Array.isArray(entry.inputs) && entry.inputs.length > 0, 'PROMPTS.advisor registers no input')
-})
-
-test('the registered advisor assembler yields the same bytes for the same input', () => {
-  const entry = PROMPTS.advisor
-  assert.ok(entry, 'PROMPTS.advisor is not registered')
-  for (const [i, input] of entry.inputs.entries()) {
-    const first = entry.assemble(input)
-    assert.equal(typeof first, 'string')
-    // A structural copy is the same input: nothing outside it (a clock, a cwd)
-    // may reach the bytes.
-    assert.equal(entry.assemble(JSON.parse(JSON.stringify(input))), first, `advisor[${i}] is not a function of its input`)
-  }
+test('no advisor brief assembler is registered', () => {
+  for (const key of Object.keys(PROMPTS)) assert.doesNotMatch(key, /advisor/i, `PROMPTS.${key} is still registered`)
+  for (const entry of Object.values(PROMPTS)) assert.doesNotMatch(entry.module, /advisor|brief-kit/, `${entry.module} is still registered`)
 })
 
 test('the commit briefing names the compound-notes table as touched only when the manifest carries it', () => {

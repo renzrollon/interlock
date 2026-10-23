@@ -189,9 +189,11 @@ import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { buildReport, formatReport } from '../lib/report.mjs'
 import { renderReportHtml } from '../lib/report-html.mjs'
 import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
+import { readSettingsSources, settingsSources } from '../lib/settings-sources.mjs'
+import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
-import { advisorBrief, advisorCheck, advisorVerdict, noteCommand } from '../lib/advisor-cli.mjs'
-import { reviewAdvisorBrief, reviewAdvisorCheck, reviewAdvisorVerdict } from '../lib/review-advisor-cli.mjs'
+import { noteCommand } from '../lib/note-cli.mjs'
+import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
 import { promote, formatPromotion } from '../lib/evals-promote.mjs'
@@ -328,30 +330,6 @@ Usage:
                                            (a real path collision or a lane whose
                                            worktree could not be located) — never
                                            auto-resolves, never applies a guess
-  interlock advisor [change] --brief       Assemble the checkpoint consult's brief
-                  [--findings <f>]          under .claude/metrics and print its path
-  interlock advisor [change] --check <draft|->
-                                            Validate the consult's JSON draft by code
-                                            and write the change's advisor.md. Exits 0
-                                            once the change resolves: a missing or
-                                            unreadable draft, or an advisor.md that
-                                            cannot be written, is reported as a
-                                            consult that did not run (advice, never
-                                            a gate)
-  interlock advisor [change] --check --failed "<reason>"
-                                            Write advisor.md as a consult that did not run
-  interlock advisor --verdict               Tally the Spec Range human labels against
-                  [--labels <dir>]          the advisor caps: KEEP, KILL or
-                                            INSUFFICIENT LABELS. Always exits 0
-  interlock review-advisor <change> --check <draft|->
-                                            Validate the review consult's JSON draft by
-                                            code and write the change's review-advisor.md.
-                                            Exits 0 once the change resolves
-  interlock review-advisor <change> --check --failed "<reason>"
-                                            Write review-advisor.md as a consult that did not run
-  interlock review-advisor --verdict [--labels <dir>]
-                                            Tally the Review Range human labels: KEEP,
-                                            KILL or INSUFFICIENT LABELS. Always exits 0
   interlock note add --change <c> --file <f> --surprise "<s>" --rule "<r>"
                                             Append one row to the compound-notes table
   interlock note derive --findings <f> --change <c>
@@ -833,9 +811,6 @@ remediate:
 review:
   --findings <file>      Findings raised by the review dimensions. "-" for stdin.
   --verdicts <file>      Flat JSON array of skeptic verdicts. "-" for stdin.
-  --advisor-brief <change>  Also write the review consult's brief and id index
-                         under .claude/metrics. A failure warns and never
-                         changes the exit code.
   --metrics <change>     Also append the counts to .claude/metrics/ under this
                          change name. A metrics failure prints its reason and is
                          never fatal — the exit code is unaffected.
@@ -1477,6 +1452,15 @@ function formatRunStep(step) {
 
 function emit(json, obj, text) {
   process.stdout.write(json ? JSON.stringify(obj, null, 2) + '\n' : text)
+}
+
+/**
+ * The four settings files, read for `lib/advisor-tool.mjs`, which only parses
+ * what it is handed. A file that is absent is not a degradation; one that exists
+ * and does not read is handed over with its reason, to be named in a run note.
+ */
+function readAdvisorSettings(root) {
+  return readAdvisorConfig(readSettingsSources(settingsSources(root)))
 }
 
 /**
@@ -2331,7 +2315,7 @@ function requireChange(root, requested, json) {
 }
 
 // The entry file's output and exit helpers, for the subcommands that live in
-// lib/advisor-cli.mjs: one stdout shape, one exit path, one stdin read.
+// lib/note-cli.mjs: one stdout shape, one exit path, one stdin read.
 const cliIo = { emit, die, requireChange, readFindingsInput, readStdin, splitPaths }
 
 // risk.mjs is pure and takes artifact TEXT, so the filesystem read belongs here.
@@ -3116,10 +3100,6 @@ function splitPaths(value) {
 }
 
 async function main() {
-  // The flag table is loaded here, by a specifier built in two pieces, and not
-  // with a static import: the flag-table test scans this file for dotted reads
-  // of the flags object, and the literal file name reads as one.
-  const { firstUnknownFlag, helpFor } = await import(new URL('../lib/cli-fl' + 'ags.mjs', import.meta.url))
   const argv = process.argv.slice(2)
   if (!argv.length) {
     process.stdout.write(USAGE)
@@ -3138,7 +3118,7 @@ async function main() {
   // `--version` alone prints the bare version; `interlock version` is the form
   // that also names the binary.
   if (argv[0] === '--version' || (argv.length === 1 && argv[0] === '-v')) {
-    process.stdout.write(`${cliVersion()}\n`)
+    process.stdout.write(`${cliVersion() ?? 'unknown'}\n`)
     return
   }
 
@@ -3154,7 +3134,7 @@ async function main() {
   // Workflow relay copies stdout only and would otherwise lose them.
   const unknown = firstUnknownFlag(positional, flags)
   if (unknown) {
-    const version = cliVersion()
+    const version = cliVersion() ?? 'unknown'
     const message = `unknown flag ${unknown.flag} for interlock ${unknown.leaf} (CLI ${version})`
     process.stderr.write(`interlock: ${message}\n\n${helpFor(USAGE, cmd)}`)
     if (json) {
@@ -3173,8 +3153,8 @@ async function main() {
     case 'version': {
       emit(
         json,
-        { version: cliVersion(), path: realpathSync(fileURLToPath(import.meta.url)) },
-        `${cliVersion()}\n`
+        { version: cliVersion() ?? 'unknown', path: realpathSync(fileURLToPath(import.meta.url)) },
+        `${cliVersion() ?? 'unknown'}\n`
       )
       break
     }
@@ -3802,14 +3782,6 @@ async function main() {
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
-      // The consult's brief is bookkeeping too: it warns and keeps the exit code.
-      let advisorBrief = null
-      if (flags['advisor-brief'] !== undefined) {
-        if (flags['advisor-brief'] === true) die('--advisor-brief requires a change name')
-        advisorBrief = reviewAdvisorBrief(cliIo, root, String(flags['advisor-brief']), result, verdicts, changedPaths, flags)
-        if (!advisorBrief.written) warn(`advisor brief not written: ${advisorBrief.reason}`)
-      }
-
       const policyProblems = policy.problems.length
         ? `  policy: ${policy.problems.length} problem(s) in REVIEW.md\n` +
           policy.problems.map(p => `    - ${p}`).join('\n') + '\n'
@@ -3824,11 +3796,10 @@ async function main() {
         formatReview(result) +
         policyDiffers +
         policyProblems +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
-        (advisorBrief ? `  advisor brief: ${advisorBrief.written ? advisorBrief.path : `not written (${advisorBrief.reason})`}\n` : '')
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
       emit(
         json,
-        { ...result, policyProblems: policy.problems, ...(policyBase ? { policyBase } : {}), ...(metrics ? { metrics } : {}), ...(advisorBrief ? { advisorBrief } : {}) },
+        { ...result, policyProblems: policy.problems, ...(policyBase ? { policyBase } : {}), ...(metrics ? { metrics } : {}) },
         text
       )
       break
@@ -4053,28 +4024,6 @@ async function main() {
       break
     }
 
-    case 'advisor': {
-      if (flags.verdict) {
-        advisorVerdict(cliIo, root, flags, json)
-        break
-      }
-      if (flags.brief === undefined && flags.check === undefined) die('advisor requires --brief, --check or --verdict')
-      // `--brief` takes no value, so `advisor --brief <change>` hands the name
-      // to the flag; read it back as the change when no positional names one.
-      const asName = typeof flags.brief === 'string' && !requestedName(positional, flags) ? flags.brief : undefined
-      const name = requireChange(root, asName ?? requestedName(positional, flags), json)
-      if (flags.brief !== undefined) advisorBrief(cliIo, root, name, flags, json)
-      else advisorCheck(cliIo, root, name, flags, json)
-      break
-    }
-
-    case 'review-advisor': {
-      if (flags.verdict) reviewAdvisorVerdict(cliIo, root, flags, json)
-      else if (flags.check === undefined) die('review-advisor requires --check or --verdict')
-      else reviewAdvisorCheck(cliIo, root, requireChange(root, requestedName(positional, flags), json), flags, json)
-      break
-    }
-
     case 'note':
       noteCommand(cliIo, root, positional, flags, json)
       break
@@ -4205,6 +4154,16 @@ async function main() {
           }
           const columns = boardColumns(flags)
           const lines = format === 'board' ? drawRunBoard(drawn, { columns }) : drawRunMermaid(drawn)
+          // The plain form says how many foreign-release lines it would not
+          // read; a drawing carries the same note (spec: ship-run), as a
+          // `%%` comment in mermaid so the diagram stays valid.
+          const foreign = Array.isArray(result.foreignLines) ? result.foreignLines : []
+          if (foreign.length) {
+            const note = formatRunLog({ exists: true, records: [], skipped: [], foreignLines: foreign })
+              .split('\n')[1]
+              .trim()
+            lines.push(format === 'board' ? note : `  %% ${note}`)
+          }
           process.stdout.write(lines.join('\n') + '\n')
         }
       } else if (sub === 'query') {
@@ -4731,8 +4690,16 @@ async function main() {
         let hostEnv
         if (hostId === 'workflow') {
           const probed = probeClaudeVersion(process.env)
+          const observed = observeClaudeEnv(process.env, { version: probed.version, cpuCount: cpuCount() })
+          // What the four settings files say about Claude Code's advisor tool,
+          // read once here and recorded on the manifest: every later step of the
+          // run, the close included, reads this snapshot and nothing re-reads
+          // settings mid-run. `advisorDisabled` moves from the env observation
+          // into the advisor record, which is where the run reads it.
+          const { advisorDisabled, ...rest } = observed
           hostEnv = {
-            ...observeClaudeEnv(process.env, { version: probed.version, cpuCount: cpuCount() }),
+            ...rest,
+            advisor: { ...readAdvisorSettings(root), disabled: advisorDisabled === true },
             ...(probed.reason ? { versionReason: probed.reason } : {})
           }
         }
@@ -4925,9 +4892,11 @@ async function main() {
               : `${r.path}: ${r.current_level} (${r.consecutive_clean}/${r.needed} clean)`
           )
           .join('\n') + '\n'
-        // JSON.stringify drops a property set on an array, so the warnings ride
-        // beside the rows only when there are any.
-        emit(json, cleanWarnings.length ? { results, warnings: cleanWarnings } : results, text)
+        // `--json` stays an array of rows on every path (it was one before the
+        // unreadable-record warning existed). JSON.stringify drops a property set
+        // on an array, so the warning rides on each row as `warnings`, the field
+        // `autonomy record` uses, and only when there is one.
+        emit(json, cleanWarnings.length ? results.map(r => ({ ...r, warnings: cleanWarnings })) : results, text)
       } else if (sub === 'state') {
         const state = getState(opts)
         const text = Object.entries(state).length

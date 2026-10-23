@@ -91,7 +91,7 @@ You type two commands for every change and read the spec between them. The rest 
 |---|---|---|
 | once per repo | [`/interlock:bootstrap`](docs/01-first-hour.md#step-1--onboard-the-repo-once "Once per repo. Reads the code, writes one spec per existing feature, builds the graph. Never edits source.") | Your repo, described in specs |
 | **every change** | <kbd>/interlock:spec "idea"</kbd> | [A reviewed, implementation-ready change](docs/01-first-hour.md#step-2--spec-one-small-change "Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs."). Then it stops |
-| **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each, plus advisor.md. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
+| **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
 | **every change** | <kbd>/interlock:ship</kbd> | [Parallel agents, your tests, one commit](docs/01-first-hour.md#step-4--ship-it "Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one."). Asks nothing |
 | when you want it | [`/interlock:mr`](docs/15-merge-confidence.md "Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The PR or MR, with the merge verdict on it |
 | after the merge | [`openspec archive <change>`](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") | The living specs catch up |
@@ -113,7 +113,7 @@ You type two commands for every change and read the spec between them. The rest 
 
 | | |
 |---|---|
-| **Change** | One unit of work: a folder under `openspec/changes/<name>/` holding `proposal.md`, `design.md`, `tasks.md`, delta specs and, once the checkpoint advisor has run, `advisor.md` |
+| **Change** | One unit of work: a folder under `openspec/changes/<name>/` holding `proposal.md`, `design.md`, `tasks.md` and delta specs |
 | **Delta spec** | The behaviour a change adds or alters, written as Given/When/Then scenarios |
 | **Living spec** | `openspec/specs/`: what the system does today. Archiving a change folds its delta specs in |
 | **Checkpoint** | Your read of the spec, between `spec` and `ship`. The one step a human must do |

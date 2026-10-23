@@ -1119,6 +1119,78 @@ test('a Codex run WITH an API key does not claim the ChatGPT plan path', () => {
   }
 })
 
+// --- the advisor tool on a runner host (replace-subagent-advisors-with-advisor-tool D14) --
+//
+// Only the user can turn Claude Code's advisor tool on. The runner reads the
+// four settings files on the host that drives the Claude binary and says what it
+// found; it counts nothing, so the note says consults are not counted here.
+
+/** A repo whose project settings set the advisor key, and a home that sets nothing. */
+function advisorRunnerRepo() {
+  const repo = runnerRepo()
+  mkdirSync(join(repo.root, '.claude'), { recursive: true })
+  writeFileSync(join(repo.root, '.claude', 'settings.json'), JSON.stringify({ advisorModel: 'opus' }) + '\n')
+  const home = mkdtempSync(join(tmpdir(), 'interlock-advisor-home-'))
+  return { ...repo, home }
+}
+
+test('a Claude-host runner with advisorModel set says consults are not counted on this host', () => {
+  const { root, change, home } = advisorRunnerRepo()
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /ADVISOR CONFIGURED \(project\)/, stdout)
+    assert.match(stdout, /consults are not counted on this host/, stdout)
+    assert.doesNotMatch(stdout, /consults are counted per lane/, stdout)
+    assert.doesNotMatch(stdout, /opus/, 'the configured value is never printed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a Claude-host runner with no advisorModel in any scope raises no advisor note', () => {
+  const { root, change } = runnerRepo()
+  const home = mkdtempSync(join(tmpdir(), 'interlock-advisor-home-'))
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /RUNNER HOST: claude/, stdout)
+    assert.doesNotMatch(stdout, /ADVISOR/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a Codex-host runner raises no advisor note even when advisorModel is set', () => {
+  const { root, change, home } = advisorRunnerRepo()
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /RUNNER HOST: codex \(experimental\)/, stdout)
+    assert.doesNotMatch(stdout, /ADVISOR/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 // --- effort routing on the runner (spec: effort-routing, run-host-adapters) --
 //
 // The runner forwards a spawn's effort to its host and banners what the host
@@ -4975,19 +5047,47 @@ test('a run start relay unreadable twice points at the CLI on PATH being older t
 })
 
 const HARNESS_BIN = process.env.INTERLOCK_HARNESS_BIN
+// ci.yml's upgrade-install job runs this case by its exact title and fails when
+// no case of that title passed, so a rename cannot make the step run nothing
+// (test/spine/github-workflows.test.mjs pins the two together).
 test(
-  'the current ship.js against the previous release CLI closes, and says the CLI is older',
+  'the current ship.js against the previous release CLI closes, and names how that CLI differs from the plugin',
   {
     skip: HARNESS_BIN
       ? false
       : "INTERLOCK_HARNESS_BIN unset — the previous release's CLI is installed only in CI's upgrade-install job"
   },
-  async () => {
-    const { output, root } = await runShip({ keepRepo: true, cliBin: HARNESS_BIN })
+  async t => {
+    // What the previous release can say about itself decides which banner the
+    // close owes. A CLI from before version reporting answers no version, and
+    // only the driver can speak for it; one that reports is compared with this
+    // plugin by `run start`, which needs the plugin root to do it.
+    const answered = spawnSync(process.execPath, [HARNESS_BIN, '--version'], { encoding: 'utf8' })
+    const reported = /^v?(\d+\.\d+\.\d+)/.exec((answered.stdout || '').trim())?.[1] ?? null
+    const plugin = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version
+    t.diagnostic(`previous release CLI reports ${reported ?? 'no version'}; plugin is ${plugin}`)
+    const { output, root } = await runShip({
+      keepRepo: true,
+      cliBin: HARNESS_BIN,
+      args: { change: DEMO_CHANGE, pluginRoot: ROOT }
+    })
     try {
       assert.doesNotMatch(output, /the run program returned no step/, output)
       assert.match(output, /SHIP (COMPLETE|HALTED)/, output)
-      assert.match(output, /CLI VERSION UNKNOWN/, output)
+      if (reported === null) {
+        assert.match(output, /CLI VERSION UNKNOWN/, output)
+        assert.doesNotMatch(output, /CLI VERSION SKEW/, output)
+      } else if (reported !== plugin) {
+        assert.doesNotMatch(output, /CLI VERSION UNKNOWN/, output)
+        assert.ok(
+          output.includes(`CLI VERSION SKEW: this run's interlock is ${reported} `) && output.includes(`the plugin is ${plugin} `),
+          `a ${reported} CLI under a ${plugin} plugin closed without naming the skew:\n${output}`
+        )
+      } else {
+        // Published and checked out at the same version (the window right
+        // after a release): there is no skew to name, and none may be claimed.
+        assert.doesNotMatch(output, /CLI VERSION (UNKNOWN|SKEW)/, output)
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

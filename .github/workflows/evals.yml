@@ -200,12 +200,12 @@ jobs:
           # each case's own `runs` value: the per-case values were chosen for
           # the fast per-change subset, and the full run is the one off the
           # critical path that can afford repetition (design D3).
-          # --scaffold runs each case's context.scaffold_script, which the
-          # Spec Range cases need to seed their frozen change folder; the
-          # smoke job seeds nothing and does not pass it. --allow-tools grants the
-          # operator-gated tools the cases list in allowed_tools: without Bash and
-          # Write no Spec Range case can pass check-ran or advisor-written
-          # (test/fixtures/evals/README.md); test/evals.test.mjs pins the set.
+          # --scaffold runs each case's context.scaffold_script, for any case
+          # that seeds its fixture that way; the smoke job seeds nothing and
+          # does not pass it. --allow-tools grants the operator-gated tools the
+          # cases list in allowed_tools: without them a grader that needs Bash,
+          # Edit or Write cannot pass (test/fixtures/evals/README.md);
+          # test/evals.test.mjs pins the set.
           claude plugin eval . \
             --ablation with-without \
             --scaffold \

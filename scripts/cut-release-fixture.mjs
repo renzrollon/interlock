@@ -29,7 +29,8 @@
 //
 // Usage:
 //   node scripts/cut-release-fixture.mjs <tag>                 cut release-<version>
-//   node scripts/cut-release-fixture.mjs <tag> --out <dir>     write somewhere else
+//   node scripts/cut-release-fixture.mjs <tag> --out <dir>     write somewhere else (an empty
+//                                                              directory or a previous cut; it is replaced)
 //   node scripts/cut-release-fixture.mjs <tag> --keep          keep the scratch directory
 //   node scripts/cut-release-fixture.mjs <tag> --verbose       print every step the CLI named
 //
@@ -49,7 +50,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -119,6 +120,38 @@ export function tokenise(text, paths) {
   const ordered = [...new Set(paths)].filter(p => p && p !== '/').sort((a, b) => b.length - a.length)
   for (const p of ordered) out = out.split(p).join(TOKEN)
   return out
+}
+
+/**
+ * Why `outDir` may not be written, or null when it may. `copyOut` removes the
+ * directory it is given before it writes, so a mistyped `--out` must be refused
+ * here, before anything runs: the filesystem root, the home directory, the
+ * repository root or anything above it, a path that is a file, and an existing
+ * directory that holds something other than a previous cut. A previous cut is
+ * recognised by the change it always holds, `openspec/changes/${CHANGE}`.
+ */
+export function outDirRefusal(outDir, { repo = REPO, home = homedir() } = {}) {
+  const real = path => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return resolve(path)
+    }
+  }
+  const target = real(outDir)
+  const within = (inner, outer) => {
+    const rel = relative(outer, inner)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  }
+  if (target === dirname(target)) return `--out resolves to the filesystem root (${target})`
+  if (home && target === real(home)) return `--out resolves to the home directory (${target})`
+  if (within(real(repo), target)) return `--out resolves to the repository root or a directory above it (${target})`
+  const info = statSync(target, { throwIfNoEntry: false })
+  if (!info) return null
+  if (!info.isDirectory()) return `--out names an existing file, not a directory (${target})`
+  if (readdirSync(target).length === 0) return null
+  if (existsSync(join(target, 'openspec', 'changes', CHANGE))) return null
+  return `--out is a non-empty directory that does not look like a previous cut (no openspec/changes/${CHANGE}): ${target}`
 }
 
 /** The version a tag names: `v1.7.0` -> `1.7.0`. */
@@ -353,6 +386,8 @@ function main() {
   const version = versionOfTag(opts.tag)
   if (!version) die(`'${opts.tag}' is not a release tag like v1.7.0`)
   const outDir = opts.out ? resolve(opts.out) : join(REPO, 'test', 'fixtures', 'ship', `release-${version}`)
+  const refusal = outDirRefusal(outDir)
+  if (refusal) die(`refusing to replace it: ${refusal}`)
 
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-cut-')))
   const root = join(scratch, 'repo')

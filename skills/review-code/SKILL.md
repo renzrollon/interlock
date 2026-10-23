@@ -3,7 +3,7 @@ name: review-code
 description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security and technical-lead, then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening an MR, or when a diff is high-stakes enough that false positives would waste real time.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
-argument-hint: "[change-name] [--dimensions a,b,c] [--advisor]"
+argument-hint: "[change-name] [--dimensions a,b,c]"
 allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: review
@@ -59,10 +59,6 @@ Spawn one agent per dimension, in parallel. Each dimension's brief is a bundled 
 
 `--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the seven, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not.
 
-| Flag | Effect |
-|---|---|
-| `--advisor` | After the gate, run the opt-in findings consult in §4a. Without it, the review never consults. |
-
 (This used to bite: the fourth always-on dimension was called `delivery` here and in `README.md` while its brief file was `technical-lead.md`, so `--dimensions delivery` matched nothing at all and said nothing about it.)
 
 A dimension whose brief file cannot be read is **not** dispatched with an empty rubric either. Report it as unavailable — a reviewer given a dimension name and no criteria produces findings that two skeptics then spend their budget verifying.
@@ -107,7 +103,7 @@ Run both skeptics per finding, in parallel.
 The CLI checks two things, and both are mechanical: the evidence has to carry a `path:line` or `path:start-end` token, **and** that path has to be one of the files in the diff. Pass the diff with `--changed` so the second half can run:
 
 ```bash
-interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --metrics <change> [--advisor-brief <change>] --json
+interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --metrics <change> --json
 ```
 
 `--metrics <change>` is not optional either. It writes the four counts this review produced to `.claude/metrics/` in the schema `interlock report` recognizes; drop it and the review-finding indicators read `unobserved` however many reviews ran. It is bookkeeping only and cannot change the verdict or the exit status.
@@ -159,28 +155,6 @@ A blocker here also resets `ship` via transitive blame — the gate blames whoev
 
 ---
 
-## 4a. Consult: the findings advisor
-
-Run this only when `--advisor` was passed, after the `interlock note derive` line. The gate has already decided; the consult is advice and never changes the verdict. With no resolved change there is no change folder to write into: report that the consult did not run because there is no change folder, and do not invent one.
-
-Add `--advisor-brief <change>` to the `interlock review` line in §3 so the CLI writes the brief. Read `path` from the `advisorBrief` object in its output. Then make one Agent tool call with `subagent_type: "interlock:review-advisor"` whose prompt names that path and nothing else. Pipe the agent's reply, verbatim, to the check on standard input; the CLI persists it itself, so you write no file:
-
-```bash
-interlock review-advisor "<change>" --check - --json
-```
-
-Read `status`, `flags` and `dropped` from the output. The CLI writes `openspec/changes/<change>/review-advisor.md`.
-
-If the brief was not written, the spawn errored, or no reply came back, record that instead:
-
-```bash
-interlock review-advisor "<change>" --check --failed "<reason>" --json
-```
-
-When either line exits non-zero, report its first output line as the reason and continue to §5. The consult is never retried. It raises only: it does not restore a dismissed finding, drop a survivor or reopen the gate, and `review-advisor.md` is never edited by hand.
-
----
-
 ## 5. Report
 
 Lead with the verdict, then the survivors, most severe first:
@@ -197,5 +171,3 @@ GATE BLOCKED — 2 blockers of 7 findings (4 dismissed by skeptics)
 Always report **how many findings the skeptics dismissed**, and separately the gate's `droppedByQuality` count. Those numbers are the evidence the review is worth trusting; hiding them makes a verified review look identical to an unverified one.
 
 Never report a dismissed finding "just in case". That defeats the entire mechanism.
-
-When `--advisor` ran, add one line: the consult's `status`, its flag count and ids, and the `review-advisor.md` path, or `did not run` with the reason.

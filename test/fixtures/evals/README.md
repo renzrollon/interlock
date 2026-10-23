@@ -87,9 +87,12 @@ how the `id` / `runs` misread landed in the first place.
 
 ## `spec-range-2026-10-21.json`
 
-The first results file with judged (`llm`) graders, and the first run of a Spec
-Range case through the harness. Produced by `scripts/advisor-e2e.mjs`
-(`docs/14-evals.md`, "Running the advisor end to end").
+A triage fixture. It is the only results file with judged (`llm`) graders, and
+the only one written under `--ablation none`, and `test/spine/evals-triage.test.mjs`
+reads it for both. The case it records (`spec-range-collapse-singleton`, the
+checkpoint-advisor eval) has since been removed from `evals/` along with the
+advisor it measured, so nothing here can be re-run. The grader names inside the
+file are historical; only its scoring shape is pinned.
 
 ### Which run produced it
 

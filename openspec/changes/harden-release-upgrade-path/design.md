@@ -292,10 +292,10 @@ A new flag in a skill therefore fails CI until the table and the smoke cover it.
 
 A `ci.yml` job, `upgrade-install`, runs these steps:
 
-1. Resolve the previous release with `npm view @renzrollon/interlock version`. `main` is always ahead of the latest published version.
+1. Resolve the previous release with `npm view @renzrollon/interlock version`. That is not always behind `main`: right after a release the two are the same version, and from the release that began reporting versions on, the previous CLI reports one. The skew case (D25) branches on what that CLI reports for this reason.
 2. `npm install -g @renzrollon/interlock@<that> --prefix "$RUNNER_TEMP/prefix"`, then `interlock --help` to prove the install took.
 3. `npm pack` the working tree and install the tarball over the same prefix.
-4. Run the full smoke (D21) and `interlock doctor --json` from the prefix.
+4. Run the full smoke (D21) and `interlock doctor --json` from the prefix. The doctor runs with `CLAUDE_PLUGIN_ROOT` set to the working tree, as a plugin session sets it, and its `cli-version` row must be `ok`. Run by name with no plugin root, the row has no plugin to compare with and skips, which proves nothing here.
 
 Running the current smoke before the over-install was rejected: it would fail by design on every command this release adds. The job then runs the skew harness test (D25) with `INTERLOCK_HARNESS_BIN` pointing at a second prefix holding only the previous release.
 
@@ -326,10 +326,13 @@ The re-cut is a release step, documented in `CONTRIBUTING.md` (D31). A spine ass
 
 `test/helpers/ship-harness.mjs` lets `runShip` take `opts.cliBin`, defaulting to `INTERLOCK_BIN` (`lib/host.mjs:38`). `runCli` gains the same option.
 
-`test/workflows.test.mjs` adds a case that reads `process.env.INTERLOCK_HARNESS_BIN`. Without it, the case skips with the reason `INTERLOCK_HARNESS_BIN unset — the previous release's CLI is installed only in CI's upgrade-install job`. With it, the case runs the current `ship.js` against that CLI and asserts:
+`test/workflows.test.mjs` adds a case that reads `process.env.INTERLOCK_HARNESS_BIN`. Without it, the case skips with the reason `INTERLOCK_HARNESS_BIN unset — the previous release's CLI is installed only in CI's upgrade-install job`. With it, the case asks that CLI for `--version`, runs the current `ship.js` against it with the working tree as the plugin root, and asserts that the run closes. It also asserts the banner that matches what the CLI reported:
 
-- the run closes;
-- the close carries `CLI VERSION UNKNOWN` (D18).
+- no version (a CLI from before version reporting): the close carries `CLI VERSION UNKNOWN` (D18), and no `CLI VERSION SKEW`;
+- a version other than the plugin's: the close carries `CLI VERSION SKEW` naming both versions, and no `CLI VERSION UNKNOWN`;
+- the plugin's own version (the window right after a release): neither banner.
+
+Asserting only `CLI VERSION UNKNOWN` held until the first version-reporting release was published, and failed for good after it. The job runs the case by its exact title (`SKEW_CASE`) and fails unless that case's own `ok` line is in the TAP output. A name pattern that matches nothing exits 0, so a renamed case would otherwise run nothing and pass. `test/spine/github-workflows.test.mjs` pins the title to a case that exists.
 
 ### D26. Out of scope: graph `path`/`explain` exit codes
 
@@ -343,7 +346,9 @@ The re-cut is a release step, documented in `CONTRIBUTING.md` (D31). A spine ass
 - fetches the `release` branch into a directory;
 - runs `claude plugin validate <dir> --strict` and `claude plugin test <dir>`;
 - installs the bundle's `package.json`-declared bins into a prefix with `npm install -g <dir> --prefix`;
-- runs `interlock doctor --json` and the smoke (D21), with the repository's own fixtures.
+- runs `interlock doctor --json` (with `CLAUDE_PLUGIN_ROOT` set to the bundle) and the smoke (D21).
+
+The module tests, the smoke script and its fixtures come from the tag the bundle was cut from (`v<bundle version>`), not from `main`. `main`'s inventory and module tests describe commands and rows the shipped release does not have yet. Run against the 1.7.0 bundle, they failed 9 of 71 smoke commands and 2 module tests, and the 1.7.0 doctor has no `cli-version` row. So the canary was red every day until the next release, and again whenever `main` added an inventory entry, and a real engine break would have looked the same. A bundle at or below 1.7.0 predates the `cli-version` row and the smoke script. For such a bundle the canary skips those two steps and writes the reason into the run summary. The job has a timeout.
 
 A failed scheduled run notifies the repository owner through GitHub's own scheduled-workflow notifications. Opening an issue would need `issues: write`, and the trust test allows exactly one write-capable job (`test/spine/github-workflows.test.mjs:112-131`).
 
@@ -357,7 +362,9 @@ If `claude plugin test` does not exist at the floor engine, the floor leg runs `
 
 The `test` matrix becomes `['18','20','22','24']`. `cli-smoke` gains `strategy.matrix.os: [ubuntu-latest, macos-latest]`.
 
-Required checks are ruleset settings (review §1, Protect row), so the new jobs block nothing until the owner adds them. The Upgrading page and the PR description say so.
+Required checks are ruleset settings (review §1, Protect row) that live on GitHub. The `main: required CI` ruleset requires the bare names `validate-plugin` and `cli-smoke`, and a matrix leg reports as `validate-plugin (latest)`, `cli-smoke (macos-latest)` and so on. Turning both jobs into matrices therefore left two required checks with nothing to report them, and every pull request was blocked with every check green.
+
+Two gate jobs now report those names: `validate-plugin-gate` (named `validate-plugin`) and `cli-smoke-gate` (named `cli-smoke`). Each needs its matrix, runs on `always()`, and passes only when the matrix result is `success`. A skipped required check reads as passing, so a gate must never skip. As a result, the floor-engine leg and the macOS leg block a merge through their gates. `test (24)` and `upgrade-install` still block nothing until the owner adds them to the ruleset. `test/spine/github-workflows.test.mjs` mirrors the ruleset's list and fails when a required name is reported by no job.
 
 ### D30. `--grade-root` grades an interactive run in place
 
@@ -438,7 +445,7 @@ The first `run` subcommand after `run start` that reads a manifest missing eithe
 
 ## Rollout
 
-Ordinary merge. The new CI jobs and the canary start on merge but block nothing until the owner adds them to the `main` ruleset. That is a follow-up action, named in the PR description. The first release after merge is 1.8.0 (D35). The release fixture for 1.8.0 is cut at that bump (D24). Rollback is a revert: no persisted format changes tag, and the manifest, step and graph-manifest additions are fields that older readers ignore.
+Ordinary merge. The floor-engine and macOS legs block through the `validate-plugin` and `cli-smoke` gates (D29). `test (24)`, `upgrade-install` and the canary start on merge and block nothing until the owner adds them to the `main` ruleset. That is a follow-up action, named in the PR description. The first release after merge is 1.8.0 (D35). The release fixture for 1.8.0 is cut at that bump (D24). Rollback is a revert: no persisted format changes tag, and the manifest, step and graph-manifest additions are fields that older readers ignore.
 
 ## Open Questions
 

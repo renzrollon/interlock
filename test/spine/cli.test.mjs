@@ -4492,15 +4492,14 @@ test('an always-human-review item app/[id]/ is a path: a file under it is amber 
 })
 
 // =============================================================================
-// advisor, note, evals triage --eval-dir: the checkpoint consult's CLI brackets
-// (change add-checkpoint-advisor). The model sits between two of these lines;
-// every cap, citation check and file write is the CLI's, so the wiring is what
-// these tests pin — the shapes the spec skill and the spec meter read by name.
+// note, evals triage --eval-dir: the compound-notes CLI and the triage join.
+// The shapes the spec skill and the spec meter read by name are what these
+// tests pin.
 // =============================================================================
 
 /** A repo root holding one change with the four artifact kinds. */
-function advisorRepo(label, change = 'add-the-thing', over = {}) {
-  const root = join(dir, `advisor-${label}`)
+function changeRepo(label, change = 'add-the-thing', over = {}) {
+  const root = join(dir, `change-${label}`)
   const changeDir = join(root, 'openspec', 'changes', change)
   mkdirSync(join(changeDir, 'specs', 'demo'), { recursive: true })
   writeFileSync(join(changeDir, 'proposal.md'), over.proposal ?? '# Add the thing\n\n## Why\n\nBecause.\n\n## What Changes\n\nA thing.\n')
@@ -4529,232 +4528,36 @@ function runJsonAt(root, args, expectedCode = 0) {
   return parsed
 }
 
-const abs = (root, p) => (p.startsWith('/') ? p : join(root, p))
 
 const NOTES_HEADER =
   '# Compound notes\n\n| id | date | change | file | surprise | rule | source |\n' +
   '|----|------|--------|------|----------|------|--------|\n'
 
-test('USAGE documents the advisor and note subcommands and the triage --eval-dir flag', () => {
+test('USAGE documents the note subcommands and the triage --eval-dir flag, and no advisor subcommand', () => {
   const { stdout } = run(['--help'])
-  for (const name of ['interlock advisor', 'interlock note', '--eval-dir']) {
+  for (const name of ['interlock note', '--eval-dir']) {
     assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
   }
-})
-
-test('advisor --brief --json writes the brief under .claude/metrics and prints the brief step', () => {
-  const { root, change } = advisorRepo('brief-happy')
-  const findings = file('advisor-brief-findings.json', [
-    { dimension: 'qa', severity: 'warning', title: 'the empty case is untested', file: 'tasks.md' }
-  ])
-  const out = runJsonAt(root, ['advisor', change, '--brief', '--findings', findings])
-  assert.deepEqual(
-    Object.keys(out).sort(),
-    ['change', 'chars', 'findings', 'notes', 'omitted', 'overrun', 'path', 'step'],
-    JSON.stringify(out)
-  )
-  assert.equal(out.step, 'brief')
-  assert.equal(out.change, change)
-  assert.deepEqual(out.omitted, [])
-  assert.equal(out.overrun, 0)
-  assert.equal(out.findings, 1)
-  assert.equal(out.notes, 0, 'no compound-notes table exists in this repo')
-  assert.match(out.path, new RegExp(`\\.claude/metrics/advisor-brief-${change}-\\d{8}-\\d{6}\\.md$`))
-  const brief = readFileSync(abs(root, out.path), 'utf8')
-  assert.equal(out.chars, brief.length, 'chars is the written brief\'s size')
-  assert.ok(brief.includes('the empty case is untested'), 'the finding is listed as already raised')
-  assert.ok(brief.includes('ledger: absent'), 'no decisions.md was written')
-  assert.ok(brief.includes('compound notes: none matched'))
-})
-
-test('advisor --brief exits 0 and says the findings are unreadable when --findings names a missing file', () => {
-  const { root, change } = advisorRepo('brief-missing-findings')
-  const out = runJsonAt(root, ['advisor', change, '--brief', '--findings', join(root, 'no-such-findings.json')])
-  assert.equal(out.step, 'brief')
-  assert.equal(out.findings, 0)
-  const brief = readFileSync(abs(root, out.path), 'utf8')
-  assert.ok(brief.includes('review findings: unreadable'), brief.slice(0, 400))
-
-  const bare = runJsonAt(root, ['advisor', change, '--brief'])
-  assert.ok(readFileSync(abs(root, bare.path), 'utf8').includes('review findings: none given'))
-})
-
-test('advisor --brief exits non-zero with the write error first and no path when the brief cannot be written', () => {
-  // `.claude/metrics` is a regular file, so the write fails under any uid —
-  // no chmod, no root skip.
-  const { root, change } = advisorRepo('brief-unwritable')
-  mkdirSync(join(root, '.claude'), { recursive: true })
-  writeFileSync(join(root, '.claude', 'metrics'), 'not a directory\n')
-  for (const json of [[], ['--json']]) {
-    const r = runAt(root, ['advisor', change, '--brief', ...json])
-    assert.notEqual(r.code, 0, `a brief that was not written must not exit 0 (${json.join('')})`)
-    const first = (r.stderr + r.stdout).trim().split('\n')[0]
-    assert.match(first, /EEXIST|ENOTDIR|not a directory|exists/i, `first output line: ${first}`)
-    assert.doesNotMatch(r.stdout, /"path"/, 'no path is printed for a brief that does not exist')
+  for (const name of ['interlock advisor', 'interlock review-advisor', '--advisor-brief']) {
+    assert.ok(!stdout.includes(name), `USAGE still names "${name}"`)
   }
 })
 
-test('advisor --check --json validates the draft, writes advisor.md and leaves the draft where it was', () => {
-  const { root, change, changeDir } = advisorRepo('check-happy')
-  const draftPath = join(root, '.claude', 'metrics', `advisor-${change}-20261019-121000.json`)
-  const draft = JSON.stringify({
-    questions: [
-      { id: 'Q9', question: 'Which package name is published?', why: 'the proposal names two', cite: 'design.md#Decisions' },
-      { question: 'Who owns the label step?', why: 'no task names one', cite: 'tasks.md#1. Failing tests first' }
-    ],
-    risks: [{ task: '1.1', kind: 'vague-task', note: 'edit what, exactly?' }]
-  })
-  mkdirSync(dirname(draftPath), { recursive: true })
-  writeFileSync(draftPath, draft)
-
-  const out = runJsonAt(root, ['advisor', change, '--check', draftPath])
-  assert.deepEqual(
-    Object.keys(out).sort(),
-    ['change', 'dropped', 'path', 'questions', 'risks', 'status', 'step'],
-    JSON.stringify(out)
-  )
-  assert.equal(out.step, 'check')
-  assert.equal(out.change, change)
-  assert.equal(out.status, 'drafted')
-  assert.deepEqual(out.questions, [
-    { id: 'Q1', question: 'Which package name is published?' },
-    { id: 'Q2', question: 'Who owns the label step?' }
-  ], 'ids are positional; the draft\'s own id is ignored')
-  assert.equal(out.dropped, 0)
-  assert.equal(out.risks, 1)
-  assert.equal(out.path, `openspec/changes/${change}/advisor.md`)
-
-  const md = readFileSync(join(changeDir, 'advisor.md'), 'utf8')
-  for (const heading of ['## Questions for the human', '## Risks', '## Dropped']) {
-    assert.ok(md.includes(heading), `advisor.md is missing ${heading}`)
+test('the removed advisor subcommands exit non-zero and write nothing under the change', () => {
+  const { root, change, changeDir } = changeRepo('advisor-removed')
+  for (const args of [[ 'advisor', change, '--brief', '--json' ], [ 'review-advisor', change, '--check', '-', '--json' ]]) {
+    const r = runAt(root, args, { input: '{}' })
+    assert.notEqual(r.code, 0, `${args[0]} still exits 0`)
   }
-  assert.equal(readFileSync(draftPath, 'utf8'), draft, 'the draft is kept, byte for byte')
-})
-
-test('advisor --check exits 0 on a draft that is not JSON and writes a consult that did not run', () => {
-  const { root, change, changeDir } = advisorRepo('check-not-json')
-  const draftPath = join(root, '.claude', 'metrics', `advisor-${change}-20261019-121500.json`)
-  mkdirSync(dirname(draftPath), { recursive: true })
-  writeFileSync(draftPath, 'I am sorry, I could not produce the questions.\n')
-
-  const out = runJsonAt(root, ['advisor', change, '--check', draftPath])
-  assert.equal(out.step, 'check')
-  assert.equal(out.status, 'did-not-run')
-  assert.equal(out.reason, 'draft is not a JSON object')
-  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: draft is not a JSON object'))
-  assert.ok(existsSync(draftPath), 'the draft is left where it was')
-})
-
-test('advisor --check --failed writes the did-not-run stanza and exits 0', () => {
-  const { root, change, changeDir } = advisorRepo('check-failed')
-  const out = runJsonAt(root, ['advisor', change, '--check', '--failed', 'agent spawn errored'])
-  assert.deepEqual(out, {
-    step: 'check',
-    change,
-    status: 'did-not-run',
-    reason: 'agent spawn errored',
-    questions: [],
-    dropped: 0,
-    risks: 0,
-    path: `openspec/changes/${change}/advisor.md`
-  })
-  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: agent spawn errored'))
-})
-
-test('advisor --check --failed names the candidates and exits non-zero for a change that does not resolve', () => {
-  const { root } = advisorRepo('check-failed-unresolved')
-  const out = runJsonAt(root, ['advisor', 'add-the-thin', '--check', '--failed', 'agent spawn errored'], 1)
-  assert.equal(typeof out.error, 'string')
-  assert.deepEqual(out.candidates, ['add-the-thing'])
-  assert.equal(existsSync(join(root, 'openspec', 'changes', 'add-the-thin', 'advisor.md')), false)
-})
-
-test('advisor --check records a consult that did not run, exit 0, for a draft that is missing or unreadable', () => {
-  const { root, change, changeDir } = advisorRepo('check-no-draft')
-  const bare = runJsonAt(root, ['advisor', change, '--check'])
-  assert.equal(bare.status, 'did-not-run')
-  assert.equal(bare.reason, 'no draft given to --check')
-  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: no draft given to --check'))
-
-  const missing = runJsonAt(root, ['advisor', change, '--check', join(root, 'no-such-draft.json')])
-  assert.equal(missing.status, 'did-not-run')
-  assert.match(missing.reason, /^draft unreadable: .*ENOENT/)
-  assert.ok(readFileSync(join(changeDir, 'advisor.md'), 'utf8').includes('did not run: draft unreadable: '))
-})
-
-test('advisor --check speaks an advisor.md it cannot write as a consult that did not run, and exits 0', () => {
-  // advisor.md is a directory, so the write fails under any uid.
-  const { root, change, changeDir } = advisorRepo('check-unwritable')
-  mkdirSync(join(changeDir, 'advisor.md'))
-  for (const flags of [['--failed', 'agent spawn errored'], [join(root, 'no-such-draft.json')]]) {
-    const text = runAt(root, ['advisor', change, '--check', ...flags])
-    assert.equal(text.code, 0, text.stderr)
-    assert.match(text.stdout.split('\n')[0], /^advisor: did not run: advisor\.md not written: \S/, text.stdout)
-
-    const r = runAt(root, ['advisor', change, '--check', ...flags, '--json'])
-    assert.equal(r.code, 0, r.stderr)
-    const out = JSON.parse(r.stdout)
-    assert.equal(out.status, 'did-not-run')
-    assert.equal(out.written, false)
-    assert.match(out.reason, /^advisor\.md not written: \S/)
-    assert.match(r.stderr, /^advisor: did not run: advisor\.md not written: /m)
-  }
-})
-
-test('advisor --brief <change> with the flag first reads the name as the change', () => {
-  // A second change, so an unnamed request cannot resolve to the only one.
-  const { root, change } = advisorRepo('brief-flag-first')
-  advisorRepo('brief-flag-first', 'add-another-thing')
-  const out = runJsonAt(root, ['advisor', '--brief', change])
-  assert.equal(out.step, 'brief')
-  assert.equal(out.change, change)
-})
-
-test('advisor --brief says a missing artifact is absent instead of quoting an empty block', () => {
-  const { root, change, changeDir } = advisorRepo('brief-absent-design')
-  rmSync(join(changeDir, 'design.md'))
-  const out = runJsonAt(root, ['advisor', change, '--brief'])
-  const brief = readFileSync(abs(root, out.path), 'utf8')
-  assert.ok(brief.includes('### design.md\n\ndesign.md: absent'), 'design.md is named absent')
-  assert.ok(!brief.includes('proposal.md: absent'), 'a present artifact is quoted, not named absent')
-})
-
-test('advisor --verdict --labels prints the verdict step and exits 0', () => {
-  const evalsDir = join(dir, 'advisor-verdict-evals')
-  const label = (kase, grader, name, value) => {
-    const p = join(evalsDir, kase, 'calibration', grader, `${name}.md`)
-    mkdirSync(dirname(p), { recursive: true })
-    writeFileSync(p, `---\ntranscript: ${name}\ngrader: ${grader}\nlabel: ${value}\n---\n\nhand label\n`)
-  }
-  for (const kase of ['spec-range-a', 'spec-range-b']) {
-    label(kase, 'matches-label', 't1', 'pass')
-    label(kase, 'answered-already', 't1', 'pass')
-  }
-  const r = run(['advisor', '--verdict', '--labels', evalsDir, '--json'])
-  assert.equal(r.code, 0, r.stderr)
-  const out = JSON.parse(r.stdout)
-  assert.deepEqual(
-    Object.keys(out).sort(),
-    ['caps', 'labelled', 'matches', 'problems', 'repeats', 'step', 'verdict'],
-    JSON.stringify(out)
-  )
-  assert.equal(out.step, 'verdict')
-  assert.equal(out.labelled, 2)
-  assert.equal(out.matches, 2)
-  assert.equal(out.repeats, 0)
-  assert.equal(out.verdict, `INSUFFICIENT LABELS (2 of ${LIMITS.advisorVerdictMinLabels})`)
-  assert.deepEqual(out.caps, {
-    minLabels: LIMITS.advisorVerdictMinLabels,
-    keepMinMatches: LIMITS.advisorKeepMinMatches,
-    repeatMaxPercent: LIMITS.advisorRepeatMaxPercent
-  })
-  assert.ok(Array.isArray(out.problems))
+  assert.equal(existsSync(join(changeDir, 'advisor.md')), false)
+  assert.equal(existsSync(join(changeDir, 'review-advisor.md')), false)
+  assert.equal(existsSync(join(root, '.claude', 'metrics')), false)
 })
 
 // --- note: the compound-notes table --------------------------------------------
 
 test('note add appends one row with the next free id and skips the same row twice', () => {
-  const { root } = advisorRepo('note-add')
+  const { root } = changeRepo('note-add')
   const args = [
     'note', 'add', '--change', 'add-x', '--file', 'lib/a.mjs',
     '--surprise', 'a sibling reader was missed', '--rule', 'Name every reader of the raw form.'
@@ -4774,7 +4577,7 @@ test('note add appends one row with the next free id and skips the same row twic
 })
 
 test('note derive appends one row per specGap finding and refuses an input with no findings list', () => {
-  const { root } = advisorRepo('note-derive')
+  const { root } = changeRepo('note-derive')
   const findings = file('note-derive-findings.json', [
     { dimension: 'domain', severity: 'warning', file: 'lib/a.mjs', title: 'the raw form has a second reader', description: 'lib/b.mjs reads it too. It was missed.', suggestion: 'Name every reader of the raw form.', specGap: true },
     { dimension: 'domain', severity: 'warning', file: 'lib/b.mjs', title: 'not a gap', description: 'x', specGap: false },
@@ -4797,7 +4600,7 @@ test('note derive appends one row per specGap finding and refuses an input with 
 })
 
 test('note derive with no specGap survivor appends nothing and creates no file', () => {
-  const { root } = advisorRepo('note-derive-none')
+  const { root } = changeRepo('note-derive-none')
   const findings = file('note-derive-none.json', [
     { dimension: 'qa', severity: 'suggestion', file: 'lib/c.mjs', title: 'no field', description: 'y' }
   ])
@@ -4808,7 +4611,7 @@ test('note derive with no specGap survivor appends nothing and creates no file',
 })
 
 test('note derive prints COMPOUND NOTES NOT WRITTEN and exits 0 when the table\'s directory is read-only', { skip: isRoot() }, () => {
-  const { root } = advisorRepo('note-derive-readonly')
+  const { root } = changeRepo('note-derive-readonly')
   const notesDir = join(root, 'docs', 'notes')
   mkdirSync(notesDir, { recursive: true })
   const findings = file('note-derive-ro.json', [
@@ -4830,7 +4633,7 @@ test('note derive prints COMPOUND NOTES NOT WRITTEN and exits 0 when the table\'
 })
 
 test('note match prints the rows whose file the change\'s tasks name, plus any --paths, with the omitted count', () => {
-  const { root, change } = advisorRepo('note-match')
+  const { root, change } = changeRepo('note-match')
   mkdirSync(join(root, 'docs', 'notes'), { recursive: true })
   writeFileSync(
     join(root, 'docs', 'notes', 'compound.md'),
@@ -4840,13 +4643,56 @@ test('note match prints the rows whose file the change\'s tasks name, plus any -
       '| N3 | 2026-10-19 | add-y | lib/z.mjs | s3 | Do three. | run-2 |\n'
   )
   const out = runJsonAt(root, ['note', 'match', change])
-  assert.deepEqual(Object.keys(out).sort(), ['change', 'omitted', 'rows'], JSON.stringify(out))
+  assert.deepEqual(Object.keys(out).sort(), ['change', 'omitted', 'rows', 'unreadable'], JSON.stringify(out))
   assert.equal(out.change, change)
   assert.deepEqual(out.rows.map(r => r.id), ['N1'], 'tasks.md names lib/a.mjs only')
   assert.equal(out.omitted, 0)
+  assert.equal(out.unreadable, 0)
+  assert.ok(!runAt(root, ['note', 'match', change]).stdout.includes('unreadable'), 'a clean table prints no unreadable line')
 
   const widened = runJsonAt(root, ['note', 'match', change, '--paths', 'lib/b.mjs'])
   assert.deepEqual(widened.rows.map(r => r.id), ['N1', 'N2'], 'table order, tasks paths and --paths together')
+})
+
+test('note match counts the malformed rows of a parseable table: unreadable in JSON, a text line in text', () => {
+  const { root, change } = changeRepo('note-match-unreadable')
+  mkdirSync(join(root, 'docs', 'notes'), { recursive: true })
+  writeFileSync(
+    join(root, 'docs', 'notes', 'compound.md'),
+    NOTES_HEADER +
+      '| N1 | 2026-10-19 | add-x | lib/a.mjs | s1 | Do one. | run-1 |\n' +
+      '| N2 | 2026-10-19 | add-x | lib/b.mjs | too few cells |\n' +
+      '| N1 | 2026-10-19 | add-x | lib/a.mjs | repeated id | Do again. | run-1 |\n'
+  )
+  const json = runJsonAt(root, ['note', 'match', change])
+  assert.deepEqual(json.rows.map(r => r.id), ['N1'])
+  assert.equal(json.unreadable, 2)
+  const text = runAt(root, ['note', 'match', change])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.split('\n').includes('compound notes: 2 rows unreadable'), text.stdout)
+})
+
+test('note match with no docs/notes/compound.md exits 0 with no rows and unreadable 0', () => {
+  const { root, change } = changeRepo('note-match-absent')
+  assert.equal(existsSync(join(root, 'docs', 'notes', 'compound.md')), false)
+  const r = runAt(root, ['note', 'match', change, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(out.rows, [])
+  assert.equal(out.omitted, 0)
+  assert.equal(out.unreadable, 0)
+  const text = runAt(root, ['note', 'match', change])
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(!text.stdout.includes('unreadable'), text.stdout)
+})
+
+test('note match on a table that does not parse still exits 1', () => {
+  const { root, change } = changeRepo('note-match-unparseable')
+  mkdirSync(join(root, 'docs', 'notes'), { recursive: true })
+  writeFileSync(join(root, 'docs', 'notes', 'compound.md'), '# Compound notes\n\nno table here\n')
+  const r = runAt(root, ['note', 'match', change])
+  assert.equal(r.code, 1, r.stdout)
+  assert.ok(r.stderr.includes('docs/notes/compound.md'), r.stderr)
 })
 
 // --- evals triage --eval-dir: joining a typeless trial grader's type -----------
@@ -4885,338 +4731,16 @@ test('evals triage joins a typeless grader\'s type from graders/<name>.md under 
   assert.ok(named.stdout.includes('type unknown, treated as deterministic'), named.stdout)
 })
 
-// --- limits: the six advisor caps -------------------------------------------
+// --- limits: the note-match cap, and no advisor cap ------------------------
 
-test('limits carries the six advisor caps by name in text and JSON', () => {
-  const names = [
-    'maxAdvisorQuestions',
-    'maxAdvisorBriefChars',
-    'maxAdvisorNoteRows',
-    'advisorKeepMinMatches',
-    'advisorRepeatMaxPercent',
-    'advisorVerdictMinLabels'
-  ]
+test('limits carries the note-match cap by name and no advisor cap, in text and JSON', () => {
   const out = runJson(['limits'])
-  for (const name of names) {
-    assert.equal(typeof out.limits[name], 'number', `limits --json is missing ${name}`)
-    assert.equal(out.limits[name], LIMITS[name])
-  }
+  assert.equal(out.limits.maxNoteMatchRows, LIMITS.maxNoteMatchRows)
+  assert.equal(typeof out.limits.maxNoteMatchRows, 'number')
+  const advisorKeys = Object.keys(out.limits).filter(k => /advisor(?!y)/i.test(k))
+  assert.deepEqual(advisorKeys, [], 'limits --json still carries an advisor cap')
   const text = run(['limits'])
   assert.equal(text.code, 0)
-  const advisorRows = text.stdout.split('\n').filter(l => /advisor/i.test(l))
-  assert.ok(advisorRows.length >= names.length, `expected a text row per advisor cap:\n${text.stdout}`)
-})
-
-// =============================================================================
-// review --advisor-brief, review-advisor --check / --verdict: the review-code
-// consult's CLI brackets (change add-review-findings-advisor). The model sits
-// between the brief and the check; every cap, target check and file write is
-// the CLI's, so these tests pin the wiring the review-code skill reads by name.
-// =============================================================================
-
-const RA_CHANGED = ['lib/a.mjs', 'lib/b.mjs']
-const RA_FINDINGS = [
-  { dimension: 'qa', severity: 'warning', title: 'null deref in a', file: 'lib/a.mjs' },
-  { dimension: 'typescript', severity: 'warning', title: 'same cause in b', file: 'lib/b.mjs' },
-  { dimension: 'qa', severity: 'warning', title: 'exit code is wrong', file: 'lib/a.mjs' }
-]
-const RA_VERDICTS = [
-  { findingTitle: 'null deref in a', isReal: true, qualityScore: 8 },
-  { findingTitle: 'null deref in a', isReal: true, qualityScore: 8 },
-  { findingTitle: 'same cause in b', isReal: true, qualityScore: 8 },
-  { findingTitle: 'same cause in b', isReal: true, qualityScore: 8 },
-  { findingTitle: 'exit code is wrong', isReal: false, qualityScore: 8, reasoning: 'RA-REASON-ONE the exit is fine', evidence: 'lib/a.mjs:10' },
-  { findingTitle: 'exit code is wrong', isReal: false, qualityScore: 8, reasoning: 'RA-REASON-TWO callers ignore it', evidence: 'lib/a.mjs:11' }
-]
-
-/** A review over RA_FINDINGS: S1 and S2 survive, D1 is dismissed on two weak citations. */
-function reviewAdvisorArgs(label, ...extra) {
-  return [
-    'review',
-    '--findings', file(`ra-${label}-findings.json`, RA_FINDINGS),
-    '--verdicts', file(`ra-${label}-verdicts.json`, RA_VERDICTS),
-    '--changed', RA_CHANGED.join(','),
-    ...extra
-  ]
-}
-
-/** The advisor repo with the brief already written; returns the brief's step output. */
-function briefedRepo(label, change = 'add-the-thing') {
-  const repo = advisorRepo(label, change)
-  const brief = runJsonAt(repo.root, reviewAdvisorArgs(label, '--advisor-brief', change)).advisorBrief
-  assert.equal(brief.written, true, JSON.stringify(brief))
-  return { ...repo, brief }
-}
-
-const RA_DRAFT = {
-  flags: [
-    { id: 'F9', kind: 'dismissal-doubt', targets: ['D1'], why: 'both skeptics cited code that does not decide the exit', check: 'read lib/a.mjs where the exit is chosen' },
-    { kind: 'shared-root-cause', targets: ['S1', 'S2'], why: 'one missing guard', check: 'compare the two call sites' },
-    { kind: 'uncovered', targets: ['lib/b.mjs'], why: 'no dimension engaged this file', check: 'read the diff of lib/b.mjs' }
-  ]
-}
-
-const reviewAdvisorFiles = (root, prefix) => {
-  try {
-    return readdirSync(join(root, '.claude', 'metrics')).filter(f => f.startsWith(prefix))
-  } catch {
-    return []
-  }
-}
-
-test('USAGE documents review-advisor and the review --advisor-brief flag', () => {
-  const { stdout } = run(['--help'])
-  for (const name of ['interlock review-advisor', '--advisor-brief']) {
-    assert.ok(stdout.includes(name), `USAGE is missing "${name}"`)
-  }
-})
-
-test('review --advisor-brief --json writes the brief and the id index and prints the advisorBrief step', () => {
-  const { root, change } = advisorRepo('ra-brief-happy')
-  const out = runJsonAt(root, reviewAdvisorArgs('brief-happy', '--advisor-brief', change))
-  assert.deepEqual(
-    Object.keys(out.advisorBrief).sort(),
-    ['chars', 'index', 'omitted', 'overrun', 'path', 'written'],
-    JSON.stringify(out.advisorBrief)
-  )
-  const brief = out.advisorBrief
-  assert.equal(brief.written, true)
-  assert.match(brief.path, new RegExp(`\\.claude/metrics/review-advisor-brief-${change}-\\d{8}-\\d{6}\\.md$`))
-  assert.match(brief.index, new RegExp(`\\.claude/metrics/review-advisor-brief-${change}-\\d{8}-\\d{6}\\.json$`))
-  assert.equal(brief.index, brief.path.replace(/\.md$/, '.json'), 'the index sits beside the brief')
-  assert.deepEqual(brief.omitted, [])
-  assert.equal(brief.overrun, 0)
-
-  const text = readFileSync(abs(root, brief.path), 'utf8')
-  assert.equal(brief.chars, text.length, 'chars is the written brief\'s size')
-  for (const token of ['S1', 'S2', 'D1', 'RA-REASON-ONE', 'RA-REASON-TWO', 'lib/a.mjs:10']) {
-    assert.ok(text.includes(token), `the brief is missing ${token}`)
-  }
-
-  const index = JSON.parse(readFileSync(abs(root, brief.index), 'utf8'))
-  assert.equal(index.change, change)
-  assert.deepEqual(index.survivors, [
-    { id: 'S1', file: 'lib/a.mjs', title: 'null deref in a' },
-    { id: 'S2', file: 'lib/b.mjs', title: 'same cause in b' }
-  ])
-  assert.deepEqual(index.dismissed, [{ id: 'D1', file: 'lib/a.mjs', title: 'exit code is wrong' }])
-  assert.deepEqual(index.changed, RA_CHANGED)
-
-  // The review's own fields are the same ones it prints without the flag.
-  const plain = runJsonAt(root, reviewAdvisorArgs('brief-happy'))
-  const { advisorBrief, ...rest } = out
-  assert.deepEqual(rest, plain)
-})
-
-test('review without --advisor-brief has no advisorBrief key and writes no brief', () => {
-  const { root } = advisorRepo('ra-brief-absent')
-  const out = runJsonAt(root, reviewAdvisorArgs('brief-absent'))
-  assert.equal('advisorBrief' in out, false)
-  assert.deepEqual(reviewAdvisorFiles(root, 'review-advisor-brief-'), [])
-})
-
-test('review --advisor-brief warns and keeps the exit code when the brief cannot be written', () => {
-  // `.claude/metrics` is a regular file, so the write fails under any uid.
-  const { root, change } = advisorRepo('ra-brief-unwritable')
-  mkdirSync(join(root, '.claude'), { recursive: true })
-  writeFileSync(join(root, '.claude', 'metrics'), 'not a directory\n')
-  const without = runAt(root, reviewAdvisorArgs('brief-unwritable', '--json'))
-  const withFlag = runAt(root, reviewAdvisorArgs('brief-unwritable', '--advisor-brief', change, '--json'))
-  assert.equal(withFlag.code, without.code, 'the exit code is the same review\'s without the flag')
-  assert.match(withFlag.stderr, /advisor brief not written: \S/, withFlag.stderr)
-  const out = JSON.parse(withFlag.stdout)
-  assert.equal(out.advisorBrief.written, false)
-  assert.equal(typeof out.advisorBrief.reason, 'string')
-  assert.ok(out.advisorBrief.reason.length > 0)
-  assert.equal('path' in out.advisorBrief, false, 'no path is printed for a brief that does not exist')
-})
-
-test('review --advisor-brief for a change that does not resolve warns, reports written:false and keeps the exit code', () => {
-  const { root } = advisorRepo('ra-brief-unresolved')
-  const without = runAt(root, reviewAdvisorArgs('brief-unresolved', '--json'))
-  const withFlag = runAt(root, reviewAdvisorArgs('brief-unresolved', '--advisor-brief', 'add-the-thin', '--json'))
-  assert.equal(withFlag.code, without.code)
-  assert.match(withFlag.stderr, /advisor brief not written: \S/, withFlag.stderr)
-  const out = JSON.parse(withFlag.stdout)
-  assert.equal(out.advisorBrief.written, false)
-  assert.equal(typeof out.advisorBrief.reason, 'string')
-  assert.deepEqual(reviewAdvisorFiles(root, 'review-advisor-brief-'), [])
-})
-
-test('review-advisor --check - validates the draft, persists it, writes review-advisor.md and exits 0', () => {
-  const { root, change, changeDir } = briefedRepo('ra-check-happy')
-  const stdin = JSON.stringify(RA_DRAFT)
-  const r = runAt(root, ['review-advisor', change, '--check', '-', '--json'], { input: stdin })
-  assert.equal(r.code, 0, r.stderr + r.stdout)
-  const out = JSON.parse(r.stdout)
-  assert.deepEqual(
-    Object.keys(out).sort(),
-    ['change', 'draft', 'dropped', 'flags', 'path', 'status', 'step'],
-    JSON.stringify(out)
-  )
-  assert.equal(out.step, 'check')
-  assert.equal(out.change, change)
-  assert.equal(out.status, 'drafted')
-  assert.deepEqual(out.flags, [
-    { id: 'F1', kind: 'dismissal-doubt' },
-    { id: 'F2', kind: 'shared-root-cause' },
-    { id: 'F3', kind: 'uncovered' }
-  ], 'ids are positional; the draft\'s own id is ignored')
-  assert.equal(out.dropped, 0)
-  assert.equal(out.path, `openspec/changes/${change}/review-advisor.md`)
-  assert.match(out.draft, new RegExp(`\\.claude/metrics/review-advisor-${change}-\\d{8}-\\d{6}\\.json$`))
-  assert.equal(readFileSync(abs(root, out.draft), 'utf8'), stdin, 'the draft is persisted unchanged')
-
-  const md = readFileSync(join(changeDir, 'review-advisor.md'), 'utf8')
-  for (const heading of ['## Flags', '## Dropped']) {
-    assert.ok(md.includes(heading), `review-advisor.md is missing ${heading}`)
-  }
-  for (const token of ['F1', 'F2', 'F3', 'exit code is wrong', 'null deref in a', 'same cause in b', 'lib/b.mjs']) {
-    assert.ok(md.includes(token), `review-advisor.md is missing ${token}`)
-  }
-})
-
-test('review-advisor --check - drops flags whose targets do not resolve and still exits 0 as drafted', () => {
-  const { root, change, changeDir } = briefedRepo('ra-check-dropped')
-  const draft = {
-    flags: [
-      { kind: 'dismissal-doubt', targets: ['D7'], why: 'w', check: 'c' },
-      { kind: 'shared-root-cause', targets: ['S1'], why: 'w', check: 'c' },
-      { kind: 'uncovered', targets: ['lib/z.mjs'], why: 'w', check: 'c' }
-    ]
-  }
-  const r = runAt(root, ['review-advisor', change, '--check', '-', '--json'], { input: JSON.stringify(draft) })
-  assert.equal(r.code, 0, r.stderr + r.stdout)
-  const out = JSON.parse(r.stdout)
-  assert.equal(out.status, 'drafted')
-  assert.deepEqual(out.flags, [])
-  assert.equal(out.dropped, 3)
-  assert.ok(readFileSync(join(changeDir, 'review-advisor.md'), 'utf8').includes('## Dropped'))
-})
-
-test('review-advisor --check - exits 0 with did-not-run when stdin is not JSON', () => {
-  const { root, change, changeDir } = briefedRepo('ra-check-not-json')
-  const r = runAt(root, ['review-advisor', change, '--check', '-', '--json'], { input: 'I could not read the brief' })
-  assert.equal(r.code, 0, r.stderr + r.stdout)
-  const out = JSON.parse(r.stdout)
-  assert.equal(out.status, 'did-not-run')
-  assert.equal(typeof out.reason, 'string')
-  assert.deepEqual(out.flags, [])
-  assert.equal(out.path, `openspec/changes/${change}/review-advisor.md`)
-  assert.ok(readFileSync(join(changeDir, 'review-advisor.md'), 'utf8').includes('did not run: '))
-})
-
-test('review-advisor --check - with no brief index records did-not-run naming the change, exit 0', () => {
-  const { root, change, changeDir } = advisorRepo('ra-check-no-index')
-  const r = runAt(root, ['review-advisor', change, '--check', '-', '--json'], { input: JSON.stringify(RA_DRAFT) })
-  assert.equal(r.code, 0, r.stderr + r.stdout)
-  const out = JSON.parse(r.stdout)
-  assert.equal(out.status, 'did-not-run')
-  assert.equal(out.reason, `no brief index for ${change}`)
-  assert.ok(readFileSync(join(changeDir, 'review-advisor.md'), 'utf8').includes(`did not run: no brief index for ${change}`))
-})
-
-test('review-advisor --check --failed writes the did-not-run stanza with the reason and exits 0', () => {
-  const { root, change, changeDir } = advisorRepo('ra-check-failed')
-  const out = runJsonAt(root, ['review-advisor', change, '--check', '--failed', 'agent spawn errored'])
-  assert.deepEqual(out, {
-    step: 'check',
-    change,
-    status: 'did-not-run',
-    reason: 'agent spawn errored',
-    flags: [],
-    dropped: 0,
-    path: `openspec/changes/${change}/review-advisor.md`
-  })
-  assert.ok(readFileSync(join(changeDir, 'review-advisor.md'), 'utf8').includes('did not run: agent spawn errored'))
-})
-
-test('review-advisor --check names the candidates and exits non-zero for a change that does not resolve', () => {
-  const { root } = advisorRepo('ra-check-unresolved')
-  const failed = runJsonAt(root, ['review-advisor', 'add-the-thin', '--check', '--failed', 'agent spawn errored'], 1)
-  assert.equal(typeof failed.error, 'string')
-  assert.deepEqual(failed.candidates, ['add-the-thing'])
-  const piped = runAt(root, ['review-advisor', 'add-the-thin', '--check', '-', '--json'], { input: JSON.stringify(RA_DRAFT) })
-  assert.equal(piped.code, 1, piped.stdout)
-  const out = JSON.parse(piped.stdout)
-  assert.equal(typeof out.error, 'string')
-  assert.deepEqual(out.candidates, ['add-the-thing'])
-  assert.equal(existsSync(join(root, 'openspec', 'changes', 'add-the-thin', 'review-advisor.md')), false)
-})
-
-/** Hand labels under <evals>/<case>/calibration/<grader>/<name>.md, the layout readLabels reads. */
-function writeLabel(evalsDir, kase, grader, name, value) {
-  const p = join(evalsDir, kase, 'calibration', grader, `${name}.md`)
-  mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, `---\ntranscript: ${name}\ngrader: ${grader}\nlabel: ${value}\n---\n\nhand label\n`)
-}
-
-test('review-advisor --verdict --labels counts only review-range cases and exits 0', () => {
-  const evalsDir = join(dir, 'review-advisor-verdict-evals')
-  for (const kase of ['review-range-a', 'review-range-b', 'review-range-c']) {
-    writeLabel(evalsDir, kase, 'matches-label', 't1', kase === 'review-range-c' ? 'fail' : 'pass')
-    writeLabel(evalsDir, kase, 'repeats-survivor', 't1', 'pass')
-  }
-  // The checkpoint family sits in the same tree and must not be counted here.
-  for (const kase of ['spec-range-a', 'spec-range-b']) {
-    writeLabel(evalsDir, kase, 'matches-label', 't1', 'pass')
-    writeLabel(evalsDir, kase, 'answered-already', 't1', 'pass')
-  }
-  const r = run(['review-advisor', '--verdict', '--labels', evalsDir, '--json'])
-  assert.equal(r.code, 0, r.stderr)
-  const out = JSON.parse(r.stdout)
-  assert.deepEqual(
-    Object.keys(out).sort(),
-    ['caps', 'labelled', 'matches', 'problems', 'repeats', 'step', 'verdict'],
-    JSON.stringify(out)
-  )
-  assert.equal(out.step, 'verdict')
-  assert.equal(out.labelled, 3)
-  assert.equal(out.matches, 2)
-  assert.equal(out.repeats, 0)
-  assert.equal(out.verdict, `INSUFFICIENT LABELS (3 of ${LIMITS.reviewAdvisorVerdictMinLabels})`)
-  assert.equal(out.caps.minLabels, LIMITS.reviewAdvisorVerdictMinLabels)
-  assert.equal(out.caps.keepMinMatches, LIMITS.reviewAdvisorKeepMinMatches)
-  assert.ok(Array.isArray(out.problems))
-
-  // The checkpoint verdict over the same tree is what it was: spec-range cases only.
-  const checkpoint = JSON.parse(run(['advisor', '--verdict', '--labels', evalsDir, '--json']).stdout)
-  assert.equal(checkpoint.labelled, 2)
-  assert.equal(checkpoint.matches, 2)
-  assert.equal(checkpoint.repeats, 0)
-  assert.equal(checkpoint.verdict, `INSUFFICIENT LABELS (2 of ${LIMITS.advisorVerdictMinLabels})`)
-  assert.deepEqual(checkpoint.caps, {
-    minLabels: LIMITS.advisorVerdictMinLabels,
-    keepMinMatches: LIMITS.advisorKeepMinMatches,
-    repeatMaxPercent: LIMITS.advisorRepeatMaxPercent
-  })
-})
-
-test('review-advisor --verdict with no review-range labels prints INSUFFICIENT LABELS (0 of min) and exits 0', () => {
-  const evalsDir = join(dir, 'review-advisor-verdict-empty')
-  mkdirSync(evalsDir, { recursive: true })
-  const text = run(['review-advisor', '--verdict', '--labels', evalsDir])
-  assert.equal(text.code, 0, text.stderr)
-  assert.ok(
-    text.stdout.includes(`INSUFFICIENT LABELS (0 of ${LIMITS.reviewAdvisorVerdictMinLabels})`),
-    text.stdout
-  )
-})
-
-test('limits carries the four review-advisor caps by name in text and JSON', () => {
-  const names = [
-    'maxReviewAdvisorFlags',
-    'maxReviewAdvisorBriefChars',
-    'reviewAdvisorVerdictMinLabels',
-    'reviewAdvisorKeepMinMatches'
-  ]
-  const out = runJson(['limits'])
-  for (const name of names) {
-    assert.equal(typeof out.limits[name], 'number', `limits --json is missing ${name}`)
-    assert.equal(out.limits[name], LIMITS[name])
-  }
-  const text = run(['limits'])
-  assert.equal(text.code, 0)
-  const rows = text.stdout.split('\n').filter(l => /review/i.test(l) && /advisor/i.test(l))
-  assert.ok(rows.length >= names.length, `expected a text row per review-advisor cap:\n${text.stdout}`)
+  assert.ok(text.stdout.split('\n').some(l => /note match rows/.test(l)), `no note-match row:\n${text.stdout}`)
+  assert.doesNotMatch(text.stdout, /advisor(?!y)/i, 'limits text still prints an advisor row')
 })

@@ -1,0 +1,101 @@
+## 1. Move the survivors out and build the native-advisor modules
+
+- [x] 1.1 Move `interlock note` out of the advisor module (design "Removal order", "`note match` names unreadable rows").
+  - Create `lib/note-cli.mjs` holding `noteCommand`, `noteWrite`, `findingsListOf` and `readOr`, moved from `lib/advisor-cli.mjs:24-37,168-210` with behaviour unchanged.
+  - Point `bin/interlock`'s `noteCommand` import at the new file. `lib/advisor-cli.mjs` keeps only the advisor handlers and drops the imports it no longer uses.
+  - Repoint `test/spine/cli-arguments.test.mjs:157-158` at `lib/note-cli.mjs`.
+  - In the same file, `note match` reports the malformed-row count of a parseable table: `unreadable` in `--json`, and the text line `compound notes: <n> rows unreadable` when non-zero. An unparseable table still exits 1.
+  - Extend the note tests in `test/spine/cli.test.mjs` (the `note` block at ~4752-4848) for both outputs, and for an absent `docs/notes/compound.md` (exit 0, `rows` empty, `unreadable` 0).
+- [x] 1.2 Add the pure configuration module (design "Configuration is read by one pure module").
+  - Create `lib/advisor-tool.mjs`, importing no `node:` module, with `readAdvisorConfig(sources)`, `advisorNotes(observation, { counted })`, `advisorConfigured(observation)`, and the doctor row's detail and fix texts. The texts follow `specs/advisor-tool/spec.md`. This is the only file under `lib/`, `bin/`, `hooks/` and `workflows/` that spells `advisorModel`.
+  - In `lib/host/claude-env.mjs`, export the `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` name and add `advisorDisabled` to `observeClaudeEnv`, using the module's existing `enabled()` rule.
+  - Add `test/spine/advisor-tool.test.mjs`. It covers: scopes named and the value never returned; an unreadable scope; a non-string `advisorModel` read as unset; a file whose JSON is not an object read as unreadable; disabled with and without a scope; `counted: true` and `false`; and no note when unset. Extend the claude-env tests for the new field.
+- [x] 1.3 Count advisor consults in `summarizeTranscript` (`lib/agent-usage.mjs:242-305`).
+  - Count distinct `server_tool_use` blocks named `advisor` across every assistant row, keyed by block `id`, before the per-message-id grouping.
+  - Return `advisorConsults`: a number when at least one line parsed, otherwise `null`.
+  - A block with no string `id` counts once for its row; a block whose `name` is not the string `advisor` does not count; a row that is not an assistant message, or whose `content` is not an array, adds nothing and does not by itself make the result `null`.
+  - Add tests with synthetic rows: blocks on separate rows sharing a message id, one id repeated, a block with no id, a non-string name, a user row and a string-content assistant row, no advisor block (0), and an unparseable transcript (`null`).
+- [x] 1.4 Add the doctor `advisor` row (design "Doctor row"). Depends on 1.2 for `readAdvisorConfig`.
+  - In `lib/doctor.mjs`, add `checkAdvisor` beside `checkPromptCache` (:1290-1356). It reads the `settingsSources` files (:91-110) and the env, and is pushed in `diagnose` next to `prompt-cache`.
+  - Status is `ok` or `skip`, never `fail`. A set scope keeps the row `ok` when another file is unreadable, and the detail names every unreadable file with its reason. Its own try/catch turns a throw into a `skip` with the reason.
+  - The detail and fix texts come from `lib/advisor-tool.mjs`; the fix reads `Run /advisor <model> to turn it on. Interlock cannot: a plugin's settings apply only agent and subagentStatusLine.`
+  - Add tests in `test/spine/doctor.test.mjs` for set in two scopes, unset, unparseable local settings, set in user with unparseable local settings (`ok`, names `local`), and disabled. Update any test that counts or orders doctor rows.
+
+## 2. Remove both subagent advisors and wire the native advisor in
+
+- [x] 2.1 Remove the Spec Range and Review Range evals (D8). This runs before the advisor code goes: their cases declare `agents/advisor.md` and `agents/review-advisor.md` under `exercises:`, which `test/evals.test.mjs:607` requires to exist, and their tests read the advisor caps from `LIMITS` (:802, :1085). Eval coverage is reported, never asserted, so removing the cases first fails nothing.
+  - Delete the ten `evals/spec-range-*` and six `evals/review-range-*` case directories.
+  - Remove their rows from `evals/CALIBRATION-DEFERRALS.md:24-55`.
+  - In `test/evals.test.mjs`, remove their `EXPECTED_CASES` entries and their structural and docs blocks (~640-1097, and the comment at 1143-1144). Keep the `--scaffold` and grant tests.
+  - Delete the Spec Range and Review Range sections of `docs/14-evals.md` (255-346).
+  - Edit comments only in `.github/workflows/evals.yml:203-208`, `lib/evals-triage.mjs:47` and `scripts/host-probe.mjs:22-27,41-42`.
+  - Rewrite the `test/fixtures/evals/README.md` entry so `spec-range-2026-10-21.json` reads as a triage fixture, and keep the file.
+- [x] 2.2 Remove both subagent advisors from every surface that spells them (design "Removal order", "Both kits and `verdictFromLabels` go", "The spec meter loses the subagent advisor lines", "Review-code"). Needs 1.1's `lib/note-cli.mjs` and 2.1. This is one checkbox on purpose. The advisor's fenced skill lines are pinned three ways: `test/spine/cli-inventory.test.mjs` fails when a fence names a leaf the CLI no longer accepts, `test/spine/spec-meter.test.mjs:659-668` fails when a fence and `KEYED_LINES` disagree in either direction, and `test/skills.test.mjs` pins the advisor chain. The CLI leaves, the meter's advisor kind, the skill sections and those pins therefore leave together, or no split of them passes `npm test`.
+  - Delete:
+    - `agents/advisor.md`, `agents/review-advisor.md`
+    - `lib/advisor.mjs`, `lib/advisor-cli.mjs`, `lib/advisor-kit.mjs`, `lib/review-advisor.mjs`, `lib/review-advisor-cli.mjs`
+    - `lib/prompts/advisor.mjs`, `lib/prompts/review-advisor.mjs`, `lib/prompts/brief-kit.mjs`
+    - `scripts/advisor-e2e.mjs`
+  - CLI:
+    - Edit `bin/interlock`: the imports, the `advisor`/`review-advisor` USAGE lines and dispatch cases, the `review --advisor-brief` flag help and block, and the `+ advisor brief` text and spread. Keep `cliIo` and the `note` lines.
+    - Edit `lib/cli-flags.mjs:80,86,87` and the advisor rows in `scripts/postinstall-smoke.mjs:218-223`, keeping the note rows.
+    - In `lib/prompts/index.mjs`, remove the imports, re-exports, the `PROMPTS.advisor` and `PROMPTS.reviewAdvisor` entries, and `brief-kit.mjs` from `NON_ASSEMBLER_MODULES`.
+    - In `lib/review-core.mjs`, remove `verdictsFor` and reword the :220-223 docstring so it no longer names it.
+    - In `lib/limits.mjs`, remove every advisor key and its `formatLimits` row. Rename `maxAdvisorNoteRows` to `maxNoteMatchRows` (value 20 unchanged) and move every reader: `lib/notes.mjs:283` and `shared/COMPOUND-NOTES.md:57-60` (D6).
+  - Spec meter:
+    - In `lib/spec-meter.mjs`, remove the `advisor` kind from `KEYED_LINES` and `TEXT_KINDS`, `READERS.advisor`, the `draft` write kind, and the advisor stage texts, pane line, question rows, consult line and `waiting on you` line (D7).
+    - In `hooks/mod.mjs`, remove the draft filing, the `interlock:advisor` spawn gate and `countConsult` (:682,703-706,920-930).
+  - Skills:
+    - In `skills/spec/SKILL.md`, delete §5a and the §6 advisor bullet, drop `advisor.md` from the description and `metadata`, and drop `Agent` from `allowed-tools`.
+    - In `skills/review-code/SKILL.md`, remove `[--advisor]`, the flag table, `[--advisor-brief <change>]`, §4a and the §5 line.
+  - Delete the tests:
+    - `test/spine/{advisor,advisor-brief,advisor-e2e,review-advisor,review-advisor-brief}.test.mjs`
+    - `test/fixtures/mod/advisor-run.mjs` and `agent-spawn-advisor.json`
+  - Edit the tests:
+    - `test/spine/cli.test.mjs`: the advisor block, the six-caps limits test, the review-advisor block and the USAGE assert. Keep the shared helpers the note tests use.
+    - `test/spine/review-core.test.mjs`: the `verdictsFor` tests go, and the `resolveReview` snapshot test is renamed.
+    - `test/spine/artifacts.test.mjs`: the advisor.md and review-advisor.md blocks, and their now-unused imports.
+    - `test/spine/plugin-agents.test.mjs`: replace the advisor-agent tests with one asserting no `agents/*.md` name contains `advisor`.
+    - `test/spine/prompts.test.mjs:829-856`.
+    - `test/spine/notes.test.mjs`: the cap name.
+    - `test/spine/package.test.mjs:393-394`: the comment.
+    - `test/spine/spec-meter.test.mjs`: the `TEXT_KINDS` pin, the advisor blocks and the review-advisor isolation block.
+    - `test/mod/spec-meter.test.ts`: the advisor run and the consult line.
+    - `test/spine/mod-pins.test.mjs`: replace the advisor spawn pin (:589-602) with one asserting neither `hooks/mod.mjs` nor `lib/spec-meter.mjs` spells `interlock:advisor`.
+    - `test/skills.test.mjs`: remove the advisor chain pins, the consult-field pins, the `writeOf` import and the review-code advisor tests; retitle the no-model test at :963; add assertions that no fenced line in any skill runs `interlock advisor` or `interlock review-advisor`, that `Agent` is absent from the spec skill's `allowed-tools`, and that review-code names no `--advisor`.
+  - Run `node bin/interlock limits` and `node bin/interlock advisor` to confirm the removal.
+- [x] 2.3 Add `note match` to the spec flow and the meter (design "The spec skill reads compound notes itself", "The spec meter loses the subagent advisor lines"; `specs/hooks/spec-meter/spec.md`). Needs 2.2. The fenced line and the `notes` kind are pinned together, so they land together.
+  - In `lib/spec-meter.mjs`, add a `notes` kind for `interlock note match`, between `status` and `ledger`, with its reader, stage text and pane line.
+  - In `skills/spec/SKILL.md`, add the fenced `interlock note match "<name>" --json` line after the artifact loop and before §3a. Its reading sentence names `rows` and `unreadable`, and says that on a non-zero exit the skill reports the `first output line` and continues. Add the matched-notes count to §6.
+  - Tests: the notes cases and the keyed-order case in `test/spine/spec-meter.test.mjs`, and in `test/skills.test.mjs` the `note match` order pin (between status and ledger) and its field and `first output line` tokens.
+- [x] 2.4 Count the spec session's advisor consults and report them at the hand-off (design "Counting consults", "The spec skill's native-advisor prose"; `specs/hooks/spec-meter/spec.md`, `specs/advisor-tool/spec.md`). Needs 2.3.
+  - In `lib/spec-meter.mjs`, add a pure reader of advisor entries in `serverToolUses`.
+  - In `hooks/mod.mjs`, extend the existing `turn.step` hook to count advisor entries by id while a spec run is live: events with no `agentId` count toward the session, the rest toward subagents. Draw `advisor consults seen: session <a> · subagents <b>` only once the run has seen its first entry, and draw no advisor-consults line before that. Add no hooked event and no call.
+  - In `skills/spec/SKILL.md`, add the "Advisor tool" bullet to §3. It asks for no consult (D2) and says: never run `/advisor` or edit `advisorModel`; if the session consults it, the advice is guidance and a conflict with the evidence becomes a ledger row; a call that fails is said at the hand-off, never retried, and the spec continues. Add the §6 bullet: availability or `not available in this session`, the consults by the session's own account, and that the spec meter's advisor line is the record.
+  - Tests: the consult-count cases in `test/spine/spec-meter.test.mjs` and `test/mod/spec-meter.test.ts`, including a run with no advisor entry drawing no advisor-consults line; and in `test/skills.test.mjs` the advisor-tool tokens from `specs/advisor-tool/spec.md`, plus an assertion that no shipped skill asks the session to consult the advisor tool (a line naming `consult` and the advisor together with `before`).
+- [x] 2.5 Record and speak the advisor configuration in a Workflow run (design "Where the run speaks", "Briefings ask for no consult", "Counting consults"). Needs 1.2 and 1.3.
+  - In `bin/interlock`, `run start --host workflow` reads the four `settingsSources` files into `readAdvisorConfig` and stores `hostEnv.advisor` with `disabled`.
+  - In `lib/run.mjs`:
+    - `decideHostEnvironment` appends `advisorNotes(…, { counted: true })`.
+    - Every step reads `manifest.hostEnv.advisor`; nothing after `run start` re-reads settings.
+    - `joinAgentUsage` sums `advisorConsults`, `null` unless every briefed spawn joined a parsed transcript.
+    - The close summary adds `advisor consults: <n> across <m> lanes` when the sum is above 0, `advisor consults: not established (<k> of <m> lanes unrecorded)` when a lane is unrecorded, and `advisor consults: not established (none recognized in <m> lanes)` when every lane parsed and the sum is 0. It prints only when `advisorConfigured(manifest.hostEnv?.advisor)` or the sum is above 0, and never prints a count of 0. With `--json` it carries `advisorConsults: { count, lanes, unrecorded }` exactly then.
+  - Add a static test: under `lib/`, `bin/`, `hooks/` and `workflows/`, only `lib/advisor-tool.mjs` spells `advisorModel`, and `lib/host/claude-cli.mjs`'s argv builder never emits `--advisor`.
+  - Tests:
+    - the same implementer and remediation steps, emitted from a configured and an unconfigured manifest, carry byte-identical briefings with equal bootstrap sha256 values; `spawn()` and the prompt assemblers are not edited, and every `test/fixtures/prompts/` snapshot is unchanged
+    - the notes for configured, disabled, unreadable and unset
+    - the three close lines, never `advisor consults: 0`, and no advisor line for an unconfigured run with no consults
+- [x] 2.6 Speak the advisor configuration on runner hosts (D14). Needs 1.2.
+  - In `bin/interlock-run`'s banner block (:346-390), when `drivesClaudeBinary` holds, read the four settings files and add `advisorNotes(…, { counted: false })` to `banners`. Add nothing for other hosts.
+  - Add tests: the claude host with `advisorModel` set shows the not-counted text; the codex host shows none.
+- [x] 2.7 Update docs, CHANGELOG, the flow diagram and the OpenSpec folders (D9, D10, D11, D12).
+  - Docs:
+    - `docs/02-the-checkpoint.md:73-79` loses the advisor.md section.
+    - `docs/07-cli-and-configuration.md` loses the advisor meter rows and the two consult sections, and gains the doctor `advisor` row, the run notes, `note match` in the spec flow, and the consult counts.
+    - `docs/10-agentic-workflow-ship-and-spec.md:408` loses its two review-advisor sentences.
+    - `docs/16-upgrading.md` names the removed `interlock advisor`.
+    - `README.md:94,116` loses its advisor mentions.
+  - In `scripts/gen-flow-svg.mjs:58-59`, drop `advisor.md`, then regenerate `docs/assets/flow-*.svg` with `node scripts/gen-flow-svg.mjs`.
+  - CHANGELOG: delete the unreleased review-advisor bullet (CHANGELOG.md:12). Add a `### Removed` section under `[Unreleased]` for the 1.7.0 checkpoint advisor, its command, `advisor.md` and the Spec Range cases, and `### Added` bullets for the doctor row, run notes and consult counts.
+  - Delete `openspec/changes/add-review-findings-advisor/` with `git rm -r`.
+  - Leave `openspec/changes/archive/2026-10-21-add-checkpoint-advisor/`, the dated `docs/notes/*`, and the untracked owner files untouched.

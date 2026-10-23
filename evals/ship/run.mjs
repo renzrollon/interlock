@@ -640,7 +640,7 @@ Flags:
   --baseline-commit <sha>
                      --grade-root: the commit the run started from
   --fixture-id <id>  --grade-root: the identity the row is keyed on (e.g. kettle@demo-ship)
-  --run-id <id>      --grade-root: the run to grade (default: the newest run of the change)
+  --run-id <id>      --grade-root: the run to grade (default: the change's newest run by recorded start time)
   --baseline-counts <file>
                      --grade-root: JSON of the suite's counts before the run; without it the
                      not-weakened criterion is recorded unobserved, never met
@@ -810,14 +810,60 @@ function recordedModel(receipt, spawns) {
   return models.size === 1 ? [...models][0] : 'unknown'
 }
 
-/** The version a run recorded: the plugin's, falling back to the CLI's. */
-function recordedVersion(...sources) {
-  for (const key of ['pluginVersion', 'cliVersion']) {
-    for (const source of sources) {
-      if (source && typeof source[key] === 'string' && source[key]) return source[key]
-    }
-  }
+/**
+ * The version a run recorded, and which release it names (design D30, D17): the
+ * plugin's, falling back to the CLI's only when no plugin version was recorded.
+ *
+ * The two events spell it differently. `run-start` records nested blocks
+ * (`plugin: {version, root}`, `cli: {version, path}`); `run-receipt` records flat
+ * keys (`pluginVersion`, `cliVersion`), and only when it knew them. Neither event
+ * records a flat key on the start nor a nested block on the receipt, so each is
+ * read in the shape it is written in. Where both events name one release, the
+ * receipt's wins: it is the later record of the same run.
+ *
+ * @returns {{version: string, source: 'plugin'|'cli'} | null}
+ */
+function recordedVersion(receipt, start) {
+  const text = value => (typeof value === 'string' && value ? value : null)
+  const nested = (event, key) => (event && event[key] && typeof event[key] === 'object' ? text(event[key].version) : null)
+  const flat = (event, key) => (event ? text(event[key]) : null)
+  const plugin = flat(receipt, 'pluginVersion') || nested(start, 'plugin')
+  if (plugin) return { version: plugin, source: 'plugin' }
+  const cli = flat(receipt, 'cliVersion') || nested(start, 'cli')
+  if (cli) return { version: cli, source: 'cli' }
   return null
+}
+
+/**
+ * The newest run in a `run-log list` answer, chosen here rather than trusted to
+ * the order that module happens to return: by the run's own recorded start time,
+ * the later wins; a run with no parseable start time loses to any run that has
+ * one; equal start times fall to the run id, so the pick is the same every time.
+ *
+ * @returns {{run: object|null, tied: string[]}} `tied` lists every run id that
+ *   shares the winner's start time (including the winner), so the caller can say
+ *   the pick was an id-order tie-break rather than a time difference.
+ */
+function newestRun(runs) {
+  const stamp = run => {
+    const t = Date.parse(run && run.startedAt)
+    return Number.isFinite(t) ? t : null
+  }
+  const named = runs.filter(run => run && typeof run.runId === 'string' && run.runId)
+  const order = (a, b) => {
+    const ta = stamp(a)
+    const tb = stamp(b)
+    if (ta !== tb) {
+      if (ta === null) return -1
+      if (tb === null) return 1
+      return ta - tb
+    }
+    return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0
+  }
+  const sorted = named.slice().sort(order)
+  const run = sorted.length ? sorted[sorted.length - 1] : null
+  const tied = run ? sorted.filter(r => stamp(r) === stamp(run)).map(r => r.runId) : []
+  return { run, tied }
 }
 
 /**
@@ -873,14 +919,22 @@ function gradeRootCommand(flags) {
   }
 
   let runId = flags.runId
+  let runPick = 'flag'
   if (!runId) {
     const listed = interlock(['run-log', 'list', '--change', flags.change, '--root', root, '--json'])
     const runs = listed.json && Array.isArray(listed.json.runs) ? listed.json.runs : []
-    const newest = runs.length ? runs[runs.length - 1] : null
-    if (!newest || !newest.runId) {
+    const { run: newest, tied } = newestRun(runs)
+    if (!newest) {
       return refuse(`no run of ${flags.change} is recorded under ${root} (.claude/ship/runs)`)
     }
     runId = newest.runId
+    runPick = 'newest'
+    if (tied.length > 1) {
+      process.stderr.write(
+        `interlock outcome eval --grade-root: ${tied.length} runs of ${flags.change} share the newest start time ` +
+          `(${tied.join(', ')}); picked ${runId} by id order — pass --run-id to choose\n`
+      )
+    }
   }
 
   const query = type => {
@@ -895,14 +949,15 @@ function gradeRootCommand(flags) {
     return refuse(`run ${runId} has no trajectory under ${root}, so there is nothing to grade`)
   }
 
-  const version = recordedVersion(recorded, start)
-  if (!version) {
+  const recordedRelease = recordedVersion(recorded, start)
+  if (!recordedRelease) {
     return refuse(
       `run ${runId} carries no version: neither its receipt nor its start event records a plugin or ` +
         `CLI version, so there is nothing to key the row on — nothing was graded or appended`
     )
   }
 
+  const version = recordedRelease.version
   const work = mkdtempSync(join(tmpdir(), 'interlock-grade-root-'))
   try {
     // The fixture is the root's own: its testing profile names the unit command,
@@ -949,6 +1004,8 @@ function gradeRootCommand(flags) {
       root,
       change: flags.change,
       runId,
+      runPick,
+      versionSource: recordedRelease.source,
       fixture: flags.fixtureId,
       arm: 'loop',
       ...row,
@@ -981,7 +1038,10 @@ function gradeRootCommand(flags) {
     const lines = [
       `INTERLOCK OUTCOME EVAL — ${row.version} on the ${row.host} host, model ${row.model}, ` +
         `agent ${row.evalAgent}`,
-      `  ${flags.fixtureId} / loop: run ${runId} graded in place at ${root}`,
+      `  ${flags.fixtureId} / loop: run ${runId} (${runPick === 'flag' ? 'named by --run-id' : 'the newest of the change'}) graded in place at ${root}`,
+      recordedRelease.source === 'cli'
+        ? `  version ${version} is the CLI's: the run recorded no plugin version, so the row is keyed on the CLI release`
+        : `  version ${version} is the plugin's`,
       `  ${tally.met} of ${tally.applicable} applicable criteria met` +
         (tally.notApplicable ? `, ${tally.notApplicable} not applicable` : '') +
         (tally.unobserved ? `, ${tally.unobserved} unobserved` : '')

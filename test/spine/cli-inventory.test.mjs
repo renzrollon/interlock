@@ -184,9 +184,12 @@ function extractAll() {
   const js = [
     ['workflows/ship.js', 'driver', {}],
     ['lib/run.mjs', 'run', {}],
+    ['bin/interlock-run', 'run-driver', {}],
     ['lib/resume-card.mjs', 'resume-card', { templateLines: true }]
   ]
   for (const f of filesUnder(join(ROOT, 'hooks'), '.mjs')) js.push([rel(f), 'hooks', {}])
+  // The briefings carry commands too: lib/prompts assembles every one a step hands out.
+  for (const f of filesUnder(join(ROOT, 'lib', 'prompts'), '.mjs')) js.push([rel(f), 'prompts', {}])
   for (const [file, surface, opts] of js) {
     for (const s of fromJs(readFileSync(join(ROOT, file), 'utf8'), file, opts)) out.push({ ...s, surface })
   }

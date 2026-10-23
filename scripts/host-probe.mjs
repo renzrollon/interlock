@@ -22,7 +22,7 @@
 //              settles, then the session is killed
 //   eval       claude plugin eval <plugin-dir> --scaffold ... with a required
 //              cost ceiling: the full eval job's flags for one case glob, so
-//              a metered case can be run on demand (scripts/advisor-e2e.mjs);
+//              a metered case can be run on demand;
 //              results.json, report.html and the harness's own results
 //              directory land in --out
 //
@@ -38,7 +38,7 @@ export const MODES = ['validate', 'headless', 'tty', 'eval']
 export const ABLATIONS = ['none', 'with-without']
 const DEFAULT_TIMEOUT_S = 180
 const MAX_TIMEOUT_S = 900
-// One eval case may take its own timeout_seconds (a Spec Range case allows
+// One eval case may take its own timeout_seconds (a long case can allow
 // 1200) plus the judge, so eval mode gets a longer ceiling of its own.
 const DEFAULT_EVAL_TIMEOUT_S = 1800
 const MAX_EVAL_TIMEOUT_S = 3600

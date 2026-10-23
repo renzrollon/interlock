@@ -183,6 +183,25 @@ test('the canary is scheduled, read-only, and runs validate, plugin test, doctor
   ]) {
     assert.match(canary.code, pattern, `the canary no longer does this: ${what}`)
   }
+  assert.match(canary.code, /^\s+timeout-minutes:\s*\d+\s*$/m, 'the canary job has no timeout')
+})
+
+test('the canary checks the bundle with the tests and smoke of the tag it was cut from, not main', () => {
+  // main's inventory and module tests describe commands the shipped release
+  // does not have yet: run against it, they fail by construction, and a real
+  // engine break would read exactly the same.
+  const canary = workflowNamed('canary.yml')
+  assert.match(canary.code, /ref:\s*v\$\{\{\s*steps\.bundle\.outputs\.version\s*\}\}/, 'the canary must check out the tag matching the bundle')
+  const checkouts = [...canary.code.matchAll(/uses:\s*actions\/checkout@\S+((?:\n\s+(?:with:|ref:|path:)[^\n]*)*)/g)]
+  assert.ok(
+    checkouts.every(([, opts]) => /\bref:/.test(opts)),
+    'the canary checks out main (a checkout with no ref); its checks must come from the tag'
+  )
+  assert.match(canary.code, /cp -R tagged\/test\/mod /, "the module tests must be the tag's")
+  assert.match(canary.code, /node tagged\/scripts\/postinstall-smoke\.mjs \S+ tagged /, "the smoke must be the tag's, against the tag's tree")
+  // A check the bundle predates is skipped out loud, in the run summary.
+  const spoken = canary.code.match(/if \[ "\$PREDATES" = true \]; then\n[^\n]*skipped[^\n]*GITHUB_STEP_SUMMARY/g) || []
+  assert.equal(spoken.length, 2, 'the doctor and the smoke must each say in the summary when the bundle predates them')
 })
 
 test('ci.yml runs Node 24, the smoke on macOS, and the postinstall smoke from the packed tarball', () => {
@@ -239,4 +258,60 @@ test('ci.yml installs the release over the previous one and smokes it', () => {
     'upgrade-install must resolve and install the previous release, pack and install over it, smoke, then run the skew harness'
   )
   assert.doesNotMatch(job, GRANTS_WRITE, 'upgrade-install holds a write permission')
+})
+
+test('the skew step runs the harness case by its exact title and fails when that case did not pass', () => {
+  // A name pattern that matches nothing exits 0, so a renamed case would leave
+  // the step running nothing and passing.
+  const ci = workflowNamed('ci.yml')
+  const job = jobNamed(ci, 'upgrade-install')
+  const title = /^\s+SKEW_CASE:\s*(.+?)\s*$/m.exec(job)?.[1]
+  assert.ok(title, 'upgrade-install no longer names the skew case it runs')
+  const cases = readFileSync(join(ROOT, 'test', 'workflows.test.mjs'), 'utf8')
+  assert.ok(cases.includes(`'${title}'`), `test/workflows.test.mjs has no case titled ${JSON.stringify(title)}`)
+  assert.match(job, /--test-name-pattern "\$SKEW_CASE"/, 'the step must select the case by that title')
+  assert.match(job, /grep -Fxq "\$SKEW_CASE"/, "the step must require the case's own ok line")
+})
+
+// The `main: required CI` ruleset (25566171) lives on GitHub, not in this
+// repository, and requires these check names. A matrix leg reports as
+// `job (value)`, so a required bare name that no job reports blocks every merge
+// with every check green. Mirrors the live list; a change to the ruleset is a
+// change here.
+const REQUIRED_CHECKS = ['test (18)', 'test (20)', 'test (22)', 'validate-plugin', 'cli-smoke', 'Outcome eval prepare (model-free)']
+
+/** The check names one job reports: its `name:` (or id), once per leg of a one-key matrix. */
+function reportedChecks(job) {
+  const raw = /^ {4}name:\s*(.+?)\s*$/m.exec(job.lines.join('\n'))?.[1]
+  const name = raw ? raw.replace(/^(['"])(.*)\1$/, '$2') : job.name
+  const matrix = block(job.lines, 'matrix', 6)
+  if (!matrix) return [name]
+  const keys = matrix.split('\n').slice(1).map(l => /^ {8}([\w-]+):\s*\[([^\]]*)\]/.exec(l)).filter(Boolean)
+  assert.equal(keys.length, 1, `${job.name}: only a one-key matrix is rendered here`)
+  const [, key, list] = keys[0]
+  const values = list.split(',').map(v => v.trim().replace(/^(['"])(.*)\1$/, '$2'))
+  const expr = new RegExp(`\\$\\{\\{\\s*matrix\\.${key}\\s*\\}\\}`, 'g')
+  return values.map(v => (expr.test(name) ? name.replace(expr, v) : `${name} (${v})`))
+}
+
+test('every check the main ruleset requires is reported by a ci.yml job', () => {
+  const ci = workflowNamed('ci.yml')
+  const reported = jobs(ci.code).flatMap(reportedChecks)
+  for (const check of REQUIRED_CHECKS) {
+    assert.ok(reported.includes(check), `no ci.yml job reports the required check "${check}"; reported: ${reported.join(', ')}`)
+  }
+})
+
+test('a gate that reports a matrix under its bare name runs always and passes only when every leg passed', () => {
+  // A skipped required check reads as passing, so a gate that skipped when a leg
+  // failed would wave the failure through.
+  const ci = workflowNamed('ci.yml')
+  for (const [check, matrixJob] of [['validate-plugin', 'validate-plugin'], ['cli-smoke', 'cli-smoke']]) {
+    const gate = jobs(ci.code).find(job => reportedChecks(job).length === 1 && reportedChecks(job)[0] === check)
+    assert.ok(gate, `no job reports ${check}`)
+    const body = gate.lines.join('\n')
+    assert.match(body, new RegExp(`^ {4}needs:\\s*\\[?\\s*${matrixJob}\\s*\\]?\\s*$`, 'm'), `${gate.name} must wait on ${matrixJob}`)
+    assert.match(body, /^ {4}if:\s*\$\{\{\s*always\(\)\s*\}\}\s*$/m, `${gate.name} must run even when a leg failed`)
+    assert.match(body, new RegExp(`test "\\$\\{\\{ needs\\.${matrixJob}\\.result \\}\\}" = success`), `${gate.name} must pass only on success`)
+  }
 })

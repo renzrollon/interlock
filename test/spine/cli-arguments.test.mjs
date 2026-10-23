@@ -152,10 +152,12 @@ test('every flag bin/interlock reads is in the global set or some subcommand set
   const declared = new Set([...global])
   for (const set of leaves.values()) for (const n of set) declared.add(n)
 
+  // The dotted form is not read out of a file name: `cli-flags.mjs` in an import
+  // specifier is a path, and the lookbehind keeps it from reading as `flags.mjs`.
   // `flags.x`, `flags['x']` and `num(flags, 'x')` are the three spellings a
   // handler reads a flag by. A helper that receives the whole object is scanned
-  // too: advisor-cli is handed `flags` through the entry file's io bundle.
-  const sources = [join(ROOT, 'bin', 'interlock'), join(ROOT, 'lib', 'advisor-cli.mjs')]
+  // too: note-cli is handed `flags` through the entry file's io bundle.
+  const sources = [join(ROOT, 'bin', 'interlock'), join(ROOT, 'lib', 'note-cli.mjs')]
   const read = new Map()
   for (const file of sources) {
     const text = readFileSync(file, 'utf8')
@@ -163,7 +165,7 @@ test('every flag bin/interlock reads is in the global set or some subcommand set
     const add = (name, how) => {
       if (!read.has(name)) read.set(name, `${rel} (${how})`)
     }
-    for (const m of text.matchAll(/\bflags\.([a-zA-Z_][a-zA-Z0-9_]*)/g)) add(m[1], `flags.${m[1]}`)
+    for (const m of text.matchAll(/(?<![\w-])flags\.([a-zA-Z_][a-zA-Z0-9_]*)/g)) add(m[1], `flags.${m[1]}`)
     for (const m of text.matchAll(/\bflags\[\s*'([^']+)'\s*\]/g)) add(m[1], `flags['${m[1]}']`)
     for (const m of text.matchAll(/\bnum\(\s*flags\s*,\s*'([^']+)'\s*\)/g)) add(m[1], `num(flags, '${m[1]}')`)
   }

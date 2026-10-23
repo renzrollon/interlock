@@ -53,13 +53,25 @@ A workflow SHALL run on a daily schedule and on manual invocation, holding no wr
 - run the plugin's strict validation and its module tests against that bundle;
 - run the doctor and the smoke inventory from binaries installed from that bundle.
 
-Its failure SHALL fail the scheduled run, which is the notification.
+The module tests, the smoke inventory and its fixtures SHALL come from the tag the bundle was cut from, not from the default branch. When the bundle predates a check, the canary SHALL skip that check and write the reason into the run summary. Its failure SHALL fail the scheduled run, which is the notification.
 
 #### Scenario: Failure — an engine update breaks the shipped bundle between releases
 
 - **GIVEN** a newly published engine under which the shipped bundle fails strict validation
 - **WHEN** the canary next runs
 - **THEN** the run fails naming the validation step
+
+#### Scenario: Edge case — the default branch is ahead of the shipped bundle
+
+- **GIVEN** the default branch has added a smoke inventory entry the shipped release does not have
+- **WHEN** the canary next runs
+- **THEN** it runs the shipped release's own inventory and passes
+
+#### Scenario: Edge case — a bundle older than a check
+
+- **GIVEN** a shipped bundle from before the doctor's `cli-version` row and the smoke script existed
+- **WHEN** the canary runs
+- **THEN** those two steps are skipped, with their reason in the run summary
 
 ### Requirement: The plugin SHALL be validated under the oldest engine the CLI supports, read from code
 
@@ -73,10 +85,16 @@ Plugin validation SHALL run under the newest engine and under the minimum engine
 
 ### Requirement: The suite SHALL run on every supported and current Node major, and the smoke on macOS
 
-The unit suite SHALL run on Node 18, 20, 22 and 24. The tarball smoke SHALL run on Linux and on macOS.
+The unit suite SHALL run on Node 18, 20, 22 and 24. The tarball smoke SHALL run on Linux and on macOS. Every check name the repository's required-checks ruleset names SHALL be reported by some job. A matrix whose legs report under suffixed names SHALL be gated by a job that reports the bare name. That gate SHALL run even when a leg fails, and SHALL pass only when every leg passed.
 
 #### Scenario: Happy path — a macOS-only path defect is caught
 
 - **GIVEN** a defect that appears only under macOS path resolution in an installed binary
 - **WHEN** continuous integration runs
 - **THEN** the macOS smoke fails
+
+#### Scenario: Failure — a matrix renames a required check
+
+- **GIVEN** a required check named `cli-smoke` and a matrix whose legs report as `cli-smoke (<os>)`
+- **WHEN** no job reports the bare name
+- **THEN** the suite fails naming `cli-smoke`

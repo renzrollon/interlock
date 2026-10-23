@@ -37,7 +37,7 @@
 //          that code, so a permissive CLI fails it
 //   keys   dotted paths that must exist in the JSON on stdout
 //   check  (result, ctx) => '' | a message; for what a key cannot say
-//   env    extra environment for this child
+//   env    extra environment for this child, as an object or (ctx) => object
 //   input  stdin, as a string or (ctx) => string
 //   setup  (ctx) => void, run first, for the file this entry's argv names
 //
@@ -47,7 +47,7 @@
 // Exit code: 0 when every row passes, 1 on any FAIL (or a bad invocation).
 
 import { spawnSync, execFileSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -198,7 +198,17 @@ export const INVENTORY = [
   // Preflight: the doctor reads the installed plugin and the binary on PATH, which
   // the script leads with binDir.
   { bin: I, argv: ['limits', '--json'], codes: [0], keys: ['limits.maxParallel', 'evals.smokeCostUsd', 'evals.fullRunCostUsd', 'evals.runsPerCase', 'evals.shipEvalCostUsd', 'evals.matrixCostUsd', 'prices', 'mergeBands'] },
-  { bin: I, argv: ['doctor', '--json'], codes: [0, 1], keys: ['ok', 'checks', 'counts', 'stateHome', 'surface'], check: doctorRows },
+  // Run as a plugin session runs it, with the plugin root set: by name alone the
+  // doctor has no plugin to compare the CLI with, and its cli-version row skips.
+  // The root is the package the binary under test belongs to.
+  {
+    bin: I,
+    argv: ['doctor', '--json'],
+    codes: [0, 1],
+    keys: ['ok', 'checks', 'counts', 'stateHome', 'surface'],
+    env: ctx => ({ CLAUDE_PLUGIN_ROOT: ctx.binPackage }),
+    check: doctorRows
+  },
 
   // The OpenSpec readers.
   { bin: I, argv: ['changes'], codes: [0], check: r => (r.stdout.trim() === CHANGE ? '' : 'change not listed') },
@@ -216,11 +226,8 @@ export const INVENTORY = [
   { bin: I, argv: ['ready', CHANGE, '--findings', '{in}/empty.json', '--json'], codes: [0, 1], keys: ['ready'] },
 
   // The spec skill's commands.
-  { bin: I, argv: ['advisor', CHANGE, '--brief', '--findings', '{in}/empty.json', '--json'], codes: [0], keys: ['path'] },
-  { bin: I, argv: ['advisor', CHANGE, '--check', '--failed', 'smoke', '--json'], codes: [0], keys: ['status'] },
   { bin: I, argv: ['autonomy', 'record', 'review-code', '--blockers', '0', '--json'], codes: [0], keys: ['current_level', 'consecutive_clean'] },
   { bin: I, argv: ['autonomy', 'clean', 'review-artifacts', 'explore', 'spec', '--json'], codes: [0], check: r => (Array.isArray(stepOf(r)) ? '' : 'not an array') },
-  { bin: I, argv: ['review-advisor', '--check', '--failed', 'smoke', '--json'], codes: [0], keys: ['status'] },
   { bin: I, argv: ['note', 'match', CHANGE, '--json'], codes: [0], keys: ['rows'] },
   { bin: I, argv: ['note', 'derive', '--findings', '{in}/blocker.json', '--change', CHANGE, '--json'], codes: [0] },
   { bin: I, argv: ['notify', 'checkpoint', CHANGE], codes: [0], env: { INTERLOCK_NTFY_TOPIC: '' }, check: r => (/not configured/.test(r.stdout) ? '' : 'no not-configured line') },
@@ -449,6 +456,7 @@ export function runInventory(inventory, { binDir, repo, scratch }) {
     ctx = { work: scratch, inputs: scratch, state: scratch, fixtures: join(repo, 'test', 'fixtures'), put: () => {}, version: null }
   }
 
+  ctx.binPackage = packageOf(binDir)
   const env = { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH || ''}`, INTERLOCK_NTFY_TOPIC: '' }
   // The corpora land in the scratch repository and nowhere else, and the doctor
   // resolves the plugin from the binary under test, not from a session's.
@@ -466,7 +474,7 @@ export function runInventory(inventory, { binDir, repo, scratch }) {
       result = spawnSync(join(binDir, entry.bin), argv, {
         cwd: ctx.work,
         encoding: 'utf8',
-        env: { ...env, ...(entry.env || {}) },
+        env: { ...env, ...((typeof entry.env === 'function' ? entry.env(ctx) : entry.env) || {}) },
         input: input ?? '',
         timeout: 60_000
       })
@@ -519,4 +527,23 @@ function main() {
   process.exit(fails ? 1 : 0)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main()
+/** The package root `binDir/interlock` belongs to: an npm prefix's bin/ holds a link into it. */
+function packageOf(binDir) {
+  try {
+    return dirname(dirname(realpathSync(join(binDir, I))))
+  } catch {
+    return dirname(binDir)
+  }
+}
+
+/** Run directly, under whatever path reached it: a symlinked path (macOS /tmp) must still run main. */
+function invokedDirectly() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (invokedDirectly()) main()
