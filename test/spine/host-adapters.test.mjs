@@ -37,6 +37,7 @@ import { HOSTS, createHost } from '../../lib/host/registry.mjs'
 import { MODEL_MAP_ENV, modelMatches, parseModelMap, resolveModel } from '../../lib/host/model-map.mjs'
 import { MAX_AGENT_ERRORS, MAX_TEXT } from '../../lib/run-log.mjs'
 import { modelSubstitution } from '../../lib/run.mjs'
+import { FIXTURE_CLASSIFIED_PATH } from '../fixtures/hosts/ship-answers.mjs'
 import { projectSlug } from '../../lib/project-slug.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -1281,7 +1282,7 @@ function signalRepo() {
   put(`openspec/changes/${change}/design.md`, '# Design\n\nD1: keep it small.\n')
   put(`openspec/changes/${change}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Write docs/a.md\n- [ ] 1.2 Write docs/b.md\n')
   put('README.md', 'hello\n')
-  put('.claude/ship/classified.json', {
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: ['a', 'b'].map((name, i) => ({
       id: `1.${i + 1}`,
       group: 1,

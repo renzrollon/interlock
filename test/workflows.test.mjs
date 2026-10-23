@@ -20,6 +20,7 @@ import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
 import { laneTitle } from '../lib/lane.mjs'
+import { FIXTURE_CLASSIFIED_PATH } from './fixtures/hosts/ship-answers.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -740,7 +741,9 @@ function acpShipRepo({ tasks = [{ id: '1.1', tier: 2, model: 'sonnet', path: 'RE
     `# Tasks\n\n${tasks.map(t => `- [ ] ${t.id} Note it in ${t.path}`).join('\n')}\n`
   )
   put('README.md', 'hello\n')
-  put('.claude/ship/classified.json', {
+  // The seed the fixture planner writes to .claude/ship/classified.json when
+  // briefed; a file already there before `run start` would be removed as stale.
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: tasks.map(t => ({
       id: t.id,
       group: 1,
@@ -899,7 +902,7 @@ function runnerRepo({
   // Tier 4 on purpose: cohesion packs path-disjoint components at or below
   // `LANE_CAPS.cohesionMaxTier` into ONE lane, and a batch of one lane proves
   // nothing about isolation between lanes.
-  put('.claude/ship/classified.json', {
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: ids.map((id, i) => ({
       id,
       group: 1,
@@ -2106,15 +2109,18 @@ test('the runner and ship.js drive the same interlock subcommands', () => {
 test('the runner holds no second copy of the halt rules', () => {
   const driver = readFileSync(RUNNER_DRIVER, 'utf8')
 
-  // It may import the host port. It may not import the policy — a driver that
-  // loaded lib/waves.mjs or lib/limits.mjs could answer "may I continue"
-  // itself, which is the entire thing this change is not doing.
+  // It may import the host port, and the version reader: `--version` prints a
+  // fact about the package, not a rule about the run. It may not import the
+  // policy — a driver that loaded lib/waves.mjs or lib/limits.mjs could answer
+  // "may I continue" itself, which is the entire thing this change is not doing.
   const imports = [...driver.matchAll(/from '([^']+)'/g)].map(m => m[1])
   assert.ok(imports.length > 0, 'failed to read the driver imports')
   for (const specifier of imports) {
     assert.ok(
-      specifier.startsWith('node:') || /^\.\.\/lib\/host(\/|\.)/.test(specifier),
-      `the runner may only import node builtins and the host port, not ${specifier}`
+      specifier.startsWith('node:') ||
+        /^\.\.\/lib\/host(\/|\.)/.test(specifier) ||
+        specifier === '../lib/version.mjs',
+      `the runner may only import node builtins, the host port and the version reader, not ${specifier}`
     )
   }
 
@@ -3957,8 +3963,11 @@ test('the host hands its measurements to the close, and the close does not re-de
   )
   assert.match(run, /spend: hostSpend \|\| counted\.spend/, 'the host measurement takes precedence')
   assert.match(run, /outputTokens: hostTotal !== undefined \? hostTotal : counted\.outputTokens/)
+  // The fold itself lives in lib/run-usage.mjs, moved out of lib/run.mjs for
+  // the directory's size headroom; the rule is pinned where the code is.
+  const usage = readFileSync(join(ROOT, 'lib', 'run-usage.mjs'), 'utf8')
   assert.match(
-    run,
+    usage,
     /UNKNOWN IS NOT ZERO, and it is contagious by design/,
     'and one unmeasured spawn makes its group unknown rather than smaller'
   )

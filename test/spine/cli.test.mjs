@@ -2406,7 +2406,9 @@ test('every unobserved paths read exits 0 and names its reason', () => {
   for (const args of [
     ['paths', 'touched', '--root', repo.root],
     ['paths', 'touched', '--commit', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', '--root', repo.root],
-    ['paths', 'touched', '--commit', '--not-an-object', '--root', repo.root],
+    // A value git cannot resolve. An unknown FLAG is a usage error (exit 2) for
+    // every subcommand since cli/arguments, not an unobserved read.
+    ['paths', 'touched', '--commit', 'not-an-object', '--root', repo.root],
     ['paths', 'predicted', '--root', repo.root],
     ['paths', 'predicted', '--plan', 'nowhere/plan.json', '--root', repo.root]
   ]) {

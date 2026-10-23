@@ -57,6 +57,7 @@ import {
   VERIFY_TIMINGS_PATH,
   answeredInput,
   checkSequence,
+  isRefusal,
   locateInput,
   readManifest,
   relayStep,
@@ -1514,7 +1515,9 @@ function emitRunStep(json, root, step, text, { relay = false } = {}) {
   }
   const shaped = relay ? relayStep(readManifest(root), step) : step
   const out = JSON.stringify(shaped, null, 2) + '\n'
-  keepStepCopy(root, LAST_STEP_PATH, out)
+  // A refusal of a closed run wrote nothing, and the copy is part of nothing
+  // (design D15): the file keeps the step the run's last real call left there.
+  if (!isRefusal(step)) keepStepCopy(root, LAST_STEP_PATH, out)
   process.stdout.write(out)
 }
 

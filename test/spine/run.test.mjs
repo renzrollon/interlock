@@ -3389,10 +3389,11 @@ test('on the Workflow host a run step is printed slim, and its exact bytes are k
 // summary of the waves that will run, the step `run record-batch` returns
 // carries the ids it recorded, and every other step grows by the three integer
 // positions alone. The summary module is loaded lazily so a missing module fails
-// these cases and nothing else in this file.
+// these cases and nothing else in this file. `cliVersion` has ridden every step
+// since harden-release-upgrade-path (its design D17).
 
 const RUN_STEP_SCHEMA = 'interlock.run-step/1'
-const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel', 'seq']
+const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel', 'seq', 'cliVersion']
 const summaryModule = () => import('../../lib/plan-summary.mjs')
 const stateOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
 const planOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
@@ -5785,8 +5786,10 @@ test('two worktree runs of one repository share only the main checkout\'s append
     const w2 = realpathSync(second)
     const runIds = []
     for (const root of [w.worktree, w2]) {
-      file(root, '.claude/ship/classified.json', CLASSIFIED)
+      // Classified after the start: a classification that predates `run start`
+      // is an earlier run's, and the start removes it.
       const started = step0(root, ['run', 'start', '--change', w.change], { env: w.env })
+      file(root, '.claude/ship/classified.json', CLASSIFIED)
       const batch = step0(root, started.then.argv, { env: w.env })
       step0(root, batch.then.argv, {
         results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
@@ -5878,8 +5881,8 @@ test('an explicit state home, by flag or by environment, receives every append o
 test('a manifest without a recorded home appends under the working root, as before', () => {
   const w = linkedWorktree()
   try {
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const batch = step0(w.worktree, started.then.argv, { env: w.env })
     const { runId } = manifestOf(w.worktree)
     const inHome = eventsAt(w.main, runId).length
@@ -5976,8 +5979,8 @@ test('a run subcommand in a worktree with no manifest names the main checkout\'s
 test('a read-only runs directory in the main checkout halts the worktree run\'s record path', { skip: IS_ROOT && 'chmod does not bind root' }, () => {
   const w = linkedWorktree()
   try {
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const batch = step0(w.worktree, started.then.argv, { env: w.env })
     const { runId } = manifestOf(w.worktree)
     const dir = join(w.main, '.claude', 'ship', 'runs')
@@ -6009,8 +6012,8 @@ test('a learning directory the main checkout cannot create only reports, and the
   try {
     // A file where the directory must go: the mkdir fails whatever the uid.
     writeFileSync(join(w.main, '.claude', 'learning'), 'not a directory\n')
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     let step = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     step = step0(w.worktree, step.then.argv, { env: w.env })
     step = step0(w.worktree, step.then.argv, {
       results: step.spawns.map((_, i) => laneOk(step.lanes[i].map(t => t.id))),

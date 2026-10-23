@@ -1101,9 +1101,10 @@ test('preflight: a one-warning doctor in an OpenSpec project leaves this session
     assert.equal(report.doctor.parsed, true)
     assert.equal(report.doctor.ok, true)
     assert.deepEqual(report.doctor.counts, { ok: 1, warn: 1, fail: 0, skip: 0 })
-    const { evidence, ...warn } = WARN_CHECK
-    assert.deepEqual(report.doctor.checks[1], warn, 'the check travels with its fix and without its evidence')
-    assert.ok(!JSON.stringify(report).includes('evidence'))
+    // The evidence travels with the check (spec: hooks/session-preflight): the
+    // cli-version row records the resolved binary and both versions there.
+    assert.deepEqual(report.doctor.checks[1], WARN_CHECK, 'the check travels with its fix and its evidence')
+    assert.deepEqual(report.doctor.checks[0].evidence, ['v22'])
     assert.deepEqual(report.notes, { spoken: [], unreadable: [] })
   } finally {
     rmSync(root, { recursive: true, force: true })

@@ -1,0 +1,39 @@
+{
+  "steps": [],
+  "skipped": [
+    {
+      "kind": "typecheck",
+      "reason": "no-detectable-command",
+      "detail": "no typecheck command in the profile or from the caller"
+    },
+    {
+      "kind": "unit",
+      "reason": "no-test-profile"
+    },
+    {
+      "kind": "lint",
+      "reason": "no-detectable-command",
+      "detail": "no lint command in the profile or from the caller"
+    },
+    {
+      "kind": "coverage",
+      "reason": "no-test-profile"
+    },
+    {
+      "kind": "e2e",
+      "reason": "no-test-profile"
+    }
+  ],
+  "hasProfile": false,
+  "budgetMs": 60000,
+  "elapsedMs": 0,
+  "budgetExceeded": false,
+  "banners": [
+    "NO TEST PROFILE: run /interlock:fix-tests --reconfigure once",
+    "VERIFICATION SKIPPED: reason=no-detectable-command",
+    "VERIFICATION SKIPPED: reason=no-test-profile",
+    "VERIFICATION SKIPPED: reason=no-detectable-command",
+    "VERIFICATION SKIPPED: reason=no-test-profile",
+    "VERIFICATION SKIPPED: reason=no-test-profile"
+  ]
+}
