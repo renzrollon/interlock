@@ -23,7 +23,7 @@
 // indistinguishable from a record written by a real one.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +31,14 @@ import { applyStartingState, readFixture, readFixtures, listFixtureIds } from '.
 import { AGENT_IDENTITY } from './agent/main.mjs'
 import { DEFAULT_MODEL, MODEL_ENV } from './agent/model.mjs'
 import { SHARED_CRITERIA, gradeArm, interlock, runUnitCommand, tallyCriteria } from './graders.mjs'
-import { HOST_ID, priceUsage, readAgentUsage, runControlArm, runLoopArm } from './arms.mjs'
+import {
+  HOST_ID,
+  agentsSpawnedIn,
+  priceUsage,
+  readAgentUsage,
+  runControlArm,
+  runLoopArm
+} from './arms.mjs'
 import { appendShipOutcome } from '../../lib/eval-history.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -613,6 +620,9 @@ const USAGE = `interlock outcome eval — ship a committed fixture and grade wha
 
 Usage:
   node evals/ship/run.mjs [flags]
+  node evals/ship/run.mjs --grade-root <dir> --change <name> --baseline-commit <sha> \\
+      --fixture-id <id> [--run-id <id>] [--baseline-counts <file>] [--history-root <d>] \\
+      [--no-history] [--json]
 
 Flags:
   --fixture <id>     only this fixture (repeatable); default: every fixture
@@ -624,6 +634,16 @@ Flags:
   --history-root <d> where the record is appended (default: this repository)
   --timeout-ms <n>   per-agent transport budget
   --prepare-only     prepare and discard each scratch root; no model call, no spend
+  --grade-root <d>   grade an existing run in place with the loop arm's graders and append
+                     one interactive-session row; no agent, no credential, no spend
+  --change <name>    --grade-root: the change the run shipped
+  --baseline-commit <sha>
+                     --grade-root: the commit the run started from
+  --fixture-id <id>  --grade-root: the identity the row is keyed on (e.g. kettle@demo-ship)
+  --run-id <id>      --grade-root: the run to grade (default: the newest run of the change)
+  --baseline-counts <file>
+                     --grade-root: JSON of the suite's counts before the run; without it the
+                     not-weakened criterion is recorded unobserved, never met
   --help
 
 METERED. Every arm but --prepare-only makes real model calls, bounded by the
@@ -634,7 +654,9 @@ graded and would be recorded as a failure it did not earn.
 
 Exit codes:
   0  the sweep ran and every result it produced was recorded
-  1  a result could not be recorded, or a fixture was named that does not exist
+  1  a result could not be recorded, a fixture was named that does not exist, or
+     --grade-root refused (a run that recorded no version is never appended)
+  2  --grade-root was invoked without a flag it requires
 `
 
 function parseArgv(argv) {
@@ -650,6 +672,12 @@ function parseArgv(argv) {
     else if (arg === '--json') flags.json = true
     else if (arg === '--no-history') flags.noHistory = true
     else if (arg === '--prepare-only') flags.prepareOnly = true
+    else if (arg === '--grade-root') flags.gradeRoot = argv[++i]
+    else if (arg === '--change') flags.change = argv[++i]
+    else if (arg === '--baseline-commit') flags.baselineCommit = argv[++i]
+    else if (arg === '--fixture-id') flags.fixtureId = argv[++i]
+    else if (arg === '--run-id') flags.runId = argv[++i]
+    else if (arg === '--baseline-counts') flags.baselineCounts = argv[++i]
     else if (arg === '--help' || arg === '-h') flags.help = true
     else throw new Error(`unknown flag: ${arg}`)
   }
@@ -757,12 +785,237 @@ function formatSweep(sweep) {
   return lines.join('\n') + '\n'
 }
 
+// --- grading an interactive run in place (design D30) ------------------------
+
+/** The host a run recorded, from its receipt first and its start event second. */
+function recordedHost(receipt, start) {
+  for (const source of [receipt, start]) {
+    const host = source && source.host
+    if (host && typeof host === 'object' && typeof host.id === 'string' && host.id) return host.id
+    if (typeof host === 'string' && host) return host
+  }
+  return null
+}
+
+/**
+ * The model a run recorded: the receipt's when it names one, else the single
+ * model every recorded agent spawn named. Several models, or none, is `unknown`
+ * rather than a pick — a row naming one of them would be a claim nothing observed.
+ */
+function recordedModel(receipt, spawns) {
+  if (receipt && typeof receipt.model === 'string' && receipt.model) return receipt.model
+  const models = new Set(
+    spawns.map(s => (typeof s.model === 'string' && s.model ? s.model : null)).filter(Boolean)
+  )
+  return models.size === 1 ? [...models][0] : 'unknown'
+}
+
+/** The version a run recorded: the plugin's, falling back to the CLI's. */
+function recordedVersion(...sources) {
+  for (const key of ['pluginVersion', 'cliVersion']) {
+    for (const source of sources) {
+      if (source && typeof source[key] === 'string' && source[key]) return source[key]
+    }
+  }
+  return null
+}
+
+/**
+ * Grade a run that already happened — an interactive /interlock:ship session —
+ * with the loop arm's graders, and append one row saying what produced it.
+ *
+ * Spawns no agent and reads no credential. A run that recorded no version is
+ * refused before anything is graded or written: a row keyed on a guessed version
+ * would pair with rows that mean something else.
+ */
+function gradeRootCommand(flags) {
+  const emit = (report, prose) => {
+    process.stdout.write(flags.json ? `${JSON.stringify(report, null, 2)}\n` : prose)
+  }
+  const refuse = (reason, code = 1) => {
+    emit(
+      { schema: 'interlock.ship-eval-grade-root/1', graded: false, appended: false, reason },
+      `interlock outcome eval: ${reason}\n`
+    )
+    process.stderr.write(`interlock outcome eval --grade-root: ${reason}\n`)
+    return code
+  }
+
+  const missing = [
+    ['--change', flags.change],
+    ['--baseline-commit', flags.baselineCommit],
+    ['--fixture-id', flags.fixtureId]
+  ]
+    .filter(([, value]) => typeof value !== 'string' || !value.trim())
+    .map(([name]) => name)
+  if (typeof flags.gradeRoot !== 'string' || !flags.gradeRoot.trim()) missing.unshift('--grade-root <dir>')
+  if (missing.length) return refuse(`--grade-root also requires ${missing.join(', ')}`, 2)
+
+  const root = resolve(flags.gradeRoot)
+  let isDir = false
+  try {
+    isDir = statSync(root).isDirectory()
+  } catch {
+    isDir = false
+  }
+  if (!isDir) return refuse(`${root} is not a directory, so there is no run to grade`)
+
+  let baselineCounts = null
+  if (flags.baselineCounts !== undefined) {
+    try {
+      baselineCounts = JSON.parse(readFileSync(flags.baselineCounts, 'utf8'))
+    } catch (err) {
+      return refuse(`--baseline-counts ${flags.baselineCounts} could not be read as JSON: ${(err && err.message) || err}`)
+    }
+    if (!baselineCounts || typeof baselineCounts !== 'object') {
+      return refuse(`--baseline-counts ${flags.baselineCounts} is not a JSON object`)
+    }
+  }
+
+  let runId = flags.runId
+  if (!runId) {
+    const listed = interlock(['run-log', 'list', '--change', flags.change, '--root', root, '--json'])
+    const runs = listed.json && Array.isArray(listed.json.runs) ? listed.json.runs : []
+    const newest = runs.length ? runs[runs.length - 1] : null
+    if (!newest || !newest.runId) {
+      return refuse(`no run of ${flags.change} is recorded under ${root} (.claude/ship/runs)`)
+    }
+    runId = newest.runId
+  }
+
+  const query = type => {
+    const q = interlock(['run-log', 'query', '--run', runId, '--type', type, '--root', root, '--json'])
+    return q.json && Array.isArray(q.json.records) ? q.json.records : []
+  }
+  const starts = query('run-start')
+  const receipts = query('run-receipt')
+  const start = starts.length ? starts[0] : null
+  const recorded = receipts.length ? receipts[receipts.length - 1] : null
+  if (!start && !recorded) {
+    return refuse(`run ${runId} has no trajectory under ${root}, so there is nothing to grade`)
+  }
+
+  const version = recordedVersion(recorded, start)
+  if (!version) {
+    return refuse(
+      `run ${runId} carries no version: neither its receipt nor its start event records a plugin or ` +
+        `CLI version, so there is nothing to key the row on — nothing was graded or appended`
+    )
+  }
+
+  const work = mkdtempSync(join(tmpdir(), 'interlock-grade-root-'))
+  try {
+    // The fixture is the root's own: its testing profile names the unit command,
+    // and a root without one grades the unit criteria unobserved, never guessed.
+    const fixture = { id: flags.fixtureId, change: flags.change, startDir: root }
+    const graded = gradeArm({
+      root,
+      fixture,
+      arm: 'loop',
+      runId,
+      baselineCommit: flags.baselineCommit,
+      baselineCounts,
+      expectCommit: true,
+      workDir: work
+    })
+    const tally = tallyCriteria(graded.criteria)
+
+    const measures = measuresFor({
+      armResult: { agentsSpawned: agentsSpawnedIn(root, runId), wallClockMs: null },
+      receipt: graded.receipt,
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        reason: 'an interactive session ran no eval agent, so no agent usage was read'
+      },
+      priced: { usd: null, reason: 'an interactive session is not metered by this eval' }
+    })
+    measures.wallClockMs = {
+      value: null,
+      reason: 'an interactive session has no single measured wall clock'
+    }
+
+    const row = {
+      version,
+      host: recordedHost(graded.receipt, start) || 'unknown',
+      model: recordedModel(graded.receipt, query('agent-spawn')),
+      evalAgent: 'interactive-session',
+      node: process.version
+    }
+
+    const report = {
+      schema: 'interlock.ship-eval-grade-root/1',
+      graded: true,
+      root,
+      change: flags.change,
+      runId,
+      fixture: flags.fixtureId,
+      arm: 'loop',
+      ...row,
+      criteria: graded.criteria,
+      tally,
+      measures,
+      appended: false,
+      historyPath: null,
+      reason: null
+    }
+
+    let failed = false
+    if (!flags.noHistory) {
+      const written = appendShipOutcome(flags.historyRoot || REPO_ROOT, {
+        ...row,
+        fixture: flags.fixtureId,
+        arm: 'loop',
+        criteria: graded.criteria,
+        tally,
+        measures
+      })
+      report.appended = written.written
+      report.historyPath = written.path
+      if (!written.written) {
+        failed = true
+        report.reason = written.reason
+      }
+    }
+
+    const lines = [
+      `INTERLOCK OUTCOME EVAL — ${row.version} on the ${row.host} host, model ${row.model}, ` +
+        `agent ${row.evalAgent}`,
+      `  ${flags.fixtureId} / loop: run ${runId} graded in place at ${root}`,
+      `  ${tally.met} of ${tally.applicable} applicable criteria met` +
+        (tally.notApplicable ? `, ${tally.notApplicable} not applicable` : '') +
+        (tally.unobserved ? `, ${tally.unobserved} unobserved` : '')
+    ]
+    for (const c of graded.criteria) {
+      lines.push(
+        `      ${String(c.status).padEnd(10)} ${c.id}` +
+          (c.exitCode === null ? '' : `  (exit ${c.exitCode})`) +
+          (c.detail ? `\n                 ${c.detail}` : '')
+      )
+    }
+    lines.push(
+      report.appended
+        ? `  1 row appended to ${report.historyPath}.`
+        : flags.noHistory
+          ? '  nothing appended (--no-history).'
+          : `  NOT APPENDED: ${report.reason}`
+    )
+    emit(report, lines.join('\n') + '\n')
+    if (failed) process.stderr.write(`interlock outcome eval --grade-root: the row could not be appended: ${report.reason}\n`)
+    return failed ? 1 : 0
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
+
 async function main(argv) {
   const flags = parseArgv(argv)
   if (flags.help) {
     process.stdout.write(USAGE)
     return 0
   }
+
+  if (flags.gradeRoot !== undefined) return gradeRootCommand(flags)
 
   const known = new Set(listFixtureIds())
   for (const id of flags.fixture) {

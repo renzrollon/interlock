@@ -529,7 +529,7 @@ test('the eval README states that ordinary CI runs the model-free prepare path',
   }
 })
 
-// --- the scheduled job (spec: scheduled, bounded, never on a pull request) --
+// --- the manual job (spec: manually invoked, bounded, never on a pull request) --
 
 const gitCheck = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: ROOT, encoding: 'utf8' })
 const NOT_A_CHECKOUT =
@@ -537,10 +537,9 @@ const NOT_A_CHECKOUT =
     ? 'not a git checkout (or git unavailable) — tracking status cannot be determined'
     : false
 
-test('the scheduled outcome-eval workflow stays tracked', { skip: NOT_A_CHECKOUT }, () => {
-  // `.gitignore` ignores `.github/workflows/`, so this file exists on disk only
-  // because it was force-added. An untracked workflow never runs on the remote
-  // and nothing else would say so.
+test('the outcome-eval workflow stays tracked', { skip: NOT_A_CHECKOUT }, () => {
+  // An untracked workflow never runs on the remote and nothing else would say
+  // so. (Only copilot-setup-steps.yml in this directory is gitignored.)
   const rel = '.github/workflows/ship-outcome-eval.yml'
   assert.ok(existsSync(join(ROOT, rel)), `${rel} is missing`)
   const listed = spawnSync('git', ['ls-files', '--', rel], { cwd: ROOT, encoding: 'utf8' })
@@ -548,8 +547,8 @@ test('the scheduled outcome-eval workflow stays tracked', { skip: NOT_A_CHECKOUT
   assert.equal(
     listed.stdout.trim(),
     rel,
-    `${rel} is not tracked. .github/workflows/ is gitignored, so it must be force-added ` +
-      `(\`git add -f ${rel}\`) — otherwise the scheduled eval silently never runs.`
+    `${rel} is not tracked, so the outcome eval never runs on the remote. ` +
+      `Add it (\`git add ${rel}\`).`
   )
 })
 
@@ -557,7 +556,14 @@ test('the outcome eval can never be triggered by a pull request or a push', () =
   const text = readFileSync(WORKFLOW, 'utf8')
   const triggers = text.slice(text.indexOf('\non:'), text.indexOf('\nconcurrency:'))
 
-  assert.match(triggers, /^\s+schedule:/m, 'the job must be scheduled')
+  // No schedule while the repository provisions no model credential: a cron
+  // with no key reaches the skip step and reports green with nothing run. Adding
+  // a schedule is the edit that records the credential's arrival.
+  assert.doesNotMatch(
+    triggers.replace(/#.*$/gm, ''),
+    /^\s+schedule:/m,
+    'the outcome eval carries no schedule until a credential is provisioned'
+  )
   assert.match(triggers, /^\s+workflow_dispatch:/m, 'the job must be manually invocable')
   // The absence IS the requirement — not a path filter that happens to match
   // nothing. The run consumes metered model calls and its result may not
@@ -590,8 +596,8 @@ test('the scheduled job restates no ceiling and configures itself as no required
 // test can move or skip without the spec noticing and a deleted job cannot.
 
 test('ordinary CI stays tracked', { skip: NOT_A_CHECKOUT }, () => {
-  // Same gitignore trap as the scheduled workflow: `.github/workflows/` is
-  // ignored, so this file exists only because it was force-added.
+  // Same tracking trap as the outcome-eval workflow: an untracked file never
+  // runs on the remote.
   const rel = '.github/workflows/ci.yml'
   assert.ok(existsSync(CI_WORKFLOW), `${rel} is missing`)
   const listed = spawnSync('git', ['ls-files', '--', rel], { cwd: ROOT, encoding: 'utf8' })
@@ -599,8 +605,8 @@ test('ordinary CI stays tracked', { skip: NOT_A_CHECKOUT }, () => {
   assert.equal(
     listed.stdout.trim(),
     rel,
-    `${rel} is not tracked. .github/workflows/ is gitignored, so it must be force-added ` +
-      `(\`git add -f ${rel}\`) — otherwise ordinary CI silently never runs on the remote.`
+    `${rel} is not tracked, so ordinary CI silently never runs on the remote. ` +
+      `Add it (\`git add ${rel}\`).`
   )
 })
 
@@ -639,7 +645,7 @@ test('the CI prepare job carries no credential and can never be skipped into a p
     'a non-zero exit from the prepare path must fail the workflow'
   )
   // And it is not the metered sweep wearing a different hat: that one is
-  // schedule + workflow_dispatch, in its own file.
+  // workflow_dispatch only, in its own file.
   assert.doesNotMatch(job, /workflow_dispatch/)
 })
 

@@ -119,13 +119,13 @@ function run() {
   const surface = typeof doctor.surface === 'string' && doctor.surface ? doctor.surface : null
 
   const checks = Array.isArray(doctor.checks) ? doctor.checks : []
-  // The checks as the file carries them: the fix travels, the evidence does not (design D1).
+  // The checks as the file carries them: the fix and the evidence travel (design D1, D5).
   const verdict = {
     ran: true,
     parsed: true,
     ok: typeof doctor.ok === 'boolean' ? doctor.ok : null,
     counts: doctor.counts && typeof doctor.counts === 'object' ? doctor.counts : null,
-    checks: checks.filter(c => c && typeof c === 'object').map(c => ({ id: c.id, status: c.status, detail: c.detail, fix: c.fix ?? null }))
+    checks: checks.filter(c => c && typeof c === 'object').map(c => ({ id: c.id, status: c.status, detail: c.detail, fix: c.fix ?? null, evidence: c.evidence }))
   }
   const failures = checks.filter(c => c && c.status === 'fail')
   if (!failures.length) {

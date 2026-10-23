@@ -24,6 +24,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -222,14 +223,31 @@ function gitInit(dir) {
   return r.status === 0
 }
 
+/** The version a plugin directory's manifest declares, or null. */
+function pluginVersionOf(pluginRoot) {
+  try {
+    return JSON.parse(readFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8')).version || null
+  } catch {
+    return null
+  }
+}
+
 function baseOpts(dir, extra = {}) {
   const binDir = join(dir, 'stub-bin')
   mkdirSync(binDir, { recursive: true })
-  for (const name of ['interlock', 'interlock-graph', 'openspec']) stubBin(binDir, name)
+  // Only fabricate the default plugin when the caller did not bring its own;
+  // building it unconditionally would overwrite a deliberately broken one.
+  const pluginRoot = 'pluginRoot' in extra ? extra.pluginRoot : fakePlugin(dir)
+  for (const name of ['interlock-graph', 'openspec']) stubBin(binDir, name)
+  // The `interlock` the doctor finds first on this PATH answers `--version` with
+  // the plugin's own version, so the `cli-version` row reads this PATH as in
+  // step with the plugin. Without it the row would read whatever `interlock`
+  // the developer running the suite has installed, and an overall `ok` would
+  // depend on that machine (design D5, Risks).
+  const stub = file(binDir, 'interlock', `#!/bin/sh\necho ${pluginVersionOf(pluginRoot) || '0.0.0'}\n`)
+  chmodSync(stub, 0o755)
   return {
-    // Only fabricate the default plugin when the caller did not bring its own;
-    // building it unconditionally would overwrite a deliberately broken one.
-    ...('pluginRoot' in extra ? {} : { pluginRoot: fakePlugin(dir) }),
+    pluginRoot,
     // The real PATH stays on the end so `git` still resolves; every other
     // binary is answered by the stub directory in front of it.
     env: { PATH: `${binDir}:${process.env.PATH || ''}` },
@@ -1837,4 +1855,262 @@ test('with no profile in the root or the home the test-profile row still fails',
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
+
+// ---------------------------------------------------------------------------
+// The cli-version row: which interlock the session's PATH serves
+// ---------------------------------------------------------------------------
+//
+// spec: hooks/session-preflight — "The preflight SHALL name a CLI whose version
+// differs from the plugin's"; design D5. Every case builds its own PATH, because
+// the row reads the machine's `interlock` and a test that left that to the
+// developer's PATH would report on the developer.
+
+const PLUGIN_VERSION = '1.8.0'
+
+/** A plugin directory whose plugin.json holds `version`. */
+function versionedPlugin(dir, version = PLUGIN_VERSION) {
+  return fakePlugin(dir, { version })
+}
+
+/**
+ * An npm global install laid out as npm lays it out: the package under
+ * `lib/node_modules`, and a symlink in `bin/` that the PATH points at. The
+ * binary answers nothing on `--version`, so only reading the adjacent
+ * package.json can produce a version.
+ */
+function npmCopy(dir, version, name = 'npm') {
+  const prefix = join(dir, name)
+  const pkg = join(prefix, 'lib', 'node_modules', '@renzrollon', 'interlock')
+  file(pkg, 'package.json', { name: '@renzrollon/interlock', version })
+  const real = file(pkg, 'bin/interlock', '#!/bin/sh\nexit 0\n')
+  chmodSync(real, 0o755)
+  mkdirSync(join(prefix, 'bin'), { recursive: true })
+  symlinkSync(real, join(prefix, 'bin', 'interlock'))
+  return { binDir: join(prefix, 'bin'), real: realpathSync(real) }
+}
+
+/** Diagnose with PATH holding exactly `binDirs`, then the system's own `git`. */
+function cliVersionRow(dir, pluginRoot, binDirs) {
+  const opts = baseOpts(dir, { pluginRoot })
+  const gitDir = dirname(whichSync('git', process.env) || '/usr/bin/git')
+  const report = diagnose(dir, { ...opts, env: { PATH: [...binDirs, gitDir].join(':') } })
+  return { report, row: byId(report, 'cli-version') }
+}
+
+test('an npm copy one release behind the plugin fails with the skew line and the install command', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const copy = npmCopy(dir, '1.7.0')
+    const { report, row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'fail', formatDoctor(report))
+    assert.match(row.detail, /^CLI VERSION SKEW: interlock on PATH is 1\.7\.0 \(.+\), plugin is 1\.8\.0$/)
+    assert.match(row.fix, /npm i -g @renzrollon\/interlock@1\.8\.0/)
+    const evidence = row.evidence.join('\n')
+    assert.ok(evidence.includes(copy.real), `evidence names the resolved path ${copy.real}: ${evidence}`)
+    assert.match(evidence, /1\.7\.0/)
+    assert.match(evidence, /1\.8\.0/)
+    assert.ok(report.failures.includes('cli-version'))
+    assert.equal(report.ok, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a shim that answers --version with "Unknown command" predates version reporting and fails', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    // What 1.7.0 and earlier really do: the unknown-command line and the usage
+    // on stderr, exit 1. No package.json sits beside it, so asking is the only way.
+    const shimDir = join(dir, 'shim-bin')
+    const shim = file(shimDir, 'interlock', '#!/bin/sh\necho "Unknown command: undefined" >&2\nexit 1\n')
+    chmodSync(shim, 0o755)
+    const { report, row } = cliVersionRow(dir, pluginRoot, [shimDir])
+    assert.equal(row.status, 'fail', formatDoctor(report))
+    assert.match(row.detail, /CLI VERSION SKEW/)
+    assert.match(row.detail, /predates version reporting/)
+    assert.ok(row.fix && row.fix.length > 0, 'a failing row says what to do')
+    assert.ok(report.failures.includes('cli-version'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a binary that answers --version with something that is not a version is read as too old, not as ok', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const shimDir = join(dir, 'odd-bin')
+    const shim = file(shimDir, 'interlock', '#!/bin/sh\necho "hello"\n')
+    chmodSync(shim, 0o755)
+    const { row } = cliVersionRow(dir, pluginRoot, [shimDir])
+    assert.equal(row.status, 'fail')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a newer copy than the plugin is an advisory warn, not a failure', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const copy = npmCopy(dir, '1.9.0')
+    const { report, row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'warn', formatDoctor(report))
+    assert.match(row.detail, /1\.9\.0/)
+    assert.match(row.detail, /1\.8\.0/)
+    assert.ok(!report.failures.includes('cli-version'))
+    assert.ok(report.warnings.includes('cli-version'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('versions are compared numerically: 1.10.0 is newer than 1.9.0', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir, '1.9.0')
+    const copy = npmCopy(dir, '1.10.0')
+    const { row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'warn', 'a string compare would call 1.10.0 older and fail it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an npm copy at the plugin\'s version is ok', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const copy = npmCopy(dir, PLUGIN_VERSION)
+    const { row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'ok')
+    assert.ok(row.evidence.join('\n').includes(copy.real), 'the resolved path is evidence even when equal')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the plugin\'s own bin/ on PATH is ok, whatever it answers', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const own = join(pluginRoot, 'bin')
+    // fakePlugin lays bin/interlock down as plain text; give it the mode bit so
+    // a PATH scan finds it. It prints nothing, so only recognising it as the
+    // plugin's own can make this row ok.
+    chmodSync(join(own, 'interlock'), 0o755)
+    const { report, row } = cliVersionRow(dir, pluginRoot, [own])
+    assert.equal(row.status, 'ok', formatDoctor(report))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('no interlock on PATH skips the row and leaves the verdict to the binaries row', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const { report, row } = cliVersionRow(dir, pluginRoot, [])
+    assert.equal(row.status, 'skip', formatDoctor(report))
+    assert.match(row.detail, /interlock is not on PATH; the bundled binary runs/)
+    assert.ok(!report.failures.includes('cli-version'))
+    assert.ok(!report.warnings.includes('cli-version'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a skew failure is reported as a failure by formatDoctor, with its fix', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const copy = npmCopy(dir, '1.7.0')
+    const { report } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    const text = formatDoctor(report)
+    assert.match(text, /CLI VERSION SKEW/)
+    assert.match(text, /npm i -g @renzrollon\/interlock@1\.8\.0/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The test-profile row applies the validation a run applies
+// ---------------------------------------------------------------------------
+//
+// spec: hooks/session-preflight — "The doctor's test-profile row SHALL apply the
+// same validation a run applies"; design D14. The cases are the ones
+// verify.test.mjs refuses at plan time, so a profile the doctor passes can never
+// be one the run's verification then rejects.
+
+const INVALID_PROFILES = [
+  ['not an object', /must be a JSON object/],
+  [{ unit: 'npm test' }, /"unit" must be an object/],
+  [{ unit: { command: 42 } }, /"unit.command" must be a string/],
+  [{ unit: { command: 'npm test' }, e2e: { enabled: 'yes' } }, /"e2e.enabled" must be a boolean/],
+  [{ version: '1', unit: { command: 'npm test' } }, /"version" must be an integer/],
+  [{ unit: { command: 'npm test', timeout_ms: '5s' } }, /"unit.timeout_ms" must be an integer/],
+  [{ unit: { command: 'npm test' }, notes: 'none' }, /"notes" must be an array/],
+  [{ unit: { command: 'npm test' }, lint: { command: 42 } }, /"lint.command" must be a string/],
+  [{ unit: { command: 'npm test' }, typecheck: { command: 42 } }, /"typecheck.command" must be a string/]
+]
+
+test('the test-profile row fails a unit timeout written as a string, naming the field', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', { version: 1, unit: { command: 'npm test', timeout_ms: '120000' } })
+    const row = byId(diagnose(dir, baseOpts(dir)), 'test-profile')
+    assert.equal(row.status, 'fail')
+    assert.match(row.detail, /unit\.timeout_ms/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the test-profile row fails every profile the verification refuses', () => {
+  const dir = tmp()
+  try {
+    for (const [bad, pattern] of INVALID_PROFILES) {
+      file(dir, '.claude/testing/profile.json', JSON.stringify(bad))
+      const row = byId(diagnose(dir, baseOpts(dir)), 'test-profile')
+      assert.equal(row.status, 'fail', `${JSON.stringify(bad)} must fail the row`)
+      // A profile with no unit.command is already failed for that reason first;
+      // every other one must be failed for its own.
+      const hasCommand = bad && typeof bad === 'object' && bad.unit && typeof bad.unit.command === 'string'
+      if (hasCommand) assert.match(row.detail, pattern, `${JSON.stringify(bad)}: ${row.detail}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('profileProblem returns the message verification throws, and null for a sound profile', async () => {
+  const { profileProblem, planVerification } = await import('../../lib/verify.mjs')
+  assert.equal(typeof profileProblem, 'function', 'lib/verify.mjs must export profileProblem')
+  assert.equal(profileProblem(PROFILE), null)
+  assert.equal(profileProblem(null), null, 'no profile is not malformed')
+  assert.equal(profileProblem(undefined), null)
+  for (const [bad, pattern] of INVALID_PROFILES) {
+    const problem = profileProblem(bad)
+    assert.equal(typeof problem, 'string', `${JSON.stringify(bad)} must yield a message`)
+    assert.match(problem, pattern)
+    // One validator: the thrown message and the returned one are the same text.
+    assert.throws(() => planVerification(bad), err => err.message.includes(problem))
+  }
+})
+
+test('a profile the doctor passes is one verification accepts', async () => {
+  const { planVerification } = await import('../../lib/verify.mjs')
+  const dir = tmp()
+  try {
+    const good = { version: 1, unit: { command: 'npm test', timeout_ms: 120000 }, e2e: { enabled: false, command: null } }
+    file(dir, '.claude/testing/profile.json', good)
+    assert.equal(byId(diagnose(dir, baseOpts(dir)), 'test-profile').status, 'ok')
+    assert.doesNotThrow(() => planVerification(good))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

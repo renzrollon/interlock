@@ -25,6 +25,17 @@ npx -p @renzrollon/interlock interlock limits
 | **Works from the package alone** | `interlock` (the policy engine), `interlock-graph` (build and query the codebase graph), `interlock-run` (drive the loop over the Claude Code CLI, an ACP agent, Codex or Qwen) |
 | **Needs the Claude Code plugin** | `/interlock:spec`, `/interlock:ship`, `/interlock:bootstrap` and every other slash command; the `SessionStart` preflight and the `PreToolUse` guards. The package ships the skill and hook files so a package checkout is still a complete plugin, but nothing runs them without the plugin host |
 
+Keep the npm copy at the plugin's version. The plugin's skills call `interlock` by name, and the copy your shell finds first answers them; `interlock doctor` fails its `cli-version` row when that copy is older than the plugin and names the install command that fixes it ([16](./16-upgrading.md)).
+
+**Four behaviours hold across the commands.**
+
+- **`--version`.** `interlock --version`, `interlock-graph --version` and `interlock-run --version` print the bare version. `interlock version --json` prints `{ "version", "path" }`, the path being the file that answered.
+- **An unknown flag is refused, exit 2.** `interlock <sub> --bogus` prints `interlock: unknown flag --bogus for interlock <sub> (CLI <version>)` and the subcommand's usage lines on stderr and exits 2. With `--json` stdout also carries `{ "error", "unknownFlag", "subcommand", "cliVersion" }`. Exit 1 stays the blocked verdict of `gate`, `ready`, `ledger`, `validate` and `run-log check`. The accepted flags per subcommand are code (`lib/cli-flags.mjs`), and `USAGE` documents the same set. `interlock-graph` keeps its permissive parser.
+- **Help after a subcommand.** `-h` or `--help` anywhere prints that subcommand's usage lines and exits 0 without running anything. `interlock-run -h` is help too.
+- **A change as a positional.** `interlock tasks tick <change> --ids <ids>` and `interlock tasks coverage <change>` read the change from the positional that follows the subcommand, as `run start` does; `--change` wins when both are given.
+
+`interlock run start` also takes `--plugin-root <dir>`: the plugin directory, from which the run reads `.claude-plugin/plugin.json`. `/interlock:ship` forwards it, `run start` raises `CLI VERSION SKEW` when the plugin's version and the CLI's differ, and both are recorded on the manifest and the trajectory.
+
 The plugin manifest, `.claude-plugin/plugin.json`, carries the settings hooks inline and names the rest by path: `workflows` names the ship workflow's folder, `hooks/hooks.json` names the hooks module, and `types` names `types/index.d.ts`, the plugin's type contract. The contract declares the one value the hooks module keeps in the session's state, the launch guard's record (`interlock.ledger`), and `claude plugin validate` refuses a state key the module names that the contract does not declare. Every path the manifest names ships in the npm package; `test/spine/package.test.mjs` fails naming any that the `files` list would leave out. Claude Code 2.1.161 does not know the `types` key: it warns `Unknown field 'types'` and ignores it at load time, the settings hooks still run, and only `claude plugin validate --strict` turns that warning into a failure.
 
 ---

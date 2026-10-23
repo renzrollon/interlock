@@ -252,6 +252,24 @@ test('the ship trampoline carries the plan-shape flags and forwards them verbati
   )
 })
 
+test('the ship trampoline forwards the plugin root in the Workflow args', () => {
+  // The CLI compares its own version with the plugin's, and can only do that if
+  // the run is told where the plugin is. `scriptPath` already holds the root
+  // token, so the pin reads the `args` object alone: a trampoline that dropped
+  // `pluginRoot` would still pass a match on the whole block.
+  // Tokens, not sentences — the first reword must not delete the pin.
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  const call = /Workflow\(\{[\s\S]*?\n\}\)/.exec(text)
+  assert.ok(call, 'the ship skill must show its Workflow invocation')
+  const args = /args:\s*\{[^\n]*\}/.exec(call[0])
+  assert.ok(args, 'the Workflow invocation must carry an args object')
+  assert.ok(args[0].includes('pluginRoot'), 'the args must carry pluginRoot')
+  assert.ok(
+    args[0].includes('${CLAUDE_PLUGIN_ROOT}'),
+    'pluginRoot must be given the ${CLAUDE_PLUGIN_ROOT} token, not a path the model composes'
+  )
+})
+
 test('the spec skill tells authors not to split a section to buy parallelism', () => {
   // The mirror of the packing rule. An author who splits a section into
   // one-checkbox sections to "get more agents" serializes the change instead:

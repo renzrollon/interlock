@@ -6,10 +6,12 @@ import { join } from 'node:path'
 import {
   appendRunLogEvent,
   checkRunLog,
+  formatRunLogCheck,
   deriveWaveElapsed,
   formatRunLog,
   formatRunLogList,
   listRunLogs,
+  queryRunLog,
   readRunLog,
   runLogPath,
   runLogDir,
@@ -1746,4 +1748,188 @@ test('a trajectory written before the block existed still reads, checks and list
   const read = readRunLog(tmp, 'run-pre')
   assert.equal(read.records[6].mergeConfidence, undefined, 'an old receipt is not rewritten to say null')
   assert.deepEqual(checkRunLog(tmp, 'run-pre'), { ok: true, runId: 'run-pre', problems: [], events: 8 })
+})
+
+// --- a line whose schema this CLI does not read -------------------------------
+//
+// A trajectory written by a newer release can carry events this CLI would
+// misread as current ones: the same `type` with a different field meaning.
+// spec: ship-run — "A trajectory line with a schema this CLI does not read SHALL
+// be named, never folded in"; design D12.
+
+const FOREIGN_TAG = 'interlock.ship-run/2'
+
+/** A well-formed line of a schema this CLI does not write. */
+function foreignLine(over = {}) {
+  return (
+    JSON.stringify({
+      schema: FOREIGN_TAG,
+      ts: '2026-10-22T10:00:00.000Z',
+      runId: RUN_ID,
+      change: 'add-widget',
+      seq: 99,
+      type: 'run-start',
+      mode: 'checkpoint',
+      ...over
+    }) + '\n'
+  )
+}
+
+/** How many a reader says it skipped as foreign: a count, or the list it counted. */
+const foreignCount = read =>
+  Array.isArray(read.foreignLines) ? read.foreignLines.length : read.foreignLines
+
+test('readRunLog skips a foreign-schema line and counts it', () => {
+  seed('run-start', 'run-complete')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine())
+  const read = readRunLog(tmp, RUN_ID)
+  assert.deepEqual(read.records.map(r => r.seq), [1, 2], 'the foreign line is not a record')
+  assert.ok(read.records.every(r => r.schema === RUN_LOG_SCHEMA))
+  assert.equal(foreignCount(read), 1)
+})
+
+test('a trajectory with no foreign line reports none', () => {
+  seed('run-start', 'run-complete')
+  const read = readRunLog(tmp, RUN_ID)
+  assert.ok(!foreignCount(read), `expected no foreign lines, got ${JSON.stringify(read.foreignLines)}`)
+})
+
+test('the next seq ignores the claimed seq of a foreign line', () => {
+  seed('run-start')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine({ seq: 99 }))
+  const r = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-complete', leftoverTaskIds: [] })
+  assert.equal(r.written, true)
+  assert.equal(r.seq, 2, 'seq 99 belongs to another schema and must not move this one')
+})
+
+test('listRunLogs counts the foreign line in no tally', () => {
+  seed('run-start', 'run-complete')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine({ type: 'run-halt', reason: 'newer release halted' }))
+  const [summary] = listRunLogs(tmp)
+  assert.equal(summary.runId, RUN_ID)
+  assert.equal(summary.events, 2, 'two current events, not three')
+  assert.equal(summary.halted, false, 'a foreign run-halt does not halt the run')
+  assert.equal(summary.complete, true)
+})
+
+test('queryRunLog skips the foreign line too', () => {
+  seed('run-start')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine())
+  const starts = queryRunLog(tmp, RUN_ID, { type: 'run-start' })
+  assert.equal(starts.records.length, 1)
+  assert.equal(foreignCount(starts), 1)
+})
+
+test('run-log check fails a trajectory holding a foreign line, naming the count and the tag', () => {
+  seed('run-start', 'wave-action', 'cli-exit', 'run-complete')
+  assert.equal(checkRunLog(tmp, RUN_ID).ok, true, 'the same trajectory is clean before the foreign line')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine())
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.equal(result.ok, false)
+  const text = result.problems.join('; ')
+  assert.match(text, /\b1\b[^;]*foreign|foreign[^;]*\b1\b/i, `the problem must count the line: ${text}`)
+  assert.ok(text.includes(FOREIGN_TAG), `the problem must name the tag: ${text}`)
+  assert.equal(result.events, 4, 'the four current events still count')
+  assert.match(formatRunLogCheck(result), /interlock\.ship-run\/2/)
+})
+
+test('the check names the FIRST foreign tag and the full count', () => {
+  seed('run-start', 'run-complete')
+  const file = runLogPath(tmp, RUN_ID)
+  appendFileSync(file, foreignLine({ schema: 'interlock.ship-run/2', seq: 3 }))
+  appendFileSync(file, foreignLine({ schema: 'interlock.ship-run/3', seq: 4 }))
+  const result = checkRunLog(tmp, RUN_ID)
+  assert.equal(result.ok, false)
+  const text = result.problems.join('; ')
+  assert.ok(text.includes('interlock.ship-run/2'), text)
+  assert.match(text, /\b2\b/, `two foreign lines: ${text}`)
+})
+
+test('show and query print a note with the foreign count', () => {
+  seed('run-start', 'run-complete')
+  const clean = formatRunLog(readRunLog(tmp, RUN_ID))
+  assert.doesNotMatch(clean, /foreign/i, 'a clean trajectory prints no note')
+  appendFileSync(runLogPath(tmp, RUN_ID), foreignLine())
+  const shown = formatRunLog(readRunLog(tmp, RUN_ID))
+  assert.match(shown, /foreign/i)
+  assert.match(shown, /\b1\b/)
+  assert.match(formatRunLog(queryRunLog(tmp, RUN_ID, { type: 'run-start' })), /foreign/i)
+})
+
+test('a line with no schema tag is still read, as it always was', () => {
+  seed('run-start')
+  const bare = {
+    ts: '2026-10-22T10:00:01.000Z',
+    runId: RUN_ID,
+    change: 'add-widget',
+    seq: 2,
+    type: 'run-complete',
+    leftoverTaskIds: []
+  }
+  appendFileSync(runLogPath(tmp, RUN_ID), JSON.stringify(bare) + '\n')
+  const read = readRunLog(tmp, RUN_ID)
+  assert.equal(read.records.length, 2, 'a schemaless line is a record')
+  assert.ok(!foreignCount(read))
+  assert.equal(checkRunLog(tmp, RUN_ID).ok, true)
+})
+
+// --- which release produced the run ---------------------------------------------
+//
+// spec: ship-run — "The run-start event and the receipt SHALL record the CLI and
+// plugin versions"; design D17.
+
+test('the run-start event carries the CLI and the plugin versions', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-start',
+    mode: 'checkpoint',
+    cli: { version: '1.8.0', path: '/opt/interlock/bin/interlock' },
+    plugin: { version: '1.8.0', root: '/opt/plugins/interlock' }
+  })
+  assert.equal(r.written, true)
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.cli.version, '1.8.0')
+  assert.equal(record.cli.path, '/opt/interlock/bin/interlock')
+  assert.equal(record.plugin.version, '1.8.0')
+  assert.equal(record.plugin.root, '/opt/plugins/interlock')
+})
+
+test('a run given no plugin root records the plugin as unknown, never as the CLI version', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-start',
+    mode: 'checkpoint',
+    cli: { version: '1.8.0', path: '/opt/interlock/bin/interlock' },
+    plugin: null
+  })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.cli.version, '1.8.0')
+  assert.ok(record.plugin == null, `plugin must be null or absent, got ${JSON.stringify(record.plugin)}`)
+})
+
+test('a run-start written before the fields existed still reads, with no cli key invented', () => {
+  seed('run-start')
+  const [record] = readRunLog(tmp, RUN_ID).records
+  assert.ok(record.cli == null && record.plugin == null)
+})
+
+test('the receipt event carries the CLI and the plugin version', () => {
+  const r = appendRunLogEvent(tmp, {
+    runId: RUN_ID,
+    type: 'run-receipt',
+    change: 'add-widget',
+    cliVersion: '1.8.0',
+    pluginVersion: '1.8.0'
+  })
+  assert.equal(r.written, true)
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.cliVersion, '1.8.0')
+  assert.equal(record.pluginVersion, '1.8.0')
+})
+
+test('a receipt with no recorded version reads as unknown, not as a version', () => {
+  const r = appendRunLogEvent(tmp, { runId: RUN_ID, type: 'run-receipt', change: 'add-widget' })
+  const record = JSON.parse(lines(r.path)[0])
+  assert.equal(record.cliVersion ?? null, null)
+  assert.equal(record.pluginVersion ?? null, null)
 })

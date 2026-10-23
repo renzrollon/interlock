@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: ['18', '20', '22']
+        node: ['18', '20', '22', '24']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -25,27 +25,60 @@ jobs:
       - name: Test
         run: npm test
 
+  # The plugin is validated under the newest engine and under the oldest one the
+  # CLI declares support for. The floor is READ from MODS_MIN_HOST_VERSION in
+  # lib/host/claude-env.mjs and spelled nowhere in this file, so raising the
+  # constant moves this leg with no edit here (test/spine/github-workflows.test.mjs
+  # pins that this file names no engine version).
   validate-plugin:
+    name: validate-plugin (${{ matrix.engine }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [latest, floor]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        id: engine
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.engine }}" = floor ]; then
+            floor=$(node -e 'import("./lib/host/claude-env.mjs").then(m => process.stdout.write(m.MODS_MIN_HOST_VERSION))')
+            echo "floor=$floor" >> "$GITHUB_OUTPUT"
+            echo "Floor engine, read from MODS_MIN_HOST_VERSION: $floor" >> "$GITHUB_STEP_SUMMARY"
+            npm install -g "@anthropic-ai/claude-code@$floor"
+          else
+            npm install -g @anthropic-ai/claude-code
+          fi
+          claude --version
       - name: Validate plugin and marketplace manifests
         run: claude plugin validate . --strict
       # The hooks module's own tests (test/mod/*.test.ts), run by the engine's
       # kit; `npm test` never collects them. A host that cannot load mods
       # fails this step rather than skipping it. It runs even when the strict
       # validate above is red, so its own result stays visible in the same log.
+      # At the floor engine a missing `plugin test` command is said in the
+      # summary instead of passing silently; on latest it is a failure.
       - name: Hooks module tests
         if: ${{ !cancelled() }}
-        run: claude plugin test .
+        run: |
+          if [ "${{ matrix.engine }}" = floor ] && ! claude plugin test --help >/dev/null 2>&1; then
+            echo "plugin test is not available at the floor engine ${{ steps.engine.outputs.floor }}; mod tests are covered on latest only" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          claude plugin test .
 
   cli-smoke:
-    runs-on: ubuntu-latest
+    name: cli-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -106,10 +139,71 @@ jobs:
           echo "--- interlock limits"
           "$RUNNER_TEMP/prefix/bin/interlock" limits >/dev/null
 
+      # Every command a skill, the ship driver, the run program or a hook calls,
+      # run from the installed prefix with its exit code and the JSON keys its
+      # caller reads asserted. Runs on Linux and on macOS: a path-resolution
+      # defect in an installed binary can appear on only one of them.
+      - name: run the post-install smoke inventory from the prefix
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
+
+  # The release installed OVER the previous one. A user who runs `npm i -g` on
+  # top of last month's install gets whatever the two leave together, which no
+  # fresh-prefix smoke sees. Install the previous release first, prove it runs,
+  # install the packed tarball over the same prefix, then smoke the new one: the
+  # current smoke before the over-install would fail by design on every command
+  # this release adds. A second prefix holds only the previous release for the
+  # skew harness case, which needs an old CLI to drive the current ship.js
+  # against. Read-only token, so the write-token install rule does not apply.
+  upgrade-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install the previous release
+        run: |
+          set -euo pipefail
+          prev=$(npm view @renzrollon/interlock version)
+          echo "previous release: $prev"
+          echo "Over-install from previous release $prev" >> "$GITHUB_STEP_SUMMARY"
+          npm install -g "@renzrollon/interlock@$prev" --prefix "$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/interlock" --help >/dev/null
+          npm install -g "@renzrollon/interlock@$prev" --prefix "$RUNNER_TEMP/previous"
+      - name: Install the packed tarball over it
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack"
+          npm install -g "$RUNNER_TEMP"/pack/*.tgz --prefix "$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/interlock" --help >/dev/null
+      - name: Smoke and doctor from the over-installed prefix
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
+          # The doctor's other rows depend on what the runner has installed, so
+          # only the one this job is about can fail it: the CLI on PATH must not
+          # be older than the plugin it came with.
+          PATH="$RUNNER_TEMP/prefix/bin:$PATH" interlock doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          node -e '
+            const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const row = d.checks.find(c => c.id === "cli-version");
+            console.log("cli-version:", row ? row.status + " - " + row.detail : "no row");
+            if (!row || row.status === "fail") process.exit(1);
+          ' "$RUNNER_TEMP/doctor.json"
+      - name: Skew harness against the previous release's CLI
+        env:
+          INTERLOCK_HARNESS_BIN: ${{ runner.temp }}/previous/bin/interlock
+        run: node --test --test-name-pattern 'previous release CLI' test/workflows.test.mjs
+
   # The outcome eval's model-free prepare path. Ordinary CI runs it so a broken
   # fixture, a failed copy or an isolation refusal fails the build here, on every
-  # pull request, instead of waiting for the metered Wednesday sweep in
-  # `.github/workflows/ship-outcome-eval.yml` to notice.
+  # pull request, instead of waiting for a manually started metered sweep (see
+  # `.github/workflows/ship-outcome-eval.yml`, which carries no schedule) to notice.
   #
   # NO CREDENTIAL, AND NO SKIP. This job never reads `secrets.ANTHROPIC_API_KEY`
   # and must never grow the metered job's "no credential → skip" step: that skip

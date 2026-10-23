@@ -3285,6 +3285,9 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     skipped: false,
     recorded: { ok: ['5.1'], failed: ['5.2'], notAttempted: ['5.3'] },
     plan: { waves: [], testWave: null, deferred: [] },
+    // The CLI that produced the step, so a relay can show a skew the host cannot
+    // see (ship/run-program: every step carries the CLI's version).
+    cliVersion: '1.8.0',
     spawns: [
       {
         label: '6.1+1',
@@ -3315,7 +3318,7 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
   assert.equal(slim.wave, 3)
   assert.equal(slim.change, 'add-thing')
   assert.deepEqual(slim.banners, step.banners)
-  for (const kept of ['waveIndex', 'batchIndex', 'batchCount', 'skipped', 'recorded', 'plan']) {
+  for (const kept of ['waveIndex', 'batchIndex', 'batchCount', 'skipped', 'recorded', 'plan', 'cliVersion']) {
     assert.deepEqual(slim[kept], step[kept], `${kept} is a stated relay field for the meter`)
   }
   assert.deepEqual(RELAY_STEP_FIELDS, [
@@ -3334,7 +3337,8 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     'batchCount',
     'skipped',
     'recorded',
-    'plan'
+    'plan',
+    'cliVersion'
   ])
   assert.equal('prompt' in slim.spawns[0], false, 'the worker is handed a path and a hash, never the text')
   const { prompt, ...kept } = step.spawns[0]
@@ -8139,6 +8143,472 @@ test('a note table that cannot be written is a COMPOUND NOTES NOT WRITTEN banner
     )
     assert.equal(manifest.notesPath ?? null, null, 'the commit brief must name no note table')
   } finally {
+    cleanup(root)
+  }
+})
+
+// --- the upgrade path (harden-release-upgrade-path, spec: ship/run-program) --
+//
+// What a run left behind under one release meets the next release's CLI here:
+// a manifest that already closed, a manifest this CLI cannot read, a
+// classification a previous run left, a plan stored for another format, a
+// profile edited mid-run, a field an earlier release did not write, and the
+// versions every run now records. Each case is a state a real root can be in
+// after an upgrade, driven through the real CLI.
+
+const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+
+/**
+ * Like `run`, but accepts any exit code and keeps stderr. A refusal here is a
+ * halt step, and which exit code carries it is not what these cases pin.
+ */
+function runAny(root, argv, { results } = {}) {
+  const full = [...argv]
+  if (results !== undefined) {
+    file(root, '.claude/ship/results.json', results)
+    full.push('--results', '.claude/ship/results.json')
+  }
+  full.push('--json')
+  const r = spawnSync(process.execPath, [BIN, ...full], { cwd: root, encoding: 'utf8' })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  let step = null
+  try {
+    step = r.stdout.trim() ? JSON.parse(r.stdout) : null
+  } catch {
+    step = null
+  }
+  return { step, code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
+/** Every file under `.claude/ship` (less `skip`), by relative path, with its bytes. */
+function shipSnapshot(root, skip = []) {
+  const out = {}
+  const walk = rel => {
+    const abs = join(root, rel)
+    if (!existsSync(abs)) return
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const next = join(rel, entry.name)
+      if (entry.isDirectory()) walk(next)
+      else if (!skip.includes(next)) out[next] = readFileSync(join(root, next), 'utf8')
+    }
+  }
+  walk('.claude/ship')
+  return out
+}
+
+function editManifest(root, edit) {
+  const path = join(root, '.claude/ship/run.json')
+  const manifest = JSON.parse(readFileSync(path, 'utf8'))
+  edit(manifest)
+  writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')
+  return manifest
+}
+
+const bannersOf = step => (step && Array.isArray(step.banners) ? step.banners : [])
+const startsWithAny = (banners, prefix) => banners.some(b => typeof b === 'string' && b.startsWith(prefix))
+
+const MANIFEST_REL = join('.claude', 'ship', 'run.json')
+
+test('a run subcommand refuses a manifest that halted or closed, names the run, and writes nothing', () => {
+  for (const [label, closedState, pattern] of [
+    ['halted', { halted: 'task-failures' }, /already halted: task-failures/],
+    ['closed', { closedAt: '2026-10-22T10:00:00.000Z' }, /already closed/]
+  ]) {
+    const { root, change } = repo()
+    try {
+      toFirstBatch(root, change)
+      const manifest = editManifest(root, m => {
+        Object.assign(m, closedState)
+        // A close leaves no continuation behind it.
+        m.lastThen = null
+      })
+      const before = shipSnapshot(root, [MANIFEST_REL])
+      assert.ok(
+        Object.keys(before).some(p => p.startsWith(join('.claude', 'ship', 'runs'))),
+        'the run has a trajectory to leave alone'
+      )
+      assert.ok(before[join('.claude', 'ship', 'last-step.json')], 'the run has a last-step record to leave alone')
+
+      const { step } = runAny(root, ['run', 'next'])
+      assert.equal(step.action, 'halt', `${label}: ${JSON.stringify(step)}`)
+      assert.ok(step.reason.includes(manifest.runId), `${label}: the refusal names the run id: ${step.reason}`)
+      assert.match(step.reason, pattern, `${label}: the refusal says what state the run is in`)
+      assert.match(step.reason, /interlock run start/, `${label}: the refusal names the way out`)
+      assert.deepEqual(
+        shipSnapshot(root, [MANIFEST_REL]),
+        before,
+        `${label}: a refused call changed the trajectory, last-step record or another work file`
+      )
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('every run subcommand but start and close refuses a closed run', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.halted = 'task-failures'
+      m.lastThen = null
+    })
+    const before = shipSnapshot(root, [MANIFEST_REL])
+    for (const argv of [
+      ['run', 'next'],
+      ['run', 'classified', '--classified', '.claude/ship/classified.json'],
+      ['run', 'record-batch'],
+      ['run', 'reviewed'],
+      ['run', 'remediated', '--round', '1']
+    ]) {
+      const { step } = runAny(root, argv, argv[1] === 'record-batch'
+        ? { results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))) }
+        : {})
+      assert.equal(step && step.action, 'halt', `${argv.join(' ')}: ${JSON.stringify(step)}`)
+      assert.match(step.reason, /already halted: task-failures/, argv.join(' '))
+    }
+    // The results file this loop wrote is the harness's, not the CLI's.
+    const after = shipSnapshot(root, [MANIFEST_REL, join('.claude', 'ship', 'results.json')])
+    assert.deepEqual(after, before)
+    assert.match(
+      readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8'),
+      /- \[ \] 1\.1/,
+      'a refused record-batch ticked nothing'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start after a halted run begins a new run as before', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.halted = 'task-failures'
+      m.lastThen = null
+    })
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.notEqual(step.action, 'halt', JSON.stringify(step))
+    assert.equal(manifestOf(root).halted ?? null, null, 'the new manifest is not a halted one')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest tagged by another CLI is named with both tags and the version, never as a missing start', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.schema = 'interlock.run/2'
+    })
+    const { step } = runAny(root, ['run', 'next'])
+    assert.equal(step.action, 'halt')
+    assert.ok(step.reason.includes('interlock.run/2'), step.reason)
+    assert.ok(step.reason.includes('interlock.run/1'), step.reason)
+    assert.ok(step.reason.includes(PKG_VERSION), `the halt names the CLI's own version: ${step.reason}`)
+    assert.ok(step.reason.includes(MANIFEST_REL), `the halt names the file: ${step.reason}`)
+    assert.doesNotMatch(step.reason, /reached without/, 'a manifest that exists is not a missing start')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest that cannot be parsed is named unreadable, not absent', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    writeFileSync(join(root, MANIFEST_REL), '{"schema": "interlock.run/1", "change": ')
+    const { step } = runAny(root, ['run', 'next'])
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, /unreadable/i, step.reason)
+    assert.ok(step.reason.includes(MANIFEST_REL), `the halt names the file: ${step.reason}`)
+    assert.doesNotMatch(step.reason, /reached without/, 'a manifest that exists is not a missing start')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('closing a foreign run leaves its manifest and stage marker as they were and names the marker', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    writeStage(change, 'commit', { root, pid: process.pid })
+    editManifest(root, m => {
+      m.schema = 'interlock.run/2'
+    })
+    const marker = stagePath(change, root)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const markerBefore = readFileSync(marker, 'utf8')
+
+    const closed = runAny(root, ['run', 'close', '--halt', 'x'])
+    const text = closed.stdout + closed.stderr
+    assert.ok(text.includes('interlock.run/2'), `the close names the foreign tag: ${text}`)
+    assert.ok(text.includes(stagePath(change, '.')), `the close names the marker that still blocks a commit: ${text}`)
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the foreign manifest was rewritten')
+    assert.equal(readFileSync(marker, 'utf8'), markerBefore, 'the stage marker was cleared or rewritten')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start removes a classification an earlier run left, says so, and the next classify halts naming it', () => {
+  const { root, change } = repo()
+  try {
+    const leftover = join(root, '.claude/ship/classified.json')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const started = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(started.action, 'classify')
+    const banner = bannersOf(started).find(b => typeof b === 'string' && b.startsWith('STALE CLASSIFICATION REMOVED'))
+    assert.ok(banner, `a removed classification is a banner, never silence: ${JSON.stringify(started.banners)}`)
+    assert.ok(banner.includes('.claude/ship/classified.json'), banner)
+    assert.match(banner, /written \d{4}-\d\d-\d\dT/, 'the banner says when the file was written')
+    assert.equal(existsSync(leftover), false, 'the stale file is gone')
+
+    // A planner that writes nothing then meets the existing halt, naming the file.
+    const halted = runAny(root, [...started.then.argv])
+    assert.equal(halted.step.action, 'halt')
+    assert.ok(halted.step.reason.includes('.claude/ship/classified.json'), halted.step.reason)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start with no classification on disk raises no stale-classification banner', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(started), 'STALE CLASSIFICATION REMOVED'), false)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a stored plan from another format is a PLAN REBUILT banner on the start step; a first run and a reused plan carry none', () => {
+  const { root, change } = repo()
+  try {
+    const first = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(first), 'PLAN REBUILT'), false, 'a first run has no stored plan')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    run(root, [...first.then.argv])
+    const fingerprintPath = join(root, '.claude/ship/plan-fingerprint.json')
+    assert.ok(existsSync(fingerprintPath), 'classifying stored the plan and its fingerprint')
+
+    const reused = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(reused), 'PLAN REBUILT'), false, 'a reused plan is not a rebuilt one')
+
+    const stored = JSON.parse(readFileSync(fingerprintPath, 'utf8'))
+    assert.notEqual(stored.planFormat, 'interlock.ship-plan/4', 'the tampered value must differ from the real one')
+    writeFileSync(fingerprintPath, JSON.stringify({ ...stored, planFormat: 'interlock.ship-plan/4' }, null, 2) + '\n')
+    const rebuilt = run(root, ['run', 'start', '--change', change]).step
+    const banner = bannersOf(rebuilt).find(b => typeof b === 'string' && b.startsWith('PLAN REBUILT'))
+    assert.ok(banner, `a plan that was not reused is named on the start step: ${JSON.stringify(rebuilt.banners)}`)
+    assert.ok(banner.startsWith('PLAN REBUILT (plan-format-changed)'), banner)
+    assert.match(banner, /dispatched again/, 'the banner says what the rebuild costs')
+    assert.equal(rebuilt.action, 'classify', 'the rebuilt plan is planned afresh')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// A profile whose unit timeout is a string: valid JSON, a command that would run,
+// and a field `validateProfile` throws on only once something reads it.
+const STRING_TIMEOUT_PROFILE = {
+  version: 1,
+  unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>', timeout_ms: '120000' }
+}
+
+test('run start halts naming an invalid test profile before any step is emitted', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, STRING_TIMEOUT_PROFILE)
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes('profile.json'), `the halt names the profile: ${step.reason}`)
+    assert.match(step.reason, /timeout_ms/, 'the halt names the first problem')
+    assert.equal(step.spawns.length, 0, 'no planner was spawned over an invalid profile')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a profile made invalid between classify and record-batch halts the record with nothing recorded', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+    })
+    const batch = toFirstBatch(root, change)
+    assert.equal(batch.action, 'run-batch')
+
+    file(root, PROFILE_PATH, STRING_TIMEOUT_PROFILE)
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    const trajectory = join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`)
+    const stateBefore = readFileSync(join(root, '.claude/ship/state.json'), 'utf8')
+    const tasksBefore = readFileSync(tasksPath, 'utf8')
+    const trajectoryBefore = readFileSync(trajectory, 'utf8')
+
+    const { step, stderr } = runAny(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.ok(step, `record-batch printed no step; it threw after recording: ${stderr}`)
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes('profile.json'), `the halt names the profile: ${step.reason}`)
+    assert.match(step.reason, /timeout_ms/)
+    assert.deepEqual(step.then.argv.slice(0, 2), ['run', 'close'], 'the next call is the close')
+
+    assert.equal(readFileSync(tasksPath, 'utf8'), tasksBefore, 'a task was ticked')
+    assert.equal(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'), stateBefore, 'the run state advanced')
+    assert.equal(readFileSync(trajectory, 'utf8'), trajectoryBefore, 'a trajectory line was written')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest written before the verify budget existed raises MANIFEST FIELD DEFAULTED once, across subcommands', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      delete m.verifyBudget
+    })
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+
+    const raised = [recorded, judged]
+      .flatMap(bannersOf)
+      .filter(b => typeof b === 'string' && b.startsWith('MANIFEST FIELD DEFAULTED'))
+    assert.equal(raised.length, 1, `raised once per run per field: ${JSON.stringify(raised)}`)
+    assert.match(raised[0], /verifyBudget/, 'the banner names the field')
+    assert.match(raised[0], /using \S/, 'the banner names the default it used')
+    assert.equal(
+      startsWithAny(bannersOf(recorded), 'MANIFEST FIELD DEFAULTED'),
+      true,
+      'the first subcommand to read the manifest raises it'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest written before the state home was recorded raises MANIFEST FIELD DEFAULTED for it', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      delete m.stateHome
+    })
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const raised = bannersOf(recorded).filter(b => typeof b === 'string' && b.startsWith('MANIFEST FIELD DEFAULTED'))
+    assert.equal(raised.length, 1, JSON.stringify(recorded.banners))
+    assert.match(raised[0], /stateHome/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest this release wrote raises no MANIFEST FIELD DEFAULTED across a whole run', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+    const closed = run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    for (const step of [batch, recorded, judged, closed]) {
+      assert.equal(startsWithAny(bannersOf(step), 'MANIFEST FIELD DEFAULTED'), false, JSON.stringify(step.banners))
+    }
+    assert.doesNotMatch(closed.summary, /MANIFEST FIELD DEFAULTED/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+/** A plugin directory holding only the manifest `pluginVersionAt` reads. */
+function pluginDirAt(version) {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
+  file(dir, '.claude-plugin/plugin.json', { name: 'interlock', version })
+  return dir
+}
+
+test('the manifest records the CLI version and path, and every emitted step carries the CLI version', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    const manifest = manifestOf(root)
+    assert.equal(manifest.cli.version, PKG_VERSION)
+    assert.equal(manifest.cli.path, realpathSync(BIN), 'the path is the realpath of the running bin/interlock')
+    assert.equal(manifest.plugin, null, 'no plugin root was given, so none is claimed')
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false)
+
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = run(root, [...started.then.argv]).step
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+    const closed = run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    for (const step of [started, batch, recorded, judged, closed]) {
+      assert.equal(step.cliVersion, PKG_VERSION, `${step.action} step carries the CLI version`)
+    }
+    const last = shipFile(root, 'last-step.json')
+    assert.equal(last.cliVersion, PKG_VERSION, 'the stored copy of a step carries it too')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming a different version raises CLI VERSION SKEW with both versions and records the plugin', () => {
+  const { root, change } = repo()
+  const plugin = pluginDirAt('0.0.1')
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', plugin]).step
+    const banner = bannersOf(started).find(b => typeof b === 'string' && b.startsWith('CLI VERSION SKEW'))
+    assert.ok(banner, JSON.stringify(started.banners))
+    assert.ok(banner.includes(PKG_VERSION), `the banner names the CLI's version: ${banner}`)
+    assert.ok(banner.includes('0.0.1'), `the banner names the plugin's version: ${banner}`)
+    assert.ok(banner.includes(realpathSync(BIN)), `the banner names the CLI's path: ${banner}`)
+    assert.ok(banner.includes(plugin) || banner.includes(realpathSync(plugin)), `the banner names the plugin root: ${banner}`)
+
+    const manifest = manifestOf(root)
+    assert.equal(manifest.cli.version, PKG_VERSION)
+    assert.equal(manifest.plugin.version, '0.0.1')
+    assert.ok([plugin, realpathSync(plugin)].includes(manifest.plugin.root), JSON.stringify(manifest.plugin))
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming the CLI\'s own version records the plugin and raises no skew', () => {
+  const { root, change } = repo()
+  const plugin = pluginDirAt(PKG_VERSION)
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', plugin]).step
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false, JSON.stringify(started.banners))
+    assert.equal(manifestOf(root).plugin.version, PKG_VERSION)
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming a directory with no readable plugin manifest raises no skew and does not fail the start', () => {
+  const { root, change } = repo()
+  const empty = mkdtempSync(join(tmpdir(), 'interlock-no-plugin-'))
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', empty]).step
+    assert.equal(started.action, 'classify')
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false, JSON.stringify(started.banners))
+  } finally {
+    rmSync(empty, { recursive: true, force: true })
     cleanup(root)
   }
 })

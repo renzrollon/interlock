@@ -20,11 +20,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DIR = '.github/workflows'
 
 /**
- * Tracked workflows, repo-relative. Outside a checkout, every file on disk: a
- * local, git-ignored workflow never runs on the remote and is not held here.
+ * Tracked workflows, repo-relative, plus any new one not yet added (so a
+ * workflow is held to these rules before its first commit). Outside a checkout,
+ * every file on disk: a local, git-ignored workflow never runs on the remote and
+ * is not held here.
  */
 function workflowFiles() {
-  const listed = spawnSync('git', ['ls-files', '--', DIR], { cwd: ROOT, encoding: 'utf8' })
+  const listed = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '--', DIR], { cwd: ROOT, encoding: 'utf8' })
   const names =
     listed.status === 0 && !listed.error
       ? listed.stdout.split('\n').filter(Boolean)
@@ -62,7 +64,7 @@ function jobs(text) {
 const GRANTS_WRITE = /^\s*(?:[\w-]+:\s*write|permissions:\s*write-all)\s*$/m
 
 test('every tracked workflow was found', () => {
-  assert.ok(workflows.length >= 6, `found only ${workflows.map(w => w.path).join(', ')}`)
+  assert.ok(workflows.length >= 7, `found only ${workflows.map(w => w.path).join(', ')}`)
   assert.ok(workflows.every(w => jobs(w.text).length > 0), 'a workflow was read with no jobs')
 })
 
@@ -136,4 +138,105 @@ test('every workflow states its token scope rather than inheriting the repositor
     const unscoped = jobs(text).filter(job => !block(job.lines, 'permissions', 4)).map(job => job.name)
     assert.deepEqual(unscoped, [], `${path} has no top-level permissions, and these jobs declare none: ${unscoped.join(', ')}`)
   }
+})
+
+// --- what continuous integration and the canary prove about what ships -------
+//
+// spec: distribution/release-gates. These pin the shape of the jobs, because a
+// job that is renamed, narrowed or deleted leaves no failing check anywhere.
+
+const stripComments = text => text.replace(/^\s*#.*$/gm, '').replace(/\s+#\s.*$/gm, '')
+const workflowNamed = file => {
+  const found = workflows.find(w => w.path === `${DIR}/${file}`)
+  assert.ok(found, `${DIR}/${file} is not tracked`)
+  return { ...found, code: stripComments(found.text) }
+}
+const jobNamed = (workflow, name) => {
+  const job = jobs(workflow.code).find(j => j.name === name)
+  assert.ok(job, `${workflow.path} has no ${name} job`)
+  return job.lines.join('\n')
+}
+
+test('the canary is scheduled, read-only, and runs validate, plugin test, doctor and the smoke', () => {
+  const canary = workflowNamed('canary.yml')
+  const lines = canary.code.split('\n')
+  const triggers = block(lines, 'on', 0)
+  assert.ok(triggers, 'canary.yml has no on: block')
+  assert.match(triggers, /^\s+schedule:/m, 'the canary must run on a schedule')
+  assert.match(triggers, /^\s+- cron: /m, 'the canary schedule has no cron entry')
+  assert.match(triggers, /^\s+workflow_dispatch:/m, 'the canary must be manually invocable')
+  assert.doesNotMatch(triggers, /^\s+(?:push|pull_request|workflow_run):/m, 'the canary runs on the calendar and nothing else')
+  // Its failure IS the notification, so it needs no write token to open an
+  // issue; the only write-capable job is the plugin bundle (test above).
+  const scope = block(lines, 'permissions', 0)
+  assert.ok(scope, 'the canary must state its token scope at the top level')
+  assert.match(scope, /^\s+contents:\s*read\s*$/m, 'the canary token is contents: read')
+  assert.doesNotMatch(canary.code, GRANTS_WRITE, 'the canary holds a write permission')
+  assert.ok(jobs(canary.code).every(job => !block(job.lines, 'permissions', 4)), 'a canary job widens the top-level token scope')
+  for (const [what, pattern] of [
+    ['install the newest Claude Code', /npm install -g @anthropic-ai\/claude-code\s*$/m],
+    ['read the release branch', /ref:\s*release\b/],
+    ['validate strictly', /claude plugin validate \S+ --strict/],
+    ['run the module tests', /claude plugin test\b/],
+    ['run the doctor', /interlock doctor --json/],
+    ['run the smoke inventory', /scripts\/postinstall-smoke\.mjs/]
+  ]) {
+    assert.match(canary.code, pattern, `the canary no longer does this: ${what}`)
+  }
+})
+
+test('ci.yml runs Node 24, the smoke on macOS, and the postinstall smoke from the packed tarball', () => {
+  const ci = workflowNamed('ci.yml')
+  const matrix = jobNamed(ci, 'test')
+  assert.match(matrix, /node:\s*\[[^\]]*'24'[^\]]*\]/, "the test matrix must include Node '24'")
+  for (const major of ['18', '20', '22']) assert.ok(matrix.includes(`'${major}'`), `the test matrix dropped Node ${major}`)
+  const smoke = jobNamed(ci, 'cli-smoke')
+  assert.match(smoke, /os:\s*\[[^\]]*macos-latest[^\]]*\]/, 'the cli-smoke job must run on macOS')
+  assert.match(smoke, /os:\s*\[[^\]]*ubuntu-latest[^\]]*\]/, 'the cli-smoke job must keep running on Linux')
+  assert.match(smoke, /runs-on:\s*\$\{\{\s*matrix\.os\s*\}\}/, 'the cli-smoke job must run on the matrix os')
+  assert.match(smoke, /npm pack /, 'the cli-smoke job must install the packed tarball')
+  assert.match(
+    smoke,
+    /node scripts\/postinstall-smoke\.mjs "\$RUNNER_TEMP\/prefix\/bin" \. "\$RUNNER_TEMP\/smoke"/,
+    'the cli-smoke job must run the post-install smoke from the installed prefix'
+  )
+})
+
+test('ci.yml validates the plugin under the oldest engine, read from code and spelled nowhere', () => {
+  const ci = workflowNamed('ci.yml')
+  const job = jobNamed(ci, 'validate-plugin')
+  assert.match(job, /engine:\s*\[latest, floor\]/, 'validate-plugin must be a latest/floor matrix')
+  assert.match(job, /MODS_MIN_HOST_VERSION/, 'the floor leg must read the constant')
+  assert.match(job, /lib\/host\/claude-env\.mjs/, 'the floor leg must read the constant from the module that declares it')
+  // The floor follows the constant: any version written into this job is a
+  // second copy that would go stale the day the constant is raised.
+  assert.doesNotMatch(job, /\d+\.\d+\.\d+/, 'validate-plugin spells a version; the floor is read from MODS_MIN_HOST_VERSION')
+  assert.doesNotMatch(job, /claude-code@\d/, 'validate-plugin pins an engine version instead of reading the floor')
+  assert.match(job, /claude plugin validate \. --strict/)
+  assert.match(job, /claude plugin test \./)
+  assert.match(
+    job,
+    /plugin test is not available at the floor engine/,
+    'a floor engine without plugin test must be said in the step summary, not passed silently'
+  )
+})
+
+test('ci.yml installs the release over the previous one and smokes it', () => {
+  const ci = workflowNamed('ci.yml')
+  const job = jobNamed(ci, 'upgrade-install')
+  const order = [
+    'npm view @renzrollon/interlock version',
+    '@renzrollon/interlock@$prev',
+    'npm pack ',
+    'scripts/postinstall-smoke.mjs',
+    'interlock doctor --json',
+    'INTERLOCK_HARNESS_BIN'
+  ].map(token => ({ token, at: job.indexOf(token) }))
+  for (const { token, at } of order) assert.ok(at !== -1, `upgrade-install no longer contains ${JSON.stringify(token)}`)
+  assert.deepEqual(
+    order.map(o => o.at),
+    order.map(o => o.at).sort((a, b) => a - b),
+    'upgrade-install must resolve and install the previous release, pack and install over it, smoke, then run the skew harness'
+  )
+  assert.doesNotMatch(job, GRANTS_WRITE, 'upgrade-install holds a write permission')
 })

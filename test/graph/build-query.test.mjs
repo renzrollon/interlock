@@ -101,6 +101,63 @@ describe('build + query on fixture', () => {
   });
 });
 
+describe('update rebuilds when what the graph depends on changed', () => {
+  let root;
+
+  const readManifest = () => JSON.parse(fs.readFileSync(path.join(root, '.claude', 'graph', 'manifest.json'), 'utf8'));
+  const writeManifest = (m) =>
+    fs.writeFileSync(path.join(root, '.claude', 'graph', 'manifest.json'), `${JSON.stringify(m, null, 2)}\n`);
+
+  before(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-dep-'));
+    copyDir(FIXTURE, root);
+    writeGraphArtifacts(root, buildGraph(root));
+  });
+
+  it('rebuilds on a manifest that predates the schema record, naming it', () => {
+    const m = readManifest();
+    delete m.schema_version;
+    writeManifest(m);
+    const once = updateGraph(root);
+    assert.equal(once.updated, true);
+    assert.match(once.reason, /predates/);
+    assert.notEqual(once.reason, 'up-to-date');
+    assert.ok(readManifest().schema_version, 'the rebuild records the schema version');
+  });
+
+  it('rebuilds on a different extractor', () => {
+    const m = readManifest();
+    m.extractor = 'some-other-extractor';
+    writeManifest(m);
+    const once = updateGraph(root);
+    assert.equal(once.updated, true);
+    assert.match(once.reason, /extractor/);
+  });
+
+  it('rebuilds on a different schema version, naming both', () => {
+    const m = readManifest();
+    m.schema_version = 'schema-from-another-release';
+    writeManifest(m);
+    const once = updateGraph(root);
+    assert.equal(once.updated, true);
+    assert.match(once.reason, /schema/);
+  });
+
+  it('rebuilds on an edit under openspec/specs, counting one changed overlay', () => {
+    assert.equal(updateGraph(root).updated, false, 'a current graph is the starting point');
+    fs.appendFileSync(path.join(root, 'openspec', 'specs', 'auth', 'spec.md'), '\nAn added line.\n');
+    const once = updateGraph(root);
+    assert.equal(once.updated, true);
+    assert.match(once.reason, /overlays changed=1/);
+  });
+
+  it('reports an untouched tree up to date', () => {
+    const once = updateGraph(root);
+    assert.equal(once.updated, false);
+    assert.equal(once.reason, 'up-to-date');
+  });
+});
+
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const ent of fs.readdirSync(src, { withFileTypes: true })) {

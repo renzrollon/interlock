@@ -31,15 +31,82 @@
 //
 // Deliberately Node-only: no network, no API key, no model.
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runCli } from '../../lib/host.mjs'
+import { INTERLOCK_BIN, runCli as hostRunCli } from '../../lib/host.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SHIP = join(ROOT, 'workflows', 'ship.js')
+
+/**
+ * Execute `interlock` for a test, optionally a DIFFERENT copy of it.
+ *
+ * `lib/host.mjs`'s `runCli` pins the binary on purpose: a production host that
+ * could point it elsewhere could reimplement the rules and still look like it
+ * obeyed them. A test of an upgrade is the opposite case: it has to run the
+ * current `ship.js` against the previous release's CLI, so the choice of binary
+ * lives here, in the test helper, and nowhere in `lib/`. Without `cliBin` this is
+ * `lib/host.mjs`'s own function, byte for byte.
+ *
+ * @param {string[]} argv
+ * @param {{cwd?: string, env?: object, input?: string, timeoutMs?: number, cliBin?: string}} [opts]
+ * @returns {Promise<{code: number, stdout: string, stderr: string, signal: string|null}>}
+ */
+export function runCli(argv, opts = {}) {
+  const { cliBin, ...rest } = opts
+  if (!cliBin || cliBin === INTERLOCK_BIN) return hostRunCli(argv, rest)
+  const args = (Array.isArray(argv) ? argv : []).map(String)
+  const { cwd = process.cwd(), env = process.env, input, timeoutMs } = rest
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliBin, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer =
+      Number.isInteger(timeoutMs) && timeoutMs > 0 ? setTimeout(() => child.kill('SIGKILL'), timeoutMs) : null
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+    })
+    child.stderr.on('data', chunk => {
+      stderr += chunk
+    })
+    child.on('error', err => {
+      if (timer) clearTimeout(timer)
+      reject(err)
+    })
+    child.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer)
+      resolve({
+        code: typeof code === 'number' ? code : 1,
+        stdout,
+        stderr: signal ? `${stderr}interlock: killed by ${signal}\n` : stderr,
+        signal: signal || null
+      })
+    })
+    child.stdin.end(input === undefined ? '' : String(input))
+  })
+}
+
+/**
+ * A step's JSON with `cliVersion` removed, or the text untouched when it holds
+ * none. Stands in for a CLI that predates version reporting without needing one
+ * installed: the relayed step is exactly what such a CLI would have printed.
+ */
+function withoutCliVersion(stdout) {
+  let step
+  try {
+    step = JSON.parse(stdout)
+  } catch {
+    return stdout
+  }
+  if (!step || typeof step !== 'object' || !('cliVersion' in step)) return stdout
+  delete step.cliVersion
+  return JSON.stringify(step, null, 2) + '\n'
+}
 
 /** The coercion artifacts JavaScript produces when a concatenation goes wrong. */
 export const COERCION_ARTIFACTS = ['NaN', 'undefined', '[object Object]', 'null']
@@ -417,12 +484,20 @@ export function defaultResponses() {
  *   budget?: {total: number|null, spent: () => number},
  *   repo?: object,
  *   keepRepo?: boolean,
- *   env?: object
+ *   env?: object,
+ *   classified?: object,
+ *   cliBin?: string,
+ *   stripCliVersion?: boolean
  * }} [opts]
  *   `responses` is merged over `defaultResponses()`. A value may be a function
  *   `(label, callIndex) => result` so a label answered twice can answer
  *   differently the second time. `budget` stands in for the workflow runtime's
  *   token accounting; omitted, the script sees no such global at all.
+ *   `classified` is what the `plan-waves` stub writes (default: one demo task); a
+ *   `null` `plan-waves` response writes nothing. `cliBin` runs a different
+ *   `bin/interlock` than this checkout's, to stand the previous release in for
+ *   the CLI; `stripCliVersion` removes `cliVersion` from every relayed step, to
+ *   stand in for one without needing it installed.
  * @returns {Promise<{prompts: Array<{label: string, prompt: string, model?: string}>,
  *   output: string, calls: string[], root: string, commands: string[][]}>}
  */
@@ -433,15 +508,14 @@ export async function runShip(opts = {}) {
   const commands = []
   const seen = new Map()
   const { root, change } = makeRepo(opts.repo || {})
-  // The classification the planner spawn is supposed to write. It is placed up
-  // front rather than by the stub, because the classify step's continuation
-  // reads it and the harness answers agents, not files.
+  // The classification the planner spawn writes. It is NOT placed up front: `run
+  // start` removes a leftover `classified.json`, so a file that exists before the
+  // planner has run would be removed, and a harness that wrote one anyway would
+  // hide the very hazard that removal closes. The `plan-waves` stub writes it
+  // below, as a real planner does; a `null` response is a planner that wrote
+  // nothing.
   const classified = opts.classified || DEMO_CLASSIFIED
   mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
-  writeFileSync(
-    join(root, '.claude', 'ship', 'classified.json'),
-    JSON.stringify(classified, null, 2) + '\n'
-  )
 
   /** What a stubbed agent writes into the repository, as an agent would. */
   const write = (rel, value) => {
@@ -475,6 +549,13 @@ export async function runShip(opts = {}) {
       writeFileSync(dest, `${existing}// touched by the stubbed implementer\n`)
     }
     return body
+  }
+
+  /** The planner's own output: the classification the next relay reads off disk. */
+  const plannerWrites = (label, body) => {
+    if (label === 'plan-waves' && body !== null && body !== undefined) {
+      write('.claude/ship/classified.json', classified)
+    }
   }
 
   // What the script handed the runtime for effort, and whether it handed the
@@ -523,7 +604,11 @@ export async function runShip(opts = {}) {
       // relay's shell: `run start` reads the host's routing variables itself.
       const runIt = async () => {
         commands.push(argv)
-        return await runCli(argv, { cwd: root, ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}) })
+        return await runCli(argv, {
+          cwd: root,
+          ...(opts.cliBin ? { cliBin: opts.cliBin } : {}),
+          ...(opts.env ? { env: { ...process.env, ...opts.env } } : {})
+        })
       }
       // A relay canned as `{ relay(io, n) }` misuses its tools the way a model
       // can — runs before it writes, runs twice, gives up — and returns what it
@@ -534,6 +619,7 @@ export async function runShip(opts = {}) {
       }
       performWrites()
       const result = await runIt()
+      if (opts.stripCliVersion) result.stdout = withoutCliVersion(result.stdout)
       // A relay canned as a function is a relay that ran the command for real
       // and then retyped its stdout badly — the failure that halted the jumphour
       // run. The CLI's own effects have happened; only the copy is wrong.
@@ -568,6 +654,7 @@ export async function runShip(opts = {}) {
       const canned = lookup(responses, label)
       const body = materialize(typeof canned === 'function' ? canned(label, n, ctx) : canned)
       if (body === null) return null
+      plannerWrites(label, body)
       // The acknowledgement the script requires back. Supplied by default so an
       // ordinary run exercises the work rather than the guard — and NOT
       // overridden when a fixture states its own, which is how the fail-closed
@@ -583,7 +670,9 @@ export async function runShip(opts = {}) {
     // step names yet.
     prompts.push({ label, title, prompt: text, model: options.model, isolation: options.isolation, ...effortOf(options) })
     const canned = lookup(responses, label)
-    return typeof canned === 'function' ? canned(label, n, ctx) : canned
+    const answer = typeof canned === 'function' ? canned(label, n, ctx) : canned
+    if (answer !== null) plannerWrites(label, answer)
+    return answer
   }
 
   const pipeline = async (items, ...stages) =>

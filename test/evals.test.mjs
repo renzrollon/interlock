@@ -1096,6 +1096,26 @@ test('docs/14 has a Review Range section naming the verdict and interlock limits
   }
 })
 
+test('the full eval job is reachable by manual invocation only, with no schedule', () => {
+  // Spec: evals/gate. With no model credential provisioned a scheduled run
+  // reaches the skip step and reports green with nothing run. Adding a schedule
+  // is the edit that records the credential's arrival, and it edits this pin.
+  const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8').replace(/#.*$/gm, '')
+  const triggers = yml.slice(yml.indexOf('\non:'), yml.indexOf('\nconcurrency:'))
+  assert.ok(triggers.includes('\non:'), 'evals.yml has no on: block')
+  assert.doesNotMatch(triggers, /^\s+schedule:/m, 'evals.yml carries a schedule with no credential provisioned')
+  assert.doesNotMatch(yml, /\bcron:/, 'evals.yml carries a cron entry')
+  assert.match(triggers, /^\s+workflow_dispatch:/m, 'the full suite must stay manually invocable')
+  assert.match(triggers, /^\s+pull_request:/m, 'the per-change smoke keeps its pull-request trigger')
+  const start = yml.search(/^ {2}full:\s*$/m)
+  assert.ok(start !== -1, 'evals.yml has no full job')
+  const rest = yml.slice(start + 1)
+  const end = rest.search(/^ {2}[\w-]+:\s*$/m)
+  const body = end === -1 ? rest : rest.slice(0, end)
+  const condition = /^\s+if:\s*(.+)$/m.exec(body)?.[1].trim()
+  assert.equal(condition, "github.event_name == 'workflow_dispatch'", "the full job's if must be workflow_dispatch only")
+})
+
 test('the full eval job seeds fixtures with --scaffold and the smoke job does not', () => {
   const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8')
   // The `claude plugin eval` invocation of one job, with its `\` continuations.

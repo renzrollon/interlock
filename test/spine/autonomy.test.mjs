@@ -1,8 +1,10 @@
 import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { record, recordCleanFlow, promote, getLevel, getState } from '../../lib/autonomy.mjs'
 
 // autonomy.mjs uses cwd-relative .claude/autonomy.json, so run in a temp cwd.
@@ -126,4 +128,77 @@ test('recordCleanFlow batch-credits multiple paths and reports promotions', () =
 
 test('promote() on an unknown path reports no-entry', () => {
   assert.deepEqual(promote('ghost'), { promoted: false, reason: 'no-entry' })
+})
+
+// --- an unreadable record is preserved and spoken ---------------------------------
+
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+const CORRUPT = '{"review-artifacts": {"runs": 7, \u0000 not json'
+
+function cli(home, args) {
+  const r = spawnSync(process.execPath, [BIN, 'autonomy', ...args, '--state-home', home], {
+    cwd: home,
+    encoding: 'utf8',
+    env: { ...process.env, INTERLOCK_STATE_HOME: '' }
+  })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr }
+}
+
+function movedAside(home) {
+  const dir = join(home, '.claude')
+  return readdirSync(dir).filter(n => n.startsWith('autonomy.json.unreadable-'))
+}
+
+test('a corrupt record is moved aside with its bytes intact, the counters restart, the exit is 0', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-corrupt-'))
+  try {
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'autonomy.json'), CORRUPT)
+
+    const r = cli(home, ['record', 'review-artifacts', '--blockers', '0'])
+    assert.equal(r.code, 0, r.stderr)
+
+    const moved = movedAside(home)
+    assert.equal(moved.length, 1, `expected one moved-aside file, saw ${moved}`)
+    assert.equal(readFileSync(join(home, '.claude', moved[0]), 'utf8'), CORRUPT)
+    assert.ok(r.stderr.includes(moved[0]), `stderr must give the moved path: ${r.stderr}`)
+    assert.match(r.stderr, /counters restarted/)
+
+    // The fresh record holds this run alone.
+    const fresh = JSON.parse(readFileSync(join(home, '.claude', 'autonomy.json'), 'utf8'))
+    assert.equal(fresh['review-artifacts'].runs, 1)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('--json carries the same warning text under warnings', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-corrupt-json-'))
+  try {
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'autonomy.json'), CORRUPT)
+
+    const r = cli(home, ['record', 'review-artifacts', '--blockers', '0', '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.ok(Array.isArray(out.warnings) && out.warnings.length === 1, `warnings: ${JSON.stringify(out.warnings)}`)
+    assert.match(out.warnings[0], /counters restarted/)
+    assert.ok(out.warnings[0].includes(movedAside(home)[0]))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an absent record raises no unreadable-record warning', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-absent-'))
+  try {
+    const r = cli(home, ['record', 'review-artifacts', '--blockers', '0', '--json'])
+    assert.equal(r.code, 0, r.stderr)
+    assert.doesNotMatch(r.stderr, /unreadable|counters restarted/i)
+    assert.equal(JSON.parse(r.stdout).warnings, undefined)
+    assert.deepEqual(movedAside(home), [])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })

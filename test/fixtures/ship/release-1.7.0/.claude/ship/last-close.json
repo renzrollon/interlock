@@ -1,0 +1,14 @@
+{
+  "schema": "interlock.run-step/1",
+  "action": "halt",
+  "then": null,
+  "spawns": [],
+  "exitCode": 1,
+  "banners": [
+    "NO TEST PROFILE: run /interlock:fix-tests --reconfigure once",
+    "GRAPH UNAVAILABLE: never built — implementer and reviewer agents fall back to grep and will be slower",
+    "LANE STOPPED EARLY: 1.2 not attempted after an earlier task in the same lane failed — not counted as failures, and still unchecked in tasks.md"
+  ],
+  "summary": "SHIP HALTED — fixture\n  leftover tasks (boxes still unchecked): 1.2\n  PLAN REBUILT (no-plan): no stored plan at .claude/ship/plan.json\n  wave 1 (run-batch): 1 ok, 0 failed\n  CACHE ACCOUNTING NOT REPORTED: the run host's runtime exposes no cache decomposition, so every wave's cache-read and cache-creation figures are recorded as unknown rather than as a measured zero\n  run: 3f52df76-25f6-429a-a8d1-583cb04b92cd\n  project: -private-tmp-claude-501-interlock-cut-tVIYKU-repo\n  cwd: ${ROOT}\n  resume card: .claude/handoff/ship-fixture-change-3f52df76-25f6-429a-a8d1-583cb04b92cd.md\nDo not start another ship run unless the user asks.\n\nLEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable\nNO TEST PROFILE: run /interlock:fix-tests --reconfigure once\nGRAPH UNAVAILABLE: never built — implementer and reviewer agents fall back to grep and will be slower\nLANE STOPPED EARLY: 1.2 not attempted after an earlier task in the same lane failed — not counted as failures, and still unchecked in tasks.md",
+  "seq": 4
+}

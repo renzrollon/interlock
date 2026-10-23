@@ -1,0 +1,88 @@
+# Canary — re-validates the SHIPPED bundle under the newest engine, daily.
+#
+# Everything else in CI runs on a change. This runs on the calendar, because the
+# thing it watches is not a change: a newly published Claude Code can break the
+# bundle plugin users already received (the `release` branch) between two
+# releases of this repository, and nothing else would notice until a user did.
+# The engine is therefore installed UNPINNED on purpose; its moving is the signal.
+#
+# READ-ONLY, AND NO ISSUE. The token carries `contents: read` and nothing else.
+# Opening an issue on failure would need `issues: write`, and the repository
+# allows exactly one write-capable job (test/spine/github-workflows.test.mjs).
+# The failed scheduled run is the notification: GitHub tells the owner about a
+# failing scheduled workflow itself.
+#
+# WHAT IS SHIPPED, NOT WHAT IS ON main. The bundle is the `release` branch, which
+# holds the published tarball unchanged. Its binaries are installed from it into
+# a throwaway prefix, and the doctor and the smoke inventory run from there. The
+# bundle carries no tests (they are not in the package's `files`), so the module
+# tests run from a copy of it with this repository's test/mod added: the tests
+# are main's, the hooks module under test is the bundle's.
+name: Canary
+
+on:
+  schedule:
+    - cron: '23 6 * * *' # daily, 06:23 UTC — off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository (the smoke script and the module tests)
+        uses: actions/checkout@v7
+      - name: Check out the release branch (the shipped bundle)
+        uses: actions/checkout@v7
+        with:
+          ref: release
+          path: bundle
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # Unpinned: the newest engine is what this workflow exists to try.
+      - name: Install the newest Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Validate the bundle strictly
+        run: claude plugin validate bundle --strict
+      - name: Run the module tests against the bundle's hooks module
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          tested="$RUNNER_TEMP/bundle-tested"
+          cp -R bundle "$tested"
+          mkdir -p "$tested/test/fixtures"
+          cp -R test/mod "$tested/test/"
+          cp -R test/fixtures/mod "$tested/test/fixtures/"
+          claude plugin test "$tested"
+      - name: Install the bundle's binaries into a prefix
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack ./bundle --pack-destination "$RUNNER_TEMP/pack"
+          npm install -g "$RUNNER_TEMP"/pack/*.tgz --prefix "$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/interlock" --help >/dev/null
+      - name: Doctor from the installed bundle
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # The doctor's other rows depend on what the runner has installed, so
+          # only the CLI-versus-plugin row can fail the canary.
+          PATH="$RUNNER_TEMP/prefix/bin:$PATH" interlock doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          node -e '
+            const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const row = d.checks.find(c => c.id === "cli-version");
+            console.log("cli-version:", row ? row.status + " - " + row.detail : "no row");
+            if (!row || row.status === "fail") process.exit(1);
+          ' "$RUNNER_TEMP/doctor.json"
+      - name: Smoke inventory from the installed bundle
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"

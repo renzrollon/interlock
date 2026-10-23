@@ -47,3 +47,38 @@ accumulated.
 
 The decision module and its CI reader work over whatever is committed, so nothing
 breaks while this stays empty — `promote` simply keeps saying it cannot decide.
+
+## Local interactive-session rows
+
+Next to the per-run `*.json` records, `ship-outcomes.jsonl` is the outcome eval's
+row log. Most rows come from `node evals/ship/run.mjs`, which spawns an agent
+against a committed fixture. A second kind is graded in place after a maintainer
+ran `/interlock:ship` by hand (the per-release local run), with:
+
+```
+node evals/ship/run.mjs --grade-root <dir> --change <name> --baseline-commit <sha> \
+  --fixture-id <id> [--run-id <id>] [--baseline-counts <file>] [--history-root <dir>]
+```
+
+That form runs the loop arm's graders over the root as it stands. It spawns no
+agent and needs no credential. Its row has the same schema as every other, and is
+told apart by what it records about itself:
+
+| Field | Value |
+|---|---|
+| `evalAgent` | `interactive-session` — a person drove the run, not the eval's agent |
+| `version` | the plugin version the run recorded, else the CLI version it recorded. A run that recorded neither is **refused**, nothing is appended, and the output says so |
+| `host` | the host the run recorded (`workflow` for `/interlock:ship`) |
+| `model` | the model the run recorded, or `unknown` — never a default |
+| `fixture` | `--fixture-id`, e.g. `kettle@demo-ship` |
+| `arm` | `loop` |
+
+Without `--baseline-counts` (a JSON file of the suite's counts before the run) the
+`unit-suite-not-weakened` criterion is recorded `unobserved` with its reason,
+never met. Token and spend measures are absent with their reasons: an interactive
+session is not metered by this eval.
+
+**A maintainer commits the rows they keep.** The command appends to this
+repository's `evals/history/` by default; use `--history-root` to write elsewhere
+and `--no-history` to grade and print only. Nothing commits a row for you, and a
+row that is not committed is not part of the record.

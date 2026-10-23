@@ -68,7 +68,7 @@ Bootstrap runs `openspec init` if the repo has never been initialized. It reads 
 > ! interlock doctor
 > ```
 >
-> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)). It exits 1 when it finds something that would stop a zero-touch run.
+> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)), and keep that copy at the plugin's version: `doctor` says when it is not ([16](docs/16-upgrading.md)). It exits 1 when it finds something that would stop a zero-touch run.
 
 Your first shipped change, step by step: **[01 — The first hour](docs/01-first-hour.md)**.
 
@@ -203,6 +203,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and kee
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
 | [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a merge request or a CI job |
+| [16 — Upgrading](docs/16-upgrading.md) | What an upgrade keeps, what a resume across versions does, and how to keep the CLI at the plugin's version |
 
 ## Development
 

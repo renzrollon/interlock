@@ -19,10 +19,16 @@
 # which is what the gate spec's "No history yields the advisory posture" scenario
 # asks for. Nothing here special-cases the empty directory.
 #
-# NOTE: .github/workflows/ is gitignored (.gitignore:38), so this file was
-# force-added (`git add -f`). If it ever shows as untracked, `git ls-files
-# .github/workflows/` will not list it and it never runs on the remote.
-# test/evals.test.mjs asserts that tracking, so losing this file fails npm test.
+# NO SCHEDULE. The full suite is started by hand (`workflow_dispatch`) until the
+# repository provisions a model credential. Without `ANTHROPIC_API_KEY` a
+# scheduled run reaches the "no credential" step below, skips everything metered
+# and reports green: a weekly signal that says nothing ran. Adding a `schedule:`
+# is the edit that records the credential's arrival.
+#
+# NOTE: this file must stay tracked (`git ls-files .github/workflows/`); an
+# untracked workflow never runs on the remote. test/evals.test.mjs asserts that
+# tracking, so losing this file fails npm test. Only copilot-setup-steps.yml in
+# this directory is gitignored.
 name: Evals
 
 on:
@@ -39,9 +45,8 @@ on:
       - 'workflows/**'
       - '.claude-plugin/plugin.json'
   # The full suite — every case, with the baseline ablation arm and judged
-  # graders — runs on a schedule, off the per-change critical path.
-  schedule:
-    - cron: '17 7 * * 1' # Mondays, 07:17 UTC
+  # graders — runs on manual invocation, off the per-change critical path. There
+  # is deliberately no cron trigger (see the header).
   workflow_dispatch:
 
 # Supersede an in-flight run on the same ref rather than stacking metered runs.
@@ -154,8 +159,8 @@ jobs:
           if-no-files-found: ignore
 
   full:
-    name: Full eval suite (scheduled)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Full eval suite (manual)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       CLAUDE_CODE_WALNUT_SPIRE: '1'
@@ -193,7 +198,7 @@ jobs:
           # Every case, with the no-plugin baseline ablation arm and judged
           # graders. runs-per-case comes from the published limits rather than
           # each case's own `runs` value: the per-case values were chosen for
-          # the fast per-change subset, and the scheduled arm is the one off the
+          # the fast per-change subset, and the full run is the one off the
           # critical path that can afford repetition (design D3).
           # --scaffold runs each case's context.scaffold_script, which the
           # Spec Range cases need to seed their frozen change folder; the

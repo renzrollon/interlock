@@ -8,11 +8,13 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS } from '../../lib/limits.mjs'
+import { appendRunLogEvent } from '../../lib/run-log.mjs'
 import {
   HANDOFF_DIR,
   NO_RUN_ID,
@@ -527,4 +529,85 @@ test('a halted run with a rejected handoff report names the task ids, and a run 
     formatResumeCard({ ...HALTED, waves: [{ wave: 1, kind: 'implement', ok: 2, failed: 1, reportRejected: [] }] }),
     /handoff reports rejected/
   )
+})
+
+// --- every command the card prints runs as printed --------------------------------
+//
+// spec: ship/halt-resume-card — "Every command the card prints SHALL run as
+// printed"; design D9. The card is the one artifact a halted run leaves for a
+// reader who was not watching, and its recovery line was `interlock tasks tick
+// <change> --ids …`: a form the CLI read as change "tick" and refused. Every
+// other test here asserts the card's TEXT; this one runs the commands in it.
+
+const CLI = join(ROOT, 'bin', 'interlock')
+
+/** Every `interlock …` command line a card prints: fenced lines and inline code spans. */
+function printedCommands(card) {
+  const found = []
+  let fenced = false
+  for (const line of card.split('\n')) {
+    if (/^```/.test(line)) {
+      fenced = !fenced
+      continue
+    }
+    if (fenced && /^interlock\s/.test(line.trim())) found.push(line.trim())
+    else if (!fenced) {
+      for (const m of line.matchAll(/`(interlock\s[^`]+)`/g)) found.push(m[1].trim())
+    }
+  }
+  return found
+}
+
+/** Substitute the card's own values for its placeholders. */
+function fill(command, { change, id }) {
+  return command.replace(/<([^>]*)>/g, (whole, inner) => {
+    if (/\bids?\b/i.test(inner)) return id
+    if (/change/i.test(inner)) return change
+    return whole
+  })
+}
+
+test('every interlock command line the card prints runs as printed, and the tick line ticks', () => {
+  const change = HALTED.change
+  const runId = HALTED.runId
+  const base = join(tmp, 'openspec', 'changes', change)
+  mkdirSync(base, { recursive: true })
+  writeFileSync(join(base, 'proposal.md'), '# P\nwhy\n')
+  writeFileSync(join(base, 'design.md'), '# D\nhow\n')
+  writeFileSync(join(base, 'tasks.md'), '- [ ] 1.2 wire the widget\n- [ ] 1.4 document it\n')
+
+  // A real trajectory for the run the card names, so `run-log show` and `query`
+  // have something to read rather than printing "none recorded".
+  appendRunLogEvent(tmp, { runId, change, type: 'run-start', mode: 'checkpoint' })
+  appendRunLogEvent(tmp, { runId, change, type: 'run-halt', reason: HALTED.halted })
+
+  const written = writeResumeCard(tmp, HALTED)
+  assert.equal(written.written, true, written.reason)
+  const card = readFileSync(join(tmp, written.path), 'utf8')
+
+  const commands = printedCommands(card)
+  assert.ok(commands.length >= 3, `expected the card to print its interlock commands, found ${commands.length}: ${commands.join(' | ')}`)
+  assert.ok(commands.some(c => /^interlock run-log show /.test(c)))
+  assert.ok(commands.some(c => /^interlock run-log query /.test(c)))
+  assert.ok(commands.some(c => /^interlock tasks tick /.test(c)))
+
+  for (const printed of commands) {
+    const command = fill(printed, { change, id: '1.2' })
+    assert.doesNotMatch(command, /[<>]/, `an unfilled placeholder is left in: ${command}`)
+    const [, ...argv] = command.split(/\s+/)
+    const r = spawnSync(process.execPath, [CLI, ...argv], { cwd: tmp, encoding: 'utf8', input: '' })
+    assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+    assert.equal(
+      r.status,
+      0,
+      `the card prints "${printed}" and it does not run as printed (exit ${r.status}):\n${command}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`
+    )
+    assert.doesNotMatch(r.stdout + r.stderr, /change "(tick|coverage|show|query)"/, `${command} read a subcommand word as the change`)
+  }
+
+  // The recovery line did what it says: the id the reader verified is ticked,
+  // and the one they did not is left for the next run.
+  const tasks = readFileSync(join(base, 'tasks.md'), 'utf8')
+  assert.match(tasks, /- \[x\] 1\.2 wire the widget/)
+  assert.match(tasks, /- \[ \] 1\.4 document it/)
 })

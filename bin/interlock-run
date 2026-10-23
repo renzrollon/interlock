@@ -43,6 +43,7 @@ import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.m
 import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
 import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
 import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
+import { cliVersion } from '../lib/version.mjs'
 
 const WORK = '.claude/ship'
 
@@ -99,6 +100,7 @@ Flags:
   --conformance          answer each delta spec's scenarios against the code
   --strict               all three of the above
   --verbose              print host events as they happen
+  --version              print the CLI version and exit
 
 Environment:
   ${MODEL_MAP_ENV}    {"<host>":{"haiku":"...","sonnet":"...","opus":"..."}}
@@ -128,6 +130,12 @@ function parseArgv(argv) {
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
+    // A bare -h is help, read BEFORE the change positional: otherwise it is
+    // taken as a change name and the run starts against change "-h".
+    if (arg === '-h') {
+      flags.help = true
+      continue
+    }
     if (!arg.startsWith('--')) {
       positional.push(arg)
       continue
@@ -163,6 +171,11 @@ const { flags, positional } = parseArgv(process.argv.slice(2))
 
 if (flags.help || flags.h) {
   process.stdout.write(USAGE)
+  process.exit(0)
+}
+
+if (flags.version) {
+  process.stdout.write(`${cliVersion() ?? 'unknown'}\n`)
   process.exit(0)
 }
 

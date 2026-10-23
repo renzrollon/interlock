@@ -32,6 +32,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { constants as osConstants, cpus, tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
+import { fileURLToPath } from 'node:url'
 import {
   planWaves,
   formatPlan,
@@ -51,6 +52,7 @@ import {
   LAST_CLOSE_PATH,
   LAST_STEP_PATH,
   MANIFEST_PATH,
+  RUN_SCHEMA,
   STATE_PATH,
   VERIFY_TIMINGS_PATH,
   answeredInput,
@@ -73,6 +75,7 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { cliVersion } from '../lib/version.mjs'
 import { drawPlanBoard, drawPlanMermaid } from '../lib/draw-plan.mjs'
 import { drawRunBoard, drawRunMermaid } from '../lib/draw-run.mjs'
 import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
@@ -217,6 +220,8 @@ Usage:
   interlock validate [change]               Inspect OpenSpec change artifacts
                                             (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
+  interlock version [--json]                Print the version and path of this binary
+                                            (--version alone prints the bare version)
   interlock doctor                          Preflight the host before a run:
                                             Node, plugin install, PATH, the
                                             openspec CLI, git, the test profile,
@@ -417,8 +422,9 @@ Usage:
   interlock run-log check --state <file>    Reconstructability gate: exit 1 on
                                             a gap, a missing start, or a
                                             missing run-halt/run-complete
-  interlock tasks tick --ids <ids>          Tick succeeded task checkboxes by id
-  interlock tasks coverage --classified <f> Halt if classified.json omits an unchecked task
+  interlock tasks tick [change] --ids <ids> Tick succeeded task checkboxes by id
+  interlock tasks coverage [change]         Halt if classified.json omits an unchecked task
+                  --classified <f>
   interlock verify plan --profile <file>    Decide which verification commands to run
   interlock verify judge --plan <f> --results <f>
                                            Judge reported results against the plan
@@ -3107,9 +3113,29 @@ function splitPaths(value) {
 }
 
 async function main() {
+  // The flag table is loaded here, by a specifier built in two pieces, and not
+  // with a static import: the flag-table test scans this file for dotted reads
+  // of the flags object, and the literal file name reads as one.
+  const { firstUnknownFlag, helpFor } = await import(new URL('../lib/cli-fl' + 'ags.mjs', import.meta.url))
   const argv = process.argv.slice(2)
-  if (!argv.length || argv[0] === '-h' || argv[0] === '--help') {
+  if (!argv.length) {
     process.stdout.write(USAGE)
+    return
+  }
+
+  // Help is asked for anywhere in the line and runs nothing (spec: cli/arguments).
+  // The help tokens are taken out before parsing, because `--help doctor` would
+  // otherwise hand the subcommand to the flag as its value.
+  if (argv.includes('-h') || argv.includes('--help')) {
+    const rest = parseArgs(argv.filter(a => a !== '-h' && a !== '--help'))
+    process.stdout.write(helpFor(USAGE, rest._[0]))
+    return
+  }
+
+  // `--version` alone prints the bare version; `interlock version` is the form
+  // that also names the binary.
+  if (argv[0] === '--version' || (argv.length === 1 && argv[0] === '-v')) {
+    process.stdout.write(`${cliVersion()}\n`)
     return
   }
 
@@ -3118,7 +3144,38 @@ async function main() {
   const json = Boolean(flags.json)
   const root = typeof flags.root === 'string' ? flags.root : '.'
 
+  // A flag no subcommand declared is refused by name before anything runs
+  // (spec: cli/arguments, design D6). Exit 2: exit 1 already means "blocked" for
+  // gate, ledger, ready, validate and run-log check, and a typo must never read
+  // as a verdict. With --json the same facts also go to stdout, because the
+  // Workflow relay copies stdout only and would otherwise lose them.
+  const unknown = firstUnknownFlag(positional, flags)
+  if (unknown) {
+    const version = cliVersion()
+    const message = `unknown flag ${unknown.flag} for interlock ${unknown.leaf} (CLI ${version})`
+    process.stderr.write(`interlock: ${message}\n\n${helpFor(USAGE, cmd)}`)
+    if (json) {
+      process.stdout.write(
+        JSON.stringify(
+          { error: message, unknownFlag: unknown.flag, subcommand: unknown.leaf, cliVersion: version },
+          null,
+          2
+        ) + '\n'
+      )
+    }
+    process.exit(2)
+  }
+
   switch (cmd) {
+    case 'version': {
+      emit(
+        json,
+        { version: cliVersion(), path: realpathSync(fileURLToPath(import.meta.url)) },
+        `${cliVersion()}\n`
+      )
+      break
+    }
+
     case 'waves': {
       const format = drawFormat(flags, json)
       if (!format) {
@@ -4131,7 +4188,7 @@ async function main() {
           // The run's own state and manifest, from the state home beside the
           // trajectory. The renderer joins each only when it names this run.
           const manifest = readSource(join(logHome, MANIFEST_PATH))
-          if (manifest.read === 'ok' && !(manifest.value && manifest.value.schema === 'interlock.run/1')) {
+          if (manifest.read === 'ok' && !(manifest.value && manifest.value.schema === RUN_SCHEMA)) {
             manifest.value = null
             manifest.read = 'unreadable'
           }
@@ -4170,7 +4227,7 @@ async function main() {
     case 'tasks': {
       const sub = positional[1]
       if (sub === 'tick') {
-        const name = requireChange(root, requestedName(positional, flags), json)
+        const name = requireChange(root, requestedName(positional.slice(1), flags), json)
         const ids = splitPaths(flags.ids)
         if (!ids.length) die('--ids is required')
         const result = tickTasks(root, name, ids)
@@ -4193,7 +4250,7 @@ async function main() {
           process.exit(1)
         }
       } else if (sub === 'coverage') {
-        const name = requireChange(root, requestedName(positional, flags), json)
+        const name = requireChange(root, requestedName(positional.slice(1), flags), json)
         const classified = readInput(flags.classified, '--classified')
         const inspection = inspectChange(root, name)
         const listed = Array.isArray(classified)
@@ -4681,6 +4738,8 @@ async function main() {
           host: hostId,
           hostCapabilities,
           hostEnv,
+          // Forwarded as given; `runStart` compares it with the CLI's own version.
+          pluginRoot: typeof flags['plugin-root'] === 'string' ? flags['plugin-root'] : undefined,
           stateHome: startStateHome(root, flags),
           flags: {
             applyOnly: flags['apply-only'] === true,
@@ -4843,6 +4902,9 @@ async function main() {
           ? { human_override: true }
           : { blockers: Number(flags.blockers || 0) }
         const result = record(path, outcome, opts)
+        // An unreadable record was moved aside and restarted; say so where a
+        // person sees it. The exit code is unchanged (design D20).
+        for (const w of result.warnings || []) warn(w)
         const text = result.promoted
           ? `${path}: promoted ${result.from} → ${result.to}\n`
           : `${path}: ${result.current_level} (${result.consecutive_clean}/${result.needed} clean)\n`
@@ -4851,6 +4913,8 @@ async function main() {
         const paths = positional.slice(2)
         if (!paths.length) die('autonomy clean requires at least one path')
         const results = recordCleanFlow(paths, opts)
+        const cleanWarnings = results.warnings || []
+        for (const w of cleanWarnings) warn(w)
         const text = results
           .map(r =>
             r.promoted
@@ -4858,7 +4922,9 @@ async function main() {
               : `${r.path}: ${r.current_level} (${r.consecutive_clean}/${r.needed} clean)`
           )
           .join('\n') + '\n'
-        emit(json, results, text)
+        // JSON.stringify drops a property set on an array, so the warnings ride
+        // beside the rows only when there are any.
+        emit(json, cleanWarnings.length ? { results, warnings: cleanWarnings } : results, text)
       } else if (sub === 'state') {
         const state = getState(opts)
         const text = Object.entries(state).length

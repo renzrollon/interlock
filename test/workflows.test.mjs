@@ -2199,7 +2199,8 @@ const {
   countingBudget,
   handoffFor,
   makeRepo,
-  reviewFiles
+  reviewFiles,
+  DEMO_CHANGE
 } = await import('./helpers/ship-harness.mjs')
 
 // The remediation bound used to be a `remediationBudget` helper extracted from
@@ -4845,3 +4846,141 @@ test('a null agent result is named as such, and a wrong hash keeps its own banne
   assert.match(unread.output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/, unread.output)
   assert.doesNotMatch(unread.output, /AGENT RETURNED NO RESULT: 1\.1/)
 })
+
+// --- upgrade path (spec: ship/run-program — stale classification, rebuilt plan,
+// defaulted fields, versions; distribution/upgrade-compatibility) ---------------
+//
+// A run's state outlives the CLI that wrote it, and the plugin outlives the CLI
+// on PATH. These drive the whole script against a real CLI over a root that a
+// PREVIOUS run left behind, with the one thing an upgrade changes tampered
+// between the two. Each asserts what the operator is TOLD, because a rebuild or
+// a default that nobody hears about is the failure these exist to remove.
+
+const countOf = (text, needle) => text.split(needle).length - 1
+
+test('a plan stored for an older format is rebuilt, and the run names the format change', async () => {
+  const first = await runShip({ keepRepo: true })
+  try {
+    const stored = join(first.root, '.claude', 'ship', 'plan-fingerprint.json')
+    const fingerprint = JSON.parse(readFileSync(stored, 'utf8'))
+    assert.match(fingerprint.planFormat, /^interlock\.ship-plan\/\d+$/, 'the fixture must tamper a real field')
+    writeFileSync(stored, JSON.stringify({ ...fingerprint, planFormat: 'interlock.ship-plan/4' }, null, 2) + '\n')
+
+    const second = await runShip({ keepRepo: true, repo: { reuseRoot: first.root } })
+    assert.ok(second.calls.includes('plan-waves'), `a plan of another format must not be reused: ${second.calls.join(', ')}`)
+    assert.match(second.output, /PLAN REBUILT \(plan-format-changed\)/, second.output)
+    assert.doesNotMatch(second.output, /PLAN REUSED/)
+  } finally {
+    rmSync(first.root, { recursive: true, force: true })
+  }
+})
+
+test('a manifest stripped of fields a newer CLI reads closes naming each, once', async () => {
+  // Tampered MID-run, by the planner stub: the manifest exists by then and the
+  // next subcommands load it. This is the manifest a run started by an older CLI
+  // hands to a newer one.
+  const { output, root } = await runShip({
+    keepRepo: true,
+    responses: {
+      'plan-waves': (label, n, ctx) => {
+        const path = join(ctx.root, '.claude', 'ship', 'run.json')
+        const manifest = JSON.parse(readFileSync(path, 'utf8'))
+        delete manifest.verifyBudget
+        delete manifest.stateHome
+        writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')
+        return { ok: true, taskCount: 1 }
+      }
+    }
+  })
+  try {
+    for (const field of ['verifyBudget', 'stateHome']) {
+      assert.match(output, new RegExp(`MANIFEST FIELD DEFAULTED[^\\n]*${field}`), `${field} was defaulted in silence:\n${output}`)
+      assert.equal(
+        countOf(output, `MANIFEST FIELD DEFAULTED: ${field}`),
+        1,
+        `${field} is spoken once per run, not once per subcommand`
+      )
+    }
+    assert.ok(receiptFrom(root), 'and the run still closes with a receipt')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a classification left by an earlier run halts the planning, and no batch is dispatched', async () => {
+  const { root } = makeRepo()
+  try {
+    mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
+    writeFileSync(
+      join(root, '.claude', 'ship', 'classified.json'),
+      JSON.stringify({ tasks: [{ id: '1.1', group: 1, description: 'stale', tier: 2, model: 'sonnet', isTestTask: false, paths: ['lib/a.mjs'] }] }) + '\n'
+    )
+    // A planner that wrote nothing: the only classification on disk is the leftover.
+    const { output, calls, commands } = await runShip({
+      keepRepo: true,
+      repo: { reuseRoot: root },
+      responses: { 'plan-waves': null }
+    })
+    assert.match(output, /SHIP HALTED/, output)
+    assert.match(output, /STALE CLASSIFICATION REMOVED/, 'the start step says it removed the leftover')
+    assert.match(output, /classified\.json/, 'and the halt names the file it wanted')
+    assert.ok(!calls.includes('1.1'), `a task was dispatched off a leftover classification: ${calls.join(', ')}`)
+    assert.equal(relayCommands(commands, 'record-batch'), 0, 'no batch may be recorded')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the plugin root in the invocation reaches run start as --plugin-root', async () => {
+  const { commands } = await runShip({ args: { change: DEMO_CHANGE, pluginRoot: ROOT } })
+  const start = commands.find(argv => argv[0] === 'run' && argv[1] === 'start')
+  assert.ok(start, 'the run called run start')
+  const at = start.indexOf('--plugin-root')
+  assert.ok(at >= 0, `run start was not given the plugin root: ${start.join(' ')}`)
+  assert.equal(start[at + 1], ROOT)
+})
+
+test('without a plugin root, run start is not given --plugin-root', async () => {
+  const { commands } = await runShip({})
+  const start = commands.find(argv => argv[0] === 'run' && argv[1] === 'start')
+  assert.ok(start)
+  assert.ok(!start.includes('--plugin-root'), start.join(' '))
+})
+
+test('a start step with no cliVersion is a CLI that predates version reporting, and the close says so', async () => {
+  const older = await runShip({ stripCliVersion: true })
+  assert.match(
+    older.output,
+    /CLI VERSION UNKNOWN: the interlock on PATH predates version reporting \(older than 1\.8\.0\) — run interlock doctor/,
+    older.output
+  )
+  // The other direction: a CLI that does report a version is not accused.
+  const current = await runShip({})
+  assert.doesNotMatch(current.output, /CLI VERSION UNKNOWN/, current.output)
+})
+
+test('a run start relay unreadable twice points at the CLI on PATH being older than the plugin', async () => {
+  const { output } = await runShip({ responses: { 'cli-1': null } })
+  assert.match(output, /RELAY UNREADABLE/, output)
+  assert.match(output, /interlock --version/, 'the reason names the command that tells the operator which CLI answered')
+})
+
+const HARNESS_BIN = process.env.INTERLOCK_HARNESS_BIN
+test(
+  'the current ship.js against the previous release CLI closes, and says the CLI is older',
+  {
+    skip: HARNESS_BIN
+      ? false
+      : "INTERLOCK_HARNESS_BIN unset — the previous release's CLI is installed only in CI's upgrade-install job"
+  },
+  async () => {
+    const { output, root } = await runShip({ keepRepo: true, cliBin: HARNESS_BIN })
+    try {
+      assert.doesNotMatch(output, /the run program returned no step/, output)
+      assert.match(output, /SHIP (COMPLETE|HALTED)/, output)
+      assert.match(output, /CLI VERSION UNKNOWN/, output)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)

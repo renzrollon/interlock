@@ -640,9 +640,9 @@ test('the bundle workflow mirrors the published tarball onto the branch the mark
   )
 })
 
-// `.github/workflows/` is gitignored, so both definitions stay tracked only
-// because they were force-added. An untracked workflow never runs on the
-// remote, and plugin users would silently stop receiving releases. Where
+// An untracked workflow never runs on the remote, and plugin users would
+// silently stop receiving releases. (Only copilot-setup-steps.yml in that
+// directory is gitignored.) Where
 // version-control status cannot be determined, this skips with its reason.
 const inCheckout = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: ROOT, encoding: 'utf8' })
 const NOT_A_CHECKOUT =
@@ -656,8 +656,7 @@ test('the release and bundle workflow definitions are tracked in version control
     assert.ok(!listed.error, `git ls-files failed to run: ${listed.error && listed.error.message}`)
     assert.ok(
       listed.stdout.trim().length > 0,
-      `${workflow} is not tracked. .gitignore ignores .github/workflows/, so it stays tracked only when ` +
-        `force-added — restore it with \`git add -f ${workflow}\`.`
+      `${workflow} is not tracked, so it never runs on the remote. Restore it with \`git add ${workflow}\`.`
     )
   }
 })

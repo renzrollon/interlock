@@ -248,6 +248,7 @@ interlock evals triage --results evals-results.json   # regression / variance / 
 - **The verdict is model-free.** `interlock evals triage` classifies a results file without a model or the network; its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision.
 - **Advisory, pending a baseline.** The CI eval job reports and does not block. No baseline scores exist yet, so any blocking threshold would be a guess; promotion needs observed variance across more than one run. The offline structural gate `test/evals.test.mjs` runs in `npm test` and *does* gate every pull request.
 - **CI skips until access is provisioned.** The eval job (`.github/workflows/evals.yml`) skips fork pull requests and skips cleanly when no model credential is present, so the suite lands and is maintained before paid access exists.
+- **No schedule until a credential exists.** Neither `evals.yml` nor `ship-outcome-eval.yml` has a `schedule:` trigger; the `full` job runs on `workflow_dispatch` alone. A weekly run that skipped for want of a key finished green, and a green that measured nothing reads as a passing eval; failing weekly instead would go red for good if the key is never provisioned. Adding a cron back is the edit that records the credential's arrival. The pull-request smoke still skips quietly, so a fork stays mergeable.
 
 The cases each encode a reproduced failure: tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication. Each case cites the failure it encodes.
 
@@ -263,7 +264,7 @@ archived ledger.
 
 - **Seeding needs `--scaffold`.** Each case places its fixture through
   `context.scaffold_script`, which the harness runs only under `--scaffold`.
-  The scheduled full job passes it; the smoke job does not, and these cases
+  The dispatched full job passes it; the smoke job does not, and these cases
   carry no `smoke` tag. A run without it starts in an empty workspace, writes
   no `advisor.md`, and fails `advisor-written` — the absence is how the report
   shows the run was unseeded rather than the advisor wrong.
@@ -314,7 +315,7 @@ doubted.
 
 - **Seeding needs `--scaffold`.** Each case places its fixture through
   `context.scaffold_script`, which the harness runs only under `--scaffold`.
-  The scheduled full job passes it; these cases carry no `smoke` tag. A run
+  The dispatched full job passes it; these cases carry no `smoke` tag. A run
   without it finds no review to resolve, the check records a consult that did
   not run, and `check-drafted` fails, which is how the report shows the run was
   unseeded rather than the advisor wrong.
@@ -366,6 +367,26 @@ runner's spoken limits (ACP only, default config, apparatus agent labelled on
 every row) live in `evals/` and `evals/ship/README.md` — this page does not
 restate them.
 
+**Grading a run that already happened.** An interactive `/interlock:ship` run
+leaves the same disk and the same trajectory the outcome fixtures leave, so the
+outcome graders can read it where it ran, with no model and no credential:
+
+```bash
+node evals/ship/run.mjs --grade-root <dir> --change <name> --baseline-commit <sha> \
+  --fixture-id <id> [--run-id <id>] [--baseline-counts <file>] [--history-root <dir>] [--no-history] [--json]
+```
+
+It grades the root's newest run (or `--run-id`) with the loop arm's graders and
+spawns no agent. Unless `--no-history` is given it appends one row to the outcome
+history, and the row says what produced it: the host the run recorded, the plugin
+version it recorded (the CLI's when no plugin root was given), the model it
+recorded or `unknown`, and an eval agent of `interactive-session`, so it is never
+read as a headless-driver row. A run whose trajectory and receipt carry no
+version is refused, and nothing is appended: a row with no release to key it on
+could not be compared with another. Without `--baseline-counts` the
+not-weakened criterion is `unobserved`, with its reason, and never met. A
+maintainer commits the rows they mean to keep, as with every history row.
+
 Scores are model × harness. The outcome eval already treats the ACP apparatus
 agent as a labelled confounder and refuses to pretend ACP is Workflow. A later
 host matrix is the same fixture on another headless driver, with `host` on every
@@ -411,7 +432,7 @@ evidence for that edit, not a verdict on it.
 ### How the suite should grow
 
 The closed loop is already specified: **capture** a real miss → author a case
-from resolved evidence → scheduled or dispatched **run** → **triage** → a
+from resolved evidence → dispatched **run** → **triage** → a
 maintainer commits a history record → **promote** may move advisory to blocking.
 Authoring is `skills/evals/SKILL.md`. Classification is `interlock evals
 triage`, never the skill. Caps, windows and floors are `interlock limits --json`
@@ -457,7 +478,7 @@ not adding frameworks or hypothetical tasks.
    deferral rows. Until then those cases cannot promote.
 3. **Keep producing outcome rows.** Ordinary CI already runs
    `node evals/ship/run.mjs --prepare-only` (no credential, no spend). A
-   metered sweep is schedule and `workflow_dispatch` only. Partial-at-ceiling
+   metered sweep is `workflow_dispatch` only. Partial-at-ceiling
    is allowed; the deliverable is rows, not a verdict.
 4. **Host matrix and `--strict`** wait until a headless driver exists for the
    host, or until a fixture can plant surviving blockers and assert the loop
