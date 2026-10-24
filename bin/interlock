@@ -57,6 +57,7 @@ import {
   VERIFY_TIMINGS_PATH,
   answeredInput,
   checkSequence,
+  isCloseReplay,
   isRefusal,
   locateInput,
   readManifest,
@@ -1516,7 +1517,8 @@ function emitCloseStep(json, root, step) {
     return
   }
   const out = JSON.stringify(step, null, 2) + '\n'
-  keepStepCopy(root, LAST_CLOSE_PATH, out)
+  // A replayed close recorded nothing, so the copy of the close on record stays.
+  if (!isCloseReplay(step)) keepStepCopy(root, LAST_CLOSE_PATH, out)
   process.stdout.write(out)
 }
 

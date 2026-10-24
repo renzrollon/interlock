@@ -2,7 +2,7 @@
 
 The plugin and the `interlock` command line are installed in two places, and a run's files outlive both. This page says what an upgrade keeps, what a resume across versions does, how to read both versions from a session, and how to keep a separately installed CLI in step with the plugin.
 
-Every release's breaking changes are listed under `### Upgrading` in the [CHANGELOG](../CHANGELOG.md). A breaking change never ships in a patch release; read that heading before you update across a minor version.
+Every release's breaking changes are listed under `### Upgrading` in the [CHANGELOG](../CHANGELOG.md). From 1.8.0, a breaking change ships in a minor release at least; read that heading before you update across a minor version.
 
 ---
 
@@ -26,15 +26,16 @@ The `!` runs the command from the Claude Code prompt, so it resolves `interlock`
 
 | The `interlock` on `PATH` is | The row reads | What it means |
 |---|---|---|
-| older than the plugin, or too old to report a version | `fail`: `CLI VERSION SKEW: interlock on PATH is <x> (<path>), plugin is <y>` | The preflight prints it at session start. This is the direction that silently drops arguments a skill passes. |
-| newer than the plugin | `warn` | A mismatch worth saying. No subcommand a skill calls has been removed, so it is not a known break. |
+| older than the plugin, or too old to report a version | `fail`: `CLI VERSION SKEW: interlock on PATH is <x> (<path>), plugin is <y>`, or `CLI VERSION SKEW: interlock on PATH predates version reporting (<path>), plugin is <y>` | The preflight prints it at session start. This is the direction that silently drops arguments a skill passes. |
+| a binary whose version could not be read | `fail`: `CLI VERSION SKEW: the version of interlock on PATH (<path>) could not be read (<reason>), plugin is <y>` | `--version` timed out, was killed, exited non-zero without `Unknown command`, or printed no `major.minor.patch`. Run `<path> --version` and read its answer. |
+| newer than the plugin | `warn` | A mismatch worth saying, with one known break. 1.8.0 removed `interlock advisor`, which a 1.7.0 plugin's `/interlock:spec` still calls after a clean artifact review. The call exits 1 with `Unknown command`, and the skill reports it and goes on to the hand-off, so the spec finishes with no `advisor.md`. Update the plugin to the CLI's version, or update both together. |
 | the same version, or the plugin's own `bin/` | `ok` | Nothing to do. |
 | not on `PATH` at all | `skip`: `interlock is not on PATH; the bundled binary runs` | Whether that is a problem is the `binaries` row's call. |
 | an npm copy, with no plugin to compare it with | `skip`: `the doctor ran outside a plugin session, so there was no plugin to compare …` | The doctor found no plugin root: none passed, no `CLAUDE_PLUGIN_ROOT`, and no plugin `bin/` later on `PATH`. Run it from the Claude Code prompt, or set `CLAUDE_PLUGIN_ROOT` to the plugin's directory. |
 
 The plugin the row compares with is, in order: `CLAUDE_PLUGIN_ROOT` when it is set, then the first plugin `bin/` on `PATH` that is not the npm copy itself. The plugin puts that `bin/` on the `PATH` of Claude Code's shell, so `! interlock doctor` finds it even when a global copy comes first. A copy run by name from a plain terminal has neither, and says so rather than comparing itself with itself. A copy older than the plugin's release may have no such row at all; the session-start preflight still catches it, because it runs the plugin's own bundled `bin/interlock doctor`.
 
-A CLI that answers `--version` with `Unknown command` predates version reporting and is read as older than the plugin. The row's `evidence` in `.claude/ship/preflight.json` carries the resolved path and both versions.
+A CLI that answers `--version` with `Unknown command` predates version reporting and is read as older than the plugin. A wrapper that prints `interlock 1.8.0` is read as `1.8.0`, and a prerelease such as `1.8.0-rc.1` is older than `1.8.0`. A plugin whose own version is not `major.minor.patch` leaves the row a `skip`. The row's `evidence` in `.claude/ship/preflight.json` carries the resolved path and both versions. A relative `PATH` entry such as `.` or `./bin` is skipped: the preflight runs the binary it finds, and a relative entry would find one in whatever repository the session opened.
 
 **Every run records which release produced it.** The `run-start` event in the trajectory carries the CLI's version and path and the plugin's version and root, and the receipt carries both versions, so a trajectory read without its repository still says what wrote it. `/interlock:ship` hands the workflow the plugin's root, and `interlock run start` raises `CLI VERSION SKEW: this run's interlock is <x> (<path>), the plugin is <y> (<root>)` when the two disagree. When the CLI on `PATH` is so old that its start step carries no version at all, the close says `CLI VERSION UNKNOWN: the interlock on PATH predates version reporting (older than 1.8.0) — run interlock doctor`.
 
@@ -79,7 +80,7 @@ You can stop a run under one version, update, and resume or start again under an
 
 **It defaults a missing field out loud.** A manifest written by an earlier release can lack a field the new one reads. `verifyBudget` and `stateHome` fall back to a default, and the first subcommand that loads the manifest says `MANIFEST FIELD DEFAULTED: <field> absent (written by an earlier release); using <default>`, once per run.
 
-**It refuses a run that is over.** Every `run` subcommand except `start` and `close` refuses a manifest that records a halt or a close, naming the run id and the state, and writes nothing. Start a new run with `interlock run start`. One gap is deliberate: a run that closed *clean* under 1.7.0 recorded neither mark, so a `run` subcommand does not refuse it.
+**It refuses a run that is over.** Every `run` subcommand except `start` and `close` refuses a manifest that records a halt or a close, naming the run id and the state, and writes nothing. Start a new run with `interlock run start`. Following the refusal to `interlock run close` returns the close the earlier run kept, with its own halt reason and exit code, and records nothing; that holds for a run 1.7.0 halted as well. One gap is deliberate: a run that closed *clean* under 1.7.0 recorded neither mark, so a `run` subcommand does not refuse it.
 
 A halted run can still be picked up from its resume card; [04](./04-when-it-stops.md#reading-a-ship-halted-run) says how, and every `interlock` line on a card is checked to run.
 

@@ -250,12 +250,11 @@ test('.claude-plugin/plugin.json declares no experimental.evals key', () => {
 
 // --- the CI definition is tracked (spec: evals/gate) ----------------------
 //
-// `.github/workflows/` is gitignored, so evals.yml is tracked only because it
-// was force-added. Nothing else notices if that stops being true: an untracked
-// workflow never runs on the remote and its absence is completely silent — the
-// whole gate disappears with no failing check anywhere. GitHub requires
-// workflow definitions to live in `.github/workflows/`, so moving the file out
-// of the ignored directory is not available; the assertion is the mechanism.
+// Nothing else notices if evals.yml stops being tracked: an untracked workflow
+// never runs on the remote and its absence is completely silent — the whole
+// gate disappears with no failing check anywhere. `.gitignore` ignores only
+// copilot-setup-steps.yml in `.github/workflows/`, so the file is tracked the
+// ordinary way; the assertion is what keeps it so.
 //
 // Where version-control status cannot be determined — a published tarball, an
 // export with no `.git` — this skips with its reason stated rather than
@@ -279,10 +278,9 @@ test('the eval workflow definition is tracked in version control', { skip: NOT_A
   assert.equal(listed.status, 0, `git ls-files exited ${listed.status}: ${listed.stderr}`)
   assert.ok(
     listed.stdout.trim().length > 0,
-    `${EVAL_WORKFLOW} is not tracked. .gitignore:38 ignores .github/workflows/, so this ` +
-      `file only stays tracked because it was force-added — restore it with ` +
-      `\`git add -f ${EVAL_WORKFLOW}\`. Untracked, the eval gate never runs on the remote ` +
-      `and nothing else says so.`
+    `${EVAL_WORKFLOW} is not tracked — restore it with \`git add ${EVAL_WORKFLOW}\`, and check ` +
+      `that no .gitignore line has started to cover it. Untracked, the eval gate never runs ` +
+      `on the remote and nothing else says so.`
   )
 })
 

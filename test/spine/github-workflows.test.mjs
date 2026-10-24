@@ -277,7 +277,8 @@ test('the skew step runs the harness case by its exact title and fails when that
 // repository, and requires these check names. A matrix leg reports as
 // `job (value)`, so a required bare name that no job reports blocks every merge
 // with every check green. Mirrors the live list; a change to the ruleset is a
-// change here.
+// change here. `test (24)` and `upgrade-install` run on every pull request but
+// are advisory: a red one does not block a merge until the ruleset requires it.
 const REQUIRED_CHECKS = ['test (18)', 'test (20)', 'test (22)', 'validate-plugin', 'cli-smoke', 'Outcome eval prepare (model-free)']
 
 /** The check names one job reports: its `name:` (or id), once per leg of a one-key matrix. */
@@ -294,11 +295,17 @@ function reportedChecks(job) {
   return values.map(v => (expr.test(name) ? name.replace(expr, v) : `${name} (${v})`))
 }
 
-test('every check the main ruleset requires is reported by a ci.yml job', () => {
+test('every check the main ruleset requires is reported by exactly one ci.yml job', () => {
+  // A name two jobs report is a required check one of them can satisfy while
+  // the other fails.
   const ci = workflowNamed('ci.yml')
   const reported = jobs(ci.code).flatMap(reportedChecks)
   for (const check of REQUIRED_CHECKS) {
-    assert.ok(reported.includes(check), `no ci.yml job reports the required check "${check}"; reported: ${reported.join(', ')}`)
+    assert.equal(
+      reported.filter(r => r === check).length,
+      1,
+      `the required check "${check}" must be reported by exactly one ci.yml job; reported: ${reported.join(', ')}`
+    )
   }
 })
 

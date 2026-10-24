@@ -7,10 +7,14 @@
 # The engine is therefore installed UNPINNED on purpose; its moving is the signal.
 #
 # READ-ONLY, AND NO ISSUE. The token carries `contents: read` and nothing else.
-# Opening an issue on failure would need `issues: write`, and the repository
-# allows exactly one write-capable job (test/spine/github-workflows.test.mjs).
-# The failed scheduled run is the notification: GitHub tells the owner about a
-# failing scheduled workflow itself.
+# Opening an issue on failure would need `issues: write`. Only the plugin bundle
+# job holds `contents: write`, and this job holds no write scope at all
+# (test/spine/github-workflows.test.mjs). The failed scheduled run is the
+# notification: GitHub tells the owner about a failing scheduled workflow itself.
+#
+# GitHub disables a public repository's scheduled workflows after 60 days with
+# no repository activity, and says so only on the Actions tab. A disabled canary
+# fails nothing; re-enable it there by hand (docs/14-evals.md).
 #
 # WHAT IS SHIPPED, CHECKED BY WHAT SHIPPED WITH IT. The bundle is the `release`
 # branch, which holds the published tarball unchanged. Its binaries are

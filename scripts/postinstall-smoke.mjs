@@ -168,7 +168,8 @@ export const INVENTORY = [
     check: (r, ctx) => {
       const out = r.stdout.trim()
       if (!/^\d+\.\d+\.\d+/.test(out)) return `printed "${out.slice(0, 40)}", not a version`
-      return ctx.version && out !== ctx.version ? `printed ${out}, the checkout is ${ctx.version}` : ''
+      if (!ctx.version) return `printed ${out}, but the checkout version could not be read to compare it with`
+      return out !== ctx.version ? `printed ${out}, the checkout is ${ctx.version}` : ''
     }
   },
   { bin: I, argv: ['version', '--json'], codes: [0], keys: ['version', 'path'] },

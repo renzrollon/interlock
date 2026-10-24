@@ -438,6 +438,9 @@ function effortBanners() {
 
 let resolvedChange = changeArg || '(unresolved)'
 let steps = 0
+// The `error` of the last JSON the CLI printed that was not a step: an unknown
+// flag is refused with `{ error, unknownFlag, … }` and exit 2.
+let cliRefusal = null
 
 /** Write a work file and return the repo-relative path the CLI is given. */
 function write(rel, data) {
@@ -453,11 +456,17 @@ async function cli(argv, { closing = false } = {}) {
   // From the first close on, a signal starts no second one — whichever path
   // reached the close: the loop's own continuation, or `stop()`.
   if (argv[0] === 'run' && argv[1] === 'close') stopping = true
+  cliRefusal = null
   const result = await host.runCli([...argv, '--json'])
   if (signalled && !closing) return new Promise(() => {})
   if (!result.stdout.trim()) return null
   try {
-    return JSON.parse(result.stdout)
+    const parsed = JSON.parse(result.stdout)
+    // A step names its action. Anything else is not one, as `workflows/ship.js`
+    // reads it: a refusal object read as a step would end the run as a success.
+    if (parsed && typeof parsed.action === 'string') return parsed
+    if (parsed && typeof parsed.error === 'string' && parsed.error) cliRefusal = parsed.error
+    return null
   } catch {
     // Unparseable stdout is not a step. Nothing is inferred from it.
     return null
@@ -599,7 +608,11 @@ while (step && step.then) {
 }
 
 if (!step) {
-  await stop('the run program returned no step — the CLI produced no readable output')
+  await stop(
+    cliRefusal
+      ? `the CLI refused the call and printed no step: ${cliRefusal}`
+      : 'the run program returned no step — the CLI produced no readable output'
+  )
 }
 
 finish(step)

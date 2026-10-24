@@ -8481,6 +8481,34 @@ test('a second plain run close on a closed run writes nothing', () => {
   }
 })
 
+test('closing a closed run again clears a stage marker that outlived the close, and records nothing else', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const lastCloseBefore = readFileSync(join(root, '.claude/ship/last-close.json'), 'utf8')
+    const outcomesBefore = outcomeRows(root)
+    // A lingering worker rewrote the marker after the close, with a live pid.
+    writeStage(change, 'commit', { root, pid: process.pid })
+    const marker = stagePath(change, root)
+    assert.ok(existsSync(marker))
+
+    const replay = runAny(root, ['run', 'close', '--halt', 'clear the guard'])
+    assert.equal(replay.code, 0, 'the clean close keeps its exit code')
+    assert.equal(replay.step.summary, closed.summary, 'the close on record is what comes back')
+    assert.equal(existsSync(marker), false, 'the marker no longer arms the commit guard')
+    assert.ok(
+      bannersOf(replay.step).some(b => b.startsWith('STAGE MARKER CLEARED:') && b.includes(`.claude/ship/${change}/`)),
+      JSON.stringify(replay.step.banners)
+    )
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the manifest was rewritten')
+    assert.equal(readFileSync(join(root, '.claude/ship/last-close.json'), 'utf8'), lastCloseBefore, 'the close copy was rewritten')
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('a closed run whose close copy is lost says so, records nothing, and does not read as success', () => {
   const { root, change } = repo()
   try {
@@ -8923,6 +8951,37 @@ test('--plugin-root naming a directory with no readable plugin manifest raises n
   } finally {
     rmSync(empty, { recursive: true, force: true })
     cleanup(root)
+  }
+})
+
+test('a Workflow start given no --plugin-root says the version check did not run; a runner start and a given root do not', () => {
+  const NOT_CHECKED = 'PLUGIN VERSION NOT CHECKED: run start was given no --plugin-root'
+  const bare = repo()
+  try {
+    const started = startWorkflow(bare.root, bare.change)
+    assert.equal(started.action, 'classify')
+    assert.ok(bannersOf(started).includes(NOT_CHECKED), JSON.stringify(started.banners))
+    assert.equal(manifestOf(bare.root).plugin, null)
+  } finally {
+    cleanup(bare.root)
+  }
+  const given = repo()
+  const plugin = pluginDirAt(PKG_VERSION)
+  try {
+    const started = run(given.root, ['run', 'start', '--change', given.change, '--host', 'workflow', '--plugin-root', plugin], {
+      env: workflowEnv()
+    }).step
+    assert.equal(startsWithAny(bannersOf(started), 'PLUGIN VERSION NOT CHECKED'), false, JSON.stringify(started.banners))
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(given.root)
+  }
+  const runner = repo()
+  try {
+    const started = run(runner.root, ['run', 'start', '--change', runner.change]).step
+    assert.equal(startsWithAny(bannersOf(started), 'PLUGIN VERSION NOT CHECKED'), false, JSON.stringify(started.banners))
+  } finally {
+    cleanup(runner.root)
   }
 })
 

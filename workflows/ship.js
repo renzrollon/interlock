@@ -591,9 +591,13 @@ let step = await cli([
 // prints a step without one, so a missing field is the only sign that the
 // `interlock` on PATH is older than this plugin. Said here because that CLI
 // cannot say it.
+// A CLI new enough to carry the field but unable to read its own package.json
+// carries it as null, and is not an old one.
 if (step && typeof step.action === 'string' && typeof step.cliVersion !== 'string') {
   banners.push(
-    `CLI VERSION UNKNOWN: the ${CLI_NAME} on PATH predates version reporting (older than 1.8.0) — run ${CLI_NAME} doctor`
+    step.cliVersion === null
+      ? `CLI VERSION UNKNOWN: the ${CLI_NAME} on PATH could not read its own version — run ${CLI_NAME} version --json to see which file answered`
+      : `CLI VERSION UNKNOWN: the ${CLI_NAME} on PATH predates version reporting (older than 1.8.0) — run ${CLI_NAME} doctor`
   )
 }
 

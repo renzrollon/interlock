@@ -1438,6 +1438,49 @@ test('a signal before run start has answered still closes, truthfully, with no m
   }
 })
 
+test('a CLI refusal mid-run halts the runner through the close, naming the refusal, never as success', () => {
+  // `bin/interlock` answers an unknown flag with `{ error, unknownFlag, … }` on
+  // stdout and exit 2. A preload stands in for that answer to `run record-batch`,
+  // so the runner meets it after lanes ran and a manifest exists.
+  const { root, change } = signalRepo()
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-runner-refusal-')))
+  const preload = join(scratch, 'refuse-record-batch.cjs')
+  const REFUSAL = 'unknown flag --bogus for interlock run record-batch (CLI test)'
+  writeFileSync(
+    preload,
+    [
+      "const fs = require('node:fs')",
+      'const argv = process.argv.slice(2)',
+      "if (/[\\\\/]bin[\\\\/]interlock$/.test(process.argv[1] || '') && argv[0] === 'run' && argv[1] === 'record-batch') {",
+      `  fs.writeSync(1, JSON.stringify({ error: ${JSON.stringify(REFUSAL)}, unknownFlag: '--bogus', subcommand: 'run record-batch', cliVersion: 'test' }) + '\\n')`,
+      '  process.exit(2)',
+      '}',
+      ''
+    ].join('\n')
+  )
+  try {
+    const ran = spawnSync(process.execPath, [RUNNER, change, '--host', 'claude', '--no-commit', '--root', '.'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 180000,
+      env: runnerEnv({
+        INTERLOCK_CLAUDE_COMMAND: shipCommand([]),
+        NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', preload].filter(Boolean).join(' ')
+      })
+    })
+    const diagnostic = `\nstdout:\n${ran.stdout}\nstderr:\n${ran.stderr}`
+    assert.notEqual(ran.status, 0, `a refused call is not a clean run:${diagnostic}`)
+    assert.doesNotMatch(ran.stdout, /SHIP ENDED/, diagnostic)
+    assert.ok(ran.stdout.includes(REFUSAL), `the halt names the refusal:${diagnostic}`)
+    const halts = eventsOf(root).filter(e => e.type === 'run-halt')
+    assert.equal(halts.length, 1, `the run closed once: ${JSON.stringify(halts)}${diagnostic}`)
+    assert.ok(halts[0].reason.includes(REFUSAL), halts[0].reason)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
 // --- the host-record channel, end to end (design D7, D9; spec: run-host-adapters) -
 //
 // The real `bin/interlock-run` over the fake CLI. What the runner sends the CLI

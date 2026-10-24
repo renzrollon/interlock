@@ -95,8 +95,10 @@ export function runCli(argv, opts = {}) {
  * A step's JSON with `cliVersion` removed, or the text untouched when it holds
  * none. Stands in for a CLI that predates version reporting without needing one
  * installed: the relayed step is exactly what such a CLI would have printed.
+ * `'null'` keeps the field and nulls it instead: a current CLI that could not
+ * read its own package.json.
  */
-function withoutCliVersion(stdout) {
+function withoutCliVersion(stdout, how = true) {
   let step
   try {
     step = JSON.parse(stdout)
@@ -104,7 +106,8 @@ function withoutCliVersion(stdout) {
     return stdout
   }
   if (!step || typeof step !== 'object' || !('cliVersion' in step)) return stdout
-  delete step.cliVersion
+  if (how === 'null') step.cliVersion = null
+  else delete step.cliVersion
   return JSON.stringify(step, null, 2) + '\n'
 }
 
@@ -487,7 +490,7 @@ export function defaultResponses() {
  *   env?: object,
  *   classified?: object,
  *   cliBin?: string,
- *   stripCliVersion?: boolean
+ *   stripCliVersion?: boolean | 'null'
  * }} [opts]
  *   `responses` is merged over `defaultResponses()`. A value may be a function
  *   `(label, callIndex) => result` so a label answered twice can answer
@@ -497,7 +500,7 @@ export function defaultResponses() {
  *   `null` `plan-waves` response writes nothing. `cliBin` runs a different
  *   `bin/interlock` than this checkout's, to stand the previous release in for
  *   the CLI; `stripCliVersion` removes `cliVersion` from every relayed step, to
- *   stand in for one without needing it installed.
+ *   stand in for one without needing it installed (`'null'` nulls it instead).
  * @returns {Promise<{prompts: Array<{label: string, prompt: string, model?: string}>,
  *   output: string, calls: string[], root: string, commands: string[][]}>}
  */
@@ -619,7 +622,7 @@ export async function runShip(opts = {}) {
       }
       performWrites()
       const result = await runIt()
-      if (opts.stripCliVersion) result.stdout = withoutCliVersion(result.stdout)
+      if (opts.stripCliVersion) result.stdout = withoutCliVersion(result.stdout, opts.stripCliVersion)
       // A relay canned as a function is a relay that ran the command for real
       // and then retyped its stdout badly — the failure that halted the jumphour
       // run. The CLI's own effects have happened; only the copy is wrong.

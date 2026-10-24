@@ -10,7 +10,6 @@ import { spawnSync } from 'node:child_process'
 import {
   appendFileSync,
   cpSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -177,7 +176,9 @@ test('a CLI that cannot read its package.json says unknown, never null', () => {
     mkdirSync(join(dir, 'bin'))
     cpSync(BIN, join(dir, 'bin', 'interlock'))
     cpSync(join(ROOT, 'lib'), join(dir, 'lib'), { recursive: true })
-    assert.equal(existsSync(join(dir, 'package.json')), false)
+    // Node 18 has no module-syntax detection, so the extensionless bin needs the
+    // package type to load at all. The manifest carries no version to read.
+    writeFileSync(join(dir, 'package.json'), '{"type":"module"}\n')
     const bin = join(dir, 'bin', 'interlock')
 
     const flag = cli(['--version'], { cwd: dir, bin })

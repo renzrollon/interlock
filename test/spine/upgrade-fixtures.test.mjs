@@ -296,6 +296,43 @@ for (const fixture of releaseFixtures()) {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  test(`${fixture.name}: following a refusal of the halted run to its close keeps the original halt and close`, () => {
+    const root = freshRoot('replay')
+    try {
+      cpSync(fixture.dir, root, { recursive: true })
+      substituteRoot(root, root)
+      commitAll(root)
+      const before = manifestOf(root)
+      assert.ok(before.halted, `${fixture.name} is a halted run`)
+      assert.equal(before.closedAt, undefined, 'the old release recorded no close time')
+      const lastClosePath = join(root, '.claude', 'ship', 'last-close.json')
+      const lastClose = readFileSync(lastClosePath, 'utf8')
+      const trajectory = readFileSync(join(root, '.claude', 'ship', 'runs', `${before.runId}.jsonl`), 'utf8')
+
+      const refused = cli(root, ['run', 'next', '--json'])
+      assert.equal(refused.json && refused.json.action, 'halt', refused.stdout)
+      assert.deepEqual(refused.json.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+
+      const followed = cli(root, [...refused.json.then.argv, '--json'])
+      assert.ok(followed.json, `the close printed no step: ${followed.stderr}`)
+      assert.equal(followed.json.summary, JSON.parse(lastClose).summary, 'the close on record is what comes back')
+      assert.equal(followed.code, JSON.parse(lastClose).exitCode, 'with its original exit code')
+
+      const after = manifestOf(root)
+      assert.equal(after.halted, before.halted, 'the original halt reason is kept')
+      assert.equal(after.seq, before.seq, 'the replay was not numbered')
+      assert.equal(after.closedAt, undefined, 'nothing was recorded on the manifest')
+      assert.equal(readFileSync(lastClosePath, 'utf8'), lastClose, 'last-close.json is byte-identical')
+      assert.equal(
+        readFileSync(join(root, '.claude', 'ship', 'runs', `${before.runId}.jsonl`), 'utf8'),
+        trajectory,
+        'no event was appended to the trajectory'
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 }
 
 // --- the oldest committed run ------------------------------------------------------

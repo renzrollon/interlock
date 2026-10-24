@@ -33,7 +33,8 @@
 //                 as a failure would manufacture the result the eval tests for.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readUnitCommand } from './fixtures.mjs'
@@ -409,23 +410,33 @@ export function gradeUnit({ root, fixture, baselineCounts, resultPath }) {
     }
   }
 
-  const dir = resultPath || join(root, '..')
+  // A directory of this call's own when the caller names none. The default was
+  // `join(root, '..')`, which for a root `prepareScratchRoot` made is `tmpdir()`
+  // itself: one fixed `unit-result.json` shared by every grader on the machine,
+  // so a concurrent grade could hand `verify unit` another run's result.
+  const owned = resultPath ? null : mkdtempSync(join(tmpdir(), 'interlock-grade-unit-'))
+  const dir = resultPath || owned
   const resultFile = join(dir, 'unit-result.json')
   const baselineFile = join(dir, 'unit-baseline.json')
-  writeFileSync(resultFile, `${JSON.stringify(result)}\n`)
   const hasBaseline = Boolean(baselineCounts)
-  if (hasBaseline) writeFileSync(baselineFile, `${JSON.stringify(baselineCounts)}\n`)
+  let judged
+  try {
+    writeFileSync(resultFile, `${JSON.stringify(result)}\n`)
+    if (hasBaseline) writeFileSync(baselineFile, `${JSON.stringify(baselineCounts)}\n`)
 
-  const judged = interlock([
-    'verify',
-    'unit',
-    '--result',
-    resultFile,
-    ...(hasBaseline ? ['--baseline', baselineFile] : []),
-    '--root',
-    root,
-    '--json'
-  ])
+    judged = interlock([
+      'verify',
+      'unit',
+      '--result',
+      resultFile,
+      ...(hasBaseline ? ['--baseline', baselineFile] : []),
+      '--root',
+      root,
+      '--json'
+    ])
+  } finally {
+    if (owned) rmSync(owned, { recursive: true, force: true })
+  }
   const judgement = judged.json
 
   const green = criterion(CRITERIA.UNIT_GREEN, {

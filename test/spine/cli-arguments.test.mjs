@@ -204,6 +204,17 @@ test('run start accepts every flag the ship drivers forward, plus --plugin-root'
   }
 })
 
+test('run close accepts every flag the ship drivers pass it', async () => {
+  // The drivers spread these in from closeArgs() and the loop, so the shipped-text
+  // sweep in cli-inventory.test.mjs never sees them spelled out.
+  const { global, leaves } = await loadFlagTable()
+  const runClose = leaves.get('run close')
+  assert.ok(runClose, 'SUBCOMMAND_FLAGS needs a "run close" entry')
+  for (const flag of ['host-banners', 'host-observed', 'notify', 'results', 'host-records', 'halt']) {
+    assert.ok(runClose.has(flag) || global.has(flag), `run close must accept --${flag}`)
+  }
+})
+
 // --- documented forms -----------------------------------------------------------
 
 /**

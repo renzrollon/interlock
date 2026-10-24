@@ -2119,6 +2119,89 @@ test('a binary that answers --version with something that is not a version is re
   }
 })
 
+test('a wrapper that prints its name before the version is read by that version', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const shimDir = join(dir, 'wrapper-bin')
+    chmodSync(file(shimDir, 'interlock', `#!/bin/sh\necho "interlock ${PLUGIN_VERSION}"\n`), 0o755)
+    const { report, row } = cliVersionRow(dir, pluginRoot, [shimDir])
+    assert.equal(row.status, 'ok', formatDoctor(report))
+    assert.match(row.detail, new RegExp(`interlock ${PLUGIN_VERSION.replace(/\./g, '\\.')} on PATH matches`))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a binary whose --version fails for another reason says so, and is not called too old', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const shimDir = join(dir, 'broken-bin')
+    chmodSync(file(shimDir, 'interlock', '#!/bin/sh\necho "cannot find node" >&2\nexit 3\n'), 0o755)
+    const { report, row } = cliVersionRow(dir, pluginRoot, [shimDir])
+    assert.equal(row.status, 'fail', formatDoctor(report))
+    assert.match(row.detail, /^CLI VERSION SKEW: the version of interlock on PATH \(.+\) could not be read \(exit 3\), plugin is 1\.8\.0$/)
+    assert.doesNotMatch(row.detail, /predates/)
+    assert.match(row.fix, /--version and read its answer/)
+    assert.match(row.evidence.join('\n'), /unknown \(exit 3\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a plugin version that is not major.minor.patch skips the row rather than calling the CLI old', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir, '1.8')
+    const copy = npmCopy(dir, '1.8.0')
+    const { row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'skip', JSON.stringify(row))
+    assert.match(row.detail, /declares version "1\.8", which is not major\.minor\.patch/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a prerelease of the plugin\'s version is older than it, not equal', () => {
+  assert.equal(claudeEnv.compareVersions('1.8.0-rc.1', '1.8.0'), -1)
+  assert.equal(claudeEnv.compareVersions('1.8.0', '1.8.0-rc.1'), 1)
+  assert.equal(claudeEnv.compareVersions('1.8.0-rc.2', '1.8.0-rc.10'), -1, 'numeric identifiers compare as numbers')
+  assert.equal(claudeEnv.compareVersions('1.8.0-rc.1', '1.8.0-rc.1'), 0)
+  assert.equal(claudeEnv.compareVersions('1.8', '1.8.0'), null, 'no major.minor.patch, no order')
+  assert.equal(claudeEnv.compareVersions('2.1.288 (Claude Code)', '2.1.287'), 1, 'the engine strings still compare')
+  const dir = tmp()
+  try {
+    const pluginRoot = versionedPlugin(dir)
+    const copy = npmCopy(dir, '1.8.0-rc.1')
+    const { row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
+    assert.equal(row.status, 'fail', JSON.stringify(row))
+    assert.match(row.detail, /^CLI VERSION SKEW: interlock on PATH is 1\.8\.0-rc\.1 /)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a relative PATH entry never resolves a binary planted in the working directory', () => {
+  const dir = realpathSync(tmp())
+  const cwd = process.cwd()
+  try {
+    // An untrusted checkout carrying its own interlock, and a plugin layout beside it.
+    stubBin(dir, 'interlock')
+    stubBin(join(dir, 'bin'), 'interlock')
+    file(dir, '.claude-plugin/plugin.json', { name: 'interlock', version: PLUGIN_VERSION })
+    process.chdir(dir)
+    const env = { PATH: '.:./bin' }
+    assert.equal(whichSync('interlock', env), null, 'a relative entry resolved a binary in the cwd')
+    assert.equal(cliComparisonRoot({}, env, '/own').source, 'own', 'a relative entry was taken for a plugin bin/')
+    assert.equal(checkCliVersion({ root: '/own', source: 'own' }, env).status, 'skip')
+    assert.equal(whichSync('interlock', { PATH: join(dir, 'bin') }), join(dir, 'bin', 'interlock'), 'an absolute entry still resolves')
+  } finally {
+    process.chdir(cwd)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a newer copy than the plugin is an advisory warn, not a failure', () => {
   const dir = tmp()
   try {
@@ -2338,7 +2421,7 @@ test('readCliVersion finds an npm copy behind a Windows-style shim in the prefix
     file(prefix, 'node_modules/@renzrollon/interlock/package.json', { name: '@renzrollon/interlock', version: '1.7.0' })
     const shim = file(prefix, 'interlock.cmd', '@echo off\r\n')
     const read = readCliVersion(shim, realpathSync(shim), {})
-    assert.deepEqual(read, { version: '1.7.0', npm: true })
+    assert.deepEqual(read, { version: '1.7.0', npm: true, reason: null })
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

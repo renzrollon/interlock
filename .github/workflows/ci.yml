@@ -30,6 +30,12 @@ jobs:
   # lib/host/claude-env.mjs and spelled nowhere in this file, so raising the
   # constant moves this leg with no edit here (test/spine/github-workflows.test.mjs
   # pins that this file names no engine version).
+  #
+  # The floor leg blocks merges on purpose. Its engine is pinned, so it moves
+  # only when the constant is raised; a red floor validate means the manifest no
+  # longer loads on an engine the plugin says it supports. Fix the manifest, or
+  # raise MODS_MIN_HOST_VERSION in a change that says why. Never make the leg
+  # advisory: a floor nobody checks is a support claim nobody keeps.
   validate-plugin:
     name: validate-plugin (${{ matrix.engine }})
     runs-on: ubuntu-latest
@@ -61,14 +67,24 @@ jobs:
       # kit; `npm test` never collects them. A host that cannot load mods
       # fails this step rather than skipping it. It runs even when the strict
       # validate above is red, so its own result stays visible in the same log.
-      # At the floor engine a missing `plugin test` command is said in the
-      # summary instead of passing silently; on latest it is a failure.
+      # At the floor engine a `plugin test` command the engine does not know is
+      # said in the summary and as an annotation instead of passing silently;
+      # any other failure of the probe fails the step. On latest it is a failure.
       - name: Hooks module tests
         if: ${{ !cancelled() }}
         run: |
-          if [ "${{ matrix.engine }}" = floor ] && ! claude plugin test --help >/dev/null 2>&1; then
-            echo "plugin test is not available at the floor engine ${{ steps.engine.outputs.floor }}; mod tests are covered on latest only" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          if [ "${{ matrix.engine }}" = floor ]; then
+            if ! probe=$(claude plugin test --help 2>&1); then
+              if printf '%s\n' "$probe" | grep -qiE 'unknown (command|argument|option)'; then
+                message="plugin test is not available at the floor engine ${{ steps.engine.outputs.floor }}; mod tests are covered on latest only"
+                echo "::notice title=floor engine::$message"
+                echo "$message" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              printf '%s\n' "$probe"
+              echo "claude plugin test --help failed at the floor engine for a reason other than an unknown command" >&2
+              exit 1
+            fi
           fi
           claude plugin test .
 

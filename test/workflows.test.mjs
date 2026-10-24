@@ -5040,6 +5040,12 @@ test('a start step with no cliVersion is a CLI that predates version reporting, 
   assert.doesNotMatch(current.output, /CLI VERSION UNKNOWN/, current.output)
 })
 
+test('a start step whose cliVersion is null is a current CLI that could not read its version, not an old one', async () => {
+  const { output } = await runShip({ stripCliVersion: 'null' })
+  assert.match(output, /CLI VERSION UNKNOWN: the interlock on PATH could not read its own version/, output)
+  assert.doesNotMatch(output, /predates version reporting/, output)
+})
+
 test('a run start relay unreadable twice points at the CLI on PATH being older than the plugin', async () => {
   const { output } = await runShip({ responses: { 'cli-1': null } })
   assert.match(output, /RELAY UNREADABLE/, output)

@@ -162,6 +162,8 @@ test('a corrupt record is moved aside with its bytes intact, the counters restar
     const moved = movedAside(home)
     assert.equal(moved.length, 1, `expected one moved-aside file, saw ${moved}`)
     assert.equal(readFileSync(join(home, '.claude', moved[0]), 'utf8'), CORRUPT)
+    assert.match(moved[0], /^autonomy\.json\.unreadable-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z$/)
+    assert.doesNotMatch(moved[0], /:/, 'Windows refuses a colon in a file name')
     assert.ok(r.stderr.includes(moved[0]), `stderr must give the moved path: ${r.stderr}`)
     assert.match(r.stderr, /counters restarted/)
 

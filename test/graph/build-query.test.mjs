@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { buildGraph, writeGraphArtifacts, loadGraph } from '../../lib/graph/grap
 import { consumers, findSeedNodes, shortestPath, traverse } from '../../lib/graph/graph/query.mjs';
 import { updateGraph } from '../../lib/graph/graph/update.mjs';
 import { extractWithRegex } from '../../lib/graph/extract/regex-fallback.mjs';
+import { createJsExtractor, resolveJsExtractorMode } from '../../lib/graph/extract/typescript.mjs';
 import { resolveImport } from '../../lib/graph/graph/build.mjs';
 import { estimateTokens } from '../../lib/graph/format.mjs';
 
@@ -155,6 +157,72 @@ describe('update rebuilds when what the graph depends on changed', () => {
     const once = updateGraph(root);
     assert.equal(once.updated, false);
     assert.equal(once.reason, 'up-to-date');
+  });
+
+  it('records the overlay hashes the caller passed instead of reading them again', () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-overlays-'));
+    try {
+      copyDir(FIXTURE, scratch);
+      const sentinel = { 'openspec/specs/sentinel.md': 'not-a-real-hash' };
+      writeGraphArtifacts(scratch, { ...buildGraph(scratch), overlays: sentinel });
+      const manifest = JSON.parse(fs.readFileSync(path.join(scratch, '.claude', 'graph', 'manifest.json'), 'utf8'));
+      assert.deepEqual(manifest.overlays, sentinel);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the extractor mode an update compares is resolved, never loaded', () => {
+  const UPDATE = path.join(__dirname, '..', '..', 'lib', 'graph', 'graph', 'update.mjs');
+
+  /** A project whose `typescript` writes a `loaded` file beside itself when evaluated. */
+  function projectWithTracingTypescript() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-graph-ts-'));
+    copyDir(FIXTURE, root);
+    const pkg = path.join(root, 'node_modules', 'typescript');
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(pkg, 'package.json'), '{"name":"typescript","version":"0.0.0","main":"index.js"}\n');
+    fs.writeFileSync(
+      path.join(pkg, 'index.js'),
+      "require('node:fs').writeFileSync(require('node:path').join(__dirname, 'loaded'), 'x');\nmodule.exports = {};\n",
+    );
+    return { root, loaded: path.join(pkg, 'loaded') };
+  }
+
+  it('resolves the same mode createJsExtractor picks, without evaluating the module', () => {
+    const { root, loaded } = projectWithTracingTypescript();
+    try {
+      assert.equal(resolveJsExtractorMode(root), 'typescript');
+      assert.equal(fs.existsSync(loaded), false, 'resolving the mode evaluated typescript');
+      assert.equal(createJsExtractor(root).mode, 'typescript');
+      assert.equal(fs.existsSync(loaded), true, 'the tracer records an evaluation');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a no-op update does not load typescript', () => {
+    const { root, loaded } = projectWithTracingTypescript();
+    try {
+      writeGraphArtifacts(root, buildGraph(root));
+      fs.rmSync(loaded, { force: true });
+      // A fresh process, so this one's module cache cannot hide a second load.
+      const r = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import { updateGraph } from ${JSON.stringify(UPDATE)}; process.stdout.write(updateGraph(${JSON.stringify(root)}).reason)`,
+        ],
+        { encoding: 'utf8' },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, 'up-to-date');
+      assert.equal(fs.existsSync(loaded), false, 'the up-to-date check loaded typescript');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

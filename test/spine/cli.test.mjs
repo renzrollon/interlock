@@ -4554,6 +4554,31 @@ test('the removed advisor subcommands exit non-zero and write nothing under the 
   assert.equal(existsSync(join(root, '.claude', 'metrics')), false)
 })
 
+test('a leftover advisor.md changes nothing validate, ledger, ready or risk report', () => {
+  // docs/16 tells a 1.7.0 user that an advisor.md already in a change folder is
+  // left alone and nothing reads it. One full of risk words would move `risk` if
+  // anything did.
+  const { root, change, changeDir } = changeRepo('advisor-leftover')
+  const findings = file('advisor-leftover-findings.json', [])
+  const commands = [
+    ['validate', change, '--json'],
+    ['ledger', change, '--json'],
+    ['ready', change, '--findings', findings, '--json'],
+    ['risk', change, '--json']
+  ]
+  const answers = () => commands.map(args => {
+    const r = runAt(root, args)
+    return { args: args.join(' '), code: r.code, stdout: r.stdout }
+  })
+  const without = answers()
+  writeFileSync(
+    join(changeDir, 'advisor.md'),
+    '# Advisor\n\nThis touches auth, session tokens, credentials, payments, a database migration, ' +
+      'the public API and a breaking schema change. Security review required.\n'
+  )
+  assert.deepEqual(answers(), without)
+})
+
 // --- note: the compound-notes table --------------------------------------------
 
 test('note add appends one row with the next free id and skips the same row twice', () => {
@@ -4684,6 +4709,24 @@ test('note match with no docs/notes/compound.md exits 0 with no rows and unreada
   const text = runAt(root, ['note', 'match', change])
   assert.equal(text.code, 0, text.stderr)
   assert.ok(!text.stdout.includes('unreadable'), text.stdout)
+})
+
+test('note match on a table that exists but cannot be read exits 1 naming it, never "no notes matched"', { skip: isRoot() }, () => {
+  const { root, change } = changeRepo('note-match-eacces')
+  mkdirSync(join(root, 'docs', 'notes'), { recursive: true })
+  const table = join(root, 'docs', 'notes', 'compound.md')
+  writeFileSync(table, NOTES_HEADER + '| N1 | 2026-10-19 | add-x | lib/a.mjs | s1 | Do one. | run-1 |\n')
+  chmodSync(table, 0o000)
+  try {
+    for (const args of [['note', 'match', change], ['note', 'match', change, '--json']]) {
+      const r = runAt(root, args)
+      assert.equal(r.code, 1, `${args.join(' ')}: ${r.stdout}`)
+      assert.ok(r.stderr.includes('docs/notes/compound.md'), r.stderr)
+      assert.doesNotMatch(r.stdout, /no notes matched/)
+    }
+  } finally {
+    chmodSync(table, 0o600)
+  }
 })
 
 test('note match on a table that does not parse still exits 1', () => {

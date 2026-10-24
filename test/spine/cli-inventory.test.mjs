@@ -247,7 +247,12 @@ export function checkSegments(segments, { globalFlags, subcommandFlags, inventor
     const accepted = new Set([...global, ...names(subcommandFlags[resolved.leaf])])
     for (const token of seg.tokens) {
       if (!token.startsWith('--')) continue
-      const flag = token.replace(/=.*$/, '').replace(/^--/, '')
+      // The parser does not split `--k=v`: it reads a flag named `k=v` and refuses it.
+      if (/^--[^=]+=/.test(token)) {
+        failures.push(`${where}: ${token.replace(/=.*$/, '=…')} is the --flag=value form, which the CLI refuses as an unknown flag (in \`${shown}\`)`)
+        continue
+      }
+      const flag = token.replace(/^--/, '')
       if (flag && !accepted.has(flag)) {
         failures.push(`${where}: --${flag} is not accepted for "${resolved.leaf}" (in \`${shown}\`)`)
       }
@@ -293,6 +298,13 @@ test('checker: an undeclared flag fails naming the flag, the leaf and the file',
   assert.match(failure, /skills\/x\/SKILL\.md:7/)
   assert.match(failure, /--since/)
   assert.match(failure, /"gate"/)
+})
+
+test('checker: a declared flag in the --flag=value form fails, because the parser refuses it', () => {
+  const [failure, ...rest] = checkSegments([seg('gate --findings=f.json --json')], TABLE)
+  assert.equal(rest.length, 0)
+  assert.match(failure, /skills\/x\/SKILL\.md:7/)
+  assert.match(failure, /--findings=… is the --flag=value form/)
 })
 
 test('checker: an unknown subcommand fails naming it and the file', () => {
