@@ -2345,9 +2345,12 @@ test('CLAUDE_PLUGIN_ROOT names the plugin the PATH CLI is compared with', () => 
     const row = byId(report, 'cli-version')
     assert.equal(row.status, 'fail', formatDoctor(report))
     assert.match(row.detail, /^CLI VERSION SKEW: interlock on PATH is 1\.7\.0 \(.+\), plugin is 1\.8\.0$/)
-    // Without it, the same machine has no plugin to compare with.
-    const bare = diagnose(dir, { ...opts, env: { PATH: env.PATH } })
-    assert.notEqual(byId(bare, 'cli-version').status, 'fail')
+    // Without it, the same machine has no plugin to compare with: the doctor
+    // falls back to its own root. Asked of the resolver, not of diagnose, whose
+    // own root is this checkout and whose verdict would track its version.
+    const bare = cliComparisonRoot({}, { PATH: env.PATH }, dir)
+    assert.equal(bare.source, 'own', JSON.stringify(bare))
+    assert.notEqual(bare.root, resolve(pluginRoot))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

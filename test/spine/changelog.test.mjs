@@ -80,12 +80,13 @@ test('the CHANGELOG holds breaking entries to the semver rule', () => {
   assert.deepEqual(changelogProblems(text), [])
 })
 
-test('the rule is not vacuous: the unreleased section is parsed and carries an Upgrading subsection', () => {
+test('the rule is not vacuous: a judged section with a breaking entry is parsed and carries an Upgrading subsection', () => {
   const sections = parseChangelog(readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8'))
-  const unreleased = sections.find(s => s.unreleased)
-  assert.ok(unreleased, 'the CHANGELOG has an [Unreleased] section')
-  assert.ok(hasBreaking(unreleased), 'the unreleased section names its breaking entries')
-  assert.ok(hasUpgrading(unreleased), 'and carries the Upgrading subsection the rule asks for')
+  // A bump renames [Unreleased], so after a release the newest judged section
+  // with a breaking entry is the one that keeps the rule from passing on nothing.
+  const judged = sections.find(s => hasBreaking(s) && (s.unreleased || compareVersions(s.version, FIRST_JUDGED) >= 0))
+  assert.ok(judged, 'the CHANGELOG has a section from 1.8.0 on, or [Unreleased], that names a breaking entry')
+  assert.ok(hasUpgrading(judged), 'and carries the Upgrading subsection the rule asks for')
   assert.ok(sections.some(s => s.version && compareVersions(s.version, FIRST_JUDGED) < 0), 'released sections are parsed in both heading styles')
 })
 
