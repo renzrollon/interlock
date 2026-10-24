@@ -55,8 +55,8 @@ export const NODES = [
   },
   {
     id: 'stop', label: 'You read the spec.', kind: 'stop', fr: 1.6, tag: '',
-    line: 'ten minutes · advisor.md',
-    desc: 'Four files, one question each, plus advisor.md. The only required stop. Wrong idea? Re-spec.'
+    line: 'ten minutes · four files',
+    desc: 'Four files, one question each. The only required stop. Wrong idea? Re-spec.'
   },
   {
     id: 'ship', label: 'ship', kind: 'core', fr: 1.2, tag: 'workflow',

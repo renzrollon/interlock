@@ -54,10 +54,10 @@ whose change, file and rule are already present is skipped.
 
 ## Retrieval
 
-`interlock note match <change>` and the advisor brief return the rows whose
-`file`, canonicalised with `canonicalizePath`, is a path the change's
-`tasks.md` names (`specMentionedPaths`), in table order, cut whole at
-`LIMITS.maxAdvisorNoteRows` with the omitted count named.
+`interlock note match <change>` returns the rows whose `file`, canonicalised
+with `canonicalizePath`, is a path the change's `tasks.md` names
+(`specMentionedPaths`), in table order, cut whole at `LIMITS.maxNoteMatchRows`
+with the omitted count named.
 
 ## A machine appends and never edits
 

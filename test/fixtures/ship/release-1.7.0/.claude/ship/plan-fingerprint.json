@@ -1,0 +1,38 @@
+{
+  "planFormat": "interlock.ship-plan/5",
+  "change": "fixture-change",
+  "maxParallel": 8,
+  "mode": "auto",
+  "redWave": null,
+  "laneCaps": {
+    "1": 8,
+    "2": 8,
+    "3": 6,
+    "4": 4,
+    "5": 8
+  },
+  "cohesionMaxTier": 3,
+  "opusMinTier": 4,
+  "soloMaxTasks": 20,
+  "ok": true,
+  "hash": "094e3911f29dcbb8421836db9cee9fcdef303ed7a1fe35033ef128390746d357",
+  "edges": null,
+  "inputs": [
+    {
+      "path": "proposal.md",
+      "sha256": "de152f5f9c6234fd4ed744c41d2e06a4b932311b106c37a49cb1ff4f224b5c53",
+      "bytes": 65
+    },
+    {
+      "path": "design.md",
+      "sha256": "fb438ae213f9ed6872f5cde1ec8423fc74c9d3262725441374242c5bc258dec2",
+      "bytes": 37
+    },
+    {
+      "path": "tasks.md",
+      "sha256": "151e984018b497e3e86290453dbf2a6b41273e5964bd67241049e57c0a3e7e83",
+      "bytes": 64
+    }
+  ],
+  "problems": []
+}

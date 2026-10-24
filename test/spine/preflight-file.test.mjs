@@ -95,7 +95,7 @@ test('buildPreflightReport fills every absence with null or [] and never omits a
   assert.deepEqual(buildPreflightReport(undefined), r)
 })
 
-test('buildPreflightReport keeps every given field and drops evidence and unknown sources', () => {
+test('buildPreflightReport keeps every given field, copies each check\'s evidence and drops unknown sources', () => {
   const input = {
     writtenAt: '2026-10-07T08:00:00.000Z',
     source: 'clear',
@@ -129,7 +129,12 @@ test('buildPreflightReport keeps every given field and drops evidence and unknow
   assert.equal(r.surface, 'linked-worktree')
   assert.equal(r.message, input.message)
   assert.deepEqual(r.doctor.counts, input.doctor.counts)
-  assert.deepEqual(r.doctor.checks, [{ id: 'openspec', status: 'warn', detail: 'old cli', fix: 'npm i -g openspec' }])
+  // The evidence is copied (spec: hooks/session-preflight): the cli-version row's
+  // resolved path and both versions are only recorded there, and the file is what
+  // a later session reads to say which interlock it was served.
+  assert.deepEqual(r.doctor.checks, [
+    { id: 'openspec', status: 'warn', detail: 'old cli', fix: 'npm i -g openspec', evidence: ['x'] }
+  ])
   assert.deepEqual(r.notes, input.notes)
   assert.deepEqual(r.cards, input.cards)
   assert.equal(buildPreflightReport({ source: 'reboot' }).source, null)
@@ -345,4 +350,50 @@ test('lib/preflight-file.mjs imports only ./limits.mjs', () => {
   const specifiers = [...source.matchAll(/^\s*(?:import|export)\b[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
   assert.deepEqual(specifiers, ['./limits.mjs'])
   assert.ok(!/\bimport\s*\(/.test(source), 'no dynamic import')
+})
+
+test('buildPreflightReport carries a check\'s evidence line for line, and an absent one as []', () => {
+  const evidence = [
+    'interlock → /usr/local/lib/node_modules/@renzrollon/interlock/bin/interlock',
+    'interlock 1.7.0',
+    'plugin 1.8.0'
+  ]
+  const r = buildPreflightReport({
+    doctor: {
+      ran: true,
+      parsed: true,
+      ok: false,
+      counts: { ok: 0, warn: 0, fail: 1, skip: 0 },
+      checks: [
+        { id: 'cli-version', status: 'fail', detail: 'CLI VERSION SKEW: interlock on PATH is 1.7.0 (/x), plugin is 1.8.0', fix: 'npm i -g @renzrollon/interlock@1.8.0', evidence },
+        { id: 'node', status: 'ok', detail: 'node 22' }
+      ]
+    }
+  })
+  assert.deepEqual(r.doctor.checks[0].evidence, evidence)
+  assert.deepEqual(r.doctor.checks[1].evidence, [], 'every field present: absent evidence is [], never omitted')
+})
+
+test('a non-string evidence entry is dropped rather than carried', () => {
+  const r = buildPreflightReport({
+    doctor: { ran: true, parsed: true, checks: [{ id: 'x', status: 'ok', detail: 'y', evidence: ['kept', 7, null, { a: 1 }] }] }
+  })
+  assert.deepEqual(r.doctor.checks[0].evidence, ['kept'])
+})
+
+test('the file round-trips the cli-version evidence through readPreflightReport', () => {
+  const report = buildPreflightReport({
+    doctor: {
+      ran: true,
+      parsed: true,
+      ok: false,
+      counts: { ok: 0, warn: 0, fail: 1, skip: 0 },
+      checks: [{ id: 'cli-version', status: 'fail', detail: 'CLI VERSION SKEW', fix: 'npm i -g @renzrollon/interlock@1.8.0', evidence: ['/p/bin/interlock', '1.7.0', '1.8.0'] }]
+    }
+  })
+  const read = readPreflightReport(JSON.stringify(report))
+  assert.equal(read.problem, undefined)
+  assert.deepEqual(read.report.doctor.checks[0].evidence, ['/p/bin/interlock', '1.7.0', '1.8.0'])
+  // A fail row still draws the band; the evidence changes what the file keeps, not what is drawn.
+  assert.equal(shouldDraw(read.report), true)
 })

@@ -6,8 +6,13 @@
 # and must never fire on a pull request at all. Sharing a file would entangle the
 # two trigger surfaces, and the first person to widen one would widen both.
 #
-# `schedule` and `workflow_dispatch` ONLY. No `pull_request`, no `push`, and not
-# a path filter that happens to match nothing — the absence is the requirement.
+# `workflow_dispatch` ONLY. No `pull_request`, no `push`, and not a path filter
+# that happens to match nothing — the absence is the requirement.
+#
+# NO SCHEDULE. The repository provisions no model credential, so a scheduled run
+# would reach the "no credential" step, skip the eval and report green: a weekly
+# signal that says nothing ran. Adding a `schedule:` is the edit that records the
+# credential's arrival.
 # The run consumes metered model calls and its result may not influence whether a
 # change merges, so there is nothing a pull request could correctly do with it.
 #
@@ -28,16 +33,13 @@
 # writes the row into the checkout, this job uploads it, and a maintainer commits
 # what they choose to keep.
 #
-# NOTE: .github/workflows/ is gitignored (.gitignore), so this file was
-# force-added (`git add -f`). If it ever shows as untracked, `git ls-files
-# .github/workflows/` will not list it and it never runs on the remote.
-# test/spine/ship-outcome-workflow.test.mjs asserts that tracking, so losing this
-# file fails npm test.
+# NOTE: this file must stay tracked (`git ls-files .github/workflows/`); an
+# untracked workflow never runs on the remote. test/spine/ship-outcome-eval.test.mjs
+# asserts that tracking, so losing this file fails npm test. Only
+# copilot-setup-steps.yml in this directory is gitignored.
 name: Ship outcome eval
 
 on:
-  schedule:
-    - cron: '43 5 * * 3' # Wednesdays, 05:43 UTC — off every critical path
   workflow_dispatch:
 
 # Supersede an in-flight run rather than stacking metered ones.
@@ -52,7 +54,7 @@ permissions:
 
 jobs:
   outcome:
-    name: Outcome eval (scheduled)
+    name: Outcome eval (manual)
     runs-on: ubuntu-latest
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

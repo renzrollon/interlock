@@ -170,6 +170,7 @@ test('summarizeTranscriptFile on a missing file is unknown, never zero or empty'
   assert.equal(s.models, null)
   assert.equal(s.turns, null)
   assert.equal(s.briefingSha, null)
+  assert.equal(s.advisorConsults, null)
   assert.equal(s.transcript.path, path)
   assert.equal(s.transcript.parsed, false)
   assert.equal(typeof s.transcript.reason, 'string')
@@ -273,6 +274,85 @@ test('summarizeTranscript never throws on input that is not text', () => {
     assert.equal(s.usage, null)
     assert.equal(typeof s.reason, 'string')
   }
+})
+
+// ---------------------------------------------------------------- advisor consults
+
+/** One advisor `server_tool_use` content block; `id` omitted when undefined. */
+const advisorBlock = (id, name = 'advisor') => ({ type: 'server_tool_use', ...(id === undefined ? {} : { id }), name, input: {} })
+const consults = (...rows) => summarizeTranscript(jsonl(...rows)).advisorConsults
+
+test('advisor blocks on separate rows sharing one message id are each counted, before the per-message grouping', () => {
+  const usage = tiered(1, 1, 1, 1, 0)
+  const s = summarizeTranscript(
+    jsonl(
+      assistant({ id: 'msg_1', usage, content: [advisorBlock('srvtoolu_a')] }),
+      assistant({ id: 'msg_1', usage, content: [advisorBlock('srvtoolu_b')] }),
+      assistant({ id: 'msg_1', usage, content: [{ type: 'text', text: 'done' }] })
+    )
+  )
+  assert.equal(s.turns, 1, 'the grouping keeps only the last row of the message')
+  assert.equal(s.advisorConsults, 2)
+})
+
+test('one advisor block id repeated, on one row or across rows, counts once', () => {
+  assert.equal(consults(assistant({ id: 'm1', content: [advisorBlock('srvtoolu_a'), advisorBlock('srvtoolu_a')] })), 1)
+  assert.equal(
+    consults(
+      assistant({ id: 'm1', content: [advisorBlock('srvtoolu_a')] }),
+      assistant({ id: 'm1', content: [advisorBlock('srvtoolu_a')] }),
+      assistant({ id: 'm2', content: [advisorBlock('srvtoolu_a'), advisorBlock('srvtoolu_b')] })
+    ),
+    2
+  )
+})
+
+test('an advisor block with no string id counts once for its row', () => {
+  assert.equal(consults(assistant({ content: [advisorBlock(undefined)] })), 1)
+  assert.equal(consults(assistant({ content: [advisorBlock(undefined), advisorBlock(undefined)] })), 1, 'two id-less blocks on one row are one')
+  assert.equal(consults(assistant({ content: [advisorBlock(undefined)] }), assistant({ content: [advisorBlock(undefined)] })), 2, 'one per row')
+  assert.equal(consults(assistant({ content: [advisorBlock(7), advisorBlock('')] })), 1, 'a non-string or empty id is no id')
+  assert.equal(consults(assistant({ content: [advisorBlock('srvtoolu_a'), advisorBlock(undefined)] })), 2)
+})
+
+test('a block whose name is not the string advisor, or whose type is not server_tool_use, does not count', () => {
+  const rows = [
+    assistant({ content: [advisorBlock('a', 'Advisor'), advisorBlock('b', 'advisors'), advisorBlock('c', 5), advisorBlock('d', null)] }),
+    assistant({ content: [{ type: 'tool_use', id: 'e', name: 'advisor', input: {} }, { type: 'text', name: 'advisor', text: 'x' }] }),
+    assistant({ content: [null, 'advisor', 7, [advisorBlock('f')]] })
+  ]
+  assert.equal(consults(...rows), 0)
+})
+
+test('a user row and a string-content assistant row add nothing and leave the result a number', () => {
+  const s = summarizeTranscript(
+    jsonl(
+      user([advisorBlock('u1')]),
+      assistant({ content: 'advisor said hello' }),
+      { type: 'assistant', message: { id: 'm9', content: { 0: advisorBlock('x') } } },
+      { type: 'assistant' },
+      { type: 'system', message: { content: [advisorBlock('s1')] } }
+    )
+  )
+  assert.equal(s.advisorConsults, 0)
+  assert.equal(typeof s.advisorConsults, 'number')
+  assert.equal(consults(user('hi'), assistant({ content: [advisorBlock('a')] })), 1)
+})
+
+test('a transcript with no advisor block counts 0, and a counted block needs no usage object', () => {
+  assert.equal(consults(user('hi'), assistant({ id: 'm1', usage: tiered(1, 1, 1, 1, 0) })), 0)
+  const s = summarizeTranscript(jsonl(assistant({ content: [advisorBlock('a')] })))
+  assert.equal(s.usage, null)
+  assert.equal(s.advisorConsults, 1)
+})
+
+test('an unparseable transcript has no count: null, never 0', () => {
+  for (const text of ['', '\n\n', '{ torn', 'not json\nalso not json\n', undefined, null, 42]) {
+    assert.equal(summarizeTranscript(text).advisorConsults, null, JSON.stringify(text))
+  }
+  // One parsed line makes it a number even when it is not an object, and a torn line beside it is skipped.
+  assert.equal(summarizeTranscript('5\n{ torn').advisorConsults, 0)
+  assert.equal(summarizeTranscript(jsonl(assistant({ content: [advisorBlock('a')] }), '{ torn')).advisorConsults, 1)
 })
 
 test('a ping transcript has no briefing key and its usage is still summed', () => {
@@ -468,6 +548,7 @@ test('start then stop leave exactly one file carrying the start time and the sum
       cacheReadInputTokens: 41895,
       cacheCreationInputTokens: { ephemeral_5m: 21404, ephemeral_1h: 0 }
     },
+    advisorConsults: 0,
     transcript: { path: TRANSCRIPT, parsed: true, reason: null }
   })
 })

@@ -28,8 +28,8 @@
 # the integrity `validate` recorded before the Claude Code CLI was installed, so
 # the bytes pushed are the bytes the registry served.
 #
-# `.github/workflows/` is gitignored: this file is tracked only because it was
-# force-added, and `test/spine/package.test.mjs` fails if that stops being true.
+# This file must stay tracked: an untracked workflow never runs on the remote,
+# and `test/spine/package.test.mjs` fails if it stops being tracked.
 
 name: Plugin bundle
 

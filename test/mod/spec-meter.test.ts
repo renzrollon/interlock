@@ -15,7 +15,6 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import * as F from '../fixtures/mod/steps.mjs'
 import * as R from '../fixtures/mod/spec-run.mjs'
-import * as A from '../fixtures/mod/advisor-run.mjs'
 
 const PLUGIN = 'interlock'
 const PANE = 'interlock-spec'
@@ -48,6 +47,8 @@ type World = {
   bash: Map<string, Answer>
   writeErrors: Set<string>
   spawned: string[]
+  // What each `turn.step` answers in `serverToolUses`, by turn id; absent means the field is absent.
+  serverToolUses: Map<string, unknown>
 }
 
 /** A clean exit as the engine resolves it: the command's stdout, kept and read. */
@@ -86,7 +87,8 @@ function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
       [R.BASH_LEDGER_TEXT.command, captured(R.BASH_LEDGER_TEXT)]
     ]),
     writeErrors: new Set(),
-    spawned: []
+    spawned: [],
+    serverToolUses: new Map()
   }
   mock.clock(on, { now: T0 })
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
@@ -113,10 +115,19 @@ function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
   const write = (_$: any, e: any) => (w.writeErrors.has(e.file_path) ? { result: 'Error: refused', text: 'refused', isError: true } : { result: {}, text: 'ok' })
   on('tool.call', { tool: 'Edit' }, write)
   on('tool.call', { tool: 'Write' }, write)
+  on('turn.step', async function* (_$: any, e: any) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: null,
+      ...(w.serverToolUses.has(e.turnId) ? { serverToolUses: w.serverToolUses.get(e.turnId) } : {})
+    }
+  })
   on('agent.spawn', (_$: any, e: any) => {
     w.spawned.push(e.subagentType)
-    // The advisor spawn resolves as the live capture did (scripts/advisor-e2e.mjs).
-    if (e.subagentType === A.SPAWN_ADVISOR.input.subagentType) return A.SPAWN_ADVISOR.resolved
     return { model: 'claude-opus-5-5', agentId: `x${w.spawned.length}` }
   })
   on('tool.call', { tool: 'Workflow' }, (_$: any, e: any) =>
@@ -144,7 +155,16 @@ const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', command })
 const write = ($: any, file_path?: string) => $.tool.call({ tool: 'Write', ...(file_path === undefined ? {} : { file_path }), content: 'x' })
 const explore = ($: any, n: number) =>
   Promise.all(Array.from({ length: n }, (_, i) => $.agent.spawn({ ...R.SPAWN_EXPLORE.input, description: `investigator ${i}` })))
-const consult = ($: any, input: Record<string, unknown> = A.SPAWN_ADVISOR.input) => $.agent.spawn(input)
+/** One request of the session (no `agentId`) or of a subagent, its answer carrying `uses` as `serverToolUses`. */
+async function turnStep($: any, w: World, turnId: string, uses?: unknown, agentId?: string) {
+  if (uses !== undefined) w.serverToolUses.set(turnId, uses)
+  const s = $.turn.step({ turnId, index: 0, model: 'claude-opus-5-5', messageCount: 3, ...(agentId ? { agentId } : {}) })
+  let n = await s.next()
+  while (!n.done) n = await s.next()
+  return n.value
+}
+const advisorUse = (id?: string) => ({ ...(id === undefined ? {} : { id }), name: 'advisor', input: {} })
+const ADVISOR_LINE = 'spec-advisor-consults'
 const launch = ($: any, input: Record<string, unknown> = { name: 'interlock:ship', args: { change: C } }) =>
   $.tool.call({ tool: 'Workflow', ...input })
 const specLogs = (w: World) => w.logs.filter(l => l.to === 'debug' && SPEC_DEBUG.test(l.text))
@@ -317,25 +337,67 @@ test('explore\'s spawns and brief, two artifact writes and the findings file are
   }
 })
 
-test('the captured advisor spawn counts one consult, and the engine\'s resolution passes through unchanged', async ($: any, on: any) => {
+test('a spawn of any type other than Explore passes through and draws no consult line', async ($: any, on: any) => {
   const w = world(on)
   await start($)
   await happyPath($)
-  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toBe('consult: not spawned')
-  const resolved = await consult($)
-  expect(resolved).toEqual(A.SPAWN_ADVISOR.resolved)
-  expect(w.spawned).toEqual(['interlock:advisor'])
-  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toMatch(/^consult spawned 2026-10-07T/)
+  const resolved = await $.agent.spawn({ subagentType: 'general-purpose', description: 'other', prompt: 'x' })
+  expect(resolved.model).toBe('claude-opus-5-5')
+  expect(resolved.agentId).toBe(`x${w.spawned.length}`)
+  expect(w.spawned.at(-1)).toBe('general-purpose')
+  for (const surface of SURFACES) {
+    const { lines } = await pane($, surface)
+    expect(lines.has('spec-consult')).toBe(false)
+    expect(lines.has('spec-advisor')).toBe(false)
+    expect(lines.has('spec-waiting')).toBe(false)
+  }
 })
 
-test('a spawn of any other type, the bare agent name included, leaves the consult unspawned', async ($: any, on: any) => {
+test('advisor entries in turn.step are counted by id, the session apart from subagents, from the first entry on', async ($: any, on: any) => {
   const w = world(on)
   await start($)
   await happyPath($)
-  await consult($, { ...A.SPAWN_ADVISOR.input, subagentType: 'advisor' })
-  await consult($, { ...A.SPAWN_ADVISOR.input, subagentType: 'general-purpose' })
-  expect(w.spawned).toEqual(['advisor', 'general-purpose'])
-  for (const surface of SURFACES) expect(await line($, surface, 'spec-consult')).toBe('consult: not spawned')
+  for (const surface of SURFACES) expect((await pane($, surface)).lines.has(ADVISOR_LINE)).toBe(false)
+  const first = await turnStep($, w, 't1', [advisorUse('srvtoolu_1')])
+  expect(first.serverToolUses).toEqual([advisorUse('srvtoolu_1')])
+  await turnStep($, w, 't2', [advisorUse('srvtoolu_2'), { id: 'srvtoolu_x', name: 'web_search', input: {} }])
+  await turnStep($, w, 't3', [advisorUse('srvtoolu_3')], 'sub-1')
+  for (const surface of SURFACES) {
+    const { lines, all } = await pane($, surface)
+    expect(lines.get(ADVISOR_LINE)).toBe('advisor consults seen: session 2 · subagents 1')
+    expect(all).not.toMatch(/complete|none seen/i)
+  }
+  // An id already counted does not change the line.
+  await turnStep($, w, 't4', [advisorUse('srvtoolu_1')])
+  expect(await line($, 'terminal', ADVISOR_LINE)).toBe('advisor consults seen: session 2 · subagents 1')
+})
+
+test('a run whose turn.step events carry no advisor entry draws no advisor-consults line', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await happyPath($)
+  const before = await pane($, 'terminal')
+  await turnStep($, w, 't1')
+  await turnStep($, w, 't2', [])
+  await turnStep($, w, 't3', [{ id: 'srvtoolu_x', name: 'web_search', input: {} }], 'sub-1')
+  // A serverToolUses that is not a list is refused by the engine before it
+  // reaches a hook, so that case is pinned on the pure reader under Node.
+  for (const surface of SURFACES) {
+    const { lines, all } = await pane($, surface)
+    expect(lines.has(ADVISOR_LINE)).toBe(false)
+    expect(all).not.toMatch(/none seen/)
+  }
+  const after = await pane($, 'terminal')
+  expect([...after.lines.keys()]).toEqual([...before.lines.keys()])
+})
+
+test('with no spec run live, an advisor entry is counted nowhere and the step is the engine\'s', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  const r = await turnStep($, w, 't1', [advisorUse('srvtoolu_1')])
+  expect(r.serverToolUses).toEqual([advisorUse('srvtoolu_1')])
+  await loadSpec($)
+  expect((await pane($, 'terminal')).lines.has(ADVISOR_LINE)).toBe(false)
 })
 
 test('an unasked open the engine declines raises one toast naming the command, and an errored write is not counted', async ($: any, on: any) => {

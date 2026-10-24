@@ -93,16 +93,6 @@ const EXPECTED_CASES = [
   'lane-partial-failure',
   'skill-routing',
   'skill-routing-explore',
-  'spec-range-add-report-dashboard',
-  'spec-range-collapse-singleton',
-  'spec-range-dispatch-effort',
-  'spec-range-harden-substantive-gates',
-  'spec-range-harden-unattended',
-  'spec-range-judge-against-base',
-  'spec-range-label-merge-verdict',
-  'spec-range-merge-confidence',
-  'spec-range-prompt-cache-cost',
-  'spec-range-publish-npm',
   'tier-read-scope',
   'tier-read-scope-full',
   'trampoline-halt',
@@ -260,12 +250,11 @@ test('.claude-plugin/plugin.json declares no experimental.evals key', () => {
 
 // --- the CI definition is tracked (spec: evals/gate) ----------------------
 //
-// `.github/workflows/` is gitignored, so evals.yml is tracked only because it
-// was force-added. Nothing else notices if that stops being true: an untracked
-// workflow never runs on the remote and its absence is completely silent — the
-// whole gate disappears with no failing check anywhere. GitHub requires
-// workflow definitions to live in `.github/workflows/`, so moving the file out
-// of the ignored directory is not available; the assertion is the mechanism.
+// Nothing else notices if evals.yml stops being tracked: an untracked workflow
+// never runs on the remote and its absence is completely silent — the whole
+// gate disappears with no failing check anywhere. `.gitignore` ignores only
+// copilot-setup-steps.yml in `.github/workflows/`, so the file is tracked the
+// ordinary way; the assertion is what keeps it so.
 //
 // Where version-control status cannot be determined — a published tarball, an
 // export with no `.git` — this skips with its reason stated rather than
@@ -289,10 +278,9 @@ test('the eval workflow definition is tracked in version control', { skip: NOT_A
   assert.equal(listed.status, 0, `git ls-files exited ${listed.status}: ${listed.stderr}`)
   assert.ok(
     listed.stdout.trim().length > 0,
-    `${EVAL_WORKFLOW} is not tracked. .gitignore:38 ignores .github/workflows/, so this ` +
-      `file only stays tracked because it was force-added — restore it with ` +
-      `\`git add -f ${EVAL_WORKFLOW}\`. Untracked, the eval gate never runs on the remote ` +
-      `and nothing else says so.`
+    `${EVAL_WORKFLOW} is not tracked — restore it with \`git add ${EVAL_WORKFLOW}\`, and check ` +
+      `that no .gitignore line has started to cover it. Untracked, the eval gate never runs ` +
+      `on the remote and nothing else says so.`
   )
 })
 
@@ -631,180 +619,24 @@ test('the judged grader types are the shared set, and the harness knows two of t
   )
 })
 
-// --- Spec Range (spec: evals/spec-range) --------------------------------------
-//
-// Ten cases, one per archived change whose ledger carried a question a human had
-// to answer. Each seeds a frozen copy of that change folder WITHOUT its ledger:
-// a fixture that kept `decisions.md` carries the answer, and cannot test whether
-// the advisor asks the question.
-
-const SPEC_RANGE = [
-  ['harden-substantive-gates', 'harden-substantive-gates', 'D11'],
-  ['add-report-dashboard', 'add-report-dashboard', 'D11'],
-  ['publish-npm', 'publish-interlock-as-npm-package', 'P1'],
-  ['harden-unattended', 'harden-unattended-ship-runs', 'D6'],
-  ['label-merge-verdict', 'label-and-harden-the-merge-verdict', 'D1'],
-  ['collapse-singleton', 'collapse-singleton-waves', 'D2'],
-  ['prompt-cache-cost', 'surface-prompt-cache-cost', 'D8'],
-  ['dispatch-effort', 'dispatch-published-effort', 'D14'],
-  ['judge-against-base', 'judge-against-base-and-living-specs', 'D3'],
-  ['merge-confidence', 'add-merge-confidence-gate', 'D8']
-]
-
-const FIXTURE_ENTRIES = new Set(['proposal.md', 'design.md', 'tasks.md', 'specs'])
-
-/** `key: value` lines of a label.md, top-level, as written. */
-function readLabelFields(text) {
-  const out = {}
-  for (const line of text.split('\n')) {
-    const m = /^(change|row|source|question):\s*(.*)$/.exec(line)
-    if (m && !(m[1] in out)) out[m[1]] = m[2].trim()
-  }
-  return out
-}
-
-function walk(dir) {
-  const out = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const abs = join(dir, entry.name)
-    out.push(abs)
-    if (entry.isDirectory()) out.push(...walk(abs))
-  }
-  return out
-}
-
-test('Spec Range: every slug in the table is pinned in EXPECTED_CASES', () => {
-  for (const [slug] of SPEC_RANGE) {
-    assert.ok(EXPECTED_CASES.includes(`spec-range-${slug}`), `EXPECTED_CASES must list spec-range-${slug}`)
-  }
-})
-
-for (const [slug, change, row] of SPEC_RANGE) {
-  const name = `spec-range-${slug}`
-  const dir = join(EVALS_DIR, name)
-
-  test(`${name}: case.yaml runs once, seeds by scaffold, exercises the advisor and is not smoke`, () => {
-    const yamlPath = join(dir, 'case.yaml')
-    assert.ok(existsSync(yamlPath), `${name}: evals/${name}/case.yaml is missing`)
-    const text = readFileSync(yamlPath, 'utf8')
-    assert.ok(readTopLevel(text, 'schema_version'), `${name}: case.yaml does not pin schema_version`)
-    assert.equal(readTopLevel(text, 'runs'), '1', `${name}: case.yaml must set runs: 1`)
-    assert.ok((readTopLevel(text, 'provenance') || '').includes(change), `${name}: provenance must name ${change}`)
-    const exercises = readExercises(text)
-    for (const surface of ['agents/advisor.md', 'skills/spec/SKILL.md']) {
-      assert.ok(exercises.includes(surface), `${name}: exercises: must name ${surface}`)
-    }
-    assert.ok(!readTags(text).has('smoke'), `${name}: a Spec Range case runs in the full job only, never smoke`)
-
-    const tools = /^\s+allowed_tools:\s*\[([^\]]*)\]/m.exec(text)
-    assert.ok(tools, `${name}: execution.allowed_tools is not set`)
-    assert.deepEqual(
-      tools[1].split(',').map(t => t.trim()).sort(),
-      ['Agent', 'Bash', 'Glob', 'Grep', 'Read', 'Write'],
-      `${name}: allowed_tools must be [Agent, Bash, Read, Glob, Grep, Write]`
-    )
-
-    const script = /^\s+scaffold_script:\s*(\S+)\s*$/m.exec(text)
-    assert.ok(script, `${name}: context.scaffold_script is not set`)
-    const scriptPath = join(dir, script[1].replace(/['"]/g, ''))
-    assert.ok(existsSync(scriptPath), `${name}: scaffold script ${script[1]} does not exist`)
-    assert.ok(statSync(scriptPath).mode & 0o111, `${name}: scaffold script ${script[1]} is not executable`)
-  })
-
-  test(`${name}: the fixture holds ${change} without its ledger and nothing but the four artifact kinds`, () => {
-    const changes = join(dir, 'fixture', 'openspec', 'changes')
-    assert.ok(existsSync(changes), `${name}: fixture/openspec/changes/ is missing`)
-    const folders = readdirSync(changes)
-    assert.deepEqual(folders, [change], `${name}: the fixture must hold exactly ${change}, named without a date prefix`)
-    const folder = join(changes, change)
-    const extra = readdirSync(folder).filter(f => !FIXTURE_ENTRIES.has(f))
-    assert.deepEqual(extra, [], `${name}: the fixture carries files the four artifact kinds do not: ${extra.join(', ')}`)
-    for (const required of FIXTURE_ENTRIES) {
-      assert.ok(existsSync(join(folder, required)), `${name}: the fixture is missing ${required}`)
-    }
-    const leaked = walk(join(dir, 'fixture')).filter(p => /(?:^|\/)(decisions|advisor)\.md$/.test(p))
-    assert.deepEqual(
-      leaked.map(p => p.slice(ROOT.length + 1)),
-      [],
-      `${name}: a fixture that carries the ledger or an advisor file carries the answer`
-    )
-  })
-
-  test(`${name}: label.md cites the archived row and its question is the matches-label grader's`, () => {
-    const labelPath = join(dir, 'label.md')
-    assert.ok(existsSync(labelPath), `${name}: label.md is missing`)
-    const fields = readLabelFields(readFileSync(labelPath, 'utf8'))
-    for (const key of ['change', 'row', 'source', 'question']) {
-      assert.ok(fields[key], `${name}: label.md carries no ${key}: line`)
-    }
-    assert.equal(fields.change, change, `${name}: label.md change: must be ${change}`)
-    assert.equal(fields.row, row, `${name}: label.md row: must be ${row}`)
-    assert.match(fields.source, /decisions\.md:\d+/, `${name}: label.md source: must name the archived decisions.md and line`)
-    const grader = join(dir, 'graders', 'matches-label.md')
-    assert.ok(existsSync(grader), `${name}: graders/matches-label.md is missing`)
-    assert.ok(
-      readFileSync(grader, 'utf8').includes(fields.question),
-      `${name}: the label's question must appear in graders/matches-label.md`
-    )
-  })
-
-  test(`${name}: carries the five graders by type`, () => {
-    const expected = {
-      'advisor-written': 'file_exists',
-      'consult-spawned': 'tool_used',
-      'check-ran': 'tool_used',
-      'matches-label': 'llm',
-      'answered-already': 'llm'
-    }
-    for (const [grader, type] of Object.entries(expected)) {
-      const path = join(dir, 'graders', `${grader}.md`)
-      assert.ok(existsSync(path), `${name}: graders/${grader}.md is missing`)
-      assert.equal(readGraderType(readFileSync(path, 'utf8')), type, `${name}/${grader} must be ${type}`)
-    }
-    const written = readFileSync(join(dir, 'graders', 'advisor-written.md'), 'utf8')
-    assert.ok(written.includes(`openspec/changes/${change}/advisor.md`), `${name}/advisor-written must name the advisor file`)
-    const spawned = readFileSync(join(dir, 'graders', 'consult-spawned.md'), 'utf8')
-    assert.ok(spawned.includes('interlock:advisor'), `${name}/consult-spawned must match interlock:advisor`)
-    assert.match(spawned, /^arm:\s*with-only/m, `${name}/consult-spawned must be arm: with-only`)
-    assert.match(spawned, /^max:\s*1\b/m, `${name}/consult-spawned must cap the spawn at one`)
-    const check = readFileSync(join(dir, 'graders', 'check-ran.md'), 'utf8')
-    assert.ok(check.includes('--check'), `${name}/check-ran must match the --check line`)
-  })
-}
-
-// --- the page names Spec Range and never its caps (spec: evals/spec-range) ----
-
-const ADVISOR_CAPS = [
-  'maxAdvisorQuestions',
-  'maxAdvisorBriefChars',
-  'maxAdvisorNoteRows',
-  'advisorKeepMinMatches',
-  'advisorRepeatMaxPercent',
-  'advisorVerdictMinLabels'
-]
-
-test('docs/14 has a Spec Range section naming the verdict, interlock limits and --scaffold, and no cap', () => {
-  const page = readFileSync(join(ROOT, 'docs', '14-evals.md'), 'utf8')
-  const heading = /^#{2,4} [^\n]*Spec Range[^\n]*$/m.exec(page)
-  assert.ok(heading, 'docs/14-evals.md carries no heading naming Spec Range')
-  const after = page.slice(heading.index + heading[0].length)
-  const next = after.search(/^## /m)
-  const section = heading[0] + (next === -1 ? after : after.slice(0, next))
-  for (const token of ['interlock advisor --verdict', 'interlock limits', '--scaffold']) {
-    assert.ok(section.includes(token), `docs/14-evals.md's Spec Range section must name ${token}`)
-  }
-  for (const cap of ADVISOR_CAPS) {
-    assert.ok(!section.includes(cap), `docs/14-evals.md's Spec Range section states ${cap}; name interlock limits instead`)
-    const value = LIMITS[cap]
-    assert.equal(typeof value, 'number', `LIMITS.${cap} is not defined`)
-    for (const spelling of new Set([String(value), value.toLocaleString('en-US'), String(value).replace(/\B(?=(\d{3})+$)/g, '_')])) {
-      assert.doesNotMatch(
-        section,
-        new RegExp(`(?<![\\w.])${spelling}(?![\\w.])`),
-        `docs/14-evals.md's Spec Range section states ${cap} (${spelling}); name interlock limits instead`
-      )
-    }
-  }
+test('the full eval job is reachable by manual invocation only, with no schedule', () => {
+  // Spec: evals/gate. With no model credential provisioned a scheduled run
+  // reaches the skip step and reports green with nothing run. Adding a schedule
+  // is the edit that records the credential's arrival, and it edits this pin.
+  const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8').replace(/#.*$/gm, '')
+  const triggers = yml.slice(yml.indexOf('\non:'), yml.indexOf('\nconcurrency:'))
+  assert.ok(triggers.includes('\non:'), 'evals.yml has no on: block')
+  assert.doesNotMatch(triggers, /^\s+schedule:/m, 'evals.yml carries a schedule with no credential provisioned')
+  assert.doesNotMatch(yml, /\bcron:/, 'evals.yml carries a cron entry')
+  assert.match(triggers, /^\s+workflow_dispatch:/m, 'the full suite must stay manually invocable')
+  assert.match(triggers, /^\s+pull_request:/m, 'the per-change smoke keeps its pull-request trigger')
+  const start = yml.search(/^ {2}full:\s*$/m)
+  assert.ok(start !== -1, 'evals.yml has no full job')
+  const rest = yml.slice(start + 1)
+  const end = rest.search(/^ {2}[\w-]+:\s*$/m)
+  const body = end === -1 ? rest : rest.slice(0, end)
+  const condition = /^\s+if:\s*(.+)$/m.exec(body)?.[1].trim()
+  assert.equal(condition, "github.event_name == 'workflow_dispatch'", "the full job's if must be workflow_dispatch only")
 })
 
 test('the full eval job seeds fixtures with --scaffold and the smoke job does not', () => {
@@ -831,7 +663,7 @@ test('each eval job grants exactly the gated tools its cases list, so no grader 
   // Bash, Write, Edit and WebFetch are operator-gated in `claude plugin eval`: a
   // case's allowed_tools alone does not grant them, the harness withholds them
   // from the model, and a grader that needs one cannot pass. A 2.1.306 run of a
-  // Spec Range case with no --allow-tools printed that advisory and scored 0
+  // case with no --allow-tools printed that advisory and scored 0
   // (test/fixtures/evals/README.md, spec-range-2026-10-21.json).
   const GATED = ['Bash', 'Edit', 'WebFetch', 'Write']
   const yml = readFileSync(join(ROOT, '.github', 'workflows', 'evals.yml'), 'utf8')

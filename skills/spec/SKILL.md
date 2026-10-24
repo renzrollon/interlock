@@ -1,10 +1,10 @@
 ---
 name: spec
-description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs and the checkpoint advisor's advisor.md. Use when starting a new feature, refactor, or bug fix.
+description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs. Use when starting a new feature, refactor, or bug fix.
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
 argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd]"
-allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep Agent AskUserQuestion
+allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
 metadata:
   type: planning
   outputs:
@@ -158,6 +158,7 @@ Filter each ready artifact independently; do not dump the full instructions resp
 - **Invariant sweep.** If the change touches a shared or derived value, `tasks.md` must include a task per consumer. Use `interlock-graph consumers <symbol>` for the structural pass, then grep for string-keyed readers. See `${CLAUDE_PLUGIN_ROOT}/shared/INVARIANT-SWEEP.md`.
 - **Pinned versions.** If the design names a dependency without a version, ask for it. **Do not gap-fill a version number** — a plausible-looking wrong pin is worse than an open question.
 - **Genuine ambiguity.** Ask when it blocks a correct proposal. Otherwise take a reasonable default to keep momentum. Either way, write the row — see below.
+- **Advisor tool.** This session may have Claude Code's advisor tool because the user turned it on; this skill asks for no call to it. Never run `/advisor` or edit `advisorModel`: whether it is on, and what it spends, is the user's choice. If the session does consult it, its advice is guidance, not evidence: where it conflicts with what the code or the artifacts show, write a ledger row instead of settling it in prose. A call that fails is said at the hand-off and never retried, and the spec continues. The tool being absent is not an error either; §6 says so.
 
 ### Task shape for ship
 
@@ -189,6 +190,16 @@ Two things follow from how ship treats that wave:
 - **A dependency from an implementation task onto the red wave is now legal**, where it used to fail the plan outright. Prefer to leave it out anyway: `## 1.` already runs before `## 2.`, so `(make §1 green)` as prose is enough, and an edge buys ordering the sections had already.
 
 One consequence worth stating at the checkpoint: because the red wave's check is skipped, a run cannot tell a genuinely failing suite from one that already passed. Tests that pass before the implementation exists are not pinning new behaviour — that is a review question, and §6 flags it as one.
+
+### Compound notes
+
+Once the loop has written `tasks.md`, and before the ledger audit in §3a, read the compound notes for the files the tasks name:
+
+```bash
+interlock note match "<name>" --json
+```
+
+Each entry in `rows` is a rule an earlier change learned about a file this change touches. For each, check that `design.md` and `tasks.md` honour its `rule`. Where they do not, revise the artifact, or write a ledger row (§3a) before acting on it. `omitted` counts matches past the cap, and `unreadable` counts table rows the CLI could not parse; say both at the hand-off when they are not 0. When the line exits non-zero, report its first output line and continue: notes are guidance and never a gate.
 
 ### 3a. The decision ledger
 
@@ -244,36 +255,6 @@ A clean gate credits `explore` and `spec` too; a blocker resets them. That is wh
 
 ---
 
-## 5a. Consult: the checkpoint advisor
-
-Run this only on the clean-gate path, after `interlock autonomy clean review-artifacts explore spec`. A blocked gate halts before it and never consults. The `Agent` tool is granted for this one spawn and nothing else.
-
-Assemble the brief with the CLI, passing the findings file the review wrote:
-
-```bash
-interlock advisor "<name>" --brief --findings <findings path> --json
-```
-
-Read `path` from the output with `step: "brief"`; the check line prints `step: "check"`. Then make one Agent tool call with `subagent_type: "interlock:advisor"` whose prompt names that path and nothing else. Write the agent's reply, verbatim, to `.claude/metrics/advisor-<name>-<YYYYMMDD-HHMMSS>.json`, then check it:
-
-```bash
-interlock advisor "<name>" --check <that path> --json
-```
-
-Read `status`, `questions` and `dropped` from the output; its `step` field tells the check from the brief. The CLI writes `openspec/changes/<name>/advisor.md`.
-
-If the brief failed, the spawn errored, no reply came back, or the Write failed, record that instead:
-
-```bash
-interlock advisor "<name>" --check --failed "<reason>" --json
-```
-
-`--check` exits 0 whenever the change resolves; a draft it cannot read, or an `advisor.md` it cannot write, comes back as `status: "did-not-run"` with a `reason`. When either line exits non-zero, report its first output line (the `error` field under `--json`, an `interlock:` line on stderr without it) as the reason and continue to §6.
-
-The consult is never retried. It never writes `decisions.md`: a question becomes a ledger row only when a human adds it. `advisor.md` is never edited by hand.
-
----
-
 ## 6. Hand off to the human
 
 This is where the default run ends. Close with:
@@ -284,7 +265,8 @@ This is where the default run ends. Close with:
 - Task count, and the wave shape if it is obvious
 - The task shape, and — **when it is TDD** — that ship will run section 1's failing tests first and skip that wave's check, so nobody is told whether the suite was genuinely red. Ask the reviewer to confirm the leading tests actually fail against the current code; a test that passes before the implementation exists pins nothing.
 - Anything the artifact review flagged below blocker severity
-- The advisor: its `status`, its question count and ids, and the `advisor.md` path, or `did not run` with the reason
+- The advisor tool: whether it was available to this session, or `not available in this session`, and the consults the session made, by its own account. The spec meter's advisor line is the record of that count.
+- Compound notes: how many `rows` matched, with `omitted` and `unreadable` when not 0, or the `note match` line's first output line when it failed
 
 Then say plainly: **review the spec, and run `/interlock:ship` when it looks right.**
 

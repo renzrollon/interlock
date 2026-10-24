@@ -39,6 +39,7 @@ import {
 // and still names itself in the error.
 import { parseModelMap } from '../../lib/host/model-map.mjs'
 import { HOST_PORTS } from '../../lib/host.mjs'
+import { FIXTURE_CLASSIFIED_PATH } from '../fixtures/hosts/ship-answers.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const FIXTURE = join(ROOT, 'test', 'fixtures', 'acp', 'agent.mjs')
@@ -601,9 +602,10 @@ function shipRepo() {
   put(`${base}/design.md`, '# Design\n\nD1: keep it small.\n')
   put(`${base}/tasks.md`, '# Tasks\n\n- [ ] 1.1 Note it in README.md\n')
   put('README.md', 'hello\n')
-  // The classify step's continuation reads this; the fixture agent answers
-  // agents, not files, exactly as the Workflow harness does.
-  put('.claude/ship/classified.json', {
+  // The fixture agent writes .claude/ship/classified.json from this seed when
+  // the planner briefing reaches it, as the Workflow harness's stub does: a
+  // file placed there before `run start` would be removed as stale.
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: [
       {
         id: '1.1',

@@ -1,0 +1,131 @@
+# Canary — re-validates the SHIPPED bundle under the newest engine, daily.
+#
+# Everything else in CI runs on a change. This runs on the calendar, because the
+# thing it watches is not a change: a newly published Claude Code can break the
+# bundle plugin users already received (the `release` branch) between two
+# releases of this repository, and nothing else would notice until a user did.
+# The engine is therefore installed UNPINNED on purpose; its moving is the signal.
+#
+# READ-ONLY, AND NO ISSUE. The token carries `contents: read` and nothing else.
+# Opening an issue on failure would need `issues: write`. Only the plugin bundle
+# job holds `contents: write`, and this job holds no write scope at all
+# (test/spine/github-workflows.test.mjs). The failed scheduled run is the
+# notification: GitHub tells the owner about a failing scheduled workflow itself.
+#
+# GitHub disables a public repository's scheduled workflows after 60 days with
+# no repository activity, and says so only on the Actions tab. A disabled canary
+# fails nothing; re-enable it there by hand (docs/14-evals.md).
+#
+# WHAT IS SHIPPED, CHECKED BY WHAT SHIPPED WITH IT. The bundle is the `release`
+# branch, which holds the published tarball unchanged. Its binaries are
+# installed from it into a throwaway prefix, and the doctor and the smoke
+# inventory run from there. The checks come from the tag the bundle was cut
+# from, never from main: main's smoke inventory and module tests describe
+# commands and rows the shipped release does not have yet, so running them
+# against it fails by construction and an engine break would look the same. The
+# bundle carries no tests (they are not in the package's `files`), so the module
+# tests run from a copy of it with the tag's test/mod added. A check the bundle
+# predates is skipped with its reason in the run summary, never passed silently.
+name: Canary
+
+on:
+  schedule:
+    - cron: '23 6 * * *' # daily, 06:23 UTC — off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Check out the release branch (the shipped bundle)
+        uses: actions/checkout@v7
+        with:
+          ref: release
+          path: bundle
+      # 1.7.0 is the last release cut before the doctor's cli-version row and the
+      # post-install smoke existed; a bundle at or below it has neither to run.
+      - name: Read the bundle's version
+        id: bundle
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./bundle/package.json").version')
+          predates=$(node -e '
+            const v = process.argv[1].split(".").map(Number), last = [1, 7, 0]
+            const order = v[0] - last[0] || v[1] - last[1] || v[2] - last[2]
+            process.stdout.write(order <= 0 ? "true" : "false")
+          ' "$version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "predates=$predates" >> "$GITHUB_OUTPUT"
+          echo "Shipped bundle $version, checked with the tests and smoke of tag v$version" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out the tag the bundle was cut from (its smoke script and module tests)
+        uses: actions/checkout@v7
+        with:
+          ref: v${{ steps.bundle.outputs.version }}
+          path: tagged
+      # Unpinned: the newest engine is what this workflow exists to try.
+      - name: Install the newest Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Validate the bundle strictly
+        run: claude plugin validate bundle --strict
+      - name: Run the tag's module tests against the bundle's hooks module
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          tested="$RUNNER_TEMP/bundle-tested"
+          cp -R bundle "$tested"
+          mkdir -p "$tested/test/fixtures"
+          cp -R tagged/test/mod "$tested/test/"
+          cp -R tagged/test/fixtures/mod "$tested/test/fixtures/"
+          claude plugin test "$tested"
+      - name: Install the bundle's binaries into a prefix
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack ./bundle --pack-destination "$RUNNER_TEMP/pack"
+          npm install -g "$RUNNER_TEMP"/pack/*.tgz --prefix "$RUNNER_TEMP/prefix"
+          "$RUNNER_TEMP/prefix/bin/interlock" --help >/dev/null
+      - name: Doctor from the installed bundle
+        if: ${{ !cancelled() }}
+        env:
+          VERSION: ${{ steps.bundle.outputs.version }}
+          PREDATES: ${{ steps.bundle.outputs.predates }}
+        run: |
+          set -euo pipefail
+          if [ "$PREDATES" = true ]; then
+            echo "Doctor cli-version row skipped: bundle $VERSION predates it (it first ships in the release after 1.7.0)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The doctor's other rows depend on what the runner has installed, so
+          # only the CLI-versus-plugin row can fail the canary. The plugin is the
+          # bundle, given as a plugin session gives it; by name alone the row has
+          # no plugin to compare with and skips.
+          PATH="$RUNNER_TEMP/prefix/bin:$PATH" CLAUDE_PLUGIN_ROOT="$GITHUB_WORKSPACE/bundle" interlock doctor --json > "$RUNNER_TEMP/doctor.json" || true
+          node -e '
+            const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const row = d.checks.find(c => c.id === "cli-version");
+            console.log("cli-version:", row ? row.status + " - " + row.detail : "no row");
+            if (!row || row.status !== "ok") process.exit(1);
+          ' "$RUNNER_TEMP/doctor.json"
+      - name: Smoke inventory from the installed bundle
+        if: ${{ !cancelled() }}
+        env:
+          VERSION: ${{ steps.bundle.outputs.version }}
+          PREDATES: ${{ steps.bundle.outputs.predates }}
+        run: |
+          set -euo pipefail
+          if [ "$PREDATES" = true ]; then
+            echo "Smoke inventory skipped: bundle $VERSION predates scripts/postinstall-smoke.mjs (tag v$VERSION has none)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/smoke"
+          node tagged/scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" tagged "$RUNNER_TEMP/smoke"

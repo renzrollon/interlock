@@ -43,6 +43,8 @@ import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.m
 import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
 import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
 import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
+import { cliVersion } from '../lib/version.mjs'
+import { advisorBanners } from '../lib/host/advisor-banners.mjs'
 
 const WORK = '.claude/ship'
 
@@ -99,6 +101,7 @@ Flags:
   --conformance          answer each delta spec's scenarios against the code
   --strict               all three of the above
   --verbose              print host events as they happen
+  --version              print the CLI version and exit
 
 Environment:
   ${MODEL_MAP_ENV}    {"<host>":{"haiku":"...","sonnet":"...","opus":"..."}}
@@ -128,6 +131,12 @@ function parseArgv(argv) {
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
+    // A bare -h is help, read BEFORE the change positional: otherwise it is
+    // taken as a change name and the run starts against change "-h".
+    if (arg === '-h') {
+      flags.help = true
+      continue
+    }
     if (!arg.startsWith('--')) {
       positional.push(arg)
       continue
@@ -163,6 +172,11 @@ const { flags, positional } = parseArgv(process.argv.slice(2))
 
 if (flags.help || flags.h) {
   process.stdout.write(USAGE)
+  process.exit(0)
+}
+
+if (flags.version) {
+  process.stdout.write(`${cliVersion() ?? 'unknown'}\n`)
   process.exit(0)
 }
 
@@ -344,6 +358,11 @@ if (claudeBinary) {
       `exempted path, see docs/04-when-it-stops.md`
   )
 }
+// The advisor tool is Claude Code's own and only the user turns it on. This
+// host does not count consults per lane, so the note says they are not counted;
+// a host that is not the Claude binary has no advisor and gets no note. A
+// settings file that does not read is named by the note, never skipped quietly.
+if (claudeBinary) banners.push(...advisorBanners(root, process.env))
 // The Claude CLI's effort variable outranks `--effort` and every per-agent
 // effort, so while it is set the plan's effort is not in effect. It means
 // nothing to a host that is not the Claude binary (D22). It is the operator's
@@ -419,6 +438,9 @@ function effortBanners() {
 
 let resolvedChange = changeArg || '(unresolved)'
 let steps = 0
+// The `error` of the last JSON the CLI printed that was not a step: an unknown
+// flag is refused with `{ error, unknownFlag, … }` and exit 2.
+let cliRefusal = null
 
 /** Write a work file and return the repo-relative path the CLI is given. */
 function write(rel, data) {
@@ -434,11 +456,17 @@ async function cli(argv, { closing = false } = {}) {
   // From the first close on, a signal starts no second one — whichever path
   // reached the close: the loop's own continuation, or `stop()`.
   if (argv[0] === 'run' && argv[1] === 'close') stopping = true
+  cliRefusal = null
   const result = await host.runCli([...argv, '--json'])
   if (signalled && !closing) return new Promise(() => {})
   if (!result.stdout.trim()) return null
   try {
-    return JSON.parse(result.stdout)
+    const parsed = JSON.parse(result.stdout)
+    // A step names its action. Anything else is not one, as `workflows/ship.js`
+    // reads it: a refusal object read as a step would end the run as a success.
+    if (parsed && typeof parsed.action === 'string') return parsed
+    if (parsed && typeof parsed.error === 'string' && parsed.error) cliRefusal = parsed.error
+    return null
   } catch {
     // Unparseable stdout is not a step. Nothing is inferred from it.
     return null
@@ -580,7 +608,11 @@ while (step && step.then) {
 }
 
 if (!step) {
-  await stop('the run program returned no step — the CLI produced no readable output')
+  await stop(
+    cliRefusal
+      ? `the CLI refused the call and printed no step: ${cliRefusal}`
+      : 'the run program returned no step — the CLI produced no readable output'
+  )
 }
 
 finish(step)

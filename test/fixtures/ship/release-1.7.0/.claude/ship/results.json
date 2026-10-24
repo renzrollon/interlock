@@ -1,0 +1,28 @@
+[
+  {
+    "tasks": [
+      {
+        "id": "1.1",
+        "outcome": "ok",
+        "filesChanged": [
+          "src/first.mjs"
+        ],
+        "handoff": {
+          "schema": "interlock.wave-handoff/1",
+          "taskId": "1.1",
+          "status": "ok",
+          "summary": "done",
+          "evidence": [
+            "README.md:1"
+          ],
+          "next": "nothing",
+          "blocker": null
+        }
+      },
+      {
+        "id": "1.2",
+        "outcome": "not-attempted"
+      }
+    ]
+  }
+]

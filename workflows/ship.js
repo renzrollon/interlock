@@ -129,6 +129,10 @@ function parseInvocation(args) {
     tddMode: tddFlag && noTddFlag ? null : tddFlag ? 'tdd' : noTddFlag ? 'no-tdd' : null,
     tddModeConflict: tddFlag && noTddFlag,
     maxParallel: Number.isInteger(opts.maxParallel) ? opts.maxParallel : null,
+    // Where the plugin lives, as the ship skill reads it from the host's
+    // ${CLAUDE_PLUGIN_ROOT}. Forwarded to `run start`, which compares the
+    // plugin's version with the CLI's; this script compares nothing.
+    pluginRoot: typeof opts.pluginRoot === 'string' && opts.pluginRoot.trim() ? opts.pluginRoot.trim() : null,
     mode: opts.mode === 'continue' ? 'continue' : 'checkpoint'
   }
 }
@@ -147,6 +151,11 @@ const PING_TOOLS = ['Bash', 'Read', 'Write']
 const pingExtra = { type: PING_AGENT, tools: PING_TOOLS }
 
 const WORK = '.claude/ship'
+// The binary's name inside prose this script prints. Spelled as a constant
+// because test/workflows.test.mjs reads this file's text for `interlock <word>`
+// to find the subcommands the script drives, and a sentence about the binary on
+// PATH is not an invocation.
+const CLI_NAME = 'interlock'
 const RESULTS = `${WORK}/results.json`
 // Where the CLI keeps the exact bytes it last printed (LAST_STEP_PATH in
 // lib/run.mjs), and the close's own copy (LAST_CLOSE_PATH). This script cannot
@@ -264,6 +273,7 @@ const {
   tddMode,
   tddModeConflict,
   maxParallel,
+  pluginRoot,
   mode
 } = parseInvocation(typeof args === 'undefined' ? undefined : args)
 
@@ -483,8 +493,14 @@ async function cli(argv, results, extraWrites = []) {
   const quoted = flat
     ? `; the relay copied "${flat.slice(0, 200)}${flat.length > 200 ? '…' : ''}"`
     : '; the relay copied nothing'
+  // An older CLI answers `--version` with `Unknown command` on stderr, which the
+  // relay drops; the operator can run it and read the answer.
+  const older =
+    subcommand === 'run start'
+      ? `; the ${CLI_NAME} on PATH may be older than this plugin — run ${CLI_NAME} --version`
+      : ''
   relayFailure =
-    `${label} (interlock ${subcommand}): ${first.problem}${recovery}${quoted} — ` +
+    `${label} (interlock ${subcommand}): ${first.problem}${recovery}${quoted}${older} — ` +
     `the CLI's own bytes are in ${record}`
   return null
 }
@@ -565,9 +581,25 @@ let step = await cli([
   ...(handoff ? ['--handoff'] : []),
   ...(conformance ? ['--conformance'] : []),
   ...(strict ? ['--strict'] : []),
+  ...(pluginRoot ? ['--plugin-root', pluginRoot] : []),
   '--host',
   'workflow'
 ])
+
+// A start step carries `cliVersion` from the release that began reporting it.
+// An older CLI ignores `--plugin-root` (its flag parser is permissive) and
+// prints a step without one, so a missing field is the only sign that the
+// `interlock` on PATH is older than this plugin. Said here because that CLI
+// cannot say it.
+// A CLI new enough to carry the field but unable to read its own package.json
+// carries it as null, and is not an old one.
+if (step && typeof step.action === 'string' && typeof step.cliVersion !== 'string') {
+  banners.push(
+    step.cliVersion === null
+      ? `CLI VERSION UNKNOWN: the ${CLI_NAME} on PATH could not read its own version — run ${CLI_NAME} version --json to see which file answered`
+      : `CLI VERSION UNKNOWN: the ${CLI_NAME} on PATH predates version reporting (older than 1.8.0) — run ${CLI_NAME} doctor`
+  )
+}
 
 // The control-plane ping model `run start` decided from the host's version and
 // environment. Forwarded, never decided here: when the step names none — an
@@ -603,8 +635,11 @@ while (step && step.then) {
 
 if (!step) {
   if (relayFailure) banners.push(`RELAY UNREADABLE: ${relayFailure}`)
+  // The banner above reaches the summary only through a close that has a
+  // manifest to attach it to, and a relay that failed on `run start` has none.
+  // The reason is printed either way, so the tag rides on it too.
   return await stop('the run program returned no step — the CLI relay could not be read' +
-    (relayFailure ? `: ${relayFailure}` : ''))
+    (relayFailure ? ` (RELAY UNREADABLE): ${relayFailure}` : ''))
 }
 
 // The last argv was `run close`, so `step` IS the close: its summary and its

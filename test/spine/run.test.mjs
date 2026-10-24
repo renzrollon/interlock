@@ -995,6 +995,73 @@ test('run close records the autonomy outcome for a strict run and nothing for a 
   }
 })
 
+test('a strict close whose ladder file is unreadable says so and still records the run once the file is moved aside', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    file(root, '.claude/autonomy.json', '{ not json')
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD UNREADABLE:') && b.includes('counters restarted')),
+      `the ladder's own warning reaches the close: ${JSON.stringify(closed.banners)}`
+    )
+    assert.ok(!startsWithAny(closed.banners, 'AUTONOMY RECORD NOT WRITTEN'), 'it was written, after the move')
+    assert.match(closed.summary, /AUTONOMY RECORD UNREADABLE/, 'and the summary says so')
+    assert.deepEqual(manifestOf(root).autonomy, { path: 'review-code', blockers: 0 })
+    const ladder = JSON.parse(readFileSync(join(root, '.claude', 'autonomy.json'), 'utf8'))
+    assert.equal(ladder['review-code'].runs, 1)
+    assert.ok(
+      readdirSync(join(root, '.claude')).some(name => name.startsWith('autonomy.json.unreadable-')),
+      'the unreadable file was kept aside, not destroyed'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a strict close that could not write the ladder says AUTONOMY RECORD NOT WRITTEN and claims no record', {
+  skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root ignores directory modes' : false
+}, () => {
+  const { root, change } = repo()
+  const dotClaude = join(root, '.claude')
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeReview(root, { dismissed: 1 })
+    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    file(root, '.claude/autonomy.json', '{ not json')
+    for (const dir of ['learning', 'metrics', 'handoff']) mkdirSync(join(dotClaude, dir), { recursive: true })
+    // `.claude` cannot take a new entry, so the unreadable file cannot be moved
+    // aside; the ladder leaves it where it is and records nothing.
+    chmodSync(dotClaude, 0o500)
+    let closed
+    try {
+      closed = runAny(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    } finally {
+      chmodSync(dotClaude, 0o700)
+    }
+    assert.ok(closed, 'the close printed a step')
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD UNREADABLE:') && b.includes('this run was not recorded')),
+      `the ladder's warning reaches the close: ${JSON.stringify(closed.banners)}`
+    )
+    assert.ok(
+      closed.banners.some(b => b.startsWith('AUTONOMY RECORD NOT WRITTEN:') && b.includes('could not be moved aside')),
+      `and the close says nothing was written: ${JSON.stringify(closed.banners)}`
+    )
+    assert.equal(manifestOf(root).autonomy ?? null, null, 'the manifest does not claim a record that was not written')
+    assert.equal(readFileSync(join(dotClaude, 'autonomy.json'), 'utf8'), '{ not json', 'the unreadable file was left alone')
+  } finally {
+    try {
+      chmodSync(dotClaude, 0o700)
+    } catch {
+      // already restored
+    }
+    cleanup(root)
+  }
+})
+
 test('the commit briefing of a strict run carries no autonomy instruction', () => {
   const { root, change } = repo()
   try {
@@ -3285,6 +3352,9 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     skipped: false,
     recorded: { ok: ['5.1'], failed: ['5.2'], notAttempted: ['5.3'] },
     plan: { waves: [], testWave: null, deferred: [] },
+    // The CLI that produced the step, so a relay can show a skew the host cannot
+    // see (ship/run-program: every step carries the CLI's version).
+    cliVersion: '1.8.0',
     spawns: [
       {
         label: '6.1+1',
@@ -3315,7 +3385,7 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
   assert.equal(slim.wave, 3)
   assert.equal(slim.change, 'add-thing')
   assert.deepEqual(slim.banners, step.banners)
-  for (const kept of ['waveIndex', 'batchIndex', 'batchCount', 'skipped', 'recorded', 'plan']) {
+  for (const kept of ['waveIndex', 'batchIndex', 'batchCount', 'skipped', 'recorded', 'plan', 'cliVersion']) {
     assert.deepEqual(slim[kept], step[kept], `${kept} is a stated relay field for the meter`)
   }
   assert.deepEqual(RELAY_STEP_FIELDS, [
@@ -3334,7 +3404,8 @@ test('relayStep hands the Workflow host only the fields its interpreter reads', 
     'batchCount',
     'skipped',
     'recorded',
-    'plan'
+    'plan',
+    'cliVersion'
   ])
   assert.equal('prompt' in slim.spawns[0], false, 'the worker is handed a path and a hash, never the text')
   const { prompt, ...kept } = step.spawns[0]
@@ -3385,10 +3456,11 @@ test('on the Workflow host a run step is printed slim, and its exact bytes are k
 // summary of the waves that will run, the step `run record-batch` returns
 // carries the ids it recorded, and every other step grows by the three integer
 // positions alone. The summary module is loaded lazily so a missing module fails
-// these cases and nothing else in this file.
+// these cases and nothing else in this file. `cliVersion` has ridden every step
+// since harden-release-upgrade-path (its design D17).
 
 const RUN_STEP_SCHEMA = 'interlock.run-step/1'
-const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel', 'seq']
+const RELAYED_TODAY = ['schema', 'action', 'then', 'spawns', 'banners', 'change', 'wave', 'reason', 'pingModel', 'seq', 'cliVersion']
 const summaryModule = () => import('../../lib/plan-summary.mjs')
 const stateOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
 const planOf = root => JSON.parse(readFileSync(join(root, '.claude/ship/plan.json'), 'utf8'))
@@ -4917,9 +4989,10 @@ const USAGE_BY_SPAWN = [
  * the dispatched spawns it recorded. Each lane result carries seven output
  * tokens, so the output figures the join must leave alone are known.
  */
-function workflowThroughWaves() {
+function workflowThroughWaves({ setup, env: extraEnv } = {}) {
   const { root, change } = repo('add-thing', { tasks: JOIN_TASKS })
-  const env = workflowEnv()
+  if (setup) setup(root)
+  const env = workflowEnv({ env: extraEnv })
   let step = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, [], JOIN_CLASSIFIED, { env })
   for (let guard = 0; step.action !== 'verify-final'; guard++) {
     assert.ok(guard < 12, 'the walk did not reach the final verification')
@@ -4943,7 +5016,12 @@ function workflowThroughWaves() {
 }
 
 /** One agent file, in the shape the SubagentStop recorder writes (lib/agent-usage.mjs). */
-function plantAgent(root, runId, agentId, { sha = null, models = ['claude-sonnet-5-5'], usage = null, turns = 3 } = {}) {
+function plantAgent(
+  root,
+  runId,
+  agentId,
+  { sha = null, models = ['claude-sonnet-5-5'], usage = null, turns = 3, advisorConsults } = {}
+) {
   return file(root, `.claude/ship/agent-usage/${runId}/${agentId}.json`, {
     schema: 'interlock.agent-usage/1',
     agentId,
@@ -4954,15 +5032,25 @@ function plantAgent(root, runId, agentId, { sha = null, models = ['claude-sonnet
     models,
     turns,
     usage,
+    // Absent unless given: a record written before the field existed carries none.
+    ...(advisorConsults !== undefined ? { advisorConsults } : {}),
     transcript: { path: `/home/user/.claude/projects/-home-user-repo/agent-${agentId}.jsonl`, parsed: true, reason: null }
   })
 }
 
 /** One agent file per briefed spawn, keyed by its sha, except the dispatch indices in `skip`. */
-function plantJoined(run, { skip = [], models = () => ['claude-sonnet-5-5'], usage = i => USAGE_BY_SPAWN[i] } = {}) {
+function plantJoined(
+  run,
+  { skip = [], models = () => ['claude-sonnet-5-5'], usage = i => USAGE_BY_SPAWN[i], advisor = () => undefined } = {}
+) {
   run.briefed.forEach((spawned, i) => {
     if (skip.includes(i)) return
-    plantAgent(run.root, run.runId, `agent-${i}`, { sha: spawned.sha, models: models(spawned, i), usage: usage(i) })
+    plantAgent(run.root, run.runId, `agent-${i}`, {
+      sha: spawned.sha,
+      models: models(spawned, i),
+      usage: usage(i),
+      advisorConsults: advisor(i)
+    })
   })
 }
 
@@ -5781,8 +5869,10 @@ test('two worktree runs of one repository share only the main checkout\'s append
     const w2 = realpathSync(second)
     const runIds = []
     for (const root of [w.worktree, w2]) {
-      file(root, '.claude/ship/classified.json', CLASSIFIED)
+      // Classified after the start: a classification that predates `run start`
+      // is an earlier run's, and the start removes it.
       const started = step0(root, ['run', 'start', '--change', w.change], { env: w.env })
+      file(root, '.claude/ship/classified.json', CLASSIFIED)
       const batch = step0(root, started.then.argv, { env: w.env })
       step0(root, batch.then.argv, {
         results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
@@ -5874,8 +5964,8 @@ test('an explicit state home, by flag or by environment, receives every append o
 test('a manifest without a recorded home appends under the working root, as before', () => {
   const w = linkedWorktree()
   try {
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const batch = step0(w.worktree, started.then.argv, { env: w.env })
     const { runId } = manifestOf(w.worktree)
     const inHome = eventsAt(w.main, runId).length
@@ -5972,8 +6062,8 @@ test('a run subcommand in a worktree with no manifest names the main checkout\'s
 test('a read-only runs directory in the main checkout halts the worktree run\'s record path', { skip: IS_ROOT && 'chmod does not bind root' }, () => {
   const w = linkedWorktree()
   try {
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const started = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     const batch = step0(w.worktree, started.then.argv, { env: w.env })
     const { runId } = manifestOf(w.worktree)
     const dir = join(w.main, '.claude', 'ship', 'runs')
@@ -6005,8 +6095,8 @@ test('a learning directory the main checkout cannot create only reports, and the
   try {
     // A file where the directory must go: the mkdir fails whatever the uid.
     writeFileSync(join(w.main, '.claude', 'learning'), 'not a directory\n')
-    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     let step = step0(w.worktree, ['run', 'start', '--change', w.change], { env: w.env })
+    file(w.worktree, '.claude/ship/classified.json', CLASSIFIED)
     step = step0(w.worktree, step.then.argv, { env: w.env })
     step = step0(w.worktree, step.then.argv, {
       results: step.spawns.map((_, i) => laneOk(step.lanes[i].map(t => t.id))),
@@ -8141,4 +8231,955 @@ test('a note table that cannot be written is a COMPOUND NOTES NOT WRITTEN banner
   } finally {
     cleanup(root)
   }
+})
+
+// --- the upgrade path (harden-release-upgrade-path, spec: ship/run-program) --
+//
+// What a run left behind under one release meets the next release's CLI here:
+// a manifest that already closed, a manifest this CLI cannot read, a
+// classification a previous run left, a plan stored for another format, a
+// profile edited mid-run, a field an earlier release did not write, and the
+// versions every run now records. Each case is a state a real root can be in
+// after an upgrade, driven through the real CLI.
+
+const PKG_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+
+/**
+ * Like `run`, but accepts any exit code and keeps stderr. A refusal here is a
+ * halt step, and which exit code carries it is not what these cases pin.
+ */
+function runAny(root, argv, { results } = {}) {
+  const full = [...argv]
+  if (results !== undefined) {
+    file(root, '.claude/ship/results.json', results)
+    full.push('--results', '.claude/ship/results.json')
+  }
+  full.push('--json')
+  const r = spawnSync(process.execPath, [BIN, ...full], { cwd: root, encoding: 'utf8' })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  let step = null
+  try {
+    step = r.stdout.trim() ? JSON.parse(r.stdout) : null
+  } catch {
+    step = null
+  }
+  return { step, code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
+/** Every file under `.claude/ship` (less `skip`), by relative path, with its bytes. */
+function shipSnapshot(root, skip = []) {
+  const out = {}
+  const walk = rel => {
+    const abs = join(root, rel)
+    if (!existsSync(abs)) return
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const next = join(rel, entry.name)
+      if (entry.isDirectory()) walk(next)
+      else if (!skip.includes(next)) out[next] = readFileSync(join(root, next), 'utf8')
+    }
+  }
+  walk('.claude/ship')
+  return out
+}
+
+function editManifest(root, edit) {
+  const path = join(root, '.claude/ship/run.json')
+  const manifest = JSON.parse(readFileSync(path, 'utf8'))
+  edit(manifest)
+  writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')
+  return manifest
+}
+
+const bannersOf = step => (step && Array.isArray(step.banners) ? step.banners : [])
+const startsWithAny = (banners, prefix) => banners.some(b => typeof b === 'string' && b.startsWith(prefix))
+
+const MANIFEST_REL = join('.claude', 'ship', 'run.json')
+
+test('a run subcommand refuses a manifest that halted or closed, names the run, and writes nothing', () => {
+  for (const [label, closedState, pattern] of [
+    ['halted', { halted: 'task-failures' }, /already halted: task-failures/],
+    ['closed', { closedAt: '2026-10-22T10:00:00.000Z' }, /already closed/]
+  ]) {
+    const { root, change } = repo()
+    try {
+      toFirstBatch(root, change)
+      const manifest = editManifest(root, m => {
+        Object.assign(m, closedState)
+        // A close leaves no continuation behind it.
+        m.lastThen = null
+      })
+      const before = shipSnapshot(root, [MANIFEST_REL])
+      assert.ok(
+        Object.keys(before).some(p => p.startsWith(join('.claude', 'ship', 'runs'))),
+        'the run has a trajectory to leave alone'
+      )
+      assert.ok(before[join('.claude', 'ship', 'last-step.json')], 'the run has a last-step record to leave alone')
+
+      const { step } = runAny(root, ['run', 'next'])
+      assert.equal(step.action, 'halt', `${label}: ${JSON.stringify(step)}`)
+      assert.ok(step.reason.includes(manifest.runId), `${label}: the refusal names the run id: ${step.reason}`)
+      assert.match(step.reason, pattern, `${label}: the refusal says what state the run is in`)
+      assert.match(step.reason, /interlock run start/, `${label}: the refusal names the way out`)
+      assert.deepEqual(
+        shipSnapshot(root, [MANIFEST_REL]),
+        before,
+        `${label}: a refused call changed the trajectory, last-step record or another work file`
+      )
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('every run subcommand but start and close refuses a closed run', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.halted = 'task-failures'
+      m.lastThen = null
+    })
+    const before = shipSnapshot(root, [MANIFEST_REL])
+    for (const argv of [
+      ['run', 'next'],
+      ['run', 'classified', '--classified', '.claude/ship/classified.json'],
+      ['run', 'record-batch'],
+      ['run', 'reviewed'],
+      ['run', 'remediated', '--round', '1']
+    ]) {
+      const { step } = runAny(root, argv, argv[1] === 'record-batch'
+        ? { results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))) }
+        : {})
+      assert.equal(step && step.action, 'halt', `${argv.join(' ')}: ${JSON.stringify(step)}`)
+      assert.match(step.reason, /already halted: task-failures/, argv.join(' '))
+    }
+    // The results file this loop wrote is the harness's, not the CLI's.
+    const after = shipSnapshot(root, [MANIFEST_REL, join('.claude', 'ship', 'results.json')])
+    assert.deepEqual(after, before)
+    assert.match(
+      readFileSync(join(root, `openspec/changes/${change}/tasks.md`), 'utf8'),
+      /- \[ \] 1\.1/,
+      'a refused record-batch ticked nothing'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- a closed run is closed once -------------------------------------------
+
+/** Walk a lean run to its clean close and return the close step. */
+function closeLeanRun(root, change) {
+  const batch = toFirstBatch(root, change)
+  const recorded = run(root, [...batch.then.argv], {
+    results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+  }).step
+  const judged = run(root, [...recorded.then.argv]).step
+  return run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+}
+
+const trajectoryLines = (root, runId) =>
+  readFileSync(join(root, '.claude/ship/runs', `${runId}.jsonl`), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+
+const outcomeRows = root =>
+  readFileSync(join(root, '.claude', 'learning', 'outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+
+test("following a closed run's refusal to its close writes nothing and keeps the original close", () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    assert.equal(closed.action, 'complete')
+    const manifest = manifestOf(root)
+    assert.ok(manifest.closedAt, 'the run closed')
+    const runId = manifest.runId
+
+    // A driver that called the wrong subcommand is handed the D15 refusal, whose
+    // continuation is a close. It obeys.
+    const refusal = runAny(root, ['run', 'next']).step
+    assert.equal(refusal.action, 'halt')
+    assert.deepEqual(refusal.then.argv.slice(0, 3), ['run', 'close', '--halt'])
+
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+    const events = trajectoryLines(root, runId)
+    assert.equal(events.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(events.filter(e => e.type === 'run-halt').length, 0)
+
+    const followed = runAny(root, [...refusal.then.argv])
+    assert.equal(followed.code, 0, 'the clean close keeps its exit code')
+    assert.equal(followed.step.action, 'complete', 'a clean run is not re-listed as halted')
+    assert.equal(followed.step.exitCode, 0)
+    assert.equal(followed.step.summary, closed.summary, 'the close on record is what comes back')
+
+    assert.deepEqual(shipSnapshot(root), before, 'the follow-up close wrote into .claude/ship')
+    const after = trajectoryLines(root, runId)
+    assert.equal(after.length, events.length, 'no event was appended to the trajectory')
+    assert.equal(after.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(after.filter(e => e.type === 'run-halt').length, 0)
+    assert.deepEqual(outcomeRows(root), outcomesBefore, 'the outcomes corpus gained no row')
+    assert.equal(outcomesBefore.length, 1)
+    const again = manifestOf(root)
+    assert.equal(again.closedAt, manifest.closedAt)
+    assert.equal(again.halted ?? null, null, 'the reason the refusal supplied was not recorded')
+    assert.equal(again.seq, manifest.seq, 'the replay was not numbered')
+    assert.equal(run(root, ['run-log', 'check', '--run-id', runId], { expectExit: 0 }).code, 0)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a close that halted the run keeps its reason when the run is closed again', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    const first = run(root, ['run', 'close', '--halt', 'task-failures'], { expectExit: 1 }).step
+    assert.equal(first.action, 'halt')
+    const manifest = manifestOf(root)
+    assert.equal(manifest.halted, 'task-failures')
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+
+    const refusal = runAny(root, ['run', 'next']).step
+    const followed = runAny(root, [...refusal.then.argv])
+    assert.equal(followed.code, 1, 'the original close exited 1 and so does its replay')
+    assert.equal(followed.step.exitCode, 1)
+    assert.match(followed.step.summary, /task-failures/)
+    assert.doesNotMatch(followed.step.summary, new RegExp(refusal.reason.slice(0, 30)))
+
+    assert.deepEqual(shipSnapshot(root), before)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+    assert.equal(manifestOf(root).halted, 'task-failures', 'the original halt reason is kept')
+    assert.equal(manifestOf(root).closedAt, manifest.closedAt)
+    const events = trajectoryLines(root, manifest.runId)
+    assert.equal(events.filter(e => e.type === 'run-receipt').length, 1)
+    assert.equal(events.filter(e => e.type === 'run-halt').length, 1)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a second plain run close on a closed run writes nothing', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const before = shipSnapshot(root)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const outcomesBefore = outcomeRows(root)
+
+    const second = run(root, ['run', 'close']).step
+    assert.equal(second.action, 'complete')
+    assert.equal(second.exitCode, 0)
+    assert.equal(second.summary, closed.summary)
+    assert.deepEqual(shipSnapshot(root), before)
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('closing a closed run again clears a stage marker that outlived the close, and records nothing else', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const lastCloseBefore = readFileSync(join(root, '.claude/ship/last-close.json'), 'utf8')
+    const outcomesBefore = outcomeRows(root)
+    // A lingering worker rewrote the marker after the close, with a live pid.
+    writeStage(change, 'commit', { root, pid: process.pid })
+    const marker = stagePath(change, root)
+    assert.ok(existsSync(marker))
+
+    const replay = runAny(root, ['run', 'close', '--halt', 'clear the guard'])
+    assert.equal(replay.code, 0, 'the clean close keeps its exit code')
+    assert.equal(replay.step.summary, closed.summary, 'the close on record is what comes back')
+    assert.equal(existsSync(marker), false, 'the marker no longer arms the commit guard')
+    assert.ok(
+      bannersOf(replay.step).some(b => b.startsWith('STAGE MARKER CLEARED:') && b.includes(`.claude/ship/${change}/`)),
+      JSON.stringify(replay.step.banners)
+    )
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the manifest was rewritten')
+    assert.equal(readFileSync(join(root, '.claude/ship/last-close.json'), 'utf8'), lastCloseBefore, 'the close copy was rewritten')
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a closed run whose close copy is lost says so, records nothing, and does not read as success', () => {
+  const { root, change } = repo()
+  try {
+    const closed = closeLeanRun(root, change)
+    const manifest = manifestOf(root)
+    rmSync(join(root, '.claude/ship/last-close.json'))
+    const before = shipSnapshot(root)
+    const outcomesBefore = outcomeRows(root)
+
+    const replay = runAny(root, ['run', 'close'])
+    assert.equal(replay.step.exitCode, 1, 'an unknown original exit code is not reported as success')
+    assert.equal(replay.code, 1)
+    assert.ok(
+      bannersOf(replay.step).some(b => b.startsWith('CLOSE ALREADY RECORDED:') && b.includes(manifest.closedAt)),
+      JSON.stringify(replay.step.banners)
+    )
+    assert.ok(startsWithAny(bannersOf(replay.step), 'ORIGINAL CLOSE UNAVAILABLE:'))
+    assert.match(replay.step.summary, /already closed at/)
+    assert.ok(replay.step.summary.includes(manifest.closedAt))
+    assert.notEqual(replay.step.summary, closed.summary)
+
+    // The only thing the CLI may write is the copy of this very output.
+    const after = shipSnapshot(root, [join('.claude', 'ship', 'last-close.json')])
+    for (const [path, body] of Object.entries(before)) assert.equal(after[path], body, path)
+    assert.deepEqual(outcomeRows(root), outcomesBefore)
+    assert.equal(manifestOf(root).closedAt, manifest.closedAt)
+    assert.equal(
+      trajectoryLines(root, manifest.runId).filter(e => e.type === 'run-receipt').length,
+      1
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start after a halted run begins a new run as before', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.halted = 'task-failures'
+      m.lastThen = null
+    })
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.notEqual(step.action, 'halt', JSON.stringify(step))
+    assert.equal(manifestOf(root).halted ?? null, null, 'the new manifest is not a halted one')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest tagged by another CLI is named with both tags and the version, never as a missing start', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.schema = 'interlock.run/2'
+    })
+    const { step } = runAny(root, ['run', 'next'])
+    assert.equal(step.action, 'halt')
+    assert.ok(step.reason.includes('interlock.run/2'), step.reason)
+    assert.ok(step.reason.includes('interlock.run/1'), step.reason)
+    assert.ok(step.reason.includes(PKG_VERSION), `the halt names the CLI's own version: ${step.reason}`)
+    assert.ok(step.reason.includes(MANIFEST_REL), `the halt names the file: ${step.reason}`)
+    assert.doesNotMatch(step.reason, /reached without/, 'a manifest that exists is not a missing start')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest that cannot be parsed is named unreadable, not absent', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    writeFileSync(join(root, MANIFEST_REL), '{"schema": "interlock.run/1", "change": ')
+    const { step } = runAny(root, ['run', 'next'])
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, /unreadable/i, step.reason)
+    assert.ok(step.reason.includes(MANIFEST_REL), `the halt names the file: ${step.reason}`)
+    assert.doesNotMatch(step.reason, /reached without/, 'a manifest that exists is not a missing start')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('closing a foreign run leaves its manifest and stage marker as they were and names the marker', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    writeStage(change, 'commit', { root, pid: process.pid })
+    editManifest(root, m => {
+      m.schema = 'interlock.run/2'
+    })
+    const marker = stagePath(change, root)
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const markerBefore = readFileSync(marker, 'utf8')
+
+    const closed = runAny(root, ['run', 'close', '--halt', 'x'])
+    const text = closed.stdout + closed.stderr
+    assert.ok(text.includes('interlock.run/2'), `the close names the foreign tag: ${text}`)
+    assert.ok(text.includes(stagePath(change, '.')), `the close names the marker that still blocks a commit: ${text}`)
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the foreign manifest was rewritten')
+    assert.equal(readFileSync(marker, 'utf8'), markerBefore, 'the stage marker was cleared or rewritten')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start removes a classification an earlier run left, says so, and the next classify halts naming it', () => {
+  const { root, change } = repo()
+  try {
+    const leftover = join(root, '.claude/ship/classified.json')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const started = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(started.action, 'classify')
+    const banner = bannersOf(started).find(b => typeof b === 'string' && b.startsWith('STALE CLASSIFICATION REMOVED'))
+    assert.ok(banner, `a removed classification is a banner, never silence: ${JSON.stringify(started.banners)}`)
+    assert.ok(banner.includes('.claude/ship/classified.json'), banner)
+    assert.match(banner, /written \d{4}-\d\d-\d\dT/, 'the banner says when the file was written')
+    assert.equal(existsSync(leftover), false, 'the stale file is gone')
+
+    // A planner that writes nothing then meets the existing halt, naming the file.
+    const halted = runAny(root, [...started.then.argv])
+    assert.equal(halted.step.action, 'halt')
+    assert.ok(halted.step.reason.includes('.claude/ship/classified.json'), halted.step.reason)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start with no classification on disk raises no stale-classification banner', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(started), 'STALE CLASSIFICATION REMOVED'), false)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a stored plan from another format is a PLAN REBUILT banner on the start step; a first run and a reused plan carry none', () => {
+  const { root, change } = repo()
+  try {
+    const first = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(first), 'PLAN REBUILT'), false, 'a first run has no stored plan')
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    run(root, [...first.then.argv])
+    const fingerprintPath = join(root, '.claude/ship/plan-fingerprint.json')
+    assert.ok(existsSync(fingerprintPath), 'classifying stored the plan and its fingerprint')
+
+    const reused = run(root, ['run', 'start', '--change', change]).step
+    assert.equal(startsWithAny(bannersOf(reused), 'PLAN REBUILT'), false, 'a reused plan is not a rebuilt one')
+
+    const stored = JSON.parse(readFileSync(fingerprintPath, 'utf8'))
+    assert.notEqual(stored.planFormat, 'interlock.ship-plan/4', 'the tampered value must differ from the real one')
+    writeFileSync(fingerprintPath, JSON.stringify({ ...stored, planFormat: 'interlock.ship-plan/4' }, null, 2) + '\n')
+    const rebuilt = run(root, ['run', 'start', '--change', change]).step
+    const banner = bannersOf(rebuilt).find(b => typeof b === 'string' && b.startsWith('PLAN REBUILT'))
+    assert.ok(banner, `a plan that was not reused is named on the start step: ${JSON.stringify(rebuilt.banners)}`)
+    assert.ok(banner.startsWith('PLAN REBUILT (plan-format-changed)'), banner)
+    assert.match(banner, /dispatched again/, 'the banner says what the rebuild costs')
+    assert.equal(rebuilt.action, 'classify', 'the rebuilt plan is planned afresh')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// A profile whose unit timeout is a string: valid JSON, a command that would run,
+// and a field `validateProfile` throws on only once something reads it.
+const STRING_TIMEOUT_PROFILE = {
+  version: 1,
+  unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>', timeout_ms: '120000' }
+}
+
+test('run start halts naming an invalid test profile before any step is emitted', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, STRING_TIMEOUT_PROFILE)
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes('profile.json'), `the halt names the profile: ${step.reason}`)
+    assert.match(step.reason, /timeout_ms/, 'the halt names the first problem')
+    assert.equal(step.spawns.length, 0, 'no planner was spawned over an invalid profile')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start halts naming a test profile that exists but does not parse, as the doctor fails it', () => {
+  const { root, change } = repo()
+  try {
+    const broken = '{"version": 1, "unit": {"command": "node --test", '
+    file(root, PROFILE_PATH, broken)
+    const { step } = runAny(root, ['run', 'start', '--change', change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes(PROFILE_PATH), `the halt names the profile path: ${step.reason}`)
+    assert.match(step.reason, /does not parse: .+/, 'the halt carries the parse error')
+    assert.equal(step.spawns.length, 0, 'no planner was spawned over an unparseable profile')
+    assert.equal(readFileSync(join(root, PROFILE_PATH), 'utf8'), broken, 'the profile was left as it was')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run start halts on a profile that holds the JSON literal null, and still starts with no profile at all', () => {
+  const nullProfile = repo()
+  try {
+    file(nullProfile.root, PROFILE_PATH, 'null')
+    const { step } = runAny(nullProfile.root, ['run', 'start', '--change', nullProfile.change])
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.match(step.reason, /holds null/)
+  } finally {
+    cleanup(nullProfile.root)
+  }
+  const absent = repo()
+  try {
+    assert.equal(existsSync(join(absent.root, PROFILE_PATH)), false)
+    const { step } = runAny(absent.root, ['run', 'start', '--change', absent.change])
+    assert.equal(step.action, 'classify', 'an absent profile is not this check')
+  } finally {
+    cleanup(absent.root)
+  }
+})
+
+test('a profile made unparseable between classify and record-batch halts the record with nothing recorded', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+    })
+    const batch = toFirstBatch(root, change)
+    file(root, PROFILE_PATH, '{ not json')
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    const tasksBefore = readFileSync(tasksPath, 'utf8')
+    const { step } = runAny(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.match(step.reason, /does not parse/)
+    assert.ok(step.reason.includes('profile.json'))
+    assert.equal(readFileSync(tasksPath, 'utf8'), tasksBefore, 'a task was ticked')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a profile made invalid between classify and record-batch halts the record with nothing recorded', () => {
+  const { root, change } = repo()
+  try {
+    file(root, PROFILE_PATH, {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+    })
+    const batch = toFirstBatch(root, change)
+    assert.equal(batch.action, 'run-batch')
+
+    file(root, PROFILE_PATH, STRING_TIMEOUT_PROFILE)
+    const tasksPath = join(root, `openspec/changes/${change}/tasks.md`)
+    const trajectory = join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`)
+    const stateBefore = readFileSync(join(root, '.claude/ship/state.json'), 'utf8')
+    const tasksBefore = readFileSync(tasksPath, 'utf8')
+    const trajectoryBefore = readFileSync(trajectory, 'utf8')
+
+    const { step, stderr } = runAny(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    })
+    assert.ok(step, `record-batch printed no step; it threw after recording: ${stderr}`)
+    assert.equal(step.action, 'halt', JSON.stringify(step))
+    assert.ok(step.reason.includes('profile.json'), `the halt names the profile: ${step.reason}`)
+    assert.match(step.reason, /timeout_ms/)
+    assert.deepEqual(step.then.argv.slice(0, 2), ['run', 'close'], 'the next call is the close')
+
+    assert.equal(readFileSync(tasksPath, 'utf8'), tasksBefore, 'a task was ticked')
+    assert.equal(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'), stateBefore, 'the run state advanced')
+    assert.equal(readFileSync(trajectory, 'utf8'), trajectoryBefore, 'a trajectory line was written')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest written before the verify budget existed raises MANIFEST FIELD DEFAULTED once, across subcommands', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      delete m.verifyBudget
+    })
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+
+    const raised = [recorded, judged]
+      .flatMap(bannersOf)
+      .filter(b => typeof b === 'string' && b.startsWith('MANIFEST FIELD DEFAULTED'))
+    assert.equal(raised.length, 1, `raised once per run per field: ${JSON.stringify(raised)}`)
+    assert.match(raised[0], /verifyBudget/, 'the banner names the field')
+    assert.match(raised[0], /using \S/, 'the banner names the default it used')
+    assert.equal(
+      startsWithAny(bannersOf(recorded), 'MANIFEST FIELD DEFAULTED'),
+      true,
+      'the first subcommand to read the manifest raises it'
+    )
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest written before the state home was recorded raises MANIFEST FIELD DEFAULTED for it', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    editManifest(root, m => {
+      delete m.stateHome
+    })
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const raised = bannersOf(recorded).filter(b => typeof b === 'string' && b.startsWith('MANIFEST FIELD DEFAULTED'))
+    assert.equal(raised.length, 1, JSON.stringify(recorded.banners))
+    assert.match(raised[0], /stateHome/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a manifest this release wrote raises no MANIFEST FIELD DEFAULTED across a whole run', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change)
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+    const closed = run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    for (const step of [batch, recorded, judged, closed]) {
+      assert.equal(startsWithAny(bannersOf(step), 'MANIFEST FIELD DEFAULTED'), false, JSON.stringify(step.banners))
+    }
+    assert.doesNotMatch(closed.summary, /MANIFEST FIELD DEFAULTED/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+/** A plugin directory holding only the manifest `pluginVersionAt` reads. */
+function pluginDirAt(version) {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
+  file(dir, '.claude-plugin/plugin.json', { name: 'interlock', version })
+  return dir
+}
+
+test('the manifest records the CLI version and path, and every emitted step carries the CLI version', () => {
+  const { root, change } = repo()
+  try {
+    const started = run(root, ['run', 'start', '--change', change]).step
+    const manifest = manifestOf(root)
+    assert.equal(manifest.cli.version, PKG_VERSION)
+    assert.equal(manifest.cli.path, realpathSync(BIN), 'the path is the realpath of the running bin/interlock')
+    assert.equal(manifest.plugin, null, 'no plugin root was given, so none is claimed')
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false)
+
+    file(root, '.claude/ship/classified.json', CLASSIFIED)
+    const batch = run(root, [...started.then.argv]).step
+    const recorded = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    const judged = run(root, [...recorded.then.argv]).step
+    const closed = run(root, [...judged.then.argv], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    for (const step of [started, batch, recorded, judged, closed]) {
+      assert.equal(step.cliVersion, PKG_VERSION, `${step.action} step carries the CLI version`)
+    }
+    const last = shipFile(root, 'last-step.json')
+    assert.equal(last.cliVersion, PKG_VERSION, 'the stored copy of a step carries it too')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming a different version raises CLI VERSION SKEW with both versions and records the plugin', () => {
+  const { root, change } = repo()
+  const plugin = pluginDirAt('0.0.1')
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', plugin]).step
+    const banner = bannersOf(started).find(b => typeof b === 'string' && b.startsWith('CLI VERSION SKEW'))
+    assert.ok(banner, JSON.stringify(started.banners))
+    assert.ok(banner.includes(PKG_VERSION), `the banner names the CLI's version: ${banner}`)
+    assert.ok(banner.includes('0.0.1'), `the banner names the plugin's version: ${banner}`)
+    assert.ok(banner.includes(realpathSync(BIN)), `the banner names the CLI's path: ${banner}`)
+    assert.ok(banner.includes(plugin) || banner.includes(realpathSync(plugin)), `the banner names the plugin root: ${banner}`)
+
+    const manifest = manifestOf(root)
+    assert.equal(manifest.cli.version, PKG_VERSION)
+    assert.equal(manifest.plugin.version, '0.0.1')
+    assert.ok([plugin, realpathSync(plugin)].includes(manifest.plugin.root), JSON.stringify(manifest.plugin))
+    assert.equal(
+      banner,
+      `CLI VERSION SKEW: this run's interlock is ${PKG_VERSION} (${realpathSync(BIN)}), the plugin is ` +
+        `0.0.1 (${manifest.plugin.root}) — install the matching CLI (npm i -g @renzrollon/interlock@0.0.1) ` +
+        'or expect behaviour the plugin does not describe',
+      'the skew banner is pinned in full, not only by its parts'
+    )
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming the CLI\'s own version records the plugin and raises no skew', () => {
+  const { root, change } = repo()
+  const plugin = pluginDirAt(PKG_VERSION)
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', plugin]).step
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false, JSON.stringify(started.banners))
+    assert.equal(manifestOf(root).plugin.version, PKG_VERSION)
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(root)
+  }
+})
+
+test('--plugin-root naming a directory with no readable plugin manifest raises no skew and does not fail the start', () => {
+  const { root, change } = repo()
+  const empty = mkdtempSync(join(tmpdir(), 'interlock-no-plugin-'))
+  try {
+    const started = run(root, ['run', 'start', '--change', change, '--plugin-root', empty]).step
+    assert.equal(started.action, 'classify')
+    assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false, JSON.stringify(started.banners))
+    // The check that could not run is spoken, with the path it looked at, never passed over.
+    const recordedRoot = manifestOf(root).plugin.root
+    assert.ok([empty, realpathSync(empty)].includes(recordedRoot), recordedRoot)
+    assert.deepEqual(
+      bannersOf(started).filter(b => typeof b === 'string' && b.startsWith('PLUGIN VERSION UNREADABLE')),
+      [
+        `PLUGIN VERSION UNREADABLE: no version in ${join(recordedRoot, '.claude-plugin', 'plugin.json')} — ` +
+          'whether this interlock matches the plugin was not checked'
+      ],
+      JSON.stringify(started.banners)
+    )
+  } finally {
+    rmSync(empty, { recursive: true, force: true })
+    cleanup(root)
+  }
+})
+
+test('a Workflow start given no --plugin-root says the version check did not run; a runner start and a given root do not', () => {
+  const NOT_CHECKED = 'PLUGIN VERSION NOT CHECKED: run start was given no --plugin-root'
+  const bare = repo()
+  try {
+    const started = startWorkflow(bare.root, bare.change)
+    assert.equal(started.action, 'classify')
+    assert.ok(bannersOf(started).includes(NOT_CHECKED), JSON.stringify(started.banners))
+    assert.equal(manifestOf(bare.root).plugin, null)
+  } finally {
+    cleanup(bare.root)
+  }
+  const given = repo()
+  const plugin = pluginDirAt(PKG_VERSION)
+  try {
+    const started = run(given.root, ['run', 'start', '--change', given.change, '--host', 'workflow', '--plugin-root', plugin], {
+      env: workflowEnv()
+    }).step
+    assert.equal(startsWithAny(bannersOf(started), 'PLUGIN VERSION NOT CHECKED'), false, JSON.stringify(started.banners))
+  } finally {
+    rmSync(plugin, { recursive: true, force: true })
+    cleanup(given.root)
+  }
+  const runner = repo()
+  try {
+    const started = run(runner.root, ['run', 'start', '--change', runner.change]).step
+    assert.equal(startsWithAny(bannersOf(started), 'PLUGIN VERSION NOT CHECKED'), false, JSON.stringify(started.banners))
+  } finally {
+    cleanup(runner.root)
+  }
+})
+
+// --- Claude Code's advisor tool, recorded at start and counted at close -------
+//
+// (replace-subagent-advisors-with-advisor-tool: "Where the run speaks",
+// "Briefings ask for no consult", "Counting consults".) The tool is the user's to
+// turn on; the run reads whether it is, says so, and counts what it can see.
+
+/** A fresh HOME with no settings, so a developer's own `~/.claude/settings.json` cannot move a result. */
+function emptyHome() {
+  return mkdtempSync(join(tmpdir(), 'interlock-home-'))
+}
+
+const advisorNotesOf = notes => (notes || []).filter(n => /^ADVISOR /.test(String(n)))
+
+/** `run start --host workflow` with the given project settings text (or none), returning the manifest. */
+function startWithProjectSettings(settingsText, env = {}) {
+  const home = emptyHome()
+  const { root, change } = repo()
+  try {
+    if (settingsText !== undefined) file(root, '.claude/settings.json', settingsText)
+    startWorkflow(root, change, { env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined, ...env } })
+    return manifestOf(root)
+  } finally {
+    cleanup(root)
+    cleanup(home)
+  }
+}
+
+test('run start records a configured advisor on the manifest and speaks it as a note, never a banner', () => {
+  const manifest = startWithProjectSettings({ advisorModel: 'opus' })
+  assert.deepEqual(manifest.hostEnv.advisor, { scopes: ['project'], unreadable: [], disabled: false })
+  const notes = advisorNotesOf(manifest.notes)
+  assert.equal(notes.length, 1, JSON.stringify(manifest.notes))
+  assert.match(notes[0], /^ADVISOR CONFIGURED \(project\): /)
+  assert.match(notes[0], /consults are counted per lane/)
+  assert.match(notes[0], /the advice is not recorded/)
+  assert.match(notes[0], /its spend is not established/)
+  assert.ok(!manifest.banners.some(b => /ADVISOR/.test(b)), 'an operator\'s choice is not a degradation')
+  assert.ok(!JSON.stringify(manifest.hostEnv).includes('opus'), 'the configured value is never recorded')
+})
+
+test('run start says the advisor is disabled when the environment turns the tool off', () => {
+  const manifest = startWithProjectSettings({ advisorModel: 'opus' }, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: '1' })
+  assert.equal(manifest.hostEnv.advisor.disabled, true)
+  assert.deepEqual(advisorNotesOf(manifest.notes), [
+    'ADVISOR DISABLED: CLAUDE_CODE_DISABLE_ADVISOR_TOOL is set, so advisorModel in project is ignored'
+  ])
+})
+
+test('run start names an unreadable settings file and carries on', () => {
+  const manifest = startWithProjectSettings('{ not json')
+  assert.deepEqual(manifest.hostEnv.advisor.scopes, [])
+  assert.equal(manifest.hostEnv.advisor.unreadable.length, 1)
+  assert.equal(manifest.hostEnv.advisor.unreadable[0].scope, 'project')
+  const notes = advisorNotesOf(manifest.notes)
+  assert.equal(notes.length, 1, JSON.stringify(manifest.notes))
+  assert.match(notes[0], /^ADVISOR CONFIGURATION NOT READ: project settings \(/)
+})
+
+test('run start says nothing about an advisor that is not set, and records the empty observation', () => {
+  for (const settings of [undefined, { model: 'sonnet' }]) {
+    const manifest = startWithProjectSettings(settings)
+    assert.deepEqual(manifest.hostEnv.advisor, { scopes: [], unreadable: [], disabled: false })
+    assert.deepEqual(advisorNotesOf(manifest.notes), [])
+  }
+})
+
+test('decideHostEnvironment appends advisor notes from the recorded observation and none without one', () => {
+  const base = observeClaudeEnv({}, { version: '2.1.288', cpuCount: 4 })
+  assert.deepEqual(advisorNotesOf(decideHostEnvironment(base).notes), [])
+  const configured = decideHostEnvironment({ ...base, advisor: { scopes: ['user', 'project'], unreadable: [], disabled: false } })
+  assert.match(advisorNotesOf(configured.notes)[0], /^ADVISOR CONFIGURED \(user, project\): .*counted per lane/)
+  const disabled = decideHostEnvironment({ ...base, advisor: { scopes: ['user'], unreadable: [], disabled: true } })
+  assert.match(advisorNotesOf(disabled.notes)[0], /^ADVISOR DISABLED: /)
+  const unreadable = decideHostEnvironment({
+    ...base,
+    advisor: { scopes: [], unreadable: [{ scope: 'local', reason: 'EACCES' }], disabled: false }
+  })
+  assert.deepEqual(advisorNotesOf(unreadable.notes), ['ADVISOR CONFIGURATION NOT READ: local settings (EACCES)'])
+  assert.equal(decideHostEnvironment(base).banners.length, decideHostEnvironment({ ...base, advisor: configured }).banners.length)
+})
+
+/**
+ * The implementer lanes and the remediation lane of one strict Workflow-host run,
+ * as the briefings the program wrote for them. Everything that could differ
+ * between two runs of the same change other than the advisor is held fixed.
+ */
+function strictBriefings(configured) {
+  const home = emptyHome()
+  const { root, change } = repo()
+  const env = workflowEnv({ env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined } })
+  try {
+    if (configured) file(root, '.claude/settings.json', { advisorModel: 'opus' })
+    const batch = startWithHost(root, change, 'workflow', { worktree: 'runtime' }, ['--strict'], CLASSIFIED, { env })
+    assert.equal(batch.action, 'run-batch')
+    assert.equal(
+      manifestOf(root).hostEnv.advisor.scopes.length > 0,
+      configured,
+      'the manifest records what the fixture configured'
+    )
+    const grab = spawns =>
+      spawns.map(sp => ({
+        kind: sp.kind,
+        label: sp.label,
+        promptSha256: sp.promptSha256,
+        prompt: sp.prompt,
+        file: readFileSync(join(root, sp.promptPath), 'utf8').split(root).join('<root>')
+      }))
+    const implementers = grab(batch.spawns)
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = step0(root, [...batch.then.argv], {
+      results: pendingLanes(root).map(lane => laneOk(lane.map(t => t.id))),
+      env
+    })
+    assert.equal(review.action, 'review')
+    writeReview(root, { blockers: 1 })
+    const remediate = step0(root, [...review.then.argv], { results: [{ ok: true }], env })
+    assert.equal(remediate.action, 'remediate')
+    return { implementers, remediation: grab(remediate.spawns) }
+  } finally {
+    cleanup(root)
+    cleanup(home)
+  }
+}
+
+test('a configured run emits byte-identical implementer and remediation briefings, with equal bootstrap hashes', () => {
+  const plain = strictBriefings(false)
+  const configured = strictBriefings(true)
+  assert.ok(plain.implementers.length >= 1 && plain.remediation.length === 1)
+  assert.deepEqual(configured.implementers, plain.implementers)
+  assert.deepEqual(configured.remediation, plain.remediation)
+  for (const lane of [...plain.implementers, ...plain.remediation]) {
+    assert.match(lane.promptSha256, /^[0-9a-f]{64}$/)
+    assert.doesNotMatch(lane.file, /advisor/i, 'no briefing asks a lane to consult an advisor')
+  }
+})
+
+const configure = root => file(root, '.claude/settings.json', { advisorModel: 'opus' })
+const lineOf = summary => (summary.match(/^ {2}advisor consults: .*$/m) || [null])[0]
+const walk = (configured, plant) => {
+  const home = emptyHome()
+  const r = workflowThroughWaves({
+    setup: configured ? configure : undefined,
+    env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined }
+  })
+  try {
+    plantJoined(r, plant)
+    const closed = closeWorkflow(r)
+    assert.equal(closed.code, 0, closed.stderr)
+    return closed.step
+  } finally {
+    cleanup(r.root)
+    cleanup(home)
+  }
+}
+
+test('the close sums consults over the lanes and says how many lanes', () => {
+  const step = walk(true, { advisor: i => [1, 2, 0][i] })
+  assert.equal(lineOf(step.summary), '  advisor consults: 3 across 3 lanes')
+  assert.deepEqual(step.advisorConsults, { count: 3, lanes: 3, unrecorded: 0 })
+})
+
+test('an unconfigured run that consulted anyway still prints the count', () => {
+  const step = walk(false, { advisor: i => [0, 0, 4][i] })
+  assert.equal(lineOf(step.summary), '  advisor consults: 4 across 3 lanes')
+  assert.deepEqual(step.advisorConsults, { count: 4, lanes: 3, unrecorded: 0 })
+})
+
+test('a lane with no recorded transcript makes the count not established, never zero', () => {
+  const step = walk(true, { skip: [1], advisor: () => 0 })
+  assert.equal(lineOf(step.summary), '  advisor consults: not established (1 of 3 lanes unrecorded)')
+  assert.deepEqual(step.advisorConsults, { count: null, lanes: 3, unrecorded: 1 })
+  assert.doesNotMatch(step.summary, /advisor consults: 0/)
+})
+
+test('a lane whose transcript did not parse, or whose record predates the field, is unrecorded', () => {
+  const unparsed = walk(true, { advisor: i => (i === 0 ? null : 2) })
+  assert.equal(lineOf(unparsed.summary), '  advisor consults: not established (1 of 3 lanes unrecorded)')
+  assert.deepEqual(unparsed.advisorConsults, { count: null, lanes: 3, unrecorded: 1 })
+  const old = walk(true, { advisor: () => undefined })
+  assert.equal(lineOf(old.summary), '  advisor consults: not established (3 of 3 lanes unrecorded)')
+  assert.deepEqual(old.advisorConsults, { count: null, lanes: 3, unrecorded: 3 })
+})
+
+test('every lane parsed and no consult recognized is not established, never 0', () => {
+  const step = walk(true, { advisor: () => 0 })
+  assert.equal(lineOf(step.summary), '  advisor consults: not established (none recognized in 3 lanes)')
+  assert.deepEqual(step.advisorConsults, { count: null, lanes: 3, unrecorded: 0 })
+  assert.doesNotMatch(step.summary, /advisor consults: 0/)
+})
+
+test('an unconfigured run with no consults carries no advisor line and no field', () => {
+  const step = walk(false, { advisor: () => 0 })
+  assert.equal(lineOf(step.summary), null)
+  assert.ok(!('advisorConsults' in step), JSON.stringify(Object.keys(step)))
+  const unrecorded = walk(false, { skip: [0] })
+  assert.equal(lineOf(unrecorded.summary), null)
+  assert.ok(!('advisorConsults' in unrecorded))
 })

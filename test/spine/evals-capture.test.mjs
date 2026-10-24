@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { appendRunLogEvent, runLogPath } from '../../lib/run-log.mjs'
+import { RUN_LOG_SCHEMA, appendRunLogEvent, runLogPath } from '../../lib/run-log.mjs'
 import {
   buildSkeleton,
   captureCase,
@@ -201,11 +201,13 @@ test('a recorded prompt snapshot is carried through verbatim', () => {
   recordRun(tmp)
   // A host that did record one. Written straight to the trajectory, because the
   // writer's whitelist is what keeps such a field out of the events it writes.
+  // Tagged with this CLI's schema: a line under any other tag belongs to another
+  // release and is skipped by name, never read as an event.
   const path = runLogPath(tmp, RUN_ID)
   writeFileSync(
     path,
     readFileSync(path, 'utf8') +
-      JSON.stringify({ schema: 'x', ts: '2026-01-01T00:00:00.000Z', runId: RUN_ID, seq: 6, type: 'agent-spawn', prompt: 'Implement exactly one task.' }) +
+      JSON.stringify({ schema: RUN_LOG_SCHEMA, ts: '2026-01-01T00:00:00.000Z', runId: RUN_ID, seq: 6, type: 'agent-spawn', prompt: 'Implement exactly one task.' }) +
       '\n'
   )
 

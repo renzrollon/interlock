@@ -485,18 +485,18 @@ test('matchNotes canonicalizes the given paths as well as the file column', () =
 
 test('matchNotes cuts at the cap in whole rows and names the omitted count', () => {
   const rows = Array.from({ length: 30 }, (_, i) => row(`N${i + 1}`, 'lib/a.mjs', `R${i + 1}.`))
-  const result = matchNotes(rows, ['lib/a.mjs'], { maxAdvisorNoteRows: 20 })
+  const result = matchNotes(rows, ['lib/a.mjs'], { maxNoteMatchRows: 20 })
   assert.equal(result.rows.length, 20)
   assert.deepEqual(result.rows.map(r => r.id), rows.slice(0, 20).map(r => r.id))
   assert.equal(result.omitted, 10)
 })
 
-test('matchNotes defaults its cap to LIMITS.maxAdvisorNoteRows', () => {
-  assert.ok(Number.isInteger(LIMITS.maxAdvisorNoteRows) && LIMITS.maxAdvisorNoteRows > 0)
-  const total = LIMITS.maxAdvisorNoteRows + 10
+test('matchNotes defaults its cap to LIMITS.maxNoteMatchRows', () => {
+  assert.ok(Number.isInteger(LIMITS.maxNoteMatchRows) && LIMITS.maxNoteMatchRows > 0)
+  const total = LIMITS.maxNoteMatchRows + 10
   const rows = Array.from({ length: total }, (_, i) => row(`N${i + 1}`, 'lib/a.mjs', `R${i + 1}.`))
   const result = matchNotes(rows, ['lib/a.mjs'])
-  assert.equal(result.rows.length, LIMITS.maxAdvisorNoteRows)
+  assert.equal(result.rows.length, LIMITS.maxNoteMatchRows)
   assert.equal(result.omitted, 10)
 })
 

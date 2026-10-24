@@ -46,7 +46,7 @@ If the **Workflow tool** is available, this skill invocation is your authorizati
 ```
 Workflow({
   scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/ship.js",
-  args: { change: "<name or omit>", mode: "checkpoint" | "continue", flags: ["..."] }
+  args: { change: "<name or omit>", mode: "checkpoint" | "continue", flags: ["..."], pluginRoot: "${CLAUDE_PLUGIN_ROOT}" }
 })
 ```
 

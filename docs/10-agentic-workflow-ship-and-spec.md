@@ -422,7 +422,7 @@ Lean ship trusts the unit suite. No `.claude/testing/profile.json` means inferre
 
 The layers, the spine, and the rules for growing Interlock's own suite are [14](./14-evals.md). What follows is the coverage snapshot for this review.
 
-There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite on a schedule. The outcome eval at `evals/ship/` grades disk and the run-log after a real loop, not a transcript.
+There is no SWE-bench-style eval of Interlock vs "just prompt Cursor." There *is* a model-in-the-loop suite at `evals/`, run by `claude plugin eval` from `.github/workflows/evals.yml` — a smoke subset on pull requests that touch a model-facing path, the full suite started by hand (`workflow_dispatch`, no schedule, until the repository has a model credential). The outcome eval at `evals/ship/` grades disk and the run-log after a real loop, not a transcript.
 
 What its cases exercise is the surface `ship` drives through a model: the assembled **implementer briefing** (its handoff status enum, and lane partial-failure reporting), **control-plane action** selection, the **trampoline halt**, **skill routing**, **evidence locators**, **tier read scope**, and **cited cap resolution**.
 

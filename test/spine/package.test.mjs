@@ -391,7 +391,7 @@ const DIRECTORY_FILE_COUNT = 512
 // A warning zone below the size limit, so the file that is about to reach it
 // fails here one release early instead of holding a version at submission.
 // bin/interlock sat about 16 KB under the limit when PR #20's review raised it
-// (M3), which is why the advisor and note handlers moved to lib/advisor-cli.mjs.
+// (M3), which is why the note handlers moved out of it (now lib/note-cli.mjs).
 const DIRECTORY_HEADROOM_BYTES = 16384
 
 /** Each shipped file at or over the size limit, with its size, and the count when it is over. */
@@ -640,9 +640,9 @@ test('the bundle workflow mirrors the published tarball onto the branch the mark
   )
 })
 
-// `.github/workflows/` is gitignored, so both definitions stay tracked only
-// because they were force-added. An untracked workflow never runs on the
-// remote, and plugin users would silently stop receiving releases. Where
+// An untracked workflow never runs on the remote, and plugin users would
+// silently stop receiving releases. (Only copilot-setup-steps.yml in that
+// directory is gitignored.) Where
 // version-control status cannot be determined, this skips with its reason.
 const inCheckout = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: ROOT, encoding: 'utf8' })
 const NOT_A_CHECKOUT =
@@ -656,8 +656,7 @@ test('the release and bundle workflow definitions are tracked in version control
     assert.ok(!listed.error, `git ls-files failed to run: ${listed.error && listed.error.message}`)
     assert.ok(
       listed.stdout.trim().length > 0,
-      `${workflow} is not tracked. .gitignore ignores .github/workflows/, so it stays tracked only when ` +
-        `force-added — restore it with \`git add -f ${workflow}\`.`
+      `${workflow} is not tracked, so it never runs on the remote. Restore it with \`git add ${workflow}\`.`
     )
   }
 })

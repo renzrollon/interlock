@@ -11,8 +11,13 @@
 // WRITES the findings and verdicts the CLI then adjudicates, since the strict
 // tail is driven by those files and never by a count the agent reports about
 // itself — a fixture that only returned numbers would exercise nothing.
+//
+// The planner's answer WRITES the classification too, from the seed the test
+// left at FIXTURE_CLASSIFIED_PATH: `run start` removes any classified.json that
+// exists before the planner has run, so a repository seeded with the real file
+// would start every run with no classification at all.
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** Write a file relative to the agent's own working directory (its lane worktree). */
@@ -20,6 +25,32 @@ export function write(rel, value) {
   const dest = join(process.cwd(), rel)
   mkdirSync(dirname(dest), { recursive: true })
   writeFileSync(dest, typeof value === 'string' ? `${value}\n` : JSON.stringify(value, null, 2) + '\n')
+}
+
+/**
+ * Where a test repository leaves the classification its planner "writes".
+ *
+ * Outside `.claude/ship/`, so no run clears it. The real planner reads the
+ * change and writes `.claude/ship/classified.json`; the fixture planner reads
+ * this file and writes the same path, when — and only when — it is briefed.
+ */
+export const FIXTURE_CLASSIFIED_PATH = '.interlock-fixture/classified.json'
+
+/** The planner's answer: write the classification the test seeded, as a real planner writes one. */
+function plannerAnswer() {
+  let seed
+  try {
+    seed = JSON.parse(readFileSync(join(process.cwd(), FIXTURE_CLASSIFIED_PATH), 'utf8'))
+  } catch (err) {
+    // Spoken, never silent: the run then halts on "no readable classified.json",
+    // and this line says why instead of leaving the test to guess.
+    process.stderr.write(
+      `fixture planner: no classification seed at ${FIXTURE_CLASSIFIED_PATH} (${(err && err.code) || err}) — wrote nothing\n`
+    )
+    return { ok: true, taskCount: 0 }
+  }
+  write('.claude/ship/classified.json', seed)
+  return { ok: true, taskCount: Array.isArray(seed.tasks) ? seed.tasks.length : 0 }
 }
 
 /** Findings and verdicts that adjudicate to one surviving warning, no blocker. */
@@ -78,7 +109,7 @@ export function shipAnswer(text, { writePath = 'README.md', perLane = false, sch
     return { ok: true, manualTestPlan: false, skipReason: 'backend only', scenariosChecked: 0 }
   }
   if (/^Commit change /m.test(text)) return { ok: true, sha: 'fixture' }
-  if (/classified\.json/.test(text)) return { ok: true, taskCount: 1 }
+  if (/classified\.json/.test(text)) return plannerAnswer()
   if (requires('results')) {
     return { results: [{ kind: 'unit', exitCode: 0, total: 1, passed: 1, failed: 0 }] }
   }

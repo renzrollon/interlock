@@ -1,0 +1,43 @@
+{
+  "schema": "interlock.run-step/1",
+  "action": "verify-final",
+  "then": {
+    "argv": [
+      "run",
+      "judge",
+      "--context",
+      "final"
+    ]
+  },
+  "spawns": [],
+  "mode": "waves",
+  "summary": {
+    "waves": 1,
+    "tasksCompleted": 1,
+    "taskFailures": 0,
+    "skippedDependents": [],
+    "reportsRejected": 0,
+    "replansUsed": 0,
+    "unresolved": [],
+    "skippedVerifications": [],
+    "verificationsUsed": 0,
+    "warnings": []
+  },
+  "banners": [
+    "LANE STOPPED EARLY: 1.2 not attempted after an earlier task in the same lane failed — not counted as failures, and still unchecked in tasks.md",
+    "VERIFICATION SKIPPED: reason=no-detectable-command"
+  ],
+  "context": "final",
+  "skipped": true,
+  "reason": "no-detectable-command",
+  "recorded": {
+    "ok": [
+      "1.1"
+    ],
+    "failed": [],
+    "notAttempted": [
+      "1.2"
+    ]
+  },
+  "seq": 3
+}

@@ -1,0 +1,98 @@
+{
+  "schema": "interlock.run/1",
+  "change": "fixture-change",
+  "flags": {
+    "applyOnly": false,
+    "noCommit": false,
+    "skipE2e": false,
+    "skipCoverage": false,
+    "isolateWaves": false,
+    "laneMode": null,
+    "tddMode": null,
+    "maxParallel": null,
+    "mode": "checkpoint",
+    "review": false,
+    "handoff": false,
+    "conformance": false,
+    "strict": false
+  },
+  "host": null,
+  "usage": [
+    {
+      "wave": 1,
+      "outputTokens": null,
+      "cacheReadInputTokens": null,
+      "cacheCreationInputTokens": null
+    }
+  ],
+  "startedAt": "2026-10-23T00:44:32.120Z",
+  "steps": 3,
+  "stageIndex": 1,
+  "lastThen": null,
+  "seq": 4,
+  "seqStart": 1,
+  "mergeBase": null,
+  "startSha": "57b1c4fd230287d6a8501340aba0b3742cb44ee9",
+  "verifyStartedAt": null,
+  "verifyElapsedMs": 0,
+  "banners": [
+    "NO TEST PROFILE: run /interlock:fix-tests --reconfigure once",
+    "GRAPH UNAVAILABLE: never built — implementer and reviewer agents fall back to grep and will be slower",
+    "LANE STOPPED EARLY: 1.2 not attempted after an earlier task in the same lane failed — not counted as failures, and still unchecked in tasks.md"
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "kind": "run-batch",
+      "lanes": 1,
+      "ok": 1,
+      "failed": 0,
+      "failedIds": [],
+      "notAttempted": [
+        "1.2"
+      ]
+    }
+  ],
+  "plan": {
+    "reused": false,
+    "status": "no-plan",
+    "reason": "no stored plan at .claude/ship/plan.json"
+  },
+  "commit": null,
+  "commitSkipped": false,
+  "halted": "fixture",
+  "notes": [
+    "CACHE ACCOUNTING NOT REPORTED: the run host's runtime exposes no cache decomposition, so every wave's cache-read and cache-creation figures are recorded as unknown rather than as a measured zero"
+  ],
+  "runId": "3f52df76-25f6-429a-a8d1-583cb04b92cd",
+  "reviewDimensions": null,
+  "review": null,
+  "remediation": null,
+  "fixRoundsRun": 0,
+  "handoff": null,
+  "autonomy": null,
+  "dispatched": [
+    {
+      "wave": 1,
+      "label": "1.1+1",
+      "kind": "implementer",
+      "model": "sonnet",
+      "sha": "2bd2acc63f99dfdcaf43c9c938f2d1b6613dfafee859ad65f572d87a6cef921e"
+    }
+  ],
+  "laneSessions": [],
+  "stateHome": "${ROOT}",
+  "surface": "main",
+  "stateHomeReason": null,
+  "stateHomeFrom": "git",
+  "testProfilePath": null,
+  "testProfileSource": "none",
+  "verifyBudget": {
+    "ms": 60000,
+    "source": "published",
+    "timeoutMs": null
+  },
+  "graphPath": null,
+  "graphSource": "none",
+  "bannersCarried": 3
+}

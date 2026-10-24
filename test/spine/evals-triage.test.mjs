@@ -272,7 +272,7 @@ test("the committed harness results join every grader's type from the case, so n
 })
 
 test('the committed 2026-10-21 Spec Range results file triages its judged-only dip as variance, exit 0', () => {
-  // The first real results file with `llm` graders (scripts/advisor-e2e.mjs, harness
+  // The first real results file with `llm` graders (the since-removed scripts/advisor-e2e.mjs, harness
   // 2.1.306, --ablation none, Bash and Write granted). Every deterministic grader
   // passed; both judges failed on the one run. Before PR #20 `llm` read as
   // deterministic and this was a regression, exit 1.

@@ -850,3 +850,171 @@ test('specGap changes none of the survival arithmetic', () => {
   }
   for (const value of [true, false, 'yes']) assert.deepEqual(counts(value), counts(undefined))
 })
+
+// --- resolveReview's output does not move ----------------------------------
+//
+// A recorded snapshot: a survivor refined up, a file-qualified dismissal beside
+// a same-titled survivor, a title-only dismissal, a quality drop, a policy drop
+// and an orphan verdict. No consumer of the review JSON may see a new field.
+
+const RESOLVE_REVIEW_SNAPSHOT = JSON.parse(String.raw`{
+  "surviving": [
+    {
+      "severity": "blocker",
+      "file": "lib/a.ts",
+      "title": "kept",
+      "description": "because",
+      "dimension": "typescript",
+      "votes": {
+        "real": 2,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 2
+      },
+      "qualityScores": [
+        4,
+        4
+      ],
+      "originalSeverity": "warning"
+    },
+    {
+      "severity": "warning",
+      "file": "lib/c.ts",
+      "title": "shared title",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 1,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 1
+      },
+      "qualityScores": [
+        4
+      ]
+    }
+  ],
+  "dismissed": [
+    {
+      "severity": "warning",
+      "file": "lib/b.ts",
+      "title": "shared title",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 0,
+        "notReal": 2,
+        "uncited": 0,
+        "total": 2
+      }
+    },
+    {
+      "severity": "warning",
+      "file": "lib/d.ts",
+      "title": "title only dismissed",
+      "description": "because",
+      "dimension": "qa",
+      "votes": {
+        "real": 0,
+        "notReal": 2,
+        "uncited": 0,
+        "total": 2
+      }
+    }
+  ],
+  "droppedByQuality": [
+    {
+      "severity": "warning",
+      "file": "lib/e.ts",
+      "title": "too vague",
+      "description": "because",
+      "dimension": "typescript",
+      "votes": {
+        "real": 2,
+        "notReal": 0,
+        "uncited": 0,
+        "total": 2
+      },
+      "qualityScores": [
+        1,
+        1
+      ]
+    }
+  ],
+  "droppedByPolicy": [
+    {
+      "severity": "warning",
+      "file": "dist/x.js",
+      "title": "generated",
+      "description": "because",
+      "dimension": "devops",
+      "excludedBy": "dist"
+    }
+  ],
+  "counts": {
+    "raised": 6,
+    "droppedByPolicy": 1,
+    "dismissed": 2,
+    "droppedByQuality": 1,
+    "surviving": 2,
+    "dismissalsRejected": 0
+  },
+  "dimensionStats": {
+    "typescript": {
+      "raised": 2,
+      "surviving": 1
+    },
+    "qa": {
+      "raised": 3,
+      "surviving": 1
+    }
+  },
+  "anomalies": {
+    "orphanVerdicts": [
+      {
+        "findingTitle": "nobody raised this",
+        "isReal": true,
+        "confidence": 0.9,
+        "reasoning": "checked it",
+        "evidence": "lib/a.ts:41-58",
+        "refinedSeverity": "warning",
+        "qualityScore": 4,
+        "severityScore": 3
+      }
+    ],
+    "malformedVerdicts": [],
+    "requirementCitations": [],
+    "specGapShape": []
+  }
+}`)
+
+test('resolveReview’s output is deep-equal to its recorded snapshot', () => {
+  const findings = [
+    f({ title: 'kept', dimension: 'typescript' }),
+    f({ title: 'shared title', file: 'lib/b.ts', dimension: 'qa' }),
+    f({ title: 'shared title', file: 'lib/c.ts', dimension: 'qa' }),
+    f({ title: 'title only dismissed', file: 'lib/d.ts', dimension: 'qa' }),
+    f({ title: 'too vague', file: 'lib/e.ts', dimension: 'typescript' }),
+    f({ title: 'generated', file: 'dist/x.js', dimension: 'devops' })
+  ]
+  const verdicts = [
+    v({ findingTitle: 'kept' }),
+    v({ findingTitle: 'kept', refinedSeverity: 'blocker' }),
+    v({ findingTitle: 'shared title', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'shared title', file: 'lib/b.ts', isReal: false }),
+    v({ findingTitle: 'shared title' }),
+    v({ findingTitle: 'title only dismissed', isReal: false }),
+    v({ findingTitle: 'title only dismissed', isReal: false }),
+    v({ findingTitle: 'too vague', qualityScore: 1 }),
+    v({ findingTitle: 'too vague', qualityScore: 1 }),
+    v({ findingTitle: 'nobody raised this' })
+  ]
+  const r = resolveReview(findings, verdicts, {
+    changedPaths: ['lib/a.ts', 'lib/b.ts', 'lib/c.ts', 'lib/d.ts', 'lib/e.ts'],
+    excludePaths: ['dist']
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(r)), RESOLVE_REVIEW_SNAPSHOT)
+  assert.deepEqual(Object.keys(r).sort(), ['anomalies', 'counts', 'dimensionStats', 'dismissed', 'droppedByPolicy', 'droppedByQuality', 'surviving'])
+  for (const d of r.dismissed) assert.deepEqual(Object.keys(d.votes).sort(), ['notReal', 'real', 'total', 'uncited'])
+  assert.ok(r.dismissed.every(d => !('verdicts' in d)), 'a dismissed record gained a verdicts field')
+})

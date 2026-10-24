@@ -1,0 +1,100 @@
+{
+  "runId": "3f52df76-25f6-429a-a8d1-583cb04b92cd",
+  "change": "fixture-change",
+  "maxParallel": 8,
+  "mode": "waves",
+  "laneCaps": {
+    "1": 8,
+    "2": 8,
+    "3": 6,
+    "4": 4,
+    "5": 8
+  },
+  "waves": [
+    {
+      "kind": "impl",
+      "group": 1,
+      "taskCount": 2,
+      "batches": [
+        [
+          [
+            {
+              "id": "1.1",
+              "group": 1,
+              "description": "first task",
+              "tier": 2,
+              "model": "sonnet",
+              "isTestTask": false,
+              "paths": [
+                "src/first.mjs"
+              ]
+            },
+            {
+              "id": "1.2",
+              "group": 1,
+              "description": "second task",
+              "tier": 2,
+              "model": "sonnet",
+              "isTestTask": false,
+              "paths": [
+                "src/second.mjs"
+              ]
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  "cursor": {
+    "waveIndex": 1,
+    "batchIndex": 0,
+    "phase": "batch"
+  },
+  "verifyFailures": 0,
+  "lastVerifyErrors": [],
+  "replansUsed": 0,
+  "replanPending": false,
+  "executedGroups": [
+    1
+  ],
+  "handoffs": {
+    "1.1": {
+      "schema": "interlock.wave-handoff/1",
+      "taskId": "1.1",
+      "status": "ok",
+      "summary": "done",
+      "evidence": [
+        "README.md:1"
+      ],
+      "next": "nothing",
+      "blocker": null
+    }
+  },
+  "reportedPaths": {
+    "1.1": [
+      "src/first.mjs"
+    ]
+  },
+  "evidenceAudits": {
+    "1.1": {
+      "verdict": "unconfirmed",
+      "source": "observed",
+      "reason": "1 of 1 locator(s) name a path absent from the observed changed-path set: \"README.md:1\"",
+      "unmatched": [
+        "README.md:1"
+      ],
+      "reportedMatch": false
+    }
+  },
+  "completed": [
+    "1.1"
+  ],
+  "failures": [],
+  "skippedDependents": [],
+  "unresolved": [],
+  "skippedVerifications": [],
+  "verificationsUsed": 0,
+  "warnings": [],
+  "halt": null,
+  "rejectedReports": []
+}

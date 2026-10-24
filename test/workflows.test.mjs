@@ -20,6 +20,7 @@ import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
 import { laneTitle } from '../lib/lane.mjs'
+import { FIXTURE_CLASSIFIED_PATH } from './fixtures/hosts/ship-answers.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOWS_DIR = join(ROOT, 'workflows')
@@ -740,7 +741,9 @@ function acpShipRepo({ tasks = [{ id: '1.1', tier: 2, model: 'sonnet', path: 'RE
     `# Tasks\n\n${tasks.map(t => `- [ ] ${t.id} Note it in ${t.path}`).join('\n')}\n`
   )
   put('README.md', 'hello\n')
-  put('.claude/ship/classified.json', {
+  // The seed the fixture planner writes to .claude/ship/classified.json when
+  // briefed; a file already there before `run start` would be removed as stale.
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: tasks.map(t => ({
       id: t.id,
       group: 1,
@@ -899,7 +902,7 @@ function runnerRepo({
   // Tier 4 on purpose: cohesion packs path-disjoint components at or below
   // `LANE_CAPS.cohesionMaxTier` into ONE lane, and a batch of one lane proves
   // nothing about isolation between lanes.
-  put('.claude/ship/classified.json', {
+  put(FIXTURE_CLASSIFIED_PATH, {
     tasks: ids.map((id, i) => ({
       id,
       group: 1,
@@ -1113,6 +1116,78 @@ test('a Codex run WITH an API key does not claim the ChatGPT plan path', () => {
     assert.doesNotMatch(stdout, /MODEL ROUTING UNAVAILABLE/, `a mapped slug is routed:\n${stdout}`)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// --- the advisor tool on a runner host (replace-subagent-advisors-with-advisor-tool D14) --
+//
+// Only the user can turn Claude Code's advisor tool on. The runner reads the
+// four settings files on the host that drives the Claude binary and says what it
+// found; it counts nothing, so the note says consults are not counted here.
+
+/** A repo whose project settings set the advisor key, and a home that sets nothing. */
+function advisorRunnerRepo() {
+  const repo = runnerRepo()
+  mkdirSync(join(repo.root, '.claude'), { recursive: true })
+  writeFileSync(join(repo.root, '.claude', 'settings.json'), JSON.stringify({ advisorModel: 'opus' }) + '\n')
+  const home = mkdtempSync(join(tmpdir(), 'interlock-advisor-home-'))
+  return { ...repo, home }
+}
+
+test('a Claude-host runner with advisorModel set says consults are not counted on this host', () => {
+  const { root, change, home } = advisorRunnerRepo()
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /ADVISOR CONFIGURED \(project\)/, stdout)
+    assert.match(stdout, /consults are not counted on this host/, stdout)
+    assert.doesNotMatch(stdout, /consults are counted per lane/, stdout)
+    assert.doesNotMatch(stdout, /opus/, 'the configured value is never printed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a Claude-host runner with no advisorModel in any scope raises no advisor note', () => {
+  const { root, change } = runnerRepo()
+  const home = mkdtempSync(join(tmpdir(), 'interlock-advisor-home-'))
+  try {
+    const stdout = runRunner('claude', {
+      fixture: join(HOST_FIXTURES, 'fake-claude.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /RUNNER HOST: claude/, stdout)
+    assert.doesNotMatch(stdout, /ADVISOR/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a Codex-host runner raises no advisor note even when advisorModel is set', () => {
+  const { root, change, home } = advisorRunnerRepo()
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship'],
+      env: { HOME: home, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: undefined },
+      root,
+      change
+    })
+    assert.match(stdout, /RUNNER HOST: codex \(experimental\)/, stdout)
+    assert.doesNotMatch(stdout, /ADVISOR/, stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
   }
 })
 
@@ -2106,15 +2181,18 @@ test('the runner and ship.js drive the same interlock subcommands', () => {
 test('the runner holds no second copy of the halt rules', () => {
   const driver = readFileSync(RUNNER_DRIVER, 'utf8')
 
-  // It may import the host port. It may not import the policy — a driver that
-  // loaded lib/waves.mjs or lib/limits.mjs could answer "may I continue"
-  // itself, which is the entire thing this change is not doing.
+  // It may import the host port, and the version reader: `--version` prints a
+  // fact about the package, not a rule about the run. It may not import the
+  // policy — a driver that loaded lib/waves.mjs or lib/limits.mjs could answer
+  // "may I continue" itself, which is the entire thing this change is not doing.
   const imports = [...driver.matchAll(/from '([^']+)'/g)].map(m => m[1])
   assert.ok(imports.length > 0, 'failed to read the driver imports')
   for (const specifier of imports) {
     assert.ok(
-      specifier.startsWith('node:') || /^\.\.\/lib\/host(\/|\.)/.test(specifier),
-      `the runner may only import node builtins and the host port, not ${specifier}`
+      specifier.startsWith('node:') ||
+        /^\.\.\/lib\/host(\/|\.)/.test(specifier) ||
+        specifier === '../lib/version.mjs',
+      `the runner may only import node builtins, the host port and the version reader, not ${specifier}`
     )
   }
 
@@ -2199,7 +2277,8 @@ const {
   countingBudget,
   handoffFor,
   makeRepo,
-  reviewFiles
+  reviewFiles,
+  DEMO_CHANGE
 } = await import('./helpers/ship-harness.mjs')
 
 // The remediation bound used to be a `remediationBudget` helper extracted from
@@ -3956,8 +4035,11 @@ test('the host hands its measurements to the close, and the close does not re-de
   )
   assert.match(run, /spend: hostSpend \|\| counted\.spend/, 'the host measurement takes precedence')
   assert.match(run, /outputTokens: hostTotal !== undefined \? hostTotal : counted\.outputTokens/)
+  // The fold itself lives in lib/run-usage.mjs, moved out of lib/run.mjs for
+  // the directory's size headroom; the rule is pinned where the code is.
+  const usage = readFileSync(join(ROOT, 'lib', 'run-usage.mjs'), 'utf8')
   assert.match(
-    run,
+    usage,
     /UNKNOWN IS NOT ZERO, and it is contagious by design/,
     'and one unmeasured spawn makes its group unknown rather than smaller'
   )
@@ -4845,3 +4927,175 @@ test('a null agent result is named as such, and a wrong hash keeps its own banne
   assert.match(unread.output, /BRIEFING NOT ACKNOWLEDGED: 1\.1/, unread.output)
   assert.doesNotMatch(unread.output, /AGENT RETURNED NO RESULT: 1\.1/)
 })
+
+// --- upgrade path (spec: ship/run-program — stale classification, rebuilt plan,
+// defaulted fields, versions; distribution/upgrade-compatibility) ---------------
+//
+// A run's state outlives the CLI that wrote it, and the plugin outlives the CLI
+// on PATH. These drive the whole script against a real CLI over a root that a
+// PREVIOUS run left behind, with the one thing an upgrade changes tampered
+// between the two. Each asserts what the operator is TOLD, because a rebuild or
+// a default that nobody hears about is the failure these exist to remove.
+
+const countOf = (text, needle) => text.split(needle).length - 1
+
+test('a plan stored for an older format is rebuilt, and the run names the format change', async () => {
+  const first = await runShip({ keepRepo: true })
+  try {
+    const stored = join(first.root, '.claude', 'ship', 'plan-fingerprint.json')
+    const fingerprint = JSON.parse(readFileSync(stored, 'utf8'))
+    assert.match(fingerprint.planFormat, /^interlock\.ship-plan\/\d+$/, 'the fixture must tamper a real field')
+    writeFileSync(stored, JSON.stringify({ ...fingerprint, planFormat: 'interlock.ship-plan/4' }, null, 2) + '\n')
+
+    const second = await runShip({ keepRepo: true, repo: { reuseRoot: first.root } })
+    assert.ok(second.calls.includes('plan-waves'), `a plan of another format must not be reused: ${second.calls.join(', ')}`)
+    assert.match(second.output, /PLAN REBUILT \(plan-format-changed\)/, second.output)
+    assert.doesNotMatch(second.output, /PLAN REUSED/)
+  } finally {
+    rmSync(first.root, { recursive: true, force: true })
+  }
+})
+
+test('a manifest stripped of fields a newer CLI reads closes naming each, once', async () => {
+  // Tampered MID-run, by the planner stub: the manifest exists by then and the
+  // next subcommands load it. This is the manifest a run started by an older CLI
+  // hands to a newer one.
+  const { output, root } = await runShip({
+    keepRepo: true,
+    responses: {
+      'plan-waves': (label, n, ctx) => {
+        const path = join(ctx.root, '.claude', 'ship', 'run.json')
+        const manifest = JSON.parse(readFileSync(path, 'utf8'))
+        delete manifest.verifyBudget
+        delete manifest.stateHome
+        writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n')
+        return { ok: true, taskCount: 1 }
+      }
+    }
+  })
+  try {
+    for (const field of ['verifyBudget', 'stateHome']) {
+      assert.match(output, new RegExp(`MANIFEST FIELD DEFAULTED[^\\n]*${field}`), `${field} was defaulted in silence:\n${output}`)
+      assert.equal(
+        countOf(output, `MANIFEST FIELD DEFAULTED: ${field}`),
+        1,
+        `${field} is spoken once per run, not once per subcommand`
+      )
+    }
+    assert.ok(receiptFrom(root), 'and the run still closes with a receipt')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a classification left by an earlier run halts the planning, and no batch is dispatched', async () => {
+  const { root } = makeRepo()
+  try {
+    mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
+    writeFileSync(
+      join(root, '.claude', 'ship', 'classified.json'),
+      JSON.stringify({ tasks: [{ id: '1.1', group: 1, description: 'stale', tier: 2, model: 'sonnet', isTestTask: false, paths: ['lib/a.mjs'] }] }) + '\n'
+    )
+    // A planner that wrote nothing: the only classification on disk is the leftover.
+    const { output, calls, commands } = await runShip({
+      keepRepo: true,
+      repo: { reuseRoot: root },
+      responses: { 'plan-waves': null }
+    })
+    assert.match(output, /SHIP HALTED/, output)
+    assert.match(output, /STALE CLASSIFICATION REMOVED/, 'the start step says it removed the leftover')
+    assert.match(output, /classified\.json/, 'and the halt names the file it wanted')
+    assert.ok(!calls.includes('1.1'), `a task was dispatched off a leftover classification: ${calls.join(', ')}`)
+    assert.equal(relayCommands(commands, 'record-batch'), 0, 'no batch may be recorded')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the plugin root in the invocation reaches run start as --plugin-root', async () => {
+  const { commands } = await runShip({ args: { change: DEMO_CHANGE, pluginRoot: ROOT } })
+  const start = commands.find(argv => argv[0] === 'run' && argv[1] === 'start')
+  assert.ok(start, 'the run called run start')
+  const at = start.indexOf('--plugin-root')
+  assert.ok(at >= 0, `run start was not given the plugin root: ${start.join(' ')}`)
+  assert.equal(start[at + 1], ROOT)
+})
+
+test('without a plugin root, run start is not given --plugin-root', async () => {
+  const { commands } = await runShip({})
+  const start = commands.find(argv => argv[0] === 'run' && argv[1] === 'start')
+  assert.ok(start)
+  assert.ok(!start.includes('--plugin-root'), start.join(' '))
+})
+
+test('a start step with no cliVersion is a CLI that predates version reporting, and the close says so', async () => {
+  const older = await runShip({ stripCliVersion: true })
+  assert.match(
+    older.output,
+    /CLI VERSION UNKNOWN: the interlock on PATH predates version reporting \(older than 1\.8\.0\) — run interlock doctor/,
+    older.output
+  )
+  // The other direction: a CLI that does report a version is not accused.
+  const current = await runShip({})
+  assert.doesNotMatch(current.output, /CLI VERSION UNKNOWN/, current.output)
+})
+
+test('a start step whose cliVersion is null is a current CLI that could not read its version, not an old one', async () => {
+  const { output } = await runShip({ stripCliVersion: 'null' })
+  assert.match(output, /CLI VERSION UNKNOWN: the interlock on PATH could not read its own version/, output)
+  assert.doesNotMatch(output, /predates version reporting/, output)
+})
+
+test('a run start relay unreadable twice points at the CLI on PATH being older than the plugin', async () => {
+  const { output } = await runShip({ responses: { 'cli-1': null } })
+  assert.match(output, /RELAY UNREADABLE/, output)
+  assert.match(output, /interlock --version/, 'the reason names the command that tells the operator which CLI answered')
+})
+
+const HARNESS_BIN = process.env.INTERLOCK_HARNESS_BIN
+// ci.yml's upgrade-install job runs this case by its exact title and fails when
+// no case of that title passed, so a rename cannot make the step run nothing
+// (test/spine/github-workflows.test.mjs pins the two together).
+test(
+  'the current ship.js against the previous release CLI closes, and names how that CLI differs from the plugin',
+  {
+    skip: HARNESS_BIN
+      ? false
+      : "INTERLOCK_HARNESS_BIN unset — the previous release's CLI is installed only in CI's upgrade-install job"
+  },
+  async t => {
+    // What the previous release can say about itself decides which banner the
+    // close owes. A CLI from before version reporting answers no version, and
+    // only the driver can speak for it; one that reports is compared with this
+    // plugin by `run start`, which needs the plugin root to do it.
+    const answered = spawnSync(process.execPath, [HARNESS_BIN, '--version'], { encoding: 'utf8' })
+    const reported = /^v?(\d+\.\d+\.\d+)/.exec((answered.stdout || '').trim())?.[1] ?? null
+    const plugin = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version
+    t.diagnostic(`previous release CLI reports ${reported ?? 'no version'}; plugin is ${plugin}`)
+    const { output, root } = await runShip({
+      keepRepo: true,
+      cliBin: HARNESS_BIN,
+      args: { change: DEMO_CHANGE, pluginRoot: ROOT }
+    })
+    try {
+      assert.doesNotMatch(output, /the run program returned no step/, output)
+      assert.match(output, /SHIP (COMPLETE|HALTED)/, output)
+      if (reported === null) {
+        assert.match(output, /CLI VERSION UNKNOWN/, output)
+        assert.doesNotMatch(output, /CLI VERSION SKEW/, output)
+      } else if (reported !== plugin) {
+        assert.doesNotMatch(output, /CLI VERSION UNKNOWN/, output)
+        assert.ok(
+          output.includes(`CLI VERSION SKEW: this run's interlock is ${reported} `) && output.includes(`the plugin is ${plugin} `),
+          `a ${reported} CLI under a ${plugin} plugin closed without naming the skew:\n${output}`
+        )
+      } else {
+        // Published and checked out at the same version (the window right
+        // after a release): there is no skew to name, and none may be claimed.
+        assert.doesNotMatch(output, /CLI VERSION (UNKNOWN|SKEW)/, output)
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
