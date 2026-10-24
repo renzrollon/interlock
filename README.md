@@ -68,7 +68,7 @@ Bootstrap runs `openspec init` if the repo has never been initialized. It reads 
 > ! interlock doctor
 > ```
 >
-> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)). It exits 1 when it finds something that would stop a zero-touch run.
+> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)), and keep that copy at the plugin's version: `doctor` says when it is not ([16](docs/16-upgrading.md)). It exits 1 when it finds something that would stop a zero-touch run.
 
 Your first shipped change, step by step: **[01 — The first hour](docs/01-first-hour.md)**.
 
@@ -91,7 +91,7 @@ You type two commands for every change and read the spec between them. The rest 
 |---|---|---|
 | once per repo | [`/interlock:bootstrap`](docs/01-first-hour.md#step-1--onboard-the-repo-once "Once per repo. Reads the code, writes one spec per existing feature, builds the graph. Never edits source.") | Your repo, described in specs |
 | **every change** | <kbd>/interlock:spec "idea"</kbd> | [A reviewed, implementation-ready change](docs/01-first-hour.md#step-2--spec-one-small-change "Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs."). Then it stops |
-| **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each, plus advisor.md. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
+| **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
 | **every change** | <kbd>/interlock:ship</kbd> | [Parallel agents, your tests, one commit](docs/01-first-hour.md#step-4--ship-it "Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one."). Asks nothing |
 | when you want it | [`/interlock:mr`](docs/15-merge-confidence.md "Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The PR or MR, with the merge verdict on it |
 | after the merge | [`openspec archive <change>`](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") | The living specs catch up |
@@ -113,7 +113,7 @@ You type two commands for every change and read the spec between them. The rest 
 
 | | |
 |---|---|
-| **Change** | One unit of work: a folder under `openspec/changes/<name>/` holding `proposal.md`, `design.md`, `tasks.md`, delta specs and, once the checkpoint advisor has run, `advisor.md` |
+| **Change** | One unit of work: a folder under `openspec/changes/<name>/` holding `proposal.md`, `design.md`, `tasks.md` and delta specs |
 | **Delta spec** | The behaviour a change adds or alters, written as Given/When/Then scenarios |
 | **Living spec** | `openspec/specs/`: what the system does today. Archiving a change folds its delta specs in |
 | **Checkpoint** | Your read of the spec, between `spec` and `ship`. The one step a human must do |
@@ -203,6 +203,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and kee
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
 | [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a merge request or a CI job |
+| [16 — Upgrading](docs/16-upgrading.md) | What an upgrade keeps, what a resume across versions does, and how to keep the CLI at the plugin's version |
 
 ## Development
 
@@ -212,4 +213,4 @@ npm test                      # no dependencies to install first
 claude --plugin-dir .         # load it without installing
 ```
 
-More in [CONTRIBUTING.md](./CONTRIBUTING.md). Built on [OpenSpec](https://github.com/Fission-AI/OpenSpec) by Fission AI, and on the wave-execution pattern for parallel task application. [MIT](./LICENSE).
+More in [CONTRIBUTING.md](./CONTRIBUTING.md). Report vulnerabilities privately ([SECURITY.md](./SECURITY.md)); [ACCESSIBILITY.md](./ACCESSIBILITY.md) and the [code of conduct](./CODE_OF_CONDUCT.md) cover the rest. Built on [OpenSpec](https://github.com/Fission-AI/OpenSpec) by Fission AI, and on the wave-execution pattern for parallel task application. [MIT](./LICENSE).

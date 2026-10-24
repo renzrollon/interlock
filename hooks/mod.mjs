@@ -152,6 +152,7 @@ import {
   SPEC_TITLE,
   SPEC_UNPLACED_TOAST,
   TEXT_KINDS,
+  addAdvisorEntries,
   changeOf,
   freshSpec,
   lateLineText,
@@ -679,7 +680,6 @@ async function fileWrite($, path) {
       files.set(w.file, { count: (before ? before.count : 0) + 1, at: now === null && before ? before.at : now })
     } else if (w.kind === 'brief') spec.explore.brief = w.path
     else if (w.kind === 'findings') spec.findings.set(w.change, w.path)
-    else if (w.kind === 'draft') spec.drafts.set(w.change, w.path)
     if (now !== null) spec.lastActivityAt = now
     $.ui.invalidate('ui.render')
   } catch (err) {
@@ -699,10 +699,6 @@ async function noteSpawn($, input, spawned) {
   // An Explore investigator the chain let through (observe-the-spec-run-live design D5).
   if (specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string') {
     await countInvestigator($)
-  }
-  // The checkpoint advisor the chain let through (add-checkpoint-advisor).
-  if (specWatching() && input && input.subagentType === 'interlock:advisor' && spawned && typeof spawned.model === 'string') {
-    await countConsult($)
   }
   return spawned
 }
@@ -917,15 +913,18 @@ function endRunAtBoundary($, input) {
   }
 }
 
-/** One checkpoint advisor spawn the chain let through. Never throws. */
-async function countConsult($) {
+/**
+ * The advisor entries one `turn.step` result reports in `serverToolUses`,
+ * counted toward the session when the event has no `agentId` and toward
+ * subagents when it has one (replace-subagent-advisors-with-advisor-tool,
+ * "Counting consults"). Observes only; the step is the engine's. Never throws.
+ */
+function countAdvisorEntries($, e, result) {
   try {
-    spec.consult.spawned++
-    const now = await specStamp($)
-    if (now !== null) spec.consult.at = now
-    redrawSpec($)
+    const uses = result && typeof result === 'object' ? result.serverToolUses : undefined
+    if (addAdvisorEntries(spec.advisor, uses, Boolean(e && e.agentId)) > 0) $.ui.invalidate('ui.render')
   } catch (err) {
-    $.ui.log(`interlock spec: an advisor spawn was not counted: ${messageOf(err)}`, { to: 'debug' })
+    $.ui.log(`interlock spec: an advisor entry was not counted: ${messageOf(err)}`, { to: 'debug' })
   }
 }
 
@@ -2082,7 +2081,12 @@ export function register(on) {
   on('tool.call', { tool: 'Write' }, editCall)
 
   on('turn.step', async function* ($, e, next) {
-    if (!session.interactive || run.phase !== 'live' || !e.agentId) return yield* next(e)
+    if (!session.interactive || run.phase !== 'live' || !e.agentId) {
+      if (!specWatching()) return yield* next(e)
+      const result = yield* next(e)
+      countAdvisorEntries($, e, result)
+      return result
+    }
     // A run agent's request starting, and its answer arriving, are each activity (design D1).
     const held = run
     if (await stamp($)) redrawWord($)
@@ -2095,6 +2099,7 @@ export function register(on) {
     } catch {
       // A tally that cannot be kept is a figure the pane does not show; the step is the engine's.
     }
+    if (specWatching()) countAdvisorEntries($, e, result)
     return result
   })
 
