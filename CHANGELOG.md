@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **`/interlock:mr --review` closes the merge request loop.** It reviews the pull request, posts the findings, remediates, commits and pushes, re-reviews, answers each thread, marks the draft ready, and runs verification against the pushed head. `--create` now pushes the branch first (`git push -u origin HEAD`) and opens the request as a draft when `--review` is given. The GitLab lines are not exercised.
+- **The `interlock mr` family:** `mr comment`, `mr replies`, `mr remediate-brief`, `mr conformance-brief` and `mr test-paths`.
+- **`interlock review --out --head --dimensions`** and **`interlock verify judge --head`** bind a review and a verification record to one commit.
+- **An eighth review dimension, `blast-radius`,** graph-first, with a recorded skip (`blast-radius-skipped`) when there is no graph.
+- **A run's evidence carries over to a descendant commit,** with what is dropped said and an undecided ancestry reported.
+- **A legend line** on the verdict and a **ship summary line** naming `/interlock:mr`.
+- **`REVIEW.md` lists `.github/workflows/` under Always Human Review.**
+
+### Changed
+
+- **The risk signal at merge reads touched paths only** (decision D1, carried from `label-and-harden-the-merge-verdict`). Documentation and test paths sit outside the severity rules, and a text-only signal no longer fires at merge. The spec-stage classifier, `interlock risk` and the continuity gate still read prose.
+
 ## [1.8.0] - 2026-10-24
 
 ### Added

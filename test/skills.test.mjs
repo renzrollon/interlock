@@ -1201,18 +1201,19 @@ test('the shared test profile ties timeout_ms to the inter-wave budget in one ro
   assert.ok(together, 'shared/TEST-PROFILE.md must carry timeout_ms and inter-wave in the same row or paragraph')
 })
 
-test('the review-code skill lists the seventh dimension, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
+test('the review-code skill lists the eight dimensions, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
   // Tokens, not sentences: each is what the skill must still say after a reword.
   const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
   for (const token of [
     'interlock domain-context',
     'dimensions/domain.md',
     'DOMAIN REVIEW SKIPPED',
-    'list the seven'
+    'list the eight'
   ]) {
     assert.ok(skill.includes(token), `skills/review-code/SKILL.md must carry ${token}`)
   }
   assert.ok(!skill.includes('list the six'), 'skills/review-code/SKILL.md still lists six dimensions')
+  assert.ok(!skill.includes('list the seven'), 'skills/review-code/SKILL.md still lists seven dimensions')
   assert.match(skill, /interlock review-policy [^\n]*--base/, 'the review-policy line must pass --base')
   assert.match(skill, /interlock review [^\n]*--base/, 'the review line must pass --base')
   assert.match(skill, /interlock domain-context [^\n]*--base/, 'the domain-context line must pass --base')
@@ -1253,6 +1254,58 @@ test('the domain rubric asks for a requirement citation, names the prohibition k
   const rubric = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'domain.md'), 'utf8')
   for (const token of ['requirement', 'SHALL NOT', 'were not given', 'blocker', 'warning']) {
     assert.ok(rubric.includes(token), `skills/review-code/dimensions/domain.md must carry ${token}`)
+  }
+})
+
+test('the review-code skill runs blast-radius from the graph, says when it skipped it, and records its dimensions (spec: review/blast-radius-dimension)', () => {
+  // Tokens, not sentences.
+  const where = 'skills/review-code/SKILL.md'
+  const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
+  const paragraphs = skill.split(/\n\s*\n/)
+
+  // The table row names its brief and its condition.
+  assert.match(skill, /^\| blast-radius \|[^\n]*dimensions\/blast-radius\.md[^\n]*\.claude\/graph\/graph\.json/m, `${where} has no blast-radius table row naming its brief and the graph file`)
+  assert.ok(existsSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'blast-radius.md')), 'dimensions/blast-radius.md is missing')
+
+  // The skip is spoken, and written to the record.
+  const skipAt = skill.indexOf('BLAST RADIUS SKIPPED')
+  assert.ok(skipAt !== -1, `${where} must carry BLAST RADIUS SKIPPED`)
+  assert.ok(skill.indexOf('/interlock:graph', skipAt) > skipAt, 'BLAST RADIUS SKIPPED must be followed by /interlock:graph')
+  const skipParagraph = paragraphs.find(p => p.includes('BLAST RADIUS SKIPPED') && p.includes('/interlock:graph'))
+  assert.ok(skipParagraph, 'no paragraph carries the skip line with /interlock:graph')
+  for (const token of ['still run', '`skipped`', 'reason']) {
+    assert.ok(skipParagraph.includes(token), `the blast-radius skip paragraph must carry ${token}`)
+  }
+
+  // --dimensions naming blast-radius without a graph is reported, not silently run.
+  const dimensionsParagraph = paragraphs.find(p => p.trimStart().startsWith('`--dimensions'))
+  assert.ok(dimensionsParagraph, 'no paragraph opens with `--dimensions`')
+  for (const token of ['list the eight', '`blast-radius`', 'BLAST RADIUS SKIPPED', 'not silently run', '`skipped`', 'every dimension it did run']) {
+    assert.ok(dimensionsParagraph.includes(token), `the --dimensions paragraph must carry ${token}`)
+  }
+
+  // The dimension record's four keys, in a fence, before the review line.
+  const reviewLines = [...skill.matchAll(/^interlock review --findings[^\n]*$/gm)]
+  assert.ok(reviewLines.length > 0, 'no `interlock review --findings` line')
+  const firstReview = reviewLines[0].index
+  const record = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].find(m => m[1].includes('"selected"'))
+  assert.ok(record, 'no json fence writes the dimension record')
+  for (const key of ['"selected"', '"ran"', '"unavailable"', '"skipped"']) {
+    assert.ok(record[1].includes(key), `the dimension record fence carries no ${key}`)
+  }
+  assert.ok(record.index < firstReview, 'the dimension record must be written before the interlock review line')
+
+  // Every review line names the record; the --out line binds the head.
+  for (const m of reviewLines) assert.match(m[0], /--dimensions\b/, `the review line carries no --dimensions: ${m[0]}`)
+  assert.ok(reviewLines.some(m => /--head\b/.test(m[0]) && /--out\b/.test(m[0])), 'no review line carries --head and --out')
+
+  // The brief: graph first, outside callers, data, concurrency, rollback, no consumer.
+  const brief = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'blast-radius.md'), 'utf8')
+  for (const token of ['interlock-graph consumers', '"dimension": "blast-radius"', 'outside the diff', 'no consumer', 'observing caller', 'before you read any code', 'blocker', 'warning', 'suggestion']) {
+    assert.ok(brief.includes(token), `dimensions/blast-radius.md must carry ${token}`)
+  }
+  for (const pattern of [/rollback/i, /concurrency/i, /data effects/i, /additive plumbing/i]) {
+    assert.match(brief, pattern, `dimensions/blast-radius.md must carry ${pattern}`)
   }
 })
 
@@ -1343,6 +1396,210 @@ function mrSkillProblems(text) {
     problems.push('no paragraph tells the reader to push when the pipeline describes another commit')
   }
 
+  // --- the review loop (spec: review/merge-request-loop, merge-request-delivery) ---
+  // Fenced lines carry the loop's order; prose carries the tokens a reword must keep.
+  const fence = []
+  const blockOf = []
+  {
+    let open = -1
+    lines.forEach((line, i) => {
+      if (/^\s*```/.test(line)) {
+        open = open === -1 ? i : -1
+        return
+      }
+      if (open !== -1) {
+        fence.push({ i, line: line.trim() })
+        blockOf[i] = open
+      }
+    })
+  }
+  const fencedAt = (pattern, from = -1) => {
+    const hit = fence.find(f => f.i > from && pattern.test(f.line))
+    return hit ? hit.i : -1
+  }
+  const lastFencedAt = pattern => {
+    const hits = fence.filter(f => pattern.test(f.line))
+    return hits.length ? hits[hits.length - 1].i : -1
+  }
+  const paragraphAt = i => {
+    if (blockOf[i] !== undefined) {
+      let end = i
+      while (end < lines.length && !/^\s*```/.test(lines[end])) end++
+      let start = blockOf[i] - 1
+      while (start >= 0 && lines[start].trim() === '') start--
+      let first = start
+      while (first > 0 && lines[first - 1].trim() !== '') first--
+      return lines.slice(first, end).join('\n')
+    }
+    let start = i
+    while (start > 0 && lines[start - 1].trim() !== '') start--
+    let end = i
+    while (end < lines.length - 1 && lines[end + 1].trim() !== '') end++
+    return lines.slice(start, end + 1).join('\n')
+  }
+
+  const fm = parseFrontmatter(text)
+  if (!fm || !(fm.values['argument-hint'] || '').includes('--review')) problems.push('argument-hint carries no --review')
+  if (!fm || !/\bAgent\b/.test(fm.values['allowed-tools'] || '')) problems.push('allowed-tools carries no Agent')
+
+  // The section that opens the loop names its condition first.
+  const loopHeading = lineAt(/^##\s[^\n]*`--review`/)
+  if (loopHeading === -1) {
+    problems.push('no section heading names `--review`')
+  } else {
+    const first = lineAt(/\S/, loopHeading + 1)
+    const opening = first === -1 ? '' : paragraphAt(first)
+    for (const token of ['--review', '.claude/ship/mr/', 'Without']) {
+      if (!opening.includes(token)) problems.push(`the loop section's opening paragraph carries no ${token}`)
+    }
+  }
+
+  // A pass clears its directory before the first loop review, and reads nothing there before.
+  const clear = fencedAt(/^rm -rf \.claude\/ship\/mr\/?$/)
+  if (clear === -1) problems.push('no fenced `rm -rf .claude/ship/mr` line')
+  const firstLoopReview = fencedAt(/\/interlock:review-code\b/)
+  if (clear !== -1 && (firstLoopReview === -1 || firstLoopReview < clear)) {
+    problems.push('the `rm -rf .claude/ship/mr` line does not come before the first review-code invocation')
+  }
+  if (clear !== -1 && fence.some(f => f.i < clear && f.line.includes('.claude/ship/mr/'))) {
+    problems.push('a fenced line reads .claude/ship/mr/ before the directory is cleared')
+  }
+
+  // The happy path, in order among the fenced lines.
+  let at = -1
+  for (const [pattern, what] of [
+    [/\/interlock:review-code\b[^\n]*--base origin\/[^\n]*--out \.claude\/ship\/mr\/review-r/, 'review-code with `--base origin/` and `--out .claude/ship/mr/review-r`'],
+    [/^interlock mr comment\b/, '`interlock mr comment`'],
+    [/^interlock mr remediate-brief\b/, '`interlock mr remediate-brief`'],
+    [/^git add -A$/, '`git add -A`'],
+    [/interlock mr test-paths\b/, '`interlock mr test-paths`'],
+    [/^git diff --cached --quiet\b/, '`git diff --cached --quiet`'],
+    [/^git push\b/, '`git push`'],
+    [/^interlock mr replies\b/, '`interlock mr replies`'],
+    [/^gh pr ready\b/, '`gh pr ready`'],
+    [/^interlock mr conformance-brief\b/, '`interlock mr conformance-brief`'],
+    [/^interlock verify judge\b(?=[^\n]*--context final)(?=[^\n]*--head)/, '`interlock verify judge` with `--context final` and `--head`'],
+    [/^interlock verify coverage\b[^\n]*--base origin\//, '`interlock verify coverage` with `--base origin/`'],
+    [/^gh pr checks\b[^\n]*--watch/, '`gh pr checks … --watch`'],
+    [/^gh pr view [^\n]*\| interlock pipeline --github -/, '`gh pr view …` piped into `interlock pipeline --github -`'],
+    [/^interlock merge-confidence\b(?=[^\n]*--review \.claude\/ship\/mr\/review-r<last>\.json)(?=[^\n]*--verify)(?=[^\n]*--handoff)/, '`interlock merge-confidence` with `--review …review-r<last>.json`, `--verify` and `--handoff`']
+  ]) {
+    const next = fencedAt(pattern, at)
+    if (next === -1) {
+      problems.push(`no fenced line, in the loop's order, runs ${what}`)
+    } else {
+      at = next
+    }
+  }
+
+  // The posting lines pipe what the CLI rendered.
+  if (fencedAt(/^interlock mr comment\b[^\n]*\| gh pr comment [^\n]*--body-file -/) === -1) problems.push('no `interlock mr comment` line piped into `gh pr comment … --body-file -`')
+  if (fencedAt(/^interlock mr replies\b[^\n]*\| gh pr comment [^\n]*--body-file -/) === -1) problems.push('no `interlock mr replies` line piped into `gh pr comment … --body-file -`')
+
+  // The round stages the fixer's tree, classifies the staged list and reverts from HEAD.
+  const addAll = fencedAt(/^git add -A$/)
+  const testPaths = fencedAt(/^git diff --cached --name-only \| interlock mr test-paths [^\n]*--changed -/)
+  if (testPaths === -1) problems.push('no `git diff --cached --name-only` piped into `interlock mr test-paths --changed -`')
+  if (addAll === -1 || testPaths === -1 || addAll > testPaths) problems.push('no `git add -A` line before the `interlock mr test-paths` line')
+  if (fencedAt(/^git restore --staged --worktree --source=HEAD\b/) === -1) problems.push('no fenced `git restore --staged --worktree --source=HEAD` line')
+  if (fence.some(f => /\bgit diff\b[^\n]*--name-only/.test(f.line) && !f.line.includes('--cached'))) {
+    problems.push('a fenced `git diff --name-only` runs without --cached')
+  }
+
+  // A round that changed nothing commits nothing, pushes nothing, replies with one record on both sides.
+  const commit = fencedAt(/^git commit\b[^\n]*fix\(review\): answer the PR #[^\n]*review round/)
+  if (commit === -1) problems.push('no fenced `git commit` line naming `fix(review): answer the PR #` and `review round`')
+  const quiet = fencedAt(/^git diff --cached --quiet\b/)
+  if (quiet === -1 || commit === -1 || quiet > commit) problems.push('no `git diff --cached --quiet` line before the commit line')
+  const sameRecord = fence.find(f => {
+    const m = /^interlock mr replies\b[^\n]*--before (\S+)[^\n]*--after (\S+)/.exec(f.line)
+    return m && m[1] === m[2]
+  })
+  if (!sameRecord || quiet === -1 || commit === -1 || sameRecord.i < quiet || sameRecord.i > commit) {
+    problems.push('no `interlock mr replies` line with one record as --before and --after between the quiet check and the commit')
+  }
+  if (!paragraphs.some(p => p.includes('changed nothing') && p.includes('Commit nothing') && p.includes('push nothing') && p.includes('`open`'))) {
+    problems.push('no paragraph says a round that changed nothing commits nothing, pushes nothing and leaves every finding `open`')
+  }
+
+  // The fix is pushed before the next review, and the skill says what a push does.
+  if (commit !== -1) {
+    const push = fencedAt(/^git push$/, commit)
+    const nextReview = fencedAt(/\/interlock:review-code\b/, commit)
+    if (push === -1 || nextReview === -1 || push > nextReview) problems.push('no `git push` line between the commit line and the next review-code line')
+  }
+  if (!paragraphs.some(p => ['dismiss', 'approval', 'merge train', 'auto-merge', 're-request'].every(t => p.includes(t)))) {
+    problems.push('no paragraph says a push dismisses approvals, leaves auto-merge or a merge train, and is not re-requested')
+  }
+
+  // The create-time push, the draft, and ready after the last reply.
+  const createPush = fencedAt(/^git push -u origin HEAD$/)
+  const create = fencedAt(/^gh pr create\b/)
+  if (createPush === -1 || create === -1 || createPush > create) problems.push('no `git push -u origin HEAD` line before the `gh pr create` line')
+  if (fencedAt(/^gh pr create\b[^\n]*--draft/) === -1) problems.push('no `gh pr create` line carries --draft')
+  if (fencedAt(/^glab mr create\b[^\n]*--draft/) === -1) problems.push('no `glab mr create` line carries --draft')
+  if (!paragraphs.some(p => p.includes('--review') && p.includes('created ready'))) problems.push('no paragraph says a merge request created without --review is created ready')
+  const lastReplies = lastFencedAt(/interlock mr replies\b/)
+  const ready = fencedAt(/^gh pr ready\b/)
+  const conformance = fencedAt(/^interlock mr conformance-brief\b/)
+  if (lastReplies === -1 || ready === -1 || conformance === -1 || !(lastReplies < ready && ready < conformance)) {
+    problems.push('no `gh pr ready` line between the last `interlock mr replies` and `interlock mr conformance-brief`')
+  }
+  if (conformance !== -1 && !/--head\b/.test(lines[conformance])) problems.push('the `interlock mr conformance-brief` line carries no --head')
+  const judge = fencedAt(/^interlock verify judge\b/)
+  if (judge !== -1 && !/--head\b/.test(lines[judge])) problems.push('the `interlock verify judge` line carries no --head')
+
+  // Nothing decides for the reader.
+  for (const [pattern, what] of [
+    [/^gh pr merge\b/, 'gh pr merge'],
+    [/^gh pr review\b/, 'gh pr review'],
+    [/^glab mr merge\b/, 'glab mr merge'],
+    [/^glab mr approve\b/, 'glab mr approve'],
+    [/\bglab ci status\b[^\n]*--live/, 'glab ci status --live']
+  ]) {
+    if (fencedAt(pattern) !== -1) problems.push(`a fenced line runs ${what}`)
+  }
+  if (!paragraphs.some(p => ['never merges', 'never approves', 'branch rules', 'merge queue'].every(t => p.includes(t)))) {
+    problems.push('no paragraph says the skill never merges and never approves, naming branch rules and a merge queue')
+  }
+
+  // Every GitLab line of the loop is marked not exercised.
+  for (const [pattern, what] of [
+    [/^glab mr note\b/, 'glab mr note'],
+    [/^glab ci get --merge-request\b(?![^\n]*\| interlock pipeline)/, 'glab ci get --merge-request wait'],
+    [/^glab mr update\b[^\n]*--ready/, 'glab mr update --ready'],
+    [/^glab mr create\b/, 'glab mr create']
+  ]) {
+    const hits = fence.filter(f => pattern.test(f.line))
+    if (!hits.length) problems.push(`no fenced ${what} line`)
+    for (const hit of hits) {
+      if (!paragraphAt(hit.i).includes('not exercised')) problems.push(`the ${what} line sits in no block marked not exercised`)
+    }
+  }
+
+  // The assessment reads the loop's records for the pushed head.
+  if (verdictLine !== -1) {
+    for (const flag of [
+      '--review .claude/ship/mr/review-r<last>.json',
+      '--verify .claude/ship/mr/verify.json',
+      '--handoff .claude/ship/mr/handoff.json',
+      '--coverage .claude/ship/mr/coverage.json'
+    ]) {
+      if (!lines[verdictLine].includes(flag)) problems.push(`the merge-confidence verdict line carries no ${flag}`)
+    }
+  }
+  if (!paragraphs.some(p => p.includes('--coverage .claude/ship/mr/coverage.json') && p.includes('exists'))) {
+    problems.push('no paragraph passes --coverage only when the coverage file exists')
+  }
+  for (const token of ['REMEDIATION TOUCHED TESTS', 'TEST PATHS UNKNOWN']) {
+    if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+
+  // Without a merge request and without --create, nothing is pushed.
+  if (!paragraphs.some(p => p.includes('re-run with') && p.includes('--create') && p.includes('nothing was pushed'))) {
+    problems.push('no stop message says nothing was pushed and to re-run with --create')
+  }
+
   // The skill states no confidence of its own and carries no label name.
   for (const banned of ['confidence level', 'interlock/merge', 'interlock/human-review', 'interlock/blocked', 'interlock/score-']) {
     if (text.includes(banned)) problems.push(`carries ${banned}`)
@@ -1394,4 +1651,34 @@ test('the delivery pins fail on a doctored copy, naming what was dropped', () =>
   // A prose mention of the pipeline command is not a command line.
   const proseOnly = problemsOf(t => t.replace(/^gh pr view [^\n]*\| interlock pipeline --github -[^\n]*$/m, 'Run gh pr view and interlock pipeline.'))
   assert.ok(proseOnly.some(p => p.includes('--github')), proseOnly.join(' | '))
+})
+
+test('the loop pins fail on a doctored copy, naming what was dropped', () => {
+  const shipped = mrSkill()
+  const problemsOf = edit => mrSkillProblems(edit(shipped))
+  const fails = (problems, token) => assert.ok(problems.some(p => p.includes(token)), problems.join(' | '))
+
+  // The round's push dropped: the re-review would describe a commit the platform never saw.
+  fails(problemsOf(t => t.replace(/^(git commit -m "fix\(review\)[^\n]*)\ngit push$/m, '$1')), '`git push` line between the commit line')
+
+  // The test-path revert reads the unstaged list.
+  fails(problemsOf(t => t.replace('git diff --cached --name-only | interlock mr test-paths', 'git diff --name-only | interlock mr test-paths')), 'without --cached')
+
+  // The directory is not cleared.
+  fails(problemsOf(t => t.replace(/^rm -rf \.claude\/ship\/mr$/m, '')), 'rm -rf .claude/ship/mr')
+
+  // A fenced merge.
+  fails(problemsOf(t => t.replace(/^gh pr ready <n>$/m, 'gh pr ready <n>\ngh pr merge <n>')), 'gh pr merge')
+
+  // The assessment reads round 0 after a fix commit.
+  fails(problemsOf(t => t.replace('--review .claude/ship/mr/review-r<last>.json --verify .claude/ship/mr/verify.json --handoff .claude/ship/mr/handoff.json --coverage .claude/ship/mr/coverage.json --json', '--review .claude/ship/mr/review-r0.json --verify .claude/ship/mr/verify.json --handoff .claude/ship/mr/handoff.json --coverage .claude/ship/mr/coverage.json --json')), 'review-r<last>.json')
+
+  // A GitLab loop line that loses its marker.
+  fails(problemsOf(t => t.replace('# GitLab — not exercised\nglab mr update', '# GitLab\nglab mr update')), 'glab mr update --ready')
+
+  // Ready moved before the last reply.
+  fails(problemsOf(t => t.replace(/^gh pr ready <n>$/m, 'echo ready')), '`gh pr ready`')
+
+  // The create-time push dropped while a round's push remains.
+  fails(problemsOf(t => t.replace(/^git push -u origin HEAD$/m, '')), 'git push -u origin HEAD')
 })

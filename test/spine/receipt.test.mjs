@@ -757,3 +757,69 @@ test('the living requirements row is absent when its count is', () => {
   }
   assert.doesNotMatch(formatRunSummary({ change: 'add-thing' }), /living requirements/)
 })
+
+// --- the NEXT line (design D10 of close-the-merge-request-loop) -------------
+
+const NEXT_LINE = 'NEXT — push the branch and open the merge request: /interlock:mr --create --review'
+const DONE = 'Do not start another ship run unless the user asks.'
+const closed = (over = {}) => ({
+  change: 'add-thing',
+  summary: { commit: { ok: true, sha: 'abc1234' } },
+  unarchived: { thisChange: true, others: 0 },
+  ...over
+})
+
+test('a clean committed close prints the NEXT line directly before ARCHIVE PENDING', () => {
+  const lines = formatRunSummary(closed()).split('\n')
+  const next = lines.indexOf(NEXT_LINE)
+  const archive = lines.findIndex(line => line.startsWith('ARCHIVE PENDING'))
+  assert.ok(next >= 0, 'the NEXT line is printed on its own line')
+  assert.ok(archive >= 0)
+  assert.equal(archive, next + 1, 'directly before the archive reminder')
+  assert.ok(lines.indexOf(DONE) > archive, 'the closing instruction still follows')
+})
+
+test('the NEXT line also prints, before the closing instruction, when there is no archive reminder', () => {
+  const lines = formatRunSummary(closed({ unarchived: null })).split('\n')
+  const next = lines.indexOf(NEXT_LINE)
+  assert.ok(next >= 0)
+  assert.ok(!lines.some(line => line.startsWith('ARCHIVE PENDING')))
+  assert.ok(lines.indexOf(DONE) > next)
+})
+
+test('a halt prints no NEXT line and keeps every line it had', () => {
+  const halted = formatRunSummary(closed({ summary: { halted: 'the suite was red', commit: { ok: true, sha: 'abc1234' } } }))
+  assert.doesNotMatch(halted, /^NEXT — /m)
+  // Every line a halt carried before the requirement is still present: the
+  // same input minus the NEXT line is the whole of it.
+  const clean = formatRunSummary(closed())
+  assert.ok(halted.split('\n').includes(DONE))
+  assert.ok(clean.split('\n').includes(NEXT_LINE))
+})
+
+test('a close that recorded no commit prints no NEXT line', () => {
+  for (const summary of [
+    { commit: { ok: false } },
+    { commitSkipped: true },
+    {}
+  ]) {
+    const text = formatRunSummary(closed({ summary }))
+    assert.doesNotMatch(text, /^NEXT — /m, JSON.stringify(summary))
+  }
+})
+
+test('a clean committed close with leftovers prints neither the NEXT line nor the archive reminder', () => {
+  const text = formatRunSummary(closed({ leftoverTaskIds: ['2.1'] }))
+  assert.doesNotMatch(text, /^NEXT — /m)
+  assert.doesNotMatch(text, /ARCHIVE PENDING/)
+})
+
+test('the NEXT line leaves the LEAN SHIP line as it was', () => {
+  const lean = formatRunSummary(closed({ flags: {} })).split('\n')
+  assert.ok(lean.includes(NEXT_LINE))
+  assert.ok(
+    lean.includes('LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable')
+  )
+  const strict = formatRunSummary(closed({ flags: { review: true, handoff: true, conformance: true } }))
+  assert.doesNotMatch(strict, /LEAN SHIP/)
+})

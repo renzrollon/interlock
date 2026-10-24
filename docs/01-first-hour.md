@@ -121,11 +121,19 @@ If it halts, it tells you what completed and what it needs from you. [**04 — W
 
 ## Step 5 — Open the MR (optional)
 
+A clean ship ends its summary with the next step, `NEXT — push the branch and open the merge request: /interlock:mr --create --review`. You run it; the ship does not.
+
 ```bash
-/interlock:mr --create
+/interlock:mr --create --review
 ```
 
-Detects GitLab or GitHub from the remote, writes a summary from the change artifacts and the diff, and creates or updates the merge request.
+Detects GitLab or GitHub from the remote, writes a summary from the change artifacts and the diff, pushes the branch (`--create` pushes; without it nothing is pushed) and creates the merge request as a **draft**. Then, because of `--review`, it closes the loop on that merge request:
+
+- reviews the diff with the eight review dimensions and posts the findings as a comment, each under a stable id;
+- fixes what the review found, one commit per round (`fix(review): answer the PR #<n> review round <r>`), pushes it, re-reviews the pushed head with fresh reviewers, and posts a reply table saying which findings are `fixed`, `open` or `new`. A fix never edits a test; a protected file the fixer touched is reverted and the skill says so;
+- marks the merge request ready, confirms the change's scenarios against the head, runs the final verification, waits for the platform's checks, and then writes the merge-confidence verdict into the description and the labels.
+
+Without `--review` it only creates or updates the merge request and assesses it, and a merge request created that way is created ready. The skill never merges and never approves, and `MERGE` in the block is a statement about the local signals, not about your branch rules, required approvals, code owners or merge queue. Each fix push dismisses stale approvals a ruleset marks and takes the merge request out of auto-merge, and the skill does not re-request a review. The command's own output explains each step; [15](./15-merge-confidence.md#closing-the-loop-on-a-merge-request) has the loop in order.
 
 ## Step 6 — Archive the change once it merges
 

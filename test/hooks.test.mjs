@@ -2021,7 +2021,8 @@ function throwingRecorder(root) {
   mkdirSync(join(base, 'hooks'), { recursive: true })
   mkdirSync(join(base, 'lib'), { recursive: true })
   for (const name of ['recorder.mjs', '_shared.mjs']) copyFileSync(join(HOOKS, name), join(base, 'hooks', name))
-  for (const name of ['ship-stage.mjs', 'interrupted.mjs']) copyFileSync(join(ROOT, 'lib', name), join(base, 'lib', name))
+  // `_shared.mjs` re-exports the test-path helpers from lib/test-paths.mjs, so the copy carries it.
+  for (const name of ['ship-stage.mjs', 'interrupted.mjs', 'test-paths.mjs']) copyFileSync(join(ROOT, 'lib', name), join(base, 'lib', name))
   const real = pathToFileURL(join(ROOT, 'lib', 'agent-usage.mjs')).href
   writeFileSync(
     join(base, 'lib', 'agent-usage.mjs'),
@@ -2175,4 +2176,54 @@ test('with hooks/hooks.json present, the manifest still holds every settings hoo
     'UserPromptExpansion - hooks/guard-relaunch.mjs',
     'UserPromptSubmit - hooks/guard-relaunch.mjs'
   ])
+})
+
+// --- the test-path predicate is one implementation (close-the-merge-request-loop) ----
+//
+// The guard that denies test edits during a run's remediation does not run after
+// a close; the merge-request loop reverts what `interlock mr test-paths` names
+// instead. Those two only mean the same thing while they are the same function,
+// so `hooks/_shared.mjs` re-exports the helpers from `lib/test-paths.mjs` rather
+// than defining its own.
+
+test('hooks/_shared.mjs re-exports the test-path helpers from lib/test-paths.mjs, same identity', async () => {
+  assert.ok(existsSync(join(ROOT, 'lib', 'test-paths.mjs')), 'lib/test-paths.mjs exists')
+  const lib = await import(pathToFileURL(join(ROOT, 'lib', 'test-paths.mjs')).href)
+  const shared = await import(pathToFileURL(join(HOOKS, '_shared.mjs')).href)
+  for (const name of ['isTestPath', 'loadTestProfile', 'testRootsFromProfile']) {
+    assert.equal(typeof lib[name], 'function', `lib/test-paths.mjs exports ${name}`)
+    assert.equal(shared[name], lib[name], `${name} is the same function in both modules`)
+  }
+  // And the guard's module does not define a second copy of any of them.
+  const source = readFileSync(join(HOOKS, '_shared.mjs'), 'utf8')
+  for (const name of ['isTestPath', 'loadTestProfile', 'testRootsFromProfile']) {
+    assert.doesNotMatch(source, new RegExp(`export (async )?function ${name}\\b`), `${name} is not defined in _shared.mjs`)
+  }
+  assert.match(source, /lib\/test-paths\.mjs/, '_shared.mjs names the module it re-exports from')
+})
+
+test('the guard and `interlock mr test-paths` classify test/a.test.mjs under a test/ root alike', async () => {
+  const root = tmpRoot()
+  try {
+    const shared = await import(pathToFileURL(join(HOOKS, '_shared.mjs')).href)
+    const { roots } = shared.testRootsFromProfile(shared.loadTestProfile(root))
+    const guard = {
+      testFile: shared.isTestPath(join(root, 'test', 'a.test.mjs'), roots, root),
+      source: shared.isTestPath(join(root, 'lib', 'a.mjs'), roots, root)
+    }
+    assert.deepEqual(guard, { testFile: true, source: false }, 'the guard protects the test file only')
+
+    const r = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'mr', 'test-paths', '--changed', 'test/a.test.mjs,lib/a.mjs', '--json'], {
+      cwd: root,
+      encoding: 'utf8'
+    })
+    assert.equal(r.status, 0, r.stderr)
+    const answer = JSON.parse(r.stdout)
+    assert.deepEqual(answer.protected, ['test/a.test.mjs'])
+    assert.deepEqual(answer.unprotected, ['lib/a.mjs'])
+    assert.equal(answer.protected.includes('test/a.test.mjs'), guard.testFile, 'the command agrees with the guard')
+    assert.equal(answer.protected.includes('lib/a.mjs'), guard.source)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

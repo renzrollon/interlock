@@ -34,3 +34,11 @@ One boundary worth knowing, because it is invisible from this file: the path lis
 
 - test/fixtures/
 - test/graph/fixtures/
+
+## Always-human rationale
+
+A workflow edit can grant a token or change a trigger that no diff reviewer sees, so a merge request that touches one is read by a person whatever its score.
+
+## Always Human Review
+
+- .github/workflows/

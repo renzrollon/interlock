@@ -345,3 +345,74 @@ test('classifyRisk is unchanged by the stronger transform', () => {
   assert.equal(classOf({ changedPaths: ['lib\\auth\\session.ts'] }), 'high')
   assert.equal(classOf({ changedPaths: ['lib/foo/../auth/session.ts'] }), 'high')
 })
+
+// --- pathsOnly: the merge-time reading ------------------------------------
+// At merge there is a diff, and a word in a design document is not a touched
+// surface. `pathsOnly` ignores artifact text and judges severity rules over
+// the paths that are neither documentation nor tests.
+
+const pathsOnly = (input) => classifyRisk(input, { pathsOnly: true })
+
+test('pathsOnly: artifact text is ignored even when supplied', () => {
+  const input = {
+    changedPaths: ['lib/receipt.mjs'],
+    artifacts: { 'design.md': 'The handler becomes idempotent so retries cannot double-charge.' }
+  }
+  // Precondition: the default reading really is critical, so the option has work to do.
+  assert.equal(classifyRisk(input).riskClass, 'critical')
+  const r = pathsOnly(input)
+  assert.equal(r.riskClass, 'medium')
+  assert.deepEqual(signalNames(r), ['unmatched-source-change'])
+  assert.deepEqual(r.artifactNames, [])
+})
+
+test('pathsOnly: a test path whose name carries a policy token is not an auth signal', () => {
+  const r = pathsOnly({ changedPaths: ['test/spine/review-policy.test.mjs', 'lib/receipt.mjs'] })
+  assert.equal(r.riskClass, 'medium')
+  assert.ok(!signalNames(r).includes('auth-session-permissions-tenancy'), signalNames(r).join(','))
+  assert.ok(signalNames(r).includes('unmatched-source-change'))
+})
+
+test('pathsOnly: a test under a payments directory is not a payment signal', () => {
+  const input = { changedPaths: ['test/payments/charge.test.mjs', 'lib/receipt.mjs'] }
+  // Precondition: the default reading does read the test path as a payment surface.
+  assert.ok(signalNames(classifyRisk(input)).includes('payment'))
+  const r = pathsOnly(input)
+  assert.equal(r.riskClass, 'medium')
+  assert.ok(!signalNames(r).includes('payment'), signalNames(r).join(','))
+  assert.ok(signalNames(r).includes('unmatched-source-change'))
+})
+
+test('pathsOnly: a payment source path still reads the payment signal', () => {
+  const r = pathsOnly({ changedPaths: ['src/payments/charge.ts'] })
+  assert.equal(r.riskClass, 'critical')
+  assert.ok(signalNames(r).includes('payment'))
+  assert.match(r.signals.find(s => s.signal === 'payment').evidence, /src\/payments\/charge\.ts/)
+})
+
+test('pathsOnly: docs and tests alone still read low', () => {
+  const r = pathsOnly({ changedPaths: ['README.md', 'test/payments/charge.test.mjs'] })
+  assert.equal(r.riskClass, 'low')
+  assert.deepEqual(signalNames(r), ['docs-tests-only'])
+})
+
+test('pathsOnly: no paths with artifact text fails closed with basis no-input', () => {
+  const r = pathsOnly({ artifacts: { 'design.md': 'plain prose about a widget' } })
+  assert.equal(r.riskClass, UNCLASSIFIABLE_CLASS)
+  assert.equal(r.basis, 'no-input')
+  assert.deepEqual(signalNames(r), ['no-input'])
+  assert.equal(r.continuityAllowed, false)
+})
+
+test('pathsOnly: without the option the same inputs behave as before', () => {
+  const input = {
+    changedPaths: ['test/spine/review-policy.test.mjs', 'lib/receipt.mjs'],
+    artifacts: { 'design.md': 'exactly-once delivery with idempotent retries' }
+  }
+  const plain = classifyRisk(input)
+  const off = classifyRisk(input, { pathsOnly: false })
+  assert.equal(plain.riskClass, 'critical')
+  assert.ok(signalNames(plain).includes('idempotency'))
+  assert.deepEqual(off, plain)
+  assert.deepEqual(classifyRisk(input, {}), plain)
+})

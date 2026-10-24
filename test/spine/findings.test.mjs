@@ -423,3 +423,55 @@ test('the gate returns the same passed, blockers and malformed for every value o
   assert.equal(evaluateGate(clean).passed, true)
   assert.deepEqual(evaluateGate(clean).malformed, [])
 })
+
+// --- finding identity: findingKey / findingId ------------------------------
+// Read through the namespace so a missing export fails the assertion (RED)
+// rather than breaking the import of every other test in this file.
+
+test('findingKey: a re-cased, re-spaced, re-punctuated title is one key in one file', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function', 'lib/findings.mjs must export findingKey')
+  const a = findingKey({ file: 'lib/a.mjs', title: 'Missing null check.' })
+  const b = findingKey({ file: 'lib/a.mjs', title: 'missing  NULL check' })
+  assert.equal(a, b)
+  assert.notEqual(a, findingKey({ file: 'lib/b.mjs', title: 'Missing null check.' }))
+})
+
+test('findingKey: the key is the trimmed file, a NUL, and the normalised title', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function')
+  assert.equal(
+    findingKey({ file: '  lib/a.mjs ', title: '  Missing   Null\tCheck. ' }),
+    'lib/a.mjs\u0000missing null check'
+  )
+})
+
+test('findingKey: strips every trailing . : ; ! and only trailing ones', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function')
+  for (const tail of ['.', ':', ';', '!', '.!;:', '!!!']) {
+    assert.equal(
+      findingKey({ file: 'a', title: `Unsafe cast${tail}` }),
+      'a\u0000unsafe cast',
+      `tail ${JSON.stringify(tail)}`
+    )
+  }
+  // An inner mark is part of the title, and a different mark is not stripped.
+  assert.equal(findingKey({ file: 'a', title: 'a.b' }), 'a\u0000a.b')
+  assert.notEqual(findingKey({ file: 'a', title: 'x?' }), findingKey({ file: 'a', title: 'x' }))
+})
+
+test('findingId: F- plus the first eight hex characters of the key SHA-256, stable across calls', async () => {
+  const { findingId, findingKey } = findingsModule
+  assert.equal(typeof findingId, 'function', 'lib/findings.mjs must export findingId')
+  assert.equal(typeof findingKey, 'function')
+  const { createHash } = await import('node:crypto')
+  const finding = { file: 'lib/a.mjs', title: 'Missing null check.' }
+  const id = findingId(finding)
+  assert.match(id, /^F-[0-9a-f]{8}$/)
+  const expected = createHash('sha256').update(findingKey(finding)).digest('hex').slice(0, 8)
+  assert.equal(id, `F-${expected}`)
+  assert.equal(findingId({ ...finding }), id)
+  assert.equal(findingId({ file: 'lib/a.mjs', title: 'missing  NULL check' }), id)
+  assert.notEqual(findingId({ file: 'lib/b.mjs', title: 'Missing null check.' }), id)
+})

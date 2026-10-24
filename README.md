@@ -96,6 +96,8 @@ You type two commands for every change and read the spec between them. The rest 
 | when you want it | [`/interlock:mr`](docs/15-merge-confidence.md "Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The PR or MR, with the merge verdict on it |
 | after the merge | [`openspec archive <change>`](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") | The living specs catch up |
 
+After a ship, `/interlock:mr --create --review` pushes the branch, opens the pull request as a draft, reviews it with the blast-radius dimension included, posts the findings, remediates what it can, answers each thread, and marks it ready with the merge verdict and the head-bound evidence in its description. It never merges and never approves; a person still presses the button. [Details](docs/15-merge-confidence.md).
+
 <details>
 <summary><b>Flags, and the commands you may never need</b></summary>
 
