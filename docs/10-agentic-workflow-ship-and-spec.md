@@ -32,7 +32,7 @@ Interlock is the product this repository *is*. Stock OpenSpec is what Interlock 
 - **Default `ship` no longer reviews code.** Lean is waves → unit verify → commit. `--strict` is the previous bill. That is the right cost default for a two-file change. It is a quality default only if `tasks.md` and the unit suite are good. They often are not on a first spec.
 - **Cursor cannot run Interlock ship.** README is explicit: 0.x is Claude Code. This checkout still installs stock `/opsx:*` skills for Cursor. A new engineer in Cursor will find a propose/apply loop that looks like spec/ship and is not.
 - **No `AGENTS.md` or `CLAUDE.md`.** Industry practice in 2026 is a small always-on instruction file plus on-demand skills ([Claude Code best practices](https://code.claude.com/docs/en/best-practices), [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md), [Cursor rules](https://cursor.com/docs/rules)). This repo relies on plugin skills and `docs/`. Fine for Claude Code with the plugin loaded; thin for anyone else.
-- **`shared/CONTEXT-HYGIENE.md` is unused.** It specifies `[[VARIABLE_NAME]]` wrapping for downstream prompts and claims spec/explore/ship/mr do it. A repo-wide search finds those placeholders only inside that file. Explore's skill *says* to wrap; `assembleImplementerPrompt` in `workflows/ship.js` interpolates change name and task text directly.
+- **`shared/CONTEXT-HYGIENE.md` is unused.** It specifies `[[VARIABLE_NAME]]` wrapping for downstream prompts and claims spec/explore/ship/settle do it. A repo-wide search finds those placeholders only inside that file. Explore's skill *says* to wrap; `assembleImplementerPrompt` in `workflows/ship.js` interpolates change name and task text directly.
 - ~~**[08 — The harness landscape](./08-harness-landscape.md) is stale in one important place.** It still tells you to implement spill and a run trajectory first. `lib/spill.mjs` and `lib/run-log.mjs` exist; `add-ship-run-inspectability/tasks.md` is fully checked.~~ **Fixed.** 08 is now a map of the harness, and it lists spill and the trajectory as parts that exist.
 
 ### What's missing
@@ -287,7 +287,7 @@ Claude Code owns the agent loop: tools, permissions, compaction, subagent spawn,
 | `skills/explore/SKILL.md` | Parallel recon; writes explore brief |
 | `skills/review-artifacts/SKILL.md` | Pre-code gate |
 | `skills/review-code/SKILL.md` + `dimensions/` | Adversarial diff review |
-| `skills/{bootstrap,graph,docs-digest,fix-tests,commit,mr,...}` | Called by the loop or for recovery |
+| `skills/{bootstrap,graph,docs-digest,fix-tests,commit,settle,...}` | Called by the loop or for recovery |
 | `.claude/skills/openspec-*` and `.claude/commands/opsx/` | Stock OpenSpec (propose/apply/explore/sync/archive) |
 | `.cursor/skills/` and `.cursor/commands/` | Same stock loop for Cursor |
 
@@ -498,8 +498,8 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 ### Consider
 
 1. **Add a short root `AGENTS.md`** (symlink or stub `CLAUDE.md`): host split (Claude Code for ship, Cursor for opsx), pointer to this page, "do not implement Interlock ship inline," test command. Keep it small; put procedures in skills. This is the 2026 portable default.
-2. **Default-path quality without full `--strict`.** Options: run `/interlock:review-code` on MRs rather than inside ship; or auto-`--review` when `interlock risk` is `high`/`critical` while keeping lean for `low`. Inference: not in the code today.
-3. ~~**Make archive harder to skip** without taking the decision away from the merger: `interlock:mr` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.~~ **Shipped, and non-blocking by design.** A clean `SHIP COMPLETE` (no halt, no leftover tasks) now prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — see [04](./04-when-it-stops.md#archive-pending). It stays a reminder, not a gate: the shipped change satisfies the unarchived predicate by construction at every clean close, so a non-zero exit on this line would halt every clean ship forever. Archiving after merge is still the merger's own decision.
+2. **Default-path quality without full `--strict`.** Options: run `/interlock:review-code` on PRs rather than inside ship; or auto-`--review` when `interlock risk` is `high`/`critical` while keeping lean for `low`. Inference: not in the code today.
+3. ~~**Make archive harder to skip** without taking the decision away from the merger: `interlock:settle` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.~~ **Shipped, and non-blocking by design.** A clean `SHIP COMPLETE` (no halt, no leftover tasks) now prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — see [04](./04-when-it-stops.md#archive-pending). It stays a reminder, not a gate: the shipped change satisfies the unarchived predicate by construction at every clean close, so a non-zero exit on this line would halt every clean ship forever. Archiving after merge is still the merger's own decision.
 4. **Wire or drop context-pack.** If wave handoffs replaced it, say so in explore/spec docs so people do not run a personal `~/.claude` skill that ship ignores.
 5. **Per-task worktrees** once a host port can spawn them. Predicted-path serialization is the honest interim. Where isolation stands on each host: [08](./08-harness-landscape.md#what-holds-on-every-host-and-what-does-not).
 6. **Read the outcomes corpus** before relaxing any gate. Earned autonomy is storage-only on purpose. Wiring a branch without a control group would be deciding without the data.

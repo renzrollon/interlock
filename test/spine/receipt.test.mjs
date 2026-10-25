@@ -760,7 +760,7 @@ test('the living requirements row is absent when its count is', () => {
 
 // --- the NEXT line (design D10 of close-the-merge-request-loop) -------------
 
-const NEXT_LINE = 'NEXT — push the branch and open the merge request: /interlock:mr --create --review'
+const NEXT_LINE = 'NEXT — push the branch and open the pull request: /interlock:settle --create --review'
 const DONE = 'Do not start another ship run unless the user asks.'
 const closed = (over = {}) => ({
   change: 'add-thing',

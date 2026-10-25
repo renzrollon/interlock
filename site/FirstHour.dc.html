@@ -105,9 +105,9 @@
       <div class="tl-step" style="border-bottom: 1px solid var(--color-divider);">
         <p class="tl-time">min 55–60</p>
         <div class="stack-12">
-          <label class="chk"><input type="checkbox" checked="{{s7.done}}" onChange="{{s7.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Merge request, then archive</span></label>
+          <label class="chk"><input type="checkbox" checked="{{s7.done}}" onChange="{{s7.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Pull request, then archive</span></label>
           <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s7.copy}}" aria-label="Copy the merge request and archive commands">{{s7.copyLabel}}</button>
+            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s7.copy}}" aria-label="Copy the pull request and archive commands">{{s7.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s7.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
           </div>
           <p class="body"><code>openspec archive</code> folds the change's delta specs into the living specs, so the next <code>spec</code> plans against what is now true. Interlock never archives for you. It prints <code>ARCHIVE PENDING</code> and counts the backlog in <code>interlock drift</code>.</p>
@@ -166,8 +166,8 @@
               <tr><td class="m">bootstrap</td><td>Generate specs for all discovered features, or select some?</td><td>Always, before generating.</td></tr>
               <tr><td class="m">bootstrap</td><td>This project already has N specs; add specs for undocumented features without overwriting any?</td><td><code>openspec/specs/</code> is non-empty.</td></tr>
               <tr><td class="m">fix-tests</td><td>At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command</td><td>First run or <code>--reconfigure</code>. The only skill permitted to interview you about tests.</td></tr>
-              <tr><td class="m">mr</td><td>GitLab or GitHub?</td><td>Only when both or neither of <code>glab</code> and <code>gh</code> resolve.</td></tr>
-              <tr><td class="m">mr</td><td>Overwrite this description?</td><td>It contains hand-written prose.</td></tr>
+              <tr><td class="m">settle</td><td>GitLab or GitHub?</td><td>Only when both or neither of <code>glab</code> and <code>gh</code> resolve.</td></tr>
+              <tr><td class="m">settle</td><td>Overwrite this description?</td><td>It contains hand-written prose.</td></tr>
             </tbody>
           </table>
         </div>
@@ -307,7 +307,7 @@ class Component extends DCLogic {
       s4: mkStep('s4', [{ c: '/interlock:spec add a --json flag to the report command' }]),
       s5: { done: !!d.s5, toggle: this.toggleDone('s5') },
       s6: mkStep('s6', [{ c: '/interlock:ship' }]),
-      s7: mkStep('s7', [{ c: '/interlock:mr --create', m: '# detects GitLab or GitHub from the remote' }, { c: 'openspec archive <change-name>', m: '# after it merges. Stock OpenSpec; Interlock does not wrap it.' }], true),
+      s7: mkStep('s7', [{ c: '/interlock:settle --create', m: '# detects GitLab or GitHub from the remote' }, { c: 'openspec archive <change-name>', m: '# after it merges. Stock OpenSpec; Interlock does not wrap it.' }], true),
       doctor: toLines(doctor),
       summary: toLines(summary),
       tree: tree

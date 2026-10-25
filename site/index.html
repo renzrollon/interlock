@@ -64,7 +64,7 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
       <p class="eyebrow">Spec-driven development for Claude Code · Layered on OpenSpec · v1.5.0</p>
       <h1 class="h-hero">Two commands. One human checkpoint.</h1>
       <p class="lede">Spec a change, read it, then ship it start-to-commit with parallel agents. Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.</p>
-      <p class="mono-sm" style="font-size: 13.5px; max-width: 60ch;">Every change is spec, then ship. Bootstrap runs once per repo; mr when you want the merge request.</p>
+      <p class="mono-sm" style="font-size: 13.5px; max-width: 60ch;">Every change is spec, then ship. Bootstrap runs once per repo; settle when you want the pull request.</p>
       <div style="display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px;">
         <a class="btn btn-primary" href="#install">Install</a>
         <a class="btn btn-secondary" href="https://github.com/renzrollon/interlock">View on GitHub</a>
@@ -112,9 +112,9 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
         <span class="tag tag-outline">workflow</span>
         <span class="flow-desc-cell">Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything.</span>
       </button>
-      <div class="flow-cell" role="listitem" tabindex="0" onMouseEnter="{{fMr}}" onFocus="{{fMr}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
-        <span class="flow-name">mr</span>
-        <span class="flow-desc-cell">The merge request, when you want it. Ends by reminding you to archive the change.</span>
+      <div class="flow-cell" role="listitem" tabindex="0" onMouseEnter="{{fSettle}}" onFocus="{{fSettle}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
+        <span class="flow-name">settle</span>
+        <span class="flow-desc-cell">The pull request, when you want it. Ends by reminding you to archive the change.</span>
       </div>
     </div>
     <p class="flow-desc-bar" aria-live="polite"><span class="label-mono" style="margin-right: 10px;">{{flowName}}</span>{{flowDesc}}</p>
@@ -321,7 +321,7 @@ class Component extends DCLogic {
       spec: ['spec', 'Explore, then OpenSpec artifacts, then an artifact review. Stops having written specs and no code.'],
       stop: ['You read the spec.', 'Ten minutes. Four files, one question each. The only required stop.'],
       ship: ['ship', 'Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything.'],
-      mr: ['mr', 'The merge request, when you want it. Ends by reminding you to archive the change.']
+      settle: ['settle', 'The pull request, when you want it. Ends by reminding you to archive the change.']
     };
     var f = flow[s.flow || 'stop'];
     var setF = (k) => () => this.setState({ flow: k });
@@ -378,7 +378,7 @@ class Component extends DCLogic {
       playHero: this.playHero,
       showHeroPlay: !!(s.reduced && s.heroPaused),
       flowName: f[0], flowDesc: f[1],
-      fBootstrap: setF('bootstrap'), fSpec: setF('spec'), fStop: setF('stop'), fShip: setF('ship'), fMr: setF('mr'),
+      fBootstrap: setF('bootstrap'), fSpec: setF('spec'), fStop: setF('stop'), fShip: setF('ship'), fSettle: setF('settle'),
       fClear: () => this.setState({ flow: null }),
       goRun: () => this.selectTab('run', false, true),
       goFirstHour: () => this.selectTab('first-hour', false, true),

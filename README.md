@@ -80,7 +80,7 @@ Your first shipped change, step by step: **[01 — The first hour](docs/01-first
       <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/flow-narrow-dark.svg">
       <source media="(max-width: 600px)" srcset="docs/assets/flow-narrow-light.svg">
       <source media="(prefers-color-scheme: dark)" srcset="docs/assets/flow-dark.svg">
-      <img src="docs/assets/flow-light.svg" alt="The Interlock flow: bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint." width="1120">
+      <img src="docs/assets/flow-light.svg" alt="The Interlock flow: bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, settle and archive. Two commands, one human checkpoint." width="1120">
     </picture>
   </a>
 </p>
@@ -93,10 +93,10 @@ You type two commands for every change and read the spec between them. The rest 
 | **every change** | <kbd>/interlock:spec "idea"</kbd> | [A reviewed, implementation-ready change](docs/01-first-hour.md#step-2--spec-one-small-change "Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs."). Then it stops |
 | **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
 | **every change** | <kbd>/interlock:ship</kbd> | [Parallel agents, your tests, one commit](docs/01-first-hour.md#step-4--ship-it "Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one."). Asks nothing |
-| when you want it | [`/interlock:mr`](docs/15-merge-confidence.md "Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The PR or MR, with the merge verdict on it |
+| when you want it | [`/interlock:settle`](docs/15-merge-confidence.md "Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The pull request, with the merge verdict on it |
 | after the merge | [`openspec archive <change>`](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") | The living specs catch up |
 
-After a ship, `/interlock:mr --create --review` pushes the branch, opens the pull request as a draft, reviews it (with the blast-radius dimension when the repository has a graph; it is skipped, and says so, without one), posts the findings as a comment, remediates what it can, posts a reply comment saying which findings are `fixed`, `open` or `new`, and marks it ready with the merge verdict and the head-bound evidence in its description. It never merges and never approves; a person still presses the button. The GitHub loop is not exercised end to end until a first run on a real pull request is recorded. [Details](docs/15-merge-confidence.md).
+After a ship, `/interlock:settle --create --review` pushes the branch, opens the pull request as a draft, reviews it (with the blast-radius dimension when the repository has a graph; it is skipped, and says so, without one), posts the findings as a comment, remediates what it can, posts a reply comment saying which findings are `fixed`, `open` or `new`, and marks it ready with the merge verdict and the head-bound evidence in its description. It never merges and never approves; a person still presses the button. The GitHub loop is not exercised end to end until a first run on a real pull request is recorded. [Details](docs/15-merge-confidence.md).
 
 <details>
 <summary><b>Flags, and the commands you may never need</b></summary>
@@ -141,7 +141,7 @@ Default `ship` trusts your test suite: a green suite, one commit, nothing else. 
 |---|---|---|
 | `ship --review` | Up to seven review dimensions in parallel, then two skeptics who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
 | `ship --strict` | The review, plus remediation, a manual test plan when UI changed, a walkthrough of the commit, and a conformance check of the diff against the spec's scenarios | The previous default. [01](docs/01-first-hour.md#step-4--ship-it) |
-| `/interlock:mr` | Opens or updates the PR or MR with a `MERGE`, `HUMAN` or `BLOCK` verdict in its labels and description, and what would lift it. Never merges, never approves | Needs `gh` or `glab` signed in. [15](docs/15-merge-confidence.md) |
+| `/interlock:settle` | Opens or updates the PR with a `MERGE`, `HUMAN` or `BLOCK` verdict in its labels and description, and what would lift it. Never merges, never approves | Needs `gh` or `glab` signed in. [15](docs/15-merge-confidence.md) |
 | `interlock merge-confidence --require-merge` in CI | The same verdict as a required check. It re-reads the evidence a run left and runs no review of its own. Exits 1 unless `MERGE` | Some setup. [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |
 | `REVIEW.md` | Your repo's own policy: paths out of review scope, paths that always need a human | One file. [12](docs/12-repository-review-policy.md) |
 
@@ -177,7 +177,7 @@ It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `ope
 - **Where it goes.** To the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL` (the public `https://ntfy.sh` by default), under the topic in the plugin's `ntfy topic` option or `INTERLOCK_NTFY_TOPIC`. With no topic set, no request is ever made.
 - **What identifies you.** No account, key or token goes with the request. The topic is the only thing in it that identifies you, so treat it as a secret.
 - **How an option reaches the CLI.** A plugin option reaches hooks only, so each option has a session-start hook of its own, which the host runs only when that option is saved, and it writes the matching variable into the session's environment unless you already set it.
-- **Requests that belong to other tools.** `/interlock:mr` has the model run `gh`, `glab` and `git fetch` under your own sign-in; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
+- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
 
 Interlock makes no other request.
 
@@ -204,7 +204,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and kee
 | [12 — Repository review policy](docs/12-repository-review-policy.md) | The optional `REVIEW.md`: what it can change and what it cannot |
 | [13 — The guards](docs/13-the-guards.md) | The hooks, the stage marker's lifecycle, and the fail-open rule |
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
-| [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a merge request or a CI job |
+| [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a pull request or a CI job |
 | [16 — Upgrading](docs/16-upgrading.md) | What an upgrade keeps, what a resume across versions does, and how to keep the CLI at the plugin's version |
 
 ## Development

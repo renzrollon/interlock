@@ -257,7 +257,7 @@ test('a document that is not the expected one exits 1 with nothing on stdout, an
 
 test('pipeline names no platform, or two, as a usage error', () => {
   const source = file('p-usage-doc.json', fixtureText('github-passing'))
-  for (const argv of [['pipeline'], ['pipeline', '--github', source, '--gitlab', source, '--mr', source], ['pipeline', '--github']]) {
+  for (const argv of [['pipeline'], ['pipeline', '--github', source, '--gitlab', source, '--pending', source], ['pipeline', '--github']]) {
     const r = run(argv)
     assert.equal(r.code, 1, argv.join(' '))
     assert.equal(r.stdout, '')
@@ -265,19 +265,19 @@ test('pipeline names no platform, or two, as a usage error', () => {
   }
 })
 
-test('pipeline --gitlab-mr writes an input with no checks when the merge request has no head pipeline', () => {
-  const doc = fixtureDoc('gitlab-mr-none')
+test('pipeline --gitlab-pr writes an input with no checks when the pull request has no head pipeline', () => {
+  const doc = fixtureDoc('gitlab-pr-none')
   const out = join(dir, 'p-gitlab-none', 'pipeline.json')
-  const r = run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-none') })
+  const r = run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-none') })
   assert.equal(r.code, 0, r.stderr)
   assert.deepEqual(readJson(out), { sha: doc.sha, checks: [], excluded: [] })
   assert.match(r.stdout, new RegExp(`^pipeline ${doc.sha}: 0 check\\(s\\)`))
 })
 
-test('pipeline --gitlab-mr writes a pending record when there is a head pipeline, and merge-confidence refuses that record', () => {
-  const doc = fixtureDoc('gitlab-mr-pipeline')
+test('pipeline --gitlab-pr writes a pending record when there is a head pipeline, and merge-confidence refuses that record', () => {
+  const doc = fixtureDoc('gitlab-pr-pipeline')
   const out = join(dir, 'p-gitlab-pending', 'pipeline.json')
-  const r = run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-pipeline') })
+  const r = run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-pipeline') })
   assert.equal(r.code, 0, r.stderr)
   assert.deepEqual(readJson(out), { sha: doc.sha, headPipeline: doc.head_pipeline.id })
   assert.equal(r.stdout, `pending ${doc.sha}: head pipeline ${doc.head_pipeline.id}\n`)
@@ -289,29 +289,29 @@ test('pipeline --gitlab-mr writes a pending record when there is a head pipeline
   assert.equal(refused.stdout, '', 'no verdict is printed')
   assert.match(refused.stderr, /no "checks" list/)
 
-  // --gitlab-mr has nowhere to carry the head commit without --out.
-  const noOut = run(['pipeline', '--gitlab-mr', '-'], { input: fixtureText('gitlab-mr-pipeline') })
+  // --gitlab-pr has nowhere to carry the head commit without --out.
+  const noOut = run(['pipeline', '--gitlab-pr', '-'], { input: fixtureText('gitlab-pr-pipeline') })
   assert.equal(noOut.code, 1)
   assert.equal(noOut.stdout, '')
   assert.match(noOut.stderr, /--out/)
 
   // And a document with no head_pipeline key is not the platform saying there is none.
-  const noKey = run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-no-key') })
+  const noKey = run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-no-key') })
   assert.equal(noKey.code, 1)
   assert.equal(noKey.stdout, '')
   assert.match(noKey.stderr, /head_pipeline/)
   assert.ok(!existsSync(out), 'the earlier record does not survive a refused document')
 })
 
-test('pipeline --gitlab completes the record --mr names, over the same path, and refuses to run without it', () => {
-  const mr = fixtureDoc('gitlab-mr-pipeline')
+test('pipeline --gitlab completes the record --pending names, over the same path, and refuses to run without it', () => {
+  const pr = fixtureDoc('gitlab-pr-pipeline')
   const out = join(dir, 'p-gitlab', 'pipeline.json')
-  assert.equal(run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-pipeline') }).code, 0)
+  assert.equal(run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-pipeline') }).code, 0)
 
-  const r = run(['pipeline', '--gitlab', '-', '--mr', out, '--out', out], { input: fixtureText('gitlab-pipeline-branch') })
+  const r = run(['pipeline', '--gitlab', '-', '--pending', out, '--out', out], { input: fixtureText('gitlab-pipeline-branch') })
   assert.equal(r.code, 0, r.stderr)
   assert.deepEqual(readJson(out), {
-    sha: mr.sha,
+    sha: pr.sha,
     checks: [
       { name: 'job-a', state: 'pass', required: true },
       { name: 'job-b', state: 'fail', required: false },
@@ -319,12 +319,12 @@ test('pipeline --gitlab completes the record --mr names, over the same path, and
     ],
     excluded: []
   })
-  assert.match(r.stdout, new RegExp(`^pipeline ${mr.sha}: 3 check\\(s\\) \\(1 pass, 2 fail, 0 pending, 0 skipped\\); required: job-a, job-c; excluded: none\\n$`))
+  assert.match(r.stdout, new RegExp(`^pipeline ${pr.sha}: 3 check\\(s\\) \\(1 pass, 2 fail, 0 pending, 0 skipped\\); required: job-a, job-c; excluded: none\\n$`))
 
-  const noMr = run(['pipeline', '--gitlab', '-', '--out', join(dir, 'p-gitlab', 'other.json')], { input: fixtureText('gitlab-pipeline-branch') })
-  assert.equal(noMr.code, 1)
-  assert.equal(noMr.stdout, '')
-  assert.match(noMr.stderr, /--mr/)
+  const noPending = run(['pipeline', '--gitlab', '-', '--out', join(dir, 'p-gitlab', 'other.json')], { input: fixtureText('gitlab-pipeline-branch') })
+  assert.equal(noPending.code, 1)
+  assert.equal(noPending.stdout, '')
+  assert.match(noPending.stderr, /--pending/)
 })
 
 test('a GitLab pipeline that is not the record’s, or a branch pipeline for another commit, exits 1 and leaves no input at the output path', () => {
@@ -334,8 +334,8 @@ test('a GitLab pipeline that is not the record’s, or a branch pipeline for ano
     ['another commit', { ...branch, sha: 'd'.repeat(40) }, ['d'.repeat(40), branch.sha]]
   ]) {
     const out = join(dir, `p-gitlab-${label.replace(/\W+/g, '-')}`, 'pipeline.json')
-    assert.equal(run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-pipeline') }).code, 0)
-    const r = run(['pipeline', '--gitlab', '-', '--mr', out, '--out', out], { input: JSON.stringify(doc) })
+    assert.equal(run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-pipeline') }).code, 0)
+    const r = run(['pipeline', '--gitlab', '-', '--pending', out, '--out', out], { input: JSON.stringify(doc) })
     assert.equal(r.code, 1, label)
     assert.equal(r.stdout, '', label)
     for (const token of named) assert.ok(r.stderr.includes(token), `${label}: ${r.stderr}`)
@@ -343,17 +343,17 @@ test('a GitLab pipeline that is not the record’s, or a branch pipeline for ano
   }
 })
 
-test('a merged-result pipeline is written with the merge request’s head commit, never its own', () => {
-  const mr = fixtureDoc('gitlab-mr-pipeline')
+test('a merged-result pipeline is written with the pull request’s head commit, never its own', () => {
+  const pr = fixtureDoc('gitlab-pr-pipeline')
   const merged = fixtureDoc('gitlab-pipeline-merged-result')
   const out = join(dir, 'p-gitlab-merged', 'pipeline.json')
-  assert.equal(run(['pipeline', '--gitlab-mr', '-', '--out', out], { input: fixtureText('gitlab-mr-pipeline') }).code, 0)
-  const r = run(['pipeline', '--gitlab', '-', '--mr', out, '--out', out, '--exclude', 'job-a'], {
+  assert.equal(run(['pipeline', '--gitlab-pr', '-', '--out', out], { input: fixtureText('gitlab-pr-pipeline') }).code, 0)
+  const r = run(['pipeline', '--gitlab', '-', '--pending', out, '--out', out, '--exclude', 'job-a'], {
     input: fixtureText('gitlab-pipeline-merged-result')
   })
   assert.equal(r.code, 0, r.stderr)
   const written = readJson(out)
-  assert.equal(written.sha, mr.sha)
+  assert.equal(written.sha, pr.sha)
   assert.notEqual(written.sha, merged.sha)
   assert.deepEqual(written.checks, [{ name: 'job-m', state: 'pending', required: true }])
   assert.deepEqual(written.excluded, ['job-a'])

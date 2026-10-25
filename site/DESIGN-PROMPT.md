@@ -132,7 +132,7 @@ Build these and no others. There is no decision lens, no layer drawer and no too
 
 **Hero film loop.** The markup in Appendix A.0, unchanged. It autoplays muted and loops; under `prefers-reduced-motion` it shows its poster with a play button and waits. Clicking it toggles play.
 
-**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `mr`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
+**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
 
 **The whole run.** The markup in Appendix A.0. Poster first, native controls, `preload="none"`.
 
@@ -265,7 +265,7 @@ A plain text link after it, for a reader whose browser will not play it inline: 
 
 **Lede:** Spec a change, read it, then ship it start-to-commit with parallel agents. Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.
 
-**Under the lede, one mono line:** Every change is spec, then ship. Bootstrap runs once per repo; mr when you want the merge request.
+**Under the lede, one mono line:** Every change is spec, then ship. Bootstrap runs once per repo; settle when you want the pull request.
 
 ## A.2 Flow strip
 
@@ -277,9 +277,9 @@ Five nodes, left to right. The description follows each.
 | `spec` | `SKILL` | Explore, then OpenSpec artifacts, then an artifact review. Stops having written specs and no code. |
 | **You read the spec.** | accent block | Ten minutes. Four files, one question each. The only required stop. |
 | `ship` | `WORKFLOW` (accent outline) | Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything. |
-| `mr` | — | The merge request, when you want it. Ends by reminding you to archive the change. |
+| `settle` | — | The pull request, when you want it. Ends by reminding you to archive the change. |
 
-Eyebrows above the strip, sentence case: over `bootstrap`: "Run once, after you clone"; over `spec` through `mr`: "Then, every change"; a right-aligned "↺ Revise idea → re-spec" on the checkpoint block.
+Eyebrows above the strip, sentence case: over `bootstrap`: "Run once, after you clone"; over `spec` through `settle`: "Then, every change"; a right-aligned "↺ Revise idea → re-spec" on the checkpoint block.
 
 Mono line beneath the strip: **ship is a dynamic workflow, so there is nobody to ask.**
 
@@ -427,7 +427,7 @@ The layers, top to bottom: **host · guards · prose · drivers · policy · cli
 | id | label | layer | lens | Owns | Forbidden from | Path |
 |---|---|---|---|---|---|---|
 | `cc-host` | Claude Code | host | — | The Skill tool, the slash namespace, hook dispatch, the agent ceilings (16 concurrent, 1000 per run) | — | external, v2.1.154+ |
-| `slash` | `/interlock:bootstrap` · `spec` · `ship` · `mr` | host | — | The four commands that are the product | — | `.claude-plugin/plugin.json` |
+| `slash` | `/interlock:bootstrap` · `spec` · `ship` · `settle` | host | — | The four commands that are the product | — | `.claude-plugin/plugin.json` |
 | `workflow-rt` | Workflow runtime | host | code | Zero-touch: it accepts no mid-run user input | `import()`, the filesystem, a shell | external |
 | `subagents` | `interlock:worker` · `interlock:ping` | host | model | Isolated context per lane; reading, writing, running commands | `Skill`, `Agent`, `mcp__*` | `agents/worker.md`, `agents/ping.md` |
 | `path-inject` | plugin `bin/` on the PATH | host | code | Making `interlock` and `interlock-graph` bare commands | — | host behaviour |
@@ -632,7 +632,7 @@ waves       Waves — parallel implementers    stage
 verify      Verify — unit suite              decision
 commit      Commit                           stage
 halt        Halt — nothing committed         halt    (accent outline)
-mr          Merge request                    human
+settle      Pull request                     human
 
 EDGES
 bootstrap  → spec        once per repo, then every change
@@ -644,7 +644,7 @@ verify     → waves       green → next wave
 verify     → commit      green → one feature-level commit
 verify     → halt        red unit suite, or a cap exhausted
 waves      → halt        task failures over the cap
-commit     → mr          SHIP COMPLETE
+commit     → settle        SHIP COMPLETE
 halt       → checkpoint  fix the cause, then ship again
 ```
 
@@ -680,7 +680,7 @@ unit_halt          HALTED: unit suite red / weakened             halt
 handoff            handoff: test plan, walkthrough, conformance  stage   (strict)
 commit             commit: one feature-level commit              stage
 close              run close → receipt, outcome, trajectory      terminal
-mr                 /interlock:mr                                 human
+settle             /interlock:settle                             human
 
 EDGES  (from → to · condition · scope)
 ship_launch → trampoline_halt     Workflow tool unavailable, or --solo with --waves         all
@@ -722,7 +722,7 @@ judge_final → handoff             green and --handoff or --conformance        
 judge_final → commit              green, no tail flags                                      default
 handoff → commit                  artifacts written                                         strict
 commit → close                    one commit made, or --no-commit recorded                  all
-close → mr                        SHIP COMPLETE → the human opens the merge request         all
+close → settle                      SHIP COMPLETE → the human opens the pull request         all
 every halt → close                receipt, outcome record, trajectory, exit 1               all
 ```
 
@@ -1175,9 +1175,9 @@ No degradation banners — graph, test profile, model routing, verification and 
 GOAL MET: interlock ship returned a terminal summary.
 ```
 
-**min 55–60 · Merge request, then archive**
+**min 55–60 · Pull request, then archive**
 ```
-/interlock:mr --create              # detects GitLab or GitHub from the remote
+/interlock:settle --create              # detects GitLab or GitHub from the remote
 openspec archive <change-name>      # after it merges. Stock OpenSpec; Interlock does not wrap it.
 ```
 `openspec archive` folds the change's delta specs into the living specs, so the next `spec` plans against what is now true. Interlock never archives for you. It prints `ARCHIVE PENDING` and counts the backlog in `interlock drift`.
@@ -1220,8 +1220,8 @@ Intro: `spec` is conversational where it has to be. `ship` is not, and cannot be
 | `bootstrap` | Generate specs for all discovered features, or select some? | Always, before generating. |
 | `bootstrap` | This project already has N specs; add specs for undocumented features without overwriting any? | `openspec/specs/` is non-empty. |
 | `fix-tests` | At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command | First run or `--reconfigure`. The only skill permitted to interview you about tests. |
-| `mr` | GitLab or GitHub? | Only when both or neither of `glab` and `gh` resolve. |
-| `mr` | Overwrite this description? | It contains hand-written prose. |
+| `settle` | GitLab or GitHub? | Only when both or neither of `glab` and `gh` resolve. |
+| `settle` | Overwrite this description? | It contains hand-written prose. |
 
 ## D.4 Never asked, decided in code (First hour tab, *Asked, and never asked*, right column)
 
@@ -1294,7 +1294,7 @@ The punchline, verbatim:
 1. `/interlock:spec add a --json flag to the report command`
 2. Read the spec. Ten minutes.
 3. `/interlock:ship`
-4. `/interlock:mr --create`
+4. `/interlock:settle --create`
 5. `openspec archive <change-name>` after it merges.
 
 **A bug fix**
@@ -1302,13 +1302,13 @@ The punchline, verbatim:
 2. `/interlock:spec fix the 500 on /api/export when the tenant has no rows`. Task 1 of `tasks.md` is the failing repro test. Later tasks are constrained to the root cause, plus every consumer of a shared value the sweep found.
 3. Read the spec. Is task 1 the repro? Did a refactor sneak in?
 4. `/interlock:ship`
-5. `/interlock:mr --create`, then archive after merge.
+5. `/interlock:settle --create`, then archive after merge.
 
 **A change that touches UI**
 1. `/interlock:spec <the UI change>`
 2. Read `specs/**` especially: empty, error, loading, boundary and permission-denied states.
 3. `/interlock:ship --handoff` emits the manual test plan and a code walkthrough.
-4. `/interlock:mr --create --test-plan --explain`. Both land as comments, never in the description.
+4. `/interlock:settle --create --test-plan --explain`. Both land as comments, never in the description.
 
 **After a halt**
 1. Read the summary before re-running anything. It names every default that was applied.
@@ -1585,7 +1585,7 @@ That is the diagnosis. Every blocker and warning is attacked by two skeptics bef
 *Limit:* no monorepo-specific feature exists: no per-package specs, no package-scoped run state. Two teams shipping concurrently in one repo both append to one outcomes file, which is a merge-conflict site. This is the weakest answer on the page.
 
 **"We don't have dynamic workflows enabled."**
-Then there is no ship, and the trampoline halts rather than implementing the loop in conversation. Claude Code v2.1.154 or newer with workflows enabled; on a Pro plan, enable it in `/config`. Everything else still works: spec, both reviews, commit, mr, the graph, the full CLI.
+Then there is no ship, and the trampoline halts rather than implementing the loop in conversation. Claude Code v2.1.154 or newer with workflows enabled; on a Pro plan, enable it in `/config`. Everything else still works: spec, both reviews, commit, settle, the graph, the full CLI.
 *Limit:* the runner is experimental, weaker on zero-touch, and on the Claude binary it is a metered billing path.
 
 **"Show me the benchmark."**

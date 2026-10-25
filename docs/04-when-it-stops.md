@@ -868,7 +868,7 @@ The headline is the same line `interlock merge-confidence` prints first: the ver
 
 The end-to-end suite ran and went red, and the commit happened anyway. This is intentional: `ship` reports e2e failures and never repairs them. E2E failures are frequently environmental, and auto-fixing them is exactly how a real regression gets papered over.
 
-**You have to look at this one.** The commit is not a statement that e2e passed. Run the suite yourself, decide whether it is your change or your environment, and fix or revert before the MR merges. To skip e2e entirely on a run where you know the environment is broken:
+**You have to look at this one.** The commit is not a statement that e2e passed. Run the suite yourself, decide whether it is your change or your environment, and fix or revert before the PR merges. To skip e2e entirely on a run where you know the environment is broken:
 
 ```bash
 /interlock:ship --skip-e2e
@@ -889,7 +889,7 @@ Worth knowing when you are deciding how much to trust a clean run.
 **Enforced by the harness:**
 
 - The workflow runtime accepts no mid-run user input, so `ship` cannot stop to ask you anything. This is structural: there is no tool to remove, because there is nobody listening. This one is the *Claude Code* runtime's guarantee, and it is the main thing the experimental ACP driver does not inherit — that driver answers its agent's permission requests itself and never prompts you, which is a policy in a file rather than a property of a runtime. It is the honest reason ACP is not the default.
-- `commit` and `mr` set `disable-model-invocation: true` — the model cannot trigger them on its own; you invoke them.
+- `commit` and `settle` set `disable-model-invocation: true` — the model cannot trigger them on its own; you invoke them.
 
 (A skill's `allowed-tools` is a pre-approval list, not a restriction — it stops mid-run permission prompts, it does not remove capabilities.)
 

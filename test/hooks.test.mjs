@@ -2181,7 +2181,7 @@ test('with hooks/hooks.json present, the manifest still holds every settings hoo
 // --- the test-path predicate is one implementation (close-the-merge-request-loop) ----
 //
 // The guard that denies test edits during a run's remediation does not run after
-// a close; the merge-request loop reverts what `interlock mr test-paths` names
+// a close; the settle loop reverts what `interlock settle test-paths` names
 // instead. Those two only mean the same thing while they are the same function,
 // so `hooks/_shared.mjs` re-exports the helpers from `lib/test-paths.mjs` rather
 // than defining its own.
@@ -2202,7 +2202,7 @@ test('hooks/_shared.mjs re-exports the test-path helpers from lib/test-paths.mjs
   assert.match(source, /lib\/test-paths\.mjs/, '_shared.mjs names the module it re-exports from')
 })
 
-test('the guard and `interlock mr test-paths` classify test/a.test.mjs under a test/ root alike', async () => {
+test('the guard and `interlock settle test-paths` classify test/a.test.mjs under a test/ root alike', async () => {
   const root = tmpRoot()
   try {
     const shared = await import(pathToFileURL(join(HOOKS, '_shared.mjs')).href)
@@ -2213,7 +2213,7 @@ test('the guard and `interlock mr test-paths` classify test/a.test.mjs under a t
     }
     assert.deepEqual(guard, { testFile: true, source: false }, 'the guard protects the test file only')
 
-    const r = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'mr', 'test-paths', '--changed', 'test/a.test.mjs,lib/a.mjs', '--json'], {
+    const r = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'settle', 'test-paths', '--changed', 'test/a.test.mjs,lib/a.mjs', '--json'], {
       cwd: root,
       encoding: 'utf8'
     })

@@ -64,9 +64,9 @@ export const NODES = [
     desc: 'Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one.'
   },
   {
-    id: 'mr', label: 'mr', kind: 'optional', fr: 0.85, tag: '',
+    id: 'settle', label: 'settle', kind: 'optional', fr: 0.85, tag: '',
     line: 'PR with verdict',
-    desc: 'Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.'
+    desc: 'Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.'
   },
   {
     id: 'archive', label: 'archive', kind: 'optional', fr: 1, tag: '',
@@ -83,7 +83,7 @@ export const GROUPS = [
 
 export const FOOT = [
   'ship is a workflow, so there is nobody to ask.',
-  'Everything a human decides is settled at the checkpoint, before ship starts.'
+  'Everything a human decides is decided at the checkpoint, before ship starts.'
 ]
 
 const MONO = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
@@ -91,7 +91,7 @@ const SANS = '"IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif'
 const ADVANCE = 0.6 // monospace advance, in em
 const SLOT = 3 // seconds a node is current
 const TITLE = 'The Interlock flow'
-const SUMMARY = 'bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint.'
+const SUMMARY = 'bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, settle and archive. Two commands, one human checkpoint.'
 
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const n2 = v => String(Math.round(v * 100) / 100)

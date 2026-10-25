@@ -1675,9 +1675,9 @@ test('a run with leftovers does not print a clean complete', () => {
 
 test('the archive fix command is one string, on every surface that prints it', () => {
   // Three surfaces tell someone to archive: the drift report, the ship close,
-  // and the mr skill. A reader who greps one and finds the others worded
+  // and the settle skill. A reader who greps one and finds the others worded
   // differently learns that one of them is stale — so they are the same token.
-  for (const rel of ['lib/drift.mjs', 'lib/receipt.mjs', 'skills/mr/SKILL.md']) {
+  for (const rel of ['lib/drift.mjs', 'lib/receipt.mjs', 'skills/settle/SKILL.md']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.ok(text.includes('openspec archive '), `${rel} no longer names "openspec archive "`)
   }
