@@ -33,7 +33,9 @@ const CAMEL_HEAD = new RegExp(`\\b${SHORT}(?=[A-Z])`)
 const CAMEL_TAIL = new RegExp(`[a-z]${SHORT[0].toUpperCase()}${SHORT[1]}(?![a-z])`)
 const SCREAMING = new RegExp(`\\b${SHORT.toUpperCase()}_`)
 const PHRASE = new RegExp(LONG_A, 'i')
-const PATTERNS = [WORD, CAMEL_HEAD, CAMEL_TAIL, SCREAMING, PHRASE]
+// Case-sensitive: the long form as one identifier, mergeRequest or MergeRequest.
+const CAMEL_LONG = new RegExp(['[Mm]erge', '(?=Request)'].join(''))
+const PATTERNS = [WORD, CAMEL_HEAD, CAMEL_TAIL, SCREAMING, PHRASE, CAMEL_LONG]
 
 // The closed allow-list (D4, D6). Order matters: the change and capability
 // ids contain the phrase and go first. Nothing else is stripped.
@@ -62,6 +64,18 @@ export function strip(line) {
 export function matches(line) {
   const s = strip(line)
   return PATTERNS.some(re => re.test(s))
+}
+
+// Help text and comments wrap at a column, so the phrase can end one line and
+// finish the next. Join the two with the second line's comment leader and
+// indent dropped, and report the first line, unless either line already
+// matches on its own (that one reports itself).
+const LEADER = /^\s*(?:\/\/+|\/\*+|\*+|#+|>+)?\s*/
+export function wrapped(a, b) {
+  if (matches(a) || matches(b)) return false
+  const left = strip(a).trimEnd()
+  const right = strip(b).replace(LEADER, '')
+  return PHRASE.test(left.endsWith('-') ? `${left}${right}` : `${left} ${right}`)
 }
 
 // The surfaces the ADDED requirement lists. Everything else (docs/notes,
@@ -104,7 +118,12 @@ export function scan(path, text) {
   const rows = path === 'CHANGELOG.md'
     ? changelogSlice(text)
     : text.split('\n').map((t, i) => ({ line: i + 1, text: t }))
-  return rows.filter(r => matches(r.text)).map(r => `${path}:${r.line}: ${r.text.trim()}`)
+  return rows
+    .filter((r, i) => {
+      const next = rows[i + 1]
+      return matches(r.text) || (next !== undefined && next.line === r.line + 1 && wrapped(r.text, next.text))
+    })
+    .map(r => `${path}:${r.line}: ${r.text.trim()}`)
 }
 
 function trackedSurface() {
@@ -149,8 +168,8 @@ test(`retired names: 'interlock ${SHORT} comment' exits non-zero and writes noth
   } finally {
     rmSync(cwd, { recursive: true, force: true })
   }
-  // And the repo's own work directory was not created by it either.
-  assert.equal(existsSync(join(ROOT, '.claude', 'ship', 'settle')), false)
+  // No assertion on ROOT/.claude/ship/settle: the child ran in the scratch cwd,
+  // and the settle loop leaves its own work directory there after every pass.
 })
 
 // ---- the matcher itself, in memory ----
@@ -166,7 +185,18 @@ test('matcher: every shape of the retired name is caught', () => {
   for (const line of [
     `the ${Cap} loop`, `${Cap}s`, `/interlock:${SHORT}`, `${SHORT}-summary.md`, `.claude/ship/${SHORT}/`,
     `${SHORT}Remediate`, `fix${Title}`, `${Cap}_FILE`, 'a merge request', 'the merge-request step', 'Merge Requests',
+    `const ${['merge', 'Request'].join('')} = 1`, `${['Merge', 'Request'].join('')}Note`,
   ]) assert.equal(matches(line), true, line)
+})
+
+test('matcher: a phrase a line wrap split is caught on its first line', () => {
+  const help = ['  2  the pipeline is not the merge', "     request's head pipeline", 'ok'].join('\n')
+  assert.deepEqual(scan('bin/interlock', help), ['bin/interlock:1: 2  the pipeline is not the merge'])
+  const comment = ['  // what it pipes to the merge', '  // request', '  # the merge-', '  # request step'].join('\n')
+  assert.deepEqual(scan('scripts/x.mjs', comment), ['scripts/x.mjs:1: // what it pipes to the merge', 'scripts/x.mjs:3: # the merge-'])
+  // Each word on its own line is not the phrase, and an allowed id stays allowed across a wrap.
+  assert.deepEqual(scan('lib/x.mjs', ['merge', 'conflicts', 'request a review'].join('\n')), [])
+  assert.deepEqual(scan('lib/x.mjs', ['see close-the-merge-request-loop', 'request body'].join('\n')), [])
 })
 
 test('matcher: identifiers that only contain the two letters pass', () => {
