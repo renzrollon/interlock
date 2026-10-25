@@ -198,6 +198,15 @@ export const INVENTORY = [
     check: r => (/interlock-run/.test(r.stdout) && /Usage/i.test(r.stdout) ? '' : 'did not print the usage')
   },
 
+  // The prose spawn routing resolves, and an unknown role is an error with nothing on stdout.
+  { bin: I, argv: ['routing', '--json'], codes: [0], keys: ['depth', 'roles', 'review', 'banners', 'overrides'] },
+  {
+    bin: I,
+    argv: ['routing', 'not-a-role', '--json'],
+    codes: [1],
+    check: r => (r.stdout === '' && /roles:/.test(r.stderr) ? '' : 'an unknown role printed on stdout, or did not name the roles')
+  },
+
   // Preflight: the doctor reads the installed plugin and the binary on PATH, which
   // the script leads with binDir.
   { bin: I, argv: ['limits', '--json'], codes: [0], keys: ['limits.maxParallel', 'evals.smokeCostUsd', 'evals.fullRunCostUsd', 'evals.runsPerCase', 'evals.shipEvalCostUsd', 'evals.matrixCostUsd', 'prices', 'mergeBands'] },

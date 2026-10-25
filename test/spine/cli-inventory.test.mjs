@@ -420,3 +420,18 @@ test('every command a shipped surface spells is known, accepted and smoked', asy
   })
   assert.deepEqual([...new Set(failures)], [])
 })
+
+test('routing is a known subcommand, accepts --depth, and is in the smoke INVENTORY', async () => {
+  const flags = await load('../../lib/cli-flags.mjs')
+  const smoke = await load('../../scripts/postinstall-smoke.mjs')
+  assert.ok(!flags.error && !smoke.error, 'the flag table and the smoke inventory must load')
+  const table = {
+    globalFlags: flags.mod.GLOBAL_FLAGS,
+    subcommandFlags: flags.mod.SUBCOMMAND_FLAGS,
+    inventory: smoke.mod.INVENTORY
+  }
+  assert.deepEqual(checkSegments([seg('routing review-dimension --depth strict --json'), seg('routing --json')], table), [])
+  assert.match(checkSegments([seg('routing --nonsense')], table)[0], /--nonsense is not accepted for "routing"/)
+  const routed = smoke.mod.INVENTORY.filter(entry => entry.argv[0] === 'routing')
+  assert.ok(routed.length >= 2, 'the smoke runs routing for the table and for an unknown role')
+})

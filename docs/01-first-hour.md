@@ -129,7 +129,7 @@ A clean ship ends its summary with the next step, `NEXT — push the branch and 
 
 Detects GitLab or GitHub from the remote, writes a summary from the change artifacts and the diff, pushes the branch (`--create` pushes; without it nothing is pushed) and creates the pull request as a **draft**. Then, because of `--review`, it closes the loop on that pull request:
 
-- reviews the diff with the eight review dimensions and posts the findings as a comment, each under a stable id;
+- reviews the diff with the lean default set of review dimensions (`--strict` runs the wider set) and posts the findings as a comment, each under a stable id;
 - fixes what the review found, at most one commit per round (`fix(review): answer the PR #<n> review round <r>`; a round that leaves nothing staged commits and pushes nothing and ends the loop), pushes it, re-reviews the pushed head with fresh reviewers, and posts a reply table saying which findings are `fixed`, `open` or `new`. A path the test guard's predicate marks as a test is reverted after the fixer and named, not prevented; with no readable test profile nothing is protected, and the skill says `TEST PATHS UNKNOWN`;
 - marks the pull request ready, confirms the change's scenarios against the head, runs the final verification, waits for the platform's checks, and then writes the merge-confidence verdict into the description and the labels.
 

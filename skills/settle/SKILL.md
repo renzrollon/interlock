@@ -3,7 +3,7 @@ name: settle
 description: Generate a pull-request summary from the change artifacts and diff, then create or update it on whichever platform the remote points at — GitLab via glab, GitHub via gh — and, with --review, review its diff, fix the findings in rounds that commit and push, reply, confirm and verify the pushed head before assessing it, with the CLI's merge-confidence verdict in the description and as labels. Optional comment-only add-ons post the manual test plan or a teaching walkthrough. Use when opening an PR, refreshing its description, re-assessing it after new commits, or attaching a test plan.
 license: MIT
 compatibility: Requires git, plus glab (GitLab) or gh (GitHub) authenticated. Optional openspec CLI for change context.
-argument-hint: "[change-name] [--create] [--review] [--test-plan] [--explain] [--confidence-comment] [--gate-check <name>]"
+argument-hint: "[change-name] [--create] [--review] [--test-plan] [--explain] [--confidence-comment] [--gate-check <name>] [--strict]"
 disable-model-invocation: true
 allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Bash(rm -rf .claude/ship/settle) Bash(rm -f .claude/ship/settle/coverage.json) Bash(cp .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cmp -s .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cp .claude/ship/settle/profile-r*.json .claude/testing/profile.json) Bash(rm -f .claude/testing/profile.json) Bash(test -s .claude/ship/settle/verify.json.tmp) Bash(mv .claude/ship/settle/verify.json.tmp .claude/ship/settle/verify.json) Bash(rm -f .claude/ship/settle/verify.json.tmp) Agent Read Write Grep Glob
 metadata:
@@ -27,6 +27,7 @@ The merge-confidence verdict in the description, and the labels beside it, are *
 | `--test-plan` | Also post the full manual test plan **as a comment** |
 | `--explain` | Also post a per-file teaching walkthrough **as a comment** |
 | `--confidence-comment` | Also post the merge-confidence block **as a comment**, so each assessment leaves one entry in the timeline naming its commit |
+| `--strict` | Pass `--strict` to every `review-code` pass of the loop, so each review runs the full review instead of the CLI's published default (§5). Do not add it because the diff looks large |
 | `--gate-check <name>` | Leave the check of that exact name out of the pipeline input. Repeatable. For the check whose own result waits on the verdict; see §6 |
 
 ---
@@ -167,13 +168,15 @@ When the two differ, print `HEAD NOT ON THE PLATFORM: local <local sha>, platfor
 
 Below, `<sha>` is the head the step describes, `git rev-parse HEAD` at that step: after each push it is the commit the platform holds. `<n>` and `<iid>` are the pull request's number and iid from §2, and `<target branch>` its target as the platform reports it.
 
+`[--strict]` on the `review-code` lines below is a placeholder: write `--strict` there when this skill was given `--strict`, and write nothing otherwise, so the depth the review runs at is the CLI's published default, which this file never names. The skill does not invent `--strict` because the diff looks large; only the person's flag selects it.
+
 ### 5a. Review the pull request's diff
 
 ```text
-/interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r0.json
+/interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r0.json [--strict]
 ```
 
-The review record lands in that file, bound to the head it reviewed.
+The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth>`; print that line once, as it reported it, and not again for the rounds.
 
 ### 5b. Post the findings
 
@@ -209,11 +212,15 @@ Exit 1, or a `git status` that printed an error (the tree was not read): print `
 cp .claude/testing/profile.json .claude/ship/settle/profile-r<r>.json
 ```
 
-**Ask for the round's briefing**, with the snapshot as its profile; with no snapshot, leave `--profile` out:
+**Ask for the round's briefing**, with the snapshot as its profile; with no snapshot, leave `--profile` out. The bracketed `--previous` is filled from the second round on, naming the round before's fixer result, and left out in the first round:
 
 ```bash
-interlock settle remediate-brief --review .claude/ship/settle/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --profile .claude/ship/settle/profile-r<r>.json
+interlock settle remediate-brief --review .claude/ship/settle/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --profile .claude/ship/settle/profile-r<r>.json [--previous .claude/ship/settle/remediate-r<r-1>.json] --json
 ```
+
+The command defers two kinds of finding before it plans the round, and lists them in the briefing under `Deferred this round`: a finding in a protected test path, which the revert below would undo, and a finding the last fixer declined, whose reason it quotes. A deferred finding is not hidden. It stays `open` in the reply table and keeps its band in the verdict, and the fixer is told not to touch it. When the deferrals leave nothing fixable, the command exits 1 with `STOP: nothing fixable remains` and the count in each kind, and that ends the loop like any other `STOP:` below.
+
+**Read `reReviewDimensions`.** The answer is JSON: its `briefing` field is the fixer's briefing, and `reReviewDimensions` is the list of dimensions whose findings this round fixes. Keep that list for the round's re-review below; the first review of the pass never has one.
 
 **The loop runs while this exits 0, and ends only on the CLI's stop rule:** exit 1 with standard error beginning `interlock: STOP: ` (nothing left to fix, the round cap reached, a verdict that halts the rounds). Report the reason after `STOP:`; the loop ends, and goes on to §5d. Any other non-zero exit is a failure, never a stop: print `ROUND FAILED: <reason>` and stop the loop early. The cap is the CLI's: never count rounds against a number of your own.
 
@@ -223,7 +230,7 @@ interlock settle remediate-brief --review .claude/ship/settle/review-r<r-1>.json
 git rev-parse HEAD
 ```
 
-**Spawn ONE `general-purpose` subagent with the printed briefing as its whole prompt.** It fixes the listed findings, writes `.claude/ship/settle/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does.
+**Spawn ONE `general-purpose` subagent with the answer's `briefing` field as its whole prompt.** It fixes the listed findings, writes `.claude/ship/settle/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does. Before the pass's first fixer, run `interlock routing settle-fixer --json` once, and reuse its answer in later rounds. Pass its `model` and `effort` on the fixer call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults: routing is a cost hint, never a reason to stop the round. Name no model and no effort level in this skill or in the prompt.
 
 **The head did not move.** Read it again:
 
@@ -236,10 +243,10 @@ When it is no longer the head you recorded, the fixer committed: print `FIXER CO
 **The fixer answered.** Check its result against the findings it was briefed:
 
 ```bash
-interlock settle fixer-result --result .claude/ship/settle/remediate-r<r>.json --review .claude/ship/settle/review-r<r-1>.json --round <r> --head <sha>
+interlock settle fixer-result --result .claude/ship/settle/remediate-r<r>.json --review .claude/ship/settle/review-r<r-1>.json --round <r> --head <sha> [--profile .claude/ship/settle/profile-r<r>.json] [--previous .claude/ship/settle/remediate-r<r-1>.json]
 ```
 
-Exit 1 (the result is missing, unparseable or `ok: false`, or its ids do not partition the findings it was briefed) fails the round: print `ROUND FAILED: <reason>`, commit nothing, and stop the loop early. The fixer's edits are left in the working tree, unstaged and unreverted: say so, and name them.
+The bracketed flags are the ones the briefing line carried, so that the findings it deferred are not expected back. Exit 1 (the result is missing, unparseable or `ok: false`, or its ids do not partition the findings it was briefed) fails the round: print `ROUND FAILED: <reason>`, commit nothing, and stop the loop early. The fixer's edits are left in the working tree, unstaged and unreverted: say so, and name them.
 
 **The test profile is unchanged.** When there was a snapshot, compare the profile with it:
 
@@ -304,11 +311,13 @@ A push changes the pull request on the platform, and the skill says so once, bes
 
 **A push that fails ends the loop**, and stops it early: report the platform's message. The commit stays local, the pull request is not marked ready, and the assessment will say the pipeline describes another commit.
 
-Review the pushed head, independently of the fixer:
+Review the pushed head, independently of the fixer, scoped to the dimensions the briefing named and given the round before's record:
 
 ```text
-/interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r<r>.json
+/interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r<r>.json --dimensions <reReviewDimensions, comma-joined> --carry .claude/ship/settle/review-r<r-1>.json [--strict]
 ```
+
+The dimensions that raised nothing the round fixed are not run again, and their findings are carried, marked `carried`, into this round's record, so the reply table and the verdict read the whole pull request and not only the part that was re-examined. When `reReviewDimensions` is empty, write neither `--dimensions` nor `--carry`, and the review runs whole.
 
 Post what each finding of the round before became, `fixed`, `open` or `new`, as the command rendered it:
 
@@ -355,6 +364,8 @@ interlock settle conformance-brief <change> --changed <files> --base origin/<tar
 ```
 
 Spawn one worker with the printed briefing as its whole prompt. It answers into `.claude/ship/settle/handoff.json`, with the head beside the counts. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
+
+Only when a worker is to be spawned, first run `interlock routing settle-conformance --json` once. Pass its `model` and `effort` on the worker call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults. Name no model and no effort level in this skill or in the prompt.
 
 ### 5f. Verify the head
 

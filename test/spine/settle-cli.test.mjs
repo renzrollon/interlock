@@ -1105,3 +1105,174 @@ test('tree-check: input that is not NUL-terminated or carries a malformed entry 
   const unreadable = settle('tree-check', ['--change', 'demo-change', '--status', join(dir, 'no-such-status')])
   assertRefusal(unreadable, 'unreadable file')
 })
+
+// ── review --carry on the settle side (design D18 of route-prose-spawns-by-role) ──
+
+test('remediate-brief --json carries reReviewDimensions: the dimensions of the briefed findings, sorted, once each', () => {
+  const language = finding({ dimension: 'language', file: 'lib/l.mjs', line: 8, title: 'A language warning' })
+  const architecture = finding({ dimension: 'architecture', file: 'lib/m.mjs', line: 9, title: 'An architecture warning' })
+  const qaSecond = finding({ dimension: 'qa', file: 'lib/n.mjs', line: 2, title: 'Another qa warning' })
+  // A suggestion is not briefed, so its dimension is not re-reviewed.
+  const idle = finding({ severity: 'suggestion', dimension: 'security', file: 'lib/o.mjs', line: 3, title: 'A security suggestion' })
+  const file = record({ surviving: [W1, language, architecture, qaSecond, idle] })
+  const r = settle('remediate-brief', [...briefArgs(file, 1), '--json'], { cwd: profileProject('rb-rereview', TEST_ROOT_PROFILE) })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(out.reReviewDimensions, ['architecture', 'language', 'qa'])
+  assert.ok(!out.findings.includes(idOf(idle)), 'the suggestion is not briefed')
+  assert.deepEqual(out.findings.slice().sort(), [W1, language, architecture, qaSecond].map(idOf).sort())
+})
+
+test('replies: a carried finding that stays open reads open (carried), a plain one reads open, in the table and in --json', () => {
+  const carriedA = { ...A, carried: true, carriedFrom: BEFORE_HEAD }
+  const before = record({ head: BEFORE_HEAD, surviving: [A, B], name: 'before' })
+  const after = record({ head: HEAD, surviving: [carriedA, B], name: 'after' })
+
+  const t = settle('replies', repliesArgs(before, after))
+  assert.equal(t.code, 0, `stderr: ${t.stderr}`)
+  const carriedRow = tableRow(t.stdout, idOf(A))
+  const plainRow = tableRow(t.stdout, idOf(B))
+  assert.ok(carriedRow && carriedRow.includes('open (carried)'), `row should read open (carried): ${carriedRow}`)
+  assert.ok(plainRow && plainRow.includes('open'), `row should read open: ${plainRow}`)
+  assert.ok(!plainRow.includes('carried'), `a plain finding is not marked carried: ${plainRow}`)
+
+  const j = settle('replies', [...repliesArgs(before, after), '--json'])
+  assert.equal(j.code, 0, `stderr: ${j.stderr}`)
+  const out = JSON.parse(j.stdout)
+  const byId = Object.fromEntries(out.open.map(x => [x.id, x]))
+  assert.equal(byId[idOf(A)].carried, true)
+  assert.ok(!('carried' in byId[idOf(B)]), 'a plain open finding carries no carried key')
+  assert.deepEqual(out.counts, { fixed: 0, open: 2, new: 0 })
+})
+
+// ── deferrals: protected test paths and findings the last fixer declined ─────────
+//
+// `remediate-brief` holds back what a fixer cannot act on before the planner
+// sees the rest. A deferral is not a drop: the finding stays in the record and
+// the reply table, and the briefing lists it so the fixer knows it exists.
+
+const PROTECTED_BLOCKER = finding({ severity: 'blocker', dimension: 'security', file: 'test/x.test.mjs', line: 3, title: 'Guard skips the empty case' })
+const PROTECTED_WARNING = finding({ severity: 'warning', dimension: 'qa', file: 'test/x.test.mjs', line: 9, title: 'Assertion never runs' })
+const LIB_WARNING = finding({ severity: 'warning', dimension: 'language', file: 'lib/y.mjs', line: 12, title: 'Shadowed name in the loop' })
+
+/** The quoted findings block of a briefing, and the text after it. */
+function briefedBlock(stdout) {
+  const begin = stdout.indexOf('BEGIN REVIEWER FINDINGS')
+  const end = stdout.indexOf('END REVIEWER FINDINGS')
+  assert.ok(begin >= 0 && end > begin, `the findings are fenced off:\n${stdout}`)
+  return { quoted: stdout.slice(begin, end), after: stdout.slice(end) }
+}
+
+/** Write a fixer result into `root` under the name the loop gives it, and return that relative path. */
+function fixerResult(root, round, notFixed, over = {}) {
+  const rel = join('.claude', 'ship', 'settle', `remediate-r${round}.json`)
+  mkdirSync(join(root, '.claude', 'ship', 'settle'), { recursive: true })
+  writeFileSync(join(root, rel), JSON.stringify({ ok: true, fixed: [], notFixed, ...over }))
+  return rel
+}
+
+test('remediate-brief: a finding in a protected test path is deferred with its reason, not briefed', () => {
+  const root = profileProject('rb-defer-protected', TEST_ROOT_PROFILE)
+  const file = record({ surviving: [PROTECTED_BLOCKER, LIB_WARNING] })
+  const r = settle('remediate-brief', briefArgs(file, 1), { cwd: root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const { quoted, after } = briefedBlock(r.stdout)
+  assert.ok(quoted.includes(idOf(LIB_WARNING)), 'the warning is briefed')
+  assert.ok(!quoted.includes(idOf(PROTECTED_BLOCKER)), 'the protected blocker is not in the quoted block')
+  assert.match(after, /Deferred this round \(1\)/)
+  const deferredLine = after.split('\n').find(l => l.includes(idOf(PROTECTED_BLOCKER)))
+  assert.ok(deferredLine, `no deferred line for the blocker:\n${after}`)
+  assert.ok(deferredLine.includes('protected test path test/x.test.mjs'), deferredLine)
+  assert.match(after, /a person fixes it/)
+  assert.match(after, /fixer does not touch them/)
+
+  const j = JSON.parse(settle('remediate-brief', [...briefArgs(file, 1), '--json'], { cwd: root }).stdout)
+  assert.deepEqual(j.findings, [idOf(LIB_WARNING)])
+  assert.equal(j.deferred.length, 1)
+  assert.equal(j.deferred[0].id, idOf(PROTECTED_BLOCKER))
+  assert.match(j.deferred[0].reason, /^protected test path test\/x\.test\.mjs/)
+  assert.deepEqual(j.reReviewDimensions, ['language'], 'the deferred blocker\'s dimension is not re-reviewed')
+})
+
+test('remediate-brief: with nothing protected or declined, no Deferred block is printed and --json deferred is empty', () => {
+  const root = profileProject('rb-defer-none', TEST_ROOT_PROFILE)
+  const file = record({ surviving: [LIB_WARNING, W1] })
+  const r = settle('remediate-brief', briefArgs(file, 1), { cwd: root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.doesNotMatch(r.stdout, /Deferred this round/)
+  const j = JSON.parse(settle('remediate-brief', [...briefArgs(file, 1), '--json'], { cwd: root }).stdout)
+  assert.deepEqual(j.deferred, [])
+})
+
+test('remediate-brief: when only protected findings remain it exits 1 with STOP: nothing fixable remains, counting protected and declined', () => {
+  const root = profileProject('rb-nothing-fixable', TEST_ROOT_PROFILE)
+  const one = settle('remediate-brief', briefArgs(record({ surviving: [PROTECTED_BLOCKER] }), 1), { cwd: root })
+  assertStop(one, 'one protected finding')
+  assert.match(one.stderr, /STOP: nothing fixable remains — 1 finding\(s\) in protected test paths, 0 declined/)
+
+  const two = settle('remediate-brief', briefArgs(record({ surviving: [PROTECTED_BLOCKER, PROTECTED_WARNING] }), 1), { cwd: root })
+  assertStop(two, 'two protected findings')
+  assert.match(two.stderr, /nothing fixable remains — 2 finding\(s\) in protected test paths, 0 declined/)
+
+  // The protected deferral is applied first, so a finding both protected and
+  // declined counts as protected.
+  const both = [PROTECTED_BLOCKER, PROTECTED_WARNING]
+  const previous = fixerResult(root, 1, both.map(f => ({ id: idOf(f), reason: 'cannot touch a test file' })))
+  const later = settle('remediate-brief', [...briefArgs(record({ surviving: both }), 2), '--previous', previous], { cwd: root })
+  assertStop(later, 'protected and declined')
+  assert.match(later.stderr, /nothing fixable remains — 2 finding\(s\) in protected test paths, 0 declined/)
+})
+
+test('remediate-brief: --previous defers what the last fixer declined, quoting its reason', () => {
+  const root = profileProject('rb-previous', TEST_ROOT_PROFILE)
+  const declined = finding({ severity: 'warning', dimension: 'qa', file: 'lib/p.mjs', line: 4, title: 'Needs a design decision' })
+  const file = record({ surviving: [declined, W2, BLOCKER] })
+  const previous = fixerResult(root, 1, [{ id: idOf(declined), reason: 'needs a design decision\nacross two modules' }])
+  const args = [...briefArgs(file, 2), '--previous', previous]
+
+  const r = settle('remediate-brief', args, { cwd: root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const { quoted, after } = briefedBlock(r.stdout)
+  assert.ok(quoted.includes(idOf(BLOCKER)), 'the blocker is briefed')
+  assert.ok(!quoted.includes(idOf(declined)), 'the declined warning is not in the quoted block')
+  const line = after.split('\n').find(l => l.includes(idOf(declined)))
+  assert.ok(line, `no deferred line for the declined warning:\n${after}`)
+  assert.ok(line.includes('declined by the previous fixer'), line)
+  assert.ok(line.includes('needs a design decision across two modules'), `the reason is quoted on one line: ${line}`)
+
+  const j = JSON.parse(settle('remediate-brief', [...args, '--json'], { cwd: root }).stdout)
+  assert.deepEqual(j.deferred, [{ id: idOf(declined), reason: 'declined by the previous fixer: needs a design decision across two modules' }])
+  assert.ok(j.findings.includes(idOf(BLOCKER)))
+  assert.ok(!j.findings.includes(idOf(declined)))
+})
+
+test('remediate-brief: a blocker in a protected path plus a declined warning stops, naming one protected and one declined', () => {
+  const root = profileProject('rb-one-and-one', TEST_ROOT_PROFILE)
+  const previous = fixerResult(root, 1, [{ id: idOf(LIB_WARNING), reason: 'out of scope for a fixer' }])
+  const r = settle(
+    'remediate-brief',
+    [...briefArgs(record({ surviving: [PROTECTED_BLOCKER, LIB_WARNING] }), 2), '--previous', previous],
+    { cwd: root }
+  )
+  assertStop(r, 'one protected, one declined')
+  assert.match(r.stderr, /nothing fixable remains — 1 finding\(s\) in protected test paths, 1 declined by the round 1 fixer/)
+})
+
+test('remediate-brief: --previous for another round is refused without STOP:, naming the round it is for', () => {
+  const root = profileProject('rb-previous-other', TEST_ROOT_PROFILE)
+  const file = record({ surviving: [BLOCKER] })
+  const named = fixerResult(root, 3, [])
+  const byName = settle('remediate-brief', [...briefArgs(file, 2), '--previous', named], { cwd: root })
+  assertNoStop(byName, 'a round-3 result at round 2')
+  assert.ok(byName.stderr.includes('round 3') && byName.stderr.includes('round 2'), `stderr: ${byName.stderr}`)
+
+  // A round recorded in the result wins over the file name.
+  const recorded = fixerResult(root, 1, [], { round: 5 })
+  const byField = settle('remediate-brief', [...briefArgs(file, 2), '--previous', recorded], { cwd: root })
+  assertNoStop(byField, 'a result recording round 5')
+  assert.ok(byField.stderr.includes('round 5'), `stderr: ${byField.stderr}`)
+
+  // Round 1 has no round before it.
+  const first = settle('remediate-brief', [...briefArgs(file, 1), '--previous', named], { cwd: root })
+  assertNoStop(first, '--previous at round 1')
+})

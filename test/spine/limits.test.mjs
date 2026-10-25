@@ -16,6 +16,8 @@ import {
   MODEL_PRICES,
   RUNTIME,
   EFFORT,
+  SPAWN_ROUTING,
+  REVIEW_DEPTH,
   LANE_CAPS,
   SOLO,
   MERGE_BANDS,
@@ -795,4 +797,125 @@ test('interlock limits --json emits the merge bands under their own top-level ke
   const payload = JSON.parse(run.stdout)
   assert.deepEqual(payload.mergeBands, JSON.parse(JSON.stringify(MERGE_BANDS)))
   assert.equal(payload.limits.ceiling, undefined)
+})
+
+// --- the prose spawn routing table (spec: spawn-routing) -----------------------
+//
+// `SPAWN_ROUTING` and `REVIEW_DEPTH` are tables of null-able strings, so they
+// stay out of LIMITS and out of the positive-integer invariant. They join the
+// cap-authority sweep's discipline by hand: each is printed by `formatLimits`
+// and read by name by a module under lib/, with the bare group forward in
+// `bin/interlock` (`routing: SPAWN_ROUTING`) never counted as a reader.
+
+/** Every `.mjs` under lib/ except the limits module itself, as `{ rel, text }`. */
+function libSources() {
+  const SELF = join(ROOT, 'lib', 'limits.mjs')
+  const found = []
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (path !== SELF && entry.name.endsWith('.mjs')) {
+        found.push({ rel: path.slice(ROOT.length + 1), text: readFileSync(path, 'utf8') })
+      }
+    }
+  }
+  walk(join(ROOT, 'lib'))
+  return found
+}
+
+test('formatLimits prints a routing row per role, the strict override row, and inherit for a null', () => {
+  const text = formatLimits()
+  const roles = Object.keys(SPAWN_ROUTING)
+  assert.equal(roles.length, 5, 'the table holds the five prose spawn roles')
+  for (const role of roles) {
+    assert.match(text, new RegExp(`^ *routing: ${role}\\s+model \\S+`, 'm'), `no routing row for ${role}`)
+  }
+  // One strict row per override, and only `review-dimension` carries one.
+  const overrides = roles.filter(role => SPAWN_ROUTING[role].strict)
+  assert.deepEqual(overrides, ['review-dimension'])
+  assert.match(text, /^ *routing: review-dimension \(strict\)\s+model inherit[^\n]*effort inherit/m)
+  assert.equal(text.match(/routing: \S+ \(strict\)/g).length, overrides.length)
+  // `null` prints as `inherit`, never as the word null or an empty cell.
+  assert.equal(SPAWN_ROUTING['review-skeptic'].model, null)
+  assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort xhigh/m)
+  assert.equal(SPAWN_ROUTING['settle-conformance'].effort, null)
+  assert.match(text, /^ *routing: settle-conformance\s+model sonnet \u00b7 effort inherit/m)
+  assert.doesNotMatch(text, /routing: [^\n]*\bnull\b/)
+  // A set field prints as itself.
+  assert.match(text, /^ *routing: explore-investigator\s+model sonnet \u00b7 effort medium$/m)
+})
+
+test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward in bin/ is not a reader', () => {
+  const sources = libSources()
+  const readers = (pattern) => sources.filter(({ text }) => pattern.test(text)).map(({ rel }) => rel)
+  // An indexed or entry read is a reader; `routing: SPAWN_ROUTING` is a forward.
+  assert.deepEqual(readers(/\bSPAWN_ROUTING\[|Object\.\w+\(SPAWN_ROUTING\)/), ['lib/routing.mjs'])
+  assert.deepEqual(readers(/\bREVIEW_DEPTH\[|\bREVIEW_DEPTH\.default\b/), ['lib/routing.mjs'])
+  // The forward exists, so the sweep must be refusing it on purpose.
+  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  assert.match(cli, /routing: SPAWN_ROUTING/)
+  assert.match(cli, /reviewDepth: REVIEW_DEPTH/)
+  // Neither table is restated outside lib/ and the CLI: not by the hooks module,
+  // the workflow drivers or a skill.
+  const outside = [
+    'hooks/mod.mjs',
+    'workflows/ship.js',
+    'bin/interlock-run',
+    'skills/explore/SKILL.md',
+    'skills/review-code/SKILL.md',
+    'skills/settle/SKILL.md',
+    'skills/spec/SKILL.md'
+  ]
+  for (const rel of outside) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(!/\bSPAWN_ROUTING\b|\bREVIEW_DEPTH\b/.test(text), `${rel} names a routing table instead of asking the CLI`)
+  }
+})
+
+// --- the review depth table (spec: review-depth) --------------------------------
+
+test('REVIEW_DEPTH names a default depth, rubric-file dimensions, a known skeptic shape, and strict is a superset of lean', () => {
+  const depths = Object.keys(REVIEW_DEPTH).filter(key => key !== 'default')
+  assert.deepEqual(depths.sort(), ['lean', 'strict'])
+  assert.ok(depths.includes(REVIEW_DEPTH.default), `default names ${REVIEW_DEPTH.default}, which is not a depth`)
+  const rubrics = new Set(
+    readdirSync(join(ROOT, 'skills', 'review-code', 'dimensions'))
+      .filter(name => name.endsWith('.md'))
+      .map(name => name.slice(0, -'.md'.length))
+  )
+  for (const depth of depths) {
+    const row = REVIEW_DEPTH[depth]
+    assert.ok(Array.isArray(row.dimensions) && row.dimensions.length > 0, `${depth} names no dimensions`)
+    assert.equal(new Set(row.dimensions).size, row.dimensions.length, `${depth} names a dimension twice`)
+    for (const dimension of row.dimensions) {
+      assert.ok(rubrics.has(dimension), `${depth} names ${dimension}, which is not a rubric under skills/review-code/dimensions/`)
+    }
+    assert.ok(['per-review', 'per-finding'].includes(row.skeptics), `${depth}.skeptics is ${row.skeptics}`)
+  }
+  const strict = new Set(REVIEW_DEPTH.strict.dimensions)
+  for (const dimension of REVIEW_DEPTH.lean.dimensions) {
+    assert.ok(strict.has(dimension), `strict lacks ${dimension}, which lean runs`)
+  }
+  assert.ok(strict.size > REVIEW_DEPTH.lean.dimensions.length, 'strict adds nothing over lean')
+})
+
+test('REVIEW_DEPTH is frozen, rows and dimension lists included', () => {
+  assert.ok(Object.isFrozen(REVIEW_DEPTH))
+  for (const depth of ['lean', 'strict']) {
+    assert.ok(Object.isFrozen(REVIEW_DEPTH[depth]), `${depth} row is not frozen`)
+    assert.ok(Object.isFrozen(REVIEW_DEPTH[depth].dimensions), `${depth} dimensions are not frozen`)
+  }
+})
+
+test('formatLimits prints the five review depth rows', () => {
+  const text = formatLimits()
+  const rows = text.split('\n').filter(line => /^ *review depth: /.test(line))
+  assert.equal(rows.length, 5, `expected five review depth rows, got:\n${rows.join('\n')}`)
+  assert.match(text, new RegExp(`^ *review depth: default\\s+${REVIEW_DEPTH.default}$`, 'm'))
+  for (const depth of ['lean', 'strict']) {
+    const dimensions = REVIEW_DEPTH[depth].dimensions.join(', ')
+    assert.match(text, new RegExp(`^ *review depth: ${depth} dimensions\\s+${dimensions}$`, 'm'))
+    assert.match(text, new RegExp(`^ *review depth: ${depth} skeptics\\s+${REVIEW_DEPTH[depth].skeptics}$`, 'm'))
+  }
 })

@@ -215,6 +215,23 @@ test('run close accepts every flag the ship drivers pass it', async () => {
   }
 })
 
+test('routing accepts --depth and --json, refuses any other flag by name with exit 2, and documents its form', async () => {
+  const { global, leaves } = await loadFlagTable()
+  const routing = leaves.get('routing')
+  assert.ok(routing, 'SUBCOMMAND_FLAGS needs a "routing" entry')
+  assert.ok(routing.has('depth'), 'routing must accept --depth')
+  assert.ok(global.has('json'), 'routing reads --json from the global flags')
+  const refused = cli(['routing', 'review-dimension', '--bogus-flag'])
+  assert.equal(refused.code, 2, `stdout: ${refused.stdout}\nstderr: ${refused.stderr}`)
+  assert.match(refused.stderr, /--bogus-flag/)
+  assert.equal(refused.stdout, '')
+  const help = cli(['--help'])
+  assert.ok(documentedForms(help.stdout).some(f => f.leaf[0] === 'routing' && f.flags.has('depth')), 'the usage block must document routing --depth')
+  const own = cli(['routing', '--help'])
+  assert.equal(own.code, 0)
+  assert.match(own.stdout, /--depth lean\|strict/)
+})
+
 // --- documented forms -----------------------------------------------------------
 
 /**

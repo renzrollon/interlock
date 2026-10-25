@@ -260,7 +260,8 @@ Claude Code session (your chat)
         workflows/ship.js     no model; interprets the steps `interlock run` emits
           ├─ validate / plan-waves / record-* / verify pings   usually haiku
           ├─ implementer agents                                 haiku|sonnet|opus by lane shape
-          └─ review/remediate agents                            --strict only (host-tail seam)
+          ├─ review/remediate agents                            --strict only (host-tail seam)
+          └─ prose skills' spawns (explore, review, settle)     model and effort from `interlock routing`
   interlock CLI
     └─ lib/run.mjs            the loop itself: every briefing, every branch, no tokens
   interlock-graph             retrieval budgets, no model
@@ -314,6 +315,7 @@ Inference, not a measurement from this session:
 | A solo run | One opus agent, full artifacts, whole change | Fewest spawns and no re-reads; the cost is serial wall-clock |
 | Record/next pings | Haiku, structured JSON | Cheap unless a model override is in force (`MODEL ROUTING OVERRIDDEN`) or a Bedrock variable is set |
 | Verify (inter-wave and final) | Capped; spill above 8 KB | Runs at the published verify effort (`interlock limits`), so it costs more per call than a session-default agent. Fused into record-batch when possible |
+| Prose-skill spawns (explore investigators, review dimensions and skeptics, settle fixer and conformance) | One agent each | Run at the model and effort `interlock routing` prints for the role; reviews run at the depth it prints, lean by default and the wider set with `--strict`. `interlock limits` holds the values |
 | `--strict` review | 4–7 dimensions + 2 skeptics per finding + fixers | Easy to trip Claude Code's "Large workflow" warning (>25 agents / 1.5M tokens). Advisory, does not halt |
 | Lean commit | One call | |
 

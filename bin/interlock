@@ -119,14 +119,19 @@ import {
   LANE_CAPS,
   SOLO,
   MERGE_BANDS,
+  SPAWN_ROUTING,
+  REVIEW_DEPTH,
   formatLimits
 } from '../lib/limits.mjs'
+import { resolveRouting, listRouting, formatRouting, RoutingError } from '../lib/routing.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import {
   REVIEW_POLICY_FILE,
   composePolicy,
   parseReviewPolicy,
   resolveReview,
+  carryForward,
+  readCarryFile,
   formatReview,
   readReviewPolicy,
   reviewRecordFlags,
@@ -276,6 +281,9 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock routing [<role>]                Print the model and effort a prose
+                  [--depth lean|strict]     skill passes when it spawns a role,
+                                            and the review depth's shape
   interlock notify --title <t> [--body <b>]  Push one message so a run or a
                  [--priority high|default]   checkpoint reached while nobody was
   interlock notify checkpoint <change>       watching still reaches someone. The
@@ -390,8 +398,11 @@ Usage:
                   [--base <ref>]           Resolve a review against skeptic verdicts.
                   [--out <f>] [--head <sha>]  --out writes the JSON to a file;
                   [--dimensions <f>]       --head records the commit reviewed;
-                                           --dimensions records which dimensions
-                                           ran and which were skipped.
+                  [--carry <f>]            --dimensions records which dimensions
+                                           ran and which were skipped; --carry
+                                           appends an earlier record's findings
+                                           from dimensions this review did not
+                                           run, marked carried (needs --dimensions).
                                            Also reads repo-root REVIEW.md and drops
                                            findings on its do-not-report paths;
                                            --base reads those paths from the ref
@@ -606,6 +617,15 @@ limits:
   lane-cap table, the solo envelope and the merge bands are their own top-level
   groups (laneCaps, solo, mergeBands), never entries of the iteration-count
   limits.
+
+routing:
+  [role]                 One of the spawn roles in "interlock limits"; with none,
+                         every role and the depth's review shape are printed.
+  --depth lean|strict    The review depth; the published default when absent.
+  A null model or effort prints as inherit (JSON: null) and the caller omits the
+  parameter. A set CLAUDE_CODE_EFFORT_LEVEL or CLAUDE_CODE_SUBAGENT_MODEL_FORCE is
+  printed as a banner, never changed. An unknown role or depth exits 1 naming the
+  known ones on stderr, with nothing on stdout.
 
 conformance:
   [change]               The change whose delta-spec scenarios are listed (or
@@ -3576,10 +3596,28 @@ async function main() {
           solo: SOLO,
           // The merge verdict's thresholds: their own group, a ceiling table
           // and seven scalars, never entries of the iteration-count limits.
-          mergeBands: MERGE_BANDS
+          mergeBands: MERGE_BANDS,
+          // The prose spawn roles and the review depths, their own groups: tables
+          // of null-able strings, never entries of the iteration-count limits.
+          routing: SPAWN_ROUTING,
+          reviewDepth: REVIEW_DEPTH
         },
         formatLimits({ runtimeObserved })
       )
+      break
+    }
+
+    case 'routing': {
+      let out
+      try {
+        const opts = { depth: flags.depth }
+        out = positional[1] === undefined ? listRouting(process.env, opts) : resolveRouting(positional[1], process.env, opts)
+      } catch (err) {
+        if (!(err instanceof RoutingError)) throw err
+        process.stderr.write(`${err.message}\n`)
+        process.exit(1)
+      }
+      emit(json, out, formatRouting(out))
       break
     }
 
@@ -3756,6 +3794,11 @@ async function main() {
     case 'review': {
       // Read and validated before anything is written or printed, metrics included.
       const { dimensions, head } = reviewRecordFlags(flags, die)
+      // --carry keeps a scoped re-review's record whole: it needs --dimensions to
+      // know what ran, and its file is read here, before anything is written.
+      if (flags.carry === true) die('--carry needs a file')
+      if (flags.carry !== undefined && !dimensions) die('--carry needs --dimensions: the record of what this review ran says which findings to carry')
+      const carry = flags.carry === undefined ? null : readCarryFile(String(flags.carry), die)
       const findings = readFindingsInput(flags.findings)
       const verdicts = readInput(flags.verdicts, '--verdicts')
       // The reviewed diff. A dismissing verdict has to cite a path that is in
@@ -3783,13 +3826,20 @@ async function main() {
         // has it, so a citation cannot lean on a requirement the change added.
         requirementHeadings: requirementHeadingsAt(root, base, findings)
       })
+      // After the resolution and before the metrics and the write, so every
+      // reader of this record sees the carried findings and the metrics, which
+      // count only what this review raised, are given the counts without them.
+      if (carry) carryForward(result, carry, dimensions.ran)
+      const raisedCounts = carry
+        ? { ...result.counts, surviving: result.counts.surviving - result.counts.carried }
+        : result.counts
 
       // Metrics are bookkeeping: they report their own failure and never touch
       // the exit code, so a read-only checkout cannot fail a review.
       let metrics = null
       if (flags.metrics !== undefined) {
         if (flags.metrics === true) die('--metrics requires a change name')
-        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: result.counts })
+        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: raisedCounts })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
