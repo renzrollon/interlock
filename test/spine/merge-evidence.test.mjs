@@ -704,3 +704,118 @@ test('the base condition does not mutate the file or the base it is handed', () 
   readRunEvidence(file, { change: CHANGE, headSha: HEAD, base })
   assert.equal(JSON.stringify([file, base]), before)
 })
+
+// --- a descendant head (design D3 of close-the-merge-request-loop) ------------------
+//
+//   readRunEvidence(file, { change, headSha, base, descendsFromRecordedHead })
+//     descendsFromRecordedHead  true   the head descends from the commit the file records
+//                               false  it does not
+//                               null   git could not decide
+//   The reader never reads version control; the caller hands the fact in. Returns
+//   { usable, evidence, dropped, carriedFrom? } and keeps only the run record.
+
+const FIX_HEAD = 'dead000000000000000000000000000000000dd'
+const descendant = (over = {}) => ({
+  change: CHANGE,
+  headSha: FIX_HEAD,
+  base: { sha: BASE },
+  descendsFromRecordedHead: true,
+  ...over
+})
+const DROPPED_KEYS = ['review', 'verify', 'handoff', 'coverage']
+
+test('descendant: the exact head still returns usable, every entry, and an empty dropped list', () => {
+  const read = readRunEvidence(built(), { change: CHANGE, headSha: HEAD })
+  assert.equal(read.usable, true)
+  assert.deepEqual(read.evidence, EVIDENCE)
+  assert.deepEqual(read.dropped, [])
+  // The fact is not consulted at the exact head, whatever it says.
+  for (const fact of [true, false, null]) {
+    const same = readRunEvidence(built(), { change: CHANGE, headSha: HEAD, descendsFromRecordedHead: fact })
+    assert.equal(same.usable, true, String(fact))
+    assert.deepEqual(same.evidence, EVIDENCE)
+    assert.deepEqual(same.dropped, [])
+  }
+})
+
+test('descendant: fact true on the same merge base keeps only the run record and names what it dropped', () => {
+  const read = readRunEvidence(built(), descendant())
+  assert.equal(read.usable, true)
+  // The reader returns the run record and the four other entries null; design D3 names `{ run }`.
+  assert.equal(read.evidence.run && JSON.stringify(read.evidence.run), JSON.stringify(EVIDENCE.run))
+  for (const key of DROPPED_KEYS) assert.equal(read.evidence[key] ?? null, null, key)
+  assert.equal(read.carriedFrom, HEAD)
+  assert.equal(read.dropped.length, 4)
+  assert.deepEqual(read.dropped.map(d => d.key).sort(), [...DROPPED_KEYS].sort())
+  for (const d of read.dropped) {
+    assert.equal(typeof d.reason, 'string', JSON.stringify(d))
+    assert.ok(d.reason.includes(HEAD), `the reason names the recorded commit: ${d.reason}`)
+  }
+  assert.ok(!('result' in read), 'the recorded assessment is still never returned')
+})
+
+test('descendant: the fact false refuses with the existing "another commit" reason', () => {
+  const read = readRunEvidence(built(), descendant({ descendsFromRecordedHead: false }))
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence)
+  assert.match(read.reason, /describes another commit/)
+  assert.ok(read.reason.includes(HEAD) && read.reason.includes(FIX_HEAD), read.reason)
+  // Same answer as before the fact existed.
+  assert.deepEqual(read, readRunEvidence(built(), { change: CHANGE, headSha: FIX_HEAD, base: { sha: BASE } }))
+})
+
+test('descendant: the fact null refuses as undecided, naming the recorded commit, and not as another commit', () => {
+  const read = readRunEvidence(built(), descendant({ descendsFromRecordedHead: null }))
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence)
+  assert.match(read.reason, /could not (be )?decide/)
+  assert.ok(read.reason.includes(HEAD), read.reason)
+  assert.doesNotMatch(read.reason, /another commit/)
+})
+
+test('descendant: the fact true with no base refuses naming the missing base', () => {
+  for (const base of [undefined, null]) {
+    const read = readRunEvidence(built(), descendant({ base }))
+    assert.equal(read.usable, false, String(base))
+    assert.ok(!read.evidence)
+    assert.match(read.reason, /base/)
+    assert.doesNotMatch(read.reason, /could not (be )?decide/)
+  }
+})
+
+test('descendant: the fact true with a merge base that differs refuses with the existing diff reason', () => {
+  const read = readRunEvidence(built({ base: OTHER_BASE }), descendant())
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence)
+  assert.ok(read.reason.includes(OTHER_BASE) && read.reason.includes(BASE), read.reason)
+  // The reason is the one the exact-head path gives for the same two bases.
+  const exact = readRunEvidence(built({ base: OTHER_BASE }), { change: CHANGE, headSha: HEAD, base: { sha: BASE } })
+  assert.match(read.reason, /the diff under assessment runs from the merge base/)
+  assert.match(exact.reason, /the diff under assessment runs from the merge base/)
+})
+
+test('descendant: the fact true with a file that records no base refuses', () => {
+  const read = readRunEvidence(built({ base: null }), descendant())
+  assert.equal(read.usable, false)
+  assert.ok(!read.evidence)
+})
+
+test('descendant: the fact never rescues a file the four existing conditions refuse', () => {
+  for (const file of [
+    { ...built(), schema: 'interlock.merge-evidence/2' },
+    built({ change: 'some-other-change' }),
+    built({ committed: false })
+  ]) {
+    const plain = readRunEvidence(file, { change: CHANGE, headSha: FIX_HEAD, base: { sha: BASE } })
+    assert.equal(plain.usable, false)
+    assert.deepEqual(readRunEvidence(file, descendant()), plain)
+  }
+})
+
+test('descendant: reading does not mutate the file or the base', () => {
+  const file = built()
+  const against = descendant()
+  const before = JSON.stringify([file, against])
+  readRunEvidence(file, against)
+  assert.equal(JSON.stringify([file, against]), before)
+})

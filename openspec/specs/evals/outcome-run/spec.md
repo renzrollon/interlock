@@ -220,9 +220,9 @@ The arm under test SHALL run the loop in the configuration the product ships as 
 - **WHEN** a configuration is requested that the host cannot run
 - **THEN** the run refuses and states why, rather than running a different configuration under the requested name
 
-### Requirement: The eval is scheduled, bounded, and never runs on a pull request
+### Requirement: The eval is manually invoked, bounded, and never runs on a pull request
 
-The metered outcome eval — the sweep that invokes a model and grades a fixture on disk — SHALL be triggered on a schedule and on explicit manual invocation only. It SHALL NOT be triggered by a pull request, by a push, or by any path filter, because it consumes metered model calls and its result may not influence whether a change merges.
+The metered outcome eval is the sweep that invokes a model and grades a fixture on disk. It SHALL be triggered on explicit manual invocation. It SHALL carry no schedule while the repository provisions no model credential, because a scheduled run without one does no work and reports green. Adding a schedule SHALL be the edit that records a credential's arrival. The eval SHALL NOT be triggered by a pull request, by a push, or by any path filter, because it consumes metered model calls and its result may not influence whether a change merges.
 
 This requirement does not forbid the model-free prepare path from running on a pull request or a push. That path is specified separately and MUST NOT be read as a metered outcome eval run.
 
@@ -230,9 +230,15 @@ Every metered run SHALL carry a cost ceiling obtained from the project's publish
 
 #### Scenario: Happy path — a scheduled run carries a ceiling read from the published limits
 
-- **WHEN** the metered eval runs on its schedule
+- **WHEN** the metered eval runs, on manual invocation or on a schedule once a credential is provisioned
 - **THEN** the ceiling it enforces is the one the published limits report
 - **AND** the number appears in no other place
+
+#### Scenario: Failure — no schedule without a credential
+
+- **GIVEN** a repository with no model credential provisioned
+- **WHEN** the workflow's triggers are read
+- **THEN** they hold manual invocation and no schedule
 
 #### Scenario: Failure — a pull request never triggers the eval
 

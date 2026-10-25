@@ -391,6 +391,83 @@ test('review --metrics without a change name is an actionable error', () => {
   assert.match(r.stderr, /--metrics requires a change name/)
 })
 
+// --- review --out / --head / --dimensions ---------------------------------
+//
+// The verdict reads review evidence from a file, and a file that names the
+// commit it reviewed is how the command, not the caller's discipline, tells a
+// review of this head from an older one (close-the-merge-request-loop).
+
+const DIMENSIONS = {
+  selected: ['language', 'architecture', 'qa', 'devops', 'security', 'lead', 'domain', 'blast-radius'],
+  ran: ['language', 'architecture', 'qa', 'devops', 'security', 'lead', 'domain'],
+  unavailable: [],
+  skipped: [{ name: 'blast-radius', reason: 'no graph at .claude/graph/graph.json' }]
+}
+const REVIEW_HEAD = '0123456789abcdef0123456789abcdef01234567'
+
+test('review --out writes the same JSON --json prints, with its head and its dimension record', () => {
+  const out = join(dir, 'review-out', 'deeper', 'review-r0.json')
+  assert.equal(existsSync(join(dir, 'review-out')), false, 'the directory does not exist yet')
+  const r = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts,
+    '--head', REVIEW_HEAD, '--dimensions', file('review-dimensions.json', DIMENSIONS),
+    '--out', out, '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(existsSync(out), 'the file exists and its directories were created')
+  const written = JSON.parse(readFileSync(out, 'utf8'))
+  assert.deepEqual(written, JSON.parse(r.stdout), 'the file is the output')
+  assert.equal(written.surviving.length, 1)
+  assert.equal(written.head, REVIEW_HEAD)
+  assert.deepEqual(written.dimensions, { ...DIMENSIONS, completed: true })
+})
+
+test('review --out under an existing regular file exits 1 naming the path and leaves nothing there', () => {
+  const blocker = file('review-out-blocker', 'a regular file, not a directory')
+  const out = join(blocker, 'review.json')
+  const r = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts, '--out', out, '--json'
+  ])
+  assert.equal(r.code, 1, r.stdout)
+  assert.ok(r.stderr.includes(out) || r.stderr.includes(blocker), `standard error names the path: ${r.stderr}`)
+  assert.equal(existsSync(out), false, 'no partial file remains at the path')
+  assert.equal(readFileSync(blocker, 'utf8'), 'a regular file, not a directory', 'the blocking file is untouched')
+  assert.doesNotMatch(r.stderr, /\n\s+at /)
+})
+
+test('review --dimensions with a skipped entry that lacks a reason exits 1 naming the file and the key, prints nothing and writes nothing', () => {
+  const bad = file('review-dimensions-bad.json', {
+    ...DIMENSIONS,
+    skipped: [{ name: 'blast-radius' }]
+  })
+  const out = join(dir, 'review-out-bad', 'review.json')
+  const r = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts,
+    '--dimensions', bad, '--out', out, '--json'
+  ])
+  assert.equal(r.code, 1, r.stdout)
+  assert.equal(r.stdout, '', 'nothing is printed on standard output')
+  assert.ok(r.stderr.includes(bad), `standard error names the file: ${r.stderr}`)
+  assert.match(r.stderr, /reason/, 'and the missing key')
+  assert.equal(existsSync(out), false, 'nothing exists at the --out path')
+  assert.equal(existsSync(join(dir, 'review-out-bad')), false, 'not even its directory')
+})
+
+test('review with neither --head nor --dimensions writes neither key', () => {
+  const out = join(dir, 'review-out-plain', 'review.json')
+  const r = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts, '--out', out, '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  const written = JSON.parse(readFileSync(out, 'utf8'))
+  assert.ok(!('head' in written), 'no head key')
+  assert.ok(!('dimensions' in written), 'no dimensions key')
+  assert.deepEqual(written, JSON.parse(r.stdout))
+  // And the command without --out prints exactly that, with no head or dimensions either.
+  const bare = runJson(['review', '--findings', paths.findings, '--verdicts', paths.verdicts])
+  assert.ok(!('head' in bare) && !('dimensions' in bare))
+})
+
 // --- gate --metrics -------------------------------------------------------
 //
 // `review-artifacts` reaches a verdict through `gate`, never through `review`,
@@ -3026,6 +3103,28 @@ test('merge-confidence exits 1 on a review with a surviving blocker', () => {
   assert.equal(out.verdict, 'BLOCK')
   assert.equal(signalIn(out, 'review.blockers').band, 'red')
   assert.equal(run(mergeArgs('--review', review)).code, 1, 'the exit is the verdict with or without --json')
+})
+
+test('the dimension record review-code prescribes, through review --out and merge-confidence --review, reads green with the blast-radius skip flagged', () => {
+  // Read from the skill at test time, so the record the model is told to write
+  // and the record this round trip carries cannot drift apart.
+  const skill = readFileSync(new URL('../../skills/review-code/SKILL.md', import.meta.url), 'utf8')
+  const fence = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(body => body.includes('"selected"'))
+  assert.ok(fence, 'skills/review-code/SKILL.md carries no ```json fence naming "selected"')
+  const record = file('mc-roundtrip-dimensions.json', fence)
+  const repo = mergeConfidenceRepo()
+  const out = join(dir, 'mc-roundtrip', 'review-r0.json')
+  const reviewed = run([
+    'review', '--findings', paths.cleanFindings, '--verdicts', paths.verdicts,
+    '--dimensions', record, '--head', repo.sha, '--out', out, '--json'
+  ])
+  assert.equal(reviewed.code, 0, reviewed.stderr)
+
+  const r = run(mergeArgs('--review', out, '--json'))
+  assert.doesNotMatch(r.stderr, /describes another commit/, 'the review is bound to this head')
+  const ran = signalIn(JSON.parse(r.stdout), 'review.ran')
+  assert.equal(ran.band, 'green', `${ran.reason}\n${(ran.evidence || []).join('\n')}`)
+  assert.ok(ran.flags.includes('blast-radius-skipped'), JSON.stringify(ran.flags))
 })
 
 test('HUMAN exits 0, and exits 1 under --require-merge', () => {

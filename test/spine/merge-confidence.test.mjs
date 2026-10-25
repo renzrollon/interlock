@@ -13,12 +13,18 @@
 //     where the green fixture put it, so a reader that leaks into a neighbour's
 //     signal fails here.
 //
+// A third layer, at the end of this file, drives the built CLI in temporary git
+// repositories for the two input rules that only the command can apply: a run's
+// evidence file carried to a descendant head, and records bound to a head.
+//
 // Every expected score is computed from MERGE_BANDS.ceiling, never written as a
 // number: a re-tuned ceiling must not break a test that was only pinning one.
 
-import { test } from 'node:test'
+import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -32,7 +38,7 @@ import {
   mergeConfidenceHeadline
 } from '../../lib/merge-confidence.mjs'
 import { MERGE_BANDS } from '../../lib/limits.mjs'
-import { MERGE_ALLOWED_CLASSES } from '../../lib/risk.mjs'
+import { MERGE_ALLOWED_CLASSES, UNCLASSIFIABLE_CLASS, UNMATCHED_SOURCE_CLASS, classifyRisk } from '../../lib/risk.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const FIXTURES = join(ROOT, 'test', 'fixtures', 'merge-confidence')
@@ -289,6 +295,7 @@ test('FLAGS is the frozen published vocabulary of design D2', () => {
       'docs-only-changes',
       'dimensions-unrecorded',
       'domain-skipped',
+      'blast-radius-skipped',
       'legacy-unspecced',
       'no-graph',
       'requirements-omitted',
@@ -684,7 +691,46 @@ test('a blocker the quality band removed is amber on the adversarial signal, nee
   assert.equal(signalOf(assessMergeConfidence(absent), 'review.adversarial').band, 'green')
 })
 
-// --- risk ------------------------------------------------------------------------
+// --- risk, read at merge over the touched paths only (design D9) ---------------------
+
+/** The green input with only its changed paths and artifact text replaced. */
+function riskInput(changedPaths, artifacts = {}) {
+  const input = fixture('all-observable-green')
+  input.changedPaths = changedPaths
+  input.artifacts = artifacts
+  return input
+}
+
+// Artifact text whose words classify critical at the spec stage: payment words,
+// and the idempotency word, the one signal that has only a text rule.
+const CRITICAL_PROSE = Object.freeze({
+  'proposal.md': '## Why\n\nCharge the card once: the receipt write is idempotent, so a retry never double-charges.\n',
+  'design.md': '## Decisions\n\nD1. The payment flow refunds through the existing billing client.\n'
+})
+
+test('precondition: the critical prose classifies critical when artifact text is read', () => {
+  assert.equal(classifyRisk({ artifacts: { ...CRITICAL_PROSE } }).riskClass, 'critical')
+  assert.ok(!MERGE_ALLOWED_CLASSES.includes('critical'))
+  assert.ok(MERGE_ALLOWED_CLASSES.includes(UNMATCHED_SOURCE_CLASS), 'the unmatched-source class must be mergeable for the edge below')
+})
+
+test('a docs-and-tests change is green on risk with the class in the evidence, whatever the artifact text says', () => {
+  const docsOnly = signalOf(assessMergeConfidence(fixture('docs-only')), 'risk.class')
+  assert.equal(docsOnly.band, 'green')
+  assert.match(said(docsOnly), /\blow\b/)
+
+  for (const artifacts of [{}, { ...CRITICAL_PROSE }]) {
+    const what = Object.keys(artifacts).length ? 'with critical prose' : 'with no prose'
+    const entry = signalOf(
+      assessMergeConfidence(riskInput(['docs/widgets.md', 'test/widgets/catalogue.test.ts'], artifacts)),
+      'risk.class'
+    )
+    assert.equal(entry.band, 'green', `${what}: ${said(entry)}`)
+    assert.equal(entry.flags.length, 0, what)
+    assert.match(said(entry), /\bclass low\b/, what)
+    assert.match(said(entry), /docs-tests-only/, what)
+  }
+})
 
 test('a payment path is amber, needs a person, and names the payment signal and the path — never red', () => {
   const entry = signalOf(assessMergeConfidence(fixture('risk-payment')), 'risk.class')
@@ -693,18 +739,46 @@ test('a payment path is amber, needs a person, and names the payment signal and 
   assert.match(said(entry), /payment/)
   assert.ok(said(entry).includes('src/payments/charge.ts'))
   assert.ok(entry.reason.includes('MERGE_ALLOWED_CLASSES'), entry.reason)
+
+  // The path alone earns the signal at merge; the prose beside it adds nothing.
+  for (const artifacts of [{}, { ...CRITICAL_PROSE }]) {
+    const what = Object.keys(artifacts).length ? 'with critical prose' : 'with no prose'
+    const alone = signalOf(assessMergeConfidence(riskInput(['src/payments/charge.ts'], artifacts)), 'risk.class')
+    assert.equal(alone.band, 'amber', `${what}: never red, and not green`)
+    assert.equal(alone.kind, 'person', what)
+    assert.match(said(alone), /payment: path src\/payments\/charge\.ts/, `${what}: ${said(alone)}`)
+    assert.doesNotMatch(said(alone), /proposal\.md|design\.md|idempotency/, `${what}: artifact text was read at merge`)
+  }
 })
 
-test('no changed paths and no artifact text fails closed to amber with the classifier’s unclassifiable reason', () => {
-  const entry = signalOf(assessMergeConfidence(fixture('risk-empty')), 'risk.class')
-  assert.equal(entry.band, 'amber', 'the classifier answered, so this is not unobserved')
-  assert.match(said(entry), /unclassifiable/)
+test('no changed paths fails closed to amber with the classifier’s unclassifiable reason, with and without artifact text', () => {
+  const empty = signalOf(assessMergeConfidence(fixture('risk-empty')), 'risk.class')
+  assert.equal(empty.band, 'amber', 'the classifier answered, so this is not unobserved')
+  assert.match(said(empty), /unclassifiable/)
+
+  for (const artifacts of [{}, { ...CRITICAL_PROSE }, { 'proposal.md': '## Why\n\nList the widgets in one view.\n' }]) {
+    const what = JSON.stringify(Object.keys(artifacts))
+    const entry = signalOf(assessMergeConfidence(riskInput([], artifacts)), 'risk.class')
+    assert.equal(entry.band, 'amber', `${what}: not green and not unobserved, because the classifier answered`)
+    assert.equal(entry.kind, 'person', what)
+    assert.match(said(entry), /unclassifiable/, `${what}: artifact text is not read at merge, so nothing is left to classify`)
+    assert.match(said(entry), new RegExp(`\\bclass ${UNCLASSIFIABLE_CLASS}\\b`), what)
+  }
 })
 
-test('a docs-and-tests change is green on risk with the class in the evidence', () => {
-  const entry = signalOf(assessMergeConfidence(fixture('docs-only')), 'risk.class')
-  assert.equal(entry.band, 'green')
-  assert.match(said(entry), /\blow\b/)
+test('prose, a test path’s token and a test under a payments directory are not read at merge: the unmatched-source class, green', () => {
+  const changedPaths = ['lib/receipt.mjs', 'test/spine/review-policy.test.mjs', 'test/payments/charge.test.mjs']
+  const entry = signalOf(assessMergeConfidence(riskInput(changedPaths, { ...CRITICAL_PROSE })), 'risk.class')
+  assert.equal(entry.band, 'green', said(entry))
+  assert.match(said(entry), new RegExp(`\\bclass ${UNMATCHED_SOURCE_CLASS}\\b`), said(entry))
+  assert.match(said(entry), /unmatched-source/, said(entry))
+  assert.ok(said(entry).includes('lib/receipt.mjs'), said(entry))
+  assert.doesNotMatch(said(entry), /\bpayment\b|auth-session|idempotency/, 'no signal fired from a test path or from prose')
+
+  // The same paths and text, read as `interlock risk` reads them, still classify
+  // above the merge-allowed classes: only the merge-time reading changed.
+  const specStage = classifyRisk({ changedPaths, artifacts: { ...CRITICAL_PROSE } })
+  assert.ok(!MERGE_ALLOWED_CLASSES.includes(specStage.riskClass), specStage.riskClass)
 })
 
 // --- verification ----------------------------------------------------------------
@@ -1690,6 +1764,84 @@ test('only a skipped domain dimension raises the flag: another skipped name, or 
   }
 })
 
+// --- the blast-radius-skipped flag (spec: review/merge-confidence, the review signals) ----
+
+const BLAST_RADIUS_SKIP = Object.freeze({ name: 'blast-radius', reason: 'no graph at .claude/graph/graph.json — run /interlock:graph' })
+
+/** The green input whose dimension record names `skipped` entries, every selected dimension still run. */
+function withSkipped(...skipped) {
+  const input = fixture('all-observable-green')
+  input.review.dimensions = { ...input.review.dimensions, skipped: skipped.map(entry => ({ ...entry })) }
+  return input
+}
+
+test('a skipped blast-radius review is a flag on a green ran signal, and scores below the same review without the skip', () => {
+  assert.ok(FLAGS.includes('blast-radius-skipped'), 'FLAGS does not publish blast-radius-skipped')
+  const skipped = assessMergeConfidence(withSkipped(BLAST_RADIUS_SKIP))
+  const entry = signalOf(skipped, 'review.ran')
+  assert.equal(entry.band, 'green', said(entry))
+  assert.deepEqual(entry.flags, ['blast-radius-skipped'])
+  assert.match(said(entry), /blast-radius/, 'the skip is not reported beside the signal')
+
+  const plain = assessMergeConfidence(fixture('all-observable-green'))
+  assert.equal(skipped.verdict, plain.verdict)
+  assert.equal(skipped.worstBand, plain.worstBand)
+  assert.ok(skipped.score < plain.score, `${skipped.score} is not below ${plain.score}`)
+  assert.equal(skipped.counts.clean, plain.counts.clean - 1)
+})
+
+test('a review that skipped both domain and blast-radius is green on the ran signal and carries both flags', () => {
+  const domain = fixture('review-domain-skipped').review.dimensions.skipped
+  const both = assessMergeConfidence(withSkipped(...domain, BLAST_RADIUS_SKIP))
+  const entry = signalOf(both, 'review.ran')
+  assert.equal(entry.band, 'green', said(entry))
+  assert.deepEqual([...entry.flags].sort(), ['blast-radius-skipped', 'domain-skipped'])
+  assert.equal(both.verdict, assessMergeConfidence(fixture('all-observable-green')).verdict)
+})
+
+test('a skipped blast-radius review beside a dimension that could not run keeps the amber and the flag', () => {
+  const input = withSkipped(BLAST_RADIUS_SKIP)
+  input.review.dimensions = { ...input.review.dimensions, ran: ['qa'], unavailable: ['typescript'] }
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.match(entry.reason, /typescript/)
+  assert.deepEqual(entry.flags, ['blast-radius-skipped'])
+})
+
+/** The dimension record review-code's skill tells the model to write, read from the skill itself. */
+function skillDimensionRecord() {
+  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8')
+  const fence = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(body => body.includes('"selected"'))
+  assert.ok(fence, 'skills/review-code/SKILL.md carries no ```json fence naming "selected"')
+  return JSON.parse(fence)
+}
+
+test('the dimension record review-code\'s skill prescribes reads green, its selected-and-skipped blast-radius accounted for', () => {
+  const record = skillDimensionRecord()
+  assert.ok(record.selected.includes('blast-radius') && !record.ran.includes('blast-radius'), 'the skill record no longer selects an unrun blast-radius')
+  const input = fixture('all-observable-green')
+  input.review.dimensions = record
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'green', said(entry))
+  assert.deepEqual(entry.flags, ['blast-radius-skipped'])
+  assert.match(said(entry), /blast-radius review skipped/)
+})
+
+test('a selected dimension recorded only as skipped, under a name other than domain or blast-radius, stays amber', () => {
+  const input = fixture('all-observable-green')
+  input.review.dimensions = {
+    ...input.review.dimensions,
+    selected: [...input.review.dimensions.selected, 'security'],
+    skipped: [{ name: 'security', reason: 'ran out of time' }]
+  }
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.match(entry.reason, /no record that they ran: security/)
+  assert.deepEqual(entry.flags, [])
+})
+
 // --- the input contract -------------------------------------------------------------
 
 test('every signal reading only a caller-supplied input is unobserved, saying the input was not given', () => {
@@ -1938,6 +2090,33 @@ test('a MERGE block has no group at all, and says nothing is driving', () => {
   for (const label of ['needs a fix', 'needs a person', 'needs more evidence']) assert.equal(groupAt(text, label), -1, label)
 })
 
+test('MERGE, HUMAN and BLOCK blocks each carry one identical legend line directly after the verdict line', () => {
+  const human = humanInput()
+  const blocked = humanInput()
+  blocked.review = fixture('review-with-blocker').review
+  const results = [
+    assessMergeConfidence(fixture('all-observable-green')),
+    assessMergeConfidence(human),
+    assessMergeConfidence(blocked),
+  ]
+  assert.deepEqual(results.map(r => r.verdict), ['MERGE', 'HUMAN', 'BLOCK'])
+
+  const legends = results.map(result => {
+    const text = blockOf(result)
+    assert.ok(text.startsWith('## Merge confidence\n'), result.verdict)
+    const lines = text.split('\n')
+    const at = lines.findIndex(line => line.includes(result.verdict) && line.includes(`score ${result.score}`))
+    assert.ok(at > -1, `${result.verdict}: no verdict line`)
+    const legend = lines[at + 1]
+    for (const token of ['branch rules', 'approvals', 'code owners', 'draft', 'review threads', 'merge queue']) {
+      assert.ok(legend.includes(token), `${result.verdict}: legend line lacks "${token}": ${legend}`)
+    }
+    return legend
+  })
+  assert.equal(legends[1], legends[0])
+  assert.equal(legends[2], legends[0])
+})
+
 test('the signal table sits in exactly one collapsed section, one row per registered signal, in registry order', () => {
   const result = assessMergeConfidence(humanInput())
   const text = blockOf(result)
@@ -2089,6 +2268,12 @@ test('docs/15 has one flag row per published flag', () => {
   assertSameSet(firstCells(sectionOf(page(), '## The flags')), [...FLAGS], 'flag')
 })
 
+test('docs/15 has its row for the blast-radius-skipped flag', () => {
+  // The row above covers it once FLAGS publishes it; this names the one row
+  // the eighth review dimension added, so its absence reads as itself.
+  assert.ok(firstCells(sectionOf(page(), '## The flags')).includes('blast-radius-skipped'), 'no blast-radius-skipped row')
+})
+
 test('the table check itself names a signal registered without a row', () => {
   const section = sectionOf('## The signals\n\n| Signal | Reads |\n|---|---|\n| `review.blockers` | x |\n\n## Next\n', '## The signals')
   assert.deepEqual(firstCells(section), ['review.blockers'])
@@ -2194,4 +2379,394 @@ test('the module is pure: no node: import, no fs, no child process, no clock', (
   const imports = [...readFileSync(MODULE, 'utf8').matchAll(/^import .* from '([^']+)'/gm)].map(m => m[1])
   for (const specifier of imports) assert.match(specifier, /^\.\/[\w-]+\.mjs$/, `impure import ${specifier}`)
   assert.doesNotMatch(code, /\bDate\b|\bperformance\b|\bprocess\b|\bMath\.random\b/)
+})
+
+// =============================================================================
+// The command: a run's record carried to a descendant head, and records bound
+// to a head (spec: review/merge-confidence — the run-file, descendant and
+// head-bound record requirements; design D3, D8)
+//
+// Only the command can apply these rules: it reads git, and the module never
+// does. So these drive the built CLI in temporary git repositories.
+// =============================================================================
+
+const CLI = join(ROOT, 'bin', 'interlock')
+const CLI_CHANGE = 'add-widget-catalogue'
+const CLI_SOURCE = 'src/widgets/catalogue.ts'
+const CLI_SCENARIOS = 5
+const CLI_GIT_IDENTITY = {
+  GIT_AUTHOR_NAME: 'Test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'Test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid'
+}
+
+let scratch
+before(() => {
+  scratch = mkdtempSync(join(tmpdir(), 'interlock-merge-confidence-'))
+})
+after(() => {
+  if (scratch) rmSync(scratch, { recursive: true, force: true })
+})
+
+/** Run the real binary. Never throws on a non-zero exit: that is the assertion. */
+function cli(args) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd: scratch, encoding: 'utf8' })
+  assert.equal(r.error, undefined, `spawn failed: ${r.error && r.error.message}`)
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr }
+}
+
+function scratchFile(name, contents) {
+  const path = join(scratch, name)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, typeof contents === 'string' ? contents : JSON.stringify(contents))
+  return path
+}
+
+function git(root, ...args) {
+  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, ...CLI_GIT_IDENTITY } })
+  assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+
+function commit(root, files, message) {
+  for (const [rel, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, rel)), { recursive: true })
+    writeFileSync(join(root, rel), body)
+  }
+  git(root, 'add', '-A')
+  git(root, 'commit', '-q', '-m', message)
+  return git(root, 'rev-parse', 'HEAD')
+}
+
+/** The one change's files: a ledger with no open row, and delta specs whose scenarios name the source. */
+function cliChangeFiles() {
+  const scenarios = Array.from(
+    { length: CLI_SCENARIOS },
+    (_, i) => `#### Scenario: case ${i + 1}\n\n- **GIVEN** a catalogue\n- **WHEN** it renders\n- **THEN** it lists case ${i + 1}\n`
+  ).join('\n')
+  const base = `openspec/changes/${CLI_CHANGE}`
+  return {
+    [`${base}/proposal.md`]: '## Why\n\nList the widgets a shop sells in one catalogue view.\n',
+    [`${base}/design.md`]: '## Decisions\n\nD1. The catalogue reads the existing widget store.\n',
+    [`${base}/tasks.md`]: '- [ ] 1.1 Render the catalogue\n',
+    [`${base}/decisions.md`]: [
+      `# Decisions — ${CLI_CHANGE}`,
+      '',
+      '| id | question | class | resolution | evidence |',
+      '|----|----|----|----|----|',
+      '| D1 | Read the existing store or add one? | agent_resolved | read the existing store | design.md:3 |',
+      ''
+    ].join('\n'),
+    [`${base}/specs/widgets/catalogue/spec.md`]:
+      `## ADDED Requirements\n\n### Requirement: The catalogue lists widgets\n\n` +
+      `The catalogue SHALL list every widget, rendered by \`${CLI_SOURCE}\`.\n\n${scenarios}`
+  }
+}
+
+/**
+ * A base commit on `target`; on `feature`, the run's commit (it adds the
+ * source) and one fix commit on top of it. No REVIEW.md, so no changed path is
+ * on an always-human list.
+ */
+function carryRepo(sub) {
+  const root = join(scratch, sub)
+  mkdirSync(root, { recursive: true })
+  git(root, 'init', '-q', '-b', 'target')
+  const base = commit(root, cliChangeFiles(), 'base')
+  git(root, 'checkout', '-q', '-b', 'feature')
+  const runSha = commit(root, { [CLI_SOURCE]: 'export const catalogue = () => []\n' }, 'the run’s commit')
+  const head = commit(root, { [CLI_SOURCE]: 'export const catalogue = () => [] // answers the review\n' }, 'fix(review): round 1')
+  return { root, base, runSha, head }
+}
+
+/** What a clean, reviewed run's close wrote for a run from `base` to `headSha`. */
+function cliRunEvidence({ base, headSha }) {
+  const green = fixture('all-observable-green')
+  return {
+    schema: 'interlock.merge-evidence/1',
+    change: CLI_CHANGE,
+    runId: 'run-fixture-1',
+    base,
+    headSha,
+    committed: true,
+    evidence: {
+      review: green.review,
+      verify: green.verify,
+      handoff: { scenariosChecked: CLI_SCENARIOS, scenariosUnconfirmed: 0 },
+      coverage: green.coverage,
+      run: {
+        halted: false,
+        trajectoryComplete: true,
+        stageMarkerGaps: 0,
+        rejectedReports: 0,
+        permissionPrompts: 0,
+        autoModeDenials: 0,
+        leftoverTasks: 0
+      }
+    },
+    result: null
+  }
+}
+
+/** A final verdict whose coverage step was skipped because the profile configures none. */
+function verdictSkippingCoverage() {
+  const { verify } = fixture('all-observable-green')
+  return { ...verify, coverage: null, skipped: [...verify.skipped, { kind: 'coverage', reason: 'coverage-not-configured' }] }
+}
+
+/**
+ * The review, verification and handoff records as files, each carrying `head`
+ * when one is given and no `head` key at all otherwise.
+ */
+function records(tag, head, { verify = verdictSkippingCoverage() } = {}) {
+  const bind = record => (head === undefined ? record : { ...record, head })
+  return {
+    review: scratchFile(`${tag}-review.json`, bind(fixture('all-observable-green').review)),
+    verify: scratchFile(`${tag}-verify.json`, bind(verify)),
+    handoff: scratchFile(`${tag}-handoff.json`, bind({ scenariosChecked: CLI_SCENARIOS, scenariosUnconfirmed: 0 }))
+  }
+}
+
+const recordArgs = files => ['--review', files.review, '--verify', files.verify, '--handoff', files.handoff]
+
+const passingPipelineFor = (tag, sha) =>
+  scratchFile(`${tag}-pipeline.json`, {
+    sha,
+    checks: [
+      { name: 'unit', state: 'pass', required: true },
+      { name: 'lint', state: 'pass', required: false }
+    ],
+    excluded: []
+  })
+
+const assessAt = (repo, ...extra) => ['merge-confidence', CLI_CHANGE, '--root', repo.root, ...extra, '--json']
+
+function assessed(repo, ...extra) {
+  const r = cli(assessAt(repo, ...extra))
+  assert.ok(r.code === 0 || r.code === 1, `exit ${r.code}: ${r.stderr}`)
+  let out
+  assert.doesNotThrow(() => {
+    out = JSON.parse(r.stdout)
+  }, `no verdict on stdout: ${r.stdout}\n${r.stderr}`)
+  return { ...r, out }
+}
+
+const stderrLines = r => r.stderr.split('\n').filter(Boolean)
+const runLine = r => stderrLines(r).filter(line => line.includes('--run'))
+const short = sha => sha.slice(0, 7)
+const drivingOf = out => JSON.stringify(out.driving.map(d => [d.id, d.band, d.reason]), null, 2)
+
+// --- a run's record carried to a descendant head --------------------------------------
+
+const DROPPED_KEYS = ['review', 'verify', 'handoff', 'coverage']
+
+/** The one carried-from line, and one dropped line per tree-bound key, each naming the run's commit. */
+function assertCarried(r, runSha) {
+  const carried = stderrLines(r).filter(line => line.includes('carried from'))
+  assert.equal(carried.length, 1, `one carried-from line expected:\n${r.stderr}`)
+  assert.ok(carried[0].includes(short(runSha)), `the carried-from line does not name the run's commit: ${carried[0]}`)
+  const dropped = stderrLines(r).filter(line => line.includes(short(runSha)) && !line.includes('carried from'))
+  assert.equal(dropped.length, DROPPED_KEYS.length, `one line per dropped entry expected:\n${r.stderr}`)
+  for (const key of DROPPED_KEYS) {
+    assert.ok(
+      dropped.some(line => new RegExp(`\\b${key}\\b`).test(line)),
+      `no dropped-entry line names ${key}:\n${dropped.join('\n')}`
+    )
+  }
+  assert.doesNotMatch(r.stderr, /is not used/, 'a carried file is not refused')
+}
+
+test('one fix commit on top of the run’s: the run record is carried, four entries are dropped out loud, and the verdict is MERGE', () => {
+  const repo = carryRepo('carry-one-fix')
+  const evidence = scratchFile('carry-one-fix-evidence.json', cliRunEvidence({ base: repo.base, headSha: repo.runSha }))
+  const inputs = ['--base', 'target', '--pipeline', passingPipelineFor('carry-one-fix', repo.head), ...recordArgs(records('carry-one-fix', repo.head))]
+
+  const r = assessed(repo, ...inputs, '--run', evidence)
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(r.out.verdict, 'MERGE', drivingOf(r.out))
+  assert.equal(signalOf(r.out, 'run.integrity').band, 'green', signalOf(r.out, 'run.integrity').reason)
+  assert.equal(signalOf(r.out, 'verify.coverage').band, 'green', 'the verdict’s coverage skip greens the signal')
+  assert.deepEqual(signalOf(r.out, 'verify.coverage').flags, ['no-coverage'])
+  assertCarried(r, repo.runSha)
+
+  // The run record came from the file: without it, run integrity has nothing to read.
+  const bare = assessed(repo, ...inputs)
+  assert.equal(signalOf(bare.out, 'run.integrity').band, 'unobserved', signalOf(bare.out, 'run.integrity').reason)
+  assert.notEqual(bare.out.verdict, 'MERGE')
+})
+
+test('the same branch with coverage figures for the head in place of the skip also reads MERGE', () => {
+  const repo = carryRepo('carry-coverage')
+  const evidence = scratchFile('carry-coverage-evidence.json', cliRunEvidence({ base: repo.base, headSha: repo.runSha }))
+  const files = records('carry-coverage', repo.head, { verify: fixture('all-observable-green').verify })
+  const coverage = scratchFile('carry-coverage-coverage.json', fixture('all-observable-green').coverage)
+
+  const r = assessed(
+    repo,
+    '--base', 'target',
+    '--pipeline', passingPipelineFor('carry-coverage', repo.head),
+    ...recordArgs(files),
+    '--coverage', coverage,
+    '--run', evidence
+  )
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(r.out.verdict, 'MERGE', drivingOf(r.out))
+  assert.equal(signalOf(r.out, 'run.integrity').band, 'green')
+  assertCarried(r, repo.runSha)
+})
+
+test('the same branch with no --base takes nothing from the file and says the ancestry cannot be judged without a base', () => {
+  const repo = carryRepo('carry-no-base')
+  const evidence = scratchFile('carry-no-base-evidence.json', cliRunEvidence({ base: repo.base, headSha: repo.runSha }))
+  const r = assessed(repo, '--pipeline', passingPipelineFor('carry-no-base', repo.head), ...recordArgs(records('carry-no-base', repo.head)), '--run', evidence)
+  assert.equal(r.code, 0, r.stderr)
+  const [line, ...more] = runLine(r)
+  assert.ok(line, `nothing said about --run:\n${r.stderr}`)
+  assert.equal(more.length, 0, r.stderr)
+  assert.match(line, /is not used/)
+  assert.match(line, /\bbase\b/, line)
+  assert.match(line, /ancest|descend/i, line)
+  assert.doesNotMatch(r.stderr, /carried from/)
+  assert.equal(signalOf(r.out, 'run.integrity').band, 'unobserved', signalOf(r.out, 'run.integrity').reason)
+  assert.notEqual(r.out.verdict, 'MERGE')
+})
+
+test('a branch whose merge base moved away from the run’s base takes nothing from the file and names both bases', () => {
+  const repo = carryRepo('carry-moved-base')
+  git(repo.root, 'checkout', '-q', 'target')
+  const moved = commit(repo.root, { 'docs/elsewhere.md': 'someone else merged this\n' }, 'an unrelated merge')
+  git(repo.root, 'checkout', '-q', 'feature')
+  // Bringing the moved target into the branch keeps the run's commit an
+  // ancestor of the head and moves the merge base to the target's new tip. (A
+  // rebase that rewrites the run's commit is the sibling case below.)
+  git(repo.root, 'merge', '-q', '--no-edit', 'target')
+  const head = git(repo.root, 'rev-parse', 'HEAD')
+  assert.equal(git(repo.root, 'merge-base', 'target', 'HEAD'), moved, 'precondition: the merge base moved')
+
+  const evidence = scratchFile('carry-moved-base-evidence.json', cliRunEvidence({ base: repo.base, headSha: repo.runSha }))
+  const r = assessed(repo, '--base', 'target', '--pipeline', passingPipelineFor('carry-moved-base', head), ...recordArgs(records('carry-moved-base', head)), '--run', evidence)
+  assert.equal(r.code, 0, r.stderr)
+  const [line] = runLine(r)
+  assert.ok(line, `nothing said about --run:\n${r.stderr}`)
+  assert.match(line, /is not used/)
+  assert.ok(line.includes(short(repo.base)), `the run's base is not named: ${line}`)
+  assert.ok(line.includes(short(moved)), `the merge base is not named: ${line}`)
+  assert.doesNotMatch(r.stderr, /carried from/)
+  assert.equal(signalOf(r.out, 'run.integrity').band, 'unobserved')
+  assert.notEqual(r.out.verdict, 'MERGE')
+})
+
+test('a sibling commit, neither the head nor an ancestor of it, is refused whole as another commit', () => {
+  const repo = carryRepo('carry-sibling')
+  git(repo.root, 'checkout', '-q', '-b', 'side', repo.base)
+  const sibling = commit(repo.root, { [CLI_SOURCE]: 'export const catalogue = () => [\'side\']\n' }, 'a sibling of the run’s commit')
+  git(repo.root, 'checkout', '-q', 'feature')
+
+  const evidence = scratchFile('carry-sibling-evidence.json', cliRunEvidence({ base: repo.base, headSha: sibling }))
+  const r = assessed(repo, '--base', 'target', '--pipeline', passingPipelineFor('carry-sibling', repo.head), ...recordArgs(records('carry-sibling', repo.head)), '--run', evidence)
+  assert.equal(r.code, 0, r.stderr)
+  const [line] = runLine(r)
+  assert.ok(line, `nothing said about --run:\n${r.stderr}`)
+  assert.match(line, /is not used/)
+  assert.match(line, /another commit/)
+  assert.ok(line.includes(short(sibling)) && line.includes(short(repo.head)), line)
+  assert.doesNotMatch(r.stderr, /carried from/)
+  assert.doesNotMatch(r.stderr, /could not\b.*decid/i)
+  for (const id of ['run.integrity']) assert.equal(signalOf(r.out, id).band, 'unobserved', signalOf(r.out, id).reason)
+  assert.notEqual(r.out.verdict, 'MERGE')
+})
+
+test('a recorded commit the repository does not hold is refused as undecided, with git’s failure, and never as another commit', () => {
+  const repo = carryRepo('carry-undecided')
+  const missing = 'deadbeef'.repeat(5)
+  const evidence = scratchFile('carry-undecided-evidence.json', cliRunEvidence({ base: repo.base, headSha: missing }))
+  const r = assessed(repo, '--base', 'target', '--pipeline', passingPipelineFor('carry-undecided', repo.head), ...recordArgs(records('carry-undecided', repo.head)), '--run', evidence)
+  assert.equal(r.code, 0, r.stderr)
+  const line = runLine(r).find(l => /is not used/.test(l))
+  assert.ok(line, `the file is not refused:\n${r.stderr}`)
+  assert.match(line, /could not\b.*decid/i, line)
+  assert.ok(line.includes(short(missing)), `the recorded commit is not named: ${line}`)
+  assert.match(r.stderr, /fatal:|not a valid/i, `git's own failure is not on stderr:\n${r.stderr}`)
+  assert.doesNotMatch(r.stderr, /another commit/, 'an undecided ancestry is not another commit')
+  assert.doesNotMatch(r.stderr, /carried from/)
+  assert.equal(signalOf(r.out, 'run.integrity').band, 'unobserved')
+  assert.notEqual(r.out.verdict, 'MERGE')
+})
+
+// --- review, verification and handoff records bound to a head --------------------------
+
+const BOUND_INPUTS = ['review', 'verify', 'handoff']
+// The signals each record feeds, read as the command reads them with no such record.
+const BOUND_SIGNALS = ['review.blockers', 'review.warnings', 'review.ran', 'review.adversarial', 'verify.suite', 'verify.e2e', 'conformance.delta', 'conformance.living']
+
+test('a --review, --verify and --handoff record each bound to the head are read, and nothing about a head is said', () => {
+  const repo = carryRepo('bound-head')
+  const pipeline = passingPipelineFor('bound-head', repo.head)
+  const bound = assessed(repo, '--base', 'target', '--pipeline', pipeline, ...recordArgs(records('bound-head', repo.head)))
+  assert.equal(signalOf(bound.out, 'review.ran').band, 'green', signalOf(bound.out, 'review.ran').reason)
+  assert.equal(signalOf(bound.out, 'verify.suite').band, 'green', signalOf(bound.out, 'verify.suite').reason)
+  assert.equal(signalOf(bound.out, 'conformance.delta').band, 'green', signalOf(bound.out, 'conformance.delta').reason)
+  assert.doesNotMatch(bound.stderr, /another commit/, bound.stderr)
+
+  // A record with no head is read as it was before the key existed, and alike.
+  const unbound = assessed(repo, '--base', 'target', '--pipeline', pipeline, ...recordArgs(records('bound-none', undefined)))
+  assert.doesNotMatch(unbound.stderr, /another commit/, unbound.stderr)
+  for (const id of BOUND_SIGNALS) {
+    assert.equal(signalOf(bound.out, id).band, signalOf(unbound.out, id).band, id)
+    assert.equal(signalOf(bound.out, id).reason, signalOf(unbound.out, id).reason, id)
+  }
+  assert.equal(bound.out.verdict, unbound.out.verdict)
+  assert.equal(bound.out.score, unbound.out.score)
+})
+
+test('the same three records bound to the head’s parent are each refused by name, and read as with no record', () => {
+  const repo = carryRepo('bound-parent')
+  const parent = git(repo.root, 'rev-parse', 'HEAD^')
+  assert.equal(parent, repo.runSha, 'precondition')
+  const pipeline = passingPipelineFor('bound-parent', repo.head)
+
+  const stale = assessed(repo, '--base', 'target', '--pipeline', pipeline, ...recordArgs(records('bound-parent', parent)))
+  const refusals = stderrLines(stale).filter(line => /describes another commit/.test(line))
+  assert.equal(refusals.length, BOUND_INPUTS.length, `one refusal per record expected:\n${stale.stderr}`)
+  for (const name of BOUND_INPUTS) {
+    const line = refusals.find(l => new RegExp(`\\b${name}\\b`).test(l))
+    assert.ok(line, `no refusal names ${name}:\n${refusals.join('\n')}`)
+    assert.ok(line.includes(short(parent)) && line.includes(short(repo.head)), `${name}: both commits are not named: ${line}`)
+  }
+
+  assert.equal(signalOf(stale.out, 'review.ran').band, 'amber')
+  assert.match(signalOf(stale.out, 'review.ran').reason, /no review ran/i)
+  assert.equal(signalOf(stale.out, 'verify.suite').band, 'unobserved', signalOf(stale.out, 'verify.suite').reason)
+  assert.equal(signalOf(stale.out, 'conformance.delta').band, 'unobserved', signalOf(stale.out, 'conformance.delta').reason)
+  assert.notEqual(stale.out.verdict, 'MERGE')
+
+  // As with no such inputs at all.
+  const none = assessed(repo, '--base', 'target', '--pipeline', pipeline)
+  for (const id of BOUND_SIGNALS) assert.equal(signalOf(stale.out, id).band, signalOf(none.out, id).band, id)
+})
+
+test('verify judge --head records the head on the verdict, and without it the verdict carries no head', () => {
+  const profile = scratchFile('judge-head-profile.json', {
+    version: 1,
+    unit: { command: 'npm test', timeout_ms: 120000 },
+    coverage: { enabled: false },
+    e2e: { enabled: false }
+  })
+  const results = scratchFile('judge-head-results.json', [
+    { kind: 'typecheck', exitCode: 0 },
+    { kind: 'unit', exitCode: 0, total: 10, passed: 10, failed: 0 }
+  ])
+  const planned = cli(['verify', 'plan', '--profile', profile, '--typecheck-command', 'npx tsc --noEmit', '--json'])
+  assert.equal(planned.code, 0, planned.stderr)
+  const plan = scratchFile('judge-head-plan.json', planned.stdout)
+  const head = 'c0ffee'.padEnd(40, '0')
+
+  const judged = cli(['verify', 'judge', '--plan', plan, '--results', results, '--head', head, '--json'])
+  assert.equal(judged.code, 0, judged.stderr)
+  assert.equal(JSON.parse(judged.stdout).head, head)
+
+  const plain = cli(['verify', 'judge', '--plan', plan, '--results', results, '--json'])
+  assert.equal(plain.code, 0, plain.stderr)
+  assert.equal(Object.hasOwn(JSON.parse(plain.stdout), 'head'), false)
 })

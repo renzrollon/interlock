@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveReview, formatReview } from '../../lib/review-core.mjs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { resolveReview, formatReview, writeReviewOut } from '../../lib/review-core.mjs'
 import { TOLERANCE_BAND, FINDING_SCHEMA } from '../../lib/findings.mjs'
 
 const f = (over = {}) => ({
@@ -485,6 +488,36 @@ test('a shape-valid citation naming a path absent from the diff is rejected', ()
   const r = resolveAgainstDiff([refute('lib/nowhere.ts:1'), refute('lib/nowhere.ts:1')])
   assert.equal(r.counts.dismissed, 0)
   assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+// A blast-radius finding's file is the observing caller outside the diff, so a
+// refutation must cite that caller; that one path joins the allowed set for that
+// dimension only.
+const CALLER = 'lib/caller.ts'
+const outsideFinding = dimension =>
+  f({ severity: 'blocker', title: 'caller breaks', file: `./${CALLER}`, dimension })
+const refuteCaller = () =>
+  v({ findingTitle: 'caller breaks', file: `./${CALLER}`, isReal: false, refinedSeverity: 'dismiss', evidence: `${CALLER}:12-20` })
+
+test('a refutation citing the observing caller dismisses a blast-radius finding outside the diff', () => {
+  const r = resolveReview([outsideFinding('blast-radius')], [refuteCaller(), refuteCaller()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+})
+
+test('the same caller citation against a finding of another dimension outside the diff stays a non-vote', () => {
+  const r = resolveReview([outsideFinding('architecture')], [refuteCaller(), refuteCaller()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+test('a blast-radius finding gains only its own file: a citation of another outside path stays a non-vote', () => {
+  const other = () =>
+    v({ findingTitle: 'caller breaks', file: `./${CALLER}`, isReal: false, refinedSeverity: 'dismiss', evidence: 'lib/nowhere.ts:1' })
+  const r = resolveReview([outsideFinding('blast-radius')], [other(), other()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 0)
   assert.equal(r.counts.dismissalsRejected, 2)
 })
 
@@ -1017,4 +1050,21 @@ test('resolveReview’s output is deep-equal to its recorded snapshot', () => {
   assert.deepEqual(Object.keys(r).sort(), ['anomalies', 'counts', 'dimensionStats', 'dismissed', 'droppedByPolicy', 'droppedByQuality', 'surviving'])
   for (const d of r.dismissed) assert.deepEqual(Object.keys(d.votes).sort(), ['notReal', 'real', 'total', 'uncited'])
   assert.ok(r.dismissed.every(d => !('verdicts' in d)), 'a dismissed record gained a verdicts field')
+})
+
+test('writeReviewOut names a cleanup that also failed, so a partial file is never left unsaid', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-out-'))
+  try {
+    // A directory at the --out path: the write fails, and so does the removal.
+    const out = join(dir, 'review.json')
+    mkdirSync(out)
+    let message = null
+    writeReviewOut(out, { ok: true }, m => {
+      message = m
+    })
+    assert.match(message, /could not be written/)
+    assert.match(message, /could not be removed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

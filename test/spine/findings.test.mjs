@@ -423,3 +423,73 @@ test('the gate returns the same passed, blockers and malformed for every value o
   assert.equal(evaluateGate(clean).passed, true)
   assert.deepEqual(evaluateGate(clean).malformed, [])
 })
+
+// --- finding identity: findingKey / findingId ------------------------------
+// Read through the namespace so a missing export fails the assertion (RED)
+// rather than breaking the import of every other test in this file.
+
+test('findingKey: a re-cased, re-spaced, re-punctuated title is one key in one file', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function', 'lib/findings.mjs must export findingKey')
+  const a = findingKey({ file: 'lib/a.mjs', title: 'Missing null check.' })
+  const b = findingKey({ file: 'lib/a.mjs', title: 'missing  NULL check' })
+  assert.equal(a, b)
+  assert.notEqual(a, findingKey({ file: 'lib/b.mjs', title: 'Missing null check.' }))
+})
+
+test('findingKey: the key is the trimmed file, a NUL, and the normalised title', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function')
+  assert.equal(
+    findingKey({ file: '  lib/a.mjs ', title: '  Missing   Null\tCheck. ' }),
+    'lib/a.mjs\u0000missing null check'
+  )
+})
+
+test('findingKey: strips every trailing . : ; ! and only trailing ones', () => {
+  const { findingKey } = findingsModule
+  assert.equal(typeof findingKey, 'function')
+  for (const tail of ['.', ':', ';', '!', '.!;:', '!!!']) {
+    assert.equal(
+      findingKey({ file: 'a', title: `Unsafe cast${tail}` }),
+      'a\u0000unsafe cast',
+      `tail ${JSON.stringify(tail)}`
+    )
+  }
+  // An inner mark is part of the title, and a different mark is not stripped.
+  assert.equal(findingKey({ file: 'a', title: 'a.b' }), 'a\u0000a.b')
+  assert.notEqual(findingKey({ file: 'a', title: 'x?' }), findingKey({ file: 'a', title: 'x' }))
+})
+
+test('findingId: F- plus the first eight hex characters of the key SHA-256, stable across calls', async () => {
+  const { findingId, findingKey } = findingsModule
+  assert.equal(typeof findingId, 'function', 'lib/findings.mjs must export findingId')
+  assert.equal(typeof findingKey, 'function')
+  const { createHash } = await import('node:crypto')
+  const finding = { file: 'lib/a.mjs', title: 'Missing null check.' }
+  const id = findingId(finding)
+  assert.match(id, /^F-[0-9a-f]{8}$/)
+  const expected = createHash('sha256').update(findingKey(finding)).digest('hex').slice(0, 8)
+  assert.equal(id, `F-${expected}`)
+  assert.equal(findingId({ ...finding }), id)
+  assert.equal(findingId({ file: 'lib/a.mjs', title: 'missing  NULL check' }), id)
+  assert.notEqual(findingId({ file: 'lib/b.mjs', title: 'Missing null check.' }), id)
+})
+
+test('findingKey: a ./-prefixed path and the bare path are one key and one id', () => {
+  const { findingKey, findingId } = findingsModule
+  const dotted = { file: './lib/a.mjs', title: 'Missing null check' }
+  const bare = { file: 'lib/a.mjs', title: 'Missing null check' }
+  assert.equal(findingKey(dotted), findingKey(bare))
+  assert.equal(findingKey(dotted), 'lib/a.mjs\u0000missing null check')
+  assert.equal(findingId(dotted), findingId(bare))
+  // A path that does not canonicalise keeps its trimmed spelling rather than vanishing.
+  assert.equal(findingKey({ file: ' /abs/a.mjs ', title: 'x' }), '/abs/a.mjs\u0000x')
+})
+
+test('findingKey: whitespace before trailing punctuation is stripped with it', () => {
+  const { findingKey, findingId } = findingsModule
+  assert.equal(findingKey({ file: 'a', title: 'Title .' }), findingKey({ file: 'a', title: 'Title' }))
+  assert.equal(findingKey({ file: 'a', title: 'Title . ! ' }), 'a\u0000title')
+  assert.equal(findingId({ file: 'a', title: 'Title .' }), findingId({ file: 'a', title: 'Title' }))
+})
