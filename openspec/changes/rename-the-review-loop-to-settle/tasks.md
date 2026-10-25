@@ -14,3 +14,7 @@ The rename map, the allow-list and the residue patterns are in `design.md`. Ever
 ## 2. Verify
 
 - [x] 2.1 Run `npm test` and `npm run validate`, and `node scripts/gen-flow-svg.mjs --check`. Run `node bin/interlock validate rename-the-review-loop-to-settle` and `node bin/interlock validate close-the-merge-request-loop`, and check that every MODIFIED title in this change matches its living requirement word for word. Paste the outputs in the commit. Then run `git grep -nIiE '\bmrs?\b|merge[ -]requests?|/interlock:mr|\.claude/ship/mr' -- . ':!docs/notes' ':!openspec' ':!briefs' ':!test/fixtures/ship' ':!docs/assets/DESIGN-PROMPT.md'`, and give a reason for each line it prints: an allow-list token, or a CHANGELOG release section.
+
+## 3. Archive
+
+- [ ] 3.1 Archive this change only after `close-the-merge-request-loop` is archived (its task 8.5 waits on the owner). Before archiving, check `openspec/changes/archive/` for it. Archiving this change first leaves `openspec/specs/review/merge-request-delivery/spec.md` naming `--gitlab-mr`, `--mr` and `skills/mr/SKILL.md`, which the CLI rejects (design D8). After both are archived, run `git grep -nE -- '--gitlab-mr|skills/mr/' openspec/specs` and expect no output.

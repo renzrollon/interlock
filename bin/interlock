@@ -480,7 +480,7 @@ Exit codes:
                              verdict on stdout
     pipeline                 the document is not JSON or not the one the
                              platform flag expects, --out or --pending is missing
-                             where required, the pipeline is not the merge
+                             where required, the pipeline is not the pull
                              request's head pipeline, or a branch pipeline ran
                              on another commit; nothing is printed on stdout and
                              an earlier file at --out is removed

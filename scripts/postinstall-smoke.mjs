@@ -241,7 +241,7 @@ export const INVENTORY = [
   { bin: I, argv: ['merge-confidence', CHANGE, '--base', 'HEAD~1', '--markdown'], codes: [0, 1], check: r => (/Merge confidence/.test(r.stdout) ? '' : 'no markdown header') },
   { bin: I, argv: ['merge-confidence', '--label-names', '--json'], codes: [0] },
 
-  // The settle loop (the settle skill's --review): what it pipes to the merge
+  // The settle loop (the settle skill's --review): what it pipes to the pull
   // request, the briefings it hands its workers, and the paths the test guard protects.
   // The scratch change has no delta spec and no graph is built yet, so the conformance
   // brief takes its nothing-to-confirm exit: silent stdout, the reason on stderr.

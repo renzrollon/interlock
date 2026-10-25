@@ -62,6 +62,8 @@ The residue test strips these tokens before matching, and nothing else:
 - History (D6): `close-the-merge-request-loop`, `label-the-merge-request-with-confidence` (change ids), and `merge-request-delivery` (a living capability id, D7).
 - `data:` URIs, whose base64 can contain `mr` between word boundaries.
 
+One structural exclusion sits beside the token list. Inside `CHANGELOG.md` `[Unreleased]`, the rename note D11 requires has to name the retired commands, so the test leaves out the `- **BREAKING:` bullets and the `### Upgrading` subsection of that section. Every other `[Unreleased]` line is scanned. The exclusion is by structure rather than by one bullet's text, so a later BREAKING bullet or Upgrading line is not scanned either: a reviewer reads those two places by eye.
+
 The test scans no files outside the listed surfaces. That covers `docs/notes/**`, `briefs/**`, `openspec/**`, `docs/assets/DESIGN-PROMPT.md` (its only hits are in a retired, kept-for-the-record appendix), `CHANGELOG.md` outside `[Unreleased]`, `test/fixtures/ship/**` and the test itself. A new exception means editing the list in the test, which a reviewer sees.
 
 ### D5. `--gitlab-pr` and `--pending`
@@ -77,7 +79,7 @@ Living requirement titles that say "merge request" (for example `review/pipeline
 `close-the-merge-request-loop` is not archived. Its deltas are what will reach the living specs, so they have to say `settle`, or archiving it would bring the retired names back. Edits:
 
 - Move `specs/review/merge-request-loop/` to `specs/review/settle-loop/`. The capability is not living yet, so no RENAMED block is needed. Rewrite its seven `interlock mr <sub>` titles and its body tokens.
-- Update the tokens in its `review/merge-request-delivery` delta. That delta MODIFIES "The skill SHALL hand the command only evidence about the commit under review", the one living requirement naming `--gitlab-mr` and `skills/mr` that this change does not MODIFY itself. The two changes therefore never MODIFY the same requirement, and either archive order is conflict-free.
+- Update the tokens in its `review/merge-request-delivery` delta. That delta MODIFIES "The skill SHALL hand the command only evidence about the commit under review", the one living requirement naming `--gitlab-mr` and `skills/mr` that this change does not MODIFY itself. The two changes therefore never MODIFY the same requirement, and either archive order is conflict-free. Conflict-free is not consistent, though: until `close-the-merge-request-loop` archives, the living copy of that requirement still names `--gitlab-mr`, `--mr` and `skills/mr/SKILL.md`, which the CLI and tree no longer have. So this change archives after `close-the-merge-request-loop`, never before it (task 3.1).
 - Update the `NEXT —` line in its `ship/close-summary` ADDED requirement, and rename that title's "merge-request step" to "settle step". It is ADDED, so no verbatim constraint applies.
 - Update open task 8.5's text to `skills/settle/SKILL.md`. Its proposal, design, ledger, done tasks and review artifacts stay as history (D6).
 
@@ -87,7 +89,7 @@ Living requirement titles that say "merge request" (for example `review/pipeline
 
 ### D10. A residue test pins the rename
 
-The test is `test/retired-names.test.mjs`. It lists tracked files with `git ls-files`, keeps those under the surfaces in the ADDED requirement, keeps only the `[Unreleased]` section of `CHANGELOG.md`, strips the D4/D6 allow-list, and matches:
+The test is `test/retired-names.test.mjs`. It lists tracked files with `git ls-files`, keeps those under the surfaces in the ADDED requirement, keeps only the `[Unreleased]` section of `CHANGELOG.md` minus its rename note (the `- **BREAKING:` bullets and the `### Upgrading` subsection, D4/D6), strips the D4/D6 allow-list, and matches:
 
 - `\bmrs?\b` (case-insensitive)
 - `\bmr(?=[A-Z])`, `[a-z]Mr(?![a-z])`, `\bMR_` (case-sensitive: with case folded, `fromReceipt`, `memRoot`, `resumeFromRunId` and `armResult` match, and none of them is the retired name)
