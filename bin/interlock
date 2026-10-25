@@ -129,7 +129,7 @@ import {
   resolveReview,
   formatReview,
   readReviewPolicy,
-  readDimensionFile,
+  reviewRecordFlags,
   writeReviewOut,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
@@ -176,8 +176,8 @@ import {
   pipelineFromGitlab,
   validatePipelineInput
 } from '../lib/pipeline.mjs'
-import { gatherLivingList, gatherMergeEvidence, readRunEvidence } from '../lib/merge-evidence.mjs'
-import { ancestryOfHead, carryLines } from '../lib/merge-carry.mjs'
+import { gatherLivingList, gatherMergeEvidence } from '../lib/merge-evidence.mjs'
+import { ancestorOrFalse, runEvidenceAt } from '../lib/merge-carry.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 import {
   computeFingerprint,
@@ -2695,9 +2695,7 @@ function readCoverageBaseline(root, flags) {
   return { path, ...parsed }
 }
 
-/** `ancestryOfHead` with an undecided answer read as false, git's failure warned with its likely cause. */
-const isAncestorOfHead = (root, sha) =>
-  ancestryOfHead(root, sha, l => warn(/git exited/.test(l) ? `${l}; a shallow clone that lacks the commit is the usual cause — fetch more history` : l)) ?? false
+const isAncestorOfHead = (root, sha) => ancestorOrFalse(root, sha, warn)
 
 /**
  * Measure the coverage of the merge base in a temporary worktree and record it as
@@ -3485,23 +3483,8 @@ async function main() {
       // D8 of label-and-harden-the-merge-verdict); no base is ever taken from
       // the file. The assessment recorded in it is never read: the command
       // always reassesses.
-      let fromRun = {}
-      if (runFile) {
-        // Ancestry is asked of git only when the file records another commit.
-        const recorded = runFile && typeof runFile === 'object' ? runFile.headSha : undefined
-        const descendsFromRecordedHead =
-          headSha && typeof recorded === 'string' && recorded && recorded !== headSha ? ancestryOfHead(root, recorded, warn) : undefined
-        const read = readRunEvidence(runFile, {
-          change: name,
-          headSha,
-          base: assessedBase ? (assessedBase.sha ? { sha: assessedBase.sha } : { unreadable: true }) : undefined,
-          descendsFromRecordedHead
-        })
-        if (read.usable) {
-          fromRun = read.evidence
-          for (const line of carryLines(read, `--run ${flags.run}`, headSha)) warn(line)
-        } else warn(`--run ${flags.run} is not used: ${read.reason}`)
-      }
+      const runBase = assessedBase ? (assessedBase.sha ? { sha: assessedBase.sha } : { unreadable: true }) : undefined
+      const fromRun = runFile ? runEvidenceAt(root, runFile, { change: name, headSha, base: runBase, label: `--run ${flags.run}` }, warn) : {}
       // The conformance denominators are the command's own counts. A count the
       // handoff carries is dropped here (and ignored by the module), so a
       // caller cannot shrink one.
@@ -3771,11 +3754,8 @@ async function main() {
     }
 
     case 'review': {
-      if (flags.out === true) die('--out needs a file')
-      if (flags.head === true) die('--head needs a commit sha')
-      if (flags.dimensions === true) die('--dimensions needs a file')
       // Read and validated before anything is written or printed, metrics included.
-      const dimensions = typeof flags.dimensions === 'string' ? readDimensionFile(flags.dimensions, die) : null
+      const { dimensions, head } = reviewRecordFlags(flags, die)
       const findings = readFindingsInput(flags.findings)
       const verdicts = readInput(flags.verdicts, '--verdicts')
       // The reviewed diff. A dismissing verdict has to cite a path that is in
@@ -3823,10 +3803,6 @@ async function main() {
       const policyDiffers = differsFromBase
         ? `  policy: ${REVIEW_POLICY_FILE} differs from ${base}; its Do Not Report paths were read from ${base}\n`
         : ''
-      // The commit the review describes, when the caller names it: a record that
-      // names its commit is how `merge-confidence` tells this head's review from
-      // an older one's (design D3 of close-the-merge-request-loop).
-      const head = typeof flags.head === 'string' && flags.head ? flags.head : null
       const text =
         formatReview(result) +
         policyDiffers +

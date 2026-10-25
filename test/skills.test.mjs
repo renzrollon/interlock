@@ -1728,6 +1728,7 @@ function mrSkillProblems(text) {
     'STOP:',
     'never count',
     'spawn no worker',
+    'nothing to confirm',
     'halting verdict',
     'TEST PROFILE CHANGED — restored',
     'TESTS STILL STAGED',
@@ -1817,6 +1818,13 @@ function mrSkillProblems(text) {
   const profileRestore = profileCmp === -1 ? -1 : fencedAt(MR_PROFILE_RESTORE, profileCmp)
   if (profileRestore === -1 || (stageAt !== -1 && profileRestore > stageAt)) {
     problems.push('no fenced `cp .claude/ship/mr/profile-r<r>.json .claude/testing/profile.json` restore between the cmp line and the staging line')
+  }
+  // Restoring the snapshot and removing a created profile are two cases, never one script.
+  const profileRemove = profileCmp === -1 ? -1 : fencedAt(/^rm -f \.claude\/testing\/profile\.json$/, profileCmp)
+  if (profileRemove === -1 || (stageAt !== -1 && profileRemove > stageAt)) {
+    problems.push('no fenced `rm -f .claude/testing/profile.json` line between the cmp line and the staging line')
+  } else if (profileRestore !== -1 && blockOf[profileRemove] === blockOf[profileRestore]) {
+    problems.push('the `rm -f .claude/testing/profile.json` line shares a fence with the snapshot restore, so running the fence deletes what it restored')
   }
 
   // A push that fails ends the loop.
@@ -1997,6 +2005,7 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   }), 'line before the remediate-brief line')
   fails(problemsOf(t => t.replace(/^cmp -s [^\n]*$/m, '')), 'cmp -s')
   fails(problemsOf(t => t.replaceAll('TEST PROFILE CHANGED', 'PROFILE TOUCHED')), 'TEST PROFILE CHANGED')
+  fails(problemsOf(t => t.replace(/(^cp \.claude\/ship\/mr\/profile-r<r>\.json \.claude\/testing\/profile\.json)$/m, '$1\nrm -f .claude/testing/profile.json')), 'shares a fence with the snapshot restore')
 
   // Staging: no bare sweep, and the exclusions are the tolerated set.
   fails(problemsOf(t => t.replace(STAGE, 'git add -A')), 'bare `git add -A`')

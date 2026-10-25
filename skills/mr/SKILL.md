@@ -247,12 +247,17 @@ Exit 1 (the result is missing, unparseable or `ok: false`, or its ids do not par
 cmp -s .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json
 ```
 
-A non-zero exit means the fixer changed or removed the profile. When there was no snapshot and the fixer created one (Glob for it), it changed too. Either way put it back, and print `TEST PROFILE CHANGED — restored`:
+A non-zero exit means the fixer changed or removed the profile. When there was no snapshot and the fixer created one (Glob for it), it changed too. Either way put it back, running only the one line below for the case that holds, and print `TEST PROFILE CHANGED — restored`.
+
+When there was a snapshot, restore it:
 
 ```bash
-# there was a snapshot: restore it
 cp .claude/ship/mr/profile-r<r>.json .claude/testing/profile.json
-# there was no snapshot: remove the profile the fixer created
+```
+
+When there was no snapshot, remove the profile the fixer created:
+
+```bash
 rm -f .claude/testing/profile.json
 ```
 
@@ -349,7 +354,7 @@ When it is a draft this pass did not create (a re-run after an interrupted pass,
 interlock mr conformance-brief <change> --changed <files> --base origin/<target branch> --head <sha>
 ```
 
-Spawn one worker with the printed briefing as its whole prompt. It answers into `.claude/ship/mr/handoff.json`, with the head beside the counts. When the command prints nothing and exits 0 there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
+Spawn one worker with the printed briefing as its whole prompt. It answers into `.claude/ship/mr/handoff.json`, with the head beside the counts. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
 
 ### 5f. Verify the head
 
