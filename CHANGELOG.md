@@ -5,6 +5,29 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [1.9.0] - 2026-10-25
+
+### Added
+
+- **`/interlock:mr --review` closes the merge request loop.** It reviews the pull request, posts the findings as a comment, remediates, commits and pushes, re-reviews, posts a reply comment saying which findings are fixed, open or new (it resolves no thread), marks the draft ready, and runs verification against the pushed head. `blast-radius` is skipped, and says so, when there is no `.claude/graph/graph.json`. `--create` now pushes the branch first (`git push -u origin HEAD`) and opens the request as a draft when `--review` is given. The GitHub loop is not exercised end to end until task 8.5 records a first real run; the GitLab lines are not exercised.
+- **The `interlock mr` family:** `mr comment`, `mr replies`, `mr tree-check`, `mr remediate-brief`, `mr fixer-result`, `mr conformance-brief` and `mr test-paths`.
+- **The review loop's preconditions are code, after the PR #23 review.** `interlock mr tree-check` refuses a working tree a fix round would sweep in. It runs before the pass clears `.claude/ship/mr/` and at each round, and tolerates only the change's `mr-summary.md` and `docs/notes/compound.md`. The round stages `git add -A -- .` with those two excluded, never a bare `git add -A`. `interlock mr fixer-result` refuses a fixer result that leaves a briefed finding out. The protected-path revert reads a NUL-separated list (`test-paths --protected-only --nul`) into `git --literal-pathspecs restore … --pathspec-file-nul`, so it can no longer destroy uncommitted test edits the person made before the loop, or read a path as pathspec magic. The skill also stops on `HEAD NOT ON THE PLATFORM`, `FIXER COMMITTED` and `TEST PROFILE CHANGED`, and says `CHECKS STILL PENDING` when the background checks wait ends unsettled.
+- **`interlock review --out --head --dimensions`** and **`interlock verify judge --head`** bind a review and a verification record to one commit.
+- **An eighth review dimension, `blast-radius`,** graph-first, with a recorded skip (`blast-radius-skipped`) when there is no graph.
+- **A run's evidence carries over to a descendant commit,** with what is dropped said and an undecided ancestry reported.
+- **A legend line** on the verdict and a **ship summary line** naming `/interlock:mr`.
+- **`REVIEW.md` lists `.github/workflows/` under Always Human Review.**
+
+### Changed
+
+- **`interlock mr remediate-brief` marks its stop rule.** Nothing to fix, the cap and the verdict-round halt exit 1 with `STOP:` at the start of the reason. Any other exit 1 is a broken input, which the skill reports as `ROUND FAILED` rather than reading it as convergence. `--protected` is gone: the command computes what the fixer must not edit from the test profile, or from the copy `--profile` names (`test-paths` takes `--profile` too).
+- **`interlock mr comment` and `replies` merge findings that share an identity**, at the highest severity, so a blocker can no longer hide behind a warning with its key. The same merged list feeds `remediate-brief` and `fixer-result`. Reviewer text renders as inline code spans and fences, never as live Markdown, and the reply table's legend says `fixed` is not a confirmation.
+- **The finding identity reads the canonical path** (`./lib/a.mjs` is `lib/a.mjs`) and strips trailing whitespace with the punctuation.
+- **A documented `blast-radius` skip reads `review.ran` green.** The record `review-code` writes (`blast-radius` selected, not run, skipped with a reason) read amber and made every graphless repository read `HUMAN`. A selected `domain` or `blast-radius` recorded as skipped now counts as accounted for; any other skipped name still reads amber.
+- **A refutation of a `blast-radius` finding may cite the observing caller**, the finding's own file outside the diff, in the evidence gate.
+- **`interlock mr --help` prints the family's own help** instead of a line pointing back at itself.
+- **The risk signal at merge reads touched paths only** (decision D1, carried from `label-and-harden-the-merge-verdict`). Documentation and test paths sit outside the severity rules, and a text-only signal no longer fires at merge. The spec-stage classifier, `interlock risk` and the continuity gate still read prose.
+
 ## [1.8.0] - 2026-10-24
 
 ### Added

@@ -129,6 +129,8 @@ import {
   resolveReview,
   formatReview,
   readReviewPolicy,
+  reviewRecordFlags,
+  writeReviewOut,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -163,6 +165,7 @@ import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import {
   assessMergeConfidence,
+  boundToHead,
   formatMergeConfidence,
   formatMergeConfidenceMarkdown,
   mergeLabelNames
@@ -173,7 +176,8 @@ import {
   pipelineFromGitlab,
   validatePipelineInput
 } from '../lib/pipeline.mjs'
-import { gatherLivingList, gatherMergeEvidence, readRunEvidence } from '../lib/merge-evidence.mjs'
+import { gatherLivingList, gatherMergeEvidence } from '../lib/merge-evidence.mjs'
+import { ancestorOrFalse, runEvidenceAt } from '../lib/merge-carry.mjs'
 import { readLedger, summarize as summarizeLedger, formatLedger } from '../lib/ledger.mjs'
 import {
   computeFingerprint,
@@ -194,6 +198,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { MR_HELP, mrCommand } from '../lib/mr-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
@@ -339,6 +344,7 @@ Usage:
   interlock note match <change> [--paths a,b]
                                             Print the notes whose file the change's
                                             tasks (or --paths) name
+  interlock mr <subcommand>                 the merge-request loop; see interlock mr --help
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
                                             No model, no network. Exit code is
@@ -382,6 +388,10 @@ Usage:
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
                   [--base <ref>]           Resolve a review against skeptic verdicts.
+                  [--out <f>] [--head <sha>]  --out writes the JSON to a file;
+                  [--dimensions <f>]       --head records the commit reviewed;
+                                           --dimensions records which dimensions
+                                           ran and which were skipped.
                                            Also reads repo-root REVIEW.md and drops
                                            findings on its do-not-report paths;
                                            --base reads those paths from the ref
@@ -812,6 +822,15 @@ remediate:
 review:
   --findings <file>      Findings raised by the review dimensions. "-" for stdin.
   --verdicts <file>      Flat JSON array of skeptic verdicts. "-" for stdin.
+  --out <file>           Also write the JSON result to this file, creating its
+                         directories and removing any earlier file first. A write
+                         that fails exits 1 naming the file and prints nothing.
+  --head <sha>           Record the commit the review describes as "head", so
+                         merge-confidence --review can refuse another commit's.
+  --dimensions <file>    The dimension record { selected, ran, unavailable,
+                         skipped: [{ name, reason }] }, validated before anything
+                         is written (a fault exits 1 naming the file and key) and
+                         recorded as "dimensions" with completed: true.
   --metrics <change>     Also append the counts to .claude/metrics/ under this
                          change name. A metrics failure prints its reason and is
                          never fatal — the exit code is unaffected.
@@ -1040,6 +1059,8 @@ verify judge:
   --run-id <id>          Same, when you have a run id but not a state file.
                          --state wins if both are given.
   --change <name>        Tag the logged event with this change name.
+  --head <sha>           Record the commit the verdict describes as "head", so
+                         merge-confidence --verify can refuse another commit's.
   Exits 1 when the verdict halts, or when --state/--run-id was given and the
   trajectory append failed.
 
@@ -2318,7 +2339,7 @@ function requireChange(root, requested, json) {
 
 // The entry file's output and exit helpers, for the subcommands that live in
 // lib/note-cli.mjs: one stdout shape, one exit path, one stdin read.
-const cliIo = { emit, die, requireChange, readFindingsInput, readStdin, splitPaths }
+const cliIo = { emit, die, requireChange, readFindingsInput, readStdin, splitPaths, livingListFor }
 
 // risk.mjs is pure and takes artifact TEXT, so the filesystem read belongs here.
 function readChangeArtifacts(root, change) {
@@ -2674,18 +2695,7 @@ function readCoverageBaseline(root, flags) {
   return { path, ...parsed }
 }
 
-/**
- * Whether `sha` is an ancestor of HEAD, read from the repository: exit 0 true, 1
- * false; any other status (an unknown commit in a shallow clone) is false, with
- * the likely cause on stderr.
- */
-function isAncestorOfHead(root, sha) {
-  const r = spawnSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: root, encoding: 'utf8' })
-  if (r.status === 0) return true
-  if (r.status === 1) return false
-  warn(`could not tell whether ${sha} is an ancestor of HEAD (git exited ${r.status ?? 'abnormally'}); a shallow clone that lacks the commit is the usual cause — fetch more history`)
-  return false
-}
+const isAncestorOfHead = (root, sha) => ancestorOrFalse(root, sha, warn)
 
 /**
  * Measure the coverage of the merge base in a temporary worktree and record it as
@@ -3113,7 +3123,7 @@ async function main() {
   // otherwise hand the subcommand to the flag as its value.
   if (argv.includes('-h') || argv.includes('--help')) {
     const rest = parseArgs(argv.filter(a => a !== '-h' && a !== '--help'))
-    process.stdout.write(helpFor(USAGE, rest._[0]))
+    process.stdout.write(rest._[0] === 'mr' ? MR_HELP : helpFor(USAGE, rest._[0]))
     return
   }
 
@@ -3406,9 +3416,9 @@ async function main() {
       }
       // Every caller file is read FIRST, so an unreadable one ends the command
       // before any assessment and nothing reaches stdout (design D9).
-      const review = readMergeInput(flags, 'review')
-      const verify = readMergeInput(flags, 'verify')
-      const handoffFile = readMergeInput(flags, 'handoff')
+      const reviewFile = readMergeInput(flags, 'review')
+      const verifyFile = readMergeInput(flags, 'verify')
+      const handoffRecord = readMergeInput(flags, 'handoff')
       const pipeline = readMergeInput(flags, 'pipeline')
       // A pipeline file that is not well-formed is an input error, as one that is
       // not JSON is (design D7 of label-and-harden-the-merge-verdict). An absent
@@ -3441,6 +3451,11 @@ async function main() {
       }
 
       const headSha = headShaOf(root)
+      // A record naming another commit is refused out loud (see boundToHead).
+      const bound = (record, key) => boundToHead(record, headSha, `--${key} ${flags[key]}`, warn)
+      const review = bound(reviewFile, 'review')
+      const verify = bound(verifyFile, 'verify')
+      const handoffFile = bound(handoffRecord, 'handoff')
       const requested = typeof flags.change === 'string' ? flags.change : positional[1]
       const resolved = resolveChange(root, requested)
       const name = resolved.error ? null : resolved.name
@@ -3468,23 +3483,15 @@ async function main() {
       // D8 of label-and-harden-the-merge-verdict); no base is ever taken from
       // the file. The assessment recorded in it is never read: the command
       // always reassesses.
-      let fromRun = {}
-      if (runFile) {
-        const read = readRunEvidence(runFile, {
-          change: name,
-          headSha,
-          base: assessedBase ? (assessedBase.sha ? { sha: assessedBase.sha } : { unreadable: true }) : undefined
-        })
-        if (read.usable) fromRun = read.evidence
-        else warn(`--run ${flags.run} is not used: ${read.reason}`)
-      }
+      const runBase = assessedBase ? (assessedBase.sha ? { sha: assessedBase.sha } : { unreadable: true }) : undefined
+      const fromRun = runFile ? runEvidenceAt(root, runFile, { change: name, headSha, base: runBase, label: `--run ${flags.run}` }, warn) : {}
       // The conformance denominators are the command's own counts. A count the
       // handoff carries is dropped here (and ignored by the module), so a
       // caller cannot shrink one.
       const handoffGiven = handoffFile ?? fromRun.handoff ?? null
       let handoff = null
       if (handoffGiven && typeof handoffGiven === 'object' && !Array.isArray(handoffGiven)) {
-        const { verdictsRequired: _ignored, ...counts } = handoffGiven
+        const { verdictsRequired: _ignored, head: _head, ...counts } = handoffGiven
         handoff = counts
       }
 
@@ -3747,6 +3754,8 @@ async function main() {
     }
 
     case 'review': {
+      // Read and validated before anything is written or printed, metrics included.
+      const { dimensions, head } = reviewRecordFlags(flags, die)
       const findings = readFindingsInput(flags.findings)
       const verdicts = readInput(flags.verdicts, '--verdicts')
       // The reviewed diff. A dismissing verdict has to cite a path that is in
@@ -3798,12 +3807,19 @@ async function main() {
         formatReview(result) +
         policyDiffers +
         policyProblems +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
-      emit(
-        json,
-        { ...result, policyProblems: policy.problems, ...(policyBase ? { policyBase } : {}), ...(metrics ? { metrics } : {}) },
-        text
-      )
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
+        (head ? `  head: ${head}\n` : '')
+      const payload = {
+        ...result,
+        policyProblems: policy.problems,
+        ...(policyBase ? { policyBase } : {}),
+        ...(metrics ? { metrics } : {}),
+        ...(head ? { head } : {}),
+        ...(dimensions ? { dimensions } : {})
+      }
+      // Written before anything is printed (see writeReviewOut).
+      if (typeof flags.out === 'string') writeReviewOut(flags.out, payload, die)
+      emit(json, payload, text)
       break
     }
 
@@ -4028,6 +4044,10 @@ async function main() {
 
     case 'note':
       noteCommand(cliIo, root, positional, flags, json)
+      break
+
+    case 'mr':
+      mrCommand(cliIo, root, positional, flags, json)
       break
 
     case 'ready': {
@@ -4295,8 +4315,12 @@ async function main() {
           emit(json, rejection, formatVerification(rejection))
           process.exit(1)
         }
+        if (flags.head === true) die('--head needs a commit sha')
         const opts = { context, ...verifyJudgeOpts(flags) }
-        const verdict = judgeVerification(plan, results, opts)
+        const judged = judgeVerification(plan, results, opts)
+        // Recorded on the verdict only when asked for: a verdict with no head is
+        // read exactly as before (design D3 of close-the-merge-request-loop).
+        const verdict = typeof flags.head === 'string' && flags.head ? { ...judged, head: flags.head } : judged
         const logOk = logVerifyJudgement(corpusHome(root, flags).home, {
           runId: runIdFromFlags(flags),
           // Same precedence as every wave-state append site: the state names the
