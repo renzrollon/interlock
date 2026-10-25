@@ -31,7 +31,7 @@ Report in the schema every dimension uses, under `"dimension": "blast-radius"`:
           "description": "what the caller sees before and after, and why",
           "suggestion": "how to hold it" } ] }
 
-- **`file` is the observing caller's file**, the one outside the diff that sees the change, not the changed file. Name the changed symbol and the diff file in the description. Put a `path:line` token for the observing caller in the description, so the evidence gate can check it.
+- **`file` is the observing caller's file**, the one outside the diff that sees the change, not the changed file. Name the changed symbol and the diff file in the description. Give the observing caller's real `line` too: the evidence gate reads a skeptic's refutation, not your description, and for a blast-radius finding it accepts a `path:line` citation of the finding's own `file` besides the diff, so a skeptic can dismiss this finding only by citing the caller you named or the diff.
 - **blocker** — a caller outside the diff breaks or silently changes meaning, stored data becomes unreadable or misread, or the change cannot be rolled back alone and nothing says so. You must be able to name the caller and the line that breaks.
 - **warning** — an outside caller changes behaviour in a way it plausibly tolerates, a concurrency assumption weakens, or rollback needs a documented extra step.
 - **suggestion** — an outside caller is unaffected today but is one edit from being affected, and a note or test would hold it.

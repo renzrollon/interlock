@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires git, plus glab (GitLab) or gh (GitHub) authenticated. Optional openspec CLI for change context.
 argument-hint: "[change-name] [--create] [--review] [--test-plan] [--explain] [--confidence-comment] [--gate-check <name>]"
 disable-model-invocation: true
-allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Bash(rm -rf .claude/ship/mr) Bash(rm -f .claude/ship/mr/coverage.json) Agent Read Write Grep Glob
+allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Bash(rm -rf .claude/ship/mr) Bash(rm -f .claude/ship/mr/coverage.json) Bash(cp .claude/testing/profile.json .claude/ship/mr/profile-r*.json) Bash(cmp -s .claude/testing/profile.json .claude/ship/mr/profile-r*.json) Bash(cp .claude/ship/mr/profile-r*.json .claude/testing/profile.json) Bash(rm -f .claude/testing/profile.json) Bash(test -s .claude/ship/mr/verify.json.tmp) Bash(mv .claude/ship/mr/verify.json.tmp .claude/ship/mr/verify.json) Bash(rm -f .claude/ship/mr/verify.json.tmp) Agent Read Write Grep Glob
 metadata:
   type: generation
   outputs:
@@ -96,19 +96,31 @@ A push that fails stops the skill: report the platform's message and create noth
 
 Then create the merge request with its title and the description composed so far from §3, leaving out `## Merge confidence`: there is no verdict yet, and §9 replaces the description once there is. **With `--create --review` it is created as a draft**, because code owners are not requested on a draft: they are asked once, when the loop marks it ready after its last push (§5), for the head they will read. A merge request created without `--review` is created ready, as before.
 
+The description travels in a quoted heredoc, so nothing in it is expanded or read as an argument by the shell:
+
 ```bash
 # GitHub — with --create --review: a draft
-gh pr create --draft --title "<title>" --body "<description so far>"
+gh pr create --draft --title "<title>" --body-file - <<'EOF'
+<description so far>
+EOF
 # GitHub — with --create alone: a merge request created without --review is created ready
-gh pr create --title "<title>" --body "<description so far>"
+gh pr create --title "<title>" --body-file - <<'EOF'
+<description so far>
+EOF
 ```
 
 ```bash
 # GitLab — not exercised: written from glab's documentation; the GitHub lines are the ones this repository runs
 # with --create --review: a draft
-glab mr create --draft --title "<title>" --description "<description so far>"
+glab mr create --draft --title "<title>" --description "$(cat <<'EOF'
+<description so far>
+EOF
+)"
 # with --create alone: created ready
-glab mr create --title "<title>" --description "<description so far>"
+glab mr create --title "<title>" --description "$(cat <<'EOF'
+<description so far>
+EOF
+)"
 ```
 
 Then read the new merge request's number or iid and target branch as §2 does.
@@ -119,11 +131,39 @@ Then read the new merge request's number or iid and target branch as §2 does.
 
 Only with `--review`, and only once the merge request exists (§2 found it, or §4 created it). Without `--review` the skill runs nothing in this section: it assesses as before, and passes no file from `.claude/ship/mr/` to the assessment.
 
-The loop produces its evidence in a fixed order, and each step depends on the one before: a review of the merge request's diff, the findings comment, fix rounds that each commit, push, re-review the pushed head and reply, the ready mark, the confirmation, the verification, the platform's checks, and only then the assessment. Everything it writes lives under `.claude/ship/mr/`. A pass starts by clearing that directory, so no round of an earlier pass outlives this one:
+**The GitHub lines of this section are not exercised end to end** until task 8.5 of `close-the-merge-request-loop` records a run of the whole loop on a live pull request: each command is tested on its own, the loop as a whole is not. The GitLab lines carry their own `not exercised` markers.
+
+The loop produces its evidence in a fixed order, and each step depends on the one before: a review of the merge request's diff, the findings comment, fix rounds that each commit, push, re-review the pushed head and reply, the ready mark, the confirmation, the verification, the platform's checks, and only then the assessment. Everything it writes lives under `.claude/ship/mr/`.
+
+**Stopping early.** Some steps below stop the loop early: the working tree is not clean, the platform does not hold the local head, a round fails, the fixer commits, a push fails. Each prints its own line. Then nothing more is committed or pushed, and the rest of §5 is skipped except the draft check of §5d: no ready mark, no confirmation, no verification, no wait for the checks. Go on to the assessment (§6), and pass it only the records this pass wrote.
+
+**The working tree is clean.** Every step below that stages, reverts, commits or pushes assumes the only changes in the tree are the fixer's, so the loop starts only from a clean tree:
+
+```bash
+git status --porcelain=v1 -z --untracked-files=all | interlock mr tree-check --change <change> --status -
+```
+
+Exit 0 prints `clean`, or `clean (tolerated: …)` naming the files this skill itself writes into the tree. **Exit 1 means the loop does not start.** Print `WORKING TREE NOT CLEAN: <paths> — the review loop did not start; nothing was committed or pushed`, naming the paths it listed (or the refusal it printed on standard error), and stop the loop early. **When `git status` itself printed an error, the tree was not read**: the check reads empty input as clean, so treat it as not clean, and print `WORKING TREE NOT CLEAN` with git's message in place of the paths, as for exit 1. The assessment still runs, and is passed nothing from `.claude/ship/mr/`: whatever is there an earlier pass wrote. Never stash, commit, restore or delete the person's changes to make the tree clean.
+
+A pass that starts clears that directory, so no round of an earlier pass outlives this one:
 
 ```bash
 rm -rf .claude/ship/mr
 ```
+
+**The platform holds the head.** The review, every round and the verdict describe the local head, so the platform has to hold it before anything is reviewed:
+
+```bash
+gh pr view <n> --json headRefOid --jq .headRefOid
+git rev-parse HEAD
+```
+
+```bash
+# GitLab — not exercised: `sha` in this document is the merge request's head commit
+glab mr view <iid> --output json
+```
+
+When the two differ, print `HEAD NOT ON THE PLATFORM: local <local sha>, platform <platform sha>`, naming both, and stop the loop early. With `--create`, §4 already pushed the branch; without it, pushing is the person's call, and nothing in §5 pushes before a round has committed.
 
 Below, `<sha>` is the head the step describes, `git rev-parse HEAD` at that step: after each push it is the commit the platform holds. `<n>` and `<iid>` are the merge request's number and iid from §2, and `<target branch>` its target as the platform reports it.
 
@@ -149,32 +189,92 @@ interlock mr comment --review .claude/ship/mr/review-r0.json --head <sha> --roun
 glab mr note <iid> --message "$(interlock mr comment --review .claude/ship/mr/review-r0.json --head <sha> --round 0)"
 ```
 
+When `interlock mr comment` exits non-zero it rendered nothing, and nothing is posted: print `ROUND FAILED: <reason>` with the reason from standard error, and stop the loop early.
+
 ### 5c. Fix, round by round
 
-For round `r = 1, 2, …`, ask for the round's briefing:
+For round `r = 1, 2, …`, run the steps below in order. A round either runs to its end, ends the loop, or stops it early; it never skips a step to carry on.
+
+**The tree is still clean.** A stray file the review left behind would be swept into this round's commit, so check again before the round does anything:
 
 ```bash
-interlock mr remediate-brief --review .claude/ship/mr/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --protected <paths>
+git status --porcelain=v1 -z --untracked-files=all | interlock mr tree-check --change <change> --status -
 ```
 
-**The loop runs while this exits 0, and ends the first time it exits 1.** Exit 1 is the CLI's stop rule, not a failure: nothing left to fix, or the round cap reached. Report the reason it printed on standard error. The cap is the CLI's: never count rounds against a number of your own. `<paths>` is the test roots `.claude/testing/profile.json` names, comma-separated; with no profile, leave `--protected` out.
+Exit 1, or a `git status` that printed an error (the tree was not read): print `WORKING TREE NOT CLEAN: <paths> — round <r> did not start; nothing was committed or pushed`, with git's message in place of the paths when it failed, and stop the loop early.
 
-Spawn one fixer subagent with the printed briefing as its whole prompt. It fixes the listed findings, writes `.claude/ship/mr/remediate-r<r>.json`, and does not commit. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does.
-
-Then stage everything the fixer left, and classify every path that differs from HEAD, staged or not:
+**Snapshot the test profile.** `.claude/testing/profile.json` is gitignored, so HEAD cannot restore it if the fixer changes it. When it exists (Glob for it), copy it:
 
 ```bash
-git add -A
-git diff --cached --name-only | interlock mr test-paths --changed - --json
+cp .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json
 ```
 
-Revert every path it lists under `protected`, from HEAD, in the index and the working tree; this also removes a protected file the fixer created:
+**Ask for the round's briefing**, with the snapshot as its profile; with no snapshot, leave `--profile` out:
 
 ```bash
-git restore --staged --worktree --source=HEAD -- <paths>
+interlock mr remediate-brief --review .claude/ship/mr/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --profile .claude/ship/mr/profile-r<r>.json
 ```
 
-Then print `REMEDIATION TOUCHED TESTS: <files> — reverted`, naming them. When `profile` is null, nothing is protected: print `TEST PATHS UNKNOWN: <reason>` with the reason it gave, and revert nothing.
+**The loop runs while this exits 0, and ends only on the CLI's stop rule:** exit 1 with standard error beginning `interlock: STOP: ` (nothing left to fix, the round cap reached, a verdict that halts the rounds). Report the reason after `STOP:`; the loop ends, and goes on to §5d. Any other non-zero exit is a failure, never a stop: print `ROUND FAILED: <reason>` and stop the loop early. The cap is the CLI's: never count rounds against a number of your own.
+
+**Record the head** before the fixer runs:
+
+```bash
+git rev-parse HEAD
+```
+
+**Spawn ONE `general-purpose` subagent with the printed briefing as its whole prompt.** It fixes the listed findings, writes `.claude/ship/mr/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does.
+
+**The head did not move.** Read it again:
+
+```bash
+git rev-parse HEAD
+```
+
+When it is no longer the head you recorded, the fixer committed: print `FIXER COMMITTED: <before>..<after> — round stopped, nothing pushed`, and stop the loop early. Leave its commit where it is: do not reset, amend or push it.
+
+**The fixer answered.** Check its result against the findings it was briefed:
+
+```bash
+interlock mr fixer-result --result .claude/ship/mr/remediate-r<r>.json --review .claude/ship/mr/review-r<r-1>.json --round <r> --head <sha>
+```
+
+Exit 1 (the result is missing, unparseable or `ok: false`, or its ids do not partition the findings it was briefed) fails the round: print `ROUND FAILED: <reason>`, commit nothing, and stop the loop early. The fixer's edits are left in the working tree, unstaged and unreverted: say so, and name them.
+
+**The test profile is unchanged.** When there was a snapshot, compare the profile with it:
+
+```bash
+cmp -s .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json
+```
+
+A non-zero exit means the fixer changed or removed the profile. When there was no snapshot and the fixer created one (Glob for it), it changed too. Either way put it back, and print `TEST PROFILE CHANGED — restored`:
+
+```bash
+# there was a snapshot: restore it
+cp .claude/ship/mr/profile-r<r>.json .claude/testing/profile.json
+# there was no snapshot: remove the profile the fixer created
+rm -f .claude/testing/profile.json
+```
+
+**Stage the round.** The tree was clean when the round started, so everything the fixer left is the round's; only the files the tree check tolerates are left out:
+
+```bash
+git add -A -- . ':(exclude)openspec/changes/<change>/mr-summary.md' ':(exclude)docs/notes/compound.md'
+```
+
+Then classify every staged path, with the snapshot as the profile (with no snapshot, leave `--profile` out):
+
+```bash
+git diff --cached --name-only -z | interlock mr test-paths --changed - --profile .claude/ship/mr/profile-r<r>.json --json
+```
+
+**Only when it lists something under `protected`**, revert those paths from HEAD, in the index and the working tree; this also removes a protected file the fixer created. With nothing listed there is no path to restore, and `git restore` exits 128 on an empty list.
+
+```bash
+git diff --cached --name-only -z | interlock mr test-paths --changed - --profile .claude/ship/mr/profile-r<r>.json --protected-only --nul | git --literal-pathspecs restore --staged --worktree --source=HEAD --pathspec-from-file=- --pathspec-file-nul
+```
+
+The paths pass from one command to the next NUL-terminated and are read literally, so none is retyped and none is read as a pattern. Then print `REMEDIATION TOUCHED TESTS: <files> — reverted`, naming them, and run the classify line again. If it still lists anything under `protected`, the revert did not hold: print `TESTS STILL STAGED: <files>`, commit nothing, and stop the loop early; the round's changes are left staged. When `profile` is null, nothing is protected: print `TEST PATHS UNKNOWN: <reason>` with the reason it gave, and revert nothing.
 
 Then check whether anything is left to commit:
 
@@ -195,7 +295,9 @@ git commit -m "fix(review): answer the PR #<n> review round <r>" -m "Refs: #<n>"
 git push
 ```
 
-A push changes the merge request on the platform, and the skill says so once, beside the first round's push: a new commit dismisses the stale approvals a ruleset marks, and takes the merge request out of auto-merge or a merge train. The loop's verdict restores neither, and this skill does not re-request a review. A push that fails ends the loop: report the platform's message, and go on to the assessment, which will say the pipeline describes another commit.
+A push changes the merge request on the platform, and the skill says so once, beside the first round's push: a new commit dismisses the stale approvals a ruleset marks, and takes the merge request out of auto-merge or a merge train. The loop's verdict restores neither, and this skill does not re-request a review.
+
+**A push that fails ends the loop**, and stops it early: report the platform's message. The commit stays local, the merge request is not marked ready, and the assessment will say the pipeline describes another commit.
 
 Review the pushed head, independently of the fixer:
 
@@ -214,11 +316,17 @@ interlock mr replies --before .claude/ship/mr/review-r<r-1>.json --after .claude
 glab mr note <iid> --message "$(interlock mr replies --before .claude/ship/mr/review-r<r-1>.json --after .claude/ship/mr/review-r<r>.json --head <sha>)"
 ```
 
-Then the next round, from `review-r<r>.json`.
+When `interlock mr replies` exits non-zero it rendered nothing, and nothing is posted: print `ROUND FAILED: <reason>` and stop the loop early. Otherwise the next round, from `review-r<r>.json`.
 
 ### 5d. Mark it ready
 
-When the rounds are over and this pass created the merge request as a draft (§4), mark it ready now, after the last push, whatever the verdict will be. Ready says the loop is finished; the verdict and the labels say the rest. A merge request this pass did not create is left as it is.
+Read whether the merge request is a draft. This runs on every pass with `--review`: a re-run on a merge request an earlier pass created as a draft, and a loop that stopped early, included.
+
+```bash
+gh pr view <n> --json isDraft --jq .isDraft
+```
+
+When it is a draft that this pass created (§4) and the loop ended without stopping early, mark it ready now, after the last push, whatever the verdict will be. Ready says the loop is finished; the verdict and the labels say the rest.
 
 ```bash
 gh pr ready <n>
@@ -228,6 +336,10 @@ gh pr ready <n>
 # GitLab — not exercised
 glab mr update <iid> --ready
 ```
+
+When it is a draft and the loop stopped early, leave it a draft, and say in the report that it is still a draft and why: the loop did not start, the head was not on the platform, a round failed, the fixer committed, a push failed. Code owners are asked when it is marked ready, so it is marked ready only for a head the loop finished.
+
+When it is a draft this pass did not create (a re-run after an interrupted pass, or a draft the person opened), leave it a draft as well, and say that it is still a draft because this pass did not create it, so marking it ready is the person's call (`gh pr ready <n>`). Never leave a draft unmentioned.
 
 ### 5e. Confirm the scenarios
 
@@ -246,10 +358,13 @@ Plan the final verification, run each planned step exactly as the plan gives it,
 ```bash
 interlock verify plan --profile .claude/testing/profile.json --context final --changed <files> --json > .claude/ship/mr/plan.json
 interlock verify exec --kind <kind> --command "<command>"
-interlock verify judge --plan .claude/ship/mr/plan.json --results .claude/ship/mr/results.json --context final --head <sha> --json > .claude/ship/mr/verify.json
+interlock verify judge --plan .claude/ship/mr/plan.json --results .claude/ship/mr/results.json --context final --head <sha> --json > .claude/ship/mr/verify.json.tmp
+test -s .claude/ship/mr/verify.json.tmp && mv .claude/ship/mr/verify.json.tmp .claude/ship/mr/verify.json || rm -f .claude/ship/mr/verify.json.tmp
 ```
 
-With no profile, plan with `--no-profile` in place of `--profile`. Run `interlock verify exec` once per step the plan lists, and write one `{ kind, exitCode }` entry per step, with the counts you can read, to `.claude/ship/mr/results.json`. An exit 1 from `verify judge` with a verdict on standard output is a halting verdict, not a failed command: keep the file, the assessment reads it.
+With no profile, plan with `--no-profile` in place of `--profile`. Run `interlock verify exec` once per step the plan lists, each with the Bash tool's timeout set to the profile's `unit.timeout_ms` (or the tool's own maximum, when that is lower); with no profile, leave the tool's default. Write one `{ kind, exitCode }` entry per step, with the counts you can read, to `.claude/ship/mr/results.json`. A step the tool killed at its timeout is recorded as failed, with a non-zero `exitCode`, and the report names the step and the timeout as the reason.
+
+The judge writes to a temporary file, and the `test -s` line moves it into place only when it holds something. An exit 1 from `verify judge` with a verdict on standard output is a halting verdict, not a failed command: the file is kept, and the assessment reads it. An exit with nothing on standard output leaves an empty file, which the same line removes, so an empty verification record never lands.
 
 When the plan ran a coverage step, compute the coverage figures for this head:
 
@@ -265,12 +380,14 @@ A non-zero exit printed nothing: report its reason. When the plan skipped covera
 gh pr checks <n> --watch
 ```
 
+Run it with the Bash tool's `run_in_background`: the wait can outlast the tool's timeout, and you are told when it exits.
+
 ```bash
 # GitLab — not exercised: poll the merge request's head pipeline until its status is neither running nor pending
 glab ci get --merge-request <iid> --output json
 ```
 
-Not `glab ci status --live`: it follows the branch pipeline, and GitLab's merge check reads the merge request's. The exit status of the wait reports the checks, so a non-zero exit is not an error. Whatever it reports, read the pipeline input again from the platform's own document, for the pushed head, exactly as §6a gives it, and only then assess.
+Not `glab ci status --live`: it follows the branch pipeline, and GitLab's merge check reads the merge request's. The exit status of the wait reports the checks, so a non-zero exit is not an error. When it ends with checks still running or queued, print `CHECKS STILL PENDING` and say so in the report. Whatever it reports, read the pipeline input again from the platform's own document, for the pushed head, exactly as §6a gives it, and only then assess.
 
 ---
 

@@ -1809,6 +1809,39 @@ test('a skipped blast-radius review beside a dimension that could not run keeps 
   assert.deepEqual(entry.flags, ['blast-radius-skipped'])
 })
 
+/** The dimension record review-code's skill tells the model to write, read from the skill itself. */
+function skillDimensionRecord() {
+  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8')
+  const fence = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(body => body.includes('"selected"'))
+  assert.ok(fence, 'skills/review-code/SKILL.md carries no ```json fence naming "selected"')
+  return JSON.parse(fence)
+}
+
+test('the dimension record review-code\'s skill prescribes reads green, its selected-and-skipped blast-radius accounted for', () => {
+  const record = skillDimensionRecord()
+  assert.ok(record.selected.includes('blast-radius') && !record.ran.includes('blast-radius'), 'the skill record no longer selects an unrun blast-radius')
+  const input = fixture('all-observable-green')
+  input.review.dimensions = record
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'green', said(entry))
+  assert.deepEqual(entry.flags, ['blast-radius-skipped'])
+  assert.match(said(entry), /blast-radius review skipped/)
+})
+
+test('a selected dimension recorded only as skipped, under a name other than domain or blast-radius, stays amber', () => {
+  const input = fixture('all-observable-green')
+  input.review.dimensions = {
+    ...input.review.dimensions,
+    selected: [...input.review.dimensions.selected, 'security'],
+    skipped: [{ name: 'security', reason: 'ran out of time' }]
+  }
+  const entry = signalOf(assessMergeConfidence(input), 'review.ran')
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.match(entry.reason, /no record that they ran: security/)
+  assert.deepEqual(entry.flags, [])
+})
+
 // --- the input contract -------------------------------------------------------------
 
 test('every signal reading only a caller-supplied input is unobserved, saying the input was not given', () => {

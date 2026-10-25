@@ -46,6 +46,8 @@ Constraints that shape every decision below:
 
 **Invocation stays person-only.** `disable-model-invocation: true` is kept. The loop pushes, posts and commits on a remote the person owns; a model deciding on its own to start it is the one thing the owner asked never to happen. `Agent` is added to `allowed-tools` because the skill now spawns a fixer and a confirmation worker (D5, D7), and the Agent pin requires it.
 
+**Preconditions are code (added after the PR #23 review).** Where the loop changes state (stage, revert, commit, push), its precondition is a CLI answer or a fixed, pinned shell line, never a step the model reasons out. That covers a clean tree (`interlock mr tree-check`), a fixer result that accounts for every finding (`interlock mr fixer-result`), the stop rule as a `STOP:` prefix, the protected list computed from a copy of the profile, a NUL-separated revert under `--literal-pathspecs`, and a head the platform holds. The ship loop puts its own preconditions in `lib/run.mjs` for the same reason.
+
 ### D2. One pass of the loop, and the order its evidence is produced in
 
 With `--review`, after §1–§3 of the skill and the push/create step (D11), the skill runs, in this order:

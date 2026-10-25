@@ -3105,6 +3105,28 @@ test('merge-confidence exits 1 on a review with a surviving blocker', () => {
   assert.equal(run(mergeArgs('--review', review)).code, 1, 'the exit is the verdict with or without --json')
 })
 
+test('the dimension record review-code prescribes, through review --out and merge-confidence --review, reads green with the blast-radius skip flagged', () => {
+  // Read from the skill at test time, so the record the model is told to write
+  // and the record this round trip carries cannot drift apart.
+  const skill = readFileSync(new URL('../../skills/review-code/SKILL.md', import.meta.url), 'utf8')
+  const fence = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(body => body.includes('"selected"'))
+  assert.ok(fence, 'skills/review-code/SKILL.md carries no ```json fence naming "selected"')
+  const record = file('mc-roundtrip-dimensions.json', fence)
+  const repo = mergeConfidenceRepo()
+  const out = join(dir, 'mc-roundtrip', 'review-r0.json')
+  const reviewed = run([
+    'review', '--findings', paths.cleanFindings, '--verdicts', paths.verdicts,
+    '--dimensions', record, '--head', repo.sha, '--out', out, '--json'
+  ])
+  assert.equal(reviewed.code, 0, reviewed.stderr)
+
+  const r = run(mergeArgs('--review', out, '--json'))
+  assert.doesNotMatch(r.stderr, /describes another commit/, 'the review is bound to this head')
+  const ran = signalIn(JSON.parse(r.stdout), 'review.ran')
+  assert.equal(ran.band, 'green', `${ran.reason}\n${(ran.evidence || []).join('\n')}`)
+  assert.ok(ran.flags.includes('blast-radius-skipped'), JSON.stringify(ran.flags))
+})
+
 test('HUMAN exits 0, and exits 1 under --require-merge', () => {
   const plain = run(mergeArgs('--json'))
   assert.equal(plain.code, 0, plain.stderr)

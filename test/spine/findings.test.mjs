@@ -475,3 +475,21 @@ test('findingId: F- plus the first eight hex characters of the key SHA-256, stab
   assert.equal(findingId({ file: 'lib/a.mjs', title: 'missing  NULL check' }), id)
   assert.notEqual(findingId({ file: 'lib/b.mjs', title: 'Missing null check.' }), id)
 })
+
+test('findingKey: a ./-prefixed path and the bare path are one key and one id', () => {
+  const { findingKey, findingId } = findingsModule
+  const dotted = { file: './lib/a.mjs', title: 'Missing null check' }
+  const bare = { file: 'lib/a.mjs', title: 'Missing null check' }
+  assert.equal(findingKey(dotted), findingKey(bare))
+  assert.equal(findingKey(dotted), 'lib/a.mjs\u0000missing null check')
+  assert.equal(findingId(dotted), findingId(bare))
+  // A path that does not canonicalise keeps its trimmed spelling rather than vanishing.
+  assert.equal(findingKey({ file: ' /abs/a.mjs ', title: 'x' }), '/abs/a.mjs\u0000x')
+})
+
+test('findingKey: whitespace before trailing punctuation is stripped with it', () => {
+  const { findingKey, findingId } = findingsModule
+  assert.equal(findingKey({ file: 'a', title: 'Title .' }), findingKey({ file: 'a', title: 'Title' }))
+  assert.equal(findingKey({ file: 'a', title: 'Title . ! ' }), 'a\u0000title')
+  assert.equal(findingId({ file: 'a', title: 'Title .' }), findingId({ file: 'a', title: 'Title' }))
+})

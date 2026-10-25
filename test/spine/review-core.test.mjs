@@ -488,6 +488,36 @@ test('a shape-valid citation naming a path absent from the diff is rejected', ()
   assert.equal(r.counts.dismissalsRejected, 2)
 })
 
+// A blast-radius finding's file is the observing caller outside the diff, so a
+// refutation must cite that caller; that one path joins the allowed set for that
+// dimension only.
+const CALLER = 'lib/caller.ts'
+const outsideFinding = dimension =>
+  f({ severity: 'blocker', title: 'caller breaks', file: `./${CALLER}`, dimension })
+const refuteCaller = () =>
+  v({ findingTitle: 'caller breaks', file: `./${CALLER}`, isReal: false, refinedSeverity: 'dismiss', evidence: `${CALLER}:12-20` })
+
+test('a refutation citing the observing caller dismisses a blast-radius finding outside the diff', () => {
+  const r = resolveReview([outsideFinding('blast-radius')], [refuteCaller(), refuteCaller()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+})
+
+test('the same caller citation against a finding of another dimension outside the diff stays a non-vote', () => {
+  const r = resolveReview([outsideFinding('architecture')], [refuteCaller(), refuteCaller()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.surviving, 1)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
+test('a blast-radius finding gains only its own file: a citation of another outside path stays a non-vote', () => {
+  const other = () =>
+    v({ findingTitle: 'caller breaks', file: `./${CALLER}`, isReal: false, refinedSeverity: 'dismiss', evidence: 'lib/nowhere.ts:1' })
+  const r = resolveReview([outsideFinding('blast-radius')], [other(), other()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 0)
+  assert.equal(r.counts.dismissalsRejected, 2)
+})
+
 test('an uncited confirming verdict still keeps the finding', () => {
   // The asymmetry is deliberate: requiring a citation to *report* would drop
   // real findings, which is the expensive error.

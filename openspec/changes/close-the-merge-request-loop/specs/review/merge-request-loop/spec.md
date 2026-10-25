@@ -7,7 +7,7 @@ The loop `/interlock:mr --review` drives after a merge request exists: review th
 
 ### Requirement: The skill SHALL enter the loop only with `--review`, after the merge request exists, and SHALL produce its evidence in a fixed order
 
-With `--review`, after the merge request exists, the `mr` skill SHALL run, in this order: a `review-code` pass on the merge request's diff with `--base origin/<target>` and `--out` under `.claude/ship/mr/`; the findings comment `interlock mr comment` renders; fix rounds, each a fixer briefed by `interlock mr remediate-brief`, the fixer's whole tree staged and classified by `interlock mr test-paths` with the protected paths reverted, and then, when a staged change remains, a commit, a push, a fresh `review-code` pass on the pushed head and the reply table `interlock mr replies` renders, or, when none remains, the reply table rendered from the round's own review on both sides and the end of the loop; the merge request marked ready when this pass created it as a draft; the confirmation worker briefed by `interlock mr conformance-brief`; the final verification through `interlock verify plan`, `exec` and `judge` with `--context final` and `--head`, and `interlock verify coverage` for the head when the plan ran a coverage step; the platform's checks, then the pipeline document re-read from the platform for the pushed head; and only then the assessment. Without `--review` the skill SHALL run none of this and SHALL behave as it did before the flag existed. A pass SHALL clear `.claude/ship/mr/` before it writes there.
+With `--review`, after the merge request exists, the `mr` skill SHALL run, in this order: the working-tree check `interlock mr tree-check` and only then the clearing of `.claude/ship/mr/`; the platform's head compared with the local head; a `review-code` pass on the merge request's diff with `--base origin/<target>` and `--out` under `.claude/ship/mr/`; the findings comment `interlock mr comment` renders; fix rounds, each the working-tree check again, a copy of the test profile, a fixer briefed by `interlock mr remediate-brief`, the fixer's result checked by `interlock mr fixer-result`, the fixer's tree staged except the paths the tree check tolerates and classified by `interlock mr test-paths` with the protected paths reverted, and then, when a staged change remains, a commit, a push, a fresh `review-code` pass on the pushed head and the reply table `interlock mr replies` renders, or, when none remains, the reply table rendered from the round's own review on both sides and the end of the loop; the merge request marked ready when this pass created it as a draft; the confirmation worker briefed by `interlock mr conformance-brief`; the final verification through `interlock verify plan`, `exec` and `judge` with `--context final` and `--head`, and `interlock verify coverage` for the head when the plan ran a coverage step; the platform's checks, then the pipeline document re-read from the platform for the pushed head; and only then the assessment. Without `--review` the skill SHALL run none of this and SHALL behave as it did before the flag existed. A pass SHALL clear `.claude/ship/mr/` before it writes there.
 
 Rationale: a reply that cites a commit the platform never saw, a verdict read from evidence about an earlier head, and a pipeline document read before the checks ran on the pushed head are the failures the order exists to prevent; clearing the directory keeps a stale round from an earlier pass out of a fresh one.
 
@@ -15,7 +15,7 @@ Rationale: a reply that cites a commit the platform never saw, a verdict read fr
 
 - **GIVEN** the shipped `skills/mr/SKILL.md`
 - **WHEN** the skill suite runs
-- **THEN** it finds, in this order among the fenced lines, a `review-code` invocation carrying `--base origin/` and `--out .claude/ship/mr/review-r`, an `interlock mr comment` line, an `interlock mr remediate-brief` line, a `git add -A` line, an `interlock mr test-paths` line, a `git diff --cached --quiet` line, a `git push` line, an `interlock mr replies` line, a `gh pr ready` line, an `interlock mr conformance-brief` line, an `interlock verify judge` line carrying `--context final` and `--head`, an `interlock verify coverage` line carrying `--base origin/`, a `gh pr checks` line carrying `--watch`, the `gh pr view` line piped into `interlock pipeline --github -`, and the `interlock merge-confidence` line that carries `--review .claude/ship/mr/review-r<last>.json`, `--verify` and `--handoff`
+- **THEN** it finds, in this order among the fenced lines, a `git status --porcelain=v1 -z --untracked-files=all` line piped into `interlock mr tree-check`, the `rm -rf .claude/ship/mr` line, a `review-code` invocation carrying `--base origin/` and `--out .claude/ship/mr/review-r`, an `interlock mr comment` line, an `interlock mr remediate-brief` line, an `interlock mr fixer-result` line, a `git add -A -- .` line carrying one `:(exclude)` per tolerated path, an `interlock mr test-paths` line, a `git diff --cached --quiet` line, a `git push` line, an `interlock mr replies` line, a `gh pr ready` line, an `interlock mr conformance-brief` line, an `interlock verify judge` line carrying `--context final` and `--head`, an `interlock verify coverage` line carrying `--base origin/`, a `gh pr checks` line carrying `--watch`, the `gh pr view` line piped into `interlock pipeline --github -`, and the `interlock merge-confidence` line that carries `--review .claude/ship/mr/review-r<last>.json`, `--verify` and `--handoff`
 - **AND** the frontmatter's `argument-hint` carries `--review` and `allowed-tools` carries `Agent`
 
 #### Scenario: Failure — without the flag nothing of the loop runs
@@ -68,7 +68,7 @@ Rationale: the verdict reads review evidence from a file, and a file that names 
 
 ### Requirement: `interlock mr comment` SHALL render the surviving findings of a head-bound review with stable ids
 
-`interlock mr comment --review <file> --head <sha> --round <n>` SHALL read an adjudicated review record, refuse one that lacks `surviving` or whose recorded `head` is not the given sha (exit 1, the reason on standard error, nothing on standard output), and print a Markdown comment whose heading names the round and the sha, followed by one row per surviving finding carrying its id, severity, file and line, and title, then each finding's description and suggestion. The id SHALL be the one `findingId` derives from the shared finding identity. With `--json` it SHALL print `{ head, round, findings: [{ id, key, severity, file, line, title }] }`. An empty surviving list SHALL print one paragraph naming the sha and saying the review raised no surviving finding, and exit 0.
+`interlock mr comment --review <file> --head <sha> --round <n>` SHALL read an adjudicated review record, refuse one that lacks `surviving` or whose recorded `head` is not the given sha (exit 1, the reason on standard error, nothing on standard output), and print a Markdown comment whose heading names the round and the sha, followed by one row per surviving finding carrying its id, severity, file and line, and title, then each finding's description and suggestion. The id SHALL be the one `findingId` derives from the shared finding identity. Surviving findings that share a key SHALL be one finding at the highest severity among them, and that merged list SHALL be what `comment`, `replies`, `remediate-brief` and `fixer-result` all read, so no surviving blocker is hidden behind a warning with its key. Every reviewer-written title, location and unrecognised severity SHALL render as an inline code span, and every description and suggestion inside a code fence longer than any backtick run it holds, so no finding text renders as a mention, a link, markup or a line-start command. With `--json` it SHALL print `{ head, round, findings: [{ id, key, severity, file, line, title }] }`. An empty surviving list SHALL print one paragraph naming the sha and saying the review raised no surviving finding, and exit 0.
 
 #### Scenario: Happy path — two findings, two ids
 
@@ -91,9 +91,23 @@ Rationale: the verdict reads review evidence from a file, and a file that names 
 - **THEN** it prints one paragraph naming H and round 1 and saying no finding survived
 - **AND** it exits 0
 
+#### Scenario: Edge case — two findings with one key are one finding at the higher severity
+
+- **GIVEN** a record with `head` H whose surviving list holds a warning and then a blocker with the same file and title
+- **WHEN** `comment` runs with `--head H --round 0`, and `remediate-brief` runs on the same record with `--round 1`
+- **THEN** the comment carries one id, at `blocker`
+- **AND** the briefing lists that id one time, as a blocker
+
+#### Scenario: Failure — reviewer text that tries to be markup stays text
+
+- **GIVEN** a surviving finding whose title carries an `@`-mention and a Markdown link, and whose description carries `</details><!--`, a line reading `/approve` and a run of three backticks
+- **WHEN** `comment` runs
+- **THEN** the title renders inside an inline code span, and the description inside a fence longer than its backtick run
+- **AND** no line outside a fence or a span begins with `/approve`
+
 ### Requirement: `interlock mr replies` SHALL compute each finding's status under the shared finding identity
 
-`interlock mr replies --before <file> --after <file> --head <sha>` SHALL read two adjudicated review records, refuse either that lacks `surviving` and an after-record whose `head` is not the given sha, and SHALL compute: `fixed` for each surviving finding of the before-record whose key no surviving finding of the after-record shares; `open` for each whose key one does; `new` for each key of the after-record the before-record lacks. The key SHALL be `findingKey`: the trimmed file, a separator, and the title trimmed, with internal whitespace collapsed to one space, case-folded, and trailing `.`, `:`, `;` and `!` removed. It SHALL print a Markdown table whose heading names the sha, one row per finding with its id, status, file and title, and with `--json` `{ head, fixed, open, new, counts }`. The same file given as both records SHALL read every finding `open`.
+`interlock mr replies --before <file> --after <file> --head <sha>` SHALL read two adjudicated review records, refuse either that lacks `surviving` and an after-record whose `head` is not the given sha, and SHALL compute: `fixed` for each surviving finding of the before-record whose key no surviving finding of the after-record shares; `open` for each whose key one does; `new` for each key of the after-record the before-record lacks. The key SHALL be `findingKey`: the file in its canonical repository form (`canonicalizePath`, or the trimmed spelling when it has none), a separator, and the title trimmed, with internal whitespace collapsed to one space, case-folded, and any trailing run of whitespace, `.`, `:`, `;` and `!` removed. It SHALL print a Markdown table whose heading names the sha, a fixed legend line saying that `fixed` means a fresh review did not raise the finding again under the same file and title and is not a confirmation, one row per finding with its id, status, file and title, and with `--json` `{ head, fixed, open, new, counts }`. The same file given as both records SHALL read every finding `open`.
 
 Rationale: a reply that says "fixed" is a claim that an independent re-review on the pushed head did not raise the finding again, and two readers of the same identity are the only way the comment's ids and the reply's statuses name the same things. The same-file case is how a round that changed nothing says so without a second review.
 
@@ -102,7 +116,7 @@ Rationale: a reply that says "fixed" is a claim that an independent re-review on
 - **GIVEN** a before-record with findings A and B and an after-record with `head` H carrying B and a new finding C
 - **WHEN** the command runs with `--head H --json`
 - **THEN** `fixed` holds A's id, `open` holds B's, `new` holds C's, and `counts` reads one of each
-- **AND** the Markdown table's heading names H and its rows carry the same ids
+- **AND** the Markdown table's heading names H, the legend line says `fixed` is not a confirmation, and its rows carry the same ids
 
 #### Scenario: Failure — an after-record for another head
 
@@ -116,7 +130,7 @@ Rationale: a reply that says "fixed" is a claim that an independent re-review on
 - **GIVEN** a before-record whose finding is titled `Missing null check.` in `lib/a.mjs` and an after-record carrying `missing  NULL check` in `lib/a.mjs` and `Missing null check.` in `lib/b.mjs`
 - **WHEN** the command runs
 - **THEN** the `lib/a.mjs` finding is `open` under one id, and the `lib/b.mjs` finding is `new`
-- **AND** `findingKey` of the two `lib/a.mjs` titles is one string
+- **AND** `findingKey` of the two `lib/a.mjs` titles is one string, and so is the key of the same finding with its file spelled `./lib/a.mjs` and its title ending in a spaced period
 
 #### Scenario: Edge case — the same record on both sides
 
@@ -127,22 +141,22 @@ Rationale: a reply that says "fixed" is a claim that an independent re-review on
 
 ### Requirement: `interlock mr remediate-brief` SHALL brief a fix-only round under the ship loop's stop rule and the published cap
 
-`interlock mr remediate-brief --review <file> --round <n> --change <name> --head <sha> [--pr <n>] [--protected <paths>] [--result <file>]` SHALL build the round's plan with the same planner the ship loop uses and the limits `interlock limits` publishes, under the rule the ship loop applies: the first round plans every surviving blocker and warning; a later round plans a fix only while a surviving blocker remains, and otherwise the plan is built at the verdict round, one past the published cap, which plans nothing; a round beyond the verdict round is refused by the planner. When the plan has a fix to brief, the command SHALL print a briefing that lists each finding with its id, names the head and the merge request, lists the protected paths the fixer must not edit, tells the fixer not to commit, and names the result file and its shape `{ ok, fixed, notFixed }`. The briefing SHALL carry no re-review instruction. When the plan has nothing to fix or halts, for any reason the planner gives (an empty surviving list, suggestions only, the verdict round, unresolved blockers past the cap, a refused round), the command SHALL exit 1 with the planner's reason on standard error and nothing on standard output; a reason that concerns the cap SHALL name the round and the published value.
+`interlock mr remediate-brief --review <file> --round <n> --change <name> --head <sha> [--pr <n>] [--profile <file>] [--result <file>]` SHALL build the round's plan with the same planner the ship loop uses and the limits `interlock limits` publishes, under the rule the ship loop applies: the first round plans every surviving blocker and warning; a later round plans a fix only while a surviving blocker remains, and otherwise the plan is built at the verdict round, one past the published cap, which plans nothing; a round beyond the verdict round is refused by the planner. When the plan has a fix to brief, the command SHALL print a briefing that lists each finding with its id inside a block labelled as quoted reviewer data, names the head and the merge request, names what the fixer must not edit, tells the fixer not to commit, and names the result file and its shape `{ ok, fixed, notFixed }`. What the fixer must not edit SHALL be computed by the command from the test profile, or from the copy `--profile` names, with the guard's own roots and suffix rule, and the briefing SHALL tell apart no profile, a profile that could not be read and a profile that names no test root; the command SHALL take no list of protected paths from its caller. The briefing SHALL carry no re-review instruction. When the plan has nothing to fix or halts, for any reason the planner gives (an empty surviving list, suggestions only, the verdict round, unresolved blockers past the cap, a round past the verdict round), the command SHALL exit 1 with nothing on standard output and the planner's reason on standard error behind the fixed prefix `STOP:`; a reason that concerns the cap SHALL name the round and the published value. An input it cannot use (a record with no surviving list, a record for another head, a round that is not a positive integer, a missing flag) SHALL exit 1 with a reason that never carries the prefix.
 
-Rationale: the round cap is a threshold and lives in the CLI; the skill loops while this command exits zero and never states a number. One stop rule, the ship loop's, so the loop neither briefs a fixer after the budget nor stops a round early. The fixer does not re-review its own work: a fresh review of the pushed head does.
+Rationale: the round cap is a threshold and lives in the CLI; the skill loops while this command exits zero and never states a number. One stop rule, the ship loop's, so the loop neither briefs a fixer after the budget nor stops a round early. The prefix is what lets the loop tell its stop rule from a broken input: both exit 1, and only one of them means the review converged. The fixer does not re-review its own work: a fresh review of the pushed head does.
 
 #### Scenario: Happy path — round one is briefed
 
-- **GIVEN** a record with two surviving warnings, `--round 1`, `--head H`, `--pr 7` and `--protected test/a.test.mjs`
+- **GIVEN** a record with two surviving warnings, `--round 1`, `--head H`, `--pr 7` and `--profile` naming a profile copy whose commands name `test/` as a test root
 - **WHEN** the command runs
-- **THEN** standard output names H, `#7`, both finding ids, `test/a.test.mjs` under the protected list, the result file and the keys `ok`, `fixed` and `notFixed`
+- **THEN** standard output names H, `#7`, both finding ids, `test/` under what the fixer must not edit, the result file and the keys `ok`, `fixed` and `notFixed`
 - **AND** it contains no `re-review` and tells the fixer not to commit
 
 #### Scenario: Failure — the verdict round, and a round beyond it
 
 - **GIVEN** the same record and a `--round` equal to the `remediationRounds` value `interlock limits --json` publishes plus one; and the same record with that round plus two
 - **WHEN** the command runs for each
-- **THEN** each exits 1 with nothing on standard output
+- **THEN** each exits 1 with nothing on standard output and standard error beginning `interlock: STOP:`
 - **AND** the first's standard error names the round and the published cap, and the second's says the round is past the verdict round
 
 #### Scenario: Edge case — nothing to fix
@@ -150,20 +164,34 @@ Rationale: the round cap is a threshold and lives in the CLI; the skill loops wh
 - **GIVEN** a record whose surviving list is empty, and another whose surviving findings are all suggestions
 - **WHEN** the command runs for each with `--round 1`
 - **THEN** each exits 1 with nothing on standard output
-- **AND** standard error says there is nothing to remediate
+- **AND** standard error begins `interlock: STOP:` and says there is nothing to remediate
 
 #### Scenario: Edge case — a later round with no blocker left
 
 - **GIVEN** a published cap of at least two, a record with two surviving warnings and `--round 2`, and another record with one surviving blocker and `--round 2`
 - **WHEN** the command runs for each
-- **THEN** the first exits 1 and standard error names the verdict round and the published cap, because a round after the first is briefed only while a blocker survives
+- **THEN** the first exits 1 and standard error begins `interlock: STOP:` and names the verdict round and the published cap, because a round after the first is briefed only while a blocker survives
 - **AND** the second prints a briefing naming the blocker's id and exits 0
+
+#### Scenario: Failure — a broken input is not a stop
+
+- **GIVEN** a record that carries findings but no surviving list, a record whose `head` is not H, and `--round 0`
+- **WHEN** the command runs for each with `--head H`
+- **THEN** each exits 1 with nothing on standard output
+- **AND** no standard error carries `STOP:`
+
+#### Scenario: Edge case — no profile, an unreadable profile, and a profile naming no root
+
+- **GIVEN** a record with one surviving warning and `--profile` naming, in turn, no file, a file that does not parse, and a profile whose commands name no test directory
+- **WHEN** the command runs for each with `--round 1`
+- **THEN** each prints a briefing and exits 0
+- **AND** the three briefings say, in turn, that no profile exists, that the profile could not be read, and that the profile names no test root, each saying what that leaves protected
 
 ### Requirement: `interlock mr test-paths` SHALL name the changed paths the test guard protects, with the guard's own predicate
 
-`interlock mr test-paths --changed <files|-> [--json]` SHALL read the test profile the guard reads and classify each changed path with the predicate the guard uses, printing `{ protected, unprotected, profile, reason }`; `--changed -` SHALL read the paths from standard input, one per line. With no profile, `protected` SHALL be empty, `profile` null, and `reason` SHALL say no profile was found at its path and nothing is protected. The predicate and the profile readers SHALL be one implementation, exported from `lib/` and re-exported to the guard. The skill SHALL hand the command every path that differs from HEAD, staged or not, by staging the fixer's tree first and piping the staged list in, and SHALL revert the protected paths it names from HEAD in both the index and the working tree, so a protected file the fixer created is removed.
+`interlock mr test-paths --changed <files|-> [--profile <file>] [--protected-only [--nul]] [--json]` SHALL read the test profile the guard reads, or the copy `--profile` names, and classify each changed path with the predicate the guard uses, printing `{ protected, unprotected, profile, reason }`; `--changed -` SHALL read the paths from standard input, separated by NUL when the input holds one and otherwise one per line, and a bare `--changed` with no value SHALL be refused with the usage line. With no profile, `protected` SHALL be empty, `profile` null, and `reason` SHALL say no profile was found at its path and nothing is protected; a profile that exists and cannot be read SHALL say so in its own words. `--protected-only` SHALL print the protected paths alone, and `--nul` with it SHALL end each with NUL. The predicate and the profile readers SHALL be one implementation, exported from `lib/` and re-exported to the guard. The skill SHALL hand the command every path that differs from HEAD, staged or not, by staging the fixer's tree first and piping the staged list in, and SHALL revert the protected paths it names from HEAD in both the index and the working tree, so a protected file the fixer created is removed, by feeding the NUL-separated list to `git --literal-pathspecs restore --staged --worktree --source=HEAD --pathspec-from-file=- --pathspec-file-nul`, and only when the list is not empty. The skill SHALL classify against the copy of the profile it took before the fixer ran, and SHALL check again after the revert that nothing protected is still staged.
 
-Rationale: the guard that denies test edits during a run's remediation does not run after a close; the loop's fix rounds hold the same rule by reverting what the same predicate names, over the same set of paths the commit would carry, and a missing profile fails open out loud rather than pretending to protect.
+Rationale: the guard that denies test edits during a run's remediation does not run after a close; the loop's fix rounds hold the same rule by reverting what the same predicate names, over the same set of paths the commit would carry, and a missing profile fails open out loud rather than pretending to protect. The profile is ignored by git, so HEAD cannot restore it and the fixer could rewrite the rule it is judged by; the copy is the rule as it stood. A path the model typed into the revert, or one read as pathspec magic, could name a file nobody classified.
 
 #### Scenario: Happy path — a test file and a source file
 
@@ -190,8 +218,15 @@ Rationale: the guard that denies test edits during a run's remediation does not 
 
 - **GIVEN** the shipped `skills/mr/SKILL.md`
 - **WHEN** the skill suite runs
-- **THEN** it finds a `git add -A` line before the `interlock mr test-paths` line, and that line reads `git diff --cached --name-only` piped into `--changed -`
-- **AND** the revert line carries `git restore --staged --worktree --source=HEAD`, and no fenced line of the loop runs `git diff --name-only` without `--cached`
+- **THEN** it finds the `git add -A -- .` staging line before the `interlock mr test-paths` line, and that line reads `git diff --cached --name-only -z` piped into `--changed -`
+- **AND** the revert line pipes `--protected-only --nul` into `git --literal-pathspecs restore --staged --worktree --source=HEAD` with `--pathspec-file-nul`, no fenced line is a bare `git add -A`, and no fenced line of the loop runs `git diff --name-only` without `--cached`
+
+#### Scenario: Edge case — the copy of the profile decides, and the output feeds git
+
+- **GIVEN** a profile copy naming `test/` as a test root, a live profile naming no root, and `test/a b.test.mjs` and `lib/a.mjs` on standard input separated by NUL
+- **WHEN** the command runs with `--profile` naming the copy and `--protected-only --nul`, and again with `--nul` alone
+- **THEN** the first prints `test/a b.test.mjs` followed by one NUL and nothing else
+- **AND** the second is refused with the usage line
 
 ### Requirement: `interlock mr conformance-brief` SHALL brief the confirmation of scenarios and living requirements from the CLI's own checklist, bound to the head
 
@@ -229,7 +264,7 @@ Rationale: a lean ship leaves the two conformance signals unobserved for want of
 
 ### Requirement: The skill SHALL post only what the CLI rendered, SHALL commit and push each round's fix before replying, SHALL end a round that changed nothing without a push, and SHALL still never merge or approve
 
-The skill SHALL post the comment `interlock mr comment` printed and the table `interlock mr replies` printed, each through the platform's comment command with the body from standard input, and SHALL write neither by hand. After the fixer and the test-path revert, a round that leaves nothing staged SHALL commit nothing and push nothing, SHALL post the reply table rendered from the round's own review on both sides, in which every finding reads `open`, and SHALL end the loop. Any other round's fix SHALL be committed with a message that names the merge request and the round, and pushed, before the re-review and the reply. Beside the push the skill SHALL say what a push does on the platform: it dismisses the stale approvals a ruleset marks and takes the merge request out of auto-merge or a merge train, the loop's verdict restores neither, and the skill does not re-request a review. The skill SHALL NOT approve, request changes on, resolve a review thread of, or merge the merge request, and the paragraph that says so SHALL say that `MERGE` is a statement about the local signals and not the platform's branch rules, naming a merge queue among them. The GitLab lines of the loop SHALL be marked as not exercised, and the GitLab wait SHALL poll the merge request's head pipeline rather than follow the branch pipeline.
+The skill SHALL post the comment `interlock mr comment` printed and the table `interlock mr replies` printed, each through the platform's comment command with the body from standard input, and SHALL write neither by hand. After the fixer and the test-path revert, a round that leaves nothing staged SHALL commit nothing and push nothing, SHALL post the reply table rendered from the round's own review on both sides, in which every finding reads `open`, and SHALL end the loop. Any other round's fix SHALL be committed with a message that names the merge request and the round, and pushed, before the re-review and the reply. Beside the push the skill SHALL say what a push does on the platform: it dismisses the stale approvals a ruleset marks and takes the merge request out of auto-merge or a merge train, the loop's verdict restores neither, and the skill does not re-request a review. The skill SHALL NOT approve, request changes on, resolve a review thread of, or merge the merge request, and the paragraph that says so SHALL say that `MERGE` is a statement about the local signals and not the platform's branch rules, naming a merge queue among them. The GitLab lines of the loop SHALL be marked as not exercised, and so SHALL the loop's GitHub lines until a pass of the loop has been recorded on a real merge request; the GitLab wait SHALL poll the merge request's head pipeline rather than follow the branch pipeline. The create step SHALL hand the description to the platform from a quoted here-document, never inside a double-quoted argument, and the skill SHALL push nothing before the create step outside that step.
 
 #### Scenario: Happy path — the posting and commit lines
 
@@ -265,3 +300,105 @@ The skill SHALL post the comment `interlock mr comment` printed and the table `i
 - **WHEN** the skill suite reads the paragraph around the round's `git push` line
 - **THEN** it finds `dismiss` with `approval`, `merge train` and `auto-merge`
 - **AND** it finds that the skill does not `re-request` a review
+
+#### Scenario: Edge case — the create step's description, and pushes outside it
+
+- **GIVEN** the shipped skill
+- **WHEN** the skill suite runs
+- **THEN** no line carries `--body "<` or `--description "<`, and the `gh pr create` lines read the description with `--body-file -` from a quoted here-document
+- **AND** every fenced `git push` line before the first `gh pr create` line sits inside the create step
+
+### Requirement: `interlock mr tree-check` SHALL say whether the working tree holds anything a fix round would sweep in, and the skill SHALL start no loop and no round on a tree that does
+
+`interlock mr tree-check --change <name> --status <file|->` SHALL read the output of `git status --porcelain=v1 -z --untracked-files=all`, take each entry's path and, for a rename or a copy, its original path as well, and SHALL tolerate exactly the paths `toleratedPaths(<name>)` names: the change's `mr-summary.md`, which the skill itself writes, and `docs/notes/compound.md`, which the nested review appends to. Every other path SHALL be dirty. With no dirty path it SHALL exit 0; with any, it SHALL print the dirty paths and exit 1; with `--json` it SHALL print `{ clean, dirty, tolerated }` in both cases. Input that is not NUL-terminated, and a missing `--change` or `--status`, SHALL exit 1 with the reason on standard error and nothing on standard output. The skill SHALL run it before the pass clears `.claude/ship/mr/` and again at the start of each fix round. On a non-zero exit it SHALL print `WORKING TREE NOT CLEAN` with the paths, start nothing, commit nothing and push nothing, and the assessment SHALL still run, without the loop's records. The round's staging line SHALL exclude exactly the tolerated paths, so the paths the check lets through are never staged.
+
+Rationale: a fix round stages the whole tree. On a tree that was clean before the fixer ran, the whole tree is the fixer's work, so the commit carries nothing the person had in progress and the revert of protected paths destroys nothing the person wrote. The two tolerated paths are the loop's own writes; the staging line keeps them out of every commit.
+
+#### Scenario: Happy path — a clean tree, and one holding only the tolerated paths
+
+- **GIVEN** an empty status, and a status whose only entries modify `openspec/changes/x/mr-summary.md` and `docs/notes/compound.md`
+- **WHEN** the command runs on each with `--change x`
+- **THEN** both exit 0
+- **AND** the second's `--json` reads `clean: true` with both paths under `tolerated`
+
+#### Scenario: Failure — a modified file, an untracked file and a rename
+
+- **GIVEN** a status with a modified `.gitignore`, an untracked `json`, a rename of `a.txt` to `b c.txt`, and the `mr-summary.md` of another change
+- **WHEN** the command runs with `--change x`
+- **THEN** it exits 1
+- **AND** standard output names `.gitignore`, `json`, `b c.txt`, `a.txt` and the other change's summary
+
+#### Scenario: Failure — a status that is not NUL-terminated
+
+- **GIVEN** the newline-separated output of `git status --porcelain`
+- **WHEN** the command runs
+- **THEN** it exits 1 with nothing on standard output
+- **AND** standard error names the status command it expects
+
+#### Scenario: Edge case — the skill's lines
+
+- **GIVEN** the shipped `skills/mr/SKILL.md`
+- **WHEN** the skill suite runs
+- **THEN** the tree-check line comes before the `rm -rf .claude/ship/mr` line, and the prose carries `WORKING TREE NOT CLEAN`
+- **AND** the staging line's `:(exclude)` paths are exactly `toleratedPaths("<change>")`
+
+### Requirement: `interlock mr fixer-result` SHALL accept a round only when the fixer's result accounts for every briefed finding
+
+`interlock mr fixer-result --result <file> --review <file> --round <n> [--head <sha>]` SHALL exit 1 with the reason on standard error when the result file is absent, does not parse, is not an object, or carries `ok` other than `true`, and when its `fixed` ids and its `notFixed` entries, each with a non-empty `reason`, do not partition the ids `remediate-brief` briefs for that review and round: an id listed twice, an id nobody briefed, or a briefed id in neither list. A round that `remediate-brief` would not brief SHALL be refused, naming why. Otherwise it SHALL exit 0 and print the counts and each `notFixed` reason. The skill SHALL run it after the fixer returns and before anything is staged, and on a non-zero exit SHALL print `ROUND FAILED` with the reason, commit nothing, say that the fixer's edits are left in the working tree, and end the loop.
+
+Rationale: the git index shows what the fixer changed, not what it says it did. A result that leaves a briefed finding out is what a silent drop looks like, and the fixer's contract says every finding is either fixed or given a reason.
+
+#### Scenario: Happy path — every briefed id is fixed or given a reason
+
+- **GIVEN** a review with two surviving warnings, and a result with `ok: true`, one id under `fixed` and the other under `notFixed` with a reason
+- **WHEN** the command runs with `--round 1`
+- **THEN** it exits 0
+- **AND** standard output reads one fixed and one not fixed, with the reason
+
+#### Scenario: Failure — no result, an unparseable one, and one that says it failed
+
+- **GIVEN** no file at the result path, a result that is not JSON, and a result with `ok: false`
+- **WHEN** the command runs for each
+- **THEN** each exits 1
+- **AND** each standard error names the fault
+
+#### Scenario: Edge case — ids that do not partition the briefed set
+
+- **GIVEN** a result that lists an id nobody briefed, one that leaves a briefed id out, and one that lists an id under both `fixed` and `notFixed`
+- **WHEN** the command runs for each
+- **THEN** each exits 1
+- **AND** each standard error names the offending id
+
+### Requirement: The skill SHALL stop a round whose precondition fails, and SHALL say which one failed
+
+Before the first review the skill SHALL compare the platform's head (`gh pr view <n> --json headRefOid --jq .headRefOid`) with `git rev-parse HEAD`, and on a difference SHALL print `HEAD NOT ON THE PLATFORM`, naming both, and skip the loop. It SHALL end the loop on a `remediate-brief` exit only when standard error begins `interlock: STOP:`, reporting the reason; any other non-zero exit of `remediate-brief`, `mr comment` or `mr replies` SHALL print `ROUND FAILED` with the reason and go on to the assessment. It SHALL copy the test profile to `.claude/ship/mr/profile-r<r>.json` before briefing the round, record the head before spawning the fixer, and, after the fixer returns: end the loop with `FIXER COMMITTED` and nothing pushed when the head moved; and restore the profile from the copy, or remove one the fixer created, with `TEST PROFILE CHANGED` when the two differ. It SHALL name `general-purpose` as the fixer's type and say that the fixer runs with no ship guards. A push that fails SHALL end the loop and skip the ready mark. The verification verdict SHALL be written to a temporary file and kept only when the judge printed one (`test -s`), so a halting verdict is kept and an empty file never lands. Each verification step SHALL run with the tool's timeout set to the profile's `unit.timeout_ms`, and a step the tool killed SHALL be recorded as failed with the reason. The checks wait SHALL run in the background, and when it ends with checks unsettled the skill SHALL print `CHECKS STILL PENDING`. The ready step SHALL read `isDraft` on every pass, SHALL mark ready only a draft this pass created after a loop that did not stop early, and SHALL say why any other draft is still a draft.
+
+Rationale: each of these is a state change the loop made as prose with no precondition. A fixer that commits its own test edit escapes the staged-path revert; a profile it rewrote changes the rule it is judged by; a stop and a broken input both exit 1; a review of a head the platform does not hold is posted against the wrong commit; a wait the tool cut short reads like a settled pipeline. Each one now has a check, a fixed token, or both.
+
+#### Scenario: Happy path — the round's guards in order
+
+- **GIVEN** the shipped `skills/mr/SKILL.md`
+- **WHEN** the skill suite runs
+- **THEN** the headRefOid `--jq` line comes before the first `review-code` line, the profile copy line before the `remediate-brief` line, and the `fixer-result` line between the fixer spawn and the staging line
+- **AND** the prose carries `STOP:`, `ROUND FAILED`, `FIXER COMMITTED`, `TEST PROFILE CHANGED`, `general-purpose`, `test -s`, `run_in_background`, `CHECKS STILL PENDING`, `timeout_ms` and `isDraft`
+
+#### Scenario: Failure — a fixer that committed
+
+- **GIVEN** the shipped skill
+- **WHEN** the skill suite reads the round
+- **THEN** a head is recorded before the fixer spawn and compared after it
+- **AND** the paragraph that compares it prints `FIXER COMMITTED`, says nothing was pushed and ends the loop
+
+#### Scenario: Failure — a head the platform does not hold
+
+- **GIVEN** the shipped skill
+- **WHEN** the skill suite reads the section before the first review
+- **THEN** it finds `HEAD NOT ON THE PLATFORM`
+- **AND** the paragraph says the loop is skipped
+
+#### Scenario: Edge case — each pin fails on a doctored copy
+
+- **GIVEN** a copy of the skill with, in turn, the tree-check line moved after the clearing line, the `--literal-pathspecs` dropped from the revert, a bare `git add -A` line restored, and the `STOP:` token removed
+- **WHEN** the pins run on each copy
+- **THEN** each copy fails with a message naming what was dropped
+- **AND** the shipped skill satisfies every pin

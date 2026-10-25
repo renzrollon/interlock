@@ -261,9 +261,23 @@ export const INVENTORY = [
   },
   {
     bin: I,
-    argv: ['mr', 'remediate-brief', '--review', '{in}/mr-review.json', '--round', '1', '--change', CHANGE, '--head', MR_HEAD, '--pr', '7', '--protected', 'test/', '--json'],
+    argv: ['mr', 'remediate-brief', '--review', '{in}/mr-review.json', '--round', '1', '--change', CHANGE, '--head', MR_HEAD, '--pr', '7', '--json'],
     codes: [0],
     keys: ['briefing', 'findings', 'resultPath', 'head']
+  },
+  {
+    bin: I,
+    argv: ['mr', 'fixer-result', '--result', '{in}/mr-fixer.json', '--review', '{in}/mr-review.json', '--round', '1', '--head', MR_HEAD, '--json'],
+    codes: [1],
+    check: r => (r.stdout === '' && /fixer result/.test(r.stderr) ? '' : 'a missing fixer result was not refused')
+  },
+  {
+    bin: I,
+    argv: ['mr', 'tree-check', '--change', CHANGE, '--status', '-', '--json'],
+    codes: [1],
+    keys: ['clean', 'dirty', 'tolerated'],
+    input: ' M src/a.mjs\0?? json\0',
+    check: r => (stepOf(r).dirty.length === 2 ? '' : 'the two dirty paths were not both named')
   },
   {
     bin: I,

@@ -130,6 +130,7 @@ import {
   formatReview,
   readReviewPolicy,
   readDimensionFile,
+  writeReviewOut,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -164,6 +165,7 @@ import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import {
   assessMergeConfidence,
+  boundToHead,
   formatMergeConfidence,
   formatMergeConfidenceMarkdown,
   mergeLabelNames
@@ -196,7 +198,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
-import { mrCommand } from '../lib/mr-cli.mjs'
+import { MR_HELP, mrCommand } from '../lib/mr-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
@@ -342,8 +344,7 @@ Usage:
   interlock note match <change> [--paths a,b]
                                             Print the notes whose file the change's
                                             tasks (or --paths) name
-  interlock mr <comment|replies|remediate-brief|conformance-brief|test-paths>
-                                            the merge-request loop; see interlock mr --help
+  interlock mr <subcommand>                 the merge-request loop; see interlock mr --help
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
                                             No model, no network. Exit code is
@@ -2694,18 +2695,9 @@ function readCoverageBaseline(root, flags) {
   return { path, ...parsed }
 }
 
-/**
- * Whether `sha` is an ancestor of HEAD, read from the repository: exit 0 true, 1
- * false; any other status (an unknown commit in a shallow clone) is false, with
- * the likely cause on stderr.
- */
-function isAncestorOfHead(root, sha) {
-  const r = spawnSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], { cwd: root, encoding: 'utf8' })
-  if (r.status === 0) return true
-  if (r.status === 1) return false
-  warn(`could not tell whether ${sha} is an ancestor of HEAD (git exited ${r.status ?? 'abnormally'}); a shallow clone that lacks the commit is the usual cause — fetch more history`)
-  return false
-}
+/** `ancestryOfHead` with an undecided answer read as false, git's failure warned with its likely cause. */
+const isAncestorOfHead = (root, sha) =>
+  ancestryOfHead(root, sha, l => warn(/git exited/.test(l) ? `${l}; a shallow clone that lacks the commit is the usual cause — fetch more history` : l)) ?? false
 
 /**
  * Measure the coverage of the merge base in a temporary worktree and record it as
@@ -3133,7 +3125,7 @@ async function main() {
   // otherwise hand the subcommand to the flag as its value.
   if (argv.includes('-h') || argv.includes('--help')) {
     const rest = parseArgs(argv.filter(a => a !== '-h' && a !== '--help'))
-    process.stdout.write(helpFor(USAGE, rest._[0]))
+    process.stdout.write(rest._[0] === 'mr' ? MR_HELP : helpFor(USAGE, rest._[0]))
     return
   }
 
@@ -3461,22 +3453,11 @@ async function main() {
       }
 
       const headSha = headShaOf(root)
-      // A review, verification or handoff record that names a commit (its `head`)
-      // is evidence about that commit and nothing else (design D3 of
-      // close-the-merge-request-loop). One naming another commit is refused out
-      // loud and read as if it had not been given; one with no `head` is read as
-      // it always was.
-      const boundToHead = (record, key) => {
-        if (!record || typeof record.head !== 'string' || record.head === headSha) return record
-        warn(
-          `--${key} ${flags[key]} describes another commit: it records ${record.head}, ` +
-            `and the head is ${headSha ?? 'unreadable'}, so it is not used`
-        )
-        return null
-      }
-      const review = boundToHead(reviewFile, 'review')
-      const verify = boundToHead(verifyFile, 'verify')
-      const handoffFile = boundToHead(handoffRecord, 'handoff')
+      // A record naming another commit is refused out loud (see boundToHead).
+      const bound = (record, key) => boundToHead(record, headSha, `--${key} ${flags[key]}`, warn)
+      const review = bound(reviewFile, 'review')
+      const verify = bound(verifyFile, 'verify')
+      const handoffFile = bound(handoffRecord, 'handoff')
       const requested = typeof flags.change === 'string' ? flags.change : positional[1]
       const resolved = resolveChange(root, requested)
       const name = resolved.error ? null : resolved.name
@@ -3860,23 +3841,8 @@ async function main() {
         ...(head ? { head } : {}),
         ...(dimensions ? { dimensions } : {})
       }
-      // `--out` is written before anything is printed, so a failed write leaves
-      // standard output empty, and an earlier file at the path is removed first
-      // so a stale record can never stand in for this review.
-      if (typeof flags.out === 'string') {
-        try {
-          rmSync(flags.out, { force: true })
-          mkdirSync(dirname(flags.out), { recursive: true })
-          writeFileSync(flags.out, JSON.stringify(payload, null, 2) + '\n')
-        } catch (err) {
-          try {
-            rmSync(flags.out, { force: true })
-          } catch {
-            // nothing more to remove
-          }
-          die(`--out ${flags.out} could not be written: ${err.message}`)
-        }
-      }
+      // Written before anything is printed (see writeReviewOut).
+      if (typeof flags.out === 'string') writeReviewOut(flags.out, payload, die)
       emit(json, payload, text)
       break
     }

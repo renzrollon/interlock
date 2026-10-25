@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url'
 
 import { RED_SECTION_MARKER } from '../lib/artifacts.mjs'
 import { OPENSPEC_INSTALL } from '../lib/doctor.mjs'
+// A namespace import, so a missing `toleratedPaths` is reported by the mr pins
+// by name instead of failing the whole file at link time.
+import * as mrCli from '../lib/mr-cli.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILLS_DIR = join(ROOT, 'skills')
@@ -1307,7 +1310,30 @@ test('the review-code skill runs blast-radius from the graph, says when it skipp
   for (const pattern of [/rollback/i, /concurrency/i, /data effects/i, /additive plumbing/i]) {
     assert.match(brief, pattern, `dimensions/blast-radius.md must carry ${pattern}`)
   }
+
+  // What the evidence gate reads, said right, and the pin fails on the old wording.
+  assert.deepEqual(blastBriefEvidenceProblems(brief), [])
+  const oldWording = blastBriefEvidenceProblems(brief.replace(/Give the observing caller's real `line` too:[^\n]*/, 'Put a `path:line` token for the observing caller in the description, so the evidence gate can check it.'))
+  assert.ok(oldWording.some(p => p.includes('so the evidence gate can check it')), oldWording.join(' | '))
+  const noOwnFile = blastBriefEvidenceProblems(brief.replace("the finding's own `file`", 'the diff'))
+  assert.ok(noOwnFile.some(p => p.includes("finding's own `file`")), noOwnFile.join(' | '))
 })
+
+/**
+ * The blast-radius brief's `file` bullet must say the evidence gate reads a
+ * skeptic's refutation (not the finding's description) and, for this
+ * dimension, accepts a citation of the finding's own `file` besides the diff.
+ */
+function blastBriefEvidenceProblems(brief) {
+  const problems = []
+  const bullet = brief.split('\n').find(l => l.startsWith("- **`file` is the observing caller's file**"))
+  if (!bullet) return ["no bullet opens with **`file` is the observing caller's file**"]
+  for (const token of ['evidence gate', 'refutation', "finding's own `file`", 'path:line', 'besides the diff']) {
+    if (!bullet.includes(token)) problems.push(`the \`file\` bullet carries no ${token}`)
+  }
+  if (brief.includes('so the evidence gate can check it')) problems.push('carries so the evidence gate can check it: the gate reads a refutation, not the description')
+  return problems
+}
 
 // --- the mr skill delivers the CLI's verdict (spec: review/merge-request-delivery) ---
 //
@@ -1315,6 +1341,18 @@ test('the review-code skill runs blast-radius from the graph, says when it skipp
 // skill must still carry after a reword, and the check is a function so the
 // suite can show it failing on a doctored copy: a pin that cannot fail holds
 // nothing.
+
+// The loop's fixed shell lines. Each precondition the loop runs on is one of
+// these or a CLI subcommand, never prose a model re-derives.
+const MR_TREE_CHECK = /^git status --porcelain=v1 -z --untracked-files=all \| interlock mr tree-check --change <change> --status -$/
+const MR_STAGE = /^git add -A -- \. (?:':\(exclude\)[^']+'\s*)+$/
+const MR_CLASSIFY = /^git diff --cached --name-only -z \| interlock mr test-paths --changed - --profile \.claude\/ship\/mr\/profile-r<r>\.json --json$/
+const MR_SNAPSHOT = /^cp \.claude\/testing\/profile\.json \.claude\/ship\/mr\/profile-r<r>\.json$/
+const MR_PROFILE_CMP = /^cmp -s \.claude\/testing\/profile\.json \.claude\/ship\/mr\/profile-r<r>\.json$/
+const MR_PROFILE_RESTORE = /^cp \.claude\/ship\/mr\/profile-r<r>\.json \.claude\/testing\/profile\.json$/
+const MR_VERIFY_KEEP = /^test -s \.claude\/ship\/mr\/verify\.json\.tmp && mv \.claude\/ship\/mr\/verify\.json\.tmp \.claude\/ship\/mr\/verify\.json \|\| rm -f \.claude\/ship\/mr\/verify\.json\.tmp$/
+const MR_PLATFORM_HEAD = /^gh pr view <n> --json headRefOid --jq \.headRefOid$/
+const MR_IS_DRAFT = /^gh pr view <n> --json isDraft --jq \.isDraft$/
 
 /** Every way a copy of skills/mr/SKILL.md falls short of the delivery pins. */
 function mrSkillProblems(text) {
@@ -1468,17 +1506,29 @@ function mrSkillProblems(text) {
   // The happy path, in order among the fenced lines.
   let at = -1
   for (const [pattern, what] of [
+    [MR_TREE_CHECK, 'the `git status … | interlock mr tree-check` line'],
+    [/^rm -rf \.claude\/ship\/mr\/?$/, '`rm -rf .claude/ship/mr`'],
+    [MR_PLATFORM_HEAD, '`gh pr view <n> --json headRefOid --jq .headRefOid`'],
     [/\/interlock:review-code\b[^\n]*--base origin\/[^\n]*--out \.claude\/ship\/mr\/review-r/, 'review-code with `--base origin/` and `--out .claude/ship/mr/review-r`'],
     [/^interlock mr comment\b/, '`interlock mr comment`'],
+    [MR_TREE_CHECK, 'the round\'s `interlock mr tree-check` line'],
+    [MR_SNAPSHOT, 'the profile snapshot `cp`'],
     [/^interlock mr remediate-brief\b/, '`interlock mr remediate-brief`'],
-    [/^git add -A$/, '`git add -A`'],
-    [/interlock mr test-paths\b/, '`interlock mr test-paths`'],
+    [/^git rev-parse HEAD$/, '`git rev-parse HEAD` before the fixer'],
+    [/^git rev-parse HEAD$/, '`git rev-parse HEAD` after the fixer'],
+    [/^interlock mr fixer-result\b/, '`interlock mr fixer-result`'],
+    [MR_PROFILE_CMP, 'the profile `cmp -s`'],
+    [MR_STAGE, "the staging `git add -A -- . ':(exclude)…'`"],
+    [MR_CLASSIFY, '`interlock mr test-paths`'],
+    [/\| git --literal-pathspecs restore\b/, 'the test-path revert'],
     [/^git diff --cached --quiet\b/, '`git diff --cached --quiet`'],
     [/^git push\b/, '`git push`'],
     [/^interlock mr replies\b/, '`interlock mr replies`'],
+    [MR_IS_DRAFT, '`gh pr view <n> --json isDraft --jq .isDraft`'],
     [/^gh pr ready\b/, '`gh pr ready`'],
     [/^interlock mr conformance-brief\b/, '`interlock mr conformance-brief`'],
     [/^interlock verify judge\b(?=[^\n]*--context final)(?=[^\n]*--head)/, '`interlock verify judge` with `--context final` and `--head`'],
+    [MR_VERIFY_KEEP, 'the `test -s` keep-or-remove line'],
     [/^interlock verify coverage\b[^\n]*--base origin\//, '`interlock verify coverage` with `--base origin/`'],
     [/^gh pr checks\b[^\n]*--watch/, '`gh pr checks … --watch`'],
     [/^gh pr view [^\n]*\| interlock pipeline --github -/, '`gh pr view …` piped into `interlock pipeline --github -`'],
@@ -1497,11 +1547,45 @@ function mrSkillProblems(text) {
   if (fencedAt(/^interlock mr replies\b[^\n]*\| gh pr comment [^\n]*--body-file -/) === -1) problems.push('no `interlock mr replies` line piped into `gh pr comment … --body-file -`')
 
   // The round stages the fixer's tree, classifies the staged list and reverts from HEAD.
-  const addAll = fencedAt(/^git add -A$/)
-  const testPaths = fencedAt(/^git diff --cached --name-only \| interlock mr test-paths [^\n]*--changed -/)
-  if (testPaths === -1) problems.push('no `git diff --cached --name-only` piped into `interlock mr test-paths --changed -`')
-  if (addAll === -1 || testPaths === -1 || addAll > testPaths) problems.push('no `git add -A` line before the `interlock mr test-paths` line')
-  if (fencedAt(/^git restore --staged --worktree --source=HEAD\b/) === -1) problems.push('no fenced `git restore --staged --worktree --source=HEAD` line')
+  // One staging line, and what it leaves out is exactly what the tree check tolerates.
+  const stageAt = fencedAt(MR_STAGE)
+  const testPaths = fencedAt(MR_CLASSIFY)
+  if (testPaths === -1) problems.push('no `git diff --cached --name-only -z` piped into `interlock mr test-paths --changed - --profile .claude/ship/mr/profile-r<r>.json --json`')
+  if (stageAt === -1 || testPaths === -1 || stageAt > testPaths) problems.push("no staging `git add -A -- . ':(exclude)…'` line before the `interlock mr test-paths` line")
+  for (const f of fence.filter(f => /^git add\b/.test(f.line))) {
+    if (/^git add -A\s*$/.test(f.line)) problems.push('a fenced bare `git add -A` line sweeps whatever was dirty into the fix commit')
+    else if (!MR_STAGE.test(f.line)) problems.push(`a fenced git add line is not the staging line: ${f.line}`)
+  }
+  if (stageAt !== -1) {
+    const excluded = [...lines[stageAt].matchAll(/':\(exclude\)([^']+)'/g)].map(m => m[1]).sort()
+    if (typeof mrCli.toleratedPaths !== 'function') {
+      problems.push("lib/mr-cli.mjs exports no toleratedPaths, so the staging line's :(exclude) set has nothing to equal")
+    } else {
+      const tolerated = [...mrCli.toleratedPaths('<change>')].sort()
+      if (JSON.stringify(excluded) !== JSON.stringify(tolerated)) {
+        problems.push(`the staging line's :(exclude) set ${JSON.stringify(excluded)} is not toleratedPaths('<change>') ${JSON.stringify(tolerated)}`)
+      }
+    }
+  }
+  // The revert reads its paths from the CLI, NUL-terminated, literally; never a typed pathspec.
+  const restore = fence.find(f => /\brestore --staged --worktree --source=HEAD\b/.test(f.line))
+  if (!restore) {
+    problems.push('no fenced `restore --staged --worktree --source=HEAD` line')
+  } else {
+    if (!/^git diff --cached --name-only -z \| interlock mr test-paths --changed - [^|]*--protected-only --nul \| /.test(restore.line)) {
+      problems.push('the restore line does not read its paths from `git diff --cached --name-only -z | interlock mr test-paths … --protected-only --nul`')
+    }
+    if (!/\| git --literal-pathspecs restore\b/.test(restore.line)) problems.push('the restore line carries no --literal-pathspecs')
+    if (!/ --pathspec-from-file=- --pathspec-file-nul$/.test(restore.line)) problems.push('the restore line carries no --pathspec-from-file=- --pathspec-file-nul')
+    if (testPaths !== -1 && restore.i < testPaths) problems.push('the restore line comes before the classify line')
+  }
+  if (fence.some(f => /\bgit restore\b/.test(f.line))) problems.push('a fenced `git restore` takes its pathspecs from typed text')
+  if (!paragraphs.some(p => p.includes('Only when') && p.includes('`protected`') && p.includes('128'))) {
+    problems.push('no paragraph restores only when something is listed under `protected` (git restore exits 128 on an empty list)')
+  }
+  if (!paragraphs.some(p => p.includes('TESTS STILL STAGED') && p.includes('classify line again') && p.includes('commit nothing'))) {
+    problems.push('no paragraph classifies again after the revert and commits nothing when TESTS STILL STAGED')
+  }
   if (fence.some(f => /\bgit diff\b[^\n]*--name-only/.test(f.line) && !f.line.includes('--cached'))) {
     problems.push('a fenced `git diff --name-only` runs without --cached')
   }
@@ -1600,6 +1684,190 @@ function mrSkillProblems(text) {
     problems.push('no stop message says nothing was pushed and to re-run with --create')
   }
 
+  // --- the loop's preconditions: each one a CLI subcommand or a fixed line ---
+  const sectionOf = heading => {
+    const start = lineAt(heading)
+    if (start === -1) return null
+    const next = lineAt(/^#{2,3}\s/, start + 1)
+    const end = next === -1 ? lines.length : next
+    return { start, end, text: lines.slice(start, end).join('\n') }
+  }
+  const s4 = sectionOf(/^##\s+4\.\s/)
+  const s5 = loopHeading === -1 ? null : (() => {
+    const next = lineAt(/^##\s/, loopHeading + 1)
+    const end = next === -1 ? lines.length : next
+    return { start: loopHeading, end, text: lines.slice(loopHeading, end).join('\n') }
+  })()
+  const s5d = sectionOf(/^###\s+5d\b/)
+  const s5g = sectionOf(/^###\s+5g\b/)
+
+  // §5's GitHub lines are marked unexercised until the task that records a run.
+  if (!s5 || !s5.text.split(/\n\s*\n/).some(p => ['not exercised end to end', '8.5', 'close-the-merge-request-loop'].every(t => p.includes(t)))) {
+    problems.push('§5 carries no paragraph marking its GitHub lines not exercised end to end until task 8.5 of close-the-merge-request-loop')
+  }
+  if (!paragraphs.some(p => p.includes('Stopping early') && p.includes('nothing more is committed or pushed') && p.includes('§5d') && p.includes('§6'))) {
+    problems.push('no Stopping early paragraph says nothing more is committed or pushed, keeps the §5d draft check and goes on to §6')
+  }
+
+  // The tree is clean before the directory is cleared, and again at each round's start.
+  const treeChecks = fence.filter(f => MR_TREE_CHECK.test(f.line)).map(f => f.i)
+  if (!treeChecks.length || clear === -1 || treeChecks[0] > clear) {
+    problems.push('no fenced `git status --porcelain=v1 -z --untracked-files=all | interlock mr tree-check --change <change> --status -` line before the `rm -rf .claude/ship/mr` line')
+  }
+  const commentAt = fencedAt(/^interlock mr comment\b/)
+  const snapshot = fencedAt(MR_SNAPSHOT)
+  if (commentAt === -1 || snapshot === -1 || !treeChecks.some(i => i > commentAt && i < snapshot)) {
+    problems.push('no round tree-check line between the `interlock mr comment` line and the profile snapshot')
+  }
+  for (const token of [
+    'WORKING TREE NOT CLEAN: <paths> — the review loop did not start; nothing was committed or pushed',
+    'WORKING TREE NOT CLEAN: <paths> — round <r> did not start',
+    'HEAD NOT ON THE PLATFORM',
+    'FIXER COMMITTED: <before>..<after> — round stopped, nothing pushed',
+    'ROUND FAILED',
+    'STOP:',
+    'never count',
+    'spawn no worker',
+    'halting verdict',
+    'TEST PROFILE CHANGED — restored',
+    'TESTS STILL STAGED',
+    'run_in_background',
+    'CHECKS STILL PENDING',
+    'timeout_ms'
+  ]) {
+    if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+  // The check reads empty input as clean and the Bash tool runs no pipefail, so a
+  // failed `git status` must be said, right after each tree-check line, to be not clean.
+  for (const i of treeChecks) {
+    const close = lineAt(/^\s*```/, i + 1)
+    const next = close === -1 ? -1 : lineAt(/\S/, close + 1)
+    const after = next === -1 ? '' : paragraphAt(next)
+    if (!(after.includes('WORKING TREE NOT CLEAN') && after.includes('the tree was not read'))) {
+      problems.push(`the paragraph after the tree-check line at line ${i + 1} does not say a failed git status means the tree was not read`)
+    }
+  }
+  if (!paragraphs.some(p => p.includes('WORKING TREE NOT CLEAN') && p.includes('passed nothing from `.claude/ship/mr/`'))) {
+    problems.push('no paragraph says the assessment is passed nothing from `.claude/ship/mr/` when the loop did not start')
+  }
+
+  // The platform holds the local head before anything is reviewed.
+  const platformHead = fencedAt(MR_PLATFORM_HEAD)
+  if (platformHead === -1 || firstLoopReview === -1 || platformHead > firstLoopReview) {
+    problems.push('no fenced `gh pr view <n> --json headRefOid --jq .headRefOid` line before the first review-code line')
+  } else {
+    const localHead = fencedAt(/^git rev-parse HEAD$/, platformHead)
+    if (localHead === -1 || localHead > firstLoopReview) problems.push('no fenced `git rev-parse HEAD` beside the headRefOid --jq line, before the first review-code line')
+  }
+  if (!paragraphs.some(p => p.includes('HEAD NOT ON THE PLATFORM') && p.includes('stop the loop early'))) {
+    problems.push('no paragraph stops the loop early on HEAD NOT ON THE PLATFORM')
+  }
+
+  // The stop rule is the CLI's, and any other failure is not a stop.
+  if (!paragraphs.some(p => ['STOP:', 'ROUND FAILED', 'never count'].every(t => p.includes(t)))) {
+    problems.push('no paragraph tells STOP: from ROUND FAILED and never counts rounds')
+  }
+  if (!paragraphs.some(p => p.includes('interlock mr comment') && p.includes('ROUND FAILED'))) problems.push('no paragraph says a failed `interlock mr comment` is ROUND FAILED')
+  if (!paragraphs.some(p => p.includes('interlock mr replies') && p.includes('ROUND FAILED'))) problems.push('no paragraph says a failed `interlock mr replies` is ROUND FAILED')
+
+  // The snapshot is taken before the briefing names it, and the briefing protects from it.
+  const remediate = fencedAt(/^interlock mr remediate-brief\b/)
+  if (snapshot === -1 || remediate === -1 || snapshot > remediate) {
+    problems.push('no fenced `cp .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json` line before the remediate-brief line')
+  }
+  if (remediate !== -1 && !lines[remediate].includes('--profile .claude/ship/mr/profile-r<r>.json')) {
+    problems.push('the remediate-brief line carries no --profile .claude/ship/mr/profile-r<r>.json')
+  }
+  if (fence.some(f => /^interlock mr remediate-brief\b[^\n]*--protected\b/.test(f.line))) {
+    problems.push('a remediate-brief line passes --protected, which the CLI computes from the profile')
+  }
+
+  // One general-purpose fixer, unguarded and unreviewed, between two reads of HEAD.
+  const spawn = remediate === -1 ? -1 : lineAt(/`general-purpose`/, remediate + 1)
+  if (spawn === -1) {
+    problems.push('no `general-purpose` fixer spawn after the remediate-brief line')
+  } else {
+    const p = paragraphAt(spawn)
+    for (const token of ['ONE', 'whole prompt', 'no ship guards', 'Do not fix anything yourself']) {
+      if (!p.includes(token)) problems.push(`the general-purpose fixer spawn paragraph carries no ${token}`)
+    }
+  }
+  const fixerResult = fencedAt(/^interlock mr fixer-result\b/)
+  const headBefore = remediate === -1 ? -1 : fencedAt(/^git rev-parse HEAD$/, remediate)
+  const headAfter = spawn === -1 ? -1 : fencedAt(/^git rev-parse HEAD$/, spawn)
+  if (spawn === -1 || headBefore === -1 || headBefore > spawn) problems.push('no fenced `git rev-parse HEAD` line between the remediate-brief line and the fixer spawn')
+  if (headAfter === -1 || fixerResult === -1 || headAfter > fixerResult) problems.push('no fenced `git rev-parse HEAD` line between the fixer spawn and the fixer-result line, for FIXER COMMITTED')
+  if (spawn === -1 || fixerResult === -1 || stageAt === -1 || !(spawn < fixerResult && fixerResult < stageAt)) {
+    problems.push('no fenced `interlock mr fixer-result` line between the fixer spawn and the staging line')
+  }
+  if (fixerResult !== -1) {
+    for (const flag of ['--result .claude/ship/mr/remediate-r<r>.json', '--review .claude/ship/mr/review-r<r-1>.json', '--round <r>', '--head <sha>']) {
+      if (!lines[fixerResult].includes(flag)) problems.push(`the fixer-result line carries no ${flag}`)
+    }
+    if (!paragraphs.some(p => p.includes('ROUND FAILED') && p.includes('left in the working tree') && p.includes('commit nothing'))) {
+      problems.push('no paragraph says a failed fixer-result commits nothing and leaves the edits in the working tree')
+    }
+  }
+
+  // The gitignored profile is compared with its snapshot and put back.
+  const profileCmp = fencedAt(MR_PROFILE_CMP)
+  if (profileCmp === -1 || fixerResult === -1 || stageAt === -1 || !(fixerResult < profileCmp && profileCmp < stageAt)) {
+    problems.push('no fenced `cmp -s .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json` line between the fixer-result line and the staging line')
+  }
+  const profileRestore = profileCmp === -1 ? -1 : fencedAt(MR_PROFILE_RESTORE, profileCmp)
+  if (profileRestore === -1 || (stageAt !== -1 && profileRestore > stageAt)) {
+    problems.push('no fenced `cp .claude/ship/mr/profile-r<r>.json .claude/testing/profile.json` restore between the cmp line and the staging line')
+  }
+
+  // A push that fails ends the loop.
+  if (!paragraphs.some(p => p.includes('push that fails') && p.includes('ends the loop'))) {
+    problems.push('no paragraph says a push that fails ends the loop')
+  }
+
+  // §5d reads the draft state on every pass, and says why a draft stays one.
+  if (!s5d || !fence.some(f => f.i > s5d.start && f.i < s5d.end && MR_IS_DRAFT.test(f.line))) {
+    problems.push('§5d has no fenced `gh pr view <n> --json isDraft --jq .isDraft` line')
+  }
+  if (!s5d || !s5d.text.includes('still a draft')) problems.push('§5d does not say when the merge request is still a draft and why')
+  // A draft this pass did not create is the person's to mark ready: code owners are asked when it is.
+  if (!s5d || !s5d.text.includes('this pass created') || !s5d.text.includes('did not create')) {
+    problems.push('§5d does not limit the ready mark to a draft this pass created, and say so for one it did not create')
+  }
+
+  // The judge's output lands only when it holds something.
+  if (judge !== -1 && !/ > \.claude\/ship\/mr\/verify\.json\.tmp$/.test(lines[judge])) {
+    problems.push('the `interlock verify judge` line does not write .claude/ship/mr/verify.json.tmp')
+  }
+  const keep = fencedAt(MR_VERIFY_KEEP)
+  if (keep === -1 || judge === -1 || keep < judge) {
+    problems.push('no fenced `test -s .claude/ship/mr/verify.json.tmp && mv … || rm -f …` line after the judge line')
+  }
+  if (!paragraphs.some(p => p.includes('halting verdict') && p.includes('test -s'))) problems.push('no paragraph keeps a halting verdict through the test -s line')
+  if (!paragraphs.some(p => p.includes('interlock verify exec') && p.includes('timeout_ms'))) problems.push('no paragraph runs `interlock verify exec` with the profile\'s timeout_ms')
+
+  // The checks wait in the background, and an unsettled end is spoken.
+  for (const token of ['run_in_background', 'CHECKS STILL PENDING']) {
+    if (!s5g || !s5g.text.includes(token)) problems.push(`§5g carries no ${token}`)
+  }
+
+  // Model-typed text never travels in double quotes on a create or edit line.
+  lines.forEach(l => {
+    if (!/^gh label create\b/.test(l.trim()) && /--(?:body|description) "</.test(l)) problems.push(`carries --body "< or --description "<: ${l.trim()}`)
+  })
+  for (const f of fence) {
+    if (/^gh pr create\b/.test(f.line) && !/ --body-file - <<'EOF'$/.test(f.line)) problems.push(`a gh pr create line takes no quoted heredoc on --body-file -: ${f.line}`)
+    if (/^glab mr create\b/.test(f.line) && !/ --description "\$\(cat <<'EOF'$/.test(f.line)) problems.push(`a glab mr create line takes no quoted heredoc on --description: ${f.line}`)
+  }
+  if (fencedAt(/^gh pr create\b(?![^\n]*--draft)/) === -1) problems.push('no `gh pr create` line without --draft, for a merge request created ready')
+
+  // Before the merge request exists, only §4 pushes.
+  const firstCreate = fencedAt(/^gh pr create\b/)
+  for (const f of fence) {
+    if (/^git push\b/.test(f.line) && firstCreate !== -1 && f.i < firstCreate && (!s4 || f.i < s4.start || f.i >= s4.end)) {
+      problems.push(`a fenced git push before the first gh pr create sits outside §4 (line ${f.i + 1})`)
+    }
+  }
+
   // The skill states no confidence of its own and carries no label name.
   for (const banned of ['confidence level', 'interlock/merge', 'interlock/human-review', 'interlock/blocked', 'interlock/score-']) {
     if (text.includes(banned)) problems.push(`carries ${banned}`)
@@ -1662,7 +1930,7 @@ test('the loop pins fail on a doctored copy, naming what was dropped', () => {
   fails(problemsOf(t => t.replace(/^(git commit -m "fix\(review\)[^\n]*)\ngit push$/m, '$1')), '`git push` line between the commit line')
 
   // The test-path revert reads the unstaged list.
-  fails(problemsOf(t => t.replace('git diff --cached --name-only | interlock mr test-paths', 'git diff --name-only | interlock mr test-paths')), 'without --cached')
+  fails(problemsOf(t => t.replace('git diff --cached --name-only -z | interlock mr test-paths', 'git diff --name-only -z | interlock mr test-paths')), 'without --cached')
 
   // The directory is not cleared.
   fails(problemsOf(t => t.replace(/^rm -rf \.claude\/ship\/mr$/m, '')), 'rm -rf .claude/ship/mr')
@@ -1681,4 +1949,81 @@ test('the loop pins fail on a doctored copy, naming what was dropped', () => {
 
   // The create-time push dropped while a round's push remains.
   fails(problemsOf(t => t.replace(/^git push -u origin HEAD$/m, '')), 'git push -u origin HEAD')
+})
+
+test('the loop precondition pins fail on a doctored copy, naming what was dropped', () => {
+  const shipped = mrSkill()
+  const problemsOf = edit => mrSkillProblems(edit(shipped))
+  const fails = (problems, token) => assert.ok(problems.some(p => p.includes(token)), problems.join(' | '))
+  const TREE = 'git status --porcelain=v1 -z --untracked-files=all | interlock mr tree-check --change <change> --status -'
+  const STAGE = "git add -A -- . ':(exclude)openspec/changes/<change>/mr-summary.md' ':(exclude)docs/notes/compound.md'"
+  const RESTORE_TAIL = 'git --literal-pathspecs restore --staged --worktree --source=HEAD --pathspec-from-file=- --pathspec-file-nul'
+  assert.ok(shipped.includes(TREE) && shipped.includes(STAGE) && shipped.includes(RESTORE_TAIL), 'the doctored cases edit lines the shipped skill no longer carries')
+
+  // The tree check dropped from before the clear, or moved after it.
+  fails(problemsOf(t => t.replace(`${TREE}\n`, '')), 'before the `rm -rf .claude/ship/mr` line')
+  fails(problemsOf(t => t.replace(`${TREE}\n`, '').replace(/^rm -rf \.claude\/ship\/mr$/m, `rm -rf .claude/ship/mr\n${TREE}`)), 'before the `rm -rf .claude/ship/mr` line')
+  // The round's tree check dropped.
+  fails(problemsOf(t => { const at = t.lastIndexOf(`${TREE}\n`); return t.slice(0, at) + t.slice(at + TREE.length + 1) }), 'no round tree-check line')
+  fails(problemsOf(t => t.replaceAll('WORKING TREE NOT CLEAN', 'TREE DIRTY')), 'WORKING TREE NOT CLEAN')
+  // A failed `git status` reads clean unless the skill says otherwise.
+  fails(problemsOf(t => t.replace('or a `git status` that printed an error (the tree was not read)', 'or a status the check refused')), 'the tree was not read')
+
+  // The platform head check dropped, or its message.
+  fails(problemsOf(t => t.replace(/^gh pr view <n> --json headRefOid --jq \.headRefOid$/m, '')), 'headRefOid --jq')
+  fails(problemsOf(t => t.replaceAll('HEAD NOT ON THE PLATFORM', 'HEAD ELSEWHERE')), 'HEAD NOT ON THE PLATFORM')
+
+  // The stop rule, the failure line, the cap.
+  fails(problemsOf(t => t.replaceAll('STOP:', 'HALT:')), 'STOP:')
+  fails(problemsOf(t => t.replaceAll('ROUND FAILED', 'ROUND ERROR')), 'ROUND FAILED')
+  fails(problemsOf(t => t.replaceAll('never count', 'count')), 'never count')
+  fails(problemsOf(t => t.replace(/^(interlock mr remediate-brief [^\n]*)$/m, '$1 --protected test/')), '--protected')
+
+  // The fixer: one general-purpose subagent, unguarded, unreviewed, and checked.
+  fails(problemsOf(t => t.replace('`general-purpose`', 'fixer')), 'general-purpose')
+  fails(problemsOf(t => t.replace('no ship guards', 'the usual guards')), 'no ship guards')
+  fails(problemsOf(t => t.replace('as its whole prompt.** It fixes', 'as a prompt.** It fixes')), 'whole prompt')
+  fails(problemsOf(t => t.replace('Do not fix anything yourself', 'Fix what it missed')), 'Do not fix anything yourself')
+  fails(problemsOf(t => t.replaceAll('FIXER COMMITTED', 'FIXER MOVED HEAD')), 'FIXER COMMITTED')
+  fails(problemsOf(t => {
+    const line = t.match(/^interlock mr fixer-result [^\n]*$/m)[0]
+    return t.replace(`${line}\n`, '').replace(`${STAGE}\n`, `${STAGE}\n${line}\n`)
+  }), 'fixer-result` line between the fixer spawn and the staging line')
+
+  // The profile snapshot, its comparison and the restore message.
+  fails(problemsOf(t => {
+    const line = 'cp .claude/testing/profile.json .claude/ship/mr/profile-r<r>.json'
+    return t.replace(`${line}\n`, '').replace(/^(interlock mr remediate-brief [^\n]*)$/m, `$1\n${line}`)
+  }), 'line before the remediate-brief line')
+  fails(problemsOf(t => t.replace(/^cmp -s [^\n]*$/m, '')), 'cmp -s')
+  fails(problemsOf(t => t.replaceAll('TEST PROFILE CHANGED', 'PROFILE TOUCHED')), 'TEST PROFILE CHANGED')
+
+  // Staging: no bare sweep, and the exclusions are the tolerated set.
+  fails(problemsOf(t => t.replace(STAGE, 'git add -A')), 'bare `git add -A`')
+  fails(problemsOf(t => t.replace(` ':(exclude)docs/notes/compound.md'`, '')), "toleratedPaths('<change>')")
+
+  // The revert reads literal, NUL-terminated paths.
+  fails(problemsOf(t => t.replace('git --literal-pathspecs restore', 'git restore')), '--literal-pathspecs')
+  fails(problemsOf(t => t.replace('--pathspec-from-file=- --pathspec-file-nul', '--pathspec-from-file=-')), '--pathspec-file-nul')
+  fails(problemsOf(t => `${t}\n\`\`\`bash\ngit restore --staged --worktree --source=HEAD -- <paths>\n\`\`\`\n`), 'fenced `git restore`')
+
+  // A push that fails, §5d's draft read, the verification record and the checks.
+  fails(problemsOf(t => t.replace('**A push that fails ends the loop**', '**A failed push is reported**')), 'push that fails ends the loop')
+  fails(problemsOf(t => t.replace(/^gh pr view <n> --json isDraft --jq \.isDraft$/m, '')), 'isDraft')
+  fails(problemsOf(t => t.replace('When it is a draft that this pass created (§4) and', 'When it is a draft and')), 'a draft this pass created')
+  fails(problemsOf(t => t.replaceAll('halting verdict', 'blocking result')), 'halting verdict')
+  fails(problemsOf(t => t.replace(/^test -s [^\n]*$/m, '')), 'test -s')
+  fails(problemsOf(t => t.replace('--json > .claude/ship/mr/verify.json.tmp', '--json > .claude/ship/mr/verify.json')), 'verify.json.tmp')
+  fails(problemsOf(t => t.replaceAll('spawn no worker', 'skip the worker')), 'spawn no worker')
+  fails(problemsOf(t => t.replaceAll('timeout_ms', 'timeout')), 'timeout_ms')
+  fails(problemsOf(t => t.replaceAll('run_in_background', 'a long timeout')), 'run_in_background')
+  fails(problemsOf(t => t.replaceAll('CHECKS STILL PENDING', 'CHECKS WAITING')), 'CHECKS STILL PENDING')
+
+  // Model-typed text in double quotes, and a push before §4.
+  fails(problemsOf(t => t.replace(/^gh pr create --draft --title "<title>" --body-file - <<'EOF'$/m, 'gh pr create --draft --title "<title>" --body "<description so far>"')), '--body "<')
+  fails(problemsOf(t => t.replace(/^(glab mr create --title "<title>") --description "\$\(cat <<'EOF'$/m, '$1 --description "<description so far>"')), '--description "<')
+  fails(problemsOf(t => t.replace(/^git fetch origin <target branch>$/m, 'git fetch origin <target branch>\ngit push')), 'outside §4')
+
+  // §5's not-exercised marker.
+  fails(problemsOf(t => t.replace('task 8.5 of `close-the-merge-request-loop`', 'a later task')), 'not exercised end to end')
 })
