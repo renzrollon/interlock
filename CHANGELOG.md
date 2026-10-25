@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING: the pull request skill is renamed `settle`, and no MR naming is left.** `/interlock:mr` (shipped in 1.8.0) is now `/interlock:settle`, the `interlock mr` family (1.9.0) is now `interlock settle` with the same sub-verbs, and `interlock pipeline --gitlab-mr` and `--mr` are now `--gitlab-pr` and `--pending`. The loop's work directory is `.claude/ship/settle/` and its local artifact is `settle-summary.md`. The old names have no alias, shim or fallback: `interlock mr` exits 1 as an unknown subcommand, and files at the old paths are not read. Prose that said "MR" or "merge request" says "pull request" or "PR" in the skill, the CLI help, the docs and the site. "Settled at the checkpoint" now reads "decided", so the verb `settle` means one thing.
+
+### Upgrading
+
+- Run `/interlock:settle` where you ran `/interlock:mr`, and `interlock settle` where you ran `interlock mr`. Rename `--gitlab-mr` to `--gitlab-pr` and `--mr <file>` to `--pending <file>` in any script that calls `interlock pipeline`. Delete `.claude/ship/mr/` and any `mr-summary.md`: nothing reads them now, and the next pass writes `.claude/ship/settle/` and `settle-summary.md` afresh.
+
 ## [1.9.0] - 2026-10-25
 
 ### Added

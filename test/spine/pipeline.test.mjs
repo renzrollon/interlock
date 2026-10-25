@@ -11,7 +11,7 @@
 // Shapes pinned here, so the module, the command and the skill agree:
 //
 //   pipelineFromGithub(doc, { required, exclude }) -> { ok: true, input, notes } | { ok: false, reason }
-//   pendingFromGitlabMr(doc) -> { ok: true, input } | { ok: true, pending: { sha, headPipeline } } | { ok: false, reason }
+//   pendingFromGitlabPr(doc) -> { ok: true, input } | { ok: true, pending: { sha, headPipeline } } | { ok: false, reason }
 //   pipelineFromGitlab(doc, pending, { exclude }) -> { ok: true, input, notes } | { ok: false, reason }
 //   validatePipelineInput(value) -> { ok: true } | { ok: false, reason }
 //   input = { sha, checks: [{ name, state, required }], excluded: [names] }
@@ -26,7 +26,7 @@ import {
   GITHUB_STATE_TABLE,
   GITLAB_STATE_TABLE,
   pipelineFromGithub,
-  pendingFromGitlabMr,
+  pendingFromGitlabPr,
   pipelineFromGitlab,
   validatePipelineInput
 } from '../../lib/pipeline.mjs'
@@ -240,7 +240,7 @@ test('a value that names an inherited property, not a table row, reads pending l
     assert.equal(validatePipelineInput(input).ok, true, odd)
 
     const gitlab = { ...doc('gitlab-pipeline-branch'), jobs: [{ name: 'job-a', status: odd, allow_failure: false }] }
-    const read = ok(pipelineFromGitlab(gitlab, ok(pendingFromGitlabMr(doc('gitlab-mr-pipeline'))).pending, {}))
+    const read = ok(pipelineFromGitlab(gitlab, ok(pendingFromGitlabPr(doc('gitlab-pr-pipeline'))).pending, {}))
     assert.deepEqual(read.input.checks, [{ name: 'job-a', state: 'pending', required: true }], odd)
   }
 })
@@ -370,19 +370,19 @@ test('an excluded required name that has not reported leaves no pending entry, a
   assert.deepEqual(input.excluded, ['merge-gate', 'lint'])
 })
 
-// --- GitLab: the merge request document --------------------------------------------
+// --- GitLab: the pull request document --------------------------------------------
 
-test('a merge request with no head pipeline is an input with its head commit and no checks', () => {
-  const source = doc('gitlab-mr-none')
-  const result = ok(pendingFromGitlabMr(source))
+test('a pull request with no head pipeline is an input with its head commit and no checks', () => {
+  const source = doc('gitlab-pr-none')
+  const result = ok(pendingFromGitlabPr(source))
   assert.equal(result.pending, undefined)
   assert.deepEqual(result.input, { sha: source.sha, checks: [], excluded: [] })
   assert.equal(validatePipelineInput(result.input).ok, true)
 })
 
-test('a merge request with a head pipeline is a pending record: the head commit, the pipeline’s id, no check list', () => {
-  const source = doc('gitlab-mr-pipeline')
-  const result = ok(pendingFromGitlabMr(source))
+test('a pull request with a head pipeline is a pending record: the head commit, the pipeline’s id, no check list', () => {
+  const source = doc('gitlab-pr-pipeline')
+  const result = ok(pendingFromGitlabPr(source))
   assert.equal(result.input, undefined)
   assert.deepEqual(result.pending, { sha: source.sha, headPipeline: source.head_pipeline.id })
   // The record is not a pipeline input, so the verdict refuses it if the second step never runs.
@@ -391,29 +391,29 @@ test('a merge request with a head pipeline is a pending record: the head commit,
   assert.match(verdict.reason, /no "checks" list/)
 })
 
-test('a merge request document with no head commit, or no head_pipeline key at all, is refused', () => {
-  assert.match(refused(pendingFromGitlabMr(doc('gitlab-mr-no-key'))), /head_pipeline/)
-  const { sha, ...noSha } = doc('gitlab-mr-pipeline')
-  assert.match(refused(pendingFromGitlabMr(noSha)), /head commit/)
+test('a pull request document with no head commit, or no head_pipeline key at all, is refused', () => {
+  assert.match(refused(pendingFromGitlabPr(doc('gitlab-pr-no-key'))), /head_pipeline/)
+  const { sha, ...noSha } = doc('gitlab-pr-pipeline')
+  assert.match(refused(pendingFromGitlabPr(noSha)), /head commit/)
   for (const bad of [null, undefined, [], 'text', {}, { sha: '', head_pipeline: null }, { sha, head_pipeline: {} }, { sha, head_pipeline: 'x' }]) {
-    refused(pendingFromGitlabMr(bad))
+    refused(pendingFromGitlabPr(bad))
   }
 })
 
 // --- GitLab: the pipeline document ----------------------------------------------------
 
-const pendingRecord = () => ok(pendingFromGitlabMr(doc('gitlab-mr-pipeline'))).pending
+const pendingRecord = () => ok(pendingFromGitlabPr(doc('gitlab-pr-pipeline'))).pending
 
-test('the three GitLab fixtures agree with the merge request: one pipeline id, the head on a branch, another commit merged', () => {
-  const mr = doc('gitlab-mr-pipeline')
+test('the three GitLab fixtures agree with the pull request: one pipeline id, the head on a branch, another commit merged', () => {
+  const pr = doc('gitlab-pr-pipeline')
   const branch = doc('gitlab-pipeline-branch')
   const states = doc('gitlab-pipeline-states')
   const merged = doc('gitlab-pipeline-merged-result')
-  for (const pipeline of [branch, states, merged]) assert.equal(pipeline.id, mr.head_pipeline.id)
-  assert.equal(branch.sha, mr.sha)
-  assert.equal(states.sha, mr.sha)
-  assert.notEqual(merged.sha, mr.sha)
-  assert.equal(merged.ref, `refs/merge-requests/${mr.iid}/merge`)
+  for (const pipeline of [branch, states, merged]) assert.equal(pipeline.id, pr.head_pipeline.id)
+  assert.equal(branch.sha, pr.sha)
+  assert.equal(states.sha, pr.sha)
+  assert.notEqual(merged.sha, pr.sha)
+  assert.equal(merged.ref, `refs/merge-requests/${pr.iid}/merge`)
   assert.doesNotMatch(branch.ref, /^refs\/merge-requests\//)
 })
 
@@ -514,7 +514,7 @@ test('validatePipelineInput accepts every input the three readers produce', () =
     ok(pipelineFromGithub(doc('github-passing'), {})).input,
     ok(pipelineFromGithub(doc('github-states'), { required: ['run-a', 'not-reported'], exclude: ['run-b'] })).input,
     ok(pipelineFromGithub(doc('github-empty'), {})).input,
-    ok(pendingFromGitlabMr(doc('gitlab-mr-none'))).input,
+    ok(pendingFromGitlabPr(doc('gitlab-pr-none'))).input,
     ok(pipelineFromGitlab(doc('gitlab-pipeline-branch'), pendingRecord(), {})).input,
     ok(pipelineFromGitlab(doc('gitlab-pipeline-states'), pendingRecord(), { exclude: ['job-a'] })).input,
     ok(pipelineFromGitlab(doc('gitlab-pipeline-merged-result'), pendingRecord(), {})).input
@@ -568,11 +568,11 @@ test('validatePipelineInput refuses each fault, with a reason that names it', ()
 })
 
 test('no reader mutates the document it is handed', () => {
-  for (const name of ['github-states', 'gitlab-mr-pipeline', 'gitlab-pipeline-states']) {
+  for (const name of ['github-states', 'gitlab-pr-pipeline', 'gitlab-pipeline-states']) {
     const source = doc(name)
     const before = JSON.stringify(source)
     if (name === 'github-states') pipelineFromGithub(source, { required: ['run-a'], exclude: ['run-b'] })
-    else if (name === 'gitlab-mr-pipeline') pendingFromGitlabMr(source)
+    else if (name === 'gitlab-pr-pipeline') pendingFromGitlabPr(source)
     else pipelineFromGitlab(source, pendingRecord(), { exclude: ['job-a'] })
     assert.equal(JSON.stringify(source), before, name)
   }

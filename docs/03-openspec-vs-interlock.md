@@ -44,7 +44,7 @@ There is no penalty for mixing. A change proposed by `/openspec-propose` can be 
 | Adversarially verified diff review — two skeptics try to refute every finding | `ship --review` / `--strict`, or `/interlock:review-code` |
 | Deterministic decisions in code rather than prose: `interlock waves`, `surface`, `gate`, `validate` | throughout |
 | Repo onboarding for brownfield projects, plus a local code knowledge graph | `bootstrap` |
-| Spec-drift detection — completed changes never archived, and living specs older than the code they describe | `interlock drift`, surfaced in `spec`, `mr` and the ship summary |
+| Spec-drift detection — completed changes never archived, and living specs older than the code they describe | `interlock drift`, surfaced in `spec`, `settle` and the ship summary |
 
 The honest framing: OpenSpec gives you good artifacts. Interlock gives you a loop that produces them under gates and then executes them without you. Default `ship` is that execute loop (waves, unit verify, commit). The review theater is optional.
 
@@ -52,7 +52,7 @@ The honest framing: OpenSpec gives you good artifacts. Interlock gives you a loo
 
 OpenSpec is **spec-anchored**: `openspec archive` merges a completed change's delta specs into `openspec/specs/`, so the living specs keep describing what the code actually does. That mechanism is OpenSpec's and Interlock does not replace it.
 
-What Interlock adds is noticing when it has not run. The failure is quiet and entirely ordinary: `ship` commits, the MR merges, nobody archives, and every later run reads living specs that describe a codebase that has moved on.
+What Interlock adds is noticing when it has not run. The failure is quiet and entirely ordinary: `ship` commits, the PR merges, nobody archives, and every later run reads living specs that describe a codebase that has moved on.
 
 `interlock drift` reports four things, and **keeps them at different confidence on purpose** — collapsing them into one number would launder the weakest signal through the strongest:
 

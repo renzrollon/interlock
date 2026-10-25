@@ -100,7 +100,7 @@ You now have six words you did not have on the first page. The two commands you 
     <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/flow-narrow-dark.svg">
     <source media="(max-width: 600px)" srcset="./assets/flow-narrow-light.svg">
     <source media="(prefers-color-scheme: dark)" srcset="./assets/flow-dark.svg">
-    <img src="./assets/flow-light.svg" alt="The Interlock flow: bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint." width="1120">
+    <img src="./assets/flow-light.svg" alt="The Interlock flow: bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, settle and archive. Two commands, one human checkpoint." width="1120">
   </picture>
 </p>
 
@@ -110,7 +110,7 @@ Then you read the spec. That is the one deliberate stop, and [the checkpoint](./
 
 `/interlock:ship` is a **workflow**. It cannot ask you anything.
 
-That last sentence is the payoff, so here it is without the shorthand: `ship` asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening. Every tool in this category promises autonomy in a prompt; this one gets it from the shape of the thing it runs on. That is what "the shape is the product" means, and it is also why every decision that might need a human has to be settled *before* ship starts — which is why the checkpoint exists at all.
+That last sentence is the payoff, so here it is without the shorthand: `ship` asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening. Every tool in this category promises autonomy in a prompt; this one gets it from the shape of the thing it runs on. That is what "the shape is the product" means, and it is also why every decision that might need a human has to be decided *before* ship starts — which is why the checkpoint exists at all.
 
 There is one flag that skips the read. It is opt-in, it fails closed, and [continuity](./05-continuity.md) is the honest account of what it cannot catch. Read that page rather than a summary of it; it argues against itself carefully and the argument is the useful part.
 

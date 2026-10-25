@@ -139,7 +139,7 @@ It runs whenever `.claude/graph/graph.json` exists. Without a graph the skill pr
 
 ## This repository's own always-human list
 
-This repository's `REVIEW.md` names `.github/workflows/` under `## Always Human Review`. A workflow edit can grant a token or change a trigger that no diff reviewer sees, so a merge request that touches one reads `HUMAN` on `policy.humanPaths` whatever its score, with the path in the evidence. The list stays that narrow on purpose: this repository has no `CODEOWNERS`, and `.github/` outside `workflows/` holds issue templates, a pull request template and agent prompts, none of which gates a merge. The list is read from the base ref, so a merge request cannot add or remove its own entry ([above](#where-each-part-is-read-from-and-why)). `interlock review-policy --json` lists it under `humanPaths`.
+This repository's `REVIEW.md` names `.github/workflows/` under `## Always Human Review`. A workflow edit can grant a token or change a trigger that no diff reviewer sees, so a pull request that touches one reads `HUMAN` on `policy.humanPaths` whatever its score, with the path in the evidence. The list stays that narrow on purpose: this repository has no `CODEOWNERS`, and `.github/` outside `workflows/` holds issue templates, a pull request template and agent prompts, none of which gates a merge. The list is read from the base ref, so a pull request cannot add or remove its own entry ([above](#where-each-part-is-read-from-and-why)). `interlock review-policy --json` lists it under `humanPaths`.
 
 ## Try it
 

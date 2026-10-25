@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security, technical-lead and blast radius (who outside the diff observes the change, from the codebase graph), then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening an MR, or when a diff is high-stakes enough that false positives would waste real time.
+description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security, technical-lead and blast radius (who outside the diff observes the change, from the codebase graph), then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening a PR, or when a diff is high-stakes enough that false positives would waste real time.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
 argument-hint: "[change-name] [--dimensions a,b,c] [--base <ref>] [--out <file>]"

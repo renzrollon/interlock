@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 1108" width="360" height="1108" role="img" aria-labelledby="t d">
 <title id="t">The Interlock flow</title>
-<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint.</desc>
+<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, settle and archive. Two commands, one human checkpoint.</desc>
 <style>
 svg { --text:#151a21; --soft:#475161; --muted:#5f6978; --divider:#dde2e8; --border:#c3cad4; --strong:#838d9b; --accent:#1d5bd6; --on-accent:#ffffff; --surface-2:#edf1f5; }
 text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -64,10 +64,10 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <text class="eyebrow sans" x="0" y="685">When you want it</text>
 <line class="hair" x1="128.4" y1="681.5" x2="360" y2="681.5"/>
 <rect class="node optional" x="0.5" y="698.5" width="359" height="144.55" rx="4"/>
-<text class="name" x="17" y="728">mr</text>
+<text class="name" x="17" y="728">settle</text>
 <text class="line" x="17" y="752.5">PR with verdict</text>
-<text class="desc" x="17" y="778.75">Opens or updates the PR or MR with the</text>
-<text class="desc" x="17" y="800.35">MERGE / HUMAN / BLOCK verdict in the</text>
+<text class="desc" x="17" y="778.75">Opens or updates the pull request with</text>
+<text class="desc" x="17" y="800.35">the MERGE / HUMAN / BLOCK verdict in the</text>
 <text class="desc" x="17" y="821.95">description and labels. Never merges.</text>
 <rect class="node optional" x="0.5" y="852.05" width="359" height="144.55" rx="4"/>
 <text class="name" x="17" y="881.55">archive</text>
@@ -77,6 +77,6 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <text class="desc" x="17" y="975.5">plans against what is now true.</text>
 <text class="foot" x="0" y="1032.1">ship is a workflow, so there is nobody to</text>
 <text class="foot" x="0" y="1053.1">ask.</text>
-<text class="foot dim" x="0" y="1074.1">Everything a human decides is settled at</text>
+<text class="foot dim" x="0" y="1074.1">Everything a human decides is decided at</text>
 <text class="foot dim" x="0" y="1095.1">the checkpoint, before ship starts.</text>
 </svg>

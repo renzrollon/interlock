@@ -37,7 +37,7 @@ Three consequences follow, and none of them are available to a folder of prompts
 
 **Loop control stops being persuadable.** `ship` used to be `skills/ship/SKILL.md` — eleven numbered headings including "cap two remediation rounds". A model that has just spent forty minutes on a change is precisely the wrong party to ask whether it has earned a third round, and prose caps do not survive that conversation. The cap is now `LIMITS.remediationRounds` in `lib/limits.mjs`, read by a script that cannot argue.
 
-**Zero-touch becomes structural.** The runtime accepts no mid-run user input. There is no `AskUserQuestion` to remove because nothing is listening. This is why every decision that could need a human must be settled *before* `ship` starts — and why the checkpoint between `spec` and `ship` exists at all.
+**Zero-touch becomes structural.** The runtime accepts no mid-run user input. There is no `AskUserQuestion` to remove because nothing is listening. This is why every decision that could need a human must be decided *before* `ship` starts — and why the checkpoint between `spec` and `ship` exists at all.
 
 Default `ship` is that loop through **waves → unit verify → commit**. Adversarial review, remediation, and handoff artifacts are `--review` / `--handoff` / `--strict` — optional cost, not the execute loop. The moat is the checkpoint plus caps that cannot be argued with, not a more expensive GSD-shaped tail.
 

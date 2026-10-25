@@ -78,7 +78,7 @@ Skills that emit prompts to subagents or external tools:
 - **/interlock:spec** — wraps user description, change name, repo root before passing to `openspec new change` and downstream artifact generators.
 - **/interlock:explore** — wraps user question and any file references before fanning out to Explore subagents.
 - **/interlock:ship** — wraps goal and file lists in each subtask prompt.
-- **/interlock:mr** — wraps branch name, issue ref, summary before invoking `glab mr create` / `gh pr create`.
+- **/interlock:settle** — wraps branch name, issue ref, summary before invoking `glab mr create` / `gh pr create`.
 - **dispatch** — sanitizes freeform user input (emails, tokens, auth headers) at ingress.
 
 When adding a new skill that echoes user-supplied strings into a prompt template or tool call, follow the same pattern.

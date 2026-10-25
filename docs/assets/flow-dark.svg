@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 342" width="1120" height="342" role="img" aria-labelledby="t d">
 <title id="t">The Interlock flow</title>
-<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, mr and archive. Two commands, one human checkpoint.</desc>
+<desc id="d">bootstrap once per repo; for every change, spec, then you read the spec, then ship; when you want them, settle and archive. Two commands, one human checkpoint.</desc>
 <style>
 svg { --text:#e6eaf0; --soft:#aab3c0; --muted:#8c96a4; --divider:#262e39; --border:#343d4a; --strong:#6b7686; --accent:#5c9bff; --on-accent:#0d1117; --surface-2:#1c232d; }
 text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -77,7 +77,7 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <text class="arrow" x="806.11" y="130" text-anchor="middle">→</text>
 <rect class="node optional" x="818.61" y="77.5" width="118.87" height="95" rx="4"/>
 <rect class="ring cur s4" x="815.11" y="74" width="125.87" height="102" rx="6"/>
-<text class="name" x="878.04" y="130" text-anchor="middle">mr</text>
+<text class="name" x="878.04" y="130" text-anchor="middle">settle</text>
 <text class="line" x="878.04" y="197" text-anchor="middle">PR with verdict</text>
 <text class="arrow" x="949.98" y="130" text-anchor="middle">→</text>
 <rect class="node optional" x="962.48" y="77.5" width="140.02" height="95" rx="4"/>
@@ -89,7 +89,7 @@ text { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consol
 <text class="desc cur s1" x="0" y="266"><tspan class="who">spec</tspan><tspan dx="10">Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs.</tspan></text>
 <text class="desc cur s2" x="0" y="266"><tspan class="who">You read the spec.</tspan><tspan dx="10">Four files, one question each. The only required stop. Wrong idea? Re-spec.</tspan></text>
 <text class="desc cur s3" x="0" y="266"><tspan class="who">ship</tspan><tspan dx="10">Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one.</tspan></text>
-<text class="desc cur s4" x="0" y="266"><tspan class="who">mr</tspan><tspan dx="10">Opens or updates the PR or MR with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.</tspan></text>
+<text class="desc cur s4" x="0" y="266"><tspan class="who">settle</tspan><tspan dx="10">Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.</tspan></text>
 <text class="desc cur s5" x="0" y="266"><tspan class="who">archive</tspan><tspan dx="10">After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.</tspan></text>
-<text class="foot" x="0" y="331">ship is a workflow, so there is nobody to ask.<tspan class="dim" dx="8.4">Everything a human decides is settled at the checkpoint, before ship starts.</tspan></text>
+<text class="foot" x="0" y="331">ship is a workflow, so there is nobody to ask.<tspan class="dim" dx="8.4">Everything a human decides is decided at the checkpoint, before ship starts.</tspan></text>
 </svg>

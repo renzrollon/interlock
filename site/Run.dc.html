@@ -412,7 +412,7 @@ class Component extends DCLogic {
       ['judge_final', 'run judge --context final', 'stage', 'all', L(5), T(1), W],
       ['handoff', 'handoff: test plan, walkthrough, conformance', 'stage', 'strict', L(5), T(2), W],
       ['commit', 'commit: one feature-level commit', 'stage', 'all', L(5), T(3), W],
-      ['mr', '/interlock:mr', 'human', 'all', L(6), T(2), W],
+      ['settle', '/interlock:settle', 'human', 'all', L(6), T(2), W],
       ['close', 'run close → receipt, outcome, trajectory', 'term', 'all', L(6), T(3), W],
       ['trampoline_halt', 'No Workflow tool → HALT', 'halt', 'all', HXL(0), HT, HW],
       ['preflight_halt', 'HALTED: validate / coverage / plan', 'halt', 'all', HXL(1), HT, HW],

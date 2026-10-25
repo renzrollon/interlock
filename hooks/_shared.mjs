@@ -11,7 +11,7 @@
 import { isAbsolute, resolve } from 'node:path'
 
 // The test-path predicate lives in `lib/test-paths.mjs` so the guard and
-// `interlock mr test-paths` are one implementation (close-the-merge-request-loop).
+// `interlock settle test-paths` are one implementation (close-the-merge-request-loop).
 export { isTestPath, loadTestProfile, relPosix, testRootsFromProfile } from '../lib/test-paths.mjs'
 
 /** Read the PreToolUse/SessionStart event the host writes to stdin. */

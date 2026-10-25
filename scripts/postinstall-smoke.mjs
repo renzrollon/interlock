@@ -58,8 +58,8 @@ const HALTED = join('ship', 'halted-run-6e9d0b02')
 const CHANGE = 'add-thing'
 const CLASSIFIED = '.claude/ship/classified.json'
 const FINDINGS = '.claude/ship/findings.json'
-// The head a merge-request review record is bound to; `mr` refuses a record bound to another.
-const MR_HEAD = 'a'.repeat(40)
+// The head a pull-request review record is bound to; `settle` refuses a record bound to another.
+const SETTLE_HEAD = 'a'.repeat(40)
 
 const TASKS_MD = `# Tasks\n\n## 1. Docs\n\n- [ ] 1.1 Write docs/a.md\n- [ ] 1.2 Write docs/b.md\n`
 
@@ -241,39 +241,39 @@ export const INVENTORY = [
   { bin: I, argv: ['merge-confidence', CHANGE, '--base', 'HEAD~1', '--markdown'], codes: [0, 1], check: r => (/Merge confidence/.test(r.stdout) ? '' : 'no markdown header') },
   { bin: I, argv: ['merge-confidence', '--label-names', '--json'], codes: [0] },
 
-  // The merge-request review loop (the mr skill's --review): what it pipes to the merge
+  // The settle loop (the settle skill's --review): what it pipes to the merge
   // request, the briefings it hands its workers, and the paths the test guard protects.
   // The scratch change has no delta spec and no graph is built yet, so the conformance
   // brief takes its nothing-to-confirm exit: silent stdout, the reason on stderr.
   {
     bin: I,
-    argv: ['mr', 'comment', '--review', '{in}/mr-review.json', '--head', MR_HEAD, '--round', '0', '--json'],
+    argv: ['settle', 'comment', '--review', '{in}/settle-review.json', '--head', SETTLE_HEAD, '--round', '0', '--json'],
     codes: [0],
     keys: ['head', 'round', 'findings'],
     check: r => (stepOf(r).findings.length === 1 ? '' : 'the surviving finding was not listed')
   },
   {
     bin: I,
-    argv: ['mr', 'replies', '--before', '{in}/mr-review.json', '--after', '{in}/mr-review.json', '--head', MR_HEAD, '--json'],
+    argv: ['settle', 'replies', '--before', '{in}/settle-review.json', '--after', '{in}/settle-review.json', '--head', SETTLE_HEAD, '--json'],
     codes: [0],
     keys: ['head', 'fixed', 'open', 'new'],
     check: r => (stepOf(r).open.length === 1 ? '' : 'the finding both rounds hold is not open')
   },
   {
     bin: I,
-    argv: ['mr', 'remediate-brief', '--review', '{in}/mr-review.json', '--round', '1', '--change', CHANGE, '--head', MR_HEAD, '--pr', '7', '--json'],
+    argv: ['settle', 'remediate-brief', '--review', '{in}/settle-review.json', '--round', '1', '--change', CHANGE, '--head', SETTLE_HEAD, '--pr', '7', '--json'],
     codes: [0],
     keys: ['briefing', 'findings', 'resultPath', 'head']
   },
   {
     bin: I,
-    argv: ['mr', 'fixer-result', '--result', '{in}/mr-fixer.json', '--review', '{in}/mr-review.json', '--round', '1', '--head', MR_HEAD, '--json'],
+    argv: ['settle', 'fixer-result', '--result', '{in}/settle-fixer.json', '--review', '{in}/settle-review.json', '--round', '1', '--head', SETTLE_HEAD, '--json'],
     codes: [1],
     check: r => (r.stdout === '' && /fixer result/.test(r.stderr) ? '' : 'a missing fixer result was not refused')
   },
   {
     bin: I,
-    argv: ['mr', 'tree-check', '--change', CHANGE, '--status', '-', '--json'],
+    argv: ['settle', 'tree-check', '--change', CHANGE, '--status', '-', '--json'],
     codes: [1],
     keys: ['clean', 'dirty', 'tolerated'],
     input: ' M src/a.mjs\0?? json\0',
@@ -281,7 +281,7 @@ export const INVENTORY = [
   },
   {
     bin: I,
-    argv: ['mr', 'test-paths', '--changed', '-', '--json'],
+    argv: ['settle', 'test-paths', '--changed', '-', '--json'],
     codes: [0],
     keys: ['protected', 'unprotected', 'profile', 'reason'],
     input: 'test/a.test.mjs\nsrc/a.mjs\n',
@@ -289,7 +289,7 @@ export const INVENTORY = [
   },
   {
     bin: I,
-    argv: ['mr', 'conformance-brief', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--head', MR_HEAD, '--json'],
+    argv: ['settle', 'conformance-brief', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--head', SETTLE_HEAD, '--json'],
     codes: [0],
     check: r => (r.stdout === '' && /nothing to confirm/.test(r.stderr) ? '' : 'did not take the nothing-to-confirm exit')
   },
@@ -468,8 +468,8 @@ function prepare(scratch, repo) {
   input('blocker.json', [{ dimension: 'qa', findings: [{ severity: 'blocker', file: 'src/a.mjs', line: 1, title: 't', description: 'd', evidence: 'src/a.mjs:1' }] }])
   input('empty.json', [])
   input('review-ok.json', { ok: true })
-  input('mr-review.json', {
-    head: MR_HEAD,
+  input('settle-review.json', {
+    head: SETTLE_HEAD,
     surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', suggestion: 's' }],
     counts: { raised: 1, surviving: 1 }
   })

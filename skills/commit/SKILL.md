@@ -96,4 +96,4 @@ Stage by naming **every path explicitly**, then commit.
 
 ## 5. Report
 
-Commit hash and subject, files committed, anything left unstaged, and the warning from step 1 if it fired. Suggest the next step: `/interlock:mr` to open or update the merge request.
+Commit hash and subject, files committed, anything left unstaged, and the warning from step 1 if it fired. Suggest the next step: `/interlock:settle` to open or update the pull request.
