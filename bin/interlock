@@ -119,14 +119,19 @@ import {
   LANE_CAPS,
   SOLO,
   MERGE_BANDS,
+  SPAWN_ROUTING,
+  REVIEW_DEPTH,
   formatLimits
 } from '../lib/limits.mjs'
+import { resolveRouting, listRouting, formatRouting, RoutingError } from '../lib/routing.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import {
   REVIEW_POLICY_FILE,
   composePolicy,
   parseReviewPolicy,
   resolveReview,
+  carryForward,
+  readCarryFile,
   formatReview,
   readReviewPolicy,
   reviewRecordFlags,
@@ -171,7 +176,7 @@ import {
   mergeLabelNames
 } from '../lib/merge-confidence.mjs'
 import {
-  pendingFromGitlabMr,
+  pendingFromGitlabPr,
   pipelineFromGithub,
   pipelineFromGitlab,
   validatePipelineInput
@@ -198,7 +203,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
-import { MR_HELP, mrCommand } from '../lib/mr-cli.mjs'
+import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
@@ -264,10 +269,10 @@ Usage:
                   [--required <name>]...    into the pipeline input "merge-
                   [--exclude <name>]...     confidence --pipeline" reads. Offline:
                   [--out <file>]            reads the document it is handed, never
-  interlock pipeline --gitlab-mr <file|->   gh, glab or the network (see
+  interlock pipeline --gitlab-pr <file|->   gh, glab or the network (see
                   --out <file>              "pipeline:" below)
   interlock pipeline --gitlab <file|->
-                  --mr <file>
+                  --pending <file>
                   [--exclude <name>]... [--out <file>]
   interlock report [--since <iso>]          Indicators over the three recorded
                   [--change <name>]         corpora — outcome records, run
@@ -276,6 +281,9 @@ Usage:
                                             an unobserved value stays unobserved.
                                             Gates nothing and always exits 0
   interlock limits                          Print every cap the loop obeys
+  interlock routing [<role>]                Print the model and effort a prose
+                  [--depth lean|strict]     skill passes when it spawns a role,
+                                            and the review depth's shape
   interlock notify --title <t> [--body <b>]  Push one message so a run or a
                  [--priority high|default]   checkpoint reached while nobody was
   interlock notify checkpoint <change>       watching still reaches someone. The
@@ -344,7 +352,7 @@ Usage:
   interlock note match <change> [--paths a,b]
                                             Print the notes whose file the change's
                                             tasks (or --paths) name
-  interlock mr <subcommand>                 the merge-request loop; see interlock mr --help
+  interlock settle <subcommand>                 the settle loop; see interlock settle --help
   interlock evals triage --results <file>   Classify an eval results run:
                                             regression, variance, or no signal.
                                             No model, no network. Exit code is
@@ -390,8 +398,11 @@ Usage:
                   [--base <ref>]           Resolve a review against skeptic verdicts.
                   [--out <f>] [--head <sha>]  --out writes the JSON to a file;
                   [--dimensions <f>]       --head records the commit reviewed;
-                                           --dimensions records which dimensions
-                                           ran and which were skipped.
+                  [--carry <f>]            --dimensions records which dimensions
+                                           ran and which were skipped; --carry
+                                           appends an earlier record's findings
+                                           from dimensions this review did not
+                                           run, marked carried (needs --dimensions).
                                            Also reads repo-root REVIEW.md and drops
                                            findings on its do-not-report paths;
                                            --base reads those paths from the ref
@@ -479,8 +490,8 @@ Exit codes:
                              --markdown with --json also exits 1, with no
                              verdict on stdout
     pipeline                 the document is not JSON or not the one the
-                             platform flag expects, --out or --mr is missing
-                             where required, the pipeline is not the merge
+                             platform flag expects, --out or --pending is missing
+                             where required, the pipeline is not the pull
                              request's head pipeline, or a branch pipeline ran
                              on another commit; nothing is printed on stdout and
                              an earlier file at --out is removed
@@ -607,6 +618,15 @@ limits:
   groups (laneCaps, solo, mergeBands), never entries of the iteration-count
   limits.
 
+routing:
+  [role]                 One of the spawn roles in "interlock limits"; with none,
+                         every role and the depth's review shape are printed.
+  --depth lean|strict    The review depth; the published default when absent.
+  A null model or effort prints as inherit (JSON: null) and the caller omits the
+  parameter. A set CLAUDE_CODE_EFFORT_LEVEL or CLAUDE_CODE_SUBAGENT_MODEL_FORCE is
+  printed as a banner, never changed. An unknown role or depth exits 1 naming the
+  known ones on stderr, with nothing on stdout.
+
 conformance:
   [change]               The change whose delta-spec scenarios are listed (or
                          --change <name>); with none named, the single active
@@ -655,22 +675,22 @@ pipeline:
                          that matches no reported check becomes a pending,
                          required entry. Absent, every check is not required and
                          stderr says the required set was not given.
-  --gitlab-mr <file|->   The document "glab mr view <iid> --output json" prints.
+  --gitlab-pr <file|->   The document "glab mr view <iid> --output json" prints.
                          Needs --out. With no head pipeline it writes an input
-                         with the merge request's head commit and no checks;
+                         with the pull request's head commit and no checks;
                          with one it writes a pending record { sha, headPipeline }
                          for the next step, which "merge-confidence --pipeline"
                          refuses. A document with no sha or no head_pipeline key
                          is refused.
   --gitlab <file|->      The document "glab ci get --merge-request <iid> --output
-                         json" prints. Needs --mr. A job reads pass for success,
-                         fail for failed, skipped for skipped and for a manual
-                         job allowed to fail, pending otherwise; it is required
-                         when its allow_failure is false. The input's commit is
+                         json" prints. Needs --pending. A job reads pass for
+                         success, fail for failed, skipped for skipped and for a
+                         manual job allowed to fail, pending otherwise; it is
+                         required when its allow_failure is false. The input's commit is
                          the record's, never typed: a pipeline that is not the
                          record's, or a branch pipeline for another commit, is
                          refused.
-  --mr <file>            With --gitlab: the pending record --gitlab-mr wrote. May
+  --pending <file>       With --gitlab: the pending record --gitlab-pr wrote. May
                          be the same path as --out.
   --exclude <name>       With --github or --gitlab: leave the check of that exact
                          name out and record it under "excluded". Repeatable. No
@@ -748,7 +768,7 @@ merge-confidence:
                          file from an edited one against. A ref that names no
                          commit exits 1 with nothing on stdout.
   --require-merge        Exit 1 unless the verdict is MERGE.
-  --markdown             Print the description block for a merge request and
+  --markdown             Print the description block for a pull request and
                          nothing else: the verdict line, the commit and the base,
                          what is driving by kind, the flags, the checks excluded
                          from the pipeline input, the two labels, and every
@@ -767,7 +787,7 @@ merge-confidence:
   --json carries "head" ({ sha }, or null when the head cannot be read), "base"
   ({ ref, sha }: the reference given and the merge base the diff was taken from,
   sha null when it cannot be read; null with no --base) and "labels" (the verdict
-  and score labels for a merge request, each { name, color, description }, with
+  and score labels for a pull request, each { name, color, description }, with
   verdictNames and scorePrefix). The text form prints the two label names.
   Every input not given reads unobserved with that reason, and unobserved ranks
   as amber. The command never calls gh, glab or the network. Every gating signal
@@ -3019,10 +3039,10 @@ function pipelineCommand(flags, json) {
   }
   if (flags.out === true) refuse('--out needs a file')
 
-  const platforms = ['github', 'gitlab-mr', 'gitlab'].filter(key => flags[key] !== undefined)
+  const platforms = ['github', 'gitlab-pr', 'gitlab'].filter(key => flags[key] !== undefined)
   if (platforms.length !== 1) {
     refuse(
-      `pipeline needs exactly one of --github, --gitlab-mr or --gitlab, each with the platform's document ` +
+      `pipeline needs exactly one of --github, --gitlab-pr or --gitlab, each with the platform's document ` +
         `(a file, or "-" for stdin)${platforms.length ? `; got ${platforms.map(p => `--${p}`).join(' and ')}` : ''}`
     )
   }
@@ -3035,24 +3055,24 @@ function pipelineCommand(flags, json) {
   if (platform !== 'github' && required.length) {
     refuse(`--required is read with --github only: on GitLab a job is required when its allow_failure is false`)
   }
-  if (platform === 'gitlab-mr' && exclude.length) {
-    refuse('--exclude is read with --github and --gitlab: the merge request document carries no checks to leave out')
+  if (platform === 'gitlab-pr' && exclude.length) {
+    refuse('--exclude is read with --github and --gitlab: the pull request document carries no checks to leave out')
   }
-  if (platform === 'gitlab-mr' && !outPath) {
-    refuse('--gitlab-mr needs --out <file>: the head commit travels to "interlock pipeline --gitlab --mr <file>" in that file')
+  if (platform === 'gitlab-pr' && !outPath) {
+    refuse('--gitlab-pr needs --out <file>: the head commit travels to "interlock pipeline --gitlab --pending <file>" in that file')
   }
 
   // The record of the first GitLab step, read before anything at --out is
-  // touched: --mr and --out may name the same path.
+  // touched: --pending and --out may name the same path.
   let record = null
   if (platform === 'gitlab') {
-    if (typeof flags.mr !== 'string' || !flags.mr || flags.mr === '-') {
-      refuse('--gitlab needs --mr <file>: the file "interlock pipeline --gitlab-mr --out <file>" wrote, which carries the head commit')
+    if (typeof flags.pending !== 'string' || !flags.pending || flags.pending === '-') {
+      refuse('--gitlab needs --pending <file>: the file "interlock pipeline --gitlab-pr --out <file>" wrote, which carries the head commit')
     }
     try {
-      record = JSON.parse(readFileSync(flags.mr, 'utf8'))
+      record = JSON.parse(readFileSync(flags.pending, 'utf8'))
     } catch (err) {
-      refuse(`--mr ${flags.mr} could not be read as JSON: ${err.message}`)
+      refuse(`--pending ${flags.pending} could not be read as JSON: ${err.message}`)
     }
   }
 
@@ -3072,8 +3092,8 @@ function pipelineCommand(flags, json) {
   const read =
     platform === 'github'
       ? pipelineFromGithub(doc, { required, exclude })
-      : platform === 'gitlab-mr'
-        ? pendingFromGitlabMr(doc)
+      : platform === 'gitlab-pr'
+        ? pendingFromGitlabPr(doc)
         : pipelineFromGitlab(doc, record, { exclude })
   if (!read.ok) refuse(`--${platform} ${source === '-' ? '(stdin)' : source}: ${read.reason}`)
   for (const note of read.notes || []) warn(note)
@@ -3123,7 +3143,7 @@ async function main() {
   // otherwise hand the subcommand to the flag as its value.
   if (argv.includes('-h') || argv.includes('--help')) {
     const rest = parseArgs(argv.filter(a => a !== '-h' && a !== '--help'))
-    process.stdout.write(rest._[0] === 'mr' ? MR_HELP : helpFor(USAGE, rest._[0]))
+    process.stdout.write(rest._[0] === 'settle' ? SETTLE_HELP : helpFor(USAGE, rest._[0]))
     return
   }
 
@@ -3400,7 +3420,7 @@ async function main() {
       const markdown = flags.markdown === true
       if (markdown && json) die('--markdown and --json cannot be given together: one prints the description block, the other the assessment')
       // How to recognise the labels, and nothing else. It is asked for when an
-      // assessment stopped: a merge request may still carry the labels of an
+      // assessment stopped: a pull request may still carry the labels of an
       // earlier one, and there is no verdict to read their names from. So it
       // reads no file and nothing of the repository, and answers where every
       // other form of this command would end on the input that stopped it.
@@ -3576,10 +3596,28 @@ async function main() {
           solo: SOLO,
           // The merge verdict's thresholds: their own group, a ceiling table
           // and seven scalars, never entries of the iteration-count limits.
-          mergeBands: MERGE_BANDS
+          mergeBands: MERGE_BANDS,
+          // The prose spawn roles and the review depths, their own groups: tables
+          // of null-able strings, never entries of the iteration-count limits.
+          routing: SPAWN_ROUTING,
+          reviewDepth: REVIEW_DEPTH
         },
         formatLimits({ runtimeObserved })
       )
+      break
+    }
+
+    case 'routing': {
+      let out
+      try {
+        const opts = { depth: flags.depth }
+        out = positional[1] === undefined ? listRouting(process.env, opts) : resolveRouting(positional[1], process.env, opts)
+      } catch (err) {
+        if (!(err instanceof RoutingError)) throw err
+        process.stderr.write(`${err.message}\n`)
+        process.exit(1)
+      }
+      emit(json, out, formatRouting(out))
       break
     }
 
@@ -3756,6 +3794,11 @@ async function main() {
     case 'review': {
       // Read and validated before anything is written or printed, metrics included.
       const { dimensions, head } = reviewRecordFlags(flags, die)
+      // --carry keeps a scoped re-review's record whole: it needs --dimensions to
+      // know what ran, and its file is read here, before anything is written.
+      if (flags.carry === true) die('--carry needs a file')
+      if (flags.carry !== undefined && !dimensions) die('--carry needs --dimensions: the record of what this review ran says which findings to carry')
+      const carry = flags.carry === undefined ? null : readCarryFile(String(flags.carry), die)
       const findings = readFindingsInput(flags.findings)
       const verdicts = readInput(flags.verdicts, '--verdicts')
       // The reviewed diff. A dismissing verdict has to cite a path that is in
@@ -3783,13 +3826,20 @@ async function main() {
         // has it, so a citation cannot lean on a requirement the change added.
         requirementHeadings: requirementHeadingsAt(root, base, findings)
       })
+      // After the resolution and before the metrics and the write, so every
+      // reader of this record sees the carried findings and the metrics, which
+      // count only what this review raised, are given the counts without them.
+      if (carry) carryForward(result, carry, dimensions.ran)
+      const raisedCounts = carry
+        ? { ...result.counts, surviving: result.counts.surviving - result.counts.carried }
+        : result.counts
 
       // Metrics are bookkeeping: they report their own failure and never touch
       // the exit code, so a read-only checkout cannot fail a review.
       let metrics = null
       if (flags.metrics !== undefined) {
         if (flags.metrics === true) die('--metrics requires a change name')
-        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: result.counts })
+        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: raisedCounts })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
@@ -4046,8 +4096,8 @@ async function main() {
       noteCommand(cliIo, root, positional, flags, json)
       break
 
-    case 'mr':
-      mrCommand(cliIo, root, positional, flags, json)
+    case 'settle':
+      settleCommand(cliIo, root, positional, flags, json)
       break
 
     case 'ready': {

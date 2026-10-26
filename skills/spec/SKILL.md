@@ -103,6 +103,8 @@ Prefer a durable handoff over re-deriving discovery from chat. See `${CLAUDE_PLU
 
 No matching brief is fine — but if none exists and `--no-explore` was not passed, **run `/interlock:explore --autonomous` now** and require a decision-oriented brief: conclusions, a recommended direction, options with a winner, assumptions, pending clarifications, and only cited `file:line` spans. Do not ask for an inventory of every file touched. Use the brief it writes. A spec built on unexplored ground is the most expensive kind to get wrong.
 
+Spec spawns nothing itself. The only workers on this path are explore's investigators, and explore routes them by role: it reads `interlock routing explore-investigator` and passes what it prints. The cost policy is read from the CLI, never from this skill, so do not name a model or an effort level when you hand off to explore.
+
 ### 1c. Check the ground is current
 
 ```bash

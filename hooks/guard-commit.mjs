@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // PreToolUse guard: no `git commit` outside the commit stage.
 //
-// `skills/commit/SKILL.md` and `skills/mr/SKILL.md` already set
+// `skills/commit/SKILL.md` and `skills/settle/SKILL.md` already set
 // `disable-model-invocation: true` — the prose version of "do not commit until
 // the commit stage." This guard is the deterministic half of the same intent: a
 // Bash command that performs a `git commit` is denied unless the run's stage is

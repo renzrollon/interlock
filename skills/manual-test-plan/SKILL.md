@@ -1,6 +1,6 @@
 ---
 name: manual-test-plan
-description: Produce an expert-QA manual UI test plan from an OpenSpec change plus a git commit range — every touched file accounted for, spec scenarios and tasks mapped to numbered test cases, and non-UI-testable changes flagged rather than dropped. Use when asked for a manual test plan, QA checklist, or UI verification plan after implementing and before opening an MR.
+description: Produce an expert-QA manual UI test plan from an OpenSpec change plus a git commit range — every touched file accounted for, spec scenarios and tasks mapped to numbered test cases, and non-UI-testable changes flagged rather than dropped. Use when asked for a manual test plan, QA checklist, or UI verification plan after implementing and before opening a PR.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for change scoping. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[change-name] [commit-range]"

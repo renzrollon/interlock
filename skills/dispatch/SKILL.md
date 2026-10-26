@@ -35,7 +35,7 @@ That is Rules 2 and 3 of `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`: read st
 graph → docs-digest → bootstrap        (once per repo)
 /interlock:spec    explore → artifacts → review     ⟵ STOPS. Human reviews.
 /interlock:ship    waves → verify → commit  (workflow, zero-touch; --strict adds review)
-/interlock:mr      summary → merge request
+/interlock:settle  summary → pull request
 ```
 
 The gap between `spec` and `ship` is deliberate. Never bridge it automatically — if a spec is ready, say so and let the user start ship. The user can bridge it themselves with `/interlock:spec --continue`, but that is theirs to ask for; routing never offers it.
@@ -61,7 +61,7 @@ The gap between `spec` and `ship` is deliberate. Never bridge it automatically �
 | "Explain this code" / "what changed in that commit?" | `/interlock:explain-code` |
 | Need a QA checklist for a change | `/interlock:manual-test-plan` |
 | Work is done and needs committing | `/interlock:commit` |
-| MR or PR needs creating or updating | `/interlock:mr` |
+| PR needs creating or updating | `/interlock:settle` |
 | "I want to skip the checkpoint" / "don't stop and make me read it" | `/interlock:spec --continue` — **advanced**. Opt-in, fail-closed, and it stops anyway on anything a machine cannot settle. It cannot catch a wrong idea; only the read can. |
 
 **Prerequisite checks before routing:**
