@@ -212,10 +212,10 @@ Exit 1, or a `git status` that printed an error (the tree was not read): print `
 cp .claude/testing/profile.json .claude/ship/settle/profile-r<r>.json
 ```
 
-**Ask for the round's briefing**, with the snapshot as its profile; with no snapshot, leave `--profile` out. The bracketed `--previous` is filled from the second round on, naming the round before's fixer result, and left out in the first round:
+**Ask for the round's briefing**, with the snapshot as its profile; with no snapshot, leave `--profile` out. The bracketed `--previous` is filled from the second round on, naming the round before's fixer result, and left out in the first round. `--out` is always passed: the command keeps its answer there as the round's briefing record, which the fixer-result check below reads:
 
 ```bash
-interlock settle remediate-brief --review .claude/ship/settle/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --profile .claude/ship/settle/profile-r<r>.json [--previous .claude/ship/settle/remediate-r<r-1>.json] --json
+interlock settle remediate-brief --review .claude/ship/settle/review-r<r-1>.json --round <r> --change <change> --head <sha> --pr <n> --profile .claude/ship/settle/profile-r<r>.json [--previous .claude/ship/settle/remediate-r<r-1>.json] --out .claude/ship/settle/brief-r<r>.json --json
 ```
 
 The command defers two kinds of finding before it plans the round, and lists them in the briefing under `Deferred this round`: a finding in a protected test path, which the revert below would undo, and a finding the last fixer declined, whose reason it quotes. A deferred finding is not hidden. It stays `open` in the reply table and keeps its band in the verdict, and the fixer is told not to touch it. When the deferrals leave nothing fixable, the command exits 1 with `STOP: nothing fixable remains` and the count in each kind, and that ends the loop like any other `STOP:` below.
@@ -243,10 +243,10 @@ When it is no longer the head you recorded, the fixer committed: print `FIXER CO
 **The fixer answered.** Check its result against the findings it was briefed:
 
 ```bash
-interlock settle fixer-result --result .claude/ship/settle/remediate-r<r>.json --review .claude/ship/settle/review-r<r-1>.json --round <r> --head <sha> [--profile .claude/ship/settle/profile-r<r>.json] [--previous .claude/ship/settle/remediate-r<r-1>.json]
+interlock settle fixer-result --result .claude/ship/settle/remediate-r<r>.json --review .claude/ship/settle/review-r<r-1>.json --round <r> --head <sha> --brief .claude/ship/settle/brief-r<r>.json
 ```
 
-The bracketed flags are the ones the briefing line carried, so that the findings it deferred are not expected back. Exit 1 (the result is missing, unparseable or `ok: false`, or its ids do not partition the findings it was briefed) fails the round: print `ROUND FAILED: <reason>`, commit nothing, and stop the loop early. The fixer's edits are left in the working tree, unstaged and unreverted: say so, and name them.
+`--brief` is the record the briefing line wrote. The result is checked against the ids that briefing listed, so a finding it deferred is not expected back, and nothing is worked out again from a profile or a result the fixer could have changed. Pass neither `--profile` nor `--previous` here: the command refuses them beside `--brief`. Exit 1 (the result is missing, unparseable or `ok: false`, its ids do not partition the findings it was briefed, or the briefing record is missing or belongs to another round, head or review) fails the round: print `ROUND FAILED: <reason>`, commit nothing, and stop the loop early. The fixer's edits are left in the working tree, unstaged and unreverted: say so, and name them.
 
 **The test profile is unchanged.** When there was a snapshot, compare the profile with it:
 
