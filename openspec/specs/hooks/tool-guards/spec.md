@@ -49,7 +49,7 @@ A `PreToolUse` guard SHALL deny an `Edit` or `Write` that would change a checkbo
 
 ### Requirement: git commit SHALL be denied outside the commit stage
 
-A `PreToolUse` guard on `Bash` SHALL deny a command that performs a `git commit` unless the current stage is `commit`. `skills/commit/SKILL.md:7` and `skills/mr/SKILL.md:7` already set `disable-model-invocation: true`; this guard is the deterministic enforcement of the same intent and SHALL match commit-equivalent invocations (e.g. `git commit`, `git -C <path> commit`), not only the literal prefix `git commit`.
+A `PreToolUse` guard on `Bash` SHALL deny a command that performs a `git commit` unless the current stage is `commit`. `skills/commit/SKILL.md:7` and `skills/settle/SKILL.md:7` already set `disable-model-invocation: true`; this guard is the deterministic enforcement of the same intent and SHALL match commit-equivalent invocations (e.g. `git commit`, `git -C <path> commit`), not only the literal prefix `git commit`.
 
 #### Scenario: Happy path — mid-run commit blocked
 - **GIVEN** an active ship run with stage marker `implement`
