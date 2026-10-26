@@ -203,10 +203,10 @@ async function happyPath($: any) {
   await bash($, GATE)
 }
 
-test('session.start registers /interlock-spec after the three earlier commands', async ($: any, on: any) => {
+test('session.start registers /interlock-spec after the three earlier commands and /interlock-settle after it', async ($: any, on: any) => {
   const w = world(on)
   await start($)
-  expect(w.commands).toEqual(['interlock-meter', 'interlock-preflight', 'interlock-handoff', PANE])
+  expect(w.commands).toEqual(['interlock-meter', 'interlock-preflight', 'interlock-handoff', PANE, 'interlock-settle'])
 })
 
 test('the spec skill\'s typed load starts the run, opens the pane, and the CLI names the change', async ($: any, on: any) => {

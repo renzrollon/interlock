@@ -228,6 +228,8 @@ A ship run ends at a local commit. The step after it is the pull request, and th
 
 `.claude/ship/settle/` is gitignored with its parent. The pipeline input stays at `.claude/ship/pipeline.json`.
 
+On a mods host, `/interlock-settle` draws this loop live, section by section, from the lines it already runs; see [the settle meter](./07-cli-and-configuration.md#the-settle-meter-interlock-settle).
+
 **What a push does on the platform.** Beside each push the skill says, once, that a new commit dismisses the stale approvals a ruleset marks, takes the pull request out of auto-merge or a merge train, and that the skill does not re-request a review. The verdict does not restore any of that.
 
 **What the loop never does.** It never merges and never approves, and it resolves no review thread, re-requests no review and reads no branch rule. The findings and the replies are ordinary comments. The block's legend line says the same of `MERGE`: a `MERGE` after the loop is a statement about the local signals for the pushed head, and the branch rules, required approvals, code owners and a merge queue still decide.

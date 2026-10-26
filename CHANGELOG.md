@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Added
+
+- **A settle meter draws an `/interlock:settle --review` pass live.** The hooks module registers a pane, `interlock-settle`, opened with `/interlock-settle`, and writes the module's one status line as `interlock settle <change> #<n>: <group> · <figure>`. It groups the pass by the skill's own sections (review, each fix round, ready, conformance, verify, checks, merge confidence, publish, drift), repeats the CLI's words from the keyed lines at every pipe stage, and attributes each spawn from its prompt's first line against four pinned sources. Each agent row shows the requested, resolved and served model and the step effort as separately labelled figures, beside the `routed` figure from `interlock routing`; none is compared with another. It ends at the drift line, draws nothing without `--review` or outside an interactive session, decides nothing, and says neither `complete` nor `quiet`. `lib/settle-meter.mjs`, its spine and mod tests, and a mirror of the captured fixtures pin it.
+
 ## [1.10.0] - 2026-10-26
 
 ### Added

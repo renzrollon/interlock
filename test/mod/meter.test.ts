@@ -276,17 +276,17 @@ function tree(el: any): any[] {
   return [el, ...kids.flatMap(tree)]
 }
 
-test('session.start registers /interlock-meter beside the preflight\'s two and the spec meter\'s, and logs the engine it loaded in', async ($: any, on: any) => {
+test('session.start registers /interlock-meter beside the preflight\'s two, the spec meter\'s and the settle meter\'s, and logs the engine it loaded in', async ($: any, on: any) => {
   const w = world(on)
   await start($)
-  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec'])
+  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec', 'interlock-settle'])
   expect(w.logs.some(l => /2\.1\.289/.test(l.text) && /terminal/.test(l.text) && l.to === 'transcript')).toBe(true)
 })
 
 test('a non-interactive session registers the command and draws nothing for its life', async ($: any, on: any) => {
   const w = world(on)
   await start($, false)
-  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec'])
+  expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec', 'interlock-settle'])
   expect(w.logs.every(l => l.to === 'debug')).toBe(true)
   await launch($)
   await bash($, w, NEXT, F.stdout(F.RUN_BATCH))
