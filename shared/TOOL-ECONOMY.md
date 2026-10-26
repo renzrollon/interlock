@@ -150,6 +150,31 @@ against the preview budget and reject the result outright — "oversized result
 field(s)" — if any exceeds it. The locator is not a courtesy; the anti-swallow
 check enforces it.
 
+## Rule 5 — Route every prose spawn (model and effort from `interlock routing`)
+
+A skill that spawns a subagent from prose does not choose the model or the
+effort. Before the first spawn of a role, run `interlock routing <role> --json`
+once and pass its `model` and `effort` on every Agent call of that role. A
+`null` means omit that parameter: the host's default applies. Print every line
+of `banners` verbatim — each names an environment override that makes the
+printed value not in effect.
+
+When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of
+its output>` and spawn at the session defaults. Routing is guidance about cost,
+never a gate: it never stops a skill.
+
+Read the depth from the same answer: review-code runs one
+`interlock routing --json` call (with `--depth strict` under `--strict`) and
+takes both its roles, the dimension set and the skeptic shape from it. Never
+name a model slug or an effort level in a skill, and never restate a spawn
+count — the table and the depth publish them.
+
+The five roles and their skills:
+
+- `explore-investigator` — `/interlock:explore`
+- `review-dimension` and `review-skeptic` — `/interlock:review-code`
+- `settle-fixer` and `settle-conformance` — `/interlock:settle`
+
 ## When NOT to apply
 
 This targets *wasted* exploration, not legitimate reconnaissance:

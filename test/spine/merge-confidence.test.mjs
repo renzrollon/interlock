@@ -1842,6 +1842,37 @@ test('a selected dimension recorded only as skipped, under a name other than dom
   assert.deepEqual(entry.flags, [])
 })
 
+// --- the review depth on the ran signal (spec: review/merge-confidence) -----------
+
+test('the ran signal names the depth in its evidence when the record carries one, and the band and flags do not move', () => {
+  const withDepth = depth => {
+    const input = fixture('all-observable-green')
+    const { depth: _dropped, ...rest } = input.review.dimensions
+    input.review.dimensions = depth === undefined ? rest : { ...rest, depth }
+    return assessMergeConfidence(input)
+  }
+  const lean = withDepth('lean')
+  const strict = withDepth('strict')
+  const none = withDepth(undefined)
+  const leanEntry = signalOf(lean, 'review.ran')
+  const strictEntry = signalOf(strict, 'review.ran')
+  const noneEntry = signalOf(none, 'review.ran')
+  assert.ok(leanEntry.evidence.includes('depth: lean'), JSON.stringify(leanEntry.evidence))
+  assert.ok(strictEntry.evidence.includes('depth: strict'), JSON.stringify(strictEntry.evidence))
+  assert.ok(!noneEntry.evidence.some(line => line.startsWith('depth')), `a record with no depth names one: ${JSON.stringify(noneEntry.evidence)}`)
+  // Evidence only: no depth is a lapse, and none is a better review than another.
+  for (const entry of [leanEntry, strictEntry]) {
+    assert.equal(entry.band, noneEntry.band)
+    assert.deepEqual(entry.flags, noneEntry.flags)
+    assert.equal(entry.kind, noneEntry.kind)
+    assert.equal(entry.reason, noneEntry.reason)
+  }
+  assert.equal(lean.verdict, none.verdict)
+  assert.equal(lean.worstBand, none.worstBand)
+  assert.equal(lean.score, none.score)
+  assert.equal(strict.score, none.score)
+})
+
 // --- the input contract -------------------------------------------------------------
 
 test('every signal reading only a caller-supplied input is unobserved, saying the input was not given', () => {

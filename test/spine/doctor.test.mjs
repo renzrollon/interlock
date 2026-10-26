@@ -1420,6 +1420,43 @@ test('the claude-env row reads the plain variable by version: overriding on an o
   }
 })
 
+test('the per-call effort line has three states: applied at the floor, ignored below it naming it, unknown without a version', () => {
+  const floor = claudeEnv.PER_CALL_EFFORT_MIN_VERSION
+  const cases = [
+    [`${floor} (Claude Code)`, new RegExp(`per-call effort is applied on this host \\(>= ${floor.replaceAll('.', '\\.')}\\)`)],
+    ['2.1.291 (Claude Code)', new RegExp(`per-call effort is ignored on this host \\(below ${floor.replaceAll('.', '\\.')}\\)`)],
+    [null, /per-call effort: cannot establish whether this host applies it/]
+  ]
+  for (const [version, pattern] of cases) {
+    const dir = tmp()
+    try {
+      const row = claudeEnvRow(dir, {}, version)
+      assert.match(row.detail, pattern, String(version))
+      const states = row.detail.match(/per-call effort(?: is (?:applied|ignored)|: cannot establish)/g)
+      assert.equal(states.length, 1, `exactly one state for ${version}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('the per-call effort line changes no exit status: the row never fails and the report stays ok', () => {
+  for (const version of ['2.1.291 (Claude Code)', `${claudeEnv.PER_CALL_EFFORT_MIN_VERSION} (Claude Code)`, null]) {
+    const dir = tmp()
+    try {
+      file(dir, '.claude/testing/profile.json', PROFILE)
+      file(dir, '.claude/settings.json', ALL_ALLOWED)
+      const opts = baseOpts(dir)
+      const report = diagnose(dir, { ...opts, probeVersion: () => version, cpuCount: 8 })
+      assert.notEqual(byId(report, 'claude-env').status, 'fail', String(version))
+      assert.ok(!report.failures.includes('claude-env'), String(version))
+      assert.ok(!report.warnings.includes('claude-env'), String(version))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
 test('an unreadable host version is named unknown, and the row is skip', () => {
   const dir = tmp()
   try {

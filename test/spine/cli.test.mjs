@@ -16,7 +16,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS, MERGE_BANDS } from '../../lib/limits.mjs'
+import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
+import { resolveRouting } from '../../lib/routing.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
 
@@ -466,6 +467,145 @@ test('review with neither --head nor --dimensions writes neither key', () => {
   // And the command without --out prints exactly that, with no head or dimensions either.
   const bare = runJson(['review', '--findings', paths.findings, '--verdicts', paths.verdicts])
   assert.ok(!('head' in bare) && !('dimensions' in bare))
+})
+
+test('review --dimensions records a lean or strict depth under dimensions.depth, refuses another naming file and value, and records none when absent', () => {
+  for (const depth of ['lean', 'strict']) {
+    const out = join(dir, `review-depth-${depth}`, 'review.json')
+    const r = run([
+      'review', '--findings', paths.findings, '--verdicts', paths.verdicts,
+      '--head', REVIEW_HEAD, '--dimensions', file(`review-dimensions-${depth}.json`, { ...DIMENSIONS, depth }),
+      '--out', out, '--json'
+    ])
+    assert.equal(r.code, 0, r.stderr)
+    const written = JSON.parse(readFileSync(out, 'utf8'))
+    assert.equal(written.dimensions.depth, depth)
+    assert.deepEqual(written.dimensions, { ...DIMENSIONS, depth, completed: true })
+    assert.deepEqual(written, JSON.parse(r.stdout))
+  }
+
+  const bad = file('review-dimensions-deep.json', { ...DIMENSIONS, depth: 'deep' })
+  const badOut = join(dir, 'review-depth-deep', 'review.json')
+  const refused = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts,
+    '--dimensions', bad, '--out', badOut, '--json'
+  ])
+  assert.equal(refused.code, 1, refused.stdout)
+  assert.equal(refused.stdout, '', 'nothing is printed on standard output')
+  assert.ok(refused.stderr.includes(bad), `standard error names the file: ${refused.stderr}`)
+  assert.ok(refused.stderr.includes('deep'), `and the value: ${refused.stderr}`)
+  assert.equal(existsSync(badOut), false, 'nothing exists at the --out path')
+
+  const absentOut = join(dir, 'review-depth-absent', 'review.json')
+  const absent = run([
+    'review', '--findings', paths.findings, '--verdicts', paths.verdicts,
+    '--dimensions', file('review-dimensions-nodepth.json', DIMENSIONS), '--out', absentOut, '--json'
+  ])
+  assert.equal(absent.code, 0, absent.stderr)
+  assert.ok(!('depth' in JSON.parse(readFileSync(absentOut, 'utf8')).dimensions), 'a record without depth records none')
+})
+
+// --- review --carry (design D18 of route-prose-spawns-by-role) ---------------------
+//
+// A scoped re-review runs only the dimensions whose findings were fixed. --carry
+// keeps its record whole: the earlier record's findings from the dimensions it
+// did not run ride along marked `carried`, and stay out of the metrics, which
+// count only what this review raised.
+
+const CARRY_QA = { dimension: 'qa', severity: 'warning', title: 'untested empty case', file: 'src/b.ts', line: 4 }
+const CARRY_LANG_OLD = { dimension: 'language', severity: 'warning', title: 'fixed last round', file: 'src/a.ts', line: 9 }
+const CARRY_LANG_NEW = { dimension: 'language', severity: 'warning', title: 'raised this round', file: 'src/a.ts', line: 20 }
+const CARRY_HEAD = 'fedcba9876543210fedcba9876543210fedcba98'
+
+function carryFixture(name, previous = { head: CARRY_HEAD, surviving: [CARRY_QA, CARRY_LANG_OLD] }) {
+  return {
+    findings: file(`${name}-findings.json`, [CARRY_LANG_NEW]),
+    verdicts: file(`${name}-verdicts.json`, [
+      { findingTitle: CARRY_LANG_NEW.title, isReal: true, qualityScore: 9 },
+      { findingTitle: CARRY_LANG_NEW.title, isReal: true, qualityScore: 8 }
+    ]),
+    dimensions: file(`${name}-dimensions.json`, { selected: ['language'], ran: ['language'], unavailable: [], skipped: [] }),
+    previous: file(`${name}-previous.json`, previous)
+  }
+}
+
+test('review --carry carries the findings of a dimension this review did not run, marked, counted, and kept out of the metrics', () => {
+  const f = carryFixture('carry')
+  const root = join(dir, 'carry-root')
+  mkdirSync(root, { recursive: true })
+  const out = join(dir, 'carry-out', 'review.json')
+  const r = run([
+    'review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions, '--carry', f.previous,
+    '--metrics', 'add-auth', '--root', root, '--out', out, '--json'
+  ])
+  assert.equal(r.code, 0, r.stderr)
+  const result = JSON.parse(r.stdout)
+  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), result, 'the file is the output')
+
+  const carried = result.surviving.filter(x => x.carried === true)
+  assert.equal(carried.length, 1, 'only the qa finding is carried; the language dimension ran')
+  assert.equal(carried[0].dimension, 'qa')
+  assert.equal(carried[0].title, CARRY_QA.title)
+  assert.equal(carried[0].carriedFrom, CARRY_HEAD)
+  const mine = result.surviving.filter(x => x.carried !== true)
+  assert.deepEqual(mine.map(x => x.title), [CARRY_LANG_NEW.title])
+  assert.ok(!result.surviving.some(x => x.title === CARRY_LANG_OLD.title), 'a dimension that ran is not carried')
+
+  assert.equal(result.counts.carried, 1)
+  assert.equal(result.counts.raised, 1)
+  assert.equal(result.counts.surviving, 2, 'surviving counts the list as emitted')
+  assert.equal(result.dimensionStats.qa.carried, 1)
+
+  // The metrics record counts what this review raised: the carried finding is not in it.
+  const metrics = JSON.parse(readFileSync(result.metrics.path, 'utf8'))
+  assert.equal(metrics.counts.raised, 1)
+  assert.equal(metrics.counts.surviving, 1)
+  assert.equal(metrics.counts.carried, undefined)
+
+  // The text output names the carry.
+  const text = run([
+    'review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions, '--carry', f.previous
+  ])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /\bcarried=1\b/)
+  assert.match(text.stdout, new RegExp(`carried from ${CARRY_HEAD}: src/b\\.ts`))
+
+  // Without --carry the same review reports no carried count at all.
+  const plain = run(['review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions])
+  assert.doesNotMatch(plain.stdout, /carried/)
+})
+
+test('review --carry without --dimensions exits 1 naming both flags, and prints nothing', () => {
+  const f = carryFixture('carry-nodims')
+  const r = run(['review', '--findings', f.findings, '--verdicts', f.verdicts, '--carry', f.previous, '--json'])
+  assert.equal(r.code, 1, r.stdout)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /--carry/)
+  assert.match(r.stderr, /--dimensions/)
+})
+
+test('review --carry with a file holding no surviving list, or no file, exits 1 naming it and writes nothing', () => {
+  const f = carryFixture('carry-bad', { head: CARRY_HEAD, findings: [CARRY_QA] })
+  const out = join(dir, 'carry-bad-out', 'review.json')
+  const r = run([
+    'review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions, '--carry', f.previous,
+    '--out', out, '--json'
+  ])
+  assert.equal(r.code, 1, r.stdout)
+  assert.equal(r.stdout, '')
+  assert.ok(r.stderr.includes(f.previous), `standard error names the file: ${r.stderr}`)
+  assert.match(r.stderr, /surviving/)
+  assert.equal(existsSync(out), false, 'nothing exists at the --out path')
+
+  const missing = join(dir, 'carry-missing.json')
+  const gone = run(['review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions, '--carry', missing, '--json'])
+  assert.equal(gone.code, 1, gone.stdout)
+  assert.equal(gone.stdout, '')
+  assert.ok(gone.stderr.includes(missing), gone.stderr)
+
+  const bare = run(['review', '--findings', f.findings, '--verdicts', f.verdicts, '--dimensions', f.dimensions, '--carry'])
+  assert.equal(bare.code, 1)
+  assert.match(bare.stderr, /--carry needs a file/)
 })
 
 // --- gate --metrics -------------------------------------------------------
@@ -3111,7 +3251,12 @@ test('the dimension record review-code prescribes, through review --out and merg
   const skill = readFileSync(new URL('../../skills/review-code/SKILL.md', import.meta.url), 'utf8')
   const fence = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(body => body.includes('"selected"'))
   assert.ok(fence, 'skills/review-code/SKILL.md carries no ```json fence naming "selected"')
-  const record = file('mc-roundtrip-dimensions.json', fence)
+  // The fence is a template: its `depth` is the routing answer's, a placeholder
+  // the model fills in. Resolve it the way the model does, to the depth the
+  // skill ran at, and fail if the template carries no depth to fill.
+  const template = JSON.parse(fence)
+  assert.equal(typeof template.depth, 'string', 'the skill record names the depth the review ran at')
+  const record = file('mc-roundtrip-dimensions.json', { ...template, depth: REVIEW_DEPTH.default })
   const repo = mergeConfidenceRepo()
   const out = join(dir, 'mc-roundtrip', 'review-r0.json')
   const reviewed = run([
@@ -3125,6 +3270,7 @@ test('the dimension record review-code prescribes, through review --out and merg
   const ran = signalIn(JSON.parse(r.stdout), 'review.ran')
   assert.equal(ran.band, 'green', `${ran.reason}\n${(ran.evidence || []).join('\n')}`)
   assert.ok(ran.flags.includes('blast-radius-skipped'), JSON.stringify(ran.flags))
+  assert.ok(ran.evidence.includes(`depth: ${REVIEW_DEPTH.default}`), `the ran signal names the depth: ${JSON.stringify(ran.evidence)}`)
 })
 
 test('HUMAN exits 0, and exits 1 under --require-merge', () => {
@@ -4885,4 +5031,146 @@ test('limits carries the note-match cap by name and no advisor cap, in text and 
   assert.equal(text.code, 0)
   assert.ok(text.stdout.split('\n').some(l => /note match rows/.test(l)), `no note-match row:\n${text.stdout}`)
   assert.doesNotMatch(text.stdout, /advisor(?!y)/i, 'limits text still prints an advisor row')
+})
+
+// --- routing: the model and effort a prose skill passes (spec: spawn-routing) ---
+
+const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+/** Neither override variable set, so a developer's own export cannot change a result. */
+const NO_OVERRIDES = { CLAUDE_CODE_EFFORT_LEVEL: undefined, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined }
+
+function routingJson(args, env = NO_OVERRIDES) {
+  const r = run(['routing', ...args, '--json'], { env })
+  assert.equal(r.code, 0, `routing ${args.join(' ')}: ${r.stderr}`)
+  return JSON.parse(r.stdout)
+}
+
+test('routing <role> --json returns the single-role shape at the published default depth', () => {
+  const out = routingJson(['explore-investigator'])
+  assert.equal(out.role, 'explore-investigator')
+  assert.equal(out.depth, REVIEW_DEPTH.default)
+  assert.equal(out.model, SPAWN_ROUTING['explore-investigator'].model)
+  assert.equal(out.effort, SPAWN_ROUTING['explore-investigator'].effort)
+  assert.deepEqual(out.banners, [])
+  assert.deepEqual(out.overrides, { effortLevel: null, subagentModelForce: null })
+})
+
+test('routing review-dimension applies the strict override at the strict depth only', () => {
+  const strict = routingJson(['review-dimension', '--depth', 'strict'])
+  assert.equal(strict.depth, 'strict')
+  assert.equal(strict.model, SPAWN_ROUTING['review-dimension'].strict.model)
+  assert.equal(strict.effort, SPAWN_ROUTING['review-dimension'].strict.effort)
+  const lean = routingJson(['review-dimension'])
+  assert.equal(lean.depth, REVIEW_DEPTH.default)
+  assert.equal(lean.model, SPAWN_ROUTING['review-dimension'].model)
+  assert.equal(lean.effort, SPAWN_ROUTING['review-dimension'].effort)
+  assert.notDeepEqual([strict.model, strict.effort], [lean.model, lean.effort], 'the override must change something')
+  // A role without an override prints the same at both depths.
+  const a = routingJson(['review-skeptic'])
+  const b = routingJson(['review-skeptic', '--depth', 'strict'])
+  assert.equal(b.model, a.model)
+  assert.equal(b.effort, a.effort)
+})
+
+test('routing speaks CLAUDE_CODE_EFFORT_LEVEL and CLAUDE_CODE_SUBAGENT_MODEL_FORCE as banners, and changes neither', () => {
+  const effort = routingJson(['review-skeptic'], { ...NO_OVERRIDES, CLAUDE_CODE_EFFORT_LEVEL: 'high' })
+  assert.equal(effort.effort, SPAWN_ROUTING['review-skeptic'].effort, 'the table value is still printed')
+  assert.equal(effort.banners.length, 1)
+  assert.ok(effort.banners[0].startsWith('EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=high'), effort.banners[0])
+  assert.equal(effort.overrides.effortLevel, 'high')
+  assert.equal(effort.overrides.subagentModelForce, null)
+
+  const force = routingJson(['review-dimension'], { ...NO_OVERRIDES, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })
+  assert.equal(force.model, SPAWN_ROUTING['review-dimension'].model)
+  assert.equal(force.banners.length, 1)
+  assert.ok(force.banners[0].startsWith('MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1'), force.banners[0])
+  assert.equal(force.overrides.subagentModelForce, '1')
+  assert.equal(force.overrides.effortLevel, null)
+
+  const both = routingJson([], { CLAUDE_CODE_EFFORT_LEVEL: 'high', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })
+  assert.equal(both.banners.length, 2)
+  assert.match(both.banners[0], /^EFFORT ROUTING OVERRIDDEN: /)
+  assert.match(both.banners[1], /^MODEL ROUTING OVERRIDDEN: /)
+
+  // The text form prints each banner on its own line, after the role line.
+  const text = run(['routing', 'review-skeptic'], { env: { ...NO_OVERRIDES, CLAUDE_CODE_EFFORT_LEVEL: 'high' } })
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /^EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=high/m)
+
+  // The resolver reads the environment it is handed and never writes to it: a
+  // frozen env would throw on any `delete` or assignment in strict mode.
+  const env = Object.freeze({ CLAUDE_CODE_EFFORT_LEVEL: 'high', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })
+  assert.doesNotThrow(() => resolveRouting('review-skeptic', env))
+  assert.deepEqual({ ...env }, { CLAUDE_CODE_EFFORT_LEVEL: 'high', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })
+  const source = readFileSync(BIN, 'utf8')
+  assert.doesNotMatch(source, /delete process\.env\.CLAUDE_CODE_(EFFORT_LEVEL|SUBAGENT_MODEL_FORCE)/)
+})
+
+test('routing prints a null as inherit in text and as null in JSON', () => {
+  assert.equal(SPAWN_ROUTING['review-skeptic'].model, null, 'the fixture role must hold a null model')
+  const text = run(['routing', 'review-skeptic'], { env: NO_OVERRIDES })
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /model inherit/)
+  assert.doesNotMatch(text.stdout, /\bnull\b/)
+  assert.equal(routingJson(['review-skeptic']).model, null)
+  // A set field prints as itself, never as inherit.
+  const set = run(['routing', 'explore-investigator'], { env: NO_OVERRIDES })
+  assert.match(set.stdout, new RegExp(`model ${SPAWN_ROUTING['explore-investigator'].model} `))
+  assert.doesNotMatch(set.stdout, /inherit/)
+})
+
+test('routing refuses an unknown role or depth: non-zero, the known ones on stderr, nothing on stdout', () => {
+  const role = run(['routing', 'not-a-role', '--json'], { env: NO_OVERRIDES })
+  assert.notEqual(role.code, 0)
+  assert.equal(role.stdout, '')
+  for (const name of ROUTING_ROLES) assert.ok(role.stderr.includes(name), `stderr does not name ${name}: ${role.stderr}`)
+
+  const depth = run(['routing', 'review-dimension', '--depth', 'deep', '--json'], { env: NO_OVERRIDES })
+  assert.notEqual(depth.code, 0)
+  assert.equal(depth.stdout, '')
+  assert.match(depth.stderr, /\blean\b/)
+  assert.match(depth.stderr, /\bstrict\b/)
+  // The whole-table form refuses an unknown depth the same way.
+  const table = run(['routing', '--depth', 'deep', '--json'], { env: NO_OVERRIDES })
+  assert.notEqual(table.code, 0)
+  assert.equal(table.stdout, '')
+})
+
+test('routing with no role prints every role and the depth review shape', () => {
+  const lean = routingJson([])
+  assert.equal(lean.depth, REVIEW_DEPTH.default)
+  assert.deepEqual(Object.keys(lean.roles), ROUTING_ROLES)
+  for (const role of ROUTING_ROLES) {
+    const one = routingJson([role])
+    assert.deepEqual(lean.roles[role], { model: one.model, effort: one.effort }, `${role}: table and single-role call disagree`)
+  }
+  assert.deepEqual(lean.review, {
+    dimensions: [...REVIEW_DEPTH[REVIEW_DEPTH.default].dimensions],
+    skeptics: REVIEW_DEPTH[REVIEW_DEPTH.default].skeptics
+  })
+  assert.deepEqual(lean.banners, [])
+
+  const strict = routingJson(['--depth', 'strict'])
+  assert.equal(strict.depth, 'strict')
+  assert.deepEqual(strict.review, {
+    dimensions: [...REVIEW_DEPTH.strict.dimensions],
+    skeptics: REVIEW_DEPTH.strict.skeptics
+  })
+  assert.deepEqual(strict.roles['review-dimension'], SPAWN_ROUTING['review-dimension'].strict)
+  assert.deepEqual(strict.roles['review-skeptic'], lean.roles['review-skeptic'])
+
+  const text = run(['routing'], { env: NO_OVERRIDES })
+  assert.equal(text.code, 0, text.stderr)
+  for (const role of ROUTING_ROLES) assert.match(text.stdout, new RegExp(`^routing ${role}: model `, 'm'))
+  assert.match(text.stdout, /^review skeptics: per-review$/m)
+})
+
+test('limits --json carries the routing table and the review depth table', () => {
+  const out = runJson(['limits'])
+  assert.deepEqual(out.routing, JSON.parse(JSON.stringify(SPAWN_ROUTING)))
+  assert.deepEqual(Object.keys(out.routing), ROUTING_ROLES)
+  assert.deepEqual(out.routing['review-dimension'].strict, { model: null, effort: null })
+  assert.deepEqual(out.reviewDepth, JSON.parse(JSON.stringify(REVIEW_DEPTH)))
+  assert.equal(out.reviewDepth.default, 'lean')
+  assert.equal(out.limits.routing, undefined, 'the table is its own group, not a cap')
 })

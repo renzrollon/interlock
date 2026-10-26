@@ -7,13 +7,13 @@ How a change's merge verdict reaches its merge request: the `mr` skill asks the 
 
 ### Requirement: The skill SHALL obtain the verdict from the CLI and SHALL NOT state a confidence of its own
 
-`skills/mr/SKILL.md` SHALL run `interlock pipeline` to produce the pipeline input and `interlock merge-confidence` with `--base`, `--pipeline` and `--json` to obtain the verdict, on fenced command lines. It SHALL name `verdict` as the field that decides, and `score`, `driving`, `flags`, `labels` and `head` as the fields it reports from, each written as a backticked key. It SHALL say that an exit status of 1 with a verdict on standard output is the verdict `BLOCK` and not a failed command, and that when `interlock pipeline` or `interlock merge-confidence` exits non-zero with nothing on standard output the skill stops the assessment, reports the reason, and writes no `## Merge confidence` section and no label. The skill SHALL NOT ask for, or contain, a confidence level written by the model: `## High Risk Changes` SHALL be narrative under the CLI's verdict. The command lines and field names SHALL be pinned by token in the skill suite, so a reword that drops one fails the suite naming it.
+`skills/settle/SKILL.md` SHALL run `interlock pipeline` to produce the pipeline input and `interlock merge-confidence` with `--base`, `--pipeline` and `--json` to obtain the verdict, on fenced command lines. It SHALL name `verdict` as the field that decides, and `score`, `driving`, `flags`, `labels` and `head` as the fields it reports from, each written as a backticked key. It SHALL say that an exit status of 1 with a verdict on standard output is the verdict `BLOCK` and not a failed command, and that when `interlock pipeline` or `interlock merge-confidence` exits non-zero with nothing on standard output the skill stops the assessment, reports the reason, and writes no `## Merge confidence` section and no label. The skill SHALL NOT ask for, or contain, a confidence level written by the model: `## High Risk Changes` SHALL be narrative under the CLI's verdict. The command lines and field names SHALL be pinned by token in the skill suite, so a reword that drops one fails the suite naming it.
 
 Rationale: the description's risk section was the one place a reviewer was told how hard to look, and it was a level a model wrote. An instruction no test asserts is an instruction that stops running at the first reword.
 
 #### Scenario: Happy path — the shipped skill satisfies every pin
 
-- **GIVEN** the shipped `skills/mr/SKILL.md`
+- **GIVEN** the shipped `skills/settle/SKILL.md`
 - **WHEN** the skill suite runs
 - **THEN** it finds an `interlock pipeline` line for each platform and an `interlock merge-confidence` line carrying `--base`, `--pipeline` and `--json`
 - **AND** it finds each of the six field names as a backticked key, the word `BLOCK`, and `disable-model-invocation: true` in the front matter
@@ -32,29 +32,31 @@ Rationale: the description's risk section was the one place a reviewer was told 
 
 ### Requirement: The skill SHALL hand the command only evidence about the commit under review
 
-The skill SHALL take the base from the merge request's target branch as the platform reports it, and the checks from the platform's own document for that merge request, piped into `interlock pipeline`; it SHALL NOT take the checks' commit from the local repository, and for GitLab it SHALL NOT type a commit at all: the head travels from `--gitlab-mr` to `--gitlab` in the file the first step writes. When the run's evidence file `.claude/ship/merge-confidence.json` exists, the skill SHALL pass it with `--run` and leave the decision whether it is usable to the command, reporting the command's reason when it is not used. The skill SHALL NOT pass a review or verification file left in the working directory by any other means. The skill SHALL read nothing from the merge request's title, description or comments into the assessment. The skill SHALL tell the reader to push and assess again when the command reports that the pipeline input describes another commit.
+The skill SHALL take the base from the pull request's target branch as the platform reports it, and the checks from the platform's own document for that pull request, piped into `interlock pipeline`; it SHALL NOT take the checks' commit from the local repository, and for GitLab it SHALL NOT type a commit at all: the head travels from `--gitlab-pr` to `--gitlab` in the file the first step writes. When the run's evidence file `.claude/ship/merge-confidence.json` exists, the skill SHALL pass it with `--run` and leave the decision whether it is usable to the command, reporting the command's reason when it is not used in full. When the skill's own loop produced, in this pass and for the head under review, a review record, a verification verdict and a confirmation count under `.claude/ship/settle/`, each bound to that head, the skill SHALL pass them with `--review`, `--verify` and `--handoff`, naming the record of the last re-review and not an earlier round's, and SHALL pass the coverage figures the loop produced for the head with `--coverage` when, and only when, that file exists; it SHALL report the command's reason when it refuses any of them. The skill SHALL NOT pass a review, verification, handoff or coverage file left in the working directory by any other means, and without `--review` SHALL pass nothing from `.claude/ship/settle/`. The skill SHALL read nothing from the pull request's title, description or comments into the assessment. The skill SHALL tell the reader to push and assess again when the command reports that the pipeline input describes another commit.
 
-Rationale: a verdict is a claim about one commit. A pipeline for the commit the platform holds and evidence for a commit only the local clone holds are two different claims, and the command can tell them apart only when each arrives with its own commit.
+Rationale: a verdict is a claim about one commit. A pipeline for the commit the platform holds, a run's evidence for the commit the run made, and a review of the head the loop pushed are three different claims, and the command can tell them apart only when each arrives with its own commit.
 
 #### Scenario: Happy path — the skill's command lines carry the evidence flags
 
-- **GIVEN** the shipped `skills/mr/SKILL.md`
+- **GIVEN** the shipped `skills/settle/SKILL.md`
 - **WHEN** the skill suite runs
-- **THEN** it finds `--run` with `.claude/ship/merge-confidence.json`, `headRefOid` and `statusCheckRollup` on a `gh pr view` line piped into `interlock pipeline --github`, and a `--gitlab-mr` line followed by a `--gitlab` line carrying `--mr`
+- **THEN** it finds `--run` with `.claude/ship/merge-confidence.json`, `headRefOid` and `statusCheckRollup` on a `gh pr view` line piped into `interlock pipeline --github`, and a `--gitlab-pr` line followed by a `--gitlab` line carrying `--pending`
+- **AND** the loop's `interlock merge-confidence` line carries `--review .claude/ship/settle/review-r<last>.json`, `--verify .claude/ship/settle/verify.json` and `--handoff .claude/ship/settle/handoff.json`, and `--coverage .claude/ship/settle/coverage.json` under the paragraph's condition that the file exists
 
 #### Scenario: Failure — local commits the platform has not seen
 
-- **GIVEN** a local head one commit ahead of the merge request's head, and the skill's commands run as written
+- **GIVEN** a local head one commit ahead of the pull request's head, and the skill's commands run as written
 - **WHEN** the command assesses
 - **THEN** the pipeline input names the platform's head commit, the command reads the pipeline signal unobserved because it describes another commit, and the verdict is not `MERGE`
 - **AND** the skill's text, pinned by token, tells the reader to push before assessing again
 
 #### Scenario: Edge case — no evidence file, and one the command refuses
 
-- **GIVEN** a merge request made by hand with no evidence file, and another whose evidence file describes an earlier commit
+- **GIVEN** a pull request made by hand with no evidence file, and another whose evidence file describes an earlier commit that is not an ancestor of the head
 - **WHEN** the skill's commands run for each
 - **THEN** the first runs the command with no `--run`, and the block shows each run-supplied signal as the command read it with no file
 - **AND** the second passes `--run`, and the skill reports the reason the command gave for not using the file
+- **AND** neither, run without `--review`, passes a file from `.claude/ship/settle/`
 
 ### Requirement: The description SHALL carry the CLI's block unedited, naming the commit assessed
 
@@ -105,7 +107,7 @@ Rationale: a label is a claim about a commit, and the platform keeps a label whe
 
 #### Scenario: Failure — the skill's text carries the re-read and no label name
 
-- **GIVEN** the shipped `skills/mr/SKILL.md`
+- **GIVEN** the shipped `skills/settle/SKILL.md`
 - **WHEN** the skill suite runs
 - **THEN** it finds a platform read of the head commit after the `--markdown` line and before the first label command
 - **AND** it finds `labels.verdictNames` and `labels.scorePrefix` and no occurrence of `interlock/merge`, `interlock/human-review`, `interlock/blocked` or `interlock/score-`
@@ -157,3 +159,62 @@ Rationale: a recipe that keys a merge on a label, without saying who can apply t
 - **GIVEN** a copy of the page in which one recipe lacks its `**Exercised:**` line
 - **WHEN** the documentation pins run
 - **THEN** the suite fails naming the recipe
+
+### Requirement: With `--create` the skill SHALL push before it creates, SHALL create a draft when the loop will follow, and without `--create` SHALL push nothing
+
+With `--create`, the skill SHALL push the branch before the create line: `git push -u origin HEAD` when the branch has no upstream, `git push` when it has one and the local head is ahead. With `--create --review` it SHALL create the pull request as a draft and mark it ready after the loop's last push and re-review, before the confirmation worker, whatever the verdict will be; with `--create` alone it SHALL create it ready, as before. Without `--create`, a branch that has no pull request SHALL stop the skill with a message that says to re-run with `--create` and that nothing was pushed. The GitLab lines of the push, the draft and the ready step SHALL be marked as not exercised.
+
+Rationale: a pull request cannot be created without a pushed branch, so the flag always implied the push; it is a remote side effect all the same, and gets its own requirement. Code owners are not requested on a draft, so they are asked once, for the head they will read, and no approval is dismissed by a fix commit the loop was always going to make.
+
+#### Scenario: Happy path — the push, the draft and the ready lines in order
+
+- **GIVEN** the shipped `skills/settle/SKILL.md`
+- **WHEN** the skill suite runs
+- **THEN** it finds a `git push -u origin HEAD` line before the `gh pr create` line, `--draft` on that create line under the `--create --review` condition, and a `gh pr ready` line after the last `interlock settle replies` line and before the `interlock settle conformance-brief` line
+- **AND** the paragraph around the create line says a pull request created without `--review` is created ready
+
+#### Scenario: Failure — no pull request and no `--create`
+
+- **GIVEN** the shipped skill
+- **WHEN** the skill suite reads the stop message of the section that finds the pull request
+- **THEN** it carries `re-run with` and `--create`
+- **AND** it says nothing was pushed, and no fenced line before the create line runs `git push` outside the `--create` paragraph
+
+#### Scenario: Edge case — the GitLab lines
+
+- **GIVEN** the shipped skill
+- **WHEN** the skill suite runs
+- **THEN** the `glab mr create` line carries `--draft` under the same condition and the `glab mr update` line carries `--ready`
+- **AND** each sits in a paragraph or block marked `not exercised`
+
+### Requirement: The skill and its command family SHALL be named `settle`, and no shipped surface SHALL name the retired `mr`
+
+The skill that opens, reviews and assesses a pull request SHALL live at `skills/settle/SKILL.md` with `name: settle` in its front matter, and its command family SHALL be `interlock settle <sub>` with the sub-verbs `comment`, `replies`, `remediate-brief`, `fixer-result`, `conformance-brief`, `test-paths` and `tree-check`, implemented in `lib/settle-cli.mjs`, with the fixer's briefing assembled by `lib/prompts/settle-remediate.mjs`. The loop's work directory SHALL be `.claude/ship/settle/` and its local artifact SHALL be `openspec/changes/<change>/settle-summary.md`. No alias, shim skill or fallback SHALL exist for the retired names: `interlock mr` SHALL exit non-zero as an unknown subcommand, and there SHALL be no `skills/mr/` directory.
+
+A residue test SHALL scan the tracked shipped surfaces (`README.md`, `REVIEW.md`, the `[Unreleased]` section of `CHANGELOG.md`, the numbered `docs/*.md`, the generated `docs/assets/flow-*.svg`, `skills/**`, `shared/**`, `site/*.html`, `site/DESIGN-PROMPT.md`, `bin/**`, `lib/**`, `hooks/**`, `scripts/**`, `workflows/**`, `.claude-plugin/**` and `test/**`) and SHALL fail naming each file and line that carries the retired name as a word (`mr`, `MR`, `MRs`), as an identifier segment (`mrX`, `xMr`, `MR_`), or the phrase `merge request` / `merge-request`. Before matching it SHALL remove a closed allow-list of tokens GitLab owns or history fixed — `glab mr <verb>`, `--merge-request`, `CI_MERGE_REQUEST_`, `merge_requests`, `refs/merge-requests/`, `close-the-merge-request-loop`, `label-the-merge-request-with-confidence`, `merge-request-delivery` — and any `data:` URI. It SHALL leave out `test/fixtures/ship/**` (a recorded run) and its own file. Inside the `[Unreleased]` section it SHALL also leave out the rename note: the `- **BREAKING:` bullets and the `### Upgrading` subsection, which name the retired commands to say what changed.
+
+Rationale: a rename that only a reviewer's eye enforces comes back at the first copy-paste from an old note. The owner asked for MR naming to be gone; the suite is what keeps it gone.
+
+#### Scenario: Happy path — the renamed tree passes the residue test and the skill pins
+
+- **GIVEN** the tree after this change
+- **WHEN** `npm test` runs
+- **THEN** the residue test passes, the skill suite reads `skills/settle/SKILL.md`, and `node bin/interlock settle --help` prints the family's own help
+
+#### Scenario: Failure — a retired name in a shipped surface fails the suite naming it
+
+- **GIVEN** a copy of `docs/07-cli-and-configuration.md` with one line reading `run interlock mr comment`
+- **WHEN** the residue test scans it
+- **THEN** it fails naming the file and the line number
+
+#### Scenario: Edge case — GitLab's own tokens and historical change ids pass
+
+- **GIVEN** a shipped file whose code span reads `glab mr view <iid> --output json | interlock pipeline --gitlab-pr - --out p.json`, and a comment citing design D3 of `close-the-merge-request-loop`
+- **WHEN** the residue test scans it
+- **THEN** it reports nothing for either line
+
+#### Scenario: Edge case — the retired command is not an alias
+
+- **GIVEN** the tree after this change
+- **WHEN** `node bin/interlock mr comment` runs
+- **THEN** it exits non-zero naming an unknown subcommand, and writes nothing under `.claude/ship/`

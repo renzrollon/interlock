@@ -4,7 +4,7 @@ description: Deep codebase reconnaissance with parallel read-only investigators 
 license: MIT
 compatibility: Optional openspec CLI for change awareness. Node.js >= 18 for the bundled interlock-graph CLI.
 argument-hint: "[question] [--autonomous]"
-allowed-tools: Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
+allowed-tools: Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Agent Read Grep Glob
 metadata:
   type: discovery
   outputs:
@@ -89,6 +89,7 @@ When genuinely unsure, start single-threaded and escalate once you realize the q
 7. **Use `subagent_type: "Explore"`** for read-only investigation.
 8. **Context hygiene.** Wrap user-supplied values per `${CLAUDE_PLUGIN_ROOT}/shared/CONTEXT-HYGIENE.md` before echoing them into a subagent prompt.
 9. **Locate before Read** — graph, then grep, then Read spans.
+10. **Route every investigator.** Before the first spawn, run `interlock routing explore-investigator --json` once, not once per investigator. Pass its `model` and `effort` on every investigator call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the fan-out. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults — routing is a cost hint, never a reason to stop. Name no model and no effort level anywhere in this skill or in a prompt it emits; the CLI publishes them.
 
 ### Prompt template
 

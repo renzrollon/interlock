@@ -2036,3 +2036,280 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   // §5's not-exercised marker.
   fails(problemsOf(t => t.replace('task 8.5 of `close-the-merge-request-loop`', 'a later task')), 'not exercised end to end')
 })
+
+// ---------------------------------------------------------------------------
+// Prose spawn routing (spec: spawn-routing). Tokens, not sentences: each is what
+// a site must still say after a reword. The values themselves are never pinned
+// here; `interlock routing` publishes them.
+// ---------------------------------------------------------------------------
+
+const skillText = name => readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8')
+
+/**
+ * The text from the first heading matching `start` to the next heading of the same
+ * or a higher level. Lines inside a code fence are never headings: a `# GitLab`
+ * comment in a bash fence must not end a section.
+ */
+function sectionOfSkill(text, start) {
+  const head = start.exec(text)
+  assert.ok(head, `heading ${start} was not found`)
+  const level = /^#+/.exec(head[0])[0].length
+  const from = head.index + head[0].length
+  let offset = from
+  let fenced = false
+  const lines = text.slice(from).split('\n')
+  // The first element is the remainder of the heading line itself.
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (i > 0) {
+      if (/^```/.test(line)) fenced = !fenced
+      else if (!fenced && new RegExp(`^#{1,${level}} `).test(line)) return text.slice(head.index, offset)
+    }
+    offset += line.length + 1
+  }
+  return text.slice(head.index)
+}
+
+/** The paragraph (blank-line delimited block) of `text` that contains `token`. */
+function paragraphWith(text, token) {
+  return text.split(/\n\s*\n/).find(p => p.includes(token)) ?? null
+}
+
+/** Assert every token sits in `scope`, naming the file, the site and the token that is missing. */
+function assertRoutingTokens(scope, tokens, where) {
+  assert.ok(scope, `${where}: the section or paragraph was not found`)
+  for (const token of tokens) {
+    assert.ok(scope.includes(token), `${where} must carry ${token}`)
+  }
+}
+
+const ROUTING_COMMON = ['ROUTING UNAVAILABLE', '`banners`', '`null`', 'omit']
+
+test('explore routes its investigators in the investigator rules, and is allowed to run the CLI', () => {
+  const text = skillText('explore')
+  const fm = parseFrontmatter(text)
+  assert.ok(
+    fm.values['allowed-tools'].includes('Bash(interlock *)'),
+    'skills/explore/SKILL.md allowed-tools must carry Bash(interlock *)'
+  )
+  const rules = sectionOfSkill(text, /^## Investigator rules$/m)
+  assertRoutingTokens(
+    rules,
+    ['interlock routing explore-investigator --json', ...ROUTING_COMMON],
+    'skills/explore/SKILL.md investigator rules'
+  )
+  assert.ok(
+    rules.indexOf('interlock routing explore-investigator') < rules.indexOf('### Prompt template') ||
+      !rules.includes('### Prompt template'),
+    'skills/explore/SKILL.md routes before the prompt template'
+  )
+})
+
+test('review-code reads one routing answer in the paragraph before the dimension fan-out', () => {
+  const text = skillText('review-code')
+  const section = sectionOfSkill(text, /^## 2\. Fan out the dimensions$/m)
+  const paragraph = paragraphWith(section, 'interlock routing --json')
+  assertRoutingTokens(
+    paragraph,
+    [
+      'interlock routing --json',
+      '--depth strict',
+      'roles.review-dimension',
+      'roles.review-skeptic',
+      ...ROUTING_COMMON
+    ],
+    'skills/review-code/SKILL.md §2 routing paragraph'
+  )
+  assert.ok(
+    text.indexOf('interlock routing --json') < text.indexOf('Spawn one agent per dimension'),
+    'skills/review-code/SKILL.md must route before the fan-out'
+  )
+  assert.ok(
+    !/interlock routing (explore|review-|settle-)/.test(text),
+    'skills/review-code/SKILL.md must make one no-role routing call, not a per-role one'
+  )
+})
+
+test('settle routes its fixer in the fixer paragraph and its conformance worker in 5e', () => {
+  const text = skillText('settle')
+  const fixer = paragraphWith(sectionOfSkill(text, /^### 5c\. /m), 'Spawn ONE `general-purpose` subagent')
+  assertRoutingTokens(
+    fixer,
+    ['interlock routing settle-fixer --json', ...ROUTING_COMMON],
+    'skills/settle/SKILL.md §5c fixer paragraph'
+  )
+  const conformance = sectionOfSkill(text, /^### 5e\. /m)
+  assertRoutingTokens(
+    conformance,
+    ['interlock routing settle-conformance --json', ...ROUTING_COMMON, 'spawn no worker', 'nothing to confirm'],
+    'skills/settle/SKILL.md §5e'
+  )
+})
+
+test('spec §1b says spec spawns nothing and names the routed explore role', () => {
+  const text = skillText('spec')
+  const section = sectionOfSkill(text, /^### 1b\. /m)
+  assertRoutingTokens(
+    section,
+    ['spawns nothing itself', 'interlock routing explore-investigator'],
+    'skills/spec/SKILL.md §1b'
+  )
+})
+
+test('TOOL-ECONOMY Rule 5 carries the routing tokens and names the five roles', () => {
+  const text = readFileSync(join(ROOT, 'shared', 'TOOL-ECONOMY.md'), 'utf8')
+  const rule = sectionOfSkill(text, /^## Rule 5 — Route every prose spawn/m)
+  assertRoutingTokens(
+    rule,
+    [
+      'interlock routing',
+      '--json',
+      '--depth strict',
+      'ROUTING UNAVAILABLE',
+      'banners',
+      '`null`',
+      'omit',
+      'never',
+      ...['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+    ],
+    'shared/TOOL-ECONOMY.md Rule 5'
+  )
+})
+
+test('no routed skill spells a model or an effort level as a spawn parameter', () => {
+  const MODEL = /\bmodel\s*[:=]\s*["'`]?(haiku|sonnet|opus|claude-)/i
+  const EFFORT_LEVEL = /\beffort\s*[:=]\s*["'`]?(low|medium|high|xhigh|max)\b/i
+  for (const name of ['explore', 'review-code', 'settle', 'spec']) {
+    const text = skillText(name)
+    assert.ok(!MODEL.test(text), `skills/${name}/SKILL.md spells a model slug as a spawn parameter`)
+    assert.ok(!EFFORT_LEVEL.test(text), `skills/${name}/SKILL.md spells an effort level as a spawn parameter`)
+  }
+})
+
+// The review depth (spec: review-depth). The skills say which depth ran and read
+// what it runs from `interlock routing`; they never name a count of dimensions
+// or skeptics beside `lean` or `strict`.
+
+/** A number, as a digit or a word, directly counting dimensions, skeptics or reviewers. */
+const COUNT_OF_REVIEWERS = String.raw`(?:\d+|one|two|three|four|five|six|seven|eight)\s+(?:independent\s+)?(?:dimensions?|skeptics?|reviewers?)`
+const DEPTH_WORD = String.raw`\b(?:lean|strict)\b`
+
+function depthCountProblems(text) {
+  const plain = text.replaceAll('`', '')
+  const before = new RegExp(`${DEPTH_WORD}[^.\\n]{0,12}${COUNT_OF_REVIEWERS}`, 'gi')
+  const after = new RegExp(`${COUNT_OF_REVIEWERS}[^.\\n]{0,12}${DEPTH_WORD}`, 'gi')
+  return [...plain.matchAll(before), ...plain.matchAll(after)].map(m => m[0])
+}
+
+test('review-code selects the depth with --strict, names the dimensions by review.dimensions and spawns skeptics by review.skeptics', () => {
+  const text = skillText('review-code')
+  const where = 'skills/review-code/SKILL.md'
+  const fm = parseFrontmatter(text)
+  assert.ok(fm.values['argument-hint'].includes('--strict'), `${where} argument-hint must carry --strict`)
+  assert.ok(text.includes('REVIEW DEPTH:'), `${where} must print REVIEW DEPTH:`)
+
+  // The dimension table: the always-on rows read from the depth, and no row is `always`.
+  const fanOut = sectionOfSkill(text, /^## 2\. Fan out the dimensions$/m)
+  const tableLead = fanOut.slice(fanOut.indexOf('Spawn one agent per dimension'), fanOut.indexOf('| Dimension |'))
+  assert.ok(tableLead.includes('review.dimensions'), `${where} must say the always-on set is review.dimensions above the table`)
+  assert.ok(!/\|\s*always\s*\|/i.test(fanOut), `${where} still has a dimension row whose Run when is always`)
+  assert.ok(/\| in `review\.dimensions` \|/.test(fanOut), `${where} must have rows that run when in review.dimensions`)
+
+  // The record fence carries the depth.
+  const fence = /```json\n(\{ "selected"[\s\S]*?)```/.exec(text)
+  assert.ok(fence, `${where} dimension record fence was not found`)
+  assert.ok(fence[1].includes('"depth"'), `${where} dimension record fence must carry depth`)
+
+  // §3: the per-review paragraph and the per-finding sentence.
+  const verify = sectionOfSkill(text, /^## 3\. Adversarial verification$/m)
+  const perReview = paragraphWith(verify, 'per-review')
+  assertRoutingTokens(
+    perReview,
+    ['grouped by file', 'one verdict per finding', 'overlapping', 'judged once'],
+    `${where} §3 per-review paragraph`
+  )
+  const perFinding = paragraphWith(verify, 'per-finding')
+  assertRoutingTokens(perFinding, ['run it or read it', 'evidence'], `${where} §3 per-finding paragraph`)
+  assert.ok(verify.includes('Run both skeptics per finding, in parallel'), `${where} must keep Run both skeptics per finding, in parallel`)
+})
+
+test('settle passes --strict through to every review-code line and prints the depth once', () => {
+  const text = skillText('settle')
+  const where = 'skills/settle/SKILL.md'
+  const fm = parseFrontmatter(text)
+  assert.ok(fm.values['argument-hint'].includes('--strict'), `${where} argument-hint must carry --strict`)
+  assert.match(text, /^\| `--strict` \|/m, `${where} flag table must carry a --strict row`)
+
+  const lines = text.split('\n').filter(l => /^\/interlock:review-code /.test(l))
+  assert.ok(lines.length >= 2, `${where} must have review-code lines in 5a and 5c, found ${lines.length}`)
+  for (const line of lines) {
+    assert.ok(line.endsWith('[--strict]'), `${where} review-code line must end with [--strict]: ${line}`)
+  }
+  const review = sectionOfSkill(text, /^## 5\. The review loop/m)
+  assert.ok(
+    sectionOfSkill(review, /^### 5a\. /m).includes('[--strict]'),
+    `${where} §5a review-code line must carry [--strict]`
+  )
+  assert.ok(
+    sectionOfSkill(review, /^### 5c\. /m).includes('[--strict]'),
+    `${where} §5c review-code line must carry [--strict]`
+  )
+  assertRoutingTokens(paragraphWith(review, 'placeholder'), ['write `--strict` there', 'invent'], `${where} §5 placeholder paragraph`)
+  assert.ok(review.includes('REVIEW DEPTH:'), `${where} must print REVIEW DEPTH:`)
+})
+
+test('neither review skill names a count of dimensions or skeptics beside lean or strict', () => {
+  for (const name of ['review-code', 'settle']) {
+    assert.deepEqual(depthCountProblems(skillText(name)), [], `skills/${name}/SKILL.md counts reviewers beside a depth`)
+  }
+  // The detector itself: it sees a count beside a depth, in both orders.
+  assert.ok(depthCountProblems('the lean depth runs two dimensions').length > 0)
+  assert.ok(depthCountProblems('four dimensions at strict').length > 0)
+  assert.deepEqual(depthCountProblems('the lean depth runs `review.dimensions`'), [])
+})
+
+// The scoped re-review and the two deferrals (spec: settle-loop).
+
+test('the round\'s review-code line scopes the re-review and carries the rest, and review-code forwards --carry', () => {
+  const settle = skillText('settle')
+  const where = 'skills/settle/SKILL.md'
+  const roundLine = settle.split('\n').find(l => /^\/interlock:review-code /.test(l) && l.includes('review-r<r>.json'))
+  assert.ok(roundLine, `${where} must have a round review-code line writing review-r<r>.json`)
+  assert.match(roundLine, /--dimensions\b/, `${where} round review-code line must carry --dimensions`)
+  assert.ok(
+    roundLine.includes('--carry .claude/ship/settle/review-r<r-1>.json'),
+    `${where} round review-code line must carry --carry .claude/ship/settle/review-r<r-1>.json`
+  )
+  // Still the line the loop-order pin looks for.
+  assert.match(
+    roundLine,
+    /\/interlock:review-code\b[^\n]*--base origin\/[^\n]*--out \.claude\/ship\/settle\/review-r/,
+    `${where} round review-code line must still match the loop-order pin`
+  )
+  const fix = sectionOfSkill(settle, /^### 5c\. /m)
+  assert.ok(fix.includes('reReviewDimensions'), `${where} §5c must name reReviewDimensions`)
+
+  const review = skillText('review-code')
+  assert.match(
+    review,
+    /^interlock review [^\n]*--head <sha> --out <file>[^\n]*--carry/m,
+    'skills/review-code/SKILL.md --head --out review line must carry --carry'
+  )
+})
+
+test('the remediate-brief line passes the last fixer result, and its paragraph names both deferrals', () => {
+  const settle = skillText('settle')
+  const where = 'skills/settle/SKILL.md'
+  const line = settle.split('\n').find(l => /^interlock settle remediate-brief\b/.test(l))
+  assert.ok(line, `${where} must have a remediate-brief line`)
+  assert.ok(
+    line.includes('--previous .claude/ship/settle/remediate-r<r-1>.json'),
+    `${where} remediate-brief line must carry --previous .claude/ship/settle/remediate-r<r-1>.json`
+  )
+  const paragraph = paragraphWith(sectionOfSkill(settle, /^### 5c\. /m), 'Deferred this round')
+  assertRoutingTokens(
+    paragraph,
+    ['protected test path', 'declined', 'nothing fixable remains', '`open`'],
+    `${where} §5c deferral paragraph`
+  )
+})
