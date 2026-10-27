@@ -120,9 +120,11 @@ const WORKER_PROMPT = `Confirm change "${C}" against its diff at head ${H161}.\n
 // --- the engine beneath the plugin ---------------------------------------------
 
 /** The engine beneath the plugin, recording every display call the module makes. */
-function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
+function world(on: any, { placed = true, clock = true }: { placed?: boolean; clock?: boolean } = {}): World {
+  // With `clock: false` the engine refuses every read, which rejects the plugin's `$.clock.now()`.
+  if (!clock) on('clock.now', () => ({ deny: 'the clock is gone' }))
   const w: World = {
-    clock: mock.clock(on, { now: T0 }),
+    clock: clock ? mock.clock(on, { now: T0 }) : (null as any),
     now: T0,
     status: [],
     toasts: [],
@@ -656,7 +658,8 @@ test('the PR #25 pass reads back as a grouped timeline in the CLI\'s words on bo
     expect(dimsRow).toContain('routed sonnet · medium')
     expect(review.some(t => t.includes('routed — · xhigh'))).toBe(true)
     expect(review.some(t => t.includes('6 raised · 0 dismissed · 6 surviving · head a96cb82'))).toBe(true)
-    expect(review.some(t => t.includes('round 0 · exit 0'))).toBe(true)
+    // Piped into `gh pr comment`, the call's exit is gh's, not the comment line's (PR #26 review, M6).
+    expect(review.some(t => t.includes('round 0 · exit not its own'))).toBe(true)
     for (const name of ['language & framework', 'technical lead', 'domain', 'blast-radius']) expect(review.some(t => t.startsWith(name))).toBe(true)
     const lang = review.find(t => t.startsWith('language & framework'))!
     expect(lang.startsWith('language & framework · sonnet → claude-sonnet-5-5 · step medium · 3 req · ')).toBe(true)
@@ -821,4 +824,119 @@ test('an aborted worker ends its row in the host\'s word and raises one toast in
     expect(row).toContain('step medium → high')
     expect(row.endsWith(' · aborted')).toBe(true)
   }
+})
+
+// --- the PR #26 review's fixes (M2-M5, M15, B4, B5) ------------------------------
+
+const SPEC_DRIFT = 'interlock drift --json'
+
+test('M2: the spec flow\'s `interlock drift --json` during a live pass leaves the pass live', async ($: any, on: any) => {
+  const w = world(on)
+  w.bash.set(SPEC_DRIFT, json({ root: '.', unarchived: [], stale: { skipped: false, reason: null, broken: [], aging: [] } }))
+  await start($)
+  await loadSettle($)
+  await bash($, R.BASH_SETTLE_BRIEF.command)
+  await loadSpec($)
+  await bash($, SPEC_DRIFT)
+  await bash($, SPEC_CHECKPOINT)
+  await bash($, R.BASH_SETTLE_FIXER_RESULT.command)
+  expect(w.status.at(-1)).toBe(`${LINE}round 1 · 1 fixed, 0 not fixed`)
+  for (const surface of SURFACES) expect(headingAt((await pane($, surface)).rows, 'drift')).toBe(-1)
+})
+
+test('M3: a session that never ran settle parses no Bash call for it after a clear, and names nothing', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  expect(await $.classic.SessionStart({ source: 'clear' })).toEqual({})
+  await bash($, COMMIT_PUSH)
+  await bash($, COMMIT_PUSH)
+  expect(settleLogs(w)).toEqual([])
+  for (const surface of SURFACES) expect((await pane($, surface)).all.trim()).toBe(NO_RUN)
+})
+
+test('M3: after the drift line only the first keyed line is named, and later ones are not read', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  const logged = settleLogs(w).length
+  for (let i = 0; i < 3; i++) await bash($, COMMIT_PUSH)
+  expect(settleLogs(w).length - logged).toBe(1)
+})
+
+test('M4: with a ship run and a settle pass live, a lane\'s lines stay out of the pass and a settle agent stays out of the ship', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await loadSettle($)
+  await bash($, R.BASH_SETTLE_REVIEW.command)
+  await bash($, TREE_CHECK)
+  await bash($, R.BASH_SETTLE_BRIEF.command)
+  await launch($)
+  w.bash.set(NEXT, ok(F.stdout(F.RUN_BATCH)))
+  await bash($, NEXT)
+  // A ship lane's verify line and commit carry the lane's agent id.
+  await bash($, VERIFY_EXEC, { agentId: 'lane-1' })
+  await bash($, COMMIT_PUSH, { agentId: 'lane-1' })
+  await bash($, R.BASH_SETTLE_FIXER_RESULT.command)
+  await bash($, CONFORMANCE_BRIEF)
+  await agent($, w, { prompt: WORKER_PROMPT, model: 'sonnet', spawnAt: 30, steps: [40], served: 'claude-sonnet-5-5', end: { at: 49, reason: 'aborted', durationMs: 19_000 } })
+  for (const surface of SURFACES) {
+    const { rows } = await pane($, surface)
+    expect(headingAt(rows, 'verify')).toBe(-1)
+    const round1 = section(rows, 'round 1').join('\n')
+    expect(round1).toContain('round 1: 1 fixed, 0 not fixed')
+    expect(round1).not.toContain('commit fix(review)')
+  }
+  expect(w.toasts.filter(t => t.includes('aborted'))).toEqual(['conformance: aborted'])
+})
+
+test('M5: a ship launch takes the status line at the launch itself, and its close hands the line back to the finished pass', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  const verdict = w.status.at(-1)
+  expect(verdict).toMatch(new RegExp(`^${LINE}merge confidence · `))
+  const before = w.status.length
+  await launch($)
+  expect(w.status.length).toBeGreaterThan(before)
+  expect(w.status.at(-1) ?? '').not.toMatch(/^interlock settle/)
+  w.bash.set(NEXT, ok(F.stdout(F.RUN_BATCH)))
+  await bash($, NEXT)
+  w.bash.set(NEXT, ok(F.stdout(F.CLOSE_STEP)))
+  await bash($, NEXT)
+  expect(w.status.at(-1)).toBe(verdict)
+})
+
+test('M15: a clock the engine refuses leaves every row untimed, says so on the pane, and is named once', async ($: any, on: any) => {
+  const w = world(on, { clock: false })
+  await start($)
+  await loadSettle($)
+  await bash($, ROUTING)
+  await bash($, R.BASH_SETTLE_REVIEW.command)
+  await bash($, R.BASH_SETTLE_BRIEF.command)
+  expect(w.status.at(-1)).toMatch(new RegExp(`^${LINE}round 1 · `))
+  for (const surface of SURFACES) {
+    const { rows } = await pane($, surface)
+    expect(rows[0].endsWith('time unknown')).toBe(true)
+    expect(rows.some(t => t.startsWith('time unknown routing · depth lean'))).toBe(true)
+  }
+  expect(settleLogs(w).filter(l => l.text.includes('the clock cannot be read'))).toHaveLength(1)
+})
+
+test('B4: a spec run\'s Explore investigator is not counted as a settle agent', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await loadSettle($)
+  await bash($, ROUTING)
+  await loadSpec($)
+  await spawn($, { prompt: 'Investigate the hooks module', model: 'sonnet', subagentType: 'Explore' })
+  for (const surface of SURFACES) expect((await pane($, surface)).all).not.toContain('Explore · unattributed')
+  expect(w.spawned).toEqual(['Explore'])
+})
+
+test('B5: a typed settle load after a blank line still starts the run', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await submit($, `\n\n${LOAD}`)
+  expect(w.status.at(-1)).toBe(`interlock settle: ${UNKNOWN}`)
+  expect(w.opens).toEqual([PANE])
 })

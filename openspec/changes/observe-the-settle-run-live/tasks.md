@@ -23,3 +23,13 @@
 ## 3. Verify the whole and record what the validator says
 
 - [x] 3.1 Run `npm test`, `npm run validate` and `claude plugin test .`, all green; paste the validator's `hooks:` and `calls:` lines into design D13 so the spec's static-pin scenario names what the shipped module actually lists; confirm `bin/interlock` is unchanged in size and the shipped file count is under the directory cap (`test/spine/package.test.mjs`).
+
+## 4. Answer the PR #26 review (code review and blast radius)
+
+- [x] 4.1 H1: the retired-name residue: GitLab's argv words are spelled whole (`leadOf`, `GLAB_PULL_LINES`, `GLAB_IID_FLAG`); landed in the amended `d14d231`.
+- [x] 4.2 M1, M13: `fileReview` notes the round from `--out` before reading stdout; `dimensions.skipped` is read as `{ name, reason }[]` and `dimensions.unavailable` as names, both drawn on the review row.
+- [x] 4.3 M2: `interlock drift` is keyed only with `--changed`; the spec flow's `interlock drift --json` leaves the pass live.
+- [x] 4.4 M3, M4, M5, B4, B5: `settleReads` reads the main session's lines only, names a late line once and then stops parsing, and parses nothing after a boundary in a session that held no settle run; a settle agent is never a ship lane; an accepted ship launch takes the status line at the launch; a spec run's Explore investigator is not a settle agent; a typed load after blank lines starts the run. The living ship-meter inertness requirement is MODIFIED in this change's delta with the five-way order.
+- [x] 4.5 M6, M7, M8, M12: `cutStages` records the top-level operators and `ownerOf` draws an exit only on the stage that set it; an empty conformance brief draws its stderr line; the tree-check reader finds the CLI's head line and reads only the counted indented paths; a backslash-newline continues the line (here and in `argvOf`), a `$( )` commit message reads `(message not read)`, and a piped `glab ci get` is not keyed.
+- [x] 4.6 M9, M10, M11, M16, M17: blockquoted briefs are attributed and the verbatim-brief phrases are pinned in `test/skills.test.mjs`; control characters are made spaces and every shown text is cut to `LIMITS.settleTextChars`; the pane's `Text` truncates; the three super-linear paths are linear and a stage's words are split once; untimed rows read `time unknown` and an unread routing line `routed: not read`; the fold width is `LIMITS.settlePaneFullColumns`.
+- [x] 4.7 M14, M15: docs/07, docs/13 and the CHANGELOG say what the code does; the verify rows' duration is dropped from the spec and the merge-confidence label names are drawn; tests cover `SETTLE_KINDS` against both skills, a too-large result for each JSON kind, and a refused clock in the kit.

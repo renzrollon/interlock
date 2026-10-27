@@ -34,7 +34,9 @@ import { fileURLToPath } from 'node:url'
 
 import { assembleSettleRemediatePrompt } from '../../lib/prompts/settle-remediate.mjs'
 import { clockText, durationText } from '../../lib/meter-time.mjs'
+import { LIMITS } from '../../lib/limits.mjs'
 import {
+  SETTLE_KINDS,
   applySettleLines,
   freshSettle,
   noteSettleEnd,
@@ -576,7 +578,8 @@ test('replies belong to the round open, whatever file their --after names', () =
   const s = inRound1()
   cross(s, reviewR1, 1033)
   cross(s, repliesR1, 1040)
-  assert.ok(groupRows(s, 'round 1').some(t => t.includes('replies') && t.includes('exit 0')))
+  // Piped into `gh pr comment`, the call's exit is gh's, not the replies line's (M6).
+  assert.ok(groupRows(s, 'round 1').some(t => t.includes('replies') && t.includes('exit not its own')))
   cross(s, { ...treeClean, command: TREE_CHECK_R2 }, 1044)
   // Round 2's nothing-to-keep reply is written --before review-r1 --after review-r1 (skill section 5c).
   const keep = okBash(
@@ -586,7 +589,7 @@ test('replies belong to the round open, whatever file their --after names', () =
   cross(s, keep, 1050)
   const lines = settlePaneLines(s, 144)
   assert.equal(groupRows(s, 'round 1').filter(t => t.includes('replies')).length, 1, 'round 1 keeps its own reply only')
-  assert.ok(section(lines, 'round 2').some(t => t.includes('replies') && t.includes('exit 0')), 'round 2 draws the reply its tree-check opened')
+  assert.ok(section(lines, 'round 2').some(t => t.includes('replies') && t.includes('exit not its own')), 'round 2 draws the reply its tree-check opened')
 })
 
 test('a late --markdown row lands in publish, after the labels, and publish keeps any later merge-confidence row', () => {
@@ -734,7 +737,8 @@ test('test-paths draws its counts and protected paths, or the CLI\'s reason when
 
   const only = inRound1()
   run(only, 'git diff --cached --name-only -z | interlock settle test-paths --changed - --profile p.json --protected-only --nul | git --literal-pathspecs restore --staged --worktree --source=HEAD --pathspec-from-file=- --pathspec-file-nul', '', 1000)
-  assert.ok(groupRows(only, 'round 1').some(t => t.includes('test-paths') && t.includes('exit 0')))
+  // Piped into `git restore`, the call's exit is the restore's (M6).
+  assert.ok(groupRows(only, 'round 1').some(t => t.includes('test-paths') && t.includes('exit not its own')))
 })
 
 test('a commit and a push are rows inside a round, the message\'s first line only, and pass through unread outside one', () => {
@@ -1343,7 +1347,7 @@ test('the review group draws its dimensions row as two labelled facts, its skept
   assert.ok(dims.includes('routed sonnet · medium'), dims)
   assert.ok(review.some(t => t.includes('routed — · xhigh')), 'the skeptics row')
   assert.ok(review.some(t => t.includes('6 raised · 0 dismissed · 6 surviving · head a96cb82')), 'the review record')
-  assert.ok(review.some(t => t.includes('round 0 · exit 0')), 'the comment')
+  assert.ok(review.some(t => t.includes('round 0 · exit not its own')), 'the comment, whose exit is the gh stage\'s (M6)')
   for (const name of ['language & framework', 'technical lead', 'domain', 'blast-radius']) assert.ok(review.some(t => t.startsWith(name)), `${name} reviewer row`)
 })
 
@@ -1565,6 +1569,8 @@ const UNKEYED_PREFIXES = [
   'glab mr update <id> --description',
   'gh pr edit <id> --body',
   'gh pr checks <n> --required',
+  // Piped into `interlock pipeline` it is that line's input, not the wait for the checks (M12).
+  'glab ci get',
   'cat <<',
   'rm -f .claude/ship/settle/'
 ]
@@ -1617,4 +1623,202 @@ test('lib/settle-meter.mjs imports nothing from node, spells no engine call, nev
   assert.doesNotMatch(source, /\.completed\b/)
   assert.doesNotMatch(source, /complete/i, 'the module spells complete')
   assert.doesNotMatch(source, /deny/i, 'the module spells deny')
+})
+
+// --- the PR #26 review's fixes (M1-M17, B4, B5) --------------------------------
+
+/** A Bash result the engine kept out of line, as it raises one too large to read inline. */
+const tooLarge = command => ({
+  command,
+  result: { stdout: '', stderr: '', interrupted: false, isImage: false, noOutputExpected: false, persistedOutputPath: '/tmp/out.txt' },
+  text: ''
+})
+/** A clean exit that printed nothing on stdout and `stderr` on stderr. */
+const stderrBash = (command, stderr) => ({ command, result: { stdout: '', stderr, interrupted: false, isImage: false, noOutputExpected: true }, text: '' })
+
+test('M1: a review record whose stdout was too large still names its round, so round 2 opens and the STOP lands there', () => {
+  const s = live()
+  cross(s, routing, 0)
+  cross(s, tooLarge(R.BASH_SETTLE_REVIEW.command), 300)
+  cross(s, treeClean, 320)
+  cross(s, R.BASH_SETTLE_BRIEF, 326)
+  cross(s, tooLarge(reviewR1.command), 1033)
+  cross(s, { ...treeClean, command: TREE_CHECK_R2 }, 1044)
+  cross(s, R.BASH_SETTLE_STOP, 1050)
+  const lines = settlePaneLines(s, 144)
+  assert.ok(headingAt(lines, 'round 1') >= 0, textsOf(lines).join('\n'))
+  assert.ok(headingAt(lines, 'round 2') >= 0, textsOf(lines).join('\n'))
+  assert.ok(section(lines, 'round 2').some(t => t.includes('STOP: ')))
+  assert.match(settleStatusText(s, {}), /: round 2 · STOP$/)
+  assert.equal(s.lastRecord, 1)
+})
+
+test('M2: only the pass\'s own drift line ends it; the spec flow\'s `interlock drift --json` leaves the run live', () => {
+  assert.equal(settleLineKind('interlock drift --json'), null)
+  assert.equal(settleLineKind('interlock drift --changed a.md --json'), 'drift')
+  const s = inRound1()
+  run(s, 'interlock drift --json', json({ root: '.', unarchived: [], stale: { skipped: false, reason: null, broken: [], aging: [] } }), 1000)
+  assert.equal(s.phase, 'live')
+  assert.equal(headingAt(settlePaneLines(s, 144), 'drift'), -1)
+})
+
+test('M6: the call\'s exit is drawn only on the stage that set it', () => {
+  const coverage = 'interlock verify coverage --base origin/main --json > .claude/ship/settle/coverage.json || rm -f .claude/ship/settle/coverage.json'
+  const lines = settleLines(coverage)
+  assert.equal(lines[0].own(0), false, 'a stage followed by || does not own the exit')
+  assert.equal(lines[1].own(0), false, 'nor does the fallback after it: an exit of 0 may mean it never ran')
+  const s = live()
+  cross(s, routing, 0)
+  run(s, coverage, '', 1200)
+  assert.ok(groupRows(s, 'verify').some(t => t.includes('coverage exit not its own') && t.includes('result not seen (redirected)')), groupRows(s, 'verify').join('\n'))
+
+  const pair = settleLines('git commit -m "x" && git push')
+  assert.deepEqual([pair[0].own(0), pair[1].own(0)], [true, true], 'an && list that exited 0 ran every stage to 0')
+  assert.deepEqual([pair[0].own(1), pair[1].own(1)], [false, false], 'a failed && list could have failed at either stage')
+  assert.equal(settleLines('a | interlock settle tree-check --status -')[1].own(1), true, 'the last stage of a pipe owns its exit')
+  assert.equal(settleLines('interlock settle comment --round 0 | gh pr comment 25')[0].own(0), false)
+  assert.equal(settleLines('git commit -m "$(interlock x)"')[1].own(0), false, 'a stage inside $( ) never owns the call\'s exit')
+  assert.equal(settleLines('git commit -m a; git push')[0].own(0), false, 'a stage before ; does not own the exit')
+
+  const failed = inRound1()
+  cross(failed, errBash(commitPush.command, 1, 'error: pathspec did not match'), 1000)
+  const failedRow = groupRows(failed, 'round 1').find(t => t.includes('commit fix(review)'))
+  assert.ok(failedRow && failedRow.includes('exit 1 from the commit or the push') && !failedRow.includes('push exit 1'), failedRow)
+  const passed = inRound1()
+  cross(passed, commitPush, 1000)
+  assert.ok(groupRows(passed, 'round 1').some(t => t.includes('commit fix(review)') && t.includes('push exit 0')))
+})
+
+test('M7: a conformance brief with nothing to confirm draws the stderr line the CLI wrote', () => {
+  const s = live()
+  cross(s, routing, 0)
+  const line = `interlock: nothing to confirm for "${CHANGE}": no scenario in its delta specs and no living requirement`
+  cross(s, stderrBash(conformanceBrief.command, `${line}\n`), 1110)
+  assert.ok(groupRows(s, 'conformance').some(t => t.includes('conformance-brief exit 0') && t.includes(line)), groupRows(s, 'conformance').join('\n'))
+  const brief = live()
+  cross(brief, conformanceBrief, 1110)
+  assert.ok(groupRows(brief, 'conformance').some(t => /conformance-brief exit 0$/.test(t)), 'a brief that printed its briefing adds no line')
+})
+
+test('M8: a dirty tree-check lists only the paths it counted, wherever the folded stderr sentence sits', () => {
+  const sentence = 'interlock: working tree not clean: 2 path(s) differ from HEAD or are untracked'
+  for (const body of [`dirty (2):\n  lib/a.mjs\n  lib/b.mjs\n${sentence}`, `${sentence}\ndirty (2):\n  lib/a.mjs\n  lib/b.mjs`]) {
+    const s = live()
+    cross(s, R.BASH_SETTLE_REVIEW, 300)
+    cross(s, errBash(TREE_CHECK, 1, body), 320)
+    const row = groupRows(s, 'round 1').find(t => t.includes('tree-check'))
+    assert.ok(row, groupRows(s, 'round 1').join('\n'))
+    assert.ok(row.includes('dirty (2): lib/a.mjs, lib/b.mjs · exit 1'), row)
+    assert.ok(!row.includes('working tree not clean') && !row.includes('unparsed'), row)
+  }
+})
+
+test('M9: a skeptic brief copied with its blockquote marker is still the skeptic', () => {
+  assert.deepEqual(roleOf(`> ${SKEPTIC_REFUTE.replace('\n', '\n> ')}`), { role: 'skeptic', label: 'refute' })
+  assert.deepEqual(roleOf(`> ${SKEPTIC_SECOND}`), { role: 'skeptic', label: 'second opinion' })
+})
+
+test('M10: control characters never reach the pane, the status line or a toast, and no text runs past the published cap', () => {
+  const s = inRound1()
+  const evil = 'test/\u001b]52;c;dGVzdA==\u0007x.test.mjs'
+  run(s, 'git diff --cached --name-only -z | interlock settle test-paths --changed - --profile p.json --json', JSON.stringify({ protected: [evil], unprotected: [], profile: 'p.json', reason: null }), 1000)
+  agent(s, { id: 'long', prompt: `# Dimension: ${'x'.repeat(10_000)}\u001b[2J`, model: 'sonnet', resolved: 'claude-sonnet-5-5', spawnAt: 1001, end: { at: 1002, reason: 'aborted', durationMs: 1000 } })
+  const texts = [...textsOf(settlePaneLines(s, 144)), settleStatusText(s, {})]
+  for (const t of texts) {
+    assert.doesNotMatch(t, /[\u0000-\u001F\u007F-\u009F]/, JSON.stringify(t.slice(0, 120)))
+    assert.ok(t.length <= LIMITS.settleTextChars, `${t.length} characters`)
+  }
+  const end = noteSettleEnd(live(), {}, at(0))
+  assert.deepEqual(end.toasts, [])
+})
+
+test('M11: pathological commands are read in linear time', () => {
+  const started = performance.now()
+  settleLines(`git commit -F - <<EOF\n${'a'.repeat(250_000)}\nEOF`)
+  settleLines(`interlock gate ${'a#'.repeat(100_000)}`)
+  const s = inRound1()
+  // Built by hand: okBash's own trim is the backtracking pattern this case measures.
+  const body = `dirty (1):\n  a${' '.repeat(50_000)}b`
+  cross(s, { command: TREE_CHECK, result: { stdout: body, stderr: '' }, text: body }, 1000)
+  assert.ok(performance.now() - started < 400, `${Math.round(performance.now() - started)} ms`)
+})
+
+test('M12: a continued line, an unread commit message and a glab line piped onward', () => {
+  const s = live()
+  run(s, 'interlock routing --json \\\n  --depth strict', ROUTING, 0)
+  assert.ok(groupRows(s, 'review').some(t => t.startsWith(`${clockText(at(0))} routing · depth lean`)), groupRows(s, 'review').join('\n'))
+  const r = inRound1()
+  cross(r, okBash(`git commit -m "$(cat <<'EOF'\nfix: subject\nEOF\n)"`, '[x abc1234] fix'), 1000)
+  assert.ok(groupRows(r, 'round 1').some(t => t.includes('commit (message not read)')), groupRows(r, 'round 1').join('\n'))
+  const piped = settleLines('glab ci get --merge-request 7 --output json | interlock pipeline --gitlab - --out p.json')
+  assert.deepEqual(piped.map(l => l.kind), [null, 'pipeline'])
+  assert.equal(settleLineKind('glab ci get --merge-request 7 --output json'), 'checks')
+})
+
+test('M13: a review that skipped or could not run a dimension says so on its row', () => {
+  const doc = JSON.parse(R.BASH_SETTLE_REVIEW.result.stdout)
+  doc.dimensions = { ...doc.dimensions, skipped: [{ name: 'security', reason: 'no trigger' }], unavailable: ['devops'] }
+  const s = live()
+  cross(s, okBash(R.BASH_SETTLE_REVIEW.command, json(doc)), 300)
+  assert.ok(groupRows(s, 'review').some(t => t.includes('skipped security') && t.includes('unavailable devops')), groupRows(s, 'review').join('\n'))
+  assert.deepEqual(s.reviews.get(0).skipped, ['security'])
+})
+
+test('M15: every keyed line kind is spelled by some line of the settle or review-code skill', () => {
+  const lines = [
+    ...fencedLines('skills/settle/SKILL.md', ['interlock', 'gh', 'glab', 'git']),
+    ...fencedLines('skills/review-code/SKILL.md', ['interlock'])
+  ].map(l => l.line)
+  for (const file of ['skills/settle/SKILL.md', 'skills/review-code/SKILL.md']) {
+    for (const m of readFileSync(join(ROOT, file), 'utf8').matchAll(/`(interlock [^`]+)`/g)) lines.push(m[1])
+  }
+  const seen = new Set(lines.flatMap(l => settleLines(l).map(s => s.kind)).filter(Boolean))
+  assert.deepEqual(SETTLE_KINDS.filter(k => !seen.has(k)), [])
+})
+
+test('M15: a JSON line the engine kept out of line reads `result not seen (too large)`, never as a verdict', () => {
+  const commands = [
+    'interlock routing --json',
+    R.BASH_SETTLE_REVIEW.command,
+    'git diff --cached --name-only -z | interlock settle test-paths --changed - --profile p.json --json',
+    R.BASH_SETTLE_BRIEF.command,
+    R.BASH_SETTLE_MERGE_CONFIDENCE.command,
+    'interlock merge-confidence --label-names --json',
+    drift.command
+  ]
+  for (const command of commands) {
+    const s = live()
+    const out = cross(s, tooLarge(command), 10)
+    const rows = s.groups.flatMap(g => g.rows.map(r => r.text))
+    assert.ok(rows.some(t => t.includes('result not seen (too large)')), `${command.slice(0, 60)}: ${rows.join(' | ')}`)
+    assert.deepEqual(out.toasts, [], command.slice(0, 60))
+  }
+})
+
+test('M15: the merge-confidence row names the labels the verdict and score carry', () => {
+  const s = live()
+  cross(s, R.BASH_SETTLE_MERGE_CONFIDENCE, 1590)
+  const doc = JSON.parse(R.BASH_SETTLE_MERGE_CONFIDENCE.result.stdout)
+  assert.ok(groupRows(s, 'merge confidence').some(t => t.includes(`labels ${doc.labels.verdict.name}, ${doc.labels.score.name}`)), groupRows(s, 'merge confidence').join('\n'))
+})
+
+test('M16: a row the clock could not time says so, and an unreadable routing line reads routed: not read', () => {
+  const s = freshSettle()
+  s.phase = 'live'
+  applySettleLines(s, { command: 'interlock routing --json' }, errBash('interlock routing --json', 1, 'interlock: routing unavailable'), null)
+  noteSettleSpawn(s, spawnEvent(FIXER_PROMPT, { agentId: 'f', resolved: 'claude-opus-5-5' }).input, { agentId: 'f', model: 'claude-opus-5-5' }, null)
+  const texts = textsOf(settlePaneLines(s, 144))
+  assert.ok(texts[0].endsWith('time unknown'), texts[0])
+  assert.ok(texts.some(t => t.startsWith('time unknown routing (unparsed)')), texts.join('\n'))
+  assert.ok(texts.some(t => t.startsWith('review · time unknown')), texts.join('\n'))
+  assert.ok(texts.some(t => t.includes('routed: not read')), texts.join('\n'))
+  assert.ok(!texts.some(t => t.includes('routed: not seen')), texts.join('\n'))
+})
+
+test('M17: the pane folds its agent rows below the published width', () => {
+  const s = live()
+  agent(s, { id: 'd', prompt: brief('language'), model: 'sonnet', resolved: 'claude-sonnet-5-5', spawnAt: 1, steps: [2] })
+  const row = cols => textsOf(settlePaneLines(s, cols)).find(t => t.startsWith('Language') || t.includes('→ claude-sonnet-5-5') || t.includes('claude-sonnet-5-5 ·'))
+  assert.ok(row(LIMITS.settlePaneFullColumns).includes('→'), row(LIMITS.settlePaneFullColumns))
+  assert.ok(!row(LIMITS.settlePaneFullColumns - 1).includes('→'), row(LIMITS.settlePaneFullColumns - 1))
 })

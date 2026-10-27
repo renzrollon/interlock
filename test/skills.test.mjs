@@ -2313,3 +2313,14 @@ test('the remediate-brief line passes the last fixer result, and its paragraph n
     `${where} §5c deferral paragraph`
   )
 })
+
+test('the settle meter attributes a spawn by its brief, so both skills hand the brief over whole', () => {
+  // lib/settle-meter.mjs `roleOf` reads a dimension's `# Dimension:` heading and the
+  // conformance worker's first line off the spawn's prompt; a skill that paraphrased
+  // the brief would leave every such agent unattributed (PR #26 review, M9).
+  assert.ok(skillText('review-code').includes('use it verbatim'), 'skills/review-code/SKILL.md must hand each dimension brief over verbatim')
+  assert.ok(
+    skillText('settle').includes('printed briefing as its whole prompt'),
+    'skills/settle/SKILL.md must hand the conformance worker the printed briefing as its whole prompt'
+  )
+})
