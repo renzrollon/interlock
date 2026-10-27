@@ -1,0 +1,17 @@
+{
+  "_provenance": {
+    "capturedWith": "stdout of the PR #25 settle pass (2026-10-26, lean depth) fixer-result round 1, re-run through node bin/interlock; envelope shape from claude 2.1.310 -p through scripts/host-probe.mjs, scratch logger mod on tool.call Bash",
+    "source": ".claude/ship/settle/remediate-r1.json",
+    "date": "2026-10-26",
+    "change": "observe-the-settle-run-live task 1.1"
+  },
+  "command": "interlock settle fixer-result --result .claude/ship/settle/remediate-r1.json --review .claude/ship/settle/review-r0.json --round 1 --head a96cb82cedb626d9b6c11c1f6a090b7e52a2afa8 --brief .claude/ship/settle/brief-r1.json",
+  "result": {
+    "stdout": "round 1: 1 fixed, 0 not fixed",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "text": "round 1: 1 fixed, 0 not fixed"
+}

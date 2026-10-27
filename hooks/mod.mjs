@@ -125,6 +125,24 @@
 // status line, written by `setStatus` alone: the ship position while a ship
 // run is live, else the spec line. Every rule and word is
 // `lib/spec-meter.mjs`'s.
+//
+// THE SETTLE METER (observe-the-settle-run-live design D1-D27). The same module
+// draws an `/interlock:settle --review` pass from what already crossed it: the
+// settle skill's load with `--review`, read off a submitted prompt's first
+// line or a Skill tool call (D4); the Bash results of the pass's keyed
+// `interlock`, `gh`, `glab` and `git` stages, read on both branches of the Bash
+// hook, so a line the spec reader declines, or one that crosses after a ship
+// launch, still files (D8, D19, D27); and the spawns, steps and turn ends of
+// the agents the pass fans out, each attributed by its prompt's first source
+// line and tallied apart from the ship run's agents (D1, D12). A prompt, a
+// Skill call, a spawn and every result are passed on as they came. It reads
+// no file, keeps no timer (D11) and compares nothing: the routed effort and
+// the engine's step effort are two labelled facts (D2, D3, D23). Its record
+// is module state, ended at the drift line (D6) and at the session boundary.
+// The one status line ranks a live run above a finished one: the ship
+// position, else a live spec run, else a live settle run, else a spec run at
+// its checkpoint, else a finished settle run (D5). Every rule and word is
+// `lib/settle-meter.mjs`'s.
 
 import { drawPlanBoardRows } from '../lib/draw-plan.mjs'
 import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
@@ -166,6 +184,22 @@ import {
   unreadLineText,
   writeOf
 } from '../lib/spec-meter.mjs'
+import {
+  SETTLE_REPLACED_LINE,
+  SETTLE_TITLE,
+  SETTLE_UNPLACED_TOAST,
+  applySettleLines,
+  freshSettle,
+  lateSettleLineText,
+  noteSettleEnd,
+  noteSettleSkill,
+  noteSettleSpawn,
+  noteSettleStep,
+  settleLines,
+  settleLoad,
+  settlePaneLines,
+  settleStatusText
+} from '../lib/settle-meter.mjs'
 
 const PANE = 'interlock-meter'
 const TITLE = 'Interlock'
@@ -182,6 +216,9 @@ const HANDOFF_PANE = 'interlock-handoff'
 // The spec meter's pane and command (observe-the-spec-run-live design D6), spelled
 // here so the validator records it; pinned equal to lib/spec-meter.mjs's.
 const SPEC_PANE = 'interlock-spec'
+// The settle meter's pane and command (observe-the-settle-run-live design D13),
+// spelled here so the validator records it; pinned equal to lib/settle-meter.mjs's.
+const SETTLE_PANE = 'interlock-settle'
 
 // The launch guard's record in the session's state: the one key the plugin's
 // type contract declares (types/index.d.ts; guard-ship-relaunch-in-process D2).
@@ -235,6 +272,9 @@ let generations = 0
 // The spec run, as module state (observe-the-spec-run-live design D7): reset
 // on a reload and at the session boundary, like the ship run.
 let spec = freshSpec()
+// The settle run, as module state (observe-the-settle-run-live design D6, D12):
+// reset on a reload and at the session boundary, like the ship and spec runs.
+let settle = freshSettle()
 
 function freshRun() {
   return {
@@ -296,6 +336,7 @@ function freshRun() {
 
 const watching = () => session.interactive && (run.phase === 'live' || run.phase === 'closing')
 const specWatching = () => session.interactive && spec.phase === 'live'
+const settleWatching = () => session.interactive && settle.phase === 'live'
 const isInt = v => Number.isInteger(v)
 const str = v => (typeof v === 'string' && v ? v : null)
 
@@ -362,14 +403,18 @@ function statusText() {
 
 /**
  * The module's one status line, composed in one place (observe-the-spec-run-live
- * design D7): the ship position while a ship run is live, else the spec line
- * while a spec run is live or stopped at its checkpoint, else nothing. The
- * engine keeps one line per plugin and each call replaces it (probe 4), so
- * this is the only writer.
+ * design D7, observe-the-settle-run-live design D5), a live run ranking above a
+ * finished one: the ship position while a ship run is live, else the spec line
+ * while a spec run is live, else the settle line while a settle run is live,
+ * else the spec line while a spec run is stopped at its checkpoint, else the
+ * settle line of a finished pass, else nothing. The engine keeps one line per
+ * plugin and each call replaces it (probe 4), so this is the only writer.
  */
 function setStatus($) {
+  const settleLine = settleStatusText(settle, { shipLive: run.phase === 'live', specPhase: spec.phase })
   const shownSpec = spec.phase === 'live' || spec.phase === 'checkpoint'
-  $.ui.status(run.phase === 'live' ? statusText() : shownSpec ? specStatusText(spec) : undefined)
+  const quiet = shownSpec ? specStatusText(spec) : undefined
+  $.ui.status(run.phase === 'live' ? statusText() : spec.phase === 'live' ? specStatusText(spec) : settleLine || quiet)
 }
 
 /**
@@ -563,7 +608,7 @@ function redrawSpec($) {
  * held, `explore` and `review-artifacts` set the stage of a live one, and
  * anything else is not this meter's. Never throws.
  */
-async function observeLoad($, name) {
+async function observeLoad($, name, args) {
   try {
     const role = skillRole(name)
     if (role === 'spec') await startSpec($)
@@ -574,6 +619,171 @@ async function observeLoad($, name) {
     }
   } catch (err) {
     $.ui.log(`interlock spec: a skill load was not drawn: ${messageOf(err)}`, { to: 'debug' })
+  }
+  await observeSettleLoad($, name, args)
+}
+
+/**
+ * The settle skill's load (observe-the-settle-run-live design D4, D21): the
+ * settle skill with `--review` starts a run over whatever was held, and the
+ * review-code skill loaded during a live run changes no section. Of the load
+ * only the skill's name and the word `--review` are read. Never throws.
+ */
+async function observeSettleLoad($, name, args) {
+  try {
+    const load = settleLoad(name, args)
+    if (load === 'settle') await startSettle($)
+    else if (load === 'review' && settleWatching()) {
+      const held = settle
+      const now = await settleNow($)
+      if (held !== settle || !settleWatching()) return
+      noteSettleSkill(settle, now)
+      redrawSettle($)
+    }
+  } catch (err) {
+    $.ui.log(`interlock settle: a skill load was not drawn: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/**
+ * The first line of a submitted prompt, the only part of it the settle load
+ * reads (design D4), past leading blank lines, as `promptSkill` reads its word.
+ */
+const firstLineOf = text => (typeof text === 'string' ? text.replace(/^\s+/, '').split('\n')[0] : null)
+
+/**
+ * The engine's time now for the settle record, or `null` when the clock cannot
+ * be read: the ship meter's rule, named once per settle run.
+ */
+async function settleNow($) {
+  const held = settle
+  try {
+    const now = await $.clock.now()
+    if (Number.isFinite(now)) return now
+    throw new Error(`the clock answered ${String(now)}`)
+  } catch (err) {
+    if (!held.clockFailed) {
+      held.clockFailed = true
+      $.ui.log(`interlock settle: the clock cannot be read; the rows carry no time: ${messageOf(err)}`, { to: 'debug' })
+    }
+    return null
+  }
+}
+
+/** Redraws what the settle run shows: the status line through the composer, and the panes. */
+function redrawSettle($) {
+  setStatus($)
+  $.ui.invalidate('ui.render')
+}
+
+/** A fresh settle run, live, its pane opened unasked; one toast when the engine will not seat it (design D6, D15). */
+async function startSettle($) {
+  if (settle.phase !== 'idle') $.ui.log(SETTLE_REPLACED_LINE, { to: 'debug' })
+  settle = freshSettle()
+  const started = settle
+  settle.phase = 'live'
+  settle.startedAt = await settleNow($)
+  if (started !== settle) return
+  redrawSettle($)
+  const placed = await openPane($, SETTLE_PANE, SETTLE_TITLE)
+  if (!placed || placed.isPlaced !== true) $.ui.toast(SETTLE_UNPLACED_TOAST)
+}
+
+/** Raises the settle meter's toasts, each inside a try, so a refused toast is never thrown (design D15). */
+function settleToasts($, toasts) {
+  for (const text of toasts) {
+    try {
+      $.ui.toast(text)
+    } catch (err) {
+      $.ui.log(`interlock settle: a toast was refused: ${messageOf(err)}`, { to: 'debug' })
+    }
+  }
+}
+
+/**
+ * Whether a Bash command is the settle reader's to see (design D27): a keyed
+ * stage of the main session's, while a settle run is live. Every keyed line of
+ * a pass runs in the main session, so a subagent's command (a ship lane's
+ * `verify exec` or `git commit`) is never read. With no live run, the first
+ * keyed line after the run was done or the session started over is named once
+ * on the debug log, as the spec reader names its own, and nothing is read:
+ * once named, or with no run ever held, the command is not parsed at all.
+ * Never throws.
+ */
+function settleReads($, e, command) {
+  try {
+    if (str(e.agentId)) return false
+    if (settle.phase === 'live') return settleLines(command).some(s => s.kind !== null)
+    if (settle.lateNamed || !(settle.phase === 'done' || settle.afterBoundary)) return false
+    const keyed = settleLines(command).find(s => s.kind !== null)
+    if (keyed) {
+      settle.lateNamed = true
+      $.ui.log(lateSettleLineText(keyed.kind, settle.phase), { to: 'debug' })
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Files one Bash call into the settle record (design D27): the pure module
+ * reads every keyed stage, and the hooks module shows what it answered — the
+ * debug lines, the toasts, and a redraw while the run was live. Never throws.
+ */
+async function fileSettleLines($, e, r) {
+  try {
+    const held = settle
+    const wasLive = settle.phase === 'live'
+    const now = wasLive ? await settleNow($) : null
+    if (held !== settle) return
+    const out = applySettleLines(settle, e, r, now)
+    for (const line of out.debug) $.ui.log(line, { to: 'debug' })
+    if (wasLive) redrawSettle($)
+    settleToasts($, out.toasts)
+  } catch (err) {
+    $.ui.log(`interlock settle: a keyed line was not read: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/** A spawn the chain let through during a live settle run, filed by its prompt's role (design D1, D12, D22). Never throws. */
+async function fileSettleSpawn($, input, spawned) {
+  try {
+    const held = settle
+    const now = await settleNow($)
+    if (held !== settle || !settleWatching()) return
+    if (noteSettleSpawn(settle, input, spawned, now)) redrawSettle($)
+  } catch (err) {
+    $.ui.log(`interlock settle: a spawn was not filed: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/** Whether an agent event is one of the live settle run's agents (design D12). */
+const settleAgent = e => settleWatching() && Boolean(e) && Boolean(str(e.agentId)) && settle.agents.has(e.agentId)
+
+/** One request of a settle agent: its level, model and tokens (design D3, D23). Never throws. */
+async function fileSettleStep($, e, result) {
+  try {
+    const held = settle
+    const now = await settleNow($)
+    if (held !== settle || !settleWatching()) return
+    if (noteSettleStep(settle, e, result, now)) redrawSettle($)
+  } catch (err) {
+    $.ui.log(`interlock settle: a step was not filed: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/** A settle agent's turn end, in the host's word, and its one toast when it did not answer (design D15). Never throws. */
+async function fileSettleEnd($, e) {
+  try {
+    const held = settle
+    const now = await settleNow($)
+    if (held !== settle || !settleWatching()) return
+    const out = noteSettleEnd(settle, e, now)
+    redrawSettle($)
+    settleToasts($, out.toasts)
+  } catch (err) {
+    $.ui.log(`interlock settle: a turn end was not filed: ${messageOf(err)}`, { to: 'debug' })
   }
 }
 
@@ -697,9 +907,11 @@ async function noteSpawn($, input, spawned) {
     if (await stamp($)) redrawWord($)
   }
   // An Explore investigator the chain let through (observe-the-spec-run-live design D5).
-  if (specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string') {
-    await countInvestigator($)
-  }
+  const investigator = specWatching() && input && input.subagentType === 'Explore' && spawned && typeof spawned.model === 'string'
+  if (investigator) await countInvestigator($)
+  // An agent the settle pass fanned out, beside the ship gate and not inside it (observe-the-settle-run-live design D12);
+  // a spec run's investigator is the spec run's, not an unattributed settle agent.
+  else if (settleWatching()) await fileSettleSpawn($, input, spawned)
   return spawned
 }
 
@@ -904,6 +1116,8 @@ function endRunAtBoundary($, input) {
     run = freshRun()
     start = freshStart()
     spec = freshSpec({ afterBoundary: true })
+    // Only a session that held a settle run names a late settle line; any other is not parsed for one (M3).
+    settle = freshSettle({ afterBoundary: settle.phase !== 'idle' })
     setStatus($)
     $.ui.invalidate('ui.render')
     const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
@@ -944,6 +1158,18 @@ function drawSpecPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
   const props = l => (l.bold ? { bold: true } : l.dim ? { dimColor: true } : null)
   return h(Box, { flexDirection: 'column' }, ...specPaneLines(spec).map(l => h(Box, { key: l.key }, h(Text, props(l), l.text))))
+}
+
+/**
+ * `/interlock-settle` (observe-the-settle-run-live design D13, D24): the pure
+ * module's keyed lines on `Box` and `Text`, at the engine's `bodyColumns`, and
+ * nothing else.
+ */
+function drawSettlePane($, e) {
+  const { Box, Text } = $.ui.resolve(e)
+  const columns = e.props && isInt(e.props.bodyColumns) && e.props.bodyColumns > 0 ? e.props.bodyColumns : null
+  const props = l => ({ wrap: 'truncate-end', ...(l.bold ? { bold: true } : l.dim ? { dimColor: true } : null) })
+  return h(Box, { flexDirection: 'column' }, ...settlePaneLines(settle, columns).map(l => h(Box, { key: l.key }, h(Text, props(l), l.text))))
 }
 
 /**
@@ -1891,6 +2117,7 @@ export function register(on) {
     run = freshRun()
     start = freshStart()
     spec = freshSpec()
+    settle = freshSettle()
     try {
       await $.command.register({
         name: PANE,
@@ -1927,6 +2154,15 @@ export function register(on) {
     } catch (err) {
       $.ui.log(`interlock meter: /${SPEC_PANE} not registered: ${messageOf(err)}`, { to: 'debug' })
     }
+    try {
+      await $.command.register({
+        name: SETTLE_PANE,
+        description: 'Open the Interlock settle meter: the live /interlock:settle --review run, its review, rounds, agents and verdict',
+        immediate: true
+      })
+    } catch (err) {
+      $.ui.log(`interlock meter: /${SETTLE_PANE} not registered: ${messageOf(err)}`, { to: 'debug' })
+    }
     let version = 'unknown'
     try {
       version = (await $.session.version()).version || 'unknown'
@@ -1955,7 +2191,7 @@ export function register(on) {
       await changeRecord($, 'human prompt', withPrompt)
       if (session.interactive) await readPreflight($, session.cwd)
     } else $.ui.log(`${GUARD}: a ${kind} prompt is not a human prompt; not counted`, { to: 'debug' })
-    if (session.interactive) await observeLoad($, promptSkill(e.text))
+    if (session.interactive) await observeLoad($, promptSkill(e.text), firstLineOf(e.text))
     return next(e)
   })
 
@@ -2006,7 +2242,8 @@ export function register(on) {
     run = freshRun()
     const launched = run
     run.phase = 'live'
-    if (handing) setStatus($)
+    // The ship position takes the line at the launch itself, from a spec run or a settle run alike (design D5).
+    if (handing || settle.phase !== 'idle') setStatus($)
     run.runId = str(r.result.runId)
     run.workflowName = str(r.result.workflowName)
     run.transcriptDir = str(r.result.transcriptDir)
@@ -2028,11 +2265,14 @@ export function register(on) {
     // The spec flow's keyed lines, read only while a spec run is live (observe-the-spec-run-live design D3).
     const lines = specLines(command)
     const reader = lines.length ? specReader($, lines) : null
+    // The settle pass's keyed lines, read whatever the spec reader answered (observe-the-settle-run-live design D27).
+    const settled = settleReads($, e, command)
     if (!watching()) {
-      if (!reader) return driver ? idleStep($, e, next) : next(e)
+      if (!reader && !settled) return driver ? idleStep($, e, next) : next(e)
       const r = await next(e)
       if (driver) noteIdleStep($, r)
-      await applySpecLines($, reader, lines, r)
+      if (reader) await applySpecLines($, reader, lines, r)
+      if (settled) await fileSettleLines($, e, r)
       return r
     }
     const held = run
@@ -2056,6 +2296,8 @@ export function register(on) {
       }
     }
     if (reader) await applySpecLines($, reader, lines, r)
+    // A settle line after a ship launch still files; the ship position keeps the status line (design D5, D27).
+    if (settled) await fileSettleLines($, e, r)
     return r
   })
 
@@ -2064,7 +2306,7 @@ export function register(on) {
   on('tool.call', { tool: 'Skill' }, async ($, e, next) => {
     if (!session.interactive) return next(e)
     const r = await next(e)
-    if (!(r && r.isError === true)) await observeLoad($, e.skill)
+    if (!(r && r.isError === true)) await observeLoad($, e.skill, e.args)
     return r
   })
 
@@ -2081,10 +2323,15 @@ export function register(on) {
   on('tool.call', { tool: 'Write' }, editCall)
 
   on('turn.step', async function* ($, e, next) {
-    if (!session.interactive || run.phase !== 'live' || !e.agentId) {
-      if (!specWatching()) return yield* next(e)
+    // A settle agent's request, under its own gate beside the ship's (observe-the-settle-run-live design D12).
+    // A settle agent is never a ship lane, whatever runs beside it (design D5).
+    const settling = settleAgent(e)
+    if (!session.interactive || run.phase !== 'live' || !e.agentId || settling) {
+      const advising = specWatching()
+      if (!advising && !settling) return yield* next(e)
       const result = yield* next(e)
-      countAdvisorEntries($, e, result)
+      if (advising) countAdvisorEntries($, e, result)
+      if (settling) await fileSettleStep($, e, result)
       return result
     }
     // A run agent's request starting, and its answer arriving, are each activity (design D1).
@@ -2104,7 +2351,8 @@ export function register(on) {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (session.interactive && run.phase === 'live' && e.agentId) {
+    const settling = settleAgent(e)
+    if (session.interactive && run.phase === 'live' && e.agentId && !settling) {
       const a = agentOf(e.agentId)
       a.reason = str(e.reason)
       a.durationMs = typeof e.durationMs === 'number' ? e.durationMs : null
@@ -2124,6 +2372,8 @@ export function register(on) {
       if (held === run) a.endAt = run.stampedAt
       $.ui.invalidate('ui.render')
     }
+    // A settle agent's turn end, under its own gate beside the ship's (observe-the-settle-run-live design D12, D15).
+    if (settling) await fileSettleEnd($, e)
     return next(e)
   })
 
@@ -2174,6 +2424,8 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: SPEC_PANE }, async ($, e) => drawSpecPane($, e))
 
+  on('ui.render', { component: 'Pane', requestId: SETTLE_PANE }, async ($, e) => drawSettlePane($, e))
+
   on('command.run', { command: PANE }, async paneHost => {
     await openPane(paneHost)
     return {}
@@ -2195,6 +2447,11 @@ export function register(on) {
 
   on('command.run', { command: SPEC_PANE }, async specCmdHost => {
     await openPane(specCmdHost, SPEC_PANE, SPEC_TITLE)
+    return {}
+  })
+
+  on('command.run', { command: SETTLE_PANE }, async settleCmdHost => {
+    await openPane(settleCmdHost, SETTLE_PANE, SETTLE_TITLE)
     return {}
   })
 }

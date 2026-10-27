@@ -1,0 +1,26 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.310 -p through scripts/host-probe.mjs, scratch logger mod, Agent tool call with model and effort parameters (agent.spawn input and resolved result)",
+    "date": "2026-10-26",
+    "change": "observe-the-settle-run-live task 1.1"
+  },
+  "input": {
+    "tool_use_id": "toolu_01Ap2n3fG6b4jDK9afkXojUH",
+    "prompt": "# Dimension: language & framework\nReply with the single word ok and use no tool.",
+    "description": "probe reply",
+    "subagentType": "general-purpose",
+    "provider": {
+      "plugin": "engine",
+      "tier": "core"
+    },
+    "model": "sonnet",
+    "parentModel": "claude-opus-5-5",
+    "permissionMode": "auto",
+    "background": false,
+    "fork": false
+  },
+  "resolved": {
+    "model": "claude-sonnet-5-5",
+    "agentId": "a34a321348136e9ea"
+  }
+}

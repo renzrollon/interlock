@@ -1,0 +1,36 @@
+{
+  "_provenance": {
+    "capturedWith": "claude 2.1.310 -p through scripts/host-probe.mjs, scratch logger mod, Agent tool call with model and effort parameters (the spawned agent's turn.step)",
+    "date": "2026-10-26",
+    "change": "observe-the-settle-run-live task 1.1"
+  },
+  "input": {
+    "turnId": "9dd8f3ed-0edf-4625-b5e3-52f3b7958712",
+    "index": 0,
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "messageCount": 13,
+    "agentId": "a34a321348136e9ea"
+  },
+  "result": {
+    "turnId": "9dd8f3ed-0edf-4625-b5e3-52f3b7958712",
+    "index": 0,
+    "answer": "",
+    "toolUses": [
+      {
+        "name": "SubagentHandback",
+        "input": {
+          "message": "ok"
+        }
+      }
+    ],
+    "stopReason": "tool_use",
+    "usage": {
+      "input_tokens": 13971,
+      "output_tokens": 52,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 24827,
+      "model": "claude-sonnet-5-5"
+    }
+  }
+}

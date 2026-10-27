@@ -99,10 +99,10 @@ async function hide($: any, surface: (typeof SURFACES)[number] = 'terminal') {
 const pane = ($: any, surface: (typeof SURFACES)[number], requestId: string) =>
   $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId, props: PANE_PROPS })
 
-test('session.start registers the meter, the preflight, the handoff and the spec meter commands, in that order', async ($: any, on: any) => {
+test('session.start registers the meter, the preflight, the handoff, the spec meter and the settle meter commands, in that order', async ($: any, on: any) => {
   const w = world(on)
   await start($)
-  expect(w.commands).toEqual(['interlock-meter', 'interlock-preflight', 'interlock-handoff', 'interlock-spec'])
+  expect(w.commands).toEqual(['interlock-meter', 'interlock-preflight', 'interlock-handoff', 'interlock-spec', 'interlock-settle'])
 })
 
 test('a failing check and a spoken note draw the band on both surfaces, above the other plugins\' band', async ($: any, on: any) => {

@@ -1,0 +1,17 @@
+{
+  "_provenance": {
+    "capturedWith": "stdout of the PR #25 settle pass (2026-10-26, lean depth) the pipeline text line, re-run through node bin/interlock over a gh document rebuilt from the pass record (the rebuilt output equals the record); envelope shape from claude 2.1.310 -p through scripts/host-probe.mjs, scratch logger mod on tool.call Bash",
+    "source": ".claude/ship/pipeline.json",
+    "date": "2026-10-26",
+    "change": "observe-the-settle-run-live task 1.1"
+  },
+  "command": "gh pr view 25 --json headRefOid,statusCheckRollup | interlock pipeline --github - --required \"test (18)\" --required \"test (20)\" --required \"test (22)\" --required \"Outcome eval prepare (model-free)\" --required \"validate-plugin\" --required \"cli-smoke\" --out .claude/ship/pipeline.json",
+  "result": {
+    "stdout": "pipeline 161f955745b9443e9890890c1ce57ab627ea59af: 14 check(s) (13 pass, 0 fail, 0 pending, 1 skipped); required: test (18), test (20), test (22), Outcome eval prepare (model-free), validate-plugin, cli-smoke; excluded: none",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "text": "pipeline 161f955745b9443e9890890c1ce57ab627ea59af: 14 check(s) (13 pass, 0 fail, 0 pending, 1 skipped); required: test (18), test (20), test (22), Outcome eval prepare (model-free), validate-plugin, cli-smoke; excluded: none"
+}

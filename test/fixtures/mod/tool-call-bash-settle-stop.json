@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "capturedWith": "stdout of the PR #25 settle pass (2026-10-26, lean depth) remediate-brief round 2, re-run through node bin/interlock: exit 1, empty stdout, the STOP line on stderr, which the engine folds into the errored result; envelope shape from claude 2.1.310 -p through scripts/host-probe.mjs, scratch logger mod on tool.call Bash",
+    "source": ".claude/ship/settle/review-r1.json",
+    "date": "2026-10-26",
+    "change": "observe-the-settle-run-live task 1.1"
+  },
+  "command": "interlock settle remediate-brief --review .claude/ship/settle/review-r1.json --round 2 --change route-prose-spawns-by-role --head 161f955745b9443e9890890c1ce57ab627ea59af --pr 25 --profile .claude/ship/settle/profile-r2.json --previous .claude/ship/settle/remediate-r1.json --out .claude/ship/settle/brief-r2.json --json",
+  "result": "Error: Exit code 1\ninterlock: STOP: nothing to remediate: round 2 follows a round that left no surviving blocker, so round 3 is the verdict round (remediationRounds=2); no fix round remains (5 finding(s) deferred, not fixed in a round)",
+  "text": "Exit code 1\ninterlock: STOP: nothing to remediate: round 2 follows a round that left no surviving blocker, so round 3 is the verdict round (remediationRounds=2); no fix round remains (5 finding(s) deferred, not fixed in a round)",
+  "isError": true
+}

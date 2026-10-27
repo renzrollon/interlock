@@ -20,7 +20,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -529,13 +529,16 @@ function hookAt(source, head) {
   return source.slice(start, end === -1 ? undefined : end)
 }
 
-test('neither the hooks module nor the spec meter\'s rules spell `complete` or read OpenSpec\'s roll-up', () => {
+test('neither the hooks module nor the spec or settle meter\'s rules spell `complete` or read OpenSpec\'s roll-up', () => {
   // Two spellings are not the meter's words and are stripped first: the
   // engine's event name, which the meter must keep hooking, and the wave
   // board's overlay key, the field `lib/draw-plan.mjs` reads for the recorded
   // ids (draw-the-wave-board-in-the-meter-pane design D6).
   const strip = source => source.split('turn.complete').join('').split('completed: run.recorded.ok').join('')
-  for (const file of [moduleEntry(), join(ROOT, 'lib', 'spec-meter.mjs')]) {
+  // The settle meter's rules join the pin (observe-the-settle-run-live design D20, spec
+  // requirement 6): its review record is read for counts and never for the roll-up
+  // `dimensions.completed`, so the word is spelled nowhere in the pure module.
+  for (const file of [moduleEntry(), join(ROOT, 'lib', 'spec-meter.mjs'), join(ROOT, 'lib', 'settle-meter.mjs')]) {
     const left = strip(readFileSync(file, 'utf8'))
     const at = left.search(/complete/i)
     assert.equal(at, -1, `${file} spells ${left.slice(Math.max(0, at - 30), at + 30)}`)
@@ -553,6 +556,17 @@ test('the spec pane\'s id is spelled in the module as the pure module names it',
   // The validator records a matcher only from a constant the module declares.
   const source = readFileSync(moduleEntry(), 'utf8')
   assert.ok(source.includes(`const SPEC_PANE = '${SPEC_PANE}'`), `hooks/mod.mjs does not declare SPEC_PANE as '${SPEC_PANE}'`)
+})
+
+test('the settle pane\'s id is spelled in the module as the pure module names it', async () => {
+  // The same constant pin as SPEC_PANE (observe-the-settle-run-live design D13). The pure
+  // module is imported inside the test, so a module that does not exist yet fails this pin
+  // alone and not every other pin in this file.
+  const { SETTLE_PANE } = await import('../../lib/settle-meter.mjs')
+  assert.equal(SETTLE_PANE, 'interlock-settle')
+  assert.notEqual(SETTLE_PANE, SPEC_PANE, 'two panes share an id')
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.ok(source.includes(`const SETTLE_PANE = '${SETTLE_PANE}'`), `hooks/mod.mjs does not declare SETTLE_PANE as '${SETTLE_PANE}'`)
 })
 
 test('the spec skill\'s two observers and the briefing-read observer pass the prompt, the Skill call and the Read call on as they came', () => {
@@ -586,10 +600,48 @@ test('the kit\'s spec-run fixtures are the payloads captured from the host', asy
   assert.equal(mirror.SPAWN_EXPLORE.input.subagentType, 'Explore')
 })
 
-test('neither the hooks module nor the spec meter spells interlock:advisor', () => {
+test('the kit\'s settle-run fixtures are the payloads captured from the host', async () => {
+  const mirror = await import('../fixtures/mod/settle-run.mjs')
+  const dir = join(ROOT, 'test', 'fixtures', 'mod')
+  const covered = new Set()
+  const captured = name => {
+    covered.add(name)
+    const { _provenance, ...payload } = JSON.parse(readFileSync(join(dir, name), 'utf8'))
+    assert.ok(_provenance, `${name} carries no _provenance`)
+    assert.match(_provenance.change, /observe-the-settle-run-live task 1\.1/, name)
+    assert.ok(_provenance.capturedWith && _provenance.date, `${name} names neither what captured it nor when`)
+    return payload
+  }
+  assert.deepEqual(mirror.SPAWN_ROUTED, captured('agent-spawn-routed.json'))
+  assert.deepEqual(mirror.STEP_AGENT_TOOL, captured('turn-step-agent-tool.json'))
+  assert.deepEqual(mirror.COMPLETE_AGENT_TOOL, captured('turn-complete-agent-tool.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_REVIEW, captured('tool-call-bash-settle-review.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_BRIEF, captured('tool-call-bash-settle-brief.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_FIXER_RESULT, captured('tool-call-bash-settle-fixer-result.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_STOP, captured('tool-call-bash-settle-stop.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_MERGE_CONFIDENCE, captured('tool-call-bash-settle-merge-confidence.json'))
+  assert.deepEqual(mirror.BASH_SETTLE_PIPELINE, captured('tool-call-bash-settle-pipeline.json'))
+
+  // A capture added beside these without a mirror fails here instead of going unreplayed.
+  const settleCaptures = readdirSync(dir).filter(f => /^tool-call-bash-settle-.*\.json$/.test(f))
+  for (const f of settleCaptures) assert.ok(covered.has(f), `${f} has no export in test/fixtures/mod/settle-run.mjs`)
+
+  // What the probe showed, which the kit's tests rely on.
+  assert.equal(mirror.SPAWN_ROUTED.input.subagentType, 'general-purpose')
+  assert.equal(mirror.SPAWN_ROUTED.input.model, 'sonnet', 'the spawn carries the alias the call named')
+  assert.match(mirror.SPAWN_ROUTED.resolved.model, /^claude-sonnet-/, 'the result carries the resolved id')
+  assert.ok(!('effort' in mirror.SPAWN_ROUTED.input), 'the spawn event has no effort field')
+  assert.ok('effort' in mirror.STEP_AGENT_TOOL.input, 'the step carries the effort')
+  assert.equal(mirror.BASH_SETTLE_STOP.isError, true)
+  assert.match(mirror.BASH_SETTLE_STOP.result, /^Error: Exit code 1\n/)
+  assert.equal(mirror.CHANGE, 'route-prose-spawns-by-role')
+  assert.equal(mirror.PR, 25)
+})
+
+test('neither the hooks module nor the spec or settle meter spells interlock:advisor', () => {
   // The checkpoint advisor agent is gone (replace-subagent-advisors-with-advisor-tool
   // D1, D7): nothing in the meter may key on its spawn again.
-  for (const rel of [['hooks', 'mod.mjs'], ['lib', 'spec-meter.mjs']]) {
+  for (const rel of [['hooks', 'mod.mjs'], ['lib', 'spec-meter.mjs'], ['lib', 'settle-meter.mjs']]) {
     const text = readFileSync(join(ROOT, ...rel), 'utf8')
     assert.ok(!text.includes('interlock:advisor'), `${rel.join('/')} spells interlock:advisor`)
   }
