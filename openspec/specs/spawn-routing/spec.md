@@ -1,7 +1,7 @@
 # spawn-routing Specification
 
 ## Purpose
-TBD - created by syncing change route-prose-spawns-by-role. The model and effort a prose skill passes when it spawns a subagent are a policy the CLI publishes, not text a skill restates.
+The model and effort a prose skill passes when it spawns a subagent come from one table the CLI publishes, resolved per role and depth by `interlock routing`, so a skill never spells a slug or a level, an environment override is spoken, and the doctor says whether the host applies a per-call effort at all.
 
 ## Requirements
 
