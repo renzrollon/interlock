@@ -13,6 +13,8 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { LIMITS } from '../../lib/limits.mjs'
+import { PALETTE } from '../../lib/meter-palette.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 import * as R from '../fixtures/mod/spec-run.mjs'
 
@@ -168,14 +170,42 @@ const ADVISOR_LINE = 'spec-advisor-consults'
 const launch = ($: any, input: Record<string, unknown> = { name: 'interlock:ship', args: { change: C } }) =>
   $.tool.call({ tool: 'Workflow', ...input })
 const specLogs = (w: World) => w.logs.filter(l => l.to === 'debug' && SPEC_DEBUG.test(l.text))
-const mount = ($: any, surface: (typeof SURFACES)[number]) =>
+const mount = ($: any, surface: (typeof SURFACES)[number], bodyColumns = 100) =>
   $.ui.mount({
     plugin: PLUGIN,
     surface,
     component: 'Pane',
     requestId: PANE,
-    props: { title: 'Interlock spec', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } }
+    props: { title: 'Interlock spec', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 } }
   })
+/** An element and every element beneath it, in the order drawn. */
+function tree(el: any): any[] {
+  if (!el) return []
+  const kids = Array.isArray(el.children) ? el.children : []
+  return [el, ...kids.flatMap(tree)]
+}
+/** A nested node's text: the kit sets `text` on a found element, not on what it holds. */
+const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n?.children) ? n.children.map(textOf).join('') : '')
+const keyOf = (el: any) => (el?.props && typeof el.props.key === 'string' ? el.props.key : undefined)
+/**
+ * The pane's drawing (draw-the-settle-and-spec-panes-as-cards D3): every keyed
+ * line's key and text in the order drawn; every bordered Box, with its first
+ * child (a section's title) and the keys of the lines it holds; every Box's
+ * props; every Text's own text; and how many Texts it draws.
+ */
+async function drawing($: any, surface: (typeof SURFACES)[number], bodyColumns = 100) {
+  const ui = await mount($, surface, bodyColumns)
+  const boxes = await ui.findAll({ type: 'Box' })
+  const rows: [string, string][] = []
+  for (const b of boxes) if (keyOf(b)) rows.push([keyOf(b)!, (await ui.find({ key: keyOf(b) }))?.text ?? ''])
+  const cards = boxes
+    .filter((b: any) => b.props && b.props.borderStyle !== undefined)
+    .map((b: any) => ({ props: b.props, first: Array.isArray(b.children) ? b.children[0] : undefined, keys: tree(b).map(keyOf).filter(Boolean) as string[] }))
+  const textNodes = await ui.findAll({ type: 'Text' })
+  const props = boxes.map((b: any) => b.props ?? {})
+  await ui.unmount()
+  return { rows, cards, props, texts: textNodes.length, words: textNodes.map(textOf) }
+}
 /** Every keyed line the pane draws on `surface`, by key. */
 async function pane($: any, surface: (typeof SURFACES)[number]) {
   const ui = await mount($, surface)
@@ -611,4 +641,93 @@ test('a numeric skill and a write with no path resolve as the engine did and cha
   // Later hooks still work.
   await bash($, LEDGER)
   expect(w.status.at(-1)).toBe(`interlock spec: ${C} · ledger blocking (needs_human 2 · invalid 0)`)
+})
+
+// --- the cards (draw-the-settle-and-spec-panes-as-cards design D3) -------------
+
+const SECTION_TITLES = ['artifacts', 'explore', 'gates', 'writes', 'record']
+
+test('a run at its checkpoint draws an accent header card, then a dim titled card per section, on both surfaces', async ($: any, on: any) => {
+  world(on)
+  await start($)
+  await happyPath($)
+  await write($, `openspec/changes/${C}/proposal.md`)
+  await bash($, CHECKPOINT)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    expect(d.cards).toHaveLength(1 + SECTION_TITLES.length)
+    for (const c of d.cards) {
+      expect(c.props.borderStyle).toBe('single')
+      // A card is never a keyed line, and a title is never one either.
+      expect(c.props.key).toBeUndefined()
+      expect(c.props.width).toBe(100)
+    }
+    const [header, ...sections] = d.cards
+    expect(header.keys).toEqual(['spec-header'])
+    expect(header.props.borderColor).toBe(PALETTE.accent)
+    sections.forEach((c, i) => {
+      expect(c.props.borderDimColor).toBe(true)
+      expect(c.props.borderColor).toBeUndefined()
+      const name = SECTION_TITLES[i]
+      if (name === 'writes') {
+        // The writes card's own keyed line is its title; no second one is drawn.
+        expect(keyOf(c.first)).toBe('spec-writes')
+        expect(c.keys[0]).toBe('spec-writes')
+      } else {
+        expect(c.first?.type).toBe('Text')
+        expect(keyOf(c.first)).toBeUndefined()
+        expect(textOf(c.first)).toBe(name)
+        expect(c.first?.props?.bold).toBe(true)
+        expect(c.first?.props?.color).toBe(PALETTE.accent)
+      }
+    })
+    expect(sections[0].keys).toContain('spec-artifact-proposal')
+    expect(sections[1].keys).toEqual(['spec-explore'])
+    for (const key of ['spec-ledger', 'spec-validate', 'spec-gate']) expect(sections[2].keys).toContain(key)
+    expect(sections[3].keys).toContain('spec-write-proposal.md')
+    for (const key of ['spec-checkpoint', 'spec-record']) expect(sections[4].keys).toContain(key)
+    // The keyed lines read exactly what the pane reads by key.
+    expect(new Map(d.rows)).toEqual((await pane($, surface)).lines)
+  }
+})
+
+test('a run before any line crossed holds the status row in its artifacts card', async ($: any, on: any) => {
+  world(on)
+  await start($)
+  await loadSpec($)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    const artifacts = d.cards.find(c => textOf(c.first) === 'artifacts')
+    expect(artifacts?.keys).toEqual(['spec-status'])
+    expect(d.rows.find(([key]) => key === 'spec-status')?.[1]).toBe('status: not run yet')
+  }
+})
+
+test('below the card floor the spec pane draws flat: no border, no title, every keyed line reads its text', async ($: any, on: any) => {
+  world(on)
+  await start($)
+  await happyPath($)
+  expect(40 < LIMITS.waveBoardMinColumns).toBe(true)
+  for (const surface of SURFACES) {
+    const flat = await drawing($, surface, 40)
+    expect(flat.cards).toEqual([])
+    for (const p of flat.props) {
+      expect(p.borderStyle).toBeUndefined()
+      expect(p.borderColor).toBeUndefined()
+      expect(p.borderDimColor).toBeUndefined()
+    }
+    for (const name of ['artifacts', 'explore', 'gates', 'record']) expect(flat.words).not.toContain(name)
+    expect(flat.rows).toEqual((await drawing($, surface)).rows)
+  }
+})
+
+test('the no-run spec pane is exactly one Text and no card', async ($: any, on: any) => {
+  world(on)
+  await start($)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    expect(d.texts).toBe(1)
+    expect(d.cards).toEqual([])
+    expect(d.rows.map(([, text]) => text)).toEqual([NO_RUN])
+  }
 })

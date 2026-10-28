@@ -360,7 +360,9 @@ test('specPaneLines draws the run by key, the table as printed, and the record l
 })
 
 test('specPaneLines says what is unknown, unread, unresolved, ended and elsewhere', () => {
-  assert.deepEqual(specPaneLines(freshSpec()), [{ key: 'spec-none', text: NO_SPEC_LINE, dim: true }])
+  assert.deepEqual(specPaneLines(freshSpec()), [
+    { key: 'spec-none', text: NO_SPEC_LINE, dim: true, section: 'none', kind: 'none', spans: [{ text: NO_SPEC_LINE, tone: null }] }
+  ])
   const unnamed = freshSpec()
   unnamed.phase = 'live'
   const lines = specPaneLines(unnamed)
@@ -387,6 +389,122 @@ test('specPaneLines says what is unknown, unread, unresolved, ended and elsewher
   assert.equal(at('spec-handover'), 'handed over to ship, time unknown')
   assert.equal(at('spec-other-changes'), 'other changes named this run: alpha')
   assert.equal(at('spec-write-tasks.md'), 'tasks.md · written 1× · last time unknown')
+})
+
+// --- sections and spans (draw-the-settle-and-spec-panes-as-cards D1-D3) -----
+
+/** A live spec with every optional line present. */
+function fullSpec() {
+  const spec = liveSpec()
+  const c = spec.changes.get('add-the-thing')
+  c.ledger = { kind: 'ledger', blocking: false, needsHuman: 0, invalidCount: 0, missing: false, unparseable: false, name: R.CHANGE }
+  c.validate = { kind: 'validate', ready: true, problems: ['missing or empty: tasks.md'], name: R.CHANGE }
+  c.ready = { kind: 'ready', ready: true, blockers: 0, name: R.CHANGE }
+  c.gate = { ...c.gate, passed: true }
+  spec.autonomy = 'record'
+  spec.checkpointCrossed = true
+  spec.checkpointAt = Date.parse('2026-10-06T12:20:00Z')
+  spec.handedOver = true
+  spec.order = ['alpha', 'add-the-thing']
+  spec.advisor = freshAdvisorTally()
+  addAdvisorEntries(spec.advisor, [{ name: 'advisor', id: 'a1' }], false)
+  return spec
+}
+
+const toneOf = (lines, key, word) => {
+  const line = lines.find(l => l.key === key)
+  return line.spans.find(s => s.text === word)?.tone
+}
+
+test('spans join to the text on every line of every pane', () => {
+  const idle = freshSpec()
+  const unnamed = freshSpec()
+  unnamed.phase = 'live'
+  const unread = liveSpec()
+  unread.changes.get('add-the-thing').ledger = readResult('ledger', R.BASH_LEDGER_TEXT.command, R.BASH_LEDGER_TEXT)
+  for (const spec of [idle, unnamed, liveSpec(), fullSpec(), unread]) {
+    for (const l of specPaneLines(spec)) {
+      assert.equal(l.spans.map(s => s.text).join(''), l.text, l.key)
+      assert.ok(l.spans.every(s => s.text !== ''), l.key)
+    }
+  }
+})
+
+test('each line sits in its section, with the writes title and the no-run kind', () => {
+  const lines = specPaneLines(fullSpec())
+  const sectionOfKey = key => lines.find(l => l.key === key)?.section
+  assert.equal(sectionOfKey('spec-header'), 'header')
+  for (const k of ['spec-artifact-design', 'spec-apply-requires']) assert.equal(sectionOfKey(k), 'artifacts')
+  assert.equal(sectionOfKey('spec-explore'), 'explore')
+  for (const k of ['spec-drift', 'spec-notes', 'spec-ledger', 'spec-validate', 'spec-validate-problem-0', 'spec-gate', 'spec-ready', 'spec-autonomy', 'spec-advisor-consults']) {
+    assert.equal(sectionOfKey(k), 'gates', k)
+  }
+  for (const k of ['spec-writes', 'spec-write-proposal.md', 'spec-findings']) assert.equal(sectionOfKey(k), 'writes', k)
+  for (const k of ['spec-last-activity', 'spec-checkpoint', 'spec-handover', 'spec-other-changes', 'spec-record']) assert.equal(sectionOfKey(k), 'record', k)
+  assert.equal(lines.find(l => l.key === 'spec-writes').kind, 'title')
+  assert.equal(lines.filter(l => l.kind).length, 1)
+  assert.equal(sectionOfKey('spec-status'), undefined)
+  const unnamed = freshSpec()
+  unnamed.phase = 'live'
+  const bare = specPaneLines(unnamed)
+  assert.equal(bare.find(l => l.key === 'spec-status').section, 'artifacts')
+  assert.equal(bare.find(l => l.key === 'spec-writes-none').section, 'writes')
+  assert.equal(specPaneLines(freshSpec())[0].section, 'none')
+})
+
+test('artifact status words take done ok, ready current, blocked dim', () => {
+  const lines = specPaneLines(liveSpec())
+  const spec = liveSpec()
+  spec.changes.get('add-the-thing').status.artifacts[0].status = 'weird'
+  assert.equal(toneOf(lines, 'spec-artifact-design', 'ready'), 'current')
+  assert.equal(toneOf(lines, 'spec-artifact-tasks', 'blocked'), 'dim')
+  assert.equal(toneOf(lines, 'spec-artifact-proposal', 'done'), 'ok')
+  const odd = specPaneLines(spec).find(l => l.key === 'spec-artifact-' + spec.changes.get('add-the-thing').status.artifacts[0].id)
+  assert.ok(odd.spans.every(s => s.tone === null))
+})
+
+test('result fields take their tones: false and true, ready, blocking, missing, unparseable', () => {
+  const bad = liveSpec()
+  const good = fullSpec()
+  const badLines = specPaneLines(bad)
+  const goodLines = specPaneLines(good)
+  assert.equal(toneOf(goodLines, 'spec-gate', 'passed true'), 'ok')
+  assert.equal(toneOf(badLines, 'spec-gate', 'passed false'), 'alarm')
+  assert.equal(toneOf(goodLines, 'spec-ready', 'ready true'), 'ok')
+  assert.equal(toneOf(goodLines, 'spec-validate', 'ready true'), 'ok')
+  assert.equal(toneOf(badLines, 'spec-validate', 'ready false'), 'alarm')
+  assert.equal(toneOf(goodLines, 'spec-ledger', 'blocking false'), 'ok')
+  assert.equal(toneOf(badLines, 'spec-ledger', 'blocking true'), 'alarm')
+  const ledger = bad.changes.get('add-the-thing')
+  ledger.ledger = { kind: 'ledger', blocking: true, missing: true, unparseable: true, name: R.CHANGE }
+  const flagged = specPaneLines(bad)
+  assert.equal(toneOf(flagged, 'spec-ledger', 'missing true'), 'alarm')
+  assert.equal(toneOf(flagged, 'spec-ledger', 'unparseable true'), 'alarm')
+  ledger.ledger = { kind: 'ledger', blocking: false, missing: false, name: R.CHANGE }
+  assert.ok(specPaneLines(bad).find(l => l.key === 'spec-ledger').spans.every(s => s.text !== 'missing false' || s.tone === null))
+  ledger.ready = { kind: 'ready', ready: false, blockers: 2, name: R.CHANGE }
+  assert.equal(toneOf(specPaneLines(bad), 'spec-ready', 'ready false'), 'alarm')
+})
+
+test('not run yet is dim, a not read result is warn, the checkpoint and hand-over lines are accent', () => {
+  const lines = specPaneLines(liveSpec())
+  assert.equal(toneOf(lines, 'spec-drift', 'not run yet'), 'dim')
+  assert.equal(toneOf(lines, 'spec-ready', 'not run yet'), 'dim')
+  assert.equal(toneOf(lines, 'spec-autonomy', 'not run yet'), 'dim')
+  const spec = fullSpec()
+  spec.changes.get('add-the-thing').ledger = readResult('ledger', R.BASH_LEDGER_TEXT.command, R.BASH_LEDGER_TEXT)
+  const more = specPaneLines(spec)
+  const ledger = more.find(l => l.key === 'spec-ledger')
+  assert.deepEqual(ledger.spans.filter(s => s.tone).map(s => [s.text, s.tone]), [['not read (output not JSON)', 'warn']])
+  for (const key of ['spec-checkpoint', 'spec-handover']) {
+    const line = more.find(l => l.key === key)
+    assert.deepEqual(line.spans, [{ text: line.text, tone: 'accent' }])
+  }
+  for (const key of ['spec-record']) assert.deepEqual(more.find(l => l.key === key).spans, [{ text: SPEC_RECORD_LINE, tone: 'dim' }])
+  const unnamed = freshSpec()
+  unnamed.phase = 'live'
+  assert.deepEqual(specPaneLines(unnamed).find(l => l.key === 'spec-writes-none').spans, [{ text: 'no artifact writes yet', tone: 'dim' }])
+  assert.ok(more.find(l => l.key === 'spec-explore').spans.every(s => s.tone === null))
 })
 
 test('the debug lines name the kind and why it was not drawn', () => {
