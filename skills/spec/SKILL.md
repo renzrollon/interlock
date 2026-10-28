@@ -161,6 +161,7 @@ Filter each ready artifact independently; do not dump the full instructions resp
 - **Pinned versions.** If the design names a dependency without a version, ask for it. **Do not gap-fill a version number** — a plausible-looking wrong pin is worse than an open question.
 - **Genuine ambiguity.** Ask when it blocks a correct proposal. Otherwise take a reasonable default to keep momentum. Either way, write the row — see below.
 - **Advisor tool.** This session may have Claude Code's advisor tool because the user turned it on; this skill asks for no call to it. Never run `/advisor` or edit `advisorModel`: whether it is on, and what it spends, is the user's choice. If the session does consult it, its advice is guidance, not evidence: where it conflicts with what the code or the artifacts show, write a ledger row instead of settling it in prose. A call that fails is said at the hand-off and never retried, and the spec continues. The tool being absent is not an error either; §6 says so.
+- **MODIFIED keeps every scenario.** A `## MODIFIED` requirement copies every `#### Scenario:` title its living spec holds, each scenario title verbatim. To drop or rename one, use `## REMOVED` and add the requirement back under `## ADDED`, because archive refuses a MODIFIED block that omits a living scenario.
 
 ### Task shape for ship
 
@@ -229,11 +230,11 @@ A blocking ledger with rows in it is not a failure of this skill: an honest bloc
 ## 4. Validate
 
 ```bash
-openspec validate
+openspec validate "<name>"
 interlock validate "<name>" --json
 ```
 
-`openspec validate` checks schema conformance. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
+`openspec validate "<name>"` checks this change's delta structure and every MODIFIED block against its living spec; a bare `openspec validate` names no target and checks nothing. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
 
 ---
 

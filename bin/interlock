@@ -1029,7 +1029,7 @@ run-log:
 
 tasks:
   tick --ids <ids>       Comma-separated task ids (the leading token of a
-                         checkbox, e.g. 1.1). Flips matching - [ ] to - [x].
+                         checkbox, e.g. 1.1). Ticks the matched box to [x].
                          Already-checked matches are reported, not rewritten.
                          Exits 1 and names every id it could not mark: a
                          completed task left silently unchecked reads

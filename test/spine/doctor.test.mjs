@@ -31,6 +31,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as claudeEnv from '../../lib/host/claude-env.mjs'
+// A namespace import, so a missing OPENSPEC_MIN_VERSION fails the floor tests by
+// name instead of failing the whole file at link time.
+import * as doctorModule from '../../lib/doctor.mjs'
 import {
   checkClaudeBare,
   checkCliVersion,
@@ -555,6 +558,74 @@ test('an openspec on PATH whose version probe does not run warns instead of ok',
     assert.match(row.detail, /did not run/)
     assert.match(row.fix, /20\.19\.0/)
     assert.ok(!row.fix.includes(OPENSPEC_INSTALL), 'an installed CLI that does not run is not fixed by reinstalling it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- the OpenSpec CLI floor -----------------------------------------------
+
+function openspecRow(dir, line) {
+  return byId(diagnose(dir, baseOpts(dir, { probeVersion: () => line })), 'openspec')
+}
+
+test('the openspec row is ok at the published floor and carries the version line', () => {
+  const floor = doctorModule.OPENSPEC_MIN_VERSION
+  assert.match(String(floor), /^\d+\.\d+\.\d+$/, 'OPENSPEC_MIN_VERSION is an exported x.y.z constant')
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const row = openspecRow(dir, floor)
+    assert.equal(row.status, 'ok')
+    assert.ok(row.evidence.some(e => e.includes(floor)), `evidence must carry the version line; got ${row.evidence}`)
+    assert.equal(openspecRow(dir, `${floor.split('.')[0] * 1 + 1}.0.0`).status, 'ok', 'a newer major is ok too')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an openspec below the floor warns, naming both versions, nested deltas and the install command', () => {
+  const floor = doctorModule.OPENSPEC_MIN_VERSION
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const row = openspecRow(dir, '1.4.0')
+    assert.equal(row.status, 'warn', 'a floor miss is a warn, never a fail')
+    assert.match(row.detail, /1\.4\.0/)
+    assert.ok(row.detail.includes(floor), `the detail must name the floor ${floor}; got ${row.detail}`)
+    assert.match(row.detail, /nested/)
+    assert.ok(row.fix.includes(OPENSPEC_INSTALL), `the fix must spell the install command; got ${row.fix}`)
+    // A warn leaves the overall verdict where it was.
+    const below = diagnose(dir, baseOpts(dir, { probeVersion: () => '1.4.0' }))
+    const at = diagnose(dir, baseOpts(dir, { probeVersion: () => floor }))
+    assert.equal(below.ok, at.ok)
+    assert.ok(!below.failures.includes('openspec'))
+    assert.ok(below.warnings.includes('openspec'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an openspec version line with no x.y.z warns and quotes the line instead of passing', () => {
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const row = openspecRow(dir, 'openspec (dev build)')
+    assert.equal(row.status, 'warn')
+    assert.match(row.detail, /could not be read/)
+    assert.ok(row.detail.includes('openspec (dev build)'), `the detail must quote the line; got ${row.detail}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a current openspec with no config.yaml is still the not-initialised warn', () => {
+  const dir = tmp()
+  try {
+    const row = openspecRow(dir, doctorModule.OPENSPEC_MIN_VERSION)
+    assert.equal(row.status, 'warn')
+    assert.match(row.fix, /openspec init/)
+    assert.match(row.detail, /no openspec\/config\.yaml/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

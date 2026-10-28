@@ -12,6 +12,7 @@ import {
   inspectChange,
   parseTasks,
   tickTasks,
+  normalizeTaskMarkers,
   planCoverage,
   taskMatchesId
 } from '../../lib/artifacts.mjs'
@@ -138,6 +139,97 @@ test('tickTasks flips matching unchecked boxes and leaves others', () => {
   assert.match(md, /- \[x\] 1\.1 scaffold/)
   assert.match(md, /- \[ \] 1\.2 wire/)
   rmSync(tmp, { recursive: true, force: true })
+})
+
+// --- task-line parity with OpenSpec 1.15.0 ---------------------------------
+
+test('every list marker and box shape OpenSpec counts is a task, each open', () => {
+  const md = [
+    '- [ ] 1.1 dash',
+    '* [ ] 1.2 star',
+    '+ [ ] 1.3 plus',
+    '1. [ ] 1.4 ordered dot',
+    '2) [ ] 1.5 ordered paren',
+    '  - [ ] 1.6 nested',
+    '- [ ]',
+    ''
+  ].join('\n')
+  const tasks = parseTasks(md)
+  assert.equal(tasks.length, 7, 'one task per line')
+  assert.deepEqual(tasks.map(t => t.line), [1, 2, 3, 4, 5, 6, 7])
+  assert.deepEqual(tasks.map(t => t.done), Array(7).fill(false))
+  assert.deepEqual(tasks.map(t => t.id), ['1.1', '1.2', '1.3', '1.4', '1.5', '1.6', null])
+  assert.equal(tasks[6].text, '', 'an empty task has empty text and no id the tick can address')
+})
+
+test('an unrecognised marker is open work and only x or X inside the box is done', () => {
+  const tasks = parseTasks('- [~] 2.1 tilde\n- [] 2.2 empty box\n- [ x ] 2.3 padded x\n- [X] 2.4 capital\n')
+  assert.deepEqual(tasks.map(t => t.done), [false, false, true, true])
+  assert.deepEqual(tasks.map(t => t.id), ['2.1', '2.2', '2.3', '2.4'])
+})
+
+test('a link bullet is not a task', () => {
+  assert.equal(parseTasks('- [A](./notes.md)\n- [ref][1]\n').length, 0)
+})
+
+test('inspectChange counts a [~] line as remaining work', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-tilde-'))
+  try {
+    const change = join(dir, 'openspec', 'changes', 'half')
+    mkdirSync(change, { recursive: true })
+    for (const f of ['proposal.md', 'design.md']) writeFileSync(join(change, f), '# x\n')
+    writeFileSync(join(change, 'tasks.md'), '# Tasks\n\n- [x] 1.1 done\n- [~] 2.1 wire the guard\n')
+    const r = inspectChange(dir, 'half')
+    assert.equal(r.tasks.total, 2)
+    assert.equal(r.tasks.remaining, 1)
+    assert.equal(r.tasks.done, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('tickTasks rewrites the box it matched, whatever list marker or box shape', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-tick-shape-'))
+  try {
+    const change = join(dir, 'openspec', 'changes', 'shapes')
+    mkdirSync(change, { recursive: true })
+    writeFileSync(join(change, 'tasks.md'), '+ [ ] 1.1 alpha\n1. [~] 1.2 beta\n- [ x ] 1.3 gamma\n')
+    const r = tickTasks(dir, 'shapes', ['1.1', '1.2', '1.3'])
+    assert.deepEqual(r.ticked, ['1.1', '1.2'])
+    assert.deepEqual(r.already, ['1.3'])
+    assert.deepEqual(r.missing, [])
+    assert.equal(readFileSync(join(change, 'tasks.md'), 'utf8'), '+ [x] 1.1 alpha\n1. [x] 1.2 beta\n- [ x ] 1.3 gamma\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('normalizeTaskMarkers rewrites every matched box to [ ] and keeps the rest of the line', () => {
+  const md = [
+    '# Tasks',
+    '+ [x] 1.1 alpha',
+    '1. [~] 1.2 beta',
+    '- [ x ] 1.3 gamma [x] tail',
+    '- [] 1.4 delta',
+    '* [X] 1.5 epsilon',
+    '- [ ] 1.6 already open',
+    'prose [x] stays',
+    '- [A](./notes.md)',
+    ''
+  ].join('\n')
+  const want = [
+    '# Tasks',
+    '+ [ ] 1.1 alpha',
+    '1. [ ] 1.2 beta',
+    '- [ ] 1.3 gamma [x] tail',
+    '- [ ] 1.4 delta',
+    '* [ ] 1.5 epsilon',
+    '- [ ] 1.6 already open',
+    'prose [x] stays',
+    '- [A](./notes.md)',
+    ''
+  ].join('\n')
+  assert.equal(normalizeTaskMarkers(md), want)
 })
 
 test('planCoverage fails when classified tasks omit an unchecked checkbox', () => {

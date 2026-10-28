@@ -305,6 +305,61 @@ test('guard-tasks: allows a prose-only edit that leaves checkbox states identica
   }
 })
 
+test('guard-tasks: denies flipping a checkbox written with a + or ordered-list marker', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const path = plantTasks(root, 'add-foo', '+ [ ] 1.1 do thing\n')
+    const r = runGuard(
+      'guard-tasks.mjs',
+      edit(path, { old_string: '+ [ ] 1.1 do thing', new_string: '+ [x] 1.1 do thing' }),
+      root
+    )
+    assert.ok(isDeny(r), `expected deny on a + checkbox flip, got ${JSON.stringify(r)}`)
+    assert.match(r.decision.hookSpecificOutput.permissionDecisionReason, /guard-tasks/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-tasks: allows a prose-only edit to an ordered-list checkbox line', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const path = plantTasks(root, 'add-foo', '1. [ ] 1.1 do thing\n')
+    const r = runGuard(
+      'guard-tasks.mjs',
+      edit(path, { old_string: '1. [ ] 1.1 do thing', new_string: '1. [ ] 1.1 do the thing well' }),
+      root
+    )
+    assert.ok(isAllow(r), `expected allow on prose edit, got ${JSON.stringify(r)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-tasks: a [~] box reads as open, so [~] to [x] is a flip and [~] to [ ] is not', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root, pid: process.pid })
+    const path = plantTasks(root, 'add-foo', '- [~] 1.1 do thing\n')
+    const flip = runGuard(
+      'guard-tasks.mjs',
+      edit(path, { old_string: '- [~] 1.1 do thing', new_string: '- [x] 1.1 do thing' }),
+      root
+    )
+    assert.ok(isDeny(flip), `expected deny on [~] to [x], got ${JSON.stringify(flip)}`)
+    const same = runGuard(
+      'guard-tasks.mjs',
+      edit(path, { old_string: '- [~] 1.1 do thing', new_string: '- [ ] 1.1 do thing' }),
+      root
+    )
+    assert.ok(isAllow(same), `expected allow on [~] to [ ], got ${JSON.stringify(same)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('guard-tasks: allows an edit to a file that is not the active change tasks.md', () => {
   const root = tmpRoot()
   try {

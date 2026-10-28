@@ -23,7 +23,7 @@ npm install -g @fission-ai/openspec@latest
 cd your-project && openspec init
 ```
 
-If you skip this step, `/interlock:spec`, `/interlock:bootstrap` and `/interlock:dispatch` stop at their first command with this install line, and `interlock doctor` reports it.
+If you skip this step, `/interlock:spec`, `/interlock:bootstrap` and `/interlock:dispatch` stop at their first command with this install line, and `interlock doctor` reports it. The oldest OpenSpec Interlock's authoring skills rely on is `1.8.0`; below it `interlock doctor` warns. Before 1.7.0 the CLI reads nested `specs/<area>/<capability>/spec.md` deltas as "No deltas found" and archives without syncing them; 1.7.x syncs them, but its `openspec validate` passes a change whose `## MODIFIED` block drops a scenario, which its `openspec archive` then refuses.
 
 OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them ([03](./03-openspec-vs-interlock.md)).
 
