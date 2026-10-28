@@ -771,6 +771,41 @@ test('the domain-spec text cap is a positive integer in LIMITS, printed by inter
   assert.ok(!('maxDomainSpecChars' in payload.mergeBands))
 })
 
+// --- the change width caps (spec: spec/change-width, requirement 2; design D1) --
+//
+// Two counts the change inspection reads to say a change is wide. They are
+// LIMITS entries, so the positive-integer invariant at the top of this file
+// covers them and the cap-authority sweep counts a reader for each. The values
+// are the owner's (ledger D1): nothing here pins them.
+
+test('the change width caps are positive integers in LIMITS, printed by interlock limits, and emitted by --json', () => {
+  for (const cap of ['maxChangeCapabilities', 'maxChangeTasks']) {
+    assert.ok(cap in LIMITS, `LIMITS.${cap} is not published`)
+    assert.ok(Number.isInteger(LIMITS[cap]) && LIMITS[cap] > 0, `${cap} must be a positive integer`)
+  }
+  const text = formatLimits()
+  assert.match(
+    text,
+    new RegExp(`^\\s+change width: max capabilities \\(delta specs\\)\\s+${LIMITS.maxChangeCapabilities}\\s*$`, 'm'),
+    'interlock limits does not print the capability cap row carrying the cap'
+  )
+  assert.match(
+    text,
+    new RegExp(`^\\s+change width: max tasks\\s+${LIMITS.maxChangeTasks}\\s*$`, 'm'),
+    'interlock limits does not print the task cap row carrying the cap'
+  )
+
+  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, `interlock limits --json exited ${run.status}: ${run.stderr}`)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.limits.maxChangeCapabilities, LIMITS.maxChangeCapabilities)
+  assert.equal(payload.limits.maxChangeTasks, LIMITS.maxChangeTasks)
+  assert.ok(!('maxChangeCapabilities' in payload.mergeBands) && !('maxChangeTasks' in payload.mergeBands))
+})
+
 test('the domain-spec text cap is read by name under lib/, and the review skill and rubric restate no number for it', () => {
   const reader = readFileSync(join(ROOT, 'lib', 'prompts', 'domain-context.mjs'), 'utf8')
   assert.ok(reader.includes('LIMITS.maxDomainSpecChars'), 'lib/prompts/domain-context.mjs does not read the cap')

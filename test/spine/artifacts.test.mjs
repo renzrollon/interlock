@@ -10,12 +10,14 @@ import {
   listChanges,
   resolveChange,
   inspectChange,
+  formatInspection,
   parseTasks,
   tickTasks,
   normalizeTaskMarkers,
   planCoverage,
   taskMatchesId
 } from '../../lib/artifacts.mjs'
+import { LIMITS } from '../../lib/limits.mjs'
 
 let root
 
@@ -382,4 +384,124 @@ test('inspectChange reports the red section beside the tasks it was read from', 
   // reader can tell "no red section" from "this build does not know about them".
   assert.equal(inspectChange(root, 'add-auth').tasks.redSection, null)
   assert.equal(inspectChange(root, 'does-not-exist').tasks.redSection, null)
+})
+
+// --- change width (spec: spec/change-width) ---------------------------------
+//
+// The caps are read from LIMITS by name and never written as literals here, so
+// the cap-authority sweep keeps its one reader and a changed cap moves these
+// tests with it.
+
+/**
+ * A ready change with `specs` nested delta specs (specs/<domain>/<capability>/
+ * spec.md) and `tasks` checkbox tasks. `specs: null` writes no specs/ directory
+ * and `tasks: null` writes no tasks.md.
+ */
+function widthChange(name, { specs, tasks, artifacts = true, extra = () => {} }) {
+  const dir = join(root, 'openspec', 'changes', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'proposal.md'), '# Proposal\n')
+  if (artifacts) writeFileSync(join(dir, 'design.md'), '# Design\n')
+  if (tasks !== null) {
+    const lines = Array.from({ length: tasks }, (_, i) => `- [ ] 1.${i + 1} task ${i + 1}`)
+    writeFileSync(join(dir, 'tasks.md'), `# Tasks\n\n${lines.join('\n')}\n`)
+  }
+  if (specs !== null) {
+    for (let i = 0; i < specs; i++) {
+      const cap = join(dir, 'specs', `domain-${i % 3}`, `capability-${i}`)
+      mkdirSync(cap, { recursive: true })
+      writeFileSync(join(cap, 'spec.md'), '# Spec Delta\n')
+    }
+    mkdirSync(join(dir, 'specs'), { recursive: true })
+  }
+  extra(dir)
+  return dir
+}
+
+test('width: a change within both caps reports its counts, the published caps, and is not wide', () => {
+  widthChange('width-within', { specs: 2, tasks: 8 })
+  const r = inspectChange(root, 'width-within')
+  assert.deepEqual(r.width, {
+    capabilities: 2,
+    tasks: 8,
+    caps: { maxChangeCapabilities: LIMITS.maxChangeCapabilities, maxChangeTasks: LIMITS.maxChangeTasks },
+    wide: false,
+    over: []
+  })
+  assert.equal(r.ready, true)
+  assert.doesNotMatch(formatInspection(r), /CHANGE WIDE:/)
+})
+
+test('width: nested delta specs over the capability cap make a ready change wide, and the text names each capability directory', () => {
+  const n = LIMITS.maxChangeCapabilities + 1
+  widthChange('width-caps', { specs: n, tasks: 3 })
+  const r = inspectChange(root, 'width-caps')
+  assert.equal(r.ready, true, 'width never flips ready')
+  assert.equal(r.width.capabilities, n)
+  assert.equal(r.width.tasks, 3)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['capabilities'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`CHANGE WIDE: ${n} capabilities \\(max ${LIMITS.maxChangeCapabilities}\\)`))
+  assert.doesNotMatch(text, /tasks \(max/, 'a change within the task cap does not name the task cap')
+  for (let i = 0; i < n; i++) {
+    assert.ok(text.includes(`domain-${i % 3}/capability-${i}`), `capability directory ${i} is not listed`)
+  }
+})
+
+test('width: a change over the task cap alone is wide for tasks only', () => {
+  const n = LIMITS.maxChangeTasks + 1
+  widthChange('width-tasks', { specs: 1, tasks: n })
+  const r = inspectChange(root, 'width-tasks')
+  assert.equal(r.ready, true)
+  assert.equal(r.width.tasks, n)
+  assert.equal(r.width.capabilities, 1)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['tasks'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`CHANGE WIDE: [^\\n]*${n} tasks \\(max ${LIMITS.maxChangeTasks}\\)`))
+  assert.doesNotMatch(text, /capabilities \(max/)
+})
+
+test('width: a change over both caps names both, in the order capabilities then tasks', () => {
+  const c = LIMITS.maxChangeCapabilities + 1
+  const t = LIMITS.maxChangeTasks + 1
+  widthChange('width-both', { specs: c, tasks: t })
+  const r = inspectChange(root, 'width-both')
+  assert.equal(r.ready, true)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['capabilities', 'tasks'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`${c} capabilities \\(max ${LIMITS.maxChangeCapabilities}\\)`))
+  assert.match(text, new RegExp(`${t} tasks \\(max ${LIMITS.maxChangeTasks}\\)`))
+})
+
+test('width: a change with no specs and no tasks measures zero, is not wide, and is not ready for its own reasons', () => {
+  widthChange('width-empty', { specs: null, tasks: null, artifacts: false })
+  const r = inspectChange(root, 'width-empty')
+  assert.equal(r.width.capabilities, 0)
+  assert.equal(r.width.tasks, 0)
+  assert.equal(r.width.wide, false)
+  assert.deepEqual(r.width.over, [])
+  assert.equal(r.ready, false)
+  assert.ok(r.problems.some(p => p.includes('design.md')), 'ready is false for the missing artifacts, not width')
+  assert.doesNotMatch(formatInspection(r), /CHANGE WIDE:/)
+})
+
+test('width: only spec.md files are capabilities, so a stray note under specs/ is not counted', () => {
+  widthChange('width-stray', {
+    specs: 2,
+    tasks: 4,
+    extra: dir => {
+      writeFileSync(join(dir, 'specs', 'notes.md'), '# stray\n')
+      writeFileSync(join(dir, 'specs', 'domain-0', 'README.md'), '# stray\n')
+    }
+  })
+  const r = inspectChange(root, 'width-stray')
+  assert.equal(r.width.capabilities, 2)
+  assert.equal(r.width.wide, false)
+  assert.deepEqual(r.width.over, [])
 })

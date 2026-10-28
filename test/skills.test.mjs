@@ -2419,3 +2419,13 @@ test('review-artifacts routes one strict reviewer by role, and spec passes --str
   const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
   assertRoutingTokens(gate, ['/interlock:review-artifacts <name> --strict'], 'skills/spec/SKILL.md §5')
 })
+
+test('the spec skill acts on the validate width: wide stops with an epic of briefs, absent is spoken, no cap is restated', () => {
+  const text = skillText('spec')
+  for (const token of ['width.wide', 'CHANGE WIDE:', 'CHANGE WIDTH: not reported by this CLI', 'epic of briefs']) {
+    assert.ok(text.includes(token), `skills/spec/SKILL.md must carry the token \`${token}\``)
+  }
+  assert.ok(!text.includes('publishes no cap'), 'skills/spec/SKILL.md must not say the CLI publishes no cap')
+  assert.ok(!/max capabilities\D{0,3}\d/.test(text), 'skills/spec/SKILL.md must not restate a max capabilities number')
+  assert.ok(!/max tasks\D{0,3}\d/.test(text), 'skills/spec/SKILL.md must not restate a max tasks number')
+})

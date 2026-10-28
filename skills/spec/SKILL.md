@@ -106,7 +106,7 @@ No matching brief is fine — but if none exists and `--no-explore` was not pass
 
 Spec spawns nothing itself. The only workers on this path are explore's investigators, and explore routes them by role: it reads `interlock routing explore-investigator` and passes what it prints. The cost policy is read from the CLI, never from this skill, so do not name a model or an effort level when you hand off to explore.
 
-**One change or an epic.** Decide the width before writing. A request that spans many subsystems, or one whose brief reads "cover everything", does not converge at the artifact gate, because a reader of a change that size always finds more. Split it into an epic of briefs, each brief one change with its own gate, and say the split at the checkpoint. The width is a judgment made at the brief, not a count: the CLI publishes no cap for it.
+**One change or an epic.** Decide the width before writing. A request that spans many subsystems, or one whose brief reads "cover everything", does not converge at the artifact gate, because a reader of a change that size always finds more. Split it into an epic of briefs, each brief one change with its own gate, and say the split at the checkpoint. Section 4 then measures it: `interlock validate` reports the width once the delta specs exist, and a wide change stops there.
 
 ### 1c. Check the ground is current
 
@@ -241,6 +241,12 @@ interlock validate "<name>" --json
 
 `openspec validate "<name>"` checks this change's delta structure and every MODIFIED block against its living spec; a bare `openspec validate` names no target and checks nothing. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
 
+**Width.** Read `width.wide` from the validate JSON.
+
+- `width.wide` true: print the `CHANGE WIDE:` line(s) from the validate output verbatim, run no `/interlock:review-artifacts`, write no `interlock autonomy` line, and stop at the checkpoint (section 6) with an epic of briefs: group the delta spec capabilities from the printed list into briefs, each brief one change with its own gate, naming only capabilities from that list.
+- `width` absent (an older CLI): print `CHANGE WIDTH: not reported by this CLI` and continue to the gate.
+- `width.wide` false: continue to the gate.
+
 ---
 
 ## 5. Gate: artifact review
@@ -272,7 +278,7 @@ This is where the default run ends. Close with:
 - Assumptions made and any pending clarifications
 - Task count, and the wave shape if it is obvious
 - The task shape, and — **when it is TDD** — that ship will run section 1's failing tests first and skip that wave's check, so nobody is told whether the suite was genuinely red. Ask the reviewer to confirm the leading tests actually fail against the current code; a test that passes before the implementation exists pins nothing.
-- Anything the artifact review flagged below blocker severity
+- Anything the artifact review flagged below blocker severity. When the change was wide, the `CHANGE WIDE:` line and the epic of briefs split replace the review: no gate ran.
 - The advisor tool: whether it was available to this session, or `not available in this session`, and the consults the session made, by its own account. The spec meter's advisor line is the record of that count.
 - Compound notes: how many `rows` matched, with `omitted` and `unreadable` when not 0, or the `note match` line's first output line when it failed
 
