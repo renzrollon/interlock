@@ -21,6 +21,8 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { LIMITS } from '../../lib/limits.mjs'
+import { PALETTE, turnProps } from '../../lib/meter-palette.mjs'
 import { clockText, durationText } from '../../lib/meter-time.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 import * as R from '../fixtures/mod/settle-run.mjs'
@@ -40,7 +42,7 @@ const SETTLE_DEBUG = /^interlock settle: /
 const LINE = `interlock settle ${C} #25: `
 const NEXT = 'interlock run next --results .claude/ship/results.json --json'
 const CLOCK = /\d\d:\d\d:\d\d/
-const GROUP_LABELS = ['review', 'round 1', 'round 2', 'ready', 'conformance', 'verify', 'checks', 'merge confidence', 'publish', 'drift']
+const GROUP_LABELS = ['review', 'resolve', 'round 1', 'round 2', 'ready', 'conformance', 'verify', 'checks', 'merge confidence', 'publish', 'drift']
 
 const LOAD = '/interlock:settle --create --review'
 const LOAD_CREATE = '/interlock:settle --create'
@@ -285,6 +287,56 @@ async function pane($: any, surface: (typeof SURFACES)[number], bodyColumns = 14
   await ui.unmount()
   return { rows, all }
 }
+
+/** An element and every element beneath it, in the order drawn. */
+function tree(el: any): any[] {
+  if (!el) return []
+  const kids = Array.isArray(el.children) ? el.children : []
+  return [el, ...kids.flatMap(tree)]
+}
+/** A nested node's text: the kit sets `text` on a found element, not on what it holds. */
+const textOf = (n: any): string => (typeof n === 'string' ? n : Array.isArray(n?.children) ? n.children.map(textOf).join('') : '')
+const keyOf = (el: any) => (el?.props && typeof el.props.key === 'string' ? el.props.key : undefined)
+/**
+ * The pane's drawing (draw-the-settle-and-spec-panes-as-cards D3): every keyed
+ * row's key, text and Box props in the order drawn; every bordered Box, with
+ * the keys of the rows it holds; every Box's props; and how many Texts it draws.
+ */
+async function drawing($: any, surface: (typeof SURFACES)[number], bodyColumns = 144) {
+  const ui = await mount($, surface, bodyColumns)
+  const boxes = await ui.findAll({ type: 'Box' })
+  const rows: { key: string; text: string; props: any; node: any }[] = []
+  for (const b of boxes) if (keyOf(b)) rows.push({ key: keyOf(b)!, text: (await ui.find({ key: keyOf(b) }))?.text ?? '', props: b.props, node: b })
+  const cards = boxes
+    .filter((b: any) => b.props && b.props.borderStyle !== undefined)
+    .map((b: any) => ({ props: b.props, keys: tree(b).map(keyOf).filter(Boolean) as string[] }))
+  const texts = (await ui.findAll({ type: 'Text' })).length
+  const props = boxes.map((b: any) => b.props ?? {})
+  await ui.unmount()
+  return { rows, cards, texts, props }
+}
+type Drawing = Awaited<ReturnType<typeof drawing>>
+/** A group's card: the outer card that holds its heading row. */
+const groupCard = (d: Drawing, label: string) => {
+  const heading = d.rows.find(r => new RegExp(`^${label}\\b`).test(r.text) && CLOCK.test(r.text) && r.key.startsWith('settle-group-'))
+  expect(heading).toBeDefined()
+  return d.cards.find(c => c.keys[0] === heading!.key)
+}
+/** The verdict's own card: the bordered Box that holds the one row reading the verdict word after its clock. */
+const verdictCard = (d: Drawing, word: string) => {
+  const row = d.rows.find(r => new RegExp(`^\\d\\d:\\d\\d:\\d\\d ${word} \\d+`).test(r.text))
+  expect(row).toBeDefined()
+  return d.cards.find(c => c.keys.length === 1 && c.keys[0] === row!.key)
+}
+const expectDim = (c: any) => {
+  expect(c?.props.borderDimColor).toBe(true)
+  expect(c?.props.borderColor).toBeUndefined()
+}
+const mcAnswer = (verdict: string) => {
+  const doc = JSON.parse(R.BASH_SETTLE_MERGE_CONFIDENCE.result.stdout)
+  doc.verdict = verdict
+  return json(doc)
+}
 /** The index of a group's heading: its first row to start with the section word and carry a clock reading. */
 const headingAt = (rows: string[], label: string) => rows.findIndex(t => new RegExp(`^${label}\\b`).test(t) && CLOCK.test(t))
 /** The rows between a group's heading and the next group's heading. */
@@ -311,6 +363,7 @@ test('a typed settle load with --review starts the run, opens the pane, and pass
   expect(w.opens).toEqual([PANE])
   expect(w.toasts).toEqual([])
   for (const surface of SURFACES) expect((await pane($, surface)).rows[0]).toMatch(new RegExp(UNKNOWN))
+  for (const surface of SURFACES) expect((await pane($, surface)).rows[1]).toBe('with --review')
   // The CLI's own argv names the change, the pull request and the head.
   await to(w, 326)
   expect((await bash($, R.BASH_SETTLE_BRIEF.command)).text).toBe(R.BASH_SETTLE_BRIEF.text)
@@ -331,11 +384,39 @@ test('a Skill tool load of the settle skill with --review starts the run too, an
   expect(w.opens).toEqual([PANE])
 })
 
-test('a load without --review, and review-code loaded alone with its fan-out, draw nothing', async ($: any, on: any) => {
+// A settle load without --review starts a run too, and groups the pass under
+// `resolve` (draw-the-settle-and-spec-panes-as-cards D4): this reverses the
+// earlier --review-only start, on purpose.
+for (const [how, load] of [
+  ['a typed', ($: any) => submit($, LOAD_CREATE)],
+  ['a Skill tool', ($: any) => skill($, 'interlock:settle', '--create')]
+] as const) {
+  test(`${how} settle load without --review starts the run, reads without --review, and groups under resolve on both surfaces`, async ($: any, on: any) => {
+    const w = world(on)
+    await start($)
+    const r: any = await load($)
+    if (how === 'a typed') expect(r).toEqual({ text: LOAD_CREATE })
+    else expect(r.text).toBe('Launching skill: interlock:settle')
+    expect(w.status.at(-1)).toBe(`interlock settle: ${UNKNOWN}`)
+    expect(w.opens).toEqual([PANE])
+    for (const surface of SURFACES) {
+      const { rows } = await pane($, surface)
+      expect(rows[0]).toMatch(new RegExp(UNKNOWN))
+      expect(rows[1]).toBe('without --review')
+    }
+    expect((await bash($, ROUTING)).text).toBe(ROUTING_ANSWER.text)
+    expect(w.status.at(-1)).toMatch(/: change: unknown until named · resolve · /)
+    for (const surface of SURFACES) {
+      const { rows } = await pane($, surface)
+      expect(headingAt(rows, 'resolve') >= 0).toBe(true)
+      expect(headingAt(rows, 'review')).toBe(-1)
+    }
+  })
+}
+
+test('review-code loaded alone with its fan-out draws nothing', async ($: any, on: any) => {
   const w = world(on)
   await start($)
-  expect(await submit($, LOAD_CREATE)).toEqual({ text: LOAD_CREATE })
-  expect((await skill($, 'interlock:settle', '--create')).text).toBe('Launching skill: interlock:settle')
   expect((await skill($, 'interlock:review-code')).text).toBe('Launching skill: interlock:review-code')
   expect((await bash($, ROUTING)).text).toBe(ROUTING_ANSWER.text)
   for (const heading of ['language & framework', 'technical lead', 'domain', 'blast-radius']) {
@@ -939,4 +1020,145 @@ test('B5: a typed settle load after a blank line still starts the run', async ($
   await submit($, `\n\n${LOAD}`)
   expect(w.status.at(-1)).toBe(`interlock settle: ${UNKNOWN}`)
   expect(w.opens).toEqual([PANE])
+})
+
+// --- the cards (draw-the-settle-and-spec-panes-as-cards design D3) -------------
+
+test('the PR #25 pass draws as single-border cards: an accent header, a dim card per group, the verdict in its own warn card', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    expect(d.cards.length > 0).toBe(true)
+    for (const c of d.cards) {
+      expect(c.props.borderStyle).toBe('single')
+      // A card is never a keyed row: the readers of the keyed Boxes still see the rows flat.
+      expect(c.props.key).toBeUndefined()
+    }
+    const header = d.cards[0]
+    expect(header.keys).toEqual(['settle-header', 'settle-mode'])
+    expect(header.props.borderColor).toBe(PALETTE.accent)
+    expect(header.props.width).toBe(144)
+    for (const label of ['review', 'round 1', 'round 2', 'conformance', 'verify', 'checks', 'merge confidence', 'publish', 'drift']) {
+      const c = groupCard(d, label)
+      expect(c).toBeDefined()
+      // A done run marks no card as the open one.
+      expectDim(c)
+      expect(c!.props.width).toBe(144)
+    }
+    const verdict = verdictCard(d, 'HUMAN')
+    expect(verdict).toBeDefined()
+    expect(verdict!.props.borderColor).toBe(PALETTE.warn)
+    expect(verdict!.props.borderDimColor).toBeUndefined()
+    expect(groupCard(d, 'merge confidence')!.keys).toContain(verdict!.keys[0])
+    // The done line and the banners sit after the cards, in none of them.
+    for (const key of ['settle-done', 'settle-banners']) {
+      expect(d.rows.some(r => r.key === key)).toBe(true)
+      expect(d.cards.some(c => c.keys.includes(key))).toBe(false)
+    }
+    // The keyed rows read exactly the texts the pane reads by row.
+    expect(d.rows.map(r => r.text)).toEqual((await pane($, surface)).rows)
+  }
+})
+
+test('while a round is live its card is bordered in the current colour, its agents indented as layout; once done no card is', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await loadSettle($)
+  await bash($, ROUTING)
+  await to(w, 10)
+  await spawn($, { prompt: DIM('language & framework'), model: 'sonnet' })
+  await to(w, 60)
+  await bash($, R.BASH_SETTLE_REVIEW.command)
+  await to(w, 70)
+  await bash($, R.BASH_SETTLE_BRIEF.command)
+  await agent($, w, { prompt: FIXER_PROMPT, spawnAt: 80, steps: [90], efforts: ['xhigh'], served: 'claude-opus-5-5' })
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    const round = groupCard(d, 'round 1')
+    expect(round!.props.borderColor).toBe(PALETTE.current)
+    expect(round!.props.borderDimColor).toBeUndefined()
+    expectDim(groupCard(d, 'review'))
+    // A role row sits at the gutter; an agent beneath it one indent further; an agent with no role row at the gutter.
+    const role = d.rows.find(r => /-role-dimension$/.test(r.key))!
+    expect(role.props.paddingLeft).toBe(9)
+    const dim = d.rows.find(r => r.text.startsWith('language & framework'))!
+    expect(dim.props.paddingLeft).toBe(11)
+    const fixer = d.rows.find(r => r.text.startsWith('fixer'))!
+    expect(fixer.props.paddingLeft).toBe(9)
+    expect(fixer.text.endsWith(' · live')).toBe(true)
+    // The end word is a span of its own, in the colour of a running turn.
+    const word = tree(fixer.node).find((n: any) => n?.type === 'Text' && textOf(n) === 'live')
+    expect(word?.props?.color).toBe(turnProps(null).color)
+    // Indentation is layout, never characters in the text.
+    expect(/^\s/.test(fixer.text)).toBe(false)
+  }
+  await bash($, DRIFT)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    for (const label of ['review', 'round 1', 'drift']) expectDim(groupCard(d, label))
+  }
+})
+
+for (const [word, color] of [
+  ['MERGE', PALETTE.ok],
+  ['HUMAN', PALETTE.warn],
+  ['BLOCK', PALETTE.alarm],
+  ['MAYBE', null]
+] as const) {
+  test(`a ${word} verdict's own card is bordered ${color === null ? 'dim, the word unknown to the meter' : 'by its tone'}`, async ($: any, on: any) => {
+    const w = world(on)
+    w.bash.set(R.BASH_SETTLE_MERGE_CONFIDENCE.command, mcAnswer(word))
+    await start($)
+    await loadSettle($)
+    await bash($, ROUTING)
+    await bash($, R.BASH_SETTLE_MERGE_CONFIDENCE.command)
+    for (const surface of SURFACES) {
+      const d = await drawing($, surface)
+      const c = verdictCard(d, word)
+      expect(c).toBeDefined()
+      expect(c!.props.borderStyle).toBe('single')
+      if (color === null) expectDim(c)
+      else {
+        expect(c!.props.borderColor).toBe(color)
+        expect(c!.props.borderDimColor).toBeUndefined()
+      }
+      // The merge-confidence card is the open one, the verdict card nested in it.
+      const mc = groupCard(d, 'merge confidence')
+      expect(mc!.props.borderColor).toBe(PALETTE.current)
+      expect(mc!.keys).toContain(c!.keys[0])
+    }
+  })
+}
+
+test('below the card floor the pane draws flat: no Box has a border and every keyed row still reads its text', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  expect(40 < LIMITS.waveBoardMinColumns).toBe(true)
+  for (const surface of SURFACES) {
+    const flat = await drawing($, surface, 40)
+    expect(flat.cards).toEqual([])
+    for (const p of flat.props) {
+      expect(p.borderStyle).toBeUndefined()
+      expect(p.borderColor).toBeUndefined()
+      expect(p.borderDimColor).toBeUndefined()
+    }
+    // 40 and 90 columns both fold the agent rows, so their texts are the same; only 90 draws cards.
+    const carded = await drawing($, surface, 90)
+    expect(carded.cards.length > 0).toBe(true)
+    expect(flat.rows.map(r => [r.key, r.text])).toEqual(carded.rows.map(r => [r.key, r.text]))
+  }
+})
+
+test('the no-run pane is exactly one Text and no card', async ($: any, on: any) => {
+  world(on)
+  await start($)
+  for (const surface of SURFACES) {
+    const d = await drawing($, surface)
+    expect(d.texts).toBe(1)
+    expect(d.cards).toEqual([])
+    expect(d.rows.map(r => r.text)).toEqual([NO_RUN])
+  }
 })

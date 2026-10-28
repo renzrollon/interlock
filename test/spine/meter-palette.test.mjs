@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { specifiers, walkModule } from '../helpers/module-walk.mjs'
-import { PALETTE, stateProps, turnProps } from '../../lib/meter-palette.mjs'
+import { PALETTE, stateProps, toneProps, turnProps } from '../../lib/meter-palette.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const ENTRY = join(ROOT, 'lib', 'meter-palette.mjs')
@@ -43,6 +43,21 @@ test('a turn still running is the warn colour, an answer ok, and every other wor
   for (const word of ['error', 'aborted', 'refusal', 'cancelled', 'a word no declaration names']) {
     assert.deepEqual(turnProps(word), { color: PALETTE.alarm }, word)
   }
+})
+
+test('a tone is drawn with the props its meaning names, and an unknown tone with none', () => {
+  assert.deepEqual(toneProps('ok'), { color: PALETTE.ok })
+  assert.deepEqual(toneProps('alarm'), { color: PALETTE.alarm })
+  assert.deepEqual(toneProps('warn'), { color: PALETTE.warn })
+  assert.deepEqual(toneProps('current'), { color: PALETTE.current })
+  assert.deepEqual(toneProps('accent'), { bold: true, color: PALETTE.accent })
+  assert.deepEqual(toneProps('heading'), { bold: true, color: PALETTE.accent })
+  assert.deepEqual(toneProps('name'), { bold: true, color: PALETTE.identity })
+  assert.deepEqual(toneProps('running'), turnProps(null))
+  assert.deepEqual(toneProps('clock'), { dimColor: true })
+  assert.deepEqual(toneProps('dim'), { dimColor: true })
+  for (const tone of [null, undefined, '', 'OK', 'bold', 'a tone no card names']) assert.equal(toneProps(tone), null, String(tone))
+  assert.notEqual(toneProps('ok'), toneProps('ok'))
 })
 
 test('the palette imports nothing, so the hooks module can load it in the engine', () => {
