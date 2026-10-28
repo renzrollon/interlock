@@ -827,7 +827,7 @@ function libSources() {
 test('formatLimits prints a routing row per role, the strict override row, and inherit for a null', () => {
   const text = formatLimits()
   const roles = Object.keys(SPAWN_ROUTING)
-  assert.equal(roles.length, 5, 'the table holds the five prose spawn roles')
+  assert.equal(roles.length, 6, 'the table holds the six prose spawn roles')
   for (const role of roles) {
     assert.match(text, new RegExp(`^ *routing: ${role}\\s+model \\S+`, 'm'), `no routing row for ${role}`)
   }
@@ -841,6 +841,9 @@ test('formatLimits prints a routing row per role, the strict override row, and i
   assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort xhigh/m)
   assert.equal(SPAWN_ROUTING['settle-conformance'].effort, null)
   assert.match(text, /^ *routing: settle-conformance\s+model sonnet \u00b7 effort inherit/m)
+  assert.equal(SPAWN_ROUTING['artifact-reviewer'].model, null)
+  assert.equal(SPAWN_ROUTING['artifact-reviewer'].effort, null)
+  assert.match(text, /^ *routing: artifact-reviewer\s+model inherit \(session default\) \u00b7 effort inherit \(session default\)$/m)
   assert.doesNotMatch(text, /routing: [^\n]*\bnull\b/)
   // A set field prints as itself.
   assert.match(text, /^ *routing: explore-investigator\s+model sonnet \u00b7 effort medium$/m)

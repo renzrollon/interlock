@@ -714,7 +714,16 @@ function fencedCommandLines(file) {
 // design D10 names `--json` on it as a follow-up), so it is read by nobody.
 // `openspec --version` is the spec skill's CLI-presence probe: it either prints
 // a version or stops the run before anything is named, so there is nothing to meter.
-const UNREAD_BY_NAME = ['openspec validate "<name>"', 'openspec --version']
+// The two `interlock routing artifact-reviewer` lines are the review-artifacts
+// skill's routing lookup: the spec pane counts the strict Agent call under spawns
+// and the findings file under writes, so it keys no line for the lookup
+// (route-a-strict-artifact-reviewer design D5).
+const UNREAD_BY_NAME = [
+  'openspec validate "<name>"',
+  'openspec --version',
+  'interlock routing artifact-reviewer --json',
+  'interlock routing artifact-reviewer --depth strict --json'
+]
 
 test('every fenced openspec and interlock line in the three skills is one the meter classifies or names as unread', () => {
   const all = SKILL_FILES.flatMap(fencedCommandLines)

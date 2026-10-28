@@ -169,11 +169,12 @@ takes both its roles, the dimension set and the skeptic shape from it. Never
 name a model slug or an effort level in a skill, and never restate a spawn
 count — the table and the depth publish them.
 
-The five roles and their skills:
+The six roles and their skills:
 
 - `explore-investigator` — `/interlock:explore`
 - `review-dimension` and `review-skeptic` — `/interlock:review-code`
 - `settle-fixer` and `settle-conformance` — `/interlock:settle`
+- `artifact-reviewer` — `/interlock:review-artifacts --strict`
 
 ## When NOT to apply
 

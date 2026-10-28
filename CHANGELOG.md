@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`/interlock:review-artifacts --strict` buys an independent read of the artifacts.** A sixth routing row, `artifact-reviewer` (`interlock routing artifact-reviewer`, `inherit` for both model and effort), routes the reader by role like every other prose spawn. The skill reads its depth from one routing call, prints `GATE DEPTH:` and the banners, and under `--strict` spawns one reviewer with the skill's own Reviewer 1, Reviewer 2 and Invariant check sections as its brief; the reviewer writes no file and replies with findings JSON, and the session writes the findings file and runs the gate line itself, so the gate, the metrics record and the autonomy record are the same at both depths. An unreadable reply prints `STRICT REVIEW UNREAD:` and falls back to the inline read. `/interlock:spec --strict` passes the flag to its artifact gate.
+
 ### Changed
 
 - **The task reader and ticker count a checkbox the way OpenSpec 1.15.0 does.** `parseTasks`, `tickTasks` and `normalizeTaskMarkers` read `-`, `*` and `+` bullets and `1.` / `1)` markers, any one-character box and empty text, and leave a link bullet such as `- [A](./notes.md)` out. Only `x` or `X` is done; `[~]` and the rest are open work. `interlock tasks tick` rewrites the box it matched whatever its bullet, and the plan fingerprint normalises the same span. `TASK_LINE` is exported.

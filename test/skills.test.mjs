@@ -2172,7 +2172,7 @@ test('TOOL-ECONOMY Rule 5 carries the routing tokens and names the five roles', 
       '`null`',
       'omit',
       'never',
-      ...['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+      ...['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance', 'artifact-reviewer']
     ],
     'shared/TOOL-ECONOMY.md Rule 5'
   )
@@ -2353,4 +2353,69 @@ test('docs/01-first-hour.md names the OpenSpec floor the doctor enforces', () =>
   assert.match(String(floor), /^\d+\.\d+\.\d+$/, 'OPENSPEC_MIN_VERSION is an exported x.y.z constant')
   const text = readFileSync(join(ROOT, 'docs', '01-first-hour.md'), 'utf8')
   assert.ok(text.includes(floor), `docs/01-first-hour.md must name OpenSpec ${floor}`)
+})
+
+test('spec gates once and states the bounded pin rule; review-artifacts offers the scoped re-gate and says what a blocker is', () => {
+  // One gate per spec run. On 2026-10-29 a wide change was re-gated five times
+  // with a fresh reviewer each round: the blockers never converged, one of them
+  // ("the pin list is incomplete") cannot be satisfied before the code exists,
+  // and the rounds cost about a million subagent tokens. The rule that stops it
+  // lives in prose, so it is pinned here. Tokens, not sentences.
+  const spec = skillText('spec')
+  const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
+  assertRoutingTokens(gate, ['once', 'not a loop', 're-gate nothing', '--since'], 'skills/spec/SKILL.md §5')
+  const tests = sectionOfSkill(spec, /^#### Where the tests go$/m)
+  assertRoutingTokens(
+    tests,
+    ['bounded rule', 'never during a remediation stage', 'names the assertion and the requirement'],
+    'skills/spec/SKILL.md "Where the tests go"'
+  )
+  const brief = sectionOfSkill(spec, /^### 1b\. Load the explore brief$/m)
+  assertRoutingTokens(brief, ['epic of briefs', 'does not converge'], 'skills/spec/SKILL.md §1b')
+
+  const review = skillText('review-artifacts')
+  const where = 'skills/review-artifacts/SKILL.md'
+  const fm = parseFrontmatter(review)
+  assert.ok((fm.values['argument-hint'] || '').includes('--since'), `${where} argument-hint must offer --since`)
+  const allowed = fm.values['allowed-tools'] || ''
+  assert.match(allowed, /Bash\(git diff \*\)/, `${where} instructs git diff in its re-gate but does not admit it`)
+  assert.match(allowed, /Bash\(git status \*\)/, `${where} instructs git status in its re-gate but does not admit it`)
+  assert.doesNotMatch(allowed, /Bash\(git \*\)/, `${where}'s grant must stay narrowed to the two verbs the re-gate uses`)
+  const since = sectionOfSkill(review, /^## A scoped re-gate: `--since <findings file>`$/m)
+  assertRoutingTokens(since, ['judges the fix', 'changed hunk', 'Re-check each earlier blocker'], `${where} --since section`)
+  const output = sectionOfSkill(review, /^## Output$/m)
+  assertRoutingTokens(output, ['fail its own verification', 'bounded pin rule', 'never a blocker'], `${where} Output`)
+})
+
+test('review-artifacts routes one strict reviewer by role, and spec passes --strict through to the gate', () => {
+  // Without these tokens the strict depth is prose nobody asserts: the lookup, the
+  // banners and the fallback would each stop running on the first reword.
+  const review = skillText('review-artifacts')
+  const where = 'skills/review-artifacts/SKILL.md'
+  const fm = parseFrontmatter(review)
+  assert.ok((fm.values['argument-hint'] || '').includes('--strict'), `${where} argument-hint must offer --strict`)
+  assert.match(fm.values['allowed-tools'] || '', /\bAgent\b/, `${where} spawns the strict reviewer but does not admit Agent`)
+  const depth = sectionOfSkill(review, /^## Depth$/m)
+  assertRoutingTokens(
+    depth,
+    [
+      'interlock routing artifact-reviewer --json',
+      'interlock routing artifact-reviewer --depth strict --json',
+      'GATE DEPTH',
+      'ROUTING UNAVAILABLE',
+      'STRICT REVIEW UNREAD',
+      '`banners`',
+      '`null`',
+      'omit',
+      'exactly one Agent call',
+      'verbatim',
+      'writes no file'
+    ],
+    `${where} Depth`
+  )
+  const spec = skillText('spec')
+  const sfm = parseFrontmatter(spec)
+  assert.ok((sfm.values['argument-hint'] || '').includes('--strict'), 'skills/spec/SKILL.md argument-hint must offer --strict')
+  const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
+  assertRoutingTokens(gate, ['/interlock:review-artifacts <name> --strict'], 'skills/spec/SKILL.md §5')
 })

@@ -5035,7 +5035,7 @@ test('limits carries the note-match cap by name and no advisor cap, in text and 
 
 // --- routing: the model and effort a prose skill passes (spec: spawn-routing) ---
 
-const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance', 'artifact-reviewer']
 /** Neither override variable set, so a developer's own export cannot change a result. */
 const NO_OVERRIDES = { CLAUDE_CODE_EFFORT_LEVEL: undefined, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined }
 

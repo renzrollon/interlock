@@ -112,7 +112,8 @@ const ROUTING = json({
     'review-dimension': { model: 'sonnet', effort: 'medium' },
     'review-skeptic': { model: null, effort: 'xhigh' },
     'settle-fixer': { model: null, effort: 'xhigh' },
-    'settle-conformance': { model: 'sonnet', effort: null }
+    'settle-conformance': { model: 'sonnet', effort: null },
+    'artifact-reviewer': { model: null, effort: null }
   },
   review: { dimensions: ['language', 'technical-lead'], skeptics: 'per-review' },
   banners: [],
