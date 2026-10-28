@@ -6,21 +6,30 @@ Shows a `/interlock:settle --review` run while it runs: a status line naming the
 
 ## Requirements
 
-### Requirement: The settle meter SHALL go live only on the plugin's settle skill load that carries `--review` in an interactive session, and SHALL take the change, the pull request and the head from the CLI's lines alone
+### Requirement: The settle meter SHALL go live on every load of the plugin's settle skill in an interactive session, SHALL record whether `--review` was passed, and SHALL take the change, the pull request and the head from the CLI's lines alone
 
-The module SHALL start a settle run only when the plugin's settle skill is loaded in a session whose start reported it interactive and the load's arguments contain the word `--review`: a prompt submitted whose first word is `/interlock:settle`, or a Skill tool call naming `interlock:settle` that the engine did not mark errored. A load without `--review` SHALL start nothing. The prompt and the Skill call SHALL be passed on exactly as they came, and of them only the first word and the presence of `--review` SHALL be read. A Skill call naming `interlock:review-code` while a settle run is live SHALL change no section: it lands in the section already open, `review` on the first load and the open round on every re-review. At the start the status line and the pane SHALL read `change: unknown until named`; the change name SHALL be taken only from the CLI's own argv (`--change <name>` on the settle lines, the positional change on `interlock settle conformance-brief`, `interlock merge-confidence` and `interlock domain-context`, `--metrics <name>` on `interlock review`) or a `change` field in a result's JSON; the pull request number only from `--pr <n>` or a `pr` field, or the positional number on a `gh pr` stage; the head only from `--head <sha>` or a `head` or `head.sha` field. None of them SHALL be taken from a file path, a prompt or a tool input. A second settle load in the same session SHALL start the record over and say so once on the debug log. In a non-interactive session every hook this requirement adds SHALL return at its first line.
+The module SHALL start a settle run when the plugin's settle skill is loaded in a session whose start reported it interactive, with or without `--review`: a prompt whose first word is `/interlock:settle`, or a Skill call naming `interlock:settle` the engine did not mark errored. The run SHALL record whether its arguments contain the word `--review`, and whether they contain the word `--create`. The change, pull request and head SHALL be read only as the earlier rules read them.
 
-#### Scenario: Happy path — the load starts the run and the brief names the pass
+Of the prompt and the Skill call, only the first word and the presence of the words `--review` and `--create` SHALL be read, and both SHALL be passed on exactly as they came. A Skill call naming `interlock:review-code` while a settle run is live SHALL change no section: it lands in the section already open. At the start the status line and the pane SHALL read `change: unknown until named`. The change name SHALL be taken only from the CLI's own argv (`--change <name>` on the settle lines, the positional change on `interlock settle conformance-brief`, `interlock merge-confidence` and `interlock domain-context`, `--metrics <name>` on `interlock review`) or a `change` field in a result's JSON; the pull request number only from `--pr <n>`, a `pr` field, or the positional number on a `gh pr` stage; the head only from `--head <sha>` or a `head` or `head.sha` field. None of them SHALL be taken from a file path, a prompt or a tool input. A second settle load in the same session SHALL start the record over, with its own `--review` reading, and say so once on the debug log. In a non-interactive session every hook this requirement adds SHALL return at its first line.
+
+#### Scenario: Happy path — a load with `--review` starts the run and the brief names the pass
 
 - **GIVEN** an interactive session
 - **WHEN** the prompt `/interlock:settle --create --review` is submitted
-- **THEN** the status line reads `interlock settle: change: unknown until named`, the pane is opened unasked, and the prompt reaches the engine unchanged
+- **THEN** the status line reads `interlock settle: change: unknown until named`, the pane is opened unasked, it reads `with --review` beneath its header, and the prompt reaches the engine unchanged
 - **AND** when `interlock settle remediate-brief --review .claude/ship/settle/review-r0.json --round 1 --change route-prose-spawns-by-role --head a96cb82cedb626d9b6c11c1f6a090b7e52a2afa8 --pr 25 … --json` resolves, the header names `route-prose-spawns-by-role`, `PR #25` and `head a96cb82`
 
-#### Scenario: Failure — a non-interactive session or a load without `--review` draws nothing
+#### Scenario: Happy path — a load without `--review` starts the run and groups its pass under `resolve`
 
-- **GIVEN** `session.start` reporting `isInteractive: false`, or an interactive session in which the prompt `/interlock:settle --create` is submitted
-- **WHEN** the settle lines, spawns and turn events of a pass follow
+- **GIVEN** an interactive session
+- **WHEN** the prompt `/interlock:settle --create` is submitted, then `interlock changes` exits 0, then `interlock pipeline …` and `interlock merge-confidence <change> … --json` resolve with `verdict: 'MERGE', score: 91`, then `gh pr edit 25 --add-label …` and `interlock drift --changed … --json` resolve
+- **THEN** the pane opens unasked and reads `without --review` beneath its header, and draws the groups `resolve`, `merge confidence`, `publish` and `drift` in that order, with no `review` and no `round <n>` group
+- **AND** the run ends at the drift line, and the status line reads `interlock settle <change> #25: merge confidence · MERGE 91`
+
+#### Scenario: Failure — a non-interactive session draws nothing
+
+- **GIVEN** `session.start` reporting `isInteractive: false`
+- **WHEN** `/interlock:settle --review` or `/interlock:settle --create` is submitted and the settle lines, spawns and turn events of a pass follow
 - **THEN** no status line is set, no pane is opened, no toast is shown and no record is kept
 - **AND** every hook resolved to what the engine alone would have done
 
@@ -29,13 +38,14 @@ The module SHALL start a settle run only when the plugin's settle skill is loade
 - **GIVEN** an interactive session in which the settle skill was not loaded
 - **WHEN** a Skill call names `interlock:review-code` and four `general-purpose` agents whose prompts begin `# Dimension: ` are spawned
 - **THEN** no status line is set and the pane reads that no settle run is live in this session
-- **AND** when a live settle run exists and `/interlock:settle --review` is submitted again, the record starts over with `change: unknown until named`, the earlier rows are not kept, and one debug-log line says a new settle run replaced the previous one
+- **AND** when a live settle run loaded with `--review` exists and `/interlock:settle` is submitted again without it, the record starts over with `change: unknown until named`, reads `without --review`, the earlier rows are not kept, and one debug-log line says a new settle run replaced the previous one
 
 ### Requirement: The status line and the pane SHALL repeat the CLI's own words from the settle and review lines, read at every pipe stage, and SHALL make no verdict of their own
 
 While a settle run is live, a Bash call of the main session (one whose event carries no `agentId`: every keyed line of a pass runs there, and a ship lane's `interlock verify exec` or `git commit` is never the pass's) whose command, or one of its segments or pipe stages, begins with one of the keyed lines SHALL be let through and its result read, on the Bash hook's path with no ship run live and on its path with one live alike, and whether or not the spec meter's reader keyed or declined the same line. Segments are split at unquoted `&&`, `||`, `;` or line breaks; each segment is further split at unquoted `|` and at `$(`, a `$(` inside double quotes included; the body of a quoted heredoc is one argument and is never re-split; and every stage is keyed by its own first words. A line that crosses again SHALL append a row, never replace the earlier one.
 
 The keyed lines and the fields read from each:
+- `gh pr view` / `glab mr view` naming no pull request of its own (the branch's lookup: no number or `<n>` follows `view`): the command words and the exit code
 - `interlock routing --json` (with or without `--depth`): `depth`, `roles.<role>.model`, `roles.<role>.effort`, `review.dimensions`, `review.skeptics`, `banners`; `interlock routing <role> --json`: `role`, `model`, `effort`, `banners`
 - `interlock surface`, `interlock domain-context`, `interlock gate`, `interlock changes`, `interlock review-policy`, `interlock autonomy record`, `interlock note derive`: the command words and the exit code
 - `interlock review … --json` (with or without `--out <file>`): `counts.raised`, `counts.dismissed`, `counts.surviving`, `counts.carried`, `dimensionStats` by name, `head`, `dimensions.ran`, `dimensions.skipped` (the `name` of each `{ name, reason }`), `dimensions.unavailable`, `dimensions.depth`, the skipped and unavailable names drawn on the review row; never `dimensions.completed`
@@ -113,13 +123,14 @@ While a settle run is live, the module SHALL read each `agent.spawn` as it cross
 
 ### Requirement: The pane SHALL group the run by the settle skill's sections and rounds as a timeline on both surfaces, and SHALL toast only the CLI's STOP line, the verdict, a turn's non-answer end and a declined placement
 
-The pane SHALL be registered as `interlock-settle` with the command `/interlock-settle` at any width, opened unasked when a settle run starts, and drawn by field on the terminal and desktop surfaces from the same keyed lines: a header (`interlock settle — <change> · PR #<n> · <depth> · head <sha7> · <elapsed>`), then one group per section word of the settle skill in the order the pass runs them — `review`, `round <n>` for each round seen, `ready`, `conformance`, `verify`, `checks`, `merge confidence`, `publish`, `drift` — each with the clock time it opened, the clock time of its last line and the span between them, its agent rows grouped by role (dimensions, skeptics, fixer, worker) with `<k> spawned · <m> <reason>` counts, the dimensions row drawing the routing listing and the engine's count as two labelled facts (`review dimensions <names> · <k> spawned`), and its CLI rows with their clock times; then a banners area repeating the routing lines' banners verbatim or reading `none`. A group not yet reached SHALL not be drawn; a group the pass skipped SHALL not be invented. Below `settle pane full width (columns)` from `interlock limits` an agent row SHALL keep its role, served model, elapsed time and reason. A row, a group heading or the header the clock could not time SHALL read `time unknown` where its time would be. The pane SHALL raise a toast only for: a `STOP: ` line (its text verbatim), a merge-confidence verdict (`merge-confidence: <verdict> <score>`), a settle agent's turn ending with a reason other than `answer` (`<role>: <reason>`), and an unasked open the surface declined (`/interlock-settle opens the settle meter`). With no settle run live the pane SHALL read that no settle run is live in this session.
+The pane SHALL be registered as `interlock-settle` with the command `/interlock-settle` at any width, opened unasked when a settle run starts, and drawn by field on the terminal and desktop surfaces from the same keyed lines: a header (`interlock settle — <change> · PR #<n> · <depth> · head <sha7> · <elapsed>`), then one group per section word of the settle skill in the order the pass runs them — `review` (or `resolve` in a pass loaded without `--review`), `round <n>` for each round seen, `ready`, `conformance`, `verify`, `checks`, `merge confidence`, `publish`, `drift` — each with the clock time it opened, the clock time of its last line and the span between them, its agent rows grouped by role (dimensions, skeptics, fixer, worker) with `<k> spawned · <m> <reason>` counts, the dimensions row drawing the routing listing and the engine's count as two labelled facts (`review dimensions <names> · <k> spawned`), and its CLI rows with their clock times; then a banners area repeating the routing lines' banners verbatim or reading `none`. A group not yet reached SHALL not be drawn; a group the pass skipped SHALL not be invented. Below `settle pane full width (columns)` from `interlock limits` an agent row SHALL keep its role, served model, elapsed time and reason. A row, a group heading or the header the clock could not time SHALL read `time unknown` where its time would be. The pane SHALL raise a toast only for: a `STOP: ` line (its text verbatim), a merge-confidence verdict (`merge-confidence: <verdict> <score>`), a settle agent's turn ending with a reason other than `answer` (`<role>: <reason>`), and an unasked open the surface declined (`/interlock-settle opens the settle meter`). With no settle run live the pane SHALL read that no settle run is live in this session.
 
 The record SHALL hold one open section, and a line SHALL either open a section or append to the one open. Sections SHALL only move forward in the order below; a line whose kind opens an earlier section SHALL append to the section already open.
 
 | section | opened by | also appends here while it is open |
 |---------|-----------|------------------------------------|
 | `review` | the run's first keyed line, Skill load or spawn | review-code's lines, `interlock review --out …review-r0.json`, `interlock settle comment --round 0`, dimension and skeptic spawns |
+| `resolve` | in a pass loaded without `--review`, the run's first keyed line that has no section of its own, in place of `review` | every later line with no section of its own, until a later section opens |
 | `round <r>` | `interlock settle tree-check` after `review-r<r-1>.json` has crossed, or `interlock settle remediate-brief --round <r>` when no such tree-check did | the brief, `interlock routing settle-fixer`, the fixer spawn, `fixer-result`, `test-paths`, `git commit`, `git push`, the nested review-code load, its lines and its dimension and skeptic spawns, `interlock review --out …review-r<r>.json`, `interlock settle replies` |
 | `ready` | `gh pr ready <n>` / `glab mr update <iid> --ready` | — |
 | `conformance` | `interlock settle conformance-brief`, `interlock routing settle-conformance` | the conformance worker's spawn |
@@ -129,7 +140,7 @@ The record SHALL hold one open section, and a line SHALL either open a section o
 | `publish` | a label add or remove line, `interlock merge-confidence --label-names` | any later `merge-confidence` row |
 | `drift` | `interlock drift --changed` | — |
 
-A line with no round of its own (`surface`, `domain-context`, `routing`, `gate`, `test-paths`, a `tree-check` before any review record, the nested review-code Skill load) and an unattributed spawn SHALL append to the section open.
+In a pass loaded without `--review`, `review` and `round <n>` SHALL never be opened, and every line that would have opened `review` opens or appends to `resolve` instead. A line with no round of its own (the branch's pull request lookup, `surface`, `domain-context`, `routing`, `gate`, `test-paths`, a `tree-check` before any review record, the nested review-code Skill load) and an unattributed spawn SHALL append to the section open.
 
 #### Scenario: Happy path — the pass reads as a grouped timeline on both surfaces
 
@@ -159,9 +170,44 @@ A line with no round of its own (`surface`, `domain-context`, `routing`, `gate`,
 - **THEN** the fixer row reads `fixer · claude-opus-5-5 · 6m 10s · live` and the status line reads `interlock settle route-prose-spawns-by-role #25: round 1 · fixer 6m 10s · 18 req`
 - **AND** no `ready` group is drawn because no `gh pr ready` or `glab mr update --ready` line crossed, and no row reads any word the CLI, the engine or the clock did not supply
 
+### Requirement: The settle pane SHALL be drawn as bordered cards with toned words from fields beside unchanged row texts, and SHALL highlight the merge-confidence verdict by the CLI's own word
+
+Each pane line SHALL keep the text it reads today, and SHALL carry beside it its kind, its section, coloured spans whose concatenation is exactly the text, and, on a verdict row, the verdict word. A span's tone SHALL only name what a word the CLI, the engine or the clock supplied means. The module SHALL draw single-border cards from those fields alone, never by parsing a text.
+
+The pane SHALL draw, at or above the settle card floor (`settle pane card width (columns)` from `interlock limits`, the width at which a folded agent row keeps its reason inside a card):
+- a header card whose border takes the accent colour, holding the header line and the `with --review` or `without --review` line
+- one card per section in the order it opened, its border in the current colour while that section is the open one of a live run and dim otherwise, its heading's section word bold in the accent colour and its times dim
+- CLI rows with their clock dim; `exit 0` in the ok colour; any other own exit, a `STOP: ` line and the word `(unparsed)` in the alarm colour; `exit not its own` and `result not seen` dim
+- role rows indented under their section, and each agent's row indented beneath its role, its name in the name colour and its end word coloured as the ship meter colours a turn word; an agent row wider than the pane SHALL be cut in its middle, so its name and its end word stay, and every other row at its end
+- the merge-confidence verdict row inside a card of its own within its section, whose border and verdict word take the verdict's tone: `MERGE` the ok colour, `HUMAN` the warn colour, `BLOCK` the alarm colour; a verdict word outside those three SHALL be drawn uncoloured
+- the banners in the warn colour
+
+Indentation SHALL be layout, never characters in a text. Below the settle card floor, or with no width reported, the same lines SHALL be drawn flat with no border. With no settle run live the pane SHALL draw its one no-run text and nothing else. The pane SHALL use only `borderStyle: 'single'`, theme keys and the element props the ship meter already draws with, and SHALL add no tick, cross, glyph or word of its own.
+
+#### Scenario: Happy path — the PR #25 pass draws as cards and the verdict stands out
+
+- **GIVEN** a done settle run whose groups are `review`, `round 1`, `round 2`, `conformance`, `verify`, `checks`, `merge confidence`, whose verdict row reads `HUMAN 58 · head 161f955` and whose round 2 carries a `STOP: ` row
+- **WHEN** the pane is drawn at 144 columns on the terminal and on the desktop
+- **THEN** each group is one single-border card with a dim border, the header card's border is the accent colour, and the verdict row sits in its own card whose border and the word `HUMAN` take the warn colour
+- **AND** the keyed rows read, in order, exactly the texts the pane drew before this change, and every line's spans join to its text
+
+#### Scenario: Edge case — the open round's card is marked while the run is live
+
+- **GIVEN** a live settle run in round 1 whose fixer is running
+- **WHEN** the pane is drawn
+- **THEN** round 1's card border takes the current colour, the review card's border is dim, the fixer's row is indented beneath the round's rows and its end word `live` takes the colour of a running turn
+- **AND** once the drift line ends the run, no card's border takes the current colour
+
+#### Scenario: Failure — a narrow pane draws flat, and an unknown verdict stays uncoloured
+
+- **GIVEN** a done settle run whose verdict row's word is one the meter does not know
+- **WHEN** the pane is drawn at 40 columns, and then at 144 columns
+- **THEN** at 40 columns no Box has a border and every keyed row still reads its text
+- **AND** at 144 columns the verdict card is drawn with a dim border and its word uncoloured, and no pane text contains a tick, a cross, `passed`, `failed` or `halted` that the CLI did not print
+
 ### Requirement: The settle run SHALL end at the drift line, start over on a second load, and reset at the session boundary, and the module's one status line SHALL rank a live run above a finished one
 
-When `interlock drift --changed … --json` crosses a live settle run, the run SHALL move to `done`; an `interlock drift` line without `--changed`, as the spec flow runs it, SHALL change nothing: the pane SHALL keep its rows, with the time the run ended, and a later keyed line SHALL change nothing and be named once on the debug log. A labels line (`gh pr edit <n> --add-label …`, `glab mr update <iid> --label …`) SHALL be a `publish` row and SHALL NOT end the run. The `publish` and `drift` sections SHALL NOT retarget the status line: from the merge-confidence section on, it SHALL keep that section's last words, and `done` SHALL keep them until the boundary. The status figure SHALL otherwise be the open section's last CLI words or, while one or more attributed agents of the section run, the longest-running one's role, elapsed time and requests, preceded by `<k> live` when more than one runs; an unattributed spawn SHALL never take the figure. At a classic session-start event whose source is `clear`, `resume` or `fork` the settle run SHALL reset in the same hook and on the same event as the ship and spec runs, the status line cleared and the pane redrawn to its no-run text; a source of `startup` or `compact` SHALL leave it as it is. Only a session that held a settle run SHALL name the first keyed line after the boundary or the drift line, once; after that, and in a session that never ran settle, a Bash call SHALL not be parsed for a settle line at all. A Workflow tool call the launch rule recognises as an accepted ship launch SHALL leave the settle record and pane as they are and SHALL take the status line at the launch itself; while that ship run is live the status line SHALL read the ship position and never both, and after it closes or halts the line falls back through the order below. The module SHALL compose its one status line in one place, a live run ranking above a finished one: the ship position while a ship run is live, otherwise the spec line while a spec run is live, otherwise the settle line while a settle run is live, otherwise the spec line while a spec run is stopped at its checkpoint, otherwise the settle line while a settle run is done, otherwise nothing.
+When `interlock drift --changed … --json` crosses a live settle run, the run SHALL move to `done`. In a run loaded without `--create`, the branch's pull request lookup exiting other than 0, as its own exit, SHALL move it to `done` too, since the settle skill stops there and nothing else would end the run; with `--create`, or with an exit that is not the stage's own, it SHALL change nothing. An `interlock drift` line without `--changed`, as the spec flow runs it, SHALL change nothing: the pane SHALL keep its rows, with the time the run ended, and a later keyed line SHALL change nothing and be named once on the debug log. A labels line (`gh pr edit <n> --add-label …`, `glab mr update <iid> --label …`) SHALL be a `publish` row and SHALL NOT end the run. The `publish` and `drift` sections SHALL NOT retarget the status line: from the merge-confidence section on, it SHALL keep that section's last words, and `done` SHALL keep them until the boundary. The status figure SHALL otherwise be the open section's last CLI words or, while one or more attributed agents of the section run, the longest-running one's role, elapsed time and requests, preceded by `<k> live` when more than one runs; an unattributed spawn SHALL never take the figure. At a classic session-start event whose source is `clear`, `resume` or `fork` the settle run SHALL reset in the same hook and on the same event as the ship and spec runs, the status line cleared and the pane redrawn to its no-run text; a source of `startup` or `compact` SHALL leave it as it is. Only a session that held a settle run SHALL name the first keyed line after the boundary or the drift line, once; after that, and in a session that never ran settle, a Bash call SHALL not be parsed for a settle line at all. A Workflow tool call the launch rule recognises as an accepted ship launch SHALL leave the settle record and pane as they are and SHALL take the status line at the launch itself; while that ship run is live the status line SHALL read the ship position and never both, and after it closes or halts the line falls back through the order below. The module SHALL compose its one status line in one place, a live run ranking above a finished one: the ship position while a ship run is live, otherwise the spec line while a spec run is live, otherwise the settle line while a settle run is live, otherwise the spec line while a spec run is stopped at its checkpoint, otherwise the settle line while a settle run is done, otherwise nothing.
 
 #### Scenario: Happy path — the drift line ends the run and the verdict stays on the line
 
@@ -169,6 +215,13 @@ When `interlock drift --changed … --json` crosses a live settle run, the run S
 - **WHEN** `gh pr edit 25 --add-label "interlock/human-review,interlock/score-58"` resolves and then `interlock drift --changed … --json` resolves with `unarchived: ['route-prose-spawns-by-role']` and `stale.broken: []`
 - **THEN** the run is still live after the labels line, the publish row reads `labels interlock/human-review, interlock/score-58`, the drift row reads `unarchived 1 · broken 0`, the pane reads `done <ISO>`, and the status line reads `interlock settle route-prose-spawns-by-role #25: merge confidence · HUMAN 58` throughout and is not cleared
 - **AND** a later `interlock settle fixer-result …` changes nothing and is named once on the debug log
+
+#### Scenario: Edge case — a load on a branch with no pull request ends at the failed lookup
+
+- **GIVEN** an interactive session whose spec run is stopped at its checkpoint
+- **WHEN** `/interlock:settle` is submitted, then `gh pr view 2>/dev/null` exits 1, then an agent whose prompt begins `# Dimension: ` is spawned, the review-code skill is loaded and `interlock routing --json` resolves
+- **THEN** the pane reads `without --review`, its `resolve` group holds `gh pr view exit 1`, it reads `done <ISO>`, and the spawn, the load and the routing line are not drawn
+- **AND** the status line reads the spec run's checkpoint line from the lookup on; with `/interlock:settle --create` the same lookup leaves the run live
 
 #### Scenario: Failure — a ship launch during a settle run takes the line and leaves the pane
 

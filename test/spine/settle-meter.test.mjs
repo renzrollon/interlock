@@ -43,14 +43,31 @@ import {
   noteSettleSpawn,
   noteSettleStep,
   roleOf,
+  settleDrawsCards,
   settleLineKind,
   settleLines,
   settleLoad,
-  settlePaneLines,
+  settleLoadsCreate,
+  settleLoadsReview,
+  settlePaneLines as paneLinesOf,
   settleStatusText
 } from '../../lib/settle-meter.mjs'
 import { promptSkill, skillRole } from '../../lib/spec-meter.mjs'
 import * as R from '../fixtures/mod/settle-run.mjs'
+
+/** Asserts that every line's spans join to exactly its text (draw-the-settle-and-spec-panes-as-cards D1). */
+function assertSpansJoin(lines) {
+  for (const line of lines) {
+    assert.ok(Array.isArray(line.spans), `${line.key}: no spans`)
+    assert.equal(line.spans.map(s => s.text).join(''), line.text, `${line.key}: the spans do not join to the text`)
+  }
+}
+/** The pane every test in this file draws: each pane is held to the spans rule as it is drawn. */
+function settlePaneLines(settle, columns) {
+  const lines = paneLinesOf(settle, columns)
+  assertSpansJoin(lines)
+  return lines
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BIN = join(ROOT, 'bin', 'interlock')
@@ -64,9 +81,9 @@ const T0 = Date.UTC(2026, 9, 26, 9, 29, 22)
 /** The clock reading `s` seconds into the run. */
 const at = s => T0 + s * 1000
 
-/** A settle run made live the way the hooks module makes it. */
-function live(startedAt = 0) {
-  const s = freshSettle()
+/** A settle run loaded with `--review`, made live the way the hooks module makes it. */
+function live(startedAt = 0, review = true) {
+  const s = freshSettle({ review })
   s.phase = 'live'
   s.startedAt = at(startedAt)
   return s
@@ -194,7 +211,7 @@ function agent(settle, { id, prompt, model, resolved, subagentType, parentModel,
   if (end) noteSettleEnd(settle, endEvent(id, end), at(end.at))
 }
 
-const GROUP_LABELS = ['review', 'round 1', 'round 2', 'ready', 'conformance', 'verify', 'checks', 'merge confidence', 'publish', 'drift']
+const GROUP_LABELS = ['review', 'resolve', 'round 1', 'round 2', 'ready', 'conformance', 'verify', 'checks', 'merge confidence', 'publish', 'drift']
 const CLOCK = /\d\d:\d\d:\d\d/
 /** The index of a group's heading: its first line to start with the section word and carry a clock reading. */
 const headingAt = (lines, label) => lines.findIndex(l => new RegExp(`^${label}\\b`).test(l.text) && CLOCK.test(l.text))
@@ -223,13 +240,87 @@ test('settleLoad starts a run on the settle skill with --review, typed or loaded
   assert.equal(settleLoad('/interlock:review-code', ''), 'review')
 })
 
-test('settleLoad reads nothing from a --create-only load, another skill, or anything that is not text', () => {
-  for (const args of ['--create', '', undefined, null, 42, {}, [], 'review', '--reviewer', '--review-depth lean', 'no--review', '--no-review']) {
-    assert.equal(settleLoad('interlock:settle', args), null, `settle ${JSON.stringify(args)}`)
+test('settleLoad starts a run on every settle load without --review too, and reads nothing from another skill or a name that is not text', () => {
+  // draw-the-settle-and-spec-panes-as-cards D4: every settle load starts a run; settleLoadsReview reads which pass it is.
+  for (const name of ['interlock:settle', '/interlock:settle']) {
+    for (const args of ['--create', '', undefined, null, 42, {}, [], 'review', '--reviewer', '--review-depth lean', 'no--review', '--no-review']) {
+      assert.equal(settleLoad(name, args), 'settle', `${name} ${JSON.stringify(args)}`)
+    }
   }
+  assert.equal(settleLoad(promptSkill('/interlock:settle --create'), '--create'), 'settle')
   for (const name of ['interlock:spec', 'interlock:ship', 'interlock:explore', 'interlock:settled', 'interlock:settle-x', 'settle', 'review-code', 'other:settle', '', 42, null, undefined]) {
     assert.equal(settleLoad(name, '--review'), null, `${JSON.stringify(name)} --review`)
   }
+})
+
+test('settleLoadsReview is true only for the word --review itself among the load\'s arguments', () => {
+  for (const args of ['--review', '--create --review', '--review --create', '  --review  ', '25 --review', '--create\t--review\n']) {
+    assert.equal(settleLoadsReview(args), true, JSON.stringify(args))
+  }
+  for (const args of ['--create', '', '--reviewer', '--no-review', '--review-depth lean', 'no--review', 'review', '--review=1', undefined, null, 42, {}, ['--review']]) {
+    assert.equal(settleLoadsReview(args), false, JSON.stringify(args))
+  }
+})
+
+test('the review\'s M1: settleLoadsCreate is true only for the word --create itself, and freshSettle keeps only a true flag', () => {
+  for (const args of ['--create', '--create --review', '--review --create', '  --create  ', '25 --create']) assert.equal(settleLoadsCreate(args), true, JSON.stringify(args))
+  for (const args of ['--review', '', '--created', '--no-create', '--create=1', 'create', undefined, null, 42, {}, ['--create']]) {
+    assert.equal(settleLoadsCreate(args), false, JSON.stringify(args))
+  }
+  assert.equal(freshSettle({ create: true }).create, true)
+  for (const flags of [undefined, {}, { create: false }, { create: 'yes' }]) assert.equal(freshSettle(flags).create, false, JSON.stringify(flags))
+})
+
+test('the review\'s M1: only the branch\'s own pull request lookup is keyed, never one that names a pull request', () => {
+  for (const stage of ['gh pr view', 'gh pr view 2>/dev/null', 'gh pr view --json number,baseRefName', 'glab mr view 2>/dev/null', 'glab mr view --output json']) {
+    assert.equal(settleLineKind(stage), 'pr-lookup', stage)
+  }
+  for (const stage of ['gh pr view 25 --json headRefOid', 'gh pr view <n> --json isDraft --jq .isDraft', 'glab mr view 7', 'glab mr view <iid> --output json', 'gh pr viewer']) {
+    assert.equal(settleLineKind(stage), null, stage)
+  }
+})
+
+test('the review\'s M1: a pass without --create ends at a failed branch lookup, and the status line yields to a spec checkpoint', () => {
+  const s = live(0, false)
+  cross(s, errBash('gh pr view 2>/dev/null', 1, 'no pull requests found for branch "feat/x"'), 2)
+  assert.equal(s.phase, 'done')
+  assert.equal(s.endedAt, at(2))
+  assert.equal(groupRows(s, 'resolve')[0], `${clockText(at(2))} gh pr view exit 1`)
+  assert.ok(textsOf(settlePaneLines(s, 144)).some(t => t.startsWith('done ')))
+  assert.equal(settleStatusText(s, { shipLive: false, specPhase: 'checkpoint' }), null)
+  // A keyed line after the stop files nothing.
+  cross(s, routing, 3)
+  assert.deepEqual(s.groups.map(g => g.rows.length), [1])
+
+  const glab = live(0, true)
+  cross(glab, errBash('glab mr view 2>/dev/null', 1, ''), 2)
+  assert.equal(glab.phase, 'done', 'a --review pass stops at §2 the same way')
+  assert.equal(groupRows(glab, 'review')[0], `${clockText(at(2))} glab mr view exit 1`)
+})
+
+test('the review\'s M1: a found pull request, a --create load, a later numbered lookup and an exit not its own keep the pass live', () => {
+  const found = live(0, false)
+  cross(found, okBash('gh pr view 2>/dev/null', 'title:\tx\nnumber:\t25'), 2)
+  assert.equal(found.phase, 'live')
+  assert.equal(groupRows(found, 'resolve')[0], `${clockText(at(2))} gh pr view exit 0`)
+
+  const create = freshSettle({ review: false, create: true })
+  create.phase = 'live'
+  cross(create, errBash('gh pr view 2>/dev/null', 1, 'no pull requests found'), 2)
+  assert.equal(create.phase, 'live', 'with --create, §4 makes the pull request the lookup did not find')
+
+  const numbered = live(0, false)
+  cross(numbered, errBash('gh pr view 25 --json headRefOid --jq .headRefOid', 1, 'HTTP 502'), 2)
+  assert.equal(numbered.phase, 'live')
+
+  const piped = live(0, false)
+  cross(piped, errBash('gh pr view --json number | jq .number', 1, ''), 2)
+  assert.equal(piped.phase, 'live', 'a pipe may have set the exit')
+})
+
+test('freshSettle records whether the load carried --review, and only a true flag counts', () => {
+  assert.equal(freshSettle({ review: true }).review, true)
+  for (const flags of [undefined, {}, { review: false }, { review: 'yes' }, { review: 1 }]) assert.equal(freshSettle(flags).review, false, JSON.stringify(flags))
 })
 
 test('settleLoad leaves the spec meter\'s skillRole alone: the settle and review-code skills are still no role there', () => {
@@ -1803,7 +1894,7 @@ test('M15: the merge-confidence row names the labels the verdict and score carry
 })
 
 test('M16: a row the clock could not time says so, and an unreadable routing line reads routed: not read', () => {
-  const s = freshSettle()
+  const s = freshSettle({ review: true })
   s.phase = 'live'
   applySettleLines(s, { command: 'interlock routing --json' }, errBash('interlock routing --json', 1, 'interlock: routing unavailable'), null)
   noteSettleSpawn(s, spawnEvent(FIXER_PROMPT, { agentId: 'f', resolved: 'claude-opus-5-5' }).input, { agentId: 'f', model: 'claude-opus-5-5' }, null)
@@ -1821,4 +1912,279 @@ test('M17: the pane folds its agent rows below the published width', () => {
   const row = cols => textsOf(settlePaneLines(s, cols)).find(t => t.startsWith('Language') || t.includes('→ claude-sonnet-5-5') || t.includes('claude-sonnet-5-5 ·'))
   assert.ok(row(LIMITS.settlePaneFullColumns).includes('→'), row(LIMITS.settlePaneFullColumns))
   assert.ok(!row(LIMITS.settlePaneFullColumns - 1).includes('→'), row(LIMITS.settlePaneFullColumns - 1))
+})
+
+// --- cards: the fields beside each text (draw-the-settle-and-spec-panes-as-cards D1, D2, D4, D5) ---
+
+/** The merge-confidence `--json` line resolving with this verdict and score. */
+function mcWith(verdict, score) {
+  const doc = { ...JSON.parse(R.BASH_SETTLE_MERGE_CONFIDENCE.result.stdout), verdict, score }
+  return okBash(R.BASH_SETTLE_MERGE_CONFIDENCE.command, json(doc))
+}
+/** The line whose key is `key`. */
+function lineAt(lines, key) {
+  const line = lines.find(l => l.key === key)
+  assert.ok(line, `no line keyed ${key} in:\n${lines.map(l => l.key).join('\n')}`)
+  return line
+}
+/** The first line that is not a heading and whose text includes `words`. */
+function rowWith(lines, words) {
+  const line = lines.find(l => l.text.includes(words) && l.kind !== 'heading')
+  assert.ok(line, `no line reads ${words} in:\n${textsOf(lines).join('\n')}`)
+  return line
+}
+/** The tone of the one span whose text is exactly `words`. */
+function toneOf(line, words) {
+  const found = line.spans.filter(s => s.text === words)
+  assert.equal(found.length, 1, `${JSON.stringify(words)} is not one span of ${JSON.stringify(line.spans)}`)
+  return found[0].tone
+}
+const lastSpan = line => line.spans[line.spans.length - 1]
+
+test('a pass loaded without --review groups resolve, merge confidence, publish and drift, and ends at the drift line', () => {
+  const s = live(0, false)
+  run(s, 'interlock changes', '', 2)
+  cross(s, R.BASH_SETTLE_PIPELINE, 60)
+  cross(s, mcWith('MERGE', 91), 90)
+  cross(s, addLabels, 95)
+  cross(s, drift, 99)
+  const lines = settlePaneLines(s, 144)
+  const order = ['resolve', 'merge confidence', 'publish', 'drift'].map(label => headingAt(lines, label))
+  assert.ok(order.every(i => i > 0), JSON.stringify(order))
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'the groups are drawn in the pass\'s order')
+  assert.deepEqual(s.groups.map(g => g.label), ['resolve', 'merge confidence', 'publish', 'drift'])
+  assert.equal(headingAt(lines, 'review'), -1, 'no review group')
+  assert.ok(!lines.some(l => /^round \d/.test(l.text)), 'no round group')
+  assert.ok(section(lines, 'resolve').some(t => t.endsWith('changes exit 0')), section(lines, 'resolve').join('\n'))
+  assert.equal(s.phase, 'done')
+  assert.equal(lines[1].text, 'without --review')
+  assert.equal(settleStatusText(s, {}), `interlock settle ${CHANGE} #25: merge confidence · MERGE 91`)
+})
+
+test('a pass without --review never opens review or a round, whatever its lines name', () => {
+  const s = live(0, false)
+  run(s, 'interlock changes', '', 1)
+  cross(s, R.BASH_SETTLE_REVIEW, 300)
+  cross(s, treeClean, 320)
+  cross(s, R.BASH_SETTLE_BRIEF, 326)
+  agent(s, { id: 'fix', prompt: FIXER_PROMPT, model: undefined, resolved: 'claude-opus-5-5', spawnAt: 332, steps: [340] })
+  cross(s, R.BASH_SETTLE_FIXER_RESULT, 980)
+  cross(s, R.BASH_SETTLE_STOP, 1046)
+  assert.deepEqual(s.groups.map(g => g.label), ['resolve'])
+  const lines = settlePaneLines(s, 144)
+  assert.equal(headingAt(lines, 'review'), -1)
+  assert.ok(!lines.some(l => /^round \d/.test(l.text)), textsOf(lines).join('\n'))
+  assert.ok(section(lines, 'resolve').some(t => t.startsWith('fixer')), 'the fixer lands in the section open')
+  // With no section open yet, a pass's first spawn opens resolve too.
+  const first = live(0, false)
+  agent(first, { id: 'a', prompt: 'hello', model: undefined, resolved: 'claude-opus-5-5', spawnAt: 1 })
+  assert.deepEqual(first.groups.map(g => g.label), ['resolve'])
+})
+
+test('the mode line follows the header: with --review or without --review, dim, and the header stays rows[0]', () => {
+  for (const [review, text] of [[true, 'with --review'], [false, 'without --review']]) {
+    const s = live(0, review)
+    run(s, 'interlock changes', '', 1)
+    const lines = settlePaneLines(s, 144)
+    assert.equal(lines[0].key, 'settle-header')
+    assert.equal(lines[0].kind, 'header')
+    assert.match(lines[0].text, /^interlock settle — /)
+    assert.deepEqual(lines[1], { key: 'settle-mode', kind: 'mode', text, dim: true, spans: [{ text, tone: 'dim' }] })
+  }
+  const none = settlePaneLines(freshSettle(), 144)
+  assert.equal(none.length, 1, 'a pane with no run draws no mode line')
+  assert.equal(none[0].kind, 'none')
+})
+
+test('every line carries its kind, and every line under a heading its group index', () => {
+  const s = pr25()
+  s.banners.push('a routing banner')
+  const lines = settlePaneLines(s, 144)
+  const kinds = new Set(['none', 'header', 'mode', 'heading', 'row', 'role', 'agent', 'verdict', 'done', 'banners', 'banner'])
+  for (const l of lines) assert.ok(kinds.has(l.kind), `${l.key}: kind ${l.kind}`)
+  let g = -1
+  for (const l of lines) {
+    if (l.kind === 'heading') {
+      g++
+      assert.equal(l.group, g, l.text)
+      assert.ok(l.text.startsWith(s.groups[g].label), l.text)
+    } else if (['row', 'role', 'agent', 'verdict'].includes(l.kind)) {
+      assert.equal(l.group, g, `${l.key} sits under group ${g}`)
+    } else {
+      assert.equal(l.group, undefined, `${l.key} is in no group`)
+    }
+  }
+  assert.equal(g, s.groups.length - 1)
+  assert.equal(lineAt(lines, 'settle-done').kind, 'done')
+  assert.equal(lineAt(lines, 'settle-banners').kind, 'banners')
+  assert.equal(lineAt(lines, 'settle-banner-0').kind, 'banner')
+})
+
+test('open marks the open group\'s heading while the run is live, and no heading once it is done', () => {
+  const s = inRound1()
+  agent(s, { id: 'fix', prompt: FIXER_PROMPT, model: undefined, resolved: 'claude-opus-5-5', spawnAt: 332, steps: [340] })
+  const lines = settlePaneLines(s, 144)
+  const opened = lines.filter(l => l.open === true)
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0].kind, 'heading')
+  assert.match(opened[0].text, /^round 1 · /)
+  assert.notEqual(lines[headingAt(lines, 'review')].open, true)
+  cross(s, drift, 1599)
+  assert.equal(s.phase, 'done')
+  assert.ok(!settlePaneLines(s, 144).some(l => l.open === true), 'a done run marks no card')
+  assert.ok(!settlePaneLines(pr25(), 144).some(l => 'open' in l), 'the PR #25 pass is done')
+})
+
+test('depth: 1 on a role line and on an agent row with no role line, 2 on an agent row under a role', () => {
+  const s = live()
+  cross(s, routing, 0)
+  agent(s, { id: 'd-lang', prompt: brief('language'), model: 'sonnet', resolved: 'claude-sonnet-5-5', spawnAt: 74, steps: [80] })
+  agent(s, { id: 's-1', prompt: SKEPTIC_REFUTE, model: undefined, resolved: 'claude-opus-5-5', spawnAt: 118, steps: [125] })
+  agent(s, { id: 'u', prompt: 'hello', model: undefined, resolved: 'claude-opus-5-5', spawnAt: 119 })
+  cross(s, R.BASH_SETTLE_REVIEW, 300)
+  cross(s, treeClean, 320)
+  cross(s, R.BASH_SETTLE_BRIEF, 326)
+  agent(s, { id: 'fix', prompt: FIXER_PROMPT, model: undefined, resolved: 'claude-opus-5-5', spawnAt: 332, steps: [340] })
+  cross(s, conformanceBrief, 1052)
+  agent(s, { id: 'work', prompt: WORKER_PROMPT, model: 'sonnet', resolved: 'claude-sonnet-5-5', spawnAt: 1053, steps: [1060] })
+  const lines = settlePaneLines(s, 144)
+  const roles = lines.filter(l => l.kind === 'role')
+  assert.equal(roles.length, 2, textsOf(roles).join('\n'))
+  for (const l of roles) assert.equal(l.depth, 1, l.text)
+  const agentRow = start => lines.find(l => l.kind === 'agent' && l.text.startsWith(start))
+  assert.equal(agentRow('language & framework').depth, 2)
+  assert.equal(agentRow('skeptic (refute)').depth, 2)
+  assert.equal(agentRow('fixer').depth, 1)
+  assert.equal(agentRow('conformance').depth, 1)
+  assert.equal(agentRow('general-purpose · unattributed').depth, 1)
+  for (const l of lines.filter(x => !['role', 'agent'].includes(x.kind))) assert.equal(l.depth, undefined, l.key)
+})
+
+test('row tones: the clock, exit 0, any other own exit, exit not its own, result not seen, STOP and (unparsed)', () => {
+  const s = live()
+  run(s, 'interlock changes', '', 1)
+  cross(s, errBash('interlock surface --json', 2, 'boom'), 2)
+  run(s, 'interlock gate --json | cat', '', 3)
+  cross(s, verifyPlan, 4)
+  cross(s, errBash('interlock routing --json', 1, 'interlock: routing unavailable'), 5)
+  cross(s, R.BASH_SETTLE_STOP, 6)
+  cross(s, tooLarge('interlock routing settle-fixer --json'), 7)
+  const lines = settlePaneLines(s, 144)
+  assert.deepEqual(rowWith(lines, 'changes exit 0').spans, [
+    { text: clockText(at(1)), tone: 'clock' },
+    { text: ' changes ', tone: null },
+    { text: 'exit 0', tone: 'ok' }
+  ])
+  assert.equal(toneOf(rowWith(lines, 'surface exit 2'), 'exit 2'), 'alarm')
+  assert.equal(toneOf(rowWith(lines, 'gate exit not its own'), 'exit not its own'), 'dim')
+  const plan = rowWith(lines, 'result not seen (redirected)')
+  assert.equal(toneOf(plan, 'exit 0'), 'ok')
+  assert.equal(toneOf(plan, 'result not seen (redirected)'), 'dim')
+  const large = rowWith(lines, 'result not seen (too large)')
+  assert.equal(toneOf(large, 'result not seen (too large)'), 'dim')
+  assert.equal(toneOf(rowWith(lines, 'routing (unparsed)'), '(unparsed)'), 'alarm')
+  const stop = rowWith(lines, 'STOP: ')
+  assert.equal(stop.spans.length, 3, JSON.stringify(stop.spans))
+  assert.deepEqual(stop.spans.slice(0, 2), [{ text: clockText(at(6)), tone: 'clock' }, { text: ' ', tone: null }])
+  assert.ok(stop.spans[2].text.startsWith('STOP: '))
+  assert.equal(stop.spans[2].tone, 'alarm', 'a STOP body is wholly alarm')
+  // A row the clock could not time: the words in the clock's place take the clock's tone.
+  const untimed = freshSettle({ review: true })
+  untimed.phase = 'live'
+  applySettleLines(untimed, { command: 'interlock changes' }, okBash('interlock changes'), null)
+  assert.equal(toneOf(rowWith(settlePaneLines(untimed, 144), 'changes exit 0'), 'time unknown'), 'clock')
+})
+
+test('heading, role, banner, banners heading and done tones', () => {
+  const s = pr25()
+  s.banners.push('model forced to sonnet')
+  const lines = settlePaneLines(s, 144)
+  const mc = lines[headingAt(lines, 'merge confidence')]
+  assert.equal(mc.spans.length, 2, JSON.stringify(mc.spans))
+  assert.deepEqual(mc.spans[0], { text: 'merge confidence', tone: 'heading' })
+  assert.equal(mc.spans[1].tone, 'dim')
+  const dims = lines.find(l => l.kind === 'role' && l.text.startsWith('review dimensions'))
+  assert.deepEqual(dims.spans[0], { text: dims.text.split(' · ')[0], tone: 'accent' })
+  assert.ok(dims.spans.slice(1).every(sp => sp.tone === null), JSON.stringify(dims.spans))
+  assert.deepEqual(lineAt(lines, 'settle-banner-0').spans, [{ text: 'model forced to sonnet', tone: 'warn' }])
+  assert.deepEqual(lineAt(lines, 'settle-banners').spans, [{ text: 'banners', tone: 'dim' }])
+  const done = lineAt(lines, 'settle-done')
+  assert.deepEqual(done.spans, [{ text: done.text, tone: 'dim' }])
+  assert.deepEqual(lineAt(settlePaneLines(live(), 144), 'settle-banners').spans, [{ text: 'banners: none', tone: 'dim' }])
+})
+
+test('agent tones: the name up to the first separator, and the end word live, answer or another reason', () => {
+  const fixer = settlePaneLines(pr25(), 144).find(l => l.kind === 'agent' && l.text.startsWith('fixer'))
+  assert.deepEqual(fixer.spans[0], { text: 'fixer', tone: 'name' })
+  assert.deepEqual(lastSpan(fixer), { text: 'answer', tone: 'ok' })
+  const s = inRound1()
+  agent(s, { id: 'fix', prompt: FIXER_PROMPT, model: undefined, resolved: 'claude-opus-5-5', spawnAt: 332, steps: [340] })
+  agent(s, { id: 'ab', prompt: brief('language'), model: 'sonnet', resolved: 'claude-sonnet-5-5', spawnAt: 333, steps: [334], end: { at: 335, reason: 'aborted', durationMs: 2000 } })
+  agent(s, { id: 'u', prompt: 'hello', subagentType: 'Explore', model: undefined, resolved: 'claude-opus-5-5', spawnAt: 336 })
+  for (const columns of [144, 90]) {
+    const lines = settlePaneLines(s, columns)
+    const running = lines.find(l => l.kind === 'agent' && l.text.startsWith('fixer'))
+    assert.deepEqual(lastSpan(running), { text: 'live', tone: 'running' }, `${columns}: ${JSON.stringify(running.spans)}`)
+    const aborted = lines.find(l => l.kind === 'agent' && l.text.endsWith('aborted'))
+    assert.deepEqual(lastSpan(aborted), { text: 'aborted', tone: 'alarm' })
+    assert.equal(aborted.spans[0].tone, 'name')
+    const odd = lines.find(l => l.kind === 'agent' && l.text.includes('unattributed'))
+    assert.deepEqual(odd.spans[0], { text: 'Explore', tone: 'name' })
+  }
+})
+
+test('the verdict row carries the CLI\'s verdict word: MERGE ok, HUMAN warn, BLOCK alarm, any other word uncoloured', () => {
+  for (const [verdict, tone] of [['MERGE', 'ok'], ['HUMAN', 'warn'], ['BLOCK', 'alarm'], ['WAIT', null]]) {
+    const s = live()
+    cross(s, R.BASH_SETTLE_PIPELINE, 1)
+    cross(s, mcWith(verdict, 58), 2)
+    cross(s, mcMarkdown, 3)
+    const lines = settlePaneLines(s, 144)
+    const verdicts = lines.filter(l => l.kind === 'verdict')
+    assert.equal(verdicts.length, 1, 'only the --json row is the verdict row')
+    const row = verdicts[0]
+    assert.equal(row.verdict, verdict)
+    assert.ok(row.text.startsWith(`${clockText(at(2))} ${verdict} 58`), row.text)
+    assert.deepEqual(row.spans[0], { text: clockText(at(2)), tone: 'clock' })
+    if (tone === null) {
+      assert.equal(row.spans.length, 2, JSON.stringify(row.spans))
+      assert.equal(row.spans[1].tone, null, 'an unknown verdict word is drawn uncoloured')
+    } else {
+      assert.deepEqual(row.spans.slice(1, 3), [{ text: ' ', tone: null }, { text: verdict, tone }])
+      assert.ok(row.spans.slice(3).every(sp => sp.tone === null), JSON.stringify(row.spans))
+    }
+    assert.equal(rowWith(lines, 'merge-confidence --markdown').kind, 'row')
+  }
+  const pr = settlePaneLines(pr25(), 144).find(l => l.kind === 'verdict')
+  assert.equal(pr.verdict, 'HUMAN')
+  assert.equal(toneOf(pr, 'HUMAN'), 'warn')
+})
+
+test('spans join to the text after the cap, and every tone is one of the vocabulary', () => {
+  const s = live()
+  run(s, `git status | interlock settle tree-check --change ${CHANGE} --status -`, `dirty (1):\n  ${'x'.repeat(LIMITS.settleTextChars * 2)}`, 1)
+  const long = settlePaneLines(s, 144).find(l => l.text.endsWith('…'))
+  assert.ok(long, 'a row past the cap')
+  assert.equal(long.text.length, LIMITS.settleTextChars)
+  assert.equal(long.spans.map(sp => sp.text).join(''), long.text)
+  const tones = new Set(['clock', 'dim', 'heading', 'name', 'ok', 'alarm', 'warn', 'current', 'accent', 'running', null])
+  for (const columns of [144, 90]) for (const l of settlePaneLines(pr25(), columns)) for (const sp of l.spans) assert.ok(tones.has(sp.tone), `${l.key}: tone ${sp.tone}`)
+})
+
+// The columns a settle card takes from a row: the card's border and padding (`paneCard`), the gutter of a
+// role or agent row (`SETTLE_GUTTER`) and the indent of each depth beyond the first (`INDENT`), in hooks/mod.mjs.
+const CARD_CHROME = 4
+const SETTLE_GUTTER = 9
+const DEPTH_INDENT = 2
+
+test('the review\'s M2: every folded agent row of the PR #25 pass fits a settle card at the settle card floor', () => {
+  const floor = LIMITS.settlePaneCardColumns
+  assert.ok(Number.isInteger(floor) && floor >= LIMITS.waveBoardMinColumns && floor < LIMITS.settlePaneFullColumns, String(floor))
+  assert.equal(settleDrawsCards(floor), true)
+  for (const columns of [floor - 1, LIMITS.waveBoardMinColumns, null, undefined, '144', NaN]) assert.equal(settleDrawsCards(columns), false, String(columns))
+  const agents = settlePaneLines(pr25(), floor).filter(l => l.kind === 'agent')
+  assert.ok(agents.length >= 9, `only ${agents.length} agent rows`)
+  const drawn = agents.map(l => ({ text: l.text, width: l.text.length + CARD_CHROME + SETTLE_GUTTER + DEPTH_INDENT * ((l.depth > 1 ? l.depth : 1) - 1) }))
+  const widest = drawn.reduce((a, b) => (b.width > a.width ? b : a))
+  assert.ok(widest.width <= floor, `the widest folded agent row needs ${widest.width} columns: ${widest.text}`)
 })
