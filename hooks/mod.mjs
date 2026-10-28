@@ -127,9 +127,9 @@
 // `lib/spec-meter.mjs`'s.
 //
 // THE SETTLE METER (observe-the-settle-run-live design D1-D27). The same module
-// draws an `/interlock:settle --review` pass from what already crossed it: the
-// settle skill's load with `--review`, read off a submitted prompt's first
-// line or a Skill tool call (D4); the Bash results of the pass's keyed
+// draws an `/interlock:settle` pass, with or without `--review`, from what
+// already crossed it: the settle skill's load, read off a submitted prompt's
+// first line or a Skill tool call (D4); the Bash results of the pass's keyed
 // `interlock`, `gh`, `glab` and `git` stages, read on both branches of the Bash
 // hook, so a line the spec reader declines, or one that crosses after a ship
 // launch, still files (D8, D19, D27); and the spawns, steps and turn ends of
@@ -195,8 +195,10 @@ import {
   noteSettleSkill,
   noteSettleSpawn,
   noteSettleStep,
+  settleDrawsCards,
   settleLines,
   settleLoad,
+  settleLoadsCreate,
   settleLoadsReview,
   settlePaneLines,
   settleStatusText
@@ -627,14 +629,15 @@ async function observeLoad($, name, args) {
 /**
  * The settle skill's load (observe-the-settle-run-live design D4, D21): the
  * settle skill, with or without `--review`, starts a run over whatever was held
- * and records which (draw-the-settle-and-spec-panes-as-cards D4), and the
- * review-code skill loaded during a live run changes no section. Of the load
- * only the skill's name and the word `--review` are read. Never throws.
+ * and records which (draw-the-settle-and-spec-panes-as-cards D4), and whether
+ * it carried `--create` (the PR #28 review's M1); the review-code skill loaded
+ * during a live run changes no section. Of the load only the skill's name and
+ * the words `--review` and `--create` are read. Never throws.
  */
 async function observeSettleLoad($, name, args) {
   try {
     const load = settleLoad(name, args)
-    if (load === 'settle') await startSettle($, settleLoadsReview(args))
+    if (load === 'settle') await startSettle($, { review: settleLoadsReview(args), create: settleLoadsCreate(args) })
     else if (load === 'review' && settleWatching()) {
       const held = settle
       const now = await settleNow($)
@@ -680,12 +683,13 @@ function redrawSettle($) {
 
 /**
  * A fresh settle run, live, its pane opened unasked; one toast when the engine
- * will not seat it (design D6, D15). `review` is whether the load carried
- * `--review`, which the record keeps (draw-the-settle-and-spec-panes-as-cards D4).
+ * will not seat it (design D6, D15). `flags` is whether the load carried
+ * `--review` and `--create`, which the record keeps
+ * (draw-the-settle-and-spec-panes-as-cards D4; the PR #28 review's M1).
  */
-async function startSettle($, review) {
+async function startSettle($, { review, create }) {
   if (settle.phase !== 'idle') $.ui.log(SETTLE_REPLACED_LINE, { to: 'debug' })
-  settle = freshSettle({ review })
+  settle = freshSettle({ review, create })
   const started = settle
   settle.phase = 'live'
   settle.startedAt = await settleNow($)
@@ -1283,11 +1287,11 @@ function verdictColor(l) {
 /**
  * `/interlock-settle` (observe-the-settle-run-live design D13, D24;
  * draw-the-settle-and-spec-panes-as-cards D3): the pure module's keyed lines
- * on `Box` and `Text`, at the engine's `bodyColumns`. At or above the card
- * floor: the header and mode lines in an accent-bordered card, then one card
- * per group, its border the current colour while its heading is the open one
- * and dim otherwise, a verdict row in a card of its own bordered by its word's
- * tone; the done line, the banners and any line of no known group after the
+ * on `Box` and `Text`, at the engine's `bodyColumns`. At or above the settle
+ * card floor (`settleDrawsCards`): the header and mode lines in an
+ * accent-bordered card, then one card per group, its border the current
+ * colour while its heading is the open one and dim otherwise, a verdict row in
+ * a card of its own bordered by its word's tone; the done line, the banners and any line of no known group after the
  * cards. Below the floor, flat. With no run, the one no-run Text.
  */
 function drawSettlePane($, e) {
@@ -1296,12 +1300,14 @@ function drawSettlePane($, e) {
   const lines = settlePaneLines(settle, columns)
   const row = paneRows($, e, SETTLE_BAD_SPANS)
   const text = { wrap: 'truncate-end' }
+  // An agent row longer than its card is cut in the middle, so its role and its end word both stay (the PR #28 review's M3).
+  const wrapOf = l => (l.kind === 'agent' ? { wrap: 'truncate-middle' } : text)
   const root = (...kids) => h(Box, { flexDirection: 'column', flexShrink: 0 }, ...kids)
   if (lines.length === 1 && lines[0].kind === 'none') {
     const l = lines[0]
     return root(h(Box, { key: l.key, flexShrink: 0 }, h(Text, { ...text, ...(l.dim ? { dimColor: true } : null) }, l.text)))
   }
-  if (!drawsCards(columns)) return root(...lines.map(l => row(l, null, text)))
+  if (!settleDrawsCards(columns)) return root(...lines.map(l => row(l, null, wrapOf(l))))
   const header = []
   const groups = new Map()
   for (const l of lines) {
@@ -1311,7 +1317,7 @@ function drawSettlePane($, e) {
   for (const l of lines) {
     if (l.kind === 'header' || l.kind === 'mode') header.push(row(l, null, text))
     else if (SETTLE_CARD_KINDS.has(l.kind) && groups.has(l.group)) {
-      const drawn = row(l, settleIndent(l), text)
+      const drawn = row(l, settleIndent(l), wrapOf(l))
       groups.get(l.group).kids.push(l.kind === 'verdict' ? paneCard(Box, verdictColor(l), null, drawn) : drawn)
     } else loose.push(row(l, null, text))
   }
@@ -2306,7 +2312,7 @@ export function register(on) {
     try {
       await $.command.register({
         name: SETTLE_PANE,
-        description: 'Open the Interlock settle meter: the live /interlock:settle --review run, its review, rounds, agents and verdict',
+        description: 'Open the Interlock settle meter: the live /interlock:settle pass, with or without --review, its sections, agents and verdict',
         immediate: true
       })
     } catch (err) {

@@ -1162,3 +1162,81 @@ test('the no-run pane is exactly one Text and no card', async ($: any, on: any) 
     expect(d.rows.map(r => r.text)).toEqual([NO_RUN])
   }
 })
+
+// --- the PR #28 review ---------------------------------------------------------
+
+const PR_LOOKUP = 'gh pr view 2>/dev/null'
+const NO_PR = 'no pull requests found for branch "feat/x"'
+
+test('the review\'s M1: a plain load on a branch with no pull request ends at the failed lookup, and nothing later joins it', async ($: any, on: any) => {
+  const w = world(on)
+  w.bash.set(PR_LOOKUP, { result: `Error: Exit code 1\n${NO_PR}`, text: `Exit code 1\n${NO_PR}`, isError: true })
+  await start($)
+  await loadSpec($)
+  await bash($, SPEC_NEW_CHANGE)
+  await bash($, SPEC_CHECKPOINT)
+  const checkpoint = `interlock spec: ${S.CHANGE} · checkpoint`
+  expect(w.status.at(-1)).toBe(checkpoint)
+  await submit($, '/interlock:settle')
+  expect(w.status.at(-1)).toMatch(/^interlock settle/)
+  // The skill's §2 stop: the run is done, so the stopped spec run's checkpoint takes the line back.
+  await bash($, PR_LOOKUP)
+  expect(w.status.at(-1)).toBe(checkpoint)
+  // Unrelated work after the stop is the session's, not the pass's.
+  await spawn($, { prompt: DIM('language & framework'), model: 'sonnet' })
+  await skill($, 'interlock:review-code')
+  await bash($, ROUTING)
+  expect(w.status.at(-1)).toBe(checkpoint)
+  for (const surface of SURFACES) {
+    const { rows } = await pane($, surface)
+    expect(rows).toContain('without --review')
+    expect(section(rows, 'resolve').some(t => /^\d\d:\d\d:\d\d gh pr view exit 1$/.test(t))).toBe(true)
+    expect(rows.some(t => t.startsWith('done '))).toBe(true)
+    expect(rows.some(t => t.startsWith('language & framework') || t.startsWith('routing'))).toBe(false)
+  }
+})
+
+test('the review\'s M1: with --create a failed lookup leaves the pass live, since §4 makes the pull request', async ($: any, on: any) => {
+  const w = world(on)
+  w.bash.set(PR_LOOKUP, { result: `Error: Exit code 1\n${NO_PR}`, text: `Exit code 1\n${NO_PR}`, isError: true })
+  await start($)
+  await submit($, LOAD_CREATE)
+  await bash($, PR_LOOKUP)
+  await bash($, ROUTING)
+  for (const surface of SURFACES) {
+    const { rows } = await pane($, surface)
+    expect(rows.some(t => t.startsWith('done '))).toBe(false)
+    expect(section(rows, 'resolve').some(t => /routing/.test(t))).toBe(true)
+  }
+})
+
+test('the review\'s M2: the settle pane draws flat below its own card floor and in cards from it', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  const floor = LIMITS.settlePaneCardColumns
+  expect(floor > LIMITS.waveBoardMinColumns && floor < LIMITS.settlePaneFullColumns).toBe(true)
+  for (const surface of SURFACES) {
+    const flat = await drawing($, surface, floor - 1)
+    expect(flat.cards).toEqual([])
+    const carded = await drawing($, surface, floor)
+    expect(carded.cards.length > 0).toBe(true)
+    expect(flat.rows.map(r => [r.key, r.text])).toEqual(carded.rows.map(r => [r.key, r.text]))
+  }
+})
+
+test('the review\'s M3: an agent row is cut in the middle, so its end word stays; every other row is cut at its end', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await pr25($, w)
+  for (const surface of SURFACES) {
+    for (const columns of [144, LIMITS.settlePaneCardColumns, 40]) {
+      const d = await drawing($, surface, columns)
+      const wraps = d.rows.map(r => ({ key: r.key, wrap: tree(r.node).find((n: any) => n?.type === 'Text')?.props?.wrap }))
+      const agents = wraps.filter(r => /-agent-/.test(r.key))
+      expect(agents.length >= 9).toBe(true)
+      for (const r of agents) expect(r.wrap).toBe('truncate-middle')
+      for (const r of wraps.filter(x => !/-agent-/.test(x.key))) expect(r.wrap).toBe('truncate-end')
+    }
+  }
+})

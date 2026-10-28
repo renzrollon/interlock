@@ -43,9 +43,11 @@ import {
   noteSettleSpawn,
   noteSettleStep,
   roleOf,
+  settleDrawsCards,
   settleLineKind,
   settleLines,
   settleLoad,
+  settleLoadsCreate,
   settleLoadsReview,
   settlePaneLines as paneLinesOf,
   settleStatusText
@@ -258,6 +260,62 @@ test('settleLoadsReview is true only for the word --review itself among the load
   for (const args of ['--create', '', '--reviewer', '--no-review', '--review-depth lean', 'no--review', 'review', '--review=1', undefined, null, 42, {}, ['--review']]) {
     assert.equal(settleLoadsReview(args), false, JSON.stringify(args))
   }
+})
+
+test('the review\'s M1: settleLoadsCreate is true only for the word --create itself, and freshSettle keeps only a true flag', () => {
+  for (const args of ['--create', '--create --review', '--review --create', '  --create  ', '25 --create']) assert.equal(settleLoadsCreate(args), true, JSON.stringify(args))
+  for (const args of ['--review', '', '--created', '--no-create', '--create=1', 'create', undefined, null, 42, {}, ['--create']]) {
+    assert.equal(settleLoadsCreate(args), false, JSON.stringify(args))
+  }
+  assert.equal(freshSettle({ create: true }).create, true)
+  for (const flags of [undefined, {}, { create: false }, { create: 'yes' }]) assert.equal(freshSettle(flags).create, false, JSON.stringify(flags))
+})
+
+test('the review\'s M1: only the branch\'s own pull request lookup is keyed, never one that names a pull request', () => {
+  for (const stage of ['gh pr view', 'gh pr view 2>/dev/null', 'gh pr view --json number,baseRefName', 'glab mr view 2>/dev/null', 'glab mr view --output json']) {
+    assert.equal(settleLineKind(stage), 'pr-lookup', stage)
+  }
+  for (const stage of ['gh pr view 25 --json headRefOid', 'gh pr view <n> --json isDraft --jq .isDraft', 'glab mr view 7', 'glab mr view <iid> --output json', 'gh pr viewer']) {
+    assert.equal(settleLineKind(stage), null, stage)
+  }
+})
+
+test('the review\'s M1: a pass without --create ends at a failed branch lookup, and the status line yields to a spec checkpoint', () => {
+  const s = live(0, false)
+  cross(s, errBash('gh pr view 2>/dev/null', 1, 'no pull requests found for branch "feat/x"'), 2)
+  assert.equal(s.phase, 'done')
+  assert.equal(s.endedAt, at(2))
+  assert.equal(groupRows(s, 'resolve')[0], `${clockText(at(2))} gh pr view exit 1`)
+  assert.ok(textsOf(settlePaneLines(s, 144)).some(t => t.startsWith('done ')))
+  assert.equal(settleStatusText(s, { shipLive: false, specPhase: 'checkpoint' }), null)
+  // A keyed line after the stop files nothing.
+  cross(s, routing, 3)
+  assert.deepEqual(s.groups.map(g => g.rows.length), [1])
+
+  const glab = live(0, true)
+  cross(glab, errBash('glab mr view 2>/dev/null', 1, ''), 2)
+  assert.equal(glab.phase, 'done', 'a --review pass stops at §2 the same way')
+  assert.equal(groupRows(glab, 'review')[0], `${clockText(at(2))} glab mr view exit 1`)
+})
+
+test('the review\'s M1: a found pull request, a --create load, a later numbered lookup and an exit not its own keep the pass live', () => {
+  const found = live(0, false)
+  cross(found, okBash('gh pr view 2>/dev/null', 'title:\tx\nnumber:\t25'), 2)
+  assert.equal(found.phase, 'live')
+  assert.equal(groupRows(found, 'resolve')[0], `${clockText(at(2))} gh pr view exit 0`)
+
+  const create = freshSettle({ review: false, create: true })
+  create.phase = 'live'
+  cross(create, errBash('gh pr view 2>/dev/null', 1, 'no pull requests found'), 2)
+  assert.equal(create.phase, 'live', 'with --create, §4 makes the pull request the lookup did not find')
+
+  const numbered = live(0, false)
+  cross(numbered, errBash('gh pr view 25 --json headRefOid --jq .headRefOid', 1, 'HTTP 502'), 2)
+  assert.equal(numbered.phase, 'live')
+
+  const piped = live(0, false)
+  cross(piped, errBash('gh pr view --json number | jq .number', 1, ''), 2)
+  assert.equal(piped.phase, 'live', 'a pipe may have set the exit')
 })
 
 test('freshSettle records whether the load carried --review, and only a true flag counts', () => {
@@ -2111,4 +2169,22 @@ test('spans join to the text after the cap, and every tone is one of the vocabul
   assert.equal(long.spans.map(sp => sp.text).join(''), long.text)
   const tones = new Set(['clock', 'dim', 'heading', 'name', 'ok', 'alarm', 'warn', 'current', 'accent', 'running', null])
   for (const columns of [144, 90]) for (const l of settlePaneLines(pr25(), columns)) for (const sp of l.spans) assert.ok(tones.has(sp.tone), `${l.key}: tone ${sp.tone}`)
+})
+
+// The columns a settle card takes from a row: the card's border and padding (`paneCard`), the gutter of a
+// role or agent row (`SETTLE_GUTTER`) and the indent of each depth beyond the first (`INDENT`), in hooks/mod.mjs.
+const CARD_CHROME = 4
+const SETTLE_GUTTER = 9
+const DEPTH_INDENT = 2
+
+test('the review\'s M2: every folded agent row of the PR #25 pass fits a settle card at the settle card floor', () => {
+  const floor = LIMITS.settlePaneCardColumns
+  assert.ok(Number.isInteger(floor) && floor >= LIMITS.waveBoardMinColumns && floor < LIMITS.settlePaneFullColumns, String(floor))
+  assert.equal(settleDrawsCards(floor), true)
+  for (const columns of [floor - 1, LIMITS.waveBoardMinColumns, null, undefined, '144', NaN]) assert.equal(settleDrawsCards(columns), false, String(columns))
+  const agents = settlePaneLines(pr25(), floor).filter(l => l.kind === 'agent')
+  assert.ok(agents.length >= 9, `only ${agents.length} agent rows`)
+  const drawn = agents.map(l => ({ text: l.text, width: l.text.length + CARD_CHROME + SETTLE_GUTTER + DEPTH_INDENT * ((l.depth > 1 ? l.depth : 1) - 1) }))
+  const widest = drawn.reduce((a, b) => (b.width > a.width ? b : a))
+  assert.ok(widest.width <= floor, `the widest folded agent row needs ${widest.width} columns: ${widest.text}`)
 })
