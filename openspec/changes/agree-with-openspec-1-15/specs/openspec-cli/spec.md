@@ -2,7 +2,7 @@
 
 ### Requirement: The doctor SHALL warn when the OpenSpec CLI is older than the published floor
 
-`interlock doctor`'s `openspec` row SHALL compare the version the CLI prints against a floor that is a named constant in the doctor's code. A version below the floor SHALL make the row `warn`. The detail SHALL name the version found, the floor, and that nested delta specs are mishandled below it. The fix SHALL be the doctor's own install command. A floor miss SHALL NOT make the row `fail`.
+`interlock doctor`'s `openspec` row SHALL compare the version the CLI prints against a floor that is a named constant in the doctor's code. A version below the floor SHALL make the row `warn`. The detail SHALL name the version found, the floor, and the fault that version has: below the first version that syncs nested delta specs, that they read "No deltas found" and archive without syncing; from that version up to the floor, that `validate` passes a change whose MODIFIED block drops a scenario, which `archive` refuses. The fix SHALL be the doctor's own install command. A floor miss SHALL NOT make the row `fail`.
 
 #### Scenario: Happy path — a CLI at or above the floor is ok
 
@@ -18,6 +18,14 @@
 - **THEN** the `openspec` row is `warn`, not `fail`
 - **AND** its detail names `1.4.0`, the floor constant's value, and nested delta specs
 - **AND** its fix is the doctor's install command
+
+#### Scenario: Edge case — a CLI that syncs nested deltas but sits below the floor names the validate fault
+
+- **GIVEN** an initialised OpenSpec project and an `openspec` on PATH that prints `1.7.0`
+- **WHEN** `interlock doctor --json` runs
+- **THEN** the `openspec` row is `warn`, not `fail`
+- **AND** its detail names `1.7.0`, the floor constant's value, and that `validate` passes a change `archive` refuses
+- **AND** its detail does not say nested deltas archive without syncing
 
 #### Scenario: Edge case — a version line with no major.minor.patch is spoken, not passed
 

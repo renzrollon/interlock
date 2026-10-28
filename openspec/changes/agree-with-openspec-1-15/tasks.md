@@ -15,7 +15,7 @@
 - [x] 2.2 In `hooks/guard-tasks.mjs`, delete `CHECKBOX`. Build `checkboxStates` from `TASK_LINE` imported from `../lib/artifacts.mjs`, folding every non-`x`/`X` marker to open (design D6). This depends on 2.1's export. Keep the `const GUARD = 'guard-tasks'` line as it is, because `test/spine/mod-pins.test.mjs:496` reads it.
 - [x] 2.3 In `lib/doctor.mjs`, add `export const OPENSPEC_MIN_VERSION = '1.8.0'` beside `OPENSPEC_INSTALL`. In `checkOpenSpec`, between the `!version` guard and the `!configured` guard, add two `warn` branches (design D2–D4):
   - `compareVersions(version, OPENSPEC_MIN_VERSION)` is `null`: the detail says the version could not be read and quotes the line.
-  - It is `< 0`: the detail names the found version, the floor, and that nested `specs/<area>/<capability>/spec.md` deltas read "No deltas found" and archive without syncing below it. The fix is `OPENSPEC_INSTALL`.
+  - It is `< 0`: the detail names the found version, the floor, and the fault that version has. Below `OPENSPEC_NESTED_SYNC_VERSION` (1.7.0), nested `specs/<area>/<capability>/spec.md` deltas read "No deltas found" and archive without syncing; from it up to the floor, `openspec validate` passes a change whose MODIFIED block drops a scenario, which `openspec archive` refuses. The fix is `OPENSPEC_INSTALL`.
 - [x] 2.4 In `skills/spec/SKILL.md`:
   - Change §4's fenced line to `openspec validate "<name>"`.
   - Rewrite the §4 sentence so it says what the named validate checks: delta structure, and every MODIFIED block against its living spec (design D8).
