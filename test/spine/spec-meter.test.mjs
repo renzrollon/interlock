@@ -592,11 +592,11 @@ function fencedCommandLines(file) {
   return out
 }
 
-// `openspec validate` prints no JSON yet (print-json-from-the-spec-gate-lines
+// `openspec validate "<name>"` prints no JSON yet (print-json-from-the-spec-gate-lines
 // design D10 names `--json` on it as a follow-up), so it is read by nobody.
 // `openspec --version` is the spec skill's CLI-presence probe: it either prints
 // a version or stops the run before anything is named, so there is nothing to meter.
-const UNREAD_BY_NAME = ['openspec validate', 'openspec --version']
+const UNREAD_BY_NAME = ['openspec validate "<name>"', 'openspec --version']
 
 test('every fenced openspec and interlock line in the three skills is one the meter classifies or names as unread', () => {
   const all = SKILL_FILES.flatMap(fencedCommandLines)

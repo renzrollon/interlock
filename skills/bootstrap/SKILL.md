@@ -164,7 +164,7 @@ Write to `openspec/specs/<feature>/spec.md`. **Never overwrite an existing spec 
 Then validate:
 
 ```bash
-openspec validate
+openspec validate --specs
 ```
 
 ---
@@ -181,7 +181,7 @@ Fill in the project context in `openspec/config.yaml` with what was discovered â
 - Architecture doc path and what it covers
 - Specs created, and specs skipped because they already existed
 - Features deliberately not specced, with the reason
-- `openspec validate` result
+- `openspec validate --specs` result
 - Corpus-persistence posture (below)
 - Suggested next step: `/interlock:docs-digest` to build the agent prose primer
 

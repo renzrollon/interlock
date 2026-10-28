@@ -17,6 +17,8 @@ import { OPENSPEC_INSTALL } from '../lib/doctor.mjs'
 // A namespace import, so a missing `toleratedPaths` is reported by the settle pins
 // by name instead of failing the whole file at link time.
 import * as settleCli from '../lib/settle-cli.mjs'
+// A namespace import, so a missing OPENSPEC_MIN_VERSION is reported by name.
+import * as doctorModule from '../lib/doctor.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SKILLS_DIR = join(ROOT, 'skills')
@@ -2323,4 +2325,32 @@ test('the settle meter attributes a spawn by its brief, so both skills hand the 
     skillText('settle').includes('printed briefing as its whole prompt'),
     'skills/settle/SKILL.md must hand the conformance worker the printed briefing as its whole prompt'
   )
+})
+
+// The authoring skills' validate step must name what it validates: a bare
+// `openspec validate` checks nothing and exits 1, in every OpenSpec version.
+test('the spec skill validates the change by name and never runs a bare openspec validate', () => {
+  const lines = fencedLines(join(SKILLS_DIR, 'spec', 'SKILL.md'))
+  assert.ok(lines.includes('openspec validate "<name>"'), 'skills/spec/SKILL.md must run `openspec validate "<name>"`')
+  assert.ok(!lines.includes('openspec validate'), 'a fenced bare `openspec validate` validates nothing')
+})
+
+test('the bootstrap skill validates the specs it wrote with openspec validate --specs', () => {
+  const lines = fencedLines(join(SKILLS_DIR, 'bootstrap', 'SKILL.md'))
+  assert.ok(lines.includes('openspec validate --specs'), 'skills/bootstrap/SKILL.md must run `openspec validate --specs`')
+  assert.ok(!lines.includes('openspec validate'), 'a fenced bare `openspec validate` validates nothing')
+})
+
+test('the spec skill states the MODIFIED scenario-title rule', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  for (const token of ['MODIFIED', 'scenario title', 'REMOVED']) {
+    assert.ok(text.includes(token), `skills/spec/SKILL.md must carry the token \`${token}\``)
+  }
+})
+
+test('docs/01-first-hour.md names the OpenSpec floor the doctor enforces', () => {
+  const floor = doctorModule.OPENSPEC_MIN_VERSION
+  assert.match(String(floor), /^\d+\.\d+\.\d+$/, 'OPENSPEC_MIN_VERSION is an exported x.y.z constant')
+  const text = readFileSync(join(ROOT, 'docs', '01-first-hour.md'), 'utf8')
+  assert.ok(text.includes(floor), `docs/01-first-hour.md must name OpenSpec ${floor}`)
 })

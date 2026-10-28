@@ -1,7 +1,7 @@
 # distribution/npm-package Specification
 
 ## Purpose
-TBD - created by archiving change publish-interlock-as-npm-package. Update Purpose after archive.
+What a published Interlock package must hold so it installs and runs anywhere it is installed: a files whitelist closed over every declared binary and the hooks module, one version carried identically by the three manifests, a release published from a version tag with provenance and no stored token, the manifest's type contract and listing image shipped in the tarball, and a bundle that stays inside the plugin directory's file limits. Each rule is held by a test that names the file and the reason when it fails.
 
 ## Requirements
 
