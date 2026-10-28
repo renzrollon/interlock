@@ -117,6 +117,7 @@ Rules:
 - When no spec run is live, the pane SHALL say so.
 - The module SHALL never close the pane itself.
 - No pane text SHALL contain the word `complete`.
+- A row SHALL carry no colour of the meter's own: a tone SHALL only name what a word the CLI or the engine printed means — an artifact's status word, a field the CLI printed as `true` or `false`, `not run yet` — and SHALL leave the row's text unchanged.
 
 #### Scenario: Happy path — the pane mounts on both surfaces with the table, the counts and the writes
 
@@ -129,7 +130,7 @@ Rules:
   - two `turn.step` events with no `agentId` and one with an `agentId`, whose `serverToolUses` each carry one entry named `advisor`, with distinct ids
 - **WHEN** the pane is mounted on `terminal` and then on `desktop`
 - **THEN** on each surface these are found by key: the artifact rows, the explore line (`3 investigators spawned`, the brief's path), the writes line for `proposal.md` (`written 2×` with its last time), the findings path, the line `advisor consults seen: session 2 · subagents 1`, and the `last activity` line
-- **AND** no row carries a tick, a colour, a threshold or the word `complete`
+- **AND** no row carries a tick, a threshold or the word `complete`, and a row's colour is only a tone naming a word the CLI printed
 
 #### Scenario: Failure — the engine declines the unasked open, and a denied write is not counted
 
@@ -146,6 +147,39 @@ Rules:
 - **THEN** the pane reads that no spec run is live in this session, and nothing else
 - **AND** in a live run before any name crossed, the pane's header reads `change: unknown until named`, every result line reads `not run yet`, no advisor-consults line is drawn, and a Write under `openspec/changes/<some-name>/` does not name the change
 - **AND** when every `turn.step` event in a live run lacks `serverToolUses`, or carries none named `advisor`, no advisor-consults line is drawn, no pane text contains `none seen`, and no other line changes
+
+### Requirement: The spec pane SHALL be drawn as titled cards with toned words from fields beside unchanged row texts
+
+Each spec pane line SHALL keep the text it reads today. Beside it, each line SHALL carry its section — `header`, `artifacts`, `explore`, `gates`, `writes` or `record` — and coloured spans whose concatenation is exactly the text. At or above the card floor (`wave board min width (columns)` from `interlock limits`), the module SHALL draw the lines as a header card and titled cards, using `borderStyle: 'single'` alone. Below the floor, or with no width reported, it SHALL draw the same lines flat with no border.
+
+Tones:
+- An artifact status word: `done` the ok colour, `ready` the current colour, `blocked` dim.
+- A field the gate, ledger, validate or readiness line printed as `true` or `false`: the ok colour when the CLI's own field reads it ready, passed or not blocking; the alarm colour otherwise.
+- `not run yet`, and the record line: dim.
+- A result not read: the warn colour.
+- The checkpoint and hand-over lines: the accent colour.
+
+A card's title SHALL be drawn from the line's section and SHALL never be a keyed row. With no spec run live the pane SHALL draw its one no-run text and nothing else, and SHALL add no tick, glyph or word of its own.
+
+#### Scenario: Happy path — a stopped run reads as cards with its gate coloured
+
+- **GIVEN** a spec run at its checkpoint whose status shows four artifacts `done`, whose ledger line printed `blocking false`, whose validate line printed `ready true` and whose gate line printed `passed false`
+- **WHEN** the pane is drawn at 120 columns on the terminal and on the desktop
+- **THEN** the header card is followed by the cards titled `artifacts`, `explore`, `gates`, `writes` and `record`, each with a single border
+- **AND** each `done` takes the ok colour, `blocking false` and `ready true` take the ok colour, `passed false` takes the alarm colour, the checkpoint line takes the accent colour, and every keyed row reads exactly the text it read before this change
+
+#### Scenario: Edge case — a run before any line has crossed
+
+- **GIVEN** a live spec run in which no keyed line has crossed yet
+- **WHEN** the pane is drawn
+- **THEN** every `not run yet` is dim, the `artifacts` card holds the `status: not run yet` row, and no card is titled for a section with no line
+- **AND** the no-run pane, drawn in a session with no spec run, is one text and no card
+
+#### Scenario: Failure — a narrow pane draws flat
+
+- **GIVEN** a live spec run with its status read
+- **WHEN** the pane is drawn at 40 columns
+- **THEN** no Box has a border, no card title is drawn, and every keyed row still reads its text
 
 ### Requirement: The spec run SHALL end at the checkpoint, at an accepted ship launch and at the session boundary, and the module SHALL own one status line
 
