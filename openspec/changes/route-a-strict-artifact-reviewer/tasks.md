@@ -16,7 +16,7 @@
 
 ## 3. Full check (needs §1 and §2)
 
-- [ ] 3.1 Run `npm test > "$TMPDIR/strict-gate-npm-test.log" 2>&1` and `npm run validate`, then `openspec validate route-a-strict-artifact-reviewer`. Verify: the log's `ℹ fail` line reads 0, the plugin validates, and the change validates against the living `spawn-routing` spec.
+- [x] 3.1 Run `npm test > "$TMPDIR/strict-gate-npm-test.log" 2>&1` and `npm run validate`, then `openspec validate route-a-strict-artifact-reviewer`. Verify: the log's `ℹ fail` line reads 0, the plugin validates, and the change validates against the living `spawn-routing` spec.
 
 ## Workflow follow-up
 
