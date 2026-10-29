@@ -200,4 +200,13 @@ describe('archived changes stay out of the graph and out of retrieval', () => {
     assert.ok(files.includes('add-widgets'), 'active change is retrievable');
     assert.ok(!files.includes('/archive/'), 'archived change was retrieved');
   });
+
+  it('leaves an archived change out of a docs index over openspec/changes, unless the archive is named', async () => {
+    const { buildDocsIndex } = await import('../../lib/graph/retrieve/docs-index.mjs');
+    const paths = buildDocsIndex(tmp, { dirs: ['openspec/changes'] }).files.map((f) => f.path);
+    assert.ok(paths.includes('openspec/changes/add-widgets/design.md'), `active change is indexed: ${paths}`);
+    assert.ok(!paths.some((p) => p.includes('/archive/')), `archive leaked into the docs index: ${paths}`);
+    const named = buildDocsIndex(tmp, { dirs: ['openspec/changes/archive'] }).files.map((f) => f.path);
+    assert.deepEqual(named, ['openspec/changes/archive/2026-01-01-old-widgets/design.md']);
+  });
 });

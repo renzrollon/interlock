@@ -697,3 +697,48 @@ test('each eval job grants exactly the gated tools its cases list, so no grader 
   // before any case runs; a fresh checkout is never trusted (2.1.306).
   for (const job of ['smoke', 'full']) assert.match(jobBody(job), /claude plugin eval[^\n]*\\\n(?:\s+--?[^\n]*\\\n)*\s+--trust-plugin\b/, `the ${job} job must pass --trust-plugin`)
 })
+
+test('a scaffold script fetches and checks out commits by their full 40-hex sha', () => {
+  // `git fetch <remote> <sha>` reads an abbreviated sha as a ref name, finds no
+  // such remote ref and exits 128, so a scaffold under `set -e` that fetched
+  // `251cebe` never seeded its workspace (PR #29 review, M5; reproduced against a
+  // local remote: short sha exit 128, full sha exit 0). Every hex token a scaffold
+  // passes to `git fetch` or `git checkout` must be the full sha, and what it
+  // checks out must be one of the commits it fetched.
+  const scaffolds = cases
+    .filter(k => existsSync(join(k.dir, 'case.yaml')))
+    .map(k => ({ name: k.name, script: /^\s*scaffold_script:\s*(\S+)/m.exec(readFileSync(join(k.dir, 'case.yaml'), 'utf8'))?.[1] }))
+    .filter(k => k.script)
+    .map(k => ({ ...k, text: readFileSync(join(EVALS_DIR, k.name, k.script.replace(/['"]/g, '')), 'utf8') }))
+  assert.ok(scaffolds.some(k => k.name === 'review-recall-pr28'), 'review-recall-pr28 declares its scaffold script')
+  const args = (line, verb) => line.trim().split(/\s+/).slice(line.trim().split(/\s+/).indexOf(verb) + 1).filter(t => !t.startsWith('-'))
+  const isHex = t => /^[0-9a-f]+$/i.test(t)
+  for (const k of scaffolds) {
+    const lines = k.text.split('\n').filter(l => !/^\s*#/.test(l))
+    const fetched = lines.filter(l => /^\s*git\b.*\sfetch\s/.test(l)).flatMap(l => args(l, 'fetch').slice(1)).filter(isHex)
+    const checkedOut = lines.filter(l => /^\s*git\b.*\scheckout\s/.test(l)).flatMap(l => args(l, 'checkout')).filter(isHex)
+    for (const sha of [...fetched, ...checkedOut]) {
+      assert.match(sha, /^[0-9a-f]{40}$/, `${k.name}/${k.script} passes "${sha}" to git; an abbreviated sha is fetched as a ref name and exits 128`)
+    }
+    for (const sha of checkedOut) assert.ok(fetched.includes(sha), `${k.name}/${k.script} checks out ${sha}, which it never fetched`)
+    if (k.name === 'review-recall-pr28') {
+      assert.equal(fetched.length, 2, 'review-recall-pr28 fetches the PR base and tip by sha')
+      assert.equal(checkedOut.length, 1, 'review-recall-pr28 checks out the PR tip by sha')
+    }
+  }
+})
+
+test('review-recall-pr28 grants the tools review-code needs to reach its review line', () => {
+  // The case runs /interlock:review-code, whose §3 writes the dimension record
+  // "with the Write tool" before the review line. A case that withholds Write (or
+  // the Skill tool that loads the skill) runs a review that cannot record what it
+  // covered, and the recall graders then score a review that never finished
+  // (PR #29 review, "To investigate").
+  const text = readFileSync(join(EVALS_DIR, 'review-recall-pr28', 'case.yaml'), 'utf8')
+  const tools = ((/^\s*allowed_tools:\s*\[([^\]]*)\]/m.exec(text) || [])[1] || '').split(',').map(s => s.trim())
+  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8')
+  assert.match(skill, /with the Write tool/, 'review-code no longer names the Write tool for the dimension record; revisit this case')
+  for (const tool of ['Skill', 'Agent', 'Bash', 'Read', 'Write']) {
+    assert.ok(tools.includes(tool), `review-recall-pr28 allowed_tools must list ${tool}`)
+  }
+})

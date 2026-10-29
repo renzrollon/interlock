@@ -23,11 +23,13 @@ execution:
   prompt: |
     Run /interlock:review-code over the diff of PR #28: `git diff 251cebe e177e7d`.
     The workspace is a scratch clone checked out at e177e7d, and 251cebe is
-    fetched. Review the code diff only; make no changes and do not commit.
+    fetched. Review the code diff only; change no source file and do not commit.
 
     When the review ends, report every finding it kept, each with its severity,
     its file and line, and what is wrong, in prose or a table. Report the
     findings themselves, not a summary of how the review ran.
   max_turns: 60
   timeout_seconds: 3000
-  allowed_tools: [Agent, Bash, Read, Glob, Grep]
+  # Skill loads /interlock:review-code; Write is the tool review-code §3 names for
+  # the dimension record it writes before the review line (test/evals.test.mjs).
+  allowed_tools: [Skill, Agent, Bash, Read, Write, Glob, Grep]

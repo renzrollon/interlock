@@ -32,7 +32,7 @@ A dimension's answer SHALL carry `coverage` beside `findings`: `checked`, a list
 
 ### Requirement: The review record SHALL carry a proof computed from the ledgers and the diff
 
-`interlock review` SHALL record `proof` beside `dimensions`: `unproven` names each ran dimension whose ledger is absent or rejected, or that raised no finding and checked nothing; `unread` names each ran dimension with an `unread` entry, with the entries; `uncited` lists each changed coverable source file no ran dimension cited in a checked entry or a finding. Coverable means what the spec-coverage signal counts. The changed files SHALL be the union of `--changed` and git's own list for `--base`; with neither the proof SHALL NOT hold.
+`interlock review` SHALL record `proof` beside `dimensions`: `unproven` names each ran dimension whose ledger is absent or rejected, or that raised no finding and checked nothing; `unread` names each ran dimension with an `unread` entry, with the entries; `uncited` lists each changed coverable source file no ran dimension cited in a checked entry or a finding. Coverable means what the spec-coverage signal counts, plus an extensionless file directly under a `bin/` directory, which is source no coverage tool attributes. The changed files SHALL be the union of `--changed` and git's own list for `--base`, with a rename counted under its new path only; with neither, or when git cannot list `--base`, the proof SHALL NOT hold.
 
 #### Scenario: Happy path — a proven review
 
@@ -76,9 +76,27 @@ A dimension's answer SHALL carry `coverage` beside `findings`: `checked`, a list
 - **WHEN** the record is written
 - **THEN** both files are counted, and `lib/b.mjs` is uncited unless cited
 
+#### Scenario: Edge case — a rename is counted under its new path
+
+- **GIVEN** a branch whose only change is `git mv lib/a.mjs lib/b.mjs`, reviewed with `--changed lib/b.mjs --base <base>` and a ledger citing `lib/b.mjs:1`
+- **WHEN** the record is written
+- **THEN** `lib/a.mjs` is not counted, and `proof.uncited` is empty
+
+#### Scenario: Failure — git cannot list the base
+
+- **GIVEN** `--changed lib/a.mjs` cited by a ledger, and a `--base` git cannot diff against HEAD
+- **WHEN** the record is written
+- **THEN** standard error says the proof does not hold because git could not list the base, `proof.proven` is false with the reason that no diff was given, and the record is still written
+
+#### Scenario: Edge case — a ledger carried twice is still stale on the first round's edit
+
+- **GIVEN** a `language` ledger citing `lib/a.mjs`, carried at round 1 after `lib/a.mjs` changed, and carried again at round 2 when nothing else changed
+- **WHEN** the round-2 record is written
+- **THEN** the carried ledger's `carriedFrom` is still the head it was first carried from, and its entry on `lib/a.mjs` covers nothing
+
 ### Requirement: The run's review step SHALL record the same proof
 
-A ship run's review step SHALL ask each dimension for the same ledger, and the review record it writes SHALL carry `proof` computed by the same rules as `interlock review`, so the merge verdict reads a run's review and a settle review alike. The run's review briefing and its fix round's re-review briefing SHALL carry the proof rules, the measure line and the ledger shape `interlock review brief` prints, and SHALL ask a re-review that finds nothing for one ledger per re-reviewed dimension, `{ dimension, findings: [], coverage }`, never a bare `[]`. A fix round's re-review SHALL carry the ledger of every dimension it did not re-run from the record before, under the same stale-file rule as a settle carry. The run SHALL run no proof re-run: an unproven run review is the banner and the amber signal.
+A ship run's review step SHALL ask each dimension for the same ledger, and the review record it writes SHALL carry `proof` computed by the same rules as `interlock review`, so the merge verdict reads a run's review and a settle review alike. The run's review briefing and its fix round's re-review briefing SHALL carry the proof rules, the measure line and the ledger shape `interlock review brief` prints, and SHALL ask a re-review that finds nothing for one ledger per re-reviewed dimension, `{ dimension, findings: [], coverage }`, never a bare `[]`. A fix round's re-review SHALL carry the ledger of every dimension it did not re-run from the record before, under the same stale-file rule as a settle carry, and an entry that went stale in one round SHALL stay stale in every later round. A round that re-reviews no dimension and changes no file, as the verdict round does, SHALL keep the record's coverage and proof as they were. The run SHALL run no proof re-run: an unproven run review is the banner and the amber signal.
 
 #### Scenario: Happy path — a run's review record carries proof
 
@@ -97,6 +115,18 @@ A ship run's review step SHALL ask each dimension for the same ledger, and the r
 - **GIVEN** a strict run whose first review was proven and whose fix round re-reviews only `technical-lead`, whose worker answers with no finding and a ledger citing the files the fix changed
 - **WHEN** the run rewrites its review record and closes
 - **THEN** `technical-lead` is not unproven, `proof.proven` is true, and the close carries no `REVIEW NOT PROVEN` banner
+
+#### Scenario: Happy path — the verdict round keeps the last fix round's proof
+
+- **GIVEN** a strict run whose fix round left a proven record and cleared every blocker
+- **WHEN** the verdict round reports, re-reviewing nothing, and the run closes
+- **THEN** the review record's `proof.proven` is still true and the close carries no `REVIEW NOT PROVEN` banner
+
+#### Scenario: Edge case — a fixer's edit stays uncovered by an old ledger
+
+- **GIVEN** a strict run whose round-1 fixer edited `lib/b.mjs`, cited only by `qa`'s first-review ledger, and whose rounds 1 and 2 re-review dimensions other than `qa`
+- **WHEN** the round-2 record is written
+- **THEN** `lib/b.mjs` is uncited unless a dimension re-run in round 1 or 2 cites it
 
 #### Scenario: Failure — a run's worker that returns no ledger
 
@@ -165,13 +195,25 @@ A ship run's review step SHALL ask each dimension for the same ledger, and the r
 
 ### Requirement: `interlock review --rerun-of` SHALL merge a re-run into the draft in the CLI
 
-A draft (`--draft`) SHALL carry `inputs: { answers, verdicts }`, the per-dimension answers and the verdicts it was written from, and the final record SHALL NOT. `interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts>` SHALL merge into the draft's inputs and resolve the whole again: a dimension the draft's proof named unproven or unread SHALL have its answer replaced, ledger included; a dimension re-run for uncited files alone SHALL have the new checked entries and the findings whose ids are new appended and nothing of its first answer dropped; the draft's verdicts SHALL be kept for every finding id they cover and the new verdicts appended; a dimension the write does not name SHALL be untouched, carried or ran. A `--rerun-of` write with no `--findings` SHALL promote the draft unchanged. `interlock review brief --skeptics … --rerun-of <draft>` SHALL print prompts only for the findings the draft holds no verdict for. No skill SHALL compose a merged findings or verdicts file.
+A draft (`--draft`) SHALL carry `inputs: { answers, verdicts }`, the per-dimension answers and the verdicts it was written from, and the final record SHALL NOT. `interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts>` SHALL merge into the draft's inputs and resolve the whole again: a dimension the draft's proof named unproven or unread SHALL have its ledger replaced and the findings whose ids are new appended, no first-pass finding dropped; a dimension re-run for uncited files alone SHALL have the new checked entries and the findings whose ids are new appended and nothing of its first answer dropped; the draft's verdicts SHALL be kept for every finding id they cover and the new verdicts appended; a dimension the write does not name SHALL be untouched, carried or ran. A `--rerun-of` write with no `--findings` SHALL promote the draft unchanged. A `--draft` or `--rerun-of` write whose findings input holds an entry that is not a per-dimension answer SHALL exit 1 and write nothing. `interlock review brief --skeptics … --rerun-of <draft>` SHALL print prompts only for the findings the draft holds no verdict for. No skill SHALL compose a merged findings or verdicts file.
 
-#### Scenario: Happy path — an unproven dimension's re-run replaces its answer
+#### Scenario: Happy path — an unproven dimension's re-run replaces its ledger
 
 - **GIVEN** a draft in which `language` is unproven, and a re-run `language` answer with one finding and a ledger
 - **WHEN** `interlock review --rerun-of <draft> --findings <answer> --verdicts <its verdicts> --draft --out <next>` runs
 - **THEN** the next draft's `language` carries the new finding and ledger, `proof.reruns` is 1, and every other dimension's findings, ledgers and verdicts are the draft's
+
+#### Scenario: Failure — a blocker beside an unread input survives a clean re-run
+
+- **GIVEN** a draft whose `security` raised one blocker with two upholding verdicts and recorded one `unread` entry, and a re-run `security` answer with no finding and a ledger with no `unread` entry
+- **WHEN** the next draft is written with `--rerun-of` and promoted
+- **THEN** the promoted record lists the blocker under `surviving` with its two verdicts, and `security`'s ledger is the re-run's
+
+#### Scenario: Failure — a draft written from a flat findings list
+
+- **GIVEN** a `--findings` file that is a flat list of findings with no per-dimension answer
+- **WHEN** `interlock review --findings <file> --draft --out <draft>` runs
+- **THEN** it exits 1 naming the entries that are not answers, and no draft is written
 
 #### Scenario: Edge case — a regression blocker survives an uncited-file re-run
 

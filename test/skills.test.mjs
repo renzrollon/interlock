@@ -2508,3 +2508,87 @@ test('the settle skill runs no proof line, and resolves an archived change throu
   }
   assert.ok(settle.includes('<dir>/settle-summary.md'), `${where} §8 must write the summary into the archived directory`)
 })
+
+// --- PR #29 review M8, E3 and the review-code proof exit 2: pins for instructions nothing asserted ---
+
+test('the spec skill\'s wide path runs no artifact gate and writes no autonomy line', () => {
+  const where = 'skills/spec/SKILL.md'
+  const wide = skillText('spec').split('\n').find(l => l.startsWith('- `width.wide` true:'))
+  assert.ok(wide, `${where} has no \`width.wide\` true bullet`)
+  for (const token of ['CHANGE WIDE:', 'run no `/interlock:review-artifacts`', 'write no `interlock autonomy` line', 'checkpoint', 'epic of briefs']) {
+    assert.ok(wide.includes(token), `${where}'s wide path must carry ${token}`)
+  }
+})
+
+test('review-artifacts reads decisions.md, holding a needs_human row for the person and checking an agent_resolved one', () => {
+  const where = 'skills/review-artifacts/SKILL.md'
+  const read = paragraphWith(skillText('review-artifacts'), '`decisions.md`')
+  assertRoutingTokens(read, ['`decisions.md` when it exists', '`needs_human`', 'not a finding', '`agent_resolved`', '`design.md`'], `${where} artifact read`)
+})
+
+test('review-artifacts states that the prompt, not its allowed-tools, bounds what the strict reviewer writes', () => {
+  // The reviewer is spawned with no subagent_type, so no agent definition narrows
+  // its tools; review-code states the same limit for its dimension agents.
+  const where = 'skills/review-artifacts/SKILL.md'
+  const depth = sectionOfSkill(skillText('review-artifacts'), /^## Depth$/m)
+  const bound = paragraphWith(depth, 'do not reach an agent it spawns')
+  assertRoutingTokens(bound, ['`allowed-tools`', 'do not reach an agent it spawns', '`subagent_type`', 'writes-no-file', 'is the bound'], `${where} Depth`)
+  assert.ok(skillText('review-code').includes('do not reach an agent it spawns'), 'skills/review-code/SKILL.md must keep stating the same bound')
+})
+
+test('the settle skill pre-approves the empty-pathspec check it runs before staging', () => {
+  // Dropping the grant would raise a permission prompt in the middle of the loop.
+  const where = 'skills/settle/SKILL.md'
+  const settle = skillText('settle')
+  const allowed = parseFrontmatter(settle).values['allowed-tools'] || ''
+  assert.ok(allowed.split(/\s+(?=[A-Z])/).includes('Bash(test -s .claude/ship/settle/pathspecs-r*)'), `${where}'s allowed-tools must carry Bash(test -s .claude/ship/settle/pathspecs-r*)`)
+  const lines = fencedLines(join(SKILLS_DIR, 'settle', 'SKILL.md'))
+  const check = lines.findIndex(l => l === 'test -s .claude/ship/settle/pathspecs-r<r>')
+  const stage = lines.findIndex(l => l.startsWith('git add -A --pathspec-from-file=.claude/ship/settle/pathspecs-r<r>'))
+  assert.ok(check !== -1 && stage !== -1 && check < stage, `${where} must run the test -s check on the pathspec file before the staging line`)
+})
+
+test('review-code prints the CLI\'s archive line when the change is read from the archive', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const para = paragraphWith(skillText('review-code'), 'CHANGE READ FROM ARCHIVE:')
+  assertRoutingTokens(para, ['When the output carries `CHANGE READ FROM ARCHIVE:`', 'print that line'], where)
+})
+
+test('review-code says what an exit 2 from the proof line means: print it, loop no more, promote the draft unproven', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const skill = skillText('review-code')
+  const para = paragraphWith(skill, 'PROOF UNANSWERED:')
+  assertRoutingTokens(
+    para,
+    ['exits 2', 'not an adjudicated review', 'carries no proof', 'names no dimension to re-run', '`no diff given`', 'PROOF UNANSWERED: <its standard-error line>', 're-run nothing', 'do not run the proof line again', 'Promote the last draft', 'REVIEW NOT PROVEN', 'never report the review as proven or clean'],
+    `${where} §3`
+  )
+  const lines = fencedLines(join(SKILLS_DIR, 'review-code', 'SKILL.md'))
+  const proof = lines.findIndex(l => l === 'interlock review proof --review <draft>')
+  const promote = lines.findIndex(l => /^interlock review --rerun-of <last draft>[^\n]*--metrics <change>/.test(l))
+  assert.ok(proof !== -1 && promote !== -1, `${where} lost the proof or the promote line`)
+  assert.ok(skill.indexOf('PROOF UNANSWERED:') > skill.indexOf('interlock review proof --review <draft>') && skill.indexOf('PROOF UNANSWERED:') < skill.indexOf('interlock review --rerun-of <last draft>'), `${where} must say what exit 2 means between the proof line and the promote line`)
+})
+
+test('review-code\'s description names every bundled dimension and marks the conditional ones, with no count', () => {
+  // E3: the description is the text a session sees first. It named neither
+  // `regression` nor that devops, security, domain and blast-radius are conditional.
+  const where = 'skills/review-code/SKILL.md'
+  const skill = skillText('review-code')
+  const desc = (parseFrontmatter(skill).values.description || '').toLowerCase()
+  const spoken = name => name.replace('-', ' ')
+  const rows = [...skill.matchAll(/^\| ([a-z-]+) \| `\$\{CLAUDE_SKILL_DIR\}\/dimensions\/\1\.md` \| (.+) \|$/gm)].map(m => ({ name: m[1], always: m[2].includes('in `review.dimensions`') }))
+  const bundled = readdirSync(join(SKILLS_DIR, 'review-code', 'dimensions')).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')).sort()
+  assert.deepEqual(rows.map(r => r.name).sort(), bundled, `${where}'s dimension table must list every bundled brief`)
+  const conditional = desc.indexOf('only when')
+  assert.ok(conditional !== -1, `${where}'s description must mark the conditional dimensions with "only when"`)
+  const opens = desc.lastIndexOf('plus ', conditional)
+  assert.ok(opens !== -1, `${where}'s description must open its conditional list with "plus"`)
+  for (const { name, always } of rows) {
+    const at = desc.includes(name) ? desc.indexOf(name) : desc.indexOf(spoken(name))
+    assert.ok(at !== -1, `${where}'s description must name the ${name} dimension`)
+    if (always) assert.ok(at < opens, `${where}'s description lists ${name}, which can always run, among the conditional ones`)
+    else assert.ok(at > opens && at < conditional, `${where}'s description must mark ${name} as conditional`)
+  }
+  assert.doesNotMatch(desc, /\b(\d+|two|three|four|five|six|seven|eight|nine)\s+(review\s+)?(dimensions|reviewers)\b/, `${where}'s description must not count the dimensions`)
+})

@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, devops, security, technical-lead and blast radius (who outside the diff observes the change, from the codebase graph), then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening a PR, or when a diff is high-stakes enough that false positives would waste real time.
+description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, technical-lead and regression, the review depth deciding which of them always run, plus devops, security, domain and blast radius (who outside the diff observes the change, from the codebase graph) only when the diff calls for them, then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening a PR, or when a diff is high-stakes enough that false positives would waste real time.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
 argument-hint: "[change-name] [--dimensions a,b,c] [--base <ref>] [--out <file>] [--carry <file>] [--strict]"
@@ -169,7 +169,7 @@ and write the next draft from the last one:
 interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts> --changed <the changed files> --base <base> --dimensions <dimension record> --head <sha> [--carry <file>] --draft --out <next draft> --json
 ```
 
-then run the proof line on the next draft. The CLI merges the re-run into the draft and keeps every first-pass finding, verdict, skip and degraded entry; compose no findings or verdicts file yourself, and count nothing: the cap is the CLI's. When the proof line exits 0 — its first line is `proven`, or `PROOF CAP REACHED: <dimensions>`, which you print — promote the last draft. That is the review line, and the only one that carries `--metrics`:
+then run the proof line on the next draft. The CLI merges the re-run into the draft and keeps every first-pass finding, verdict, skip and degraded entry; compose no findings or verdicts file yourself, and count nothing: the cap is the CLI's. When the proof line exits 0 — its first line is `proven`, or `PROOF CAP REACHED: <dimensions>`, which you print — promote the last draft. When it exits 2, the CLI cannot answer for the draft: it is not an adjudicated review, it carries no proof, or its proof does not hold and names no dimension to re-run (a `no diff given` draft, for one). Print `PROOF UNANSWERED: <its standard-error line>` aloud, re-run nothing and do not run the proof line again: there is nothing to loop on. Promote the last draft all the same, so the record carries the proof as the CLI computed it and every reader of a proof that does not hold prints `REVIEW NOT PROVEN`; never report the review as proven or clean after an exit 2. When the promote line refuses the draft as well, print its error and stop: the review recorded nothing. The promote line is the review line, and the only one that carries `--metrics`:
 
 ```bash
 interlock review --rerun-of <last draft> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --json

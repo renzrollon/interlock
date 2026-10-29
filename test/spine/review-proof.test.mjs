@@ -19,13 +19,17 @@ import {
   answersOf,
   computeProof,
   coverageLine,
+  gapLines,
   mergeRerun,
   notProvenBanner,
   proofAnswer,
+  proofCounts,
   rejectedLines,
   rerunTargets,
+  runProofRecord,
   verdictedIds
 } from '../../lib/review-proof.mjs'
+import { isReviewSource } from '../../lib/artifacts.mjs'
 import { findingId } from '../../lib/findings.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
@@ -259,4 +263,106 @@ test('the skeptics are not asked twice: the draft verdicts name the ids they adj
     }
   }
   assert.deepEqual([...verdictedIds(draft)], [findingId(f1)])
+})
+
+// --- PR #29 review: the run's rounds, the readers, bin/ (spec: review/review-proof) ---
+
+const hashesOf = files => p => (p in files ? files[p] : null)
+
+test('the verdict round keeps the last fix round\'s proof: re-reviewing nothing and moving no file changes nothing', () => {
+  const ran = ['language', 'qa']
+  const changedPaths = ['lib/a.mjs', 'lib/b.mjs']
+  const files = { 'lib/a.mjs': 'h1', 'lib/b.mjs': 'h2' }
+  const round0 = runProofRecord({
+    findings: [
+      { dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')]) },
+      { dimension: 'qa', findings: [], coverage: ledger([at('b', 'lib/b.mjs:1')]) }
+    ],
+    ran,
+    changedPaths,
+    hashOf: hashesOf(files)
+  })
+  assert.equal(round0.proof.proven, true)
+  const verdict = runProofRecord({ findings: [], ran, changedPaths, reReviewed: [], previous: round0, hashOf: hashesOf(files) })
+  assert.deepEqual(verdict.proof, round0.proof, 'the proof is the last round\'s, not "no dimension ran"')
+  assert.equal(verdict.banner, null)
+
+  // An unread entry of the last round is not laundered by the verdict round either.
+  const unread = runProofRecord({
+    findings: [{ dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1'), at('b', 'lib/b.mjs:1')], [{ input: 'specs', reason: 'not opened' }]) }, { dimension: 'qa', findings: [], coverage: ledger([at('b', 'lib/b.mjs:1')]) }],
+    ran,
+    changedPaths,
+    hashOf: hashesOf(files)
+  })
+  const kept = runProofRecord({ findings: [], ran, changedPaths, reReviewed: [], previous: unread, hashOf: hashesOf(files) })
+  assert.equal(kept.proof.proven, false)
+  assert.match(kept.banner, /^REVIEW NOT PROVEN: unread language \(specs\)/)
+
+  // Carried ledgers alone are not "no dimension ran".
+  const carriedOnly = computeProof({ ran: [], answers: [], changedPaths: ['lib/a.mjs'], carried: { language: ledger([at('a', 'lib/a.mjs:1')]) } })
+  assert.equal(carriedOnly.proven, true, JSON.stringify(carriedOnly))
+})
+
+test('a file a fixer edited stays stale for a carried ledger in every later round, not only the next', () => {
+  const ran = ['language', 'qa', 'security']
+  const changedPaths = ['lib/a.mjs', 'lib/b.mjs']
+  let files = { 'lib/a.mjs': 'a0', 'lib/b.mjs': 'b0' }
+  const round0 = runProofRecord({
+    findings: [
+      { dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')]) },
+      { dimension: 'qa', findings: [], coverage: ledger([at('b', 'lib/b.mjs:1')]) },
+      { dimension: 'security', findings: [], coverage: ledger([at('a', 'lib/a.mjs:2')]) }
+    ],
+    ran,
+    changedPaths,
+    hashOf: hashesOf(files)
+  })
+  assert.equal(round0.proof.proven, true)
+  // Round 1: the fixer edits lib/b.mjs; only security is re-reviewed and cites lib/a.mjs.
+  files = { ...files, 'lib/b.mjs': 'b1' }
+  const round1 = runProofRecord({
+    findings: [{ dimension: 'security', findings: [], coverage: ledger([at('a', 'lib/a.mjs:2')]) }],
+    ran,
+    changedPaths,
+    reReviewed: ['security'],
+    previous: round0,
+    hashOf: hashesOf(files)
+  })
+  assert.deepEqual(round1.proof.uncited, ['lib/b.mjs'])
+  // Round 2: the fixer edits lib/a.mjs; only language is re-reviewed and cites it. qa's
+  // round-0 ledger on lib/b.mjs is still stale, though lib/b.mjs did not move this round.
+  files = { ...files, 'lib/a.mjs': 'a2' }
+  const round2 = runProofRecord({
+    findings: [{ dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')]) }],
+    ran,
+    changedPaths,
+    reReviewed: ['language'],
+    previous: round1,
+    hashOf: hashesOf(files)
+  })
+  assert.deepEqual(round2.proof.uncited, ['lib/b.mjs'], JSON.stringify(round2.proof))
+  assert.deepEqual(round2.coverage.qa.staleFiles, ['lib/a.mjs', 'lib/b.mjs'], 'both moved since qa\'s ledger was written')
+  assert.equal(round2.proof.proven, false)
+})
+
+test('the proof readers print, never throw, on a record whose proof lacks a list', () => {
+  for (const proof of [{ proven: false }, { proven: false, dimensions: ['qa'], unread: [{ dimension: 'qa' }] }]) {
+    assert.match(notProvenBanner(proof), /^REVIEW NOT PROVEN: /)
+    assert.match(coverageLine(proof), /^Coverage: ran (none|qa); 0 of 0 changed source file\(s\) cited\.$/)
+    assert.ok(Array.isArray(gapLines(proof)))
+    assert.match(proofCounts(proof), /^0 unproven, \d with unread inputs, 0 uncited of 0 changed source file\(s\)$/)
+    assert.ok(Array.isArray(rerunTargets(proof)))
+  }
+})
+
+test('an extensionless executable under bin/ is a source file the proof counts; a dotted or vendored one is not', () => {
+  const proof = computeProof({
+    ran: ['language'],
+    answers: [{ dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')]) }],
+    changedPaths: ['bin/interlock', 'lib/a.mjs', 'bin/run.sh', 'node_modules/x/bin/tool', 'bin/.hidden']
+  })
+  assert.deepEqual(proof.uncited, ['bin/interlock'])
+  assert.equal(proof.changed, 2)
+  for (const p of ['bin/interlock', 'tools/bin/deploy', 'lib/a.mjs']) assert.equal(isReviewSource(p), true, p)
+  for (const p of ['bin/run.sh', 'bin/sub/tool', 'node_modules/x/bin/tool', 'bin/.hidden', 'README']) assert.equal(isReviewSource(p), false, p)
 })

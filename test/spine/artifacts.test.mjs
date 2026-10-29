@@ -572,3 +572,106 @@ test('archived: without the option, listings and the no-name default exclude the
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- the living specs the domain selection scans (review fixes on PR #29, M3 and M10) ---
+
+/** A git repository with two committed living specs, then a working tree that moved on from that commit. */
+async function livingRepo() {
+  const { execFileSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-living-specs-'))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.invalid' }
+  const git = args => execFileSync('git', args, { cwd: dir, env, encoding: 'utf8' })
+  const spec = (cap, text) => {
+    mkdirSync(join(dir, 'openspec', 'specs', cap), { recursive: true })
+    writeFileSync(join(dir, 'openspec', 'specs', cap, 'spec.md'), text)
+  }
+  git(['init', '-q', '-b', 'main'])
+  spec('alpha', 'alpha at the base — café ✓\n')
+  spec('review/beta', 'beta at the base\n')
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'base'])
+  const sha = git(['rev-parse', 'HEAD']).trim()
+  spec('alpha', 'alpha edited after the base\n')
+  rmSync(join(dir, 'openspec', 'specs', 'review'), { recursive: true })
+  spec('gamma', 'gamma added after the base\n')
+  // bin/interlock's gitText, counted.
+  const calls = []
+  const gitText = (root, args, { input, encoding = 'utf8' } = {}) => {
+    calls.push(args[0])
+    return execFileSync('git', args, { cwd: root, encoding, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
+  }
+  return { dir, sha, gitText, calls }
+}
+
+test('readLivingSpecs at a ref lists and reads that ref\'s specs in two git calls, not the working tree\'s', async () => {
+  const { readLivingSpecs } = await import('../../lib/artifacts.mjs')
+  const { dir, sha, gitText, calls } = await livingRepo()
+  try {
+    const at = readLivingSpecs(dir, sha, { gitText })
+    assert.deepEqual(at.capabilities, ['alpha', 'review/beta'], 'a capability added since the ref is not in force at it')
+    assert.deepEqual(at.texts, { alpha: 'alpha at the base — café ✓\n', 'review/beta': 'beta at the base\n' })
+    assert.deepEqual(at.problems, [])
+    assert.deepEqual(calls, ['ls-tree', 'cat-file'], 'one list and one batched read, however many specs')
+
+    const wt = readLivingSpecs(dir, null)
+    assert.deepEqual(wt.capabilities, ['alpha', 'gamma'])
+    assert.equal(wt.texts.alpha, 'alpha edited after the base\n')
+    assert.deepEqual(wt.problems, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readLivingSpecs says why it read nothing: a ref git cannot list, no git reader, a batch that fails', async () => {
+  const { readLivingSpecs } = await import('../../lib/artifacts.mjs')
+  const { dir, sha, gitText } = await livingRepo()
+  try {
+    const bad = readLivingSpecs(dir, 'no-such-ref', { gitText })
+    assert.deepEqual([bad.capabilities, bad.texts], [[], {}])
+    assert.match(bad.problems[0], /^the living specs at no-such-ref could not be listed \(/)
+    assert.match(readLivingSpecs(dir, sha).problems[0], /this host supplies no git reader/)
+    assert.match(readLivingSpecs(dir, '--output=x', { gitText }).problems[0], /not a ref/)
+    const failing = (root, args, opts) => {
+      if (args[0] === 'cat-file') throw new Error('fatal: batch broke')
+      return gitText(root, args, opts)
+    }
+    const half = readLivingSpecs(dir, sha, { gitText: failing })
+    assert.deepEqual(half.capabilities, ['alpha', 'review/beta'])
+    assert.deepEqual(half.texts, {})
+    assert.match(half.problems[0], /could not be read \(fatal: batch broke\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readLivingCapabilities names an openspec/specs it could not read; a tree with none is no problem', async (t) => {
+  const { readLivingCapabilities, listLivingCapabilities } = await import('../../lib/artifacts.mjs')
+  const { chmodSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-living-caps-'))
+  try {
+    assert.deepEqual(readLivingCapabilities(dir), { capabilities: [], problems: [] })
+    const top = join(dir, 'openspec', 'specs')
+    mkdirSync(join(top, 'alpha'), { recursive: true })
+    writeFileSync(join(top, 'alpha', 'spec.md'), 'a\n')
+    assert.deepEqual(readLivingCapabilities(dir), { capabilities: ['alpha'], problems: [] })
+    chmodSync(top, 0o000)
+    try {
+      let enforced = true
+      try {
+        readFileSync(join(top, 'alpha', 'spec.md'))
+        enforced = false
+      } catch {
+        // denied, as it should be
+      }
+      if (!enforced) return t.skip('this user can read a mode-000 directory')
+      const r = readLivingCapabilities(dir)
+      assert.deepEqual(r.capabilities, [])
+      assert.match(r.problems[0], /^openspec\/specs could not be read \(EACCES\)$/)
+      assert.deepEqual(listLivingCapabilities(dir), [], 'the list-only form is unchanged')
+    } finally {
+      chmodSync(top, 0o755)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -621,3 +621,80 @@ test('a changed file absent from the graph and cited by no spec selects nothing 
   assert.deepEqual(r.capabilities, [])
   assert.deepEqual(r.ungraphed, { builtAt: null, files: [{ path: 'lib/nobody-cites-this.mjs', citedBy: [] }] })
 })
+
+// --- cited selection reads only for a changed SOURCE file (review fixes on PR #29, M3) ---
+
+const CITING_SKILL_AND_BIN = {
+  'review/skill': '### Requirement: It is cited\n\nIt SHALL live in `skills/review-code/SKILL.md`, and `bin/interlock` SHALL call it.\n'
+}
+
+test('a docs-only change the graph does not hold selects nothing by citation and lists nothing as ungraphed', () => {
+  const r = selectDomainCapabilities({
+    changedPaths: ['skills/review-code/SKILL.md'],
+    edges: [],
+    graphFiles: ['hooks/mod.mjs'],
+    livingTexts: CITING_SKILL_AND_BIN
+  })
+  assert.deepEqual(r.capabilities, [])
+  assert.equal(r.ungraphed, null, 'a doc the graph never indexes is not an ungraphed source file')
+  assert.ok(r.notSelected, 'it is recorded as not selected, as an unlinked doc always was')
+})
+
+test('an extensionless executable under bin/ the graph never indexes is still selected by citation', () => {
+  const r = selectDomainCapabilities({
+    changedPaths: ['bin/interlock'],
+    edges: [],
+    graphFiles: ['hooks/mod.mjs'],
+    livingTexts: { ...CITING_SKILL_AND_BIN, other: 'Only `bin/interlock-graph` and bin/interlock.mjs are named here.\n' }
+  })
+  assert.deepEqual(r.capabilities, [{ capability: 'review/skill', via: 'cited', files: ['bin/interlock'], count: 1 }])
+  assert.deepEqual(r.ungraphed.files, [{ path: 'bin/interlock', citedBy: ['review/skill'] }])
+})
+
+test('citedSelectionInputs reads every living spec once, and only when a changed source file is ungraphed', async () => {
+  const { citedSelectionInputs } = await import('../../lib/prompts/domain-context.mjs')
+  const graph = { nodes: [{ id: 'file:hooks/mod.mjs', type: 'file' }], builtAt: '2026-10-20T00:00:00Z' }
+  let reads = 0
+  const readAll = () => {
+    reads++
+    return { texts: PR28.livingTexts, problems: [] }
+  }
+  const docs = citedSelectionInputs({ graph, changedPaths: ['skills/review-code/SKILL.md', 'docs/a.md'], readAll })
+  assert.equal(reads, 0, 'a docs-only diff reads no living spec')
+  assert.deepEqual(docs.livingTexts, {})
+  const source = citedSelectionInputs({ graph, changedPaths: ['lib/settle-meter.mjs', 'docs/a.md'], readAll })
+  assert.equal(reads, 1, 'one batched read for the whole scan')
+  assert.deepEqual(Object.keys(source.livingTexts).sort(), Object.keys(PR28.livingTexts).sort())
+  assert.equal(source.livingUnread, undefined)
+})
+
+test('a living spec the scan could not read is carried out as citedUnread, so each caller can say it', async () => {
+  const { citedSelectionInputs } = await import('../../lib/prompts/domain-context.mjs')
+  const graph = { nodes: [], builtAt: null }
+  const inputs = citedSelectionInputs({
+    graph,
+    changedPaths: ['lib/settle-meter.mjs'],
+    readAll: () => ({ texts: {}, problems: ['the living specs at abc1234 could not be listed (fatal: bad object)'] })
+  })
+  assert.match(inputs.livingUnread, /could not be listed/)
+  const r = selectDomainCapabilities({ changedPaths: ['lib/settle-meter.mjs'], edges: [], ...inputs })
+  assert.match(r.citedUnread, /^the living specs at abc1234 could not be listed .*matched only against the living specs that were read$/)
+  assert.deepEqual(r.ungraphed.files, [{ path: 'lib/settle-meter.mjs', citedBy: [] }])
+  const clean = selectDomainCapabilities({ changedPaths: ['lib/settle-meter.mjs'], edges: [], graphFiles: [], livingTexts: {} })
+  assert.equal(clean.citedUnread, null)
+})
+
+test('the domain reason words a cited capability apart from a linked one', async () => {
+  const { selectDimensions } = await import('../../lib/prompts/dimensions.mjs')
+  const { reasons } = selectDimensions(['lib/settle-meter.mjs', 'hooks/mod.mjs'], {
+    domain: {
+      capabilities: [
+        { capability: 'hooks/settle-meter', via: 'cited', files: ['lib/settle-meter.mjs'], count: 1 },
+        { capability: 'hooks/mod', via: 'linked', files: ['hooks/mod.mjs'], count: 1 }
+      ]
+    }
+  })
+  assert.match(reasons.domain, /hooks\/settle-meter \(its living spec cites lib\/settle-meter\.mjs, which the graph does not hold\)/)
+  assert.match(reasons.domain, /hooks\/mod \(linked to hooks\/mod\.mjs\)/)
+  assert.doesNotMatch(reasons.domain, /settle-meter \(linked/)
+})

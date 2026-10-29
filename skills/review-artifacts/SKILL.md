@@ -56,7 +56,7 @@ Add no rubric of your own to that prompt: the two depths differ in who reads, no
 
 Read the reply for a JSON object holding a `findings` array. When it holds none, print `STRICT REVIEW UNREAD: <first line of the reply>` and perform the inline read in the session instead, so the gate still runs once. Otherwise the reviewer's findings are the gate's input.
 
-At both depths the session writes the findings file, from the findings as returned, and runs the gate line itself. Repair no finding and drop none: a malformed one is the gate's to report under `malformed`. The reviewer writes nothing.
+At both depths the session writes the findings file, from the findings as returned, and runs the gate line itself. Repair no finding and drop none: a malformed one is the gate's to report under `malformed`. The reviewer writes nothing. A skill's `allowed-tools` do not reach an agent it spawns, and this Agent call names no `subagent_type`, so the prompt's writes-no-file line is the bound.
 
 ---
 

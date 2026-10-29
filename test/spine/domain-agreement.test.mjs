@@ -105,3 +105,59 @@ test('the run selects alike: its review step records the verb\'s capabilities an
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// --- one batched read of the living specs at a base (review fixes on PR #29, M3 and M10) ---
+
+/** pr28Repo, committed, with the git readers bin/interlock hands the merge evidence. */
+function committedPr28(ungraphed) {
+  const root = pr28Repo({ ungraphed })
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.invalid' }
+  spawnSync('git', ['add', '-A'], { cwd: root, env })
+  spawnSync('git', ['commit', '-q', '-m', 'base'], { cwd: root, env })
+  const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim()
+  const gitText = (r, args, { input, encoding = 'utf8' } = {}) => {
+    const out = spawnSync('git', args, { cwd: r, input, encoding: encoding === 'buffer' ? undefined : encoding })
+    if (out.status !== 0) throw new Error(String(out.stderr).trim())
+    return out.stdout
+  }
+  const readAtRef = (r, ref, path) => {
+    const out = spawnSync('git', ['show', `${ref}:${path}`], { cwd: r, encoding: 'utf8' })
+    return out.status === 0 ? { text: out.stdout } : { absent: true }
+  }
+  return { root, sha, gitText, readAtRef }
+}
+
+test('at a base, the CLI verb and the merge evidence select alike from one batched read of the base\'s specs', () => {
+  const { root, sha, gitText, readAtRef } = committedPr28('lib/settle-meter.mjs')
+  try {
+    // A living spec removed after the base is still in force at it.
+    rmSync(join(root, 'openspec', 'specs', 'hooks', 'settle-meter'), { recursive: true, force: true })
+    const verb = cli(root, ['domain-context', '--changed', PR28.changedPaths.join(','), '--base', sha])
+    assert.equal(verb.citedUnread, null)
+    assert.ok(verb.ungraphed.files.some(f => f.path === 'lib/settle-meter.mjs' && f.citedBy.includes('hooks/settle-meter')))
+    const { living, notes } = gatherLivingList(root, { changedPaths: PR28.changedPaths, base: sha, deps: { readAtRef, gitText } })
+    assert.deepEqual(notes, [])
+    const fromEvidence = [...new Set(living.requirements.map(r => r.capability))]
+    assert.deepEqual(fromEvidence, verb.capabilities.map(c => c.capability).filter(c => fromEvidence.includes(c)))
+    assert.ok(fromEvidence.includes('hooks/settle-meter'), 'selected from the base, not the edited working tree')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the merge evidence notes a batched read that failed, and still builds the list from what the graph links', () => {
+  const { root, sha, readAtRef } = committedPr28('lib/settle-meter.mjs')
+  try {
+    const gitText = () => {
+      throw new Error(`fatal: Not a valid object name ${sha}`)
+    }
+    const { living, notes } = gatherLivingList(root, { changedPaths: PR28.changedPaths, base: sha, deps: { readAtRef, gitText } })
+    assert.ok(living, 'the list is still built')
+    const note = notes.find(n => n.what === 'the living specs the domain selection scans for citations')
+    assert.ok(note, JSON.stringify(notes))
+    assert.match(note.reason, /could not be listed \(fatal: Not a valid object name/)
+    assert.match(note.reason, /matched only against the living specs that were read/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

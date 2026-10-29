@@ -2469,13 +2469,14 @@ function readAtRef(root, ref, path, { maxBytes } = {}) {
   return { text: git(['show', `${ref}:${path}`]) }
 }
 
-/** Run git in `root`; stdout on success, an Error carrying git's own words on failure. */
-function gitText(root, args) {
+/** Run git in `root` (`input` on stdin); stdout on success, an Error carrying git's own words on failure. */
+function gitText(root, args, { input, encoding = 'utf8' } = {}) {
   try {
     return execFileSync('git', args, {
       cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding,
+      input,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       maxBuffer: 256 * 1024 * 1024
     })
   } catch (err) {
@@ -2641,7 +2642,7 @@ function livingListFor(root, flags, { change, changed }) {
     change,
     changedPaths: changed,
     base,
-    deps: { readAtRef },
+    deps: { readAtRef, gitText },
     ...(graph.path ? { graphPath: graph.path } : {})
   })
   if (living) return living
@@ -2938,7 +2939,8 @@ function headShaOf(root) {
 /**
  * The diff shape against a base: `git diff --numstat -z <base>...HEAD`. A
  * binary row (`-\t-\tpath`) counts as one file and no lines; a rename counts
- * as git reports it, and both of its paths are changed paths. A base that is
+ * as git reports it, and both of its paths are changed paths, its source also
+ * listed in `renamedFrom` for a reader that wants the post-image. A base that is
  * HEAD or a descendant of it diffs empty by construction, so it carries
  * `nothingToDiff` instead of counts — an empty diff there proves nothing about
  * the change. Throws when git cannot diff the base against HEAD.
@@ -2971,6 +2973,7 @@ function diffShape(root, base, headSha) {
   let changedFiles = 0
   let binaryFiles = 0
   const paths = []
+  const renamedFrom = []
   const tokens = out.split('\0')
   for (let i = 0; i < tokens.length; i++) {
     if (!tokens[i]) continue
@@ -2979,6 +2982,7 @@ function diffShape(root, base, headSha) {
       paths.push(path)
     } else {
       paths.push(...tokens.slice(i + 1, i + 3).filter(Boolean))
+      if (tokens[i + 1]) renamedFrom.push(tokens[i + 1])
       i += 2
     }
     changedFiles += 1
@@ -2988,7 +2992,7 @@ function diffShape(root, base, headSha) {
     }
     changedLines += (Number(added) || 0) + (Number(deleted) || 0)
   }
-  return { base, changedLines, changedFiles, binaryFiles, paths }
+  return { base, changedLines, changedFiles, binaryFiles, paths, renamedFrom }
 }
 
 /**
@@ -3563,7 +3567,7 @@ async function main() {
           // A run record exists only where a run wrote one; by hand there is none.
           run: fromRun.run ?? null
         },
-        deps: { diffShape, nameStatus, listFiles, readAtRef },
+        deps: { diffShape, nameStatus, listFiles, readAtRef, gitText },
         ...(graph.path ? { graphPath: graph.path } : {})
       })
 
@@ -4505,6 +4509,7 @@ async function main() {
             }
           },
           readAtRef,
+          gitText,
           // Git and coverage, as the close's merge-confidence gather reaches them
           // (complete-and-record-the-merge-verdict, D1 and D3): the same
           // functions the `merge-confidence` command hands its own gather.

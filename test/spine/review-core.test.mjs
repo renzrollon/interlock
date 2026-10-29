@@ -1075,3 +1075,26 @@ test('writeReviewOut names a cleanup that also failed, so a partial file is neve
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- PR #29 review: a ledger carried twice keeps its first head (spec: review/review-proof) ---
+
+test('carryForward keeps the head a finding or ledger was first carried from when it carries it again', async () => {
+  const { carryForward } = await import('../../lib/review-core.mjs')
+  const fresh = () => ({ surviving: [], counts: { surviving: 0 }, dimensionStats: {} })
+  const finding = { severity: 'warning', dimension: 'language', file: 'lib/a.mjs', line: 1, title: 't', description: 'd' }
+  const ledger = { checked: [{ what: 'a', at: 'lib/a.mjs:1' }], unread: [] }
+
+  const round1 = carryForward(fresh(), { head: 'h0', surviving: [finding], coverage: { language: ledger } }, ['qa'])
+  assert.equal(round1.surviving[0].carriedFrom, 'h0')
+  assert.equal(round1.carriedCoverage.language.carriedFrom, 'h0')
+
+  // The round-1 record, as `interlock review` writes it: head h1, the carried entries marked so.
+  const record1 = { head: 'h1', surviving: round1.surviving, coverage: { language: { ...round1.carriedCoverage.language, carried: true } } }
+  const round2 = carryForward(fresh(), record1, ['qa'])
+  assert.equal(round2.surviving[0].carriedFrom, 'h0', 'a finding carried twice keeps its first head')
+  assert.equal(round2.carriedCoverage.language.carriedFrom, 'h0', 'so a file changed between h0 and h1 is still stale')
+
+  // A dimension that ran at h1 and is carried at round 2 is carried from h1.
+  const ran1 = { head: 'h1', surviving: [finding], coverage: { language: ledger } }
+  assert.equal(carryForward(fresh(), ran1, ['qa']).carriedCoverage.language.carriedFrom, 'h1')
+})

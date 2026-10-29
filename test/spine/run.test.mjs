@@ -6739,6 +6739,29 @@ test('no graph and nothing declared skips domain out loud', () => {
   }
 })
 
+test('a living-spec scan that cannot read the start commit raises DOMAIN CITATIONS UNREAD; one that can raises nothing', () => {
+  // The graph holds no file node, so a changed source file is ungraphed and the
+  // run reads every living spec at the start commit for a citation of it.
+  const unread = domainRepo()
+  try {
+    file(unread.root, 'lib/ungraphed.mjs', 'export {}\n')
+    toReview(unread.root, unread.change, ['--review'], { startSha: 'f'.repeat(40) })
+    const banners = bannersWith(unread.root, 'DOMAIN CITATIONS UNREAD')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(unread.root).banners))
+    assert.match(banners[0], /could not be listed .*matched only against the living specs that were read/)
+  } finally {
+    cleanup(unread.root)
+  }
+  const read = domainRepo()
+  try {
+    file(read.root, 'lib/ungraphed.mjs', 'export {}\n')
+    toReview(read.root, read.change, ['--review'])
+    assert.deepEqual(bannersWith(read.root, 'DOMAIN CITATIONS UNREAD'), [])
+  } finally {
+    cleanup(read.root)
+  }
+})
+
 test('a graph that links none of the changed paths records why, and raises nothing', () => {
   const { root, change } = domainRepo({ graph: graphLinking('lib/elsewhere.mjs') })
   try {
@@ -9264,6 +9287,47 @@ test('a strict fix round that re-reviews one dimension carries the others\' ledg
     assert.ok(second.coverage.language && second.coverage.language.carried, 'language\'s ledger is carried')
     assert.deepEqual(second.proof.unproven, [], 'no dimension the round did not re-run is unproven')
     assert.equal(second.proof.proven, true, JSON.stringify(second.proof))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a strict run through a fix round and the verdict round closes with its proof intact and no REVIEW NOT PROVEN banner', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const blocker = { severity: 'blocker', file: 'README.md', line: 1, title: 'blocker 1', description: 'd', suggestion: 's' }
+    const upheld = [1, 2].map(i => ({
+      findingTitle: 'blocker 1', file: 'README.md', isReal: true, confidence: 0.9, reasoning: `skeptic ${i}`,
+      evidence: 'README.md:1', refinedSeverity: 'blocker', qualityScore: 4, severityScore: 4
+    }))
+    const round1 = strictReviewed(
+      root,
+      change,
+      selected => selected.map(d => ledgered(d, d === 'technical-lead' ? [blocker] : [])),
+      upheld
+    )
+    assert.equal(round1.action, 'remediate')
+
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing, fixed\n')
+    file(root, '.claude/ship/findings.json', [ledgered('technical-lead')])
+    file(root, '.claude/ship/verdicts.json', [])
+    const verdictRound = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verdictRound.action, 'verdict', JSON.stringify(verdictRound.action))
+    const fixed = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(fixed.proof.proven, true, JSON.stringify(fixed.proof))
+
+    // The verdict round fixes and re-reviews nothing; the findings file is left as the fix round wrote it.
+    const verified = run(root, [...verdictRound.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verified.action, 'verify-final', JSON.stringify(verified))
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(record.proof.proven, true, JSON.stringify(record.proof))
+    assert.equal(record.proof.reason, null)
+
+    const handoff = run(root, [...verified.then.argv]).step
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    assert.equal(commit.action, 'commit')
+    const closed = closeAt(root, realCommit(root)).step
+    assert.deepEqual(closed.banners.filter(b => b.startsWith('REVIEW NOT PROVEN')), [], JSON.stringify(closed.banners))
   } finally {
     cleanup(root)
   }
