@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-29
+
 ### Added
 
 - **An empty review proves what it covered.** Every dimension answers with a coverage ledger beside its findings, and `interlock review` records a `proof` (`unproven`, `unread`, `uncited`) from the ledgers and the changed files; the ship run's review step records the same.
