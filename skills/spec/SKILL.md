@@ -3,7 +3,7 @@ name: spec
 description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs. Use when starting a new feature, refactor, or bug fix.
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
-argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd]"
+argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd] [--strict]"
 allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
 metadata:
   type: planning
@@ -29,6 +29,7 @@ This skill writes specifications. It does not write code. By default it does not
 | `--no-tdd` | Force standard implementation-first shape; no leading red section. Never relaxes a bug fix's repro-first task |
 | `--continue` | Advanced. After a clean artifact review, Read `${CLAUDE_SKILL_DIR}/continuity.md` — ask `interlock ready` whether the checkpoint may be skipped, and ship if it says yes |
 | `--continue --force-checkpoint` | Opt back out mid-flight. Always stops at the checkpoint, whatever readiness would have said |
+| `--strict` | Pass to the artifact gate: one independent reviewer, routed by role, reads the artifacts in place of the session |
 
 ---
 
@@ -105,6 +106,8 @@ No matching brief is fine — but if none exists and `--no-explore` was not pass
 
 Spec spawns nothing itself. The only workers on this path are explore's investigators, and explore routes them by role: it reads `interlock routing explore-investigator` and passes what it prints. The cost policy is read from the CLI, never from this skill, so do not name a model or an effort level when you hand off to explore.
 
+**One change or an epic.** Decide the width before writing. A request that spans many subsystems, or one whose brief reads "cover everything", does not converge at the artifact gate, because a reader of a change that size always finds more. Split it into an epic of briefs, each brief one change with its own gate, and say the split at the checkpoint. Section 4 then measures it: `interlock validate` reports the width once the delta specs exist, and a wide change stops there.
+
 ### 1c. Check the ground is current
 
 ```bash
@@ -161,6 +164,7 @@ Filter each ready artifact independently; do not dump the full instructions resp
 - **Pinned versions.** If the design names a dependency without a version, ask for it. **Do not gap-fill a version number** — a plausible-looking wrong pin is worse than an open question.
 - **Genuine ambiguity.** Ask when it blocks a correct proposal. Otherwise take a reasonable default to keep momentum. Either way, write the row — see below.
 - **Advisor tool.** This session may have Claude Code's advisor tool because the user turned it on; this skill asks for no call to it. Never run `/advisor` or edit `advisorModel`: whether it is on, and what it spends, is the user's choice. If the session does consult it, its advice is guidance, not evidence: where it conflicts with what the code or the artifacts show, write a ledger row instead of settling it in prose. A call that fails is said at the hand-off and never retried, and the spec continues. The tool being absent is not an error either; §6 says so.
+- **MODIFIED keeps every scenario.** A `## MODIFIED` requirement copies every `#### Scenario:` title its living spec holds, each scenario title verbatim. To drop or rename one, use `## REMOVED` and add the requirement back under `## ADDED`, because archive refuses a MODIFIED block that omits a living scenario.
 
 ### Task shape for ship
 
@@ -192,6 +196,8 @@ Two things follow from how ship treats that wave:
 - **A dependency from an implementation task onto the red wave is now legal**, where it used to fail the plan outright. Prefer to leave it out anyway: `## 1.` already runs before `## 2.`, so `(make §1 green)` as prose is enough, and an edge buys ordering the sections had already.
 
 One consequence worth stating at the checkpoint: because the red wave's check is skipped, a run cannot tell a genuinely failing suite from one that already passed. Tests that pass before the implementation exists are not pinning new behaviour — that is a review question, and §6 flags it as one.
+
+**Do not enumerate every existing test pin the change breaks.** No one can list them all before the code exists, and a reviewer who asks for the complete list asks for something that cannot be written yet. Name the pins you know, by file and line, and state the bounded rule: an assertion that pins a meaning the delta specs change is updated in the task that changes that meaning, never during a remediation stage (the test guard denies test edits there), and the update names the assertion and the requirement it now pins. With that rule in `tasks.md`, an incomplete pin list is a warning at the artifact gate, not a blocker.
 
 ### Compound notes
 
@@ -229,19 +235,25 @@ A blocking ledger with rows in it is not a failure of this skill: an honest bloc
 ## 4. Validate
 
 ```bash
-openspec validate
+openspec validate "<name>"
 interlock validate "<name>" --json
 ```
 
-`openspec validate` checks schema conformance. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
+`openspec validate "<name>"` checks this change's delta structure and every MODIFIED block against its living spec; a bare `openspec validate` names no target and checks nothing. `interlock validate` checks the flow's own preconditions — all three artifacts present and non-empty, `tasks.md` actually containing checkbox tasks — and exits non-zero when the change is not implementable. Fix anything it reports before continuing. In the JSON, `ready` is the verdict and `problems` is the list to fix; an output carrying `error` and `candidates` instead of `ready` means the name did not resolve.
+
+**Width.** Read `width.wide` from the validate JSON.
+
+- `width.wide` true: print the `CHANGE WIDE:` line(s) from the validate output verbatim, run no `/interlock:review-artifacts`, write no `interlock autonomy` line, and stop at the checkpoint (section 6) with an epic of briefs: group the delta spec capabilities from the printed list into briefs, each brief one change with its own gate, naming only capabilities from that list.
+- `width` absent (an older CLI): print `CHANGE WIDTH: not reported by this CLI` and continue to the gate.
+- `width.wide` false: continue to the gate.
 
 ---
 
 ## 5. Gate: artifact review
 
-Run `/interlock:review-artifacts` against the change.
+Run `/interlock:review-artifacts <name>` against the change, or `/interlock:review-artifacts <name> --strict` when `--strict` was passed to this skill. The gate runs once per spec run, at the end: it is not a loop, and no second reviewer is spawned to re-read a change the first one blocked. A fresh exhaustive reader of a wide change always finds more, so re-gating the whole change does not converge; it costs a full review a round and the warnings keep arriving.
 
-- **Blockers → HALT.** Report them and stop. Do not proceed to ship, and do not "fix and continue" silently: a blocker at this gate means the spec was wrong, and the user should see that.
+- **Blockers → HALT.** Record them, report them and stop at the checkpoint with the findings. Fix nothing and re-gate nothing: do not proceed to ship, and do not "fix and continue" silently, because a blocker at this gate means the spec was wrong and the user should see that before anything else happens. A re-gate is the person's call, run as `/interlock:review-artifacts <change> --since <findings file>`, which judges the fix rather than the whole change again.
 - **Clean → record it and stop at the checkpoint.**
 
 ```bash
@@ -266,7 +278,7 @@ This is where the default run ends. Close with:
 - Assumptions made and any pending clarifications
 - Task count, and the wave shape if it is obvious
 - The task shape, and — **when it is TDD** — that ship will run section 1's failing tests first and skip that wave's check, so nobody is told whether the suite was genuinely red. Ask the reviewer to confirm the leading tests actually fail against the current code; a test that passes before the implementation exists pins nothing.
-- Anything the artifact review flagged below blocker severity
+- Anything the artifact review flagged below blocker severity. When the change was wide, the `CHANGE WIDE:` line and the epic of briefs split replace the review: no gate ran.
 - The advisor tool: whether it was available to this session, or `not available in this session`, and the consults the session made, by its own account. The spec meter's advisor line is the record of that count.
 - Compound notes: how many `rows` matched, with `omitted` and `unreadable` when not 0, or the `note match` line's first output line when it failed
 

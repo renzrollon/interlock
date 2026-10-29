@@ -17,6 +17,7 @@
 import { readStage, STAGES } from '../lib/ship-stage.mjs'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { TASK_LINE } from '../lib/artifacts.mjs'
 import {
   readEvent,
   allow,
@@ -33,7 +34,6 @@ const GUARD = 'guard-tasks'
 // agent's job in any of them. (The commit-stage agent does not edit tasks.md,
 // but denying a checkbox flip there too costs nothing and is the honest rule.)
 const ACTIVE_STAGES = new Set(STAGES)
-const CHECKBOX = /^\s*[-*]\s+\[([ xX])\]/
 
 /**
  * The checkbox STATES of a blob, in order — `' '` or `'x'` per checkbox line.
@@ -46,8 +46,8 @@ function checkboxStates(text) {
   if (typeof text !== 'string') return []
   const states = []
   for (const line of text.split(/\r?\n/)) {
-    const m = CHECKBOX.exec(line)
-    if (m) states.push(m[1].toLowerCase())
+    const m = TASK_LINE.exec(line)
+    if (m) states.push((m[2] || '').toLowerCase() === 'x' ? 'x' : ' ')
   }
   return states
 }

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires git, plus glab (GitLab) or gh (GitHub) authenticated. Optional openspec CLI for change context.
 argument-hint: "[change-name] [--create] [--review] [--test-plan] [--explain] [--confidence-comment] [--gate-check <name>] [--strict]"
 disable-model-invocation: true
-allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Bash(rm -rf .claude/ship/settle) Bash(rm -f .claude/ship/settle/coverage.json) Bash(cp .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cmp -s .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cp .claude/ship/settle/profile-r*.json .claude/testing/profile.json) Bash(rm -f .claude/testing/profile.json) Bash(test -s .claude/ship/settle/verify.json.tmp) Bash(mv .claude/ship/settle/verify.json.tmp .claude/ship/settle/verify.json) Bash(rm -f .claude/ship/settle/verify.json.tmp) Agent Read Write Grep Glob
+allowed-tools: Bash(git *) Bash(glab *) Bash(gh *) Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Bash(rm -rf .claude/ship/settle) Bash(rm -f .claude/ship/settle/coverage.json) Bash(cp .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cmp -s .claude/testing/profile.json .claude/ship/settle/profile-r*.json) Bash(cp .claude/ship/settle/profile-r*.json .claude/testing/profile.json) Bash(rm -f .claude/testing/profile.json) Bash(test -s .claude/ship/settle/verify.json.tmp) Bash(test -s .claude/ship/settle/pathspecs-r*) Bash(mv .claude/ship/settle/verify.json.tmp .claude/ship/settle/verify.json) Bash(rm -f .claude/ship/settle/verify.json.tmp) Agent Read Write Grep Glob
 metadata:
   type: generation
   outputs:
@@ -59,6 +59,14 @@ gh pr view 2>/dev/null
 No open PR and no `--create` → stop: *"No open pull request for this branch, and nothing was pushed: re-run with `--create` to push the branch and create one."* Without `--create` this skill never pushes a branch that has no pull request.
 
 Resolve the OpenSpec change with `interlock changes` and the branch name. If several are plausible, ask which one — a wrong change here produces a confidently wrong description.
+
+When no active change resolves, the pull request may have archived it. Ask the CLI which change it archived, from the whole diff read with rename detection and no pathspec (a pathspec would hide the rename sources):
+
+```bash
+git diff --name-status -M origin/<target branch>...HEAD | interlock settle archived-change --name-status - --json
+```
+
+Take its `change` as the change, and print `CHANGE READ FROM ARCHIVE: <dir>` with its `dir`. Every later line reads that change read-only from the archive. When it exits 1 naming two candidates, pick neither: ask which change the pull request carries. When it exits 1 naming none, there is no change; say so. Classify no name-status line yourself: which directory is a rename and which is the change is the CLI's answer.
 
 Note the pull request's number (GitHub) or iid (GitLab) and its **target branch as the platform reports it** (`gh pr view --json number,baseRefName`; `target_branch` in `glab mr view --output json`). Both are needed below. Never guess the target branch from a local branch name.
 
@@ -176,7 +184,7 @@ Below, `<sha>` is the head the step describes, `git rev-parse HEAD` at that step
 /interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r0.json [--strict]
 ```
 
-The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth>`; print that line once, as it reported it, and not again for the rounds.
+The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth>`; print that line once, as it reported it, and not again for the rounds. `review-code` proves its own coverage before it writes that record, re-running what it could not prove; post the comment from the record it wrote and add no proof step of your own. A record left unproven at the cap says so in its comment.
 
 ### 5b. Post the findings
 
@@ -268,11 +276,15 @@ When there was no snapshot, remove the profile the fixer created:
 rm -f .claude/testing/profile.json
 ```
 
-**Stage the round.** The tree was clean when the round started, so everything the fixer left is the round's; only the files the tree check tolerates are left out:
+**Stage the round.** The tree was clean when the round started, so everything the fixer left is the round's; only the files the tree check tolerates are left out. The CLI writes those pathspecs, the archived change's summary included when the change was read from the archive, so no line here spells a dated directory:
 
 ```bash
-git add -A -- . ':(exclude)openspec/changes/<change>/settle-summary.md' ':(exclude)docs/notes/compound.md'
+interlock settle staging-pathspecs --change <change> --nul > .claude/ship/settle/pathspecs-r<r>
+test -s .claude/ship/settle/pathspecs-r<r>
+git add -A --pathspec-from-file=.claude/ship/settle/pathspecs-r<r> --pathspec-file-nul
 ```
+
+Stage only when the pathspec file is non-empty: when `staging-pathspecs` exits non-zero, or `test -s` fails, git would read the empty list as the whole tree, so print `ROUND FAILED: staging-pathspecs wrote no pathspecs`, stage nothing, and stop the loop early.
 
 Then classify every staged path, with the snapshot as the profile (with no snapshot, leave `--profile` out):
 
@@ -528,7 +540,7 @@ Omit that line when `--test-plan` was not passed.
 
 ## 8. Write the local artifact
 
-Write `openspec/changes/<change-name>/settle-summary.md` with the branch name, commit message, PR title (≤70 chars), and the full description. This survives the session; the platform copy can be regenerated from it.
+Write `openspec/changes/<change-name>/settle-summary.md` with the branch name, commit message, PR title (≤70 chars), and the full description; for a change read from the archive (§2), write it into the archived directory instead, `<dir>/settle-summary.md`. This survives the session; the platform copy can be regenerated from it.
 
 ---
 

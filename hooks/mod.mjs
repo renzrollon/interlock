@@ -127,9 +127,9 @@
 // `lib/spec-meter.mjs`'s.
 //
 // THE SETTLE METER (observe-the-settle-run-live design D1-D27). The same module
-// draws an `/interlock:settle --review` pass from what already crossed it: the
-// settle skill's load with `--review`, read off a submitted prompt's first
-// line or a Skill tool call (D4); the Bash results of the pass's keyed
+// draws an `/interlock:settle` pass, with or without `--review`, from what
+// already crossed it: the settle skill's load, read off a submitted prompt's
+// first line or a Skill tool call (D4); the Bash results of the pass's keyed
 // `interlock`, `gh`, `glab` and `git` stages, read on both branches of the Bash
 // hook, so a line the spec reader declines, or one that crosses after a ship
 // launch, still files (D8, D19, D27); and the spawns, steps and turn ends of
@@ -147,7 +147,7 @@
 import { drawPlanBoardRows } from '../lib/draw-plan.mjs'
 import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
 import { LIMITS } from '../lib/limits.mjs'
-import { PALETTE, stateProps, turnProps } from '../lib/meter-palette.mjs'
+import { PALETTE, stateProps, toneProps, turnProps } from '../lib/meter-palette.mjs'
 import { TICK_MS, quietMs, quietWord } from '../lib/meter-quiet.mjs'
 import { clockText, durationText, stampText } from '../lib/meter-time.mjs'
 import { BATCH_ACTIONS, batchText, laneCountText, planWaveCount, stepText, timeline } from '../lib/meter-timeline.mjs'
@@ -195,8 +195,11 @@ import {
   noteSettleSkill,
   noteSettleSpawn,
   noteSettleStep,
+  settleDrawsCards,
   settleLines,
   settleLoad,
+  settleLoadsCreate,
+  settleLoadsReview,
   settlePaneLines,
   settleStatusText
 } from '../lib/settle-meter.mjs'
@@ -625,14 +628,16 @@ async function observeLoad($, name, args) {
 
 /**
  * The settle skill's load (observe-the-settle-run-live design D4, D21): the
- * settle skill with `--review` starts a run over whatever was held, and the
- * review-code skill loaded during a live run changes no section. Of the load
- * only the skill's name and the word `--review` are read. Never throws.
+ * settle skill, with or without `--review`, starts a run over whatever was held
+ * and records which (draw-the-settle-and-spec-panes-as-cards D4), and whether
+ * it carried `--create` (the PR #28 review's M1); the review-code skill loaded
+ * during a live run changes no section. Of the load only the skill's name and
+ * the words `--review` and `--create` are read. Never throws.
  */
 async function observeSettleLoad($, name, args) {
   try {
     const load = settleLoad(name, args)
-    if (load === 'settle') await startSettle($)
+    if (load === 'settle') await startSettle($, { review: settleLoadsReview(args), create: settleLoadsCreate(args) })
     else if (load === 'review' && settleWatching()) {
       const held = settle
       const now = await settleNow($)
@@ -676,10 +681,15 @@ function redrawSettle($) {
   $.ui.invalidate('ui.render')
 }
 
-/** A fresh settle run, live, its pane opened unasked; one toast when the engine will not seat it (design D6, D15). */
-async function startSettle($) {
+/**
+ * A fresh settle run, live, its pane opened unasked; one toast when the engine
+ * will not seat it (design D6, D15). `flags` is whether the load carried
+ * `--review` and `--create`, which the record keeps
+ * (draw-the-settle-and-spec-panes-as-cards D4; the PR #28 review's M1).
+ */
+async function startSettle($, { review, create }) {
   if (settle.phase !== 'idle') $.ui.log(SETTLE_REPLACED_LINE, { to: 'debug' })
-  settle = freshSettle()
+  settle = freshSettle({ review, create })
   const started = settle
   settle.phase = 'live'
   settle.startedAt = await settleNow($)
@@ -1153,23 +1163,168 @@ async function countInvestigator($) {
   }
 }
 
-/** `/interlock-spec` (design D6): the pure module's keyed lines on `Box` and `Text`, and nothing else. */
-function drawSpecPane($, e) {
+// THE CARDS (draw-the-settle-and-spec-panes-as-cards design D3). Both panes
+// draw each keyed line as one Text with its spans nested in it, each span on
+// the props its tone names, so a row's text still reads whole. Runs of lines
+// sit in unkeyed single-border cards, so a reader of the keyed Boxes still
+// sees flat rows in the order drawn. Below the card floor, or with no width
+// reported, the same lines are drawn flat. Every field is the pure module's;
+// a line whose spans do not join to its text is drawn as its plain text.
+
+// A settle role row sits at the gutter: a row's `HH:MM:SS` and the one space after it.
+const SETTLE_GUTTER = 9
+const SETTLE_BAD_SPANS = "interlock settle: a pane line's spans did not match its text"
+const SPEC_BAD_SPANS = "interlock spec: a pane line's spans did not match its text"
+const SPEC_SECTIONS = new Set(['artifacts', 'explore', 'gates', 'writes', 'record'])
+/** The kinds of settle line a group's card holds. */
+const SETTLE_CARD_KINDS = new Set(['heading', 'row', 'role', 'agent', 'verdict'])
+
+/** The engine's `bodyColumns` for a pane, or `null` when none was reported. */
+const paneColumns = e => (e.props && isInt(e.props.bodyColumns) && e.props.bodyColumns > 0 ? e.props.bodyColumns : null)
+
+/** Whether a pane draws its cards: a width was reported, and it is at least the card floor (design D3). */
+const drawsCards = columns => columns !== null && columns >= LIMITS.waveBoardMinColumns
+
+/** Whether a line's spans can be drawn: an array of texts that join to the line's text. */
+const spansJoin = l =>
+  Array.isArray(l.spans) && l.spans.every(s => s && typeof s.text === 'string') && l.spans.map(s => s.text).join('') === l.text
+
+/**
+ * The drawer of one pane's keyed lines: `row(l, boxProps, textProps)` is the
+ * line's keyed Box over one Text with its spans nested in it, on the line's own
+ * bold or dim. A line whose spans do not join to its text is drawn as its plain
+ * text, and `bad` is named once on the debug log for the draw (design D3).
+ */
+function paneRows($, e, bad) {
   const { Box, Text } = $.ui.resolve(e)
-  const props = l => (l.bold ? { bold: true } : l.dim ? { dimColor: true } : null)
-  return h(Box, { flexDirection: 'column' }, ...specPaneLines(spec).map(l => h(Box, { key: l.key }, h(Text, props(l), l.text))))
+  let named = false
+  return (l, boxProps, textProps) => {
+    const text = typeof l.text === 'string' ? l.text : String(l.text ?? '')
+    const weight = l.bold ? { bold: true } : l.dim ? { dimColor: true } : null
+    let body = [text]
+    if (spansJoin(l)) body = l.spans.map(s => h(Text, toneProps(s.tone), s.text))
+    else if (!named) {
+      named = true
+      $.ui.log(bad, { to: 'debug' })
+    }
+    return h(Box, { key: l.key, flexShrink: 0, ...boxProps }, h(Text, { ...textProps, ...weight }, ...body))
+  }
+}
+
+/** One unkeyed single-border card: its border the theme key given, else dim (design D3). */
+function paneCard(Box, borderColor, props, ...kids) {
+  return h(
+    Box,
+    {
+      flexDirection: 'column',
+      flexShrink: 0,
+      borderStyle: 'single',
+      ...(borderColor ? { borderColor } : { borderDimColor: true }),
+      paddingLeft: 1,
+      paddingRight: 1,
+      ...props
+    },
+    ...kids
+  )
 }
 
 /**
- * `/interlock-settle` (observe-the-settle-run-live design D13, D24): the pure
- * module's keyed lines on `Box` and `Text`, at the engine's `bodyColumns`, and
- * nothing else.
+ * `/interlock-spec` (design D6; draw-the-settle-and-spec-panes-as-cards D3):
+ * the pure module's keyed lines on `Box` and `Text`. At or above the card
+ * floor, the header in an accent-bordered card, then one dim card per section
+ * in the order its lines arrive, titled by the section's name; the writes card
+ * is titled by its own keyed `writes` line. Below the floor, flat. With no
+ * run, the one no-run Text.
+ */
+function drawSpecPane($, e) {
+  const { Box, Text } = $.ui.resolve(e)
+  const lines = specPaneLines(spec)
+  const row = paneRows($, e, SPEC_BAD_SPANS)
+  const columns = paneColumns(e)
+  const root = (...kids) => h(Box, { flexDirection: 'column', flexShrink: 0 }, ...kids)
+  if (lines.length === 1 && lines[0].kind === 'none') {
+    const l = lines[0]
+    return root(h(Box, { key: l.key, flexShrink: 0 }, h(Text, l.dim ? { dimColor: true } : null, l.text)))
+  }
+  if (!drawsCards(columns)) return root(...lines.map(l => row(l)))
+  const header = []
+  const sections = new Map()
+  const loose = []
+  for (const l of lines) {
+    if (l.section === 'header') header.push(row(l))
+    else if (SPEC_SECTIONS.has(l.section)) {
+      if (!sections.has(l.section)) sections.set(l.section, { titled: false, kids: [] })
+      const section = sections.get(l.section)
+      if (l.kind === 'title') section.titled = true
+      section.kids.push(row(l))
+    } else loose.push(row(l))
+  }
+  const cards = []
+  if (header.length) cards.push(paneCard(Box, PALETTE.accent, { width: columns }, ...header))
+  for (const [name, section] of sections) {
+    // The writes card's keyed `writes` line is its title; no second one is drawn.
+    const title = section.titled ? [] : [h(Text, HEADING_PROPS, name)]
+    cards.push(paneCard(Box, null, { width: columns }, ...title, ...section.kids))
+  }
+  return root(...cards, ...loose)
+}
+
+/** A settle line's indent, as layout: a role row at the gutter, an agent row one step further in per depth beyond the first. */
+function settleIndent(l) {
+  if (l.kind !== 'role' && l.kind !== 'agent') return null
+  const depth = isInt(l.depth) && l.depth > 1 ? l.depth : 1
+  return { paddingLeft: SETTLE_GUTTER + INDENT * (depth - 1) }
+}
+
+/** The theme key a verdict card's border takes: the colour of its verdict word's tone, else none. */
+function verdictColor(l) {
+  if (!spansJoin(l) || typeof l.verdict !== 'string') return null
+  const word = l.spans.find(s => s.text === l.verdict && s.tone !== 'clock')
+  const props = word ? toneProps(word.tone) : null
+  return props && typeof props.color === 'string' ? props.color : null
+}
+
+/**
+ * `/interlock-settle` (observe-the-settle-run-live design D13, D24;
+ * draw-the-settle-and-spec-panes-as-cards D3): the pure module's keyed lines
+ * on `Box` and `Text`, at the engine's `bodyColumns`. At or above the settle
+ * card floor (`settleDrawsCards`): the header and mode lines in an
+ * accent-bordered card, then one card per group, its border the current
+ * colour while its heading is the open one and dim otherwise, a verdict row in
+ * a card of its own bordered by its word's tone; the done line, the banners and any line of no known group after the
+ * cards. Below the floor, flat. With no run, the one no-run Text.
  */
 function drawSettlePane($, e) {
   const { Box, Text } = $.ui.resolve(e)
-  const columns = e.props && isInt(e.props.bodyColumns) && e.props.bodyColumns > 0 ? e.props.bodyColumns : null
-  const props = l => ({ wrap: 'truncate-end', ...(l.bold ? { bold: true } : l.dim ? { dimColor: true } : null) })
-  return h(Box, { flexDirection: 'column' }, ...settlePaneLines(settle, columns).map(l => h(Box, { key: l.key }, h(Text, props(l), l.text))))
+  const columns = paneColumns(e)
+  const lines = settlePaneLines(settle, columns)
+  const row = paneRows($, e, SETTLE_BAD_SPANS)
+  const text = { wrap: 'truncate-end' }
+  // An agent row longer than its card is cut in the middle, so its role and its end word both stay (the PR #28 review's M3).
+  const wrapOf = l => (l.kind === 'agent' ? { wrap: 'truncate-middle' } : text)
+  const root = (...kids) => h(Box, { flexDirection: 'column', flexShrink: 0 }, ...kids)
+  if (lines.length === 1 && lines[0].kind === 'none') {
+    const l = lines[0]
+    return root(h(Box, { key: l.key, flexShrink: 0 }, h(Text, { ...text, ...(l.dim ? { dimColor: true } : null) }, l.text)))
+  }
+  if (!settleDrawsCards(columns)) return root(...lines.map(l => row(l, null, wrapOf(l))))
+  const header = []
+  const groups = new Map()
+  for (const l of lines) {
+    if (l.kind === 'heading' && isInt(l.group) && !groups.has(l.group)) groups.set(l.group, { open: l.open === true, kids: [] })
+  }
+  const loose = []
+  for (const l of lines) {
+    if (l.kind === 'header' || l.kind === 'mode') header.push(row(l, null, text))
+    else if (SETTLE_CARD_KINDS.has(l.kind) && groups.has(l.group)) {
+      const drawn = row(l, settleIndent(l), wrapOf(l))
+      groups.get(l.group).kids.push(l.kind === 'verdict' ? paneCard(Box, verdictColor(l), null, drawn) : drawn)
+    } else loose.push(row(l, null, text))
+  }
+  const cards = []
+  if (header.length) cards.push(paneCard(Box, PALETTE.accent, { width: columns }, ...header))
+  for (const g of groups.values()) cards.push(paneCard(Box, g.open ? PALETTE.current : null, { width: columns }, ...g.kids))
+  return root(...cards, ...loose)
 }
 
 /**
@@ -2157,7 +2312,7 @@ export function register(on) {
     try {
       await $.command.register({
         name: SETTLE_PANE,
-        description: 'Open the Interlock settle meter: the live /interlock:settle --review run, its review, rounds, agents and verdict',
+        description: 'Open the Interlock settle meter: the live /interlock:settle pass, with or without --review, its sections, agents and verdict',
         immediate: true
       })
     } catch (err) {
