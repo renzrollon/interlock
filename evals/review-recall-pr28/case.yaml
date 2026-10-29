@@ -1,0 +1,33 @@
+# Gap class: review recall. PR #28 (settle and spec meter cards) merged with a
+# round-0 review that "raised no surviving finding" (comment 6471123715), while
+# two later reviews found real defects in the same diff: M1 and M2 in the code
+# review (6471559316) and B1 in the blast-radius review (6471618730). This case
+# runs review-code over that diff in a scratch clone and asks whether the
+# findings come back.
+#
+# Deterministic regex graders, one per known finding, written to tolerate
+# phrasing but to name the finding's own subject. Full suite only (no smoke tag):
+# one review costs more than the smoke cap. Metered only where a credential is
+# configured; the structural gate in test/evals.test.mjs runs regardless.
+#
+# Provenance: PR #28 of renzrollon/interlock, diff 251cebe..e177e7d, comments
+# 6471123715, 6471559316 and 6471618730.
+schema_version: "1.0"
+name: review-recall-pr28
+provenance: "github.com/renzrollon/interlock PR #28 (251cebe..e177e7d), comments 6471123715, 6471559316, 6471618730"
+exercises: ["skills/review-code/SKILL.md"]
+runs: 1
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: |
+    Run /interlock:review-code over the diff of PR #28: `git diff 251cebe e177e7d`.
+    The workspace is a scratch clone checked out at e177e7d, and 251cebe is
+    fetched. Review the code diff only; make no changes and do not commit.
+
+    When the review ends, report every finding it kept, each with its severity,
+    its file and line, and what is wrong, in prose or a table. Report the
+    findings themselves, not a summary of how the review ran.
+  max_turns: 60
+  timeout_seconds: 3000
+  allowed_tools: [Agent, Bash, Read, Glob, Grep]

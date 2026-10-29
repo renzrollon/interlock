@@ -293,9 +293,10 @@ test('FLAGS is the frozen published vocabulary of design D2', () => {
       'no-baseline',
       'no-pipeline',
       'docs-only-changes',
-      'dimensions-unrecorded',
       'domain-skipped',
       'blast-radius-skipped',
+      'domain-partial',
+      'blast-radius-partial',
       'legacy-unspecced',
       'no-graph',
       'requirements-omitted',
@@ -353,8 +354,17 @@ const EXPECT = {
   'review-with-blocker': { 'review.blockers': R() },
   'review-malformed': { 'review.blockers': R() },
   'review-warnings-over-cap': { 'review.warnings': A('finding') },
-  'review-no-dimensions': { 'review.ran': G(['dimensions-unrecorded']) },
+  // D2: a record with no dimension record, or no proof, is amber, not a flag.
+  'review-no-dimensions': { 'review.ran': A('evidence') },
   'review-domain-skipped': { 'review.ran': G(['domain-skipped']) },
+  // The proof of coverage (spec: review/review-proof): each gap is amber on the ran signal.
+  'review-unproven-pr28': { 'review.ran': A('evidence') },
+  'review-unread': { 'review.ran': A('evidence') },
+  'review-uncited': { 'review.ran': A('evidence') },
+  'review-no-proof': { 'review.ran': A('evidence') },
+  // A dimension that ran on a cut or stale input is a flag, never a band.
+  'review-domain-degraded': { 'review.ran': G(['domain-partial']) },
+  'review-blast-degraded': { 'review.ran': G(['blast-radius-partial']) },
   'review-incomplete': { 'review.ran': A('evidence') },
   'review-dismissal-rejected': { 'review.adversarial': A('evidence') },
   'review-votes-below-floor': { 'review.adversarial': A('evidence') },
@@ -619,12 +629,67 @@ test('warnings over the cap name the cap and its published value', () => {
   assert.ok(entry.reason.includes(String(MERGE_BANDS.maxWarningsForMerge)), entry.reason)
 })
 
-test('no review is amber on the ran signal because no review ran; a review with no dimension record is a flag', () => {
+test('no review is amber on the ran signal because no review ran; a review with no dimension record is amber', () => {
   const none = signalOf(assessMergeConfidence(fixture('no-review')), 'review.ran')
   assert.match(none.reason, /no review ran/i)
   const unrecorded = signalOf(assessMergeConfidence(fixture('review-no-dimensions')), 'review.ran')
-  assert.deepEqual(unrecorded.flags, ['dimensions-unrecorded'])
-  assert.match(said(unrecorded), /dimension record/i)
+  assert.equal(unrecorded.band, 'amber')
+  assert.equal(unrecorded.kind, 'evidence')
+  assert.deepEqual(unrecorded.flags, [])
+  assert.match(unrecorded.reason, /recorded neither its dimensions nor its coverage/)
+})
+
+// --- the proof of coverage on the review signals (spec: review/merge-confidence) ---
+
+test('pr28: the unproven review is amber on the ran signal, names the four dimensions and four files, and is not MERGE', () => {
+  const result = assessMergeConfidence(fixture('review-unproven-pr28'))
+  const ran = signalOf(result, 'review.ran')
+  assert.equal(ran.band, 'amber')
+  assert.equal(ran.kind, 'evidence')
+  for (const name of ['language', 'technical-lead', 'domain', 'blast-radius']) {
+    assert.ok(ran.evidence.includes(`unproven: ${name} (coverage not recorded)`), said(ran))
+  }
+  for (const file of ['hooks/mod.mjs', 'lib/meter-palette.mjs', 'lib/settle-meter.mjs', 'lib/spec-meter.mjs']) {
+    assert.ok(ran.evidence.includes(`uncited: ${file}`), said(ran))
+  }
+  assert.equal(result.verdict, 'HUMAN')
+  // The blockers signal stays green and says the proof does not hold.
+  const blockers = signalOf(result, 'review.blockers')
+  assert.equal(blockers.band, 'green')
+  assert.match(blockers.reason, /raised no surviving finding and its proof of coverage does not hold/)
+})
+
+test('an unread input is named with its dimension, and a review that raised findings still needs its coverage proved', () => {
+  const unread = signalOf(assessMergeConfidence(fixture('review-unread')), 'review.ran')
+  assert.ok(unread.evidence.some(l => l.includes('qa') && l.includes('delta specs')), said(unread))
+  const uncited = assessMergeConfidence(fixture('review-uncited'))
+  assert.match(signalOf(uncited, 'review.ran').reason, /src\/widgets\/catalogue\.ts/)
+  assert.equal(signalOf(uncited, 'review.warnings').band, 'green')
+  const noProof = signalOf(assessMergeConfidence(fixture('review-no-proof')), 'review.ran')
+  assert.match(noProof.reason, /no proof of coverage/)
+})
+
+test('a clean adjudicated review with a proof that holds says so on the blockers signal', () => {
+  const blockers = signalOf(assessMergeConfidence(fixture('all-observable-green')), 'review.blockers')
+  assert.match(blockers.reason, /its proof of coverage holds/)
+})
+
+test('a degraded domain or blast-radius input is a flag that lowers the score, and both can stand together', () => {
+  const green = assessMergeConfidence(fixture('all-observable-green'))
+  for (const [name, flag] of [['review-domain-degraded', 'domain-partial'], ['review-blast-degraded', 'blast-radius-partial']]) {
+    const result = assessMergeConfidence(fixture(name))
+    const ran = signalOf(result, 'review.ran')
+    assert.equal(ran.band, 'green')
+    assert.deepEqual(ran.flags, [flag])
+    assert.ok(result.score < green.score, `${name} scores below the same input without it`)
+  }
+  const both = fixture('review-domain-degraded')
+  both.review.dimensions.degraded.push(...fixture('review-blast-degraded').review.dimensions.degraded)
+  assert.deepEqual([...signalOf(assessMergeConfidence(both), 'review.ran').flags].sort(), ['blast-radius-partial', 'domain-partial'])
+  const page = readFileSync(DELIVERY_PAGE, 'utf8')
+  for (const flag of ['domain-partial', 'blast-radius-partial']) {
+    assert.match(page, new RegExp(`^\\| \`${flag}\` \\|`, 'm'), `docs/15 has no flag row for ${flag}`)
+  }
 })
 
 test('an incomplete review, and one whose selected dimension could not run, are amber naming why', () => {

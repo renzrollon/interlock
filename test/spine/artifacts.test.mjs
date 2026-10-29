@@ -505,3 +505,70 @@ test('width: only spec.md files are capabilities, so a stray note under specs/ i
   assert.equal(r.width.wide, false)
   assert.deepEqual(r.width.over, [])
 })
+
+// --- an archived change resolves read-only, by opt-in (design §6, D4) ---------
+
+function archivedRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-archived-'))
+  const put = (rel, text) => {
+    mkdirSync(join(dir, rel, '..'), { recursive: true })
+    writeFileSync(join(dir, rel), text)
+  }
+  for (const date of ['2026-10-27', '2026-10-28']) {
+    const at = `openspec/changes/archive/${date}-x`
+    put(`${at}/proposal.md`, '# Proposal\n')
+    put(`${at}/design.md`, '# Design\n')
+    put(`${at}/tasks.md`, `# Tasks\n\n- [x] 1.1 ${date}\n`)
+    put(`${at}/specs/alpha/spec.md`, '# Alpha\n')
+  }
+  put('openspec/changes/archive/2026-10-29-x-other/proposal.md', '# Not x\n')
+  return dir
+}
+
+test('archived: a named change only in the archive resolves read-only from the latest dated directory', async () => {
+  const dir = archivedRepo()
+  try {
+    const r = resolveChange(dir, 'x', { archived: true })
+    assert.deepEqual(r, { name: 'x', dir: join('openspec', 'changes', 'archive', '2026-10-28-x'), archived: true })
+    const inspected = inspectChange(dir, 'x', { dir: r.dir, archived: r.archived })
+    assert.equal(inspected.exists, true)
+    assert.equal(inspected.archived, true)
+    assert.equal(inspected.path, join(dir, r.dir))
+    assert.equal(inspected.tasks.items[0].text, '1.1 2026-10-28', 'the latest date wins')
+    assert.deepEqual(inspected.specFiles, ['alpha/spec.md'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('archived: an active change wins over an archived one of the same name and says archived: false', () => {
+  const dir = archivedRepo()
+  try {
+    mkdirSync(join(dir, 'openspec', 'changes', 'x'), { recursive: true })
+    assert.deepEqual(resolveChange(dir, 'x', { archived: true }), {
+      name: 'x',
+      dir: join('openspec', 'changes', 'x'),
+      archived: false
+    })
+    assert.equal('archived' in inspectChange(dir, 'x'), false, 'an active inspection carries no archived key')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('archived: without the option, listings and the no-name default exclude the archive', async () => {
+  const dir = archivedRepo()
+  try {
+    assert.deepEqual(listChanges(dir), [])
+    assert.match(resolveChange(dir, 'x').error, /not found/)
+    assert.match(resolveChange(dir).error, /no changes found/)
+    assert.match(resolveChange(dir, undefined, { archived: true }).error, /no changes found/, 'the no-name default never reads the archive')
+    const { detectUnarchived } = await import('../../lib/drift.mjs')
+    assert.deepEqual(detectUnarchived(dir), [], 'drift lists no archived change as unarchived')
+    const { assessReadiness } = await import('../../lib/ready.mjs')
+    assert.throws(() => assessReadiness(dir, 'x'), /not found/, 'ready does not select an archived change')
+    assert.throws(() => assessReadiness(dir), /no changes found/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

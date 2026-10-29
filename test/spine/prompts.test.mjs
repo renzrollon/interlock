@@ -22,6 +22,7 @@ import { assembleReviewPrompt } from '../../lib/prompts/review.mjs'
 import { assembleRemediatePrompt, assembleVerdictPrompt } from '../../lib/prompts/remediate.mjs'
 import { assembleHandoffPrompt } from '../../lib/prompts/handoff.mjs'
 import { selectDimensions, ALWAYS_ON_DIMENSIONS } from '../../lib/prompts/dimensions.mjs'
+import { renderProofRules } from '../../lib/prompts/review-dimension.mjs'
 import { publishStageLine } from '../../lib/prompts/stage.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -789,20 +790,25 @@ test('HANDOFF_RESULT_SCHEMA declares the two requirement counts as integers and 
 //
 // A review or a re-review that finds nothing and writes nothing leaves the run
 // with no findings list to adjudicate, which it reads as "did not complete" or
-// "not re-reviewed". Both briefings therefore name the findings file and ask for
-// an empty list.
+// "not re-reviewed". Both briefings therefore name the findings file and ask,
+// when nothing is found, for one ledger per dimension: a bare `[]` is a ran
+// dimension with no coverage, which is unproven (spec: review/review-proof).
 
 const FINDINGS_AT = '.claude/ship/add-widget/review/findings.json'
 const VERDICTS_AT = '.claude/ship/add-widget/review/verdicts.json'
 const EMPTY_LIST = '`[]`'
+const LEDGER_SHAPE = '"findings": [], "coverage": { "checked": [...], "unread": [...] }'
 
-test('the review briefing names the findings file and asks for an empty list when nothing is found', () => {
-  const prompt = assembleReviewPrompt(reviewInput({ findingsPath: FINDINGS_AT, verdictsPath: VERDICTS_AT }))
+test('the review briefing names the findings file and asks for the ledger shape when nothing is found', () => {
+  const prompt = assembleReviewPrompt(reviewInput({ findingsPath: FINDINGS_AT, verdictsPath: VERDICTS_AT, changedSources: ['lib/db.mjs'] }))
   assert.ok(prompt.includes(FINDINGS_AT), 'the findings path is not in the review briefing')
-  assert.ok(prompt.includes(EMPTY_LIST), 'the review briefing never asks for an empty list')
+  assert.ok(prompt.includes(LEDGER_SHAPE), 'the review briefing never asks for the ledger shape')
+  assert.match(prompt, /never\s+a bare `\[\]`/, 'the review briefing must say a bare [] is not a clean answer')
+  // The proof rules and the measure line, as `review brief` prints them.
+  assert.ok(prompt.includes(renderProofRules({ changedSources: ['lib/db.mjs'] })), 'the review briefing carries the proof rules verbatim')
 })
 
-test('the remediation briefing names the findings file and asks for an empty list when nothing is found', () => {
+test('the remediation briefing names the findings file and asks a clean re-review for one ledger per dimension', () => {
   const prompt = assembleRemediatePrompt({
     change: 'add-widget',
     round: 1,
@@ -818,7 +824,10 @@ test('the remediation briefing names the findings file and asks for an empty lis
   })
   assert.ok(prompt.includes(FINDINGS_AT), 'the findings path is not in the remediation briefing')
   assert.ok(prompt.includes(VERDICTS_AT), 'the verdicts path is not in the remediation briefing')
-  assert.ok(prompt.includes(EMPTY_LIST), 'the remediation briefing never asks for an empty list')
+  assert.ok(prompt.includes(LEDGER_SHAPE), 'the remediation briefing never asks for the ledger shape')
+  assert.match(prompt, /one\s+answer per re-reviewed dimension/)
+  assert.match(prompt, /never a bare `\[\]`/)
+  assert.ok(prompt.includes(renderProofRules({})), 'the remediation briefing carries the proof rules verbatim')
 })
 
 test('the verdict briefing fixes and re-reviews nothing, so it asks for no file', () => {

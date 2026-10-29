@@ -91,6 +91,7 @@ const EXPECTED_CASES = [
   'evidence-locator',
   'handoff-status-enum',
   'lane-partial-failure',
+  'review-recall-pr28',
   'skill-routing',
   'skill-routing-explore',
   'tier-read-scope',

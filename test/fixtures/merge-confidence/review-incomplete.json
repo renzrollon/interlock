@@ -78,6 +78,20 @@
       ],
       "unavailable": [],
       "completed": false
+    },
+    "proof": {
+      "proven": true,
+      "reason": null,
+      "dimensions": [
+        "qa"
+      ],
+      "unproven": [],
+      "unread": [],
+      "uncited": [],
+      "changed": 1,
+      "cited": 1,
+      "carried": [],
+      "reruns": 0
     }
   },
   "verify": {

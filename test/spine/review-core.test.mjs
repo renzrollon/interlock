@@ -513,6 +513,13 @@ test('the same caller citation against a finding of another dimension outside th
   assert.equal(r.counts.dismissalsRejected, 2)
 })
 
+test('a refutation citing its own file dismisses a regression finding outside the diff', () => {
+  // spec: review/review-depth — a regression finding names an unchanged reader or end path.
+  const r = resolveReview([outsideFinding('regression')], [refuteCaller(), refuteCaller()], { changedPaths: DIFF })
+  assert.equal(r.counts.dismissed, 1)
+  assert.equal(r.counts.dismissalsRejected, 0)
+})
+
 test('a blast-radius finding gains only its own file: a citation of another outside path stays a non-vote', () => {
   const other = () =>
     v({ findingTitle: 'caller breaks', file: `./${CALLER}`, isReal: false, refinedSeverity: 'dismiss', evidence: 'lib/nowhere.ts:1' })

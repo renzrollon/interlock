@@ -819,3 +819,40 @@ test('descendant: reading does not mutate the file or the base', () => {
   readRunEvidence(file, against)
   assert.equal(JSON.stringify([file, against]), before)
 })
+
+// --- a change archived in the pull request (design §6, D4) ------------------------
+
+test('a change only in the archive is read from its archived directory: scenarios, ledger and artifacts, not missing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-evidence-archived-'))
+  try {
+    const at = `openspec/changes/archive/2026-10-28-${CHANGE}`
+    put(root, `${at}/proposal.md`, '# Proposal\nwhy\n')
+    put(root, `${at}/design.md`, '# Design\nhow\n')
+    put(root, `${at}/tasks.md`, '- [x] 1.1 do it\n')
+    put(root, `${at}/specs/alpha/spec.md`, ALPHA_DELTA)
+    put(
+      root,
+      `${at}/decisions.md`,
+      `# Decisions — ${CHANGE}\n\n| id | question | class | resolution | evidence |\n|----|----------|-------|------------|----------|\n| D1 | Pin it? | needs_human | — | — |\n`
+    )
+    put(root, 'openspec/specs/alpha/spec.md', ALPHA)
+
+    const { input, notes } = gatherMergeEvidence(root, { change: CHANGE, changedPaths: ['lib/new.mjs'] })
+    assert.ok(!notes.some(n => /no change under assessment/.test(n.what)), JSON.stringify(notes))
+    assert.equal(input.change.name, CHANGE)
+    assert.equal(input.change.archived, true)
+    assert.equal(input.change.dir, at)
+    assert.deepEqual(input.change.capabilities, ['alpha'])
+    assert.ok(input.artifacts['proposal.md'], 'artifacts are read from the archived directory')
+    assert.equal(input.checklist.skipped, false, input.checklist.reason)
+    assert.equal(input.checklist.archived, true)
+    assert.equal(input.checklist.dir, join(at))
+    assert.deepEqual(input.checklist.scenarios.map(s => s.title), ['Happy path'], 'the delta scenarios are read')
+    assert.equal(input.ledger.exists, true, 'the archived ledger is read')
+    assert.equal(input.ledger.changeExists, true)
+    assert.deepEqual(input.ledger.rows.map(r => [r.id, r.class]), [['D1', 'needs_human']])
+    assert.deepEqual(input.drift.unarchived, [], 'drift still excludes the archive')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

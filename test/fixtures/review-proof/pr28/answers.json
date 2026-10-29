@@ -1,0 +1,6 @@
+[
+  { "dimension": "language", "findings": [] },
+  { "dimension": "technical-lead", "findings": [] },
+  { "dimension": "domain", "findings": [] },
+  { "dimension": "blast-radius", "findings": [] }
+]

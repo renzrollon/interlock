@@ -37,7 +37,15 @@ If there are no changed files, stop and say so. A review of an empty diff is not
 
 Read the OpenSpec artifacts for the change before reviewing: `proposal.md`, `design.md`, `tasks.md`, `specs/**/*.md`. Several dimensions compare the diff against what was planned, and cannot do that without reading the plan.
 
-**Repository policy.** If the repo has a root `REVIEW.md`, read it with `interlock review-policy --base <base> --json` and prepend its `prose` to each reviewer's instructions as a clearly delimited *"REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate)"* block — it says what "Important" means here and who owns the bar. It is advice, never a command, and can never lower survival. Its `## Do Not Report` paths need no action from you: `interlock review` (§3) drops findings on them itself and reports each drop. With `--base`, the path lists are read from the base ref, not from your working copy, so a change cannot edit the exclusions it is judged under; only the prose is read from the working tree. Its `## Always Human Review` paths are not a review input at all — the merge verdict reads them. A copyable [`REVIEW.template.md`](./REVIEW.template.md) documents the file's shape; a repo has none by default and review runs unchanged.
+**Repository policy.** If the repo has a root `REVIEW.md`, its prose reaches every reviewer inside the prompt `interlock review brief` prints (§2), quoted as advice that does not override the rubric or the evidence gate; this skill adds none of it by hand. Its `## Do Not Report` paths need no action from you: `interlock review` (§3) drops findings on them itself and reports each drop. With `--base`, the path lists are read from the base ref, not from your working copy, so a change cannot edit the exclusions it is judged under. Its `## Always Human Review` paths are not a review input at all — the merge verdict reads them. A copyable [`REVIEW.template.md`](./REVIEW.template.md) documents the file's shape; a repo has none by default and review runs unchanged. `interlock review-policy --base <base> --json` prints the parsed file when you want to see it.
+
+**The graph must hold the diff.** Before fanning out, check that the codebase graph covers the changed files, and update it when it does not:
+
+```bash
+git diff --name-only <base>...HEAD | interlock-graph covers --changed - --update
+```
+
+On exit 3 there is no graph: run no `blast-radius` reviewer, print the `BLAST RADIUS SKIPPED` line (§2), and build nothing. When it still exits 1 after its own update, print `GRAPH STALE: <the files it lists>`, run blast radius on the graph it has, and record `blast-radius` under `degraded` in the dimension record (§3) with those files as its reason. The retry is the CLI's; do not run the update again.
 
 ---
 
@@ -49,11 +57,17 @@ Read the OpenSpec artifacts for the change before reviewing: `proposal.md`, `des
 interlock domain-context <change> --changed <the changed files> --base <base> --json
 ```
 
-If `text` is non-empty, it goes to the `domain` reviewer **only**, as quoted repository data after that reviewer's brief. Never put it in another dimension's instructions. If `partial` is set, run the reviewer and print a `DOMAIN REVIEW PARTIAL: <reason>` line. If `skipped` is set, run no `domain` reviewer and print the `DOMAIN REVIEW SKIPPED: <reason>` line in your report. If nothing was selected and nothing skipped, run no `domain` reviewer and say `DOMAIN NOT SELECTED` with its reason. A `domain` reviewer given no requirement text is a reviewer making things up.
+The `domain` reviewer's prompt carries that text itself (below). If `partial` is set, run the reviewer and print a `DOMAIN REVIEW PARTIAL: <reason>` line; when `omitted` is non-empty, record `domain` under `degraded` in the dimension record (§3) with that reason, because the cap, not the reviewer, left those requirements out. If `skipped` is set, run no `domain` reviewer and print the `DOMAIN REVIEW SKIPPED: <reason>` line in your report. If nothing was selected and nothing skipped, run no `domain` reviewer and say `DOMAIN NOT SELECTED` with its reason. A `domain` reviewer given no requirement text is a reviewer making things up. When the output carries `CHANGE READ FROM ARCHIVE:`, print that line.
 
 **Routing.** Before the first spawn, run `interlock routing --json` once — add `--depth strict` under `--strict` — and make no per-role routing call. Read from that one answer: `roles.review-dimension` is the `model` and `effort` of every dimension reviewer, `roles.review-skeptic` is the `model` and `effort` of every skeptic (§3), `review.dimensions` is the depth's always-on dimension set, and `review.skeptics` is how the skeptics are spawned. Pass the role's `model` and `effort` on every Agent call of that role; a `null` means omit that parameter, and the host's default applies. Print every line of `banners` verbatim before the fan-out, then print `REVIEW DEPTH: <depth>` from the answer's `depth`. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and fall back to the strict shape at the session defaults, and print `REVIEW DEPTH: strict`: the strict depth's always-on dimensions, two skeptics per blocker and warning (§3), and no `model` or `effort` on any call. Routing is a cost hint, never a gate; a failed lookup does not stop the review and does not choose a cheaper one. Name no model and no effort level anywhere in this skill; the CLI publishes them.
 
-Spawn one agent per dimension, in parallel. The always-on set is the depth's `review.dimensions` from the routing answer; the other rows keep their own triggers at either depth. Each dimension's brief is a bundled file — load it and use it verbatim as the agent's instruction:
+Spawn one agent per dimension, in parallel. The always-on set is the depth's `review.dimensions` from the routing answer; the other rows keep their own triggers at either depth. Each dimension's prompt is printed by the CLI: run, for each dimension,
+
+```bash
+interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files>
+```
+
+and spawn the agent with the printed prompt as its whole prompt. Add nothing to it and leave nothing out: it holds the bundled rubric, the scope with the changed line ranges, the repository's review policy and review context as quoted data, the domain text for `domain`, the run-and-measure and proof rules, and the shape to return. A skill's `allowed-tools` do not reach an agent it spawns; the printed prompt's write-nothing line is the bound.
 
 | Dimension | Brief | Run when |
 |---|---|---|
@@ -61,18 +75,19 @@ Spawn one agent per dimension, in parallel. The always-on set is the depth's `re
 | architecture | `${CLAUDE_SKILL_DIR}/dimensions/architecture.md` | in `review.dimensions` |
 | qa | `${CLAUDE_SKILL_DIR}/dimensions/qa.md` | in `review.dimensions` |
 | technical-lead | `${CLAUDE_SKILL_DIR}/dimensions/technical-lead.md` | in `review.dimensions` |
+| regression | `${CLAUDE_SKILL_DIR}/dimensions/regression.md` | in `review.dimensions` |
 | devops | `${CLAUDE_SKILL_DIR}/dimensions/devops.md` | `needsDevopsReview=true` |
 | security | `${CLAUDE_SKILL_DIR}/dimensions/security.md` | any auth, input-handling, or data-exposure surface in the diff |
 | domain | `${CLAUDE_SKILL_DIR}/dimensions/domain.md` | `interlock domain-context` selected a capability (§2, above) |
 | blast-radius | `${CLAUDE_SKILL_DIR}/dimensions/blast-radius.md` | `.claude/graph/graph.json` exists |
 
-**Blast radius needs the graph.** Check for `.claude/graph/graph.json` before fanning out. If it does not exist, run no `blast-radius` reviewer and print `BLAST RADIUS SKIPPED: no graph at .claude/graph/graph.json — run /interlock:graph`. The other dimensions still run, and the skip is written to the dimension record under `skipped` with its reason (§3), so it reaches the verdict as a flag and not only as a line in this session.
+**Blast radius needs the graph.** When `interlock-graph covers` (§1) exits 3, there is no graph: run no `blast-radius` reviewer and print `BLAST RADIUS SKIPPED: no graph at .claude/graph/graph.json — run /interlock:graph`. The other dimensions still run, and the skip is written to the dimension record under `skipped` with its reason (§3), so it reaches the verdict as a flag and not only as a line in this session.
 
-`--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the eight, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not. A `blast-radius` named in `--dimensions` without a graph is not silently run and not silently dropped either: it is reported with the `BLAST RADIUS SKIPPED` line above and recorded under `skipped`, and the review names every dimension it did run.
+`--dimensions a,b,c` overrides the selection. **The names above are the rubric filenames, and they are the only names.** A name that resolves to no brief file is an error: say which name did not resolve, list the nine, and stop. Do not silently run the dimensions that did match — a caller who asked for four dimensions and got three, with no message, has been told the review covered something it did not. A `blast-radius` named in `--dimensions` without a graph is not silently run and not silently dropped either: it is reported with the `BLAST RADIUS SKIPPED` line above and recorded under `skipped`, and the review names every dimension it did run.
 
 (This used to bite: the fourth always-on dimension was called `delivery` here and in `README.md` while its brief file was `technical-lead.md`, so `--dimensions delivery` matched nothing at all and said nothing about it.)
 
-A dimension whose brief file cannot be read is **not** dispatched with an empty rubric either. Report it as unavailable — a reviewer given a dimension name and no criteria produces findings that two skeptics then spend their budget verifying.
+A dimension whose brief the CLI cannot print (`interlock review brief` exits 1) is **not** dispatched with an empty rubric either. Report it as unavailable — a reviewer given a dimension name and no criteria produces findings that two skeptics then spend their budget verifying.
 
 Every dimension agent returns findings in this shape:
 
@@ -85,11 +100,13 @@ Every dimension agent returns findings in this shape:
       "description": "what is wrong and why",
       "suggestion": "how to fix it",
       "requirement": "openspec/specs/<capability>/spec.md#<requirement heading>",
-      "specGap": true }
-  ] }
+      "specGap": true } ],
+  "coverage": {
+    "checked": [ { "what": "what was examined", "at": "path/to/file.ts:40-58" } ],
+    "unread": [ { "input": "what was not read", "reason": "why" } ] } }
 ```
 
-`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
+`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. `coverage` is what proves the review looked: an answer without it is recorded unproven. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
 This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
 
@@ -101,68 +118,76 @@ This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it
 
 Run both skeptics per finding, in parallel.
 
-How the skeptics are spawned follows `review.skeptics` from the routing answer.
+How the skeptics are spawned follows `review.skeptics` from the routing answer, and the CLI prints one prompt per agent for it:
 
-When it is `per-review`, spawn two skeptic agents for the whole review, not two per finding. Give each of them every blocker and warning, grouped by file, and have each return one verdict per finding id. Tell both that findings naming one file and overlapping lines are one issue: it is judged once and answered under each id. Every finding still carries two verdicts, one from each agent, and the evidence rule below is unchanged.
+```bash
+interlock review brief --skeptics --findings <f> [--depth strict] --json
+```
 
-When it is `per-finding`, spawn the two skeptics below for each blocker and warning. Each is also told: when a finding claims something observable (a failing test, a missing export, an unreachable branch, a command that errors), run it or read it before voting, and put what was seen in `evidence`.
+`[--depth strict]` is a placeholder: write `--depth strict` there under `--strict`, and nothing otherwise. Spawn one skeptic agent per entry of `prompts`, each with that entry's `prompt` as its whole prompt, and collect one verdict per id in its `findingIds` into the verdicts file. Add nothing to a prompt.
 
-The two briefs below are the same at both depths.
+When it is `per-review`, the CLI prints two prompts for the whole review: each skeptic is given every blocker and warning, grouped by file, returns one verdict per finding, and is told that overlapping findings are one issue, judged once. Every finding still carries two verdicts, one from each agent.
 
-**Skeptic 1 — refute it.**
-> You are a skeptical code reviewer. Your job is to REFUTE this finding if you can.
-> Read the actual file and its surrounding context. Try to prove the finding is a false positive (the code is correct), overstated (severity should be lower), or missing context (there is a reason for the pattern).
-> Default to `isReal: true` when genuinely uncertain — do not dismiss real issues. But **do** dismiss findings that misread the code or ignore surrounding context.
+When it is `per-finding`, the CLI prints two prompts per blocker and warning, each telling the skeptic to run it or read it before voting when the finding claims something observable, and to put what was seen in `evidence`.
 
-**Skeptic 2 — second opinion.**
-> You are an independent reviewer giving a second opinion. Read the actual file. Assess independently: is this real? Is the severity right? Is the suggested fix appropriate?
+**An uncited refutation does not dismiss anything.** The CLI checks two things, and both are mechanical: a refutation's `evidence` carries a `path:line` or `path:start-end` token, **and** that path is one of the files in the diff (or, for a `blast-radius` or `regression` finding, the finding's own file). Pass the diff with `--changed` so the second half can run. Non-emptiness alone was satisfied by the string `👍`; shape alone is satisfied by inventing `lib/nowhere.ts:1`. `interlock review` reports how many refutations were refused for citing nothing; a run where that number is high means the skeptics are asserting rather than reading.
 
-**Both must cite evidence to refute.** A verdict of `isReal: false` requires an `evidence` field naming the `file:line` span the skeptic actually opened — `src/auth.ts:41-58`. **An uncited refutation does not dismiss anything.** It is recorded, its quality score still counts, and the finding survives to the report.
-
-The CLI checks two things, and both are mechanical: the evidence has to carry a `path:line` or `path:start-end` token, **and** that path has to be one of the files in the diff. Pass the diff with `--changed` so the second half can run:
-
-Before that line, write the dimension record beside the findings file (with the Write tool; created directories are fine). It says what this review selected, ran, found unavailable and skipped, and `interlock review` records it so the merge verdict can see a dimension that did not run:
+Before the review line, write the dimension record beside the findings file (with the Write tool; created directories are fine). It says what this review selected, ran, found unavailable, skipped and ran on a degraded input, and `interlock review` records it so the merge verdict can see a dimension that did not run:
 
 ```json
-{ "selected": ["language", "architecture", "qa", "technical-lead", "blast-radius"],
-  "ran": ["language", "architecture", "qa", "technical-lead"],
+{ "selected": ["language", "technical-lead", "regression", "blast-radius"],
+  "ran": ["language", "technical-lead", "regression"],
   "unavailable": [],
   "skipped": [{ "name": "blast-radius", "reason": "no graph at .claude/graph/graph.json" }],
+  "degraded": [],
   "depth": "<the routing answer's depth>" }
 ```
 
-`selected`, `ran` and `unavailable` are arrays of dimension names (`unavailable` is a dimension whose brief could not be read, §2); `skipped` is an array of `{ name, reason }`, both strings, and is `[]` when nothing was skipped. `depth` is the depth that ran, copied from the routing answer (`strict` after a `ROUTING UNAVAILABLE` fallback); `interlock review` records it and refuses any other value. A `domain` skip goes here too, with the reason it printed. Write the record whether or not `--out` was given: without it the review reads as one that recorded nothing about its dimensions. With `--out <file>`, put it beside that file, and for the loop's `review-r<n>.json` name it `dimensions-r<n>.json`; otherwise put it next to the findings file as `dimensions.json`. A record that is not valid makes `interlock review` exit 1 naming the file and the fault, and prints and writes nothing.
+`selected`, `ran` and `unavailable` are arrays of dimension names (`unavailable` is a dimension whose brief could not be printed, §2); `skipped` is an array of `{ name, reason }`, both strings, and is `[]` when nothing was skipped. `degraded` is an array of `{ name, reason }` naming `domain` when `domain-context` reported `omitted`, or `blast-radius` when `interlock-graph covers` still reported files (§1); `interlock review` refuses any other name. `depth` is the depth that ran, copied from the routing answer (`strict` after a `ROUTING UNAVAILABLE` fallback); `interlock review` records it and refuses any other value. A `domain` skip goes here too, with the reason it printed. Write the record whether or not `--out` was given: without it the review reads as one that recorded nothing about its dimensions. With `--out <file>`, put it beside that file, and for the loop's `review-r<n>.json` name it `dimensions-r<n>.json`; otherwise put it next to the findings file as `dimensions.json`. A record that is not valid makes `interlock review` exit 1 naming the file and the fault, and prints and writes nothing.
+
+**Record a draft, prove it, and re-run what it cannot prove.** The first pass is written as a draft: every flag of the final write but `--metrics`, `--draft`, and `--out <draft>`, where `<draft>` is `<out>.draft.json` beside the caller's `--out`, or `.claude/ship/review/review.draft.json` when no `--out` was given:
 
 ```bash
-interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --json
+interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --dimensions <dimension record> --head <sha> [--carry <file>] --draft --out <draft> --json
+```
+
+Then ask the CLI whether the draft proves what it covered:
+
+```bash
+interlock review proof --review <draft>
+```
+
+While it exits 1, its first line reads `re-run: <dimensions>`: re-run each named dimension with its `interlock review brief --dimension` prompt, put the re-run answers alone through the skeptics with
+
+```bash
+interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> [--depth strict] --json
+```
+
+and write the next draft from the last one:
+
+```bash
+interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts> --changed <the changed files> --base <base> --dimensions <dimension record> --head <sha> [--carry <file>] --draft --out <next draft> --json
+```
+
+then run the proof line on the next draft. The CLI merges the re-run into the draft and keeps every first-pass finding, verdict, skip and degraded entry; compose no findings or verdicts file yourself, and count nothing: the cap is the CLI's. When the proof line exits 0 — its first line is `proven`, or `PROOF CAP REACHED: <dimensions>`, which you print — promote the last draft. That is the review line, and the only one that carries `--metrics`:
+
+```bash
+interlock review --rerun-of <last draft> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --json
 ```
 
 When `--out <file>` was given, the same line also carries `--head <sha> --out <file>` (`<sha>` is `git rev-parse HEAD`), so the verdict is written to that file bound to the commit it reviewed:
 
 ```bash
-interlock review --findings <f> --verdicts <f> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --head <sha> --out <file> [--carry <file>] --json
+interlock review --rerun-of <last draft> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --head <sha> --out <file> [--carry <file>] --json
 ```
 
-`[--carry <file>]` is a placeholder: write `--carry <file>` there, with the file this skill was given, when it was given `--carry`, and write nothing otherwise.
+`[--carry <file>]` is a placeholder: write `--carry <file>` there, with the file this skill was given, when it was given `--carry`, and write nothing otherwise. A `LEDGER REJECTED:` line on standard error names a dimension whose ledger was malformed; it is recorded unproven, and the proof line names it for a re-run.
 
 `--metrics <change>` is not optional either. It writes the four counts this review produced to `.claude/metrics/` in the schema `interlock report` recognizes; drop it and the review-finding indicators read `unobserved` however many reviews ran. It is bookkeeping only and cannot change the verdict or the exit status.
 
-Neither half is optional theatre. Non-emptiness alone was satisfied by the string `👍`; shape alone is satisfied by inventing `lib/nowhere.ts:1`. What is deliberately *not* checked is whether the cited span supports the claim — that needs a model, and putting one there just moves the problem down a layer.
-
 Voting a finding *real* needs no evidence: that direction already resolves toward a human reading it, which is the cheap error. Only the dismissing direction is gated, because a dismissed finding is invisible — nobody can catch the mistake.
 
-`interlock review` reports how many refutations were refused for citing nothing. A run where that number is high means the skeptics are asserting rather than reading.
-
-Both score the finding on two integer axes, 0–5:
-
-- `qualityScore` — how well-grounded, actionable and clearly explained. 0 = incomprehensible, 3 = usable, 5 = exemplary.
-- `severityScore` — impact if real. 0 = cosmetic, 3 = user-visible bug, 5 = data loss or security breach.
-
-Tell them to be honest and not inflate scores to justify keeping a weak finding.
-
 **Survival rule:** a finding survives when at least half the valid verdicts say `isReal`. A survivor takes the `refinedSeverity` of the first skeptic that judged it real — so a blocker can be demoted to a warning by verification, which is a feature. A finding that does not survive is dismissed and never reported.
-
-Skeptics must **read the file**. A verdict reached from the finding text alone is worthless; the whole mechanism depends on the skeptic having context the original reviewer lacked.
 
 ---
 

@@ -31,7 +31,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { selectDomainCapabilities, assembleDomainContext } from '../../lib/prompts/domain-context.mjs'
+import { selectDomainCapabilities, assembleDomainContext, domainPartialReason } from '../../lib/prompts/domain-context.mjs'
 import { livingSpecEdges } from '../../lib/drift.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 
@@ -517,4 +517,107 @@ test('kept is an empty list when nothing is in force, never absent', () => {
   })
   assert.ok(tooSmall.skipped)
   assert.deepEqual(tooSmall.kept, [])
+})
+
+// --- ordering, the cut as partial, graph-free selection ---------------------
+// (change `prove-the-review-covered-the-diff`, design D6 and "Graph-free
+// selection"; spec `review/domain-review`.)
+
+const PR28 = JSON.parse(
+  readFileSync(join(FIX, '..', 'review-proof', 'pr28', 'domain-context.json'), 'utf8')
+)
+const specEdge = (cap, file) => ({
+  source: `openspec:${cap}`,
+  target: `file:${file}`,
+  relation: 'implements_spec',
+  confidence: 'INFERRED',
+  source_file: `openspec/specs/${cap}/spec.md`,
+  source_location: 'L1',
+  weight: 1
+})
+
+test('capabilities are ordered by linked changed-file count, descending, and the record lists each count', () => {
+  const links = [
+    specEdge('hooks/settle-meter', 'lib/a.mjs'),
+    specEdge('hooks/settle-meter', 'lib/b.mjs'),
+    specEdge('hooks/settle-meter', 'lib/c.mjs'),
+    specEdge('distribution/npm-package', 'package.json')
+  ]
+  const r = selectDomainCapabilities({
+    changedPaths: ['package.json', 'lib/a.mjs', 'lib/b.mjs', 'lib/c.mjs'],
+    edges: livingSpecEdges({ links })
+  })
+  assert.deepEqual(
+    r.capabilities.map(c => [c.capability, c.count]),
+    [['hooks/settle-meter', 3], ['distribution/npm-package', 1]]
+  )
+})
+
+test('equal linked counts fall back to name order', () => {
+  const links = [specEdge('zeta/cap', 'lib/z.mjs'), specEdge('alpha/cap', 'lib/a.mjs')]
+  const r = selectDomainCapabilities({ changedPaths: ['lib/z.mjs', 'lib/a.mjs'], edges: livingSpecEdges({ links }) })
+  assert.deepEqual(r.capabilities.map(c => [c.capability, c.count]), [['alpha/cap', 1], ['zeta/cap', 1]])
+})
+
+test('the PR #28 cut is partial, names hooks/spec-meter as left with nothing, and cites maxDomainSpecChars', () => {
+  const selection = selectDomainCapabilities({
+    changedPaths: PR28.changedPaths,
+    edges: livingSpecEdges({ links: PR28.links }),
+    declared: PR28.declared
+  })
+  assert.deepEqual(selection.capabilities.map(c => c.capability), ['hooks/settle-meter', 'hooks/spec-meter'])
+  const total = Object.values(PR28.livingTexts).reduce((n, t) => n + t.length, 0)
+  assert.ok(total > LIMITS.maxDomainSpecChars, 'the fixture exceeds the published cap')
+  const assembled = assembleDomainContext({ capabilities: selection.capabilities, living: PR28.livingTexts })
+  const specMeterHeadings = blocksOf(PR28.livingTexts['hooks/spec-meter']).map(headingOf)
+  assert.deepEqual(
+    assembled.omitted.filter(o => o.capability === 'hooks/spec-meter').map(o => norm(o.heading)),
+    specMeterHeadings,
+    'every hooks/spec-meter requirement is cut'
+  )
+  assert.ok(!assembled.kept.some(k => k.capability === 'hooks/spec-meter'))
+  assert.deepEqual(assembled.emptied, ['hooks/spec-meter'])
+  assert.equal(selection.partial, null, 'the cut never goes on selection.partial (the no-graph flag)')
+  const reason = domainPartialReason(selection, assembled)
+  assert.ok(reason, 'a cut makes the selection partial')
+  assert.match(reason, /maxDomainSpecChars/)
+  assert.match(reason, new RegExp(`\\b${assembled.omitted.length} requirement\\(s\\)`))
+  assert.match(reason, /hooks\/spec-meter/)
+})
+
+test('a text that fits the cap has no partial reason', () => {
+  const selection = select({ changedPaths: ['hooks/guard-commit.mjs'] })
+  const assembled = assembleDomainContext({ capabilities: selection.capabilities, living: { [GUARDS]: LIVING_GUARDS } })
+  assert.deepEqual(assembled.omitted, [])
+  assert.deepEqual(assembled.emptied, [])
+  assert.equal(domainPartialReason(selection, assembled), null)
+})
+
+test('an ungraphed lib/settle-meter.mjs selects hooks/settle-meter via cited and is listed under ungraphed', () => {
+  const r = selectDomainCapabilities({
+    changedPaths: ['lib/settle-meter.mjs'],
+    edges: [],
+    graphFiles: ['hooks/mod.mjs'],
+    livingTexts: PR28.livingTexts,
+    graphBuiltAt: '2026-10-20T00:00:00Z'
+  })
+  assert.deepEqual(r.capabilities, [
+    { capability: 'hooks/settle-meter', via: 'cited', files: ['lib/settle-meter.mjs'], count: 1 }
+  ])
+  assert.deepEqual(r.ungraphed, {
+    builtAt: '2026-10-20T00:00:00Z',
+    files: [{ path: 'lib/settle-meter.mjs', citedBy: ['hooks/settle-meter'] }]
+  })
+  assert.ok(!r.notSelected)
+})
+
+test('a changed file absent from the graph and cited by no spec selects nothing but is listed under ungraphed', () => {
+  const r = selectDomainCapabilities({
+    changedPaths: ['lib/nobody-cites-this.mjs'],
+    edges: [],
+    graphFiles: ['hooks/mod.mjs'],
+    livingTexts: PR28.livingTexts
+  })
+  assert.deepEqual(r.capabilities, [])
+  assert.deepEqual(r.ungraphed, { builtAt: null, files: [{ path: 'lib/nobody-cites-this.mjs', citedBy: [] }] })
 })

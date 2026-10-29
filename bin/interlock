@@ -129,13 +129,7 @@ import {
   REVIEW_POLICY_FILE,
   composePolicy,
   parseReviewPolicy,
-  resolveReview,
-  carryForward,
-  readCarryFile,
-  formatReview,
   readReviewPolicy,
-  reviewRecordFlags,
-  writeReviewOut,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
 import { writeReviewMetrics } from '../lib/metrics.mjs'
@@ -164,8 +158,7 @@ import {
   unreportedChangedSource,
   validateBaseline
 } from '../lib/coverage.mjs'
-import { capabilityOf, parseSpec, specMentionedPaths } from '../lib/spec-text.mjs'
-import { assembleDomainContext, selectDomainCapabilities } from '../lib/prompts/domain-context.mjs'
+import { parseSpec } from '../lib/spec-text.mjs'
 import { auditSpecs, formatSpecAudit } from '../lib/spec-audit.mjs'
 import { buildChecklist, formatChecklist } from '../lib/conformance.mjs'
 import {
@@ -198,12 +191,13 @@ import {
 import { assessReadiness, formatReadiness } from '../lib/ready.mjs'
 import { buildReport, formatReport } from '../lib/report.mjs'
 import { renderReportHtml } from '../lib/report-html.mjs'
-import { diagnose, formatDoctor, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
+import { diagnose, formatDoctor, PLUGIN_ROOT, TEST_PROFILE_PATH } from '../lib/doctor.mjs'
 import { readSettingsSources, settingsSources } from '../lib/settings-sources.mjs'
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
 import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
+import { domainContextCommand, reviewCommand } from '../lib/review-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
@@ -399,13 +393,22 @@ Usage:
                   [--out <f>] [--head <sha>]  --out writes the JSON to a file;
                   [--dimensions <f>]       --head records the commit reviewed;
                   [--carry <f>]            --dimensions records which dimensions
-                                           ran and which were skipped; --carry
+                  [--draft] [--rerun-of <f>]  ran, skipped and degraded; --carry
                                            appends an earlier record's findings
                                            from dimensions this review did not
                                            run, marked carried (needs --dimensions).
                                            Also reads repo-root REVIEW.md and drops
                                            findings on its do-not-report paths;
                                            --base reads those paths from the ref
+  interlock review proof --review <file>   Whether a review record proves what it
+                                           covered: first line "re-run: <dims>"
+                                           (exit 1), "proven" or "PROOF CAP
+                                           REACHED: <dims>" (exit 0); exit 2 on a
+                                           file that is not a review record
+  interlock review brief --dimension <name> --base <ref> [--change <c>]
+                                           Print one dimension's whole prompt
+  interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
+                                           Print { prompts } for the skeptics
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
                                            both path lists and any parse problems.
@@ -848,9 +851,15 @@ review:
   --head <sha>           Record the commit the review describes as "head", so
                          merge-confidence --review can refuse another commit's.
   --dimensions <file>    The dimension record { selected, ran, unavailable,
-                         skipped: [{ name, reason }] }, validated before anything
-                         is written (a fault exits 1 naming the file and key) and
-                         recorded as "dimensions" with completed: true.
+                         skipped: [{ name, reason }], degraded? }, validated before
+                         anything is written (a fault exits 1 naming the file and
+                         key) and recorded as "dimensions" with completed: true.
+  --draft                Record a draft: it carries "inputs" and writes no metrics.
+  --rerun-of <draft>     Merge a re-run's --findings and --verdicts into the draft
+                         and resolve again; without --findings, promote it.
+                         Each answer's "coverage" ledger is recorded, and "proof"
+                         names unproven, unread and uncited (LEDGER REJECTED: on
+                         stderr for a malformed ledger, never fatal).
   --metrics <change>     Also append the counts to .claude/metrics/ under this
                          change name. A metrics failure prints its reason and is
                          never fatal — the exit code is unaffected.
@@ -2361,6 +2370,26 @@ function requireChange(root, requested, json) {
 // lib/note-cli.mjs: one stdout shape, one exit path, one stdin read.
 const cliIo = { emit, die, requireChange, readFindingsInput, readStdin, splitPaths, livingListFor }
 
+/** What lib/review-cli.mjs needs that only the entry file has: its readers, git and policy helpers, and the metrics writer. */
+function reviewIo(root, flags) {
+  return {
+    ...cliIo,
+    warn,
+    readInput,
+    baseRefOf,
+    reviewPolicyAt,
+    parseBand,
+    requirementHeadingsAt,
+    readSpecText,
+    readGraphFor,
+    gitText,
+    headShaOf,
+    diffShape,
+    pluginRoot: PLUGIN_ROOT,
+    writeReviewMetrics: (change, counts) => writeReviewMetrics(corpusHome(root, flags).home, { change, counts })
+  }
+}
+
 // risk.mjs is pure and takes artifact TEXT, so the filesystem read belongs here.
 function readChangeArtifacts(root, change) {
   const info = inspectChange(root, change)
@@ -3477,8 +3506,9 @@ async function main() {
       const verify = bound(verifyFile, 'verify')
       const handoffFile = bound(handoffRecord, 'handoff')
       const requested = typeof flags.change === 'string' ? flags.change : positional[1]
-      const resolved = resolveChange(root, requested)
+      const resolved = resolveChange(root, requested, { archived: true })
       const name = resolved.error ? null : resolved.name
+      if (resolved.archived) warn(`CHANGE READ FROM ARCHIVE: ${resolved.dir}`)
 
       // The diff under assessment runs from the merge base of --base and the
       // head. The output names both, and a run's evidence is judged against it.
@@ -3791,87 +3821,9 @@ async function main() {
       break
     }
 
-    case 'review': {
-      // Read and validated before anything is written or printed, metrics included.
-      const { dimensions, head } = reviewRecordFlags(flags, die)
-      // --carry keeps a scoped re-review's record whole: it needs --dimensions to
-      // know what ran, and its file is read here, before anything is written.
-      if (flags.carry === true) die('--carry needs a file')
-      if (flags.carry !== undefined && !dimensions) die('--carry needs --dimensions: the record of what this review ran says which findings to carry')
-      const carry = flags.carry === undefined ? null : readCarryFile(String(flags.carry), die)
-      const findings = readFindingsInput(flags.findings)
-      const verdicts = readInput(flags.verdicts, '--verdicts')
-      // The reviewed diff. A dismissing verdict has to cite a path that is in
-      // it — shape alone is satisfied by inventing `lib/nowhere.ts:1`. Optional
-      // because a caller that cannot name the changed files must still get the
-      // shape half rather than no gate at all.
-      const changedPaths = splitPaths(flags.changed)
-
-      // The repo-root REVIEW.md, if any. Its do-not-report paths are enforced
-      // here as a survival filter — never handed to a model as a request. Its
-      // problems (a malformed file, a band-like key) are reported alongside the
-      // review, so a broken policy is diagnosable rather than silent.
-      //
-      // With --base the two enforced lists are read from the commit at that ref,
-      // so a change cannot exclude its own paths by editing the copy applied to
-      // it; the prose still comes from the working tree (design D3).
-      const base = baseRefOf(root, flags)
-      const { policy, differsFromBase } = reviewPolicyAt(root, base)
-
-      const result = resolveReview(findings, verdicts, {
-        band: parseBand(flags),
-        changedPaths,
-        excludePaths: policy.excludePaths,
-        // A requirement a finding cites is checked against the spec as the base
-        // has it, so a citation cannot lean on a requirement the change added.
-        requirementHeadings: requirementHeadingsAt(root, base, findings)
-      })
-      // After the resolution and before the metrics and the write, so every
-      // reader of this record sees the carried findings and the metrics, which
-      // count only what this review raised, are given the counts without them.
-      if (carry) carryForward(result, carry, dimensions.ran)
-      const raisedCounts = carry
-        ? { ...result.counts, surviving: result.counts.surviving - result.counts.carried }
-        : result.counts
-
-      // Metrics are bookkeeping: they report their own failure and never touch
-      // the exit code, so a read-only checkout cannot fail a review.
-      let metrics = null
-      if (flags.metrics !== undefined) {
-        if (flags.metrics === true) die('--metrics requires a change name')
-        metrics = writeReviewMetrics(corpusHome(root, flags).home, { change: String(flags.metrics), counts: raisedCounts })
-        if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
-      }
-
-      const policyProblems = policy.problems.length
-        ? `  policy: ${policy.problems.length} problem(s) in REVIEW.md\n` +
-          policy.problems.map(p => `    - ${p}`).join('\n') + '\n'
-        : ''
-      const policyBase = base
-        ? { ref: base, differsFromBase }
-        : null
-      const policyDiffers = differsFromBase
-        ? `  policy: ${REVIEW_POLICY_FILE} differs from ${base}; its Do Not Report paths were read from ${base}\n`
-        : ''
-      const text =
-        formatReview(result) +
-        policyDiffers +
-        policyProblems +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
-        (head ? `  head: ${head}\n` : '')
-      const payload = {
-        ...result,
-        policyProblems: policy.problems,
-        ...(policyBase ? { policyBase } : {}),
-        ...(metrics ? { metrics } : {}),
-        ...(head ? { head } : {}),
-        ...(dimensions ? { dimensions } : {})
-      }
-      // Written before anything is printed (see writeReviewOut).
-      if (typeof flags.out === 'string') writeReviewOut(flags.out, payload, die)
-      emit(json, payload, text)
+    case 'review':
+      reviewCommand(reviewIo(root, flags), root, positional, flags, json)
       break
-    }
 
     case 'review-policy': {
       // Read-only view of the parsed REVIEW.md, so the workflow can inject the
@@ -3888,114 +3840,9 @@ async function main() {
       break
     }
 
-    case 'domain-context': {
-      // The same selection and assembly a ship run's review step makes, for a
-      // hand-run review (design D4). Selected from the graph and from the
-      // capabilities the change's delta specs declare; read from the base when
-      // one is named, the working tree otherwise, and the output says which.
-      // Exit 0 on a completed report — a skip is spoken, not a failure — and
-      // exit 1 only on a base that names no commit.
-      const base = baseRefOf(root, flags)
-      const changed =
-        flags.changed === undefined
-          ? []
-          : (() => {
-              const given = [].concat(flags.changed)
-              return given.length === 1 && given[0] === '-'
-                ? readStdin().split('\n').map(p => p.trim()).filter(Boolean)
-                : splitPaths(given.join(','))
-            })()
-
-      const requested = typeof flags.change === 'string' ? flags.change : positional[1]
-      const resolved = resolveChange(root, requested)
-      const name = resolved.error ? null : resolved.name
-      if (!name) warn(`no change under assessment: ${resolved.error} — only the graph selects a capability`)
-
-      const graph = readGraphFor(root, flags)
-      const edges = Array.isArray(graph.links) ? livingSpecEdges(graph) : null
-
-      const living = {}
-      const declared = []
-      let specFiles = []
-      if (name) {
-        try {
-          specFiles = inspectChange(root, name).specFiles
-        } catch {
-          // A change that cannot be inspected declares nothing.
-        }
-      }
-      for (const rel of specFiles) {
-        const capability = capabilityOf(rel)
-        if (!capability || declared.includes(capability)) continue
-        const read = readSpecText(root, base, `openspec/specs/${capability}/spec.md`)
-        if (typeof read.text === 'string') {
-          living[capability] = read.text
-          declared.push(capability)
-        }
-      }
-
-      const selection = selectDomainCapabilities({ changedPaths: changed, edges, graphReason: graph.reason, declared })
-      let assembled = null
-      let skipped = selection.skipped
-      if (selection.capabilities.length) {
-        const deltas = {}
-        const readErrors = []
-        for (const { capability } of selection.capabilities) {
-          if (!(capability in living)) {
-            const read = readSpecText(root, base, `openspec/specs/${capability}/spec.md`)
-            if (typeof read.text === 'string') living[capability] = read.text
-            else if (read.error) readErrors.push(`openspec/specs/${capability}/spec.md: ${read.error}`)
-          }
-          if (name) {
-            const delta = readSpecText(root, null, `openspec/changes/${name}/specs/${capability}/spec.md`)
-            if (typeof delta.text === 'string') deltas[capability] = delta.text
-          }
-        }
-        assembled = assembleDomainContext({ capabilities: selection.capabilities, living, deltas, ref: base })
-        if (assembled.skipped) {
-          skipped = readErrors.length ? `${assembled.skipped} (${readErrors.join('; ')})` : assembled.skipped
-        }
-      }
-      // `selected` says capabilities were chosen; `skipped` says whether any
-      // requirement text came of it. Both can hold: a capability the change
-      // rewrites entirely is selected and has nothing in force to judge against.
-      const selected = selection.capabilities.length > 0
-      const hasText = Boolean(assembled) && !assembled.skipped
-      const source = assembled ? assembled.source : base ? `base ${base}` : 'the working tree'
-      const out = {
-        change: name,
-        selected,
-        ref: base,
-        source,
-        capabilities: selection.capabilities,
-        skipped: skipped || null,
-        partial: selection.partial || null,
-        notSelected: selection.notSelected || null,
-        text: hasText ? assembled.text : '',
-        superseded: assembled ? assembled.superseded : [],
-        omitted: assembled ? assembled.omitted : [],
-        specifiedByChange: assembled ? assembled.specifiedByChange : []
-      }
-
-      const lines = []
-      if (out.skipped) lines.push(`DOMAIN REVIEW SKIPPED: ${out.skipped} (base: ${source})`)
-      if (selected) {
-        lines.push(`DOMAIN CONTEXT — ${out.capabilities.length} capabilit${out.capabilities.length === 1 ? 'y' : 'ies'}, read from ${source}`)
-        for (const c of out.capabilities) {
-          lines.push(`  ${c.capability}  (${c.via}${c.files.length ? `: ${c.files.join(', ')}` : ''})`)
-        }
-        if (out.partial && hasText) lines.push(`DOMAIN REVIEW PARTIAL: ${out.partial}`)
-        if (out.omitted.length) lines.push(`  ${out.omitted.length} requirement(s) left out to fit the size cap`)
-        if (hasText) lines.push('', out.text)
-      } else if (!out.skipped && out.notSelected) {
-        lines.push(`DOMAIN NOT SELECTED: ${out.notSelected.reason} (base: ${source})`)
-        for (const path of out.notSelected.unlinkedPaths) lines.push(`  unlinked: ${path}`)
-      } else if (!out.skipped) {
-        lines.push(`DOMAIN NOT SELECTED: no changed path was given (base: ${source})`)
-      }
-      emit(json, out, lines.join('\n') + '\n')
+    case 'domain-context':
+      domainContextCommand(reviewIo(root, flags), root, positional, flags, json)
       break
-    }
 
     case 'spec-audit': {
       // Counts over the living specs and, with a graph, over how they link to

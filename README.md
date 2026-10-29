@@ -139,7 +139,7 @@ Default `ship` trusts your test suite: a green suite, one commit, nothing else. 
 
 | Add | What it does | Cost |
 |---|---|---|
-| `ship --review` | Up to seven review dimensions in parallel, then two skeptics who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
+| `ship --review` | The review dimensions in parallel (`language`, `architecture`, `qa`, `technical-lead`, `regression`, and `devops`, `security` or `domain` when the diff calls for them), each proving what it covered, then two skeptics who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
 | `ship --strict` | The review, plus remediation, a manual test plan when UI changed, a walkthrough of the commit, and a conformance check of the diff against the spec's scenarios | The previous default. [01](docs/01-first-hour.md#step-4--ship-it) |
 | `/interlock:settle` | Opens or updates the PR with a `MERGE`, `HUMAN` or `BLOCK` verdict in its labels and description, and what would lift it. Never merges, never approves | Needs `gh` or `glab` signed in. [15](docs/15-merge-confidence.md) |
 | `interlock merge-confidence --require-merge` in CI | The same verdict as a required check. It re-reads the evidence a run left and runs no review of its own. Exits 1 unless `MERGE` | Some setup. [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |

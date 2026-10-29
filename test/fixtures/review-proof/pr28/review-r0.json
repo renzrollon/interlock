@@ -1,0 +1,20 @@
+{
+  "_provenance": "The PR #28 round-0 review record as /interlock:settle --review wrote it at e177e7d against 251cebe: four dimensions ran, each answered { \"findings\": [] } with no coverage, and nothing survived. Comments 6471123715 (the settle comment), 6471559316 and 6471618730 (the code review and blast-radius review findings it missed).",
+  "surviving": [],
+  "dismissed": [],
+  "droppedByQuality": [],
+  "droppedByPolicy": [],
+  "counts": { "raised": 0, "droppedByPolicy": 0, "dismissed": 0, "droppedByQuality": 0, "surviving": 0, "dismissalsRejected": 0 },
+  "dimensionStats": {},
+  "anomalies": { "orphanVerdicts": [], "malformedVerdicts": [], "requirementCitations": [], "specGapShape": [] },
+  "policyProblems": [],
+  "head": "e177e7de66d7db4ca8b0441ce9f2c41248751803",
+  "dimensions": {
+    "selected": ["language", "technical-lead", "domain", "blast-radius"],
+    "ran": ["language", "technical-lead", "domain", "blast-radius"],
+    "unavailable": [],
+    "skipped": [],
+    "depth": "lean",
+    "completed": true
+  }
+}
