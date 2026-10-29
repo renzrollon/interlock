@@ -10,12 +10,14 @@ import {
   listChanges,
   resolveChange,
   inspectChange,
+  formatInspection,
   parseTasks,
   tickTasks,
   normalizeTaskMarkers,
   planCoverage,
   taskMatchesId
 } from '../../lib/artifacts.mjs'
+import { LIMITS } from '../../lib/limits.mjs'
 
 let root
 
@@ -382,4 +384,294 @@ test('inspectChange reports the red section beside the tasks it was read from', 
   // reader can tell "no red section" from "this build does not know about them".
   assert.equal(inspectChange(root, 'add-auth').tasks.redSection, null)
   assert.equal(inspectChange(root, 'does-not-exist').tasks.redSection, null)
+})
+
+// --- change width (spec: spec/change-width) ---------------------------------
+//
+// The caps are read from LIMITS by name and never written as literals here, so
+// the cap-authority sweep keeps its one reader and a changed cap moves these
+// tests with it.
+
+/**
+ * A ready change with `specs` nested delta specs (specs/<domain>/<capability>/
+ * spec.md) and `tasks` checkbox tasks. `specs: null` writes no specs/ directory
+ * and `tasks: null` writes no tasks.md.
+ */
+function widthChange(name, { specs, tasks, artifacts = true, extra = () => {} }) {
+  const dir = join(root, 'openspec', 'changes', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'proposal.md'), '# Proposal\n')
+  if (artifacts) writeFileSync(join(dir, 'design.md'), '# Design\n')
+  if (tasks !== null) {
+    const lines = Array.from({ length: tasks }, (_, i) => `- [ ] 1.${i + 1} task ${i + 1}`)
+    writeFileSync(join(dir, 'tasks.md'), `# Tasks\n\n${lines.join('\n')}\n`)
+  }
+  if (specs !== null) {
+    for (let i = 0; i < specs; i++) {
+      const cap = join(dir, 'specs', `domain-${i % 3}`, `capability-${i}`)
+      mkdirSync(cap, { recursive: true })
+      writeFileSync(join(cap, 'spec.md'), '# Spec Delta\n')
+    }
+    mkdirSync(join(dir, 'specs'), { recursive: true })
+  }
+  extra(dir)
+  return dir
+}
+
+test('width: a change within both caps reports its counts, the published caps, and is not wide', () => {
+  widthChange('width-within', { specs: 2, tasks: 8 })
+  const r = inspectChange(root, 'width-within')
+  assert.deepEqual(r.width, {
+    capabilities: 2,
+    tasks: 8,
+    caps: { maxChangeCapabilities: LIMITS.maxChangeCapabilities, maxChangeTasks: LIMITS.maxChangeTasks },
+    wide: false,
+    over: []
+  })
+  assert.equal(r.ready, true)
+  assert.doesNotMatch(formatInspection(r), /CHANGE WIDE:/)
+})
+
+test('width: nested delta specs over the capability cap make a ready change wide, and the text names each capability directory', () => {
+  const n = LIMITS.maxChangeCapabilities + 1
+  widthChange('width-caps', { specs: n, tasks: 3 })
+  const r = inspectChange(root, 'width-caps')
+  assert.equal(r.ready, true, 'width never flips ready')
+  assert.equal(r.width.capabilities, n)
+  assert.equal(r.width.tasks, 3)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['capabilities'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`CHANGE WIDE: ${n} capabilities \\(max ${LIMITS.maxChangeCapabilities}\\)`))
+  assert.doesNotMatch(text, /tasks \(max/, 'a change within the task cap does not name the task cap')
+  for (let i = 0; i < n; i++) {
+    assert.ok(text.includes(`domain-${i % 3}/capability-${i}`), `capability directory ${i} is not listed`)
+  }
+})
+
+test('width: a change over the task cap alone is wide for tasks only', () => {
+  const n = LIMITS.maxChangeTasks + 1
+  widthChange('width-tasks', { specs: 1, tasks: n })
+  const r = inspectChange(root, 'width-tasks')
+  assert.equal(r.ready, true)
+  assert.equal(r.width.tasks, n)
+  assert.equal(r.width.capabilities, 1)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['tasks'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`CHANGE WIDE: [^\\n]*${n} tasks \\(max ${LIMITS.maxChangeTasks}\\)`))
+  assert.doesNotMatch(text, /capabilities \(max/)
+})
+
+test('width: a change over both caps names both, in the order capabilities then tasks', () => {
+  const c = LIMITS.maxChangeCapabilities + 1
+  const t = LIMITS.maxChangeTasks + 1
+  widthChange('width-both', { specs: c, tasks: t })
+  const r = inspectChange(root, 'width-both')
+  assert.equal(r.ready, true)
+  assert.equal(r.width.wide, true)
+  assert.deepEqual(r.width.over, ['capabilities', 'tasks'])
+
+  const text = formatInspection(r)
+  assert.match(text, new RegExp(`${c} capabilities \\(max ${LIMITS.maxChangeCapabilities}\\)`))
+  assert.match(text, new RegExp(`${t} tasks \\(max ${LIMITS.maxChangeTasks}\\)`))
+})
+
+test('width: a change with no specs and no tasks measures zero, is not wide, and is not ready for its own reasons', () => {
+  widthChange('width-empty', { specs: null, tasks: null, artifacts: false })
+  const r = inspectChange(root, 'width-empty')
+  assert.equal(r.width.capabilities, 0)
+  assert.equal(r.width.tasks, 0)
+  assert.equal(r.width.wide, false)
+  assert.deepEqual(r.width.over, [])
+  assert.equal(r.ready, false)
+  assert.ok(r.problems.some(p => p.includes('design.md')), 'ready is false for the missing artifacts, not width')
+  assert.doesNotMatch(formatInspection(r), /CHANGE WIDE:/)
+})
+
+test('width: only spec.md files are capabilities, so a stray note under specs/ is not counted', () => {
+  widthChange('width-stray', {
+    specs: 2,
+    tasks: 4,
+    extra: dir => {
+      writeFileSync(join(dir, 'specs', 'notes.md'), '# stray\n')
+      writeFileSync(join(dir, 'specs', 'domain-0', 'README.md'), '# stray\n')
+    }
+  })
+  const r = inspectChange(root, 'width-stray')
+  assert.equal(r.width.capabilities, 2)
+  assert.equal(r.width.wide, false)
+  assert.deepEqual(r.width.over, [])
+})
+
+// --- an archived change resolves read-only, by opt-in (design §6, D4) ---------
+
+function archivedRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-archived-'))
+  const put = (rel, text) => {
+    mkdirSync(join(dir, rel, '..'), { recursive: true })
+    writeFileSync(join(dir, rel), text)
+  }
+  for (const date of ['2026-10-27', '2026-10-28']) {
+    const at = `openspec/changes/archive/${date}-x`
+    put(`${at}/proposal.md`, '# Proposal\n')
+    put(`${at}/design.md`, '# Design\n')
+    put(`${at}/tasks.md`, `# Tasks\n\n- [x] 1.1 ${date}\n`)
+    put(`${at}/specs/alpha/spec.md`, '# Alpha\n')
+  }
+  put('openspec/changes/archive/2026-10-29-x-other/proposal.md', '# Not x\n')
+  return dir
+}
+
+test('archived: a named change only in the archive resolves read-only from the latest dated directory', async () => {
+  const dir = archivedRepo()
+  try {
+    const r = resolveChange(dir, 'x', { archived: true })
+    assert.deepEqual(r, { name: 'x', dir: join('openspec', 'changes', 'archive', '2026-10-28-x'), archived: true })
+    const inspected = inspectChange(dir, 'x', { dir: r.dir, archived: r.archived })
+    assert.equal(inspected.exists, true)
+    assert.equal(inspected.archived, true)
+    assert.equal(inspected.path, join(dir, r.dir))
+    assert.equal(inspected.tasks.items[0].text, '1.1 2026-10-28', 'the latest date wins')
+    assert.deepEqual(inspected.specFiles, ['alpha/spec.md'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('archived: an active change wins over an archived one of the same name and says archived: false', () => {
+  const dir = archivedRepo()
+  try {
+    mkdirSync(join(dir, 'openspec', 'changes', 'x'), { recursive: true })
+    assert.deepEqual(resolveChange(dir, 'x', { archived: true }), {
+      name: 'x',
+      dir: join('openspec', 'changes', 'x'),
+      archived: false
+    })
+    assert.equal('archived' in inspectChange(dir, 'x'), false, 'an active inspection carries no archived key')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('archived: without the option, listings and the no-name default exclude the archive', async () => {
+  const dir = archivedRepo()
+  try {
+    assert.deepEqual(listChanges(dir), [])
+    assert.match(resolveChange(dir, 'x').error, /not found/)
+    assert.match(resolveChange(dir).error, /no changes found/)
+    assert.match(resolveChange(dir, undefined, { archived: true }).error, /no changes found/, 'the no-name default never reads the archive')
+    const { detectUnarchived } = await import('../../lib/drift.mjs')
+    assert.deepEqual(detectUnarchived(dir), [], 'drift lists no archived change as unarchived')
+    const { assessReadiness } = await import('../../lib/ready.mjs')
+    assert.throws(() => assessReadiness(dir, 'x'), /not found/, 'ready does not select an archived change')
+    assert.throws(() => assessReadiness(dir), /no changes found/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- the living specs the domain selection scans (review fixes on PR #29, M3 and M10) ---
+
+/** A git repository with two committed living specs, then a working tree that moved on from that commit. */
+async function livingRepo() {
+  const { execFileSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-living-specs-'))
+  const env = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.invalid' }
+  const git = args => execFileSync('git', args, { cwd: dir, env, encoding: 'utf8' })
+  const spec = (cap, text) => {
+    mkdirSync(join(dir, 'openspec', 'specs', cap), { recursive: true })
+    writeFileSync(join(dir, 'openspec', 'specs', cap, 'spec.md'), text)
+  }
+  git(['init', '-q', '-b', 'main'])
+  spec('alpha', 'alpha at the base — café ✓\n')
+  spec('review/beta', 'beta at the base\n')
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'base'])
+  const sha = git(['rev-parse', 'HEAD']).trim()
+  spec('alpha', 'alpha edited after the base\n')
+  rmSync(join(dir, 'openspec', 'specs', 'review'), { recursive: true })
+  spec('gamma', 'gamma added after the base\n')
+  // bin/interlock's gitText, counted.
+  const calls = []
+  const gitText = (root, args, { input, encoding = 'utf8' } = {}) => {
+    calls.push(args[0])
+    return execFileSync('git', args, { cwd: root, encoding, input, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
+  }
+  return { dir, sha, gitText, calls }
+}
+
+test('readLivingSpecs at a ref lists and reads that ref\'s specs in two git calls, not the working tree\'s', async () => {
+  const { readLivingSpecs } = await import('../../lib/artifacts.mjs')
+  const { dir, sha, gitText, calls } = await livingRepo()
+  try {
+    const at = readLivingSpecs(dir, sha, { gitText })
+    assert.deepEqual(at.capabilities, ['alpha', 'review/beta'], 'a capability added since the ref is not in force at it')
+    assert.deepEqual(at.texts, { alpha: 'alpha at the base — café ✓\n', 'review/beta': 'beta at the base\n' })
+    assert.deepEqual(at.problems, [])
+    assert.deepEqual(calls, ['ls-tree', 'cat-file'], 'one list and one batched read, however many specs')
+
+    const wt = readLivingSpecs(dir, null)
+    assert.deepEqual(wt.capabilities, ['alpha', 'gamma'])
+    assert.equal(wt.texts.alpha, 'alpha edited after the base\n')
+    assert.deepEqual(wt.problems, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readLivingSpecs says why it read nothing: a ref git cannot list, no git reader, a batch that fails', async () => {
+  const { readLivingSpecs } = await import('../../lib/artifacts.mjs')
+  const { dir, sha, gitText } = await livingRepo()
+  try {
+    const bad = readLivingSpecs(dir, 'no-such-ref', { gitText })
+    assert.deepEqual([bad.capabilities, bad.texts], [[], {}])
+    assert.match(bad.problems[0], /^the living specs at no-such-ref could not be listed \(/)
+    assert.match(readLivingSpecs(dir, sha).problems[0], /this host supplies no git reader/)
+    assert.match(readLivingSpecs(dir, '--output=x', { gitText }).problems[0], /not a ref/)
+    const failing = (root, args, opts) => {
+      if (args[0] === 'cat-file') throw new Error('fatal: batch broke')
+      return gitText(root, args, opts)
+    }
+    const half = readLivingSpecs(dir, sha, { gitText: failing })
+    assert.deepEqual(half.capabilities, ['alpha', 'review/beta'])
+    assert.deepEqual(half.texts, {})
+    assert.match(half.problems[0], /could not be read \(fatal: batch broke\)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readLivingCapabilities names an openspec/specs it could not read; a tree with none is no problem', async (t) => {
+  const { readLivingCapabilities, listLivingCapabilities } = await import('../../lib/artifacts.mjs')
+  const { chmodSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-living-caps-'))
+  try {
+    assert.deepEqual(readLivingCapabilities(dir), { capabilities: [], problems: [] })
+    const top = join(dir, 'openspec', 'specs')
+    mkdirSync(join(top, 'alpha'), { recursive: true })
+    writeFileSync(join(top, 'alpha', 'spec.md'), 'a\n')
+    assert.deepEqual(readLivingCapabilities(dir), { capabilities: ['alpha'], problems: [] })
+    chmodSync(top, 0o000)
+    try {
+      let enforced = true
+      try {
+        readFileSync(join(top, 'alpha', 'spec.md'))
+        enforced = false
+      } catch {
+        // denied, as it should be
+      }
+      if (!enforced) return t.skip('this user can read a mode-000 directory')
+      const r = readLivingCapabilities(dir)
+      assert.deepEqual(r.capabilities, [])
+      assert.match(r.problems[0], /^openspec\/specs could not be read \(EACCES\)$/)
+      assert.deepEqual(listLivingCapabilities(dir), [], 'the list-only form is unchanged')
+    } finally {
+      chmodSync(top, 0o755)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

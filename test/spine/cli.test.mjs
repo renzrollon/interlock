@@ -3259,11 +3259,23 @@ test('the dimension record review-code prescribes, through review --out and merg
   const record = file('mc-roundtrip-dimensions.json', { ...template, depth: REVIEW_DEPTH.default })
   const repo = mergeConfidenceRepo()
   const out = join(dir, 'mc-roundtrip', 'review-r0.json')
+  // Per-dimension answers with ledgers that cite the changed file, so the proof
+  // holds (spec: review/merge-confidence, the head-binding round trip).
+  const answers = file(
+    'mc-roundtrip-answers.json',
+    template.ran.map(dimension => ({
+      dimension,
+      findings: [],
+      coverage: { checked: [{ what: 'the catalogue export', at: 'src/widgets/catalogue.ts:1' }], unread: [] }
+    }))
+  )
   const reviewed = run([
-    'review', '--findings', paths.cleanFindings, '--verdicts', paths.verdicts,
-    '--dimensions', record, '--head', repo.sha, '--out', out, '--json'
+    'review', '--findings', answers, '--verdicts', paths.verdicts,
+    '--dimensions', record, '--changed', 'src/widgets/catalogue.ts', '--base', repo.sha,
+    '--head', repo.sha, '--out', out, '--root', repo.root, '--json'
   ])
   assert.equal(reviewed.code, 0, reviewed.stderr)
+  assert.equal(JSON.parse(reviewed.stdout).proof.proven, true, reviewed.stdout)
 
   const r = run(mergeArgs('--review', out, '--json'))
   assert.doesNotMatch(r.stderr, /describes another commit/, 'the review is bound to this head')
@@ -5035,7 +5047,7 @@ test('limits carries the note-match cap by name and no advisor cap, in text and 
 
 // --- routing: the model and effort a prose skill passes (spec: spawn-routing) ---
 
-const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance', 'artifact-reviewer']
 /** Neither override variable set, so a developer's own export cannot change a result. */
 const NO_OVERRIDES = { CLAUDE_CODE_EFFORT_LEVEL: undefined, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined }
 
@@ -5173,4 +5185,303 @@ test('limits --json carries the routing table and the review depth table', () =>
   assert.deepEqual(out.reviewDepth, JSON.parse(JSON.stringify(REVIEW_DEPTH)))
   assert.equal(out.reviewDepth.default, 'lean')
   assert.equal(out.limits.routing, undefined, 'the table is its own group, not a cap')
+})
+
+// --- the proof of coverage through the binary (spec: review/review-proof, review/review-briefs) ---
+
+/** A repository whose second commit changes `lib/a.mjs` lines 2-3, for the review's base. */
+function proofRepo(sub) {
+  const repo = gitRepo(sub, { 'lib/a.mjs': 'one\ntwo\n', 'lib/b.mjs': 'b\n' })
+  writeFileSync(join(repo.root, 'lib/a.mjs'), 'one\nTWO\nthree\n')
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x.invalid' } })
+  git(['commit', '-qam', 'head'])
+  return { root: repo.root, base: repo.sha, head: git(['rev-parse', 'HEAD']).stdout.trim() }
+}
+
+const ledgerOf = (...at) => ({ checked: at.map(a => ({ what: 'the change', at: a })), unread: [] })
+
+test('review keeps each dimension\'s coverage and writes a proof; a malformed ledger is LEDGER REJECTED and unproven, exit 0', () => {
+  const repo = proofRepo('proof-record')
+  const answers = file('proof-answers.json', [
+    { dimension: 'language', findings: [], coverage: ledgerOf('lib/a.mjs:2-3') },
+    { dimension: 'technical-lead', findings: [], coverage: { checked: [{ what: 'scope', at: 'see the diff' }], unread: [] } }
+  ])
+  const dims = file('proof-dims.json', { selected: ['language', 'technical-lead'], ran: ['language', 'technical-lead'], unavailable: [], skipped: [] })
+  const r = run(['review', '--findings', answers, '--verdicts', file('proof-v.json', []), '--dimensions', dims, '--base', repo.base, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /^LEDGER REJECTED: technical-lead: .*see the diff/m)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(out.coverage.language, ledgerOf('lib/a.mjs:2-3'))
+  assert.equal(out.proof.proven, false)
+  assert.deepEqual(out.proof.unproven.map(u => u.dimension), ['technical-lead'])
+  assert.deepEqual(out.proof.uncited, [], 'git\'s list for --base is the changed list: lib/a.mjs, cited')
+  assert.equal(out.inputs, undefined, 'only a draft carries its inputs')
+})
+
+test('review refuses a degraded entry for a dimension other than domain or blast-radius', () => {
+  const dims = file('proof-degraded.json', { selected: ['language'], ran: ['language'], unavailable: [], skipped: [], degraded: [{ name: 'language', reason: 'cut' }] })
+  const r = run(['review', '--findings', paths.cleanFindings, '--verdicts', paths.verdicts, '--dimensions', dims, '--json'])
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /"degraded"\[0\] names "language"/)
+})
+
+test('review proof answers re-run, then proven after a --rerun-of merge, and the promote write keeps the count', () => {
+  const repo = proofRepo('proof-loop')
+  const dims = file('loop-dims.json', { selected: ['language', 'regression'], ran: ['language', 'regression'], unavailable: [], skipped: [] })
+  const first = file('loop-first.json', [
+    { dimension: 'language', findings: [] },
+    { dimension: 'regression', findings: [], coverage: ledgerOf('lib/a.mjs:2') }
+  ])
+  const draft = join(dir, 'loop', 'review.json.draft.json')
+  const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
+  const written = run(['review', '--findings', first, '--verdicts', file('loop-v.json', []), ...base, '--draft', '--out', draft, '--json'])
+  assert.equal(written.code, 0, written.stderr)
+  assert.ok(JSON.parse(written.stdout).inputs, 'a draft carries its inputs')
+
+  const proof = run(['review', 'proof', '--review', draft])
+  assert.equal(proof.code, 1)
+  assert.equal(proof.stdout.split('\n')[0], 're-run: language')
+
+  const rerun = file('loop-rerun.json', [{ dimension: 'language', findings: [], coverage: ledgerOf('lib/a.mjs:3') }])
+  const next = join(dir, 'loop', 'review.json.draft-2.json')
+  const merged = run(['review', '--rerun-of', draft, '--findings', rerun, '--verdicts', file('loop-v2.json', []), ...base, '--draft', '--out', next, '--json'])
+  assert.equal(merged.code, 0, merged.stderr)
+  assert.equal(JSON.parse(merged.stdout).proof.reruns, 1)
+  const again = run(['review', 'proof', '--review', next])
+  assert.deepEqual([again.code, again.stdout], [0, 'proven\n'])
+
+  const final = join(dir, 'loop', 'review.json')
+  const promoted = run(['review', '--rerun-of', next, ...base, '--out', final, '--json'])
+  assert.equal(promoted.code, 0, promoted.stderr)
+  const record = JSON.parse(readFileSync(final, 'utf8'))
+  assert.equal(record.proof.reruns, 1)
+  assert.equal(record.proof.proven, true)
+  assert.equal(record.inputs, undefined)
+
+  // A file that is not a review exits 2 with nothing on stdout.
+  const broken = run(['review', 'proof', '--review', file('loop-broken.json', '{')])
+  assert.deepEqual([broken.code, broken.stdout], [2, ''])
+  const noList = run(['review', 'proof', '--review', file('loop-nolist.json', { findings: [] })])
+  assert.deepEqual([noList.code, noList.stdout], [2, ''])
+})
+
+test('review brief --dimension prints the rubric, the scope with changed ranges, the proof rules and the ledger shape', () => {
+  const repo = proofRepo('brief-dimension')
+  const r = run(['review', 'brief', '--dimension', 'regression', '--base', repo.base, '--root', repo.root])
+  assert.equal(r.code, 0, r.stderr)
+  const rubric = readFileSync(new URL('../../skills/review-code/dimensions/regression.md', import.meta.url), 'utf8')
+  assert.ok(r.stdout.startsWith(rubric.trimEnd()), 'the rubric verbatim, first')
+  assert.match(r.stdout, /^# Dimension: regression$/m)
+  assert.match(r.stdout, /^ {2}- lib\/a\.mjs: 2-3$/m)
+  for (const token of ['"coverage"', '"checked"', '"unread"', 'You write nothing', 'is `degraded`', 'never an `unread` entry', 'measured']) {
+    assert.ok(r.stdout.includes(token), `the prompt carries ${token}`)
+  }
+  assert.match(r.stdout, /REPOSITORY REVIEW CONTEXT: there is no \.claude\/graph\/REVIEW_CONTEXT\.md/)
+  assert.doesNotMatch(r.stdout, /do not run (npm )?test/i)
+
+  const unknown = run(['review', 'brief', '--dimension', 'delivery', '--base', repo.base, '--root', repo.root])
+  assert.equal(unknown.code, 1)
+  assert.equal(unknown.stdout, '')
+  for (const name of ['delivery', 'language', 'regression', 'technical-lead']) assert.ok(unknown.stderr.includes(name), unknown.stderr)
+})
+
+test('review brief --skeptics --json prints one whole prompt per skeptic, nothing to judge as [], refuses plain text, and skips judged ids', () => {
+  const findings = file('skeptic-findings.json', [
+    { dimension: 'qa', findings: [
+      { severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' },
+      { severity: 'warning', file: 'lib/a.mjs', line: 3, title: 'two', description: 'd' },
+      { severity: 'suggestion', file: 'lib/b.mjs', line: 1, title: 'three', description: 'd' }
+    ] }
+  ])
+  const r = runJson(['review', 'brief', '--skeptics', '--findings', findings])
+  assert.equal(r.prompts.length, 2)
+  assert.ok(r.prompts[0].prompt.startsWith('You are a skeptical code reviewer.\n'))
+  assert.ok(r.prompts[1].prompt.startsWith('You are an independent reviewer giving a second opinion.\n'))
+  for (const p of r.prompts) {
+    assert.equal(p.findingIds.length, 2, 'suggestions pass unverified')
+    for (const token of ['grouped by file', 'one verdict per finding', 'overlapping', 'judged once', 'qualityScore', 'do not inflate', '`evidence`']) {
+      assert.ok(p.prompt.includes(token), `${p.skeptic} carries ${token}`)
+    }
+  }
+  const empty = run(['review', 'brief', '--skeptics', '--findings', file('skeptic-none.json', []), '--json'])
+  assert.equal(empty.code, 0, empty.stderr)
+  assert.deepEqual(JSON.parse(empty.stdout), { prompts: [] })
+  assert.match(empty.stderr, /nothing to judge/)
+
+  const plain = run(['review', 'brief', '--skeptics', '--findings', findings])
+  assert.deepEqual([plain.code, plain.stdout], [1, ''])
+  assert.match(plain.stderr, /only as JSON/)
+
+  const draft = file('skeptic-draft.json', {
+    surviving: [],
+    inputs: { answers: JSON.parse(readFileSync(findings, 'utf8')), verdicts: [{ findingTitle: 'one', file: 'lib/a.mjs', isReal: true }] }
+  })
+  const rerun = runJson(['review', 'brief', '--skeptics', '--findings', findings, '--rerun-of', draft])
+  for (const p of rerun.prompts) assert.equal(p.findingIds.length, 1, 'the id the draft holds a verdict for is dropped')
+})
+
+// --- PR #29 review: the proof's changed list, the draft's input, the merge (spec: review/review-proof) ---
+
+test('a rename is proven under its new path: the old path is not counted, with --changed from --name-only', () => {
+  const repo = gitRepo('proof-rename', { 'lib/old.mjs': 'export const a = 1\nexport const b = 2\nexport const c = 3\n' })
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x.invalid' } })
+  git(['mv', 'lib/old.mjs', 'lib/new.mjs'])
+  git(['commit', '-qm', 'rename'])
+  const changed = git(['diff', '--name-only', `${repo.sha}...HEAD`]).stdout.trim()
+  assert.equal(changed, 'lib/new.mjs', 'the skill\'s --changed names the new path only')
+  const dims = file('rename-dims.json', { selected: ['regression'], ran: ['regression'], unavailable: [], skipped: [] })
+  const answers = file('rename-answers.json', [{ dimension: 'regression', findings: [], coverage: ledgerOf('lib/new.mjs:1') }])
+  const r = run(['review', '--findings', answers, '--verdicts', file('rename-v.json', []), '--changed', changed, '--dimensions', dims, '--base', repo.sha, '--root', repo.root, '--json'])
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.deepEqual(out.proof.uncited, [], JSON.stringify(out.proof))
+  assert.equal(out.proof.changed, 1)
+  assert.equal(out.proof.proven, true)
+})
+
+test('a --base git cannot list makes the proof not hold, said aloud, where --changed alone would have been proven', () => {
+  const repo = proofRepo('proof-nobase')
+  // A base that resolves but shares no history with HEAD: git has no merge base to diff from.
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x.invalid' } })
+  const tree = git(['mktree']).stdout.trim() || git(['hash-object', '-t', 'tree', '/dev/null']).stdout.trim()
+  const orphan = git(['commit-tree', tree, '-m', 'unrelated']).stdout.trim()
+  assert.match(orphan, /^[0-9a-f]{40}$/)
+  const dims = file('nobase-dims.json', { selected: ['language'], ran: ['language'], unavailable: [], skipped: [] })
+  const answers = file('nobase-answers.json', [{ dimension: 'language', findings: [], coverage: ledgerOf('lib/a.mjs:2') }])
+  const args = ['review', '--findings', answers, '--verdicts', file('nobase-v.json', []), '--changed', 'lib/a.mjs', '--dimensions', dims, '--root', repo.root, '--json']
+  const typed = run(args)
+  assert.equal(typed.code, 0, typed.stderr)
+  assert.equal(JSON.parse(typed.stdout).proof.proven, true, 'the typed list alone, cited')
+  const broken = run([...args, '--base', orphan])
+  assert.equal(broken.code, 0, broken.stderr)
+  assert.ok(broken.stderr.includes(`the proof does not hold: git could not list ${orphan}...HEAD`), broken.stderr)
+  const proof = JSON.parse(broken.stdout).proof
+  assert.equal(proof.proven, false)
+  assert.equal(proof.reason, 'no diff given')
+})
+
+test('--draft and --rerun-of refuse a findings input that is not per-dimension answers, and write nothing', () => {
+  const repo = proofRepo('proof-flat')
+  const dims = file('flat-dims.json', { selected: ['language'], ran: ['language'], unavailable: [], skipped: [] })
+  const flat = file('flat-findings.json', [{ severity: 'blocker', dimension: 'language', file: 'lib/a.mjs', line: 2, title: 't', description: 'd' }])
+  const out = join(dir, 'flat', 'review.json.draft.json')
+  const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
+  const r = run(['review', '--findings', flat, '--verdicts', file('flat-v.json', []), ...base, '--draft', '--out', out, '--json'])
+  assert.deepEqual([r.code, r.stdout], [1, ''])
+  assert.match(r.stderr, /--draft --findings needs per-dimension answers/)
+  assert.ok(!existsSync(out), 'no draft is written')
+  const wrapped = run(['review', '--findings', file('flat-wrapped.json', { findings: [] }), '--verdicts', file('flat-v2.json', []), ...base, '--draft', '--out', out, '--json'])
+  assert.equal(wrapped.code, 1, '{ findings } with no dimension is not an answer')
+
+  const draftAnswers = file('flat-draft.json', [{ dimension: 'language', findings: [], coverage: ledgerOf('lib/a.mjs:2') }])
+  assert.equal(run(['review', '--findings', draftAnswers, '--verdicts', file('flat-v3.json', []), ...base, '--draft', '--out', out, '--json']).code, 0)
+  const next = join(dir, 'flat', 'review.json.draft-2.json')
+  const rerun = run(['review', '--rerun-of', out, '--findings', flat, '--verdicts', file('flat-v4.json', []), ...base, '--draft', '--out', next, '--json'])
+  assert.deepEqual([rerun.code, rerun.stdout], [1, ''])
+  assert.match(rerun.stderr, /--rerun-of --findings needs per-dimension answers/)
+  assert.ok(!existsSync(next))
+})
+
+test('a blocker raised beside an unread input survives a clean re-run of its dimension to the promoted record', () => {
+  const repo = proofRepo('proof-keep-blocker')
+  const dims = file('keep-dims.json', { selected: ['security'], ran: ['security'], unavailable: [], skipped: [] })
+  const blocker = { severity: 'blocker', file: 'lib/a.mjs', line: 2, title: 'token logged', description: 'the token reaches the log', suggestion: 'redact it' }
+  const first = file('keep-first.json', [
+    { dimension: 'security', findings: [blocker], coverage: { checked: [{ what: 'the log call', at: 'lib/a.mjs:2' }], unread: [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }] } }
+  ])
+  const upheld = [1, 2].map(i => ({ findingTitle: 'token logged', file: 'lib/a.mjs', isReal: true, confidence: 0.9, reasoning: `skeptic ${i}`, evidence: 'lib/a.mjs:2', refinedSeverity: 'blocker', qualityScore: 4, severityScore: 4 }))
+  const draft = join(dir, 'keep', 'review.json.draft.json')
+  const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
+  assert.equal(run(['review', '--findings', first, '--verdicts', file('keep-v.json', upheld), ...base, '--draft', '--out', draft, '--json']).code, 0)
+  assert.equal(run(['review', 'proof', '--review', draft]).stdout.split('\n')[0], 're-run: security')
+
+  const clean = file('keep-rerun.json', [{ dimension: 'security', findings: [], coverage: ledgerOf('lib/a.mjs:2-3') }])
+  const next = join(dir, 'keep', 'review.json.draft-2.json')
+  assert.equal(run(['review', '--rerun-of', draft, '--findings', clean, '--verdicts', file('keep-v2.json', []), ...base, '--draft', '--out', next, '--json']).code, 0)
+  const final = join(dir, 'keep', 'review.json')
+  const promoted = run(['review', '--rerun-of', next, ...base, '--out', final, '--json'])
+  assert.equal(promoted.code, 0, promoted.stderr)
+  const record = JSON.parse(readFileSync(final, 'utf8'))
+  assert.deepEqual(record.surviving.map(f => f.title), ['token logged'], 'the first-pass blocker is not dropped')
+  assert.equal(record.surviving[0].severity, 'blocker')
+  assert.deepEqual(record.coverage.security, ledgerOf('lib/a.mjs:2-3'), 'the ledger is the re-run\'s')
+  assert.equal(record.proof.proven, true)
+})
+
+test('review brief names a deleted file under its old path, and a deleted line that reads "-- x" is not a file header', () => {
+  const repo = gitRepo('brief-deleted', { 'lib/gone.mjs': 'export const g = 1\n', 'lib/kept.sql': '-- comment\nselect 1;\n' })
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x.invalid' } })
+  git(['rm', '-q', 'lib/gone.mjs'])
+  writeFileSync(join(repo.root, 'lib/kept.sql'), 'select 1;\n')
+  git(['commit', '-qam', 'delete'])
+  const r = run(['review', 'brief', '--dimension', 'regression', '--base', repo.sha, '--root', repo.root])
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^ {2}- lib\/gone\.mjs: no changed lines/m)
+  assert.match(r.stdout, /^ {2}- lib\/kept\.sql: no changed lines/m)
+  assert.doesNotMatch(r.stdout, /^ {2}- comment/m)
+  assert.match(r.stdout, /^ {2}- lib\/gone\.mjs$/m, 'the deleted source is among those the proof counts')
+})
+
+// --- domain-context: the cut and the cited selection (spec: review/domain-review) ---
+
+test('pr28: domain-context sets partial naming hooks/spec-meter and citing maxDomainSpecChars, and prints DOMAIN REVIEW PARTIAL', () => {
+  const pr28 = JSON.parse(readFileSync(new URL('../fixtures/review-proof/pr28/domain-context.json', import.meta.url), 'utf8'))
+  const files = {}
+  for (const [capability, text] of Object.entries(pr28.livingTexts)) files[`openspec/specs/${capability}/spec.md`] = text
+  for (const p of pr28.changedPaths) files[p] = 'export {}\n'
+  const repo = gitRepo('domain-pr28', files)
+  writeGraph(repo.root, pr28.links)
+  const args = ['domain-context', '--changed', pr28.changedPaths.join(','), '--root', repo.root]
+  const out = runJson(args)
+  assert.match(out.partial, /hooks\/spec-meter/)
+  assert.match(out.partial, /maxDomainSpecChars/)
+  assert.deepEqual(out.emptied, ['hooks/spec-meter'])
+  assert.equal(out.capabilities[0].capability, 'hooks/settle-meter', 'the most-linked capability fills the cap first')
+  const text = run(args)
+  assert.match(text.stdout, /^DOMAIN REVIEW PARTIAL: .*hooks\/spec-meter/m)
+})
+
+test('domain-context selects a capability via cited for a changed file the graph does not hold', () => {
+  const repo = gitRepo('domain-cited', {
+    'openspec/specs/hooks/settle-meter/spec.md': '# settle meter\n\n## Requirements\n\n### Requirement: It reads lib/settle-meter.mjs\n\nThe meter SHALL live in `lib/settle-meter.mjs`.\n\n#### Scenario: x\n\n- **WHEN** y\n- **THEN** z\n',
+    'lib/settle-meter.mjs': 'export {}\n'
+  })
+  writeGraph(repo.root, [])
+  const out = runJson(['domain-context', '--changed', 'lib/settle-meter.mjs', '--root', repo.root])
+  assert.deepEqual(out.capabilities.map(c => [c.capability, c.via]), [['hooks/settle-meter', 'cited']])
+  assert.deepEqual(out.ungraphed.files.map(f => f.path), ['lib/settle-meter.mjs'])
+})
+
+const CITES = paths =>
+  `# cap\n\n## Requirements\n\n### Requirement: It is cited\n\nIt SHALL live in ${paths.map(p => `\`${p}\``).join(' and ')}.\n\n#### Scenario: x\n\n- **WHEN** y\n- **THEN** z\n`
+
+test('domain-context: a docs-only change the graph does not hold selects nothing by citation; bin/interlock still does', () => {
+  const repo = gitRepo('domain-cited-docs', {
+    'openspec/specs/review/skill/spec.md': CITES(['skills/review-code/SKILL.md', 'bin/interlock']),
+    'skills/review-code/SKILL.md': '# skill\n',
+    'bin/interlock': '#!/usr/bin/env node\n'
+  })
+  writeGraph(repo.root, [])
+  const docs = runJson(['domain-context', '--changed', 'skills/review-code/SKILL.md', '--root', repo.root])
+  assert.deepEqual(docs.capabilities, [], 'a doc the graph never indexes is not an ungraphed source file')
+  assert.equal(docs.ungraphed, null)
+  assert.equal(docs.citedUnread, null)
+  const bin = runJson(['domain-context', '--changed', 'bin/interlock', '--root', repo.root])
+  assert.deepEqual(bin.capabilities.map(c => [c.capability, c.via]), [['review/skill', 'cited']])
+  assert.deepEqual(bin.ungraphed.files.map(f => f.path), ['bin/interlock'])
+})
+
+test('domain-context --base lists the living capabilities at the base, not the working tree', () => {
+  const repo = gitRepo('domain-cited-base', {
+    'openspec/specs/hooks/settle-meter/spec.md': CITES(['lib/settle-meter.mjs']),
+    'lib/settle-meter.mjs': 'export {}\n'
+  })
+  // Gone from the working tree after the base: the base still has it in force.
+  rmSync(join(repo.root, 'openspec', 'specs'), { recursive: true, force: true })
+  writeGraph(repo.root, [])
+  const out = runJson(['domain-context', '--changed', 'lib/settle-meter.mjs', '--base', repo.sha, '--root', repo.root])
+  assert.deepEqual(out.capabilities.map(c => [c.capability, c.via]), [['hooks/settle-meter', 'cited']])
+  assert.equal(out.citedUnread, null)
+  assert.match(out.text, /It SHALL live in `lib\/settle-meter\.mjs`/)
 })

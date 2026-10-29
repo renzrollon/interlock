@@ -1206,19 +1206,20 @@ test('the shared test profile ties timeout_ms to the inter-wave budget in one ro
   assert.ok(together, 'shared/TEST-PROFILE.md must carry timeout_ms and inter-wave in the same row or paragraph')
 })
 
-test('the review-code skill lists the eight dimensions, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
+test('the review-code skill lists the nine dimensions, runs domain-context before fan-out, and passes --base to the review and review-policy lines', () => {
   // Tokens, not sentences: each is what the skill must still say after a reword.
   const skill = readFileSync(join(SKILLS_DIR, 'review-code', 'SKILL.md'), 'utf8')
   for (const token of [
     'interlock domain-context',
     'dimensions/domain.md',
     'DOMAIN REVIEW SKIPPED',
-    'list the eight'
+    'list the nine'
   ]) {
     assert.ok(skill.includes(token), `skills/review-code/SKILL.md must carry ${token}`)
   }
-  assert.ok(!skill.includes('list the six'), 'skills/review-code/SKILL.md still lists six dimensions')
-  assert.ok(!skill.includes('list the seven'), 'skills/review-code/SKILL.md still lists seven dimensions')
+  for (const stale of ['list the six', 'list the seven', 'list the eight']) {
+    assert.ok(!skill.includes(stale), `skills/review-code/SKILL.md still says ${stale}`)
+  }
   assert.match(skill, /interlock review-policy [^\n]*--base/, 'the review-policy line must pass --base')
   assert.match(skill, /interlock review [^\n]*--base/, 'the review line must pass --base')
   assert.match(skill, /interlock domain-context [^\n]*--base/, 'the domain-context line must pass --base')
@@ -1285,7 +1286,7 @@ test('the review-code skill runs blast-radius from the graph, says when it skipp
   // --dimensions naming blast-radius without a graph is reported, not silently run.
   const dimensionsParagraph = paragraphs.find(p => p.trimStart().startsWith('`--dimensions'))
   assert.ok(dimensionsParagraph, 'no paragraph opens with `--dimensions`')
-  for (const token of ['list the eight', '`blast-radius`', 'BLAST RADIUS SKIPPED', 'not silently run', '`skipped`', 'every dimension it did run']) {
+  for (const token of ['list the nine', '`blast-radius`', 'BLAST RADIUS SKIPPED', 'not silently run', '`skipped`', 'every dimension it did run']) {
     assert.ok(dimensionsParagraph.includes(token), `the --dimensions paragraph must carry ${token}`)
   }
 
@@ -1295,7 +1296,7 @@ test('the review-code skill runs blast-radius from the graph, says when it skipp
   const firstReview = reviewLines[0].index
   const record = [...skill.matchAll(/```json\n([\s\S]*?)```/g)].find(m => m[1].includes('"selected"'))
   assert.ok(record, 'no json fence writes the dimension record')
-  for (const key of ['"selected"', '"ran"', '"unavailable"', '"skipped"']) {
+  for (const key of ['"selected"', '"ran"', '"unavailable"', '"skipped"', '"degraded"']) {
     assert.ok(record[1].includes(key), `the dimension record fence carries no ${key}`)
   }
   assert.ok(record.index < firstReview, 'the dimension record must be written before the interlock review line')
@@ -1306,7 +1307,13 @@ test('the review-code skill runs blast-radius from the graph, says when it skipp
 
   // The brief: graph first, outside callers, data, concurrency, rollback, no consumer.
   const brief = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'blast-radius.md'), 'utf8')
-  for (const token of ['interlock-graph consumers', '"dimension": "blast-radius"', 'outside the diff', 'no consumer', 'observing caller', 'before you read any code', 'blocker', 'warning', 'suggestion']) {
+  for (const token of ['interlock-graph consumers', '"dimension": "blast-radius"', 'outside the changed hunks', 'no consumer', 'observing caller', 'before you read any code', 'blocker', 'warning', 'suggestion']) {
+    assert.ok(brief.includes(token), `dimensions/blast-radius.md must carry ${token}`)
+  }
+  // Per hunk (D11): an unchanged line of a changed file is an outside observer, and every reader and end path is named.
+  assert.ok(brief.includes('An unchanged line of a changed file is outside the changed hunks'), 'the brief must say an unchanged line of a changed file is outside the hunks')
+  assert.ok(!/observed only by code inside the diff is not a finding/.test(brief), 'the brief still says a change observed inside the diff is not a finding')
+  for (const token of ['every end path', 'every reader', 'count', 'only path', '`path:line`, not only counted']) {
     assert.ok(brief.includes(token), `dimensions/blast-radius.md must carry ${token}`)
   }
   for (const pattern of [/rollback/i, /concurrency/i, /data effects/i, /additive plumbing/i]) {
@@ -1347,7 +1354,10 @@ function blastBriefEvidenceProblems(brief) {
 // The loop's fixed shell lines. Each precondition the loop runs on is one of
 // these or a CLI subcommand, never prose a model re-derives.
 const SETTLE_TREE_CHECK = /^git status --porcelain=v1 -z --untracked-files=all \| interlock settle tree-check --change <change> --status -$/
-const SETTLE_STAGE = /^git add -A -- \. (?:':\(exclude\)[^']+'\s*)+$/
+// The staging line reads the pathspecs `interlock settle staging-pathspecs` wrote (spec: settle-loop tree-check).
+const SETTLE_STAGE = /^git add -A --pathspec-from-file=\.claude\/ship\/settle\/pathspecs-r<r> --pathspec-file-nul$/
+const SETTLE_PATHSPECS = /^interlock settle staging-pathspecs --change <change> --nul > \.claude\/ship\/settle\/pathspecs-r<r>$/
+const SETTLE_PATHSPECS_CHECK = /^test -s \.claude\/ship\/settle\/pathspecs-r<r>$/
 const SETTLE_CLASSIFY = /^git diff --cached --name-only -z \| interlock settle test-paths --changed - --profile \.claude\/ship\/settle\/profile-r<r>\.json --json$/
 const SETTLE_SNAPSHOT = /^cp \.claude\/testing\/profile\.json \.claude\/ship\/settle\/profile-r<r>\.json$/
 const SETTLE_PROFILE_CMP = /^cmp -s \.claude\/testing\/profile\.json \.claude\/ship\/settle\/profile-r<r>\.json$/
@@ -1520,7 +1530,9 @@ function settleSkillProblems(text) {
     [/^git rev-parse HEAD$/, '`git rev-parse HEAD` after the fixer'],
     [/^interlock settle fixer-result\b/, '`interlock settle fixer-result`'],
     [SETTLE_PROFILE_CMP, 'the profile `cmp -s`'],
-    [SETTLE_STAGE, "the staging `git add -A -- . ':(exclude)…'`"],
+    [SETTLE_PATHSPECS, 'the `interlock settle staging-pathspecs` line'],
+    [SETTLE_PATHSPECS_CHECK, 'the `test -s` of the pathspec file'],
+    [SETTLE_STAGE, 'the staging `git add -A --pathspec-from-file=…` line'],
     [SETTLE_CLASSIFY, '`interlock settle test-paths`'],
     [/\| git --literal-pathspecs restore\b/, 'the test-path revert'],
     [/^git diff --cached --quiet\b/, '`git diff --cached --quiet`'],
@@ -1553,21 +1565,22 @@ function settleSkillProblems(text) {
   const stageAt = fencedAt(SETTLE_STAGE)
   const testPaths = fencedAt(SETTLE_CLASSIFY)
   if (testPaths === -1) problems.push('no `git diff --cached --name-only -z` piped into `interlock settle test-paths --changed - --profile .claude/ship/settle/profile-r<r>.json --json`')
-  if (stageAt === -1 || testPaths === -1 || stageAt > testPaths) problems.push("no staging `git add -A -- . ':(exclude)…'` line before the `interlock settle test-paths` line")
+  if (stageAt === -1 || testPaths === -1 || stageAt > testPaths) problems.push('no staging `git add -A --pathspec-from-file=…` line before the `interlock settle test-paths` line')
   for (const f of fence.filter(f => /^git add\b/.test(f.line))) {
     if (/^git add -A\s*$/.test(f.line)) problems.push('a fenced bare `git add -A` line sweeps whatever was dirty into the fix commit')
     else if (!SETTLE_STAGE.test(f.line)) problems.push(`a fenced git add line is not the staging line: ${f.line}`)
   }
-  if (stageAt !== -1) {
-    const excluded = [...lines[stageAt].matchAll(/':\(exclude\)([^']+)'/g)].map(m => m[1]).sort()
-    if (typeof settleCli.toleratedPaths !== 'function') {
-      problems.push("lib/settle-cli.mjs exports no toleratedPaths, so the staging line's :(exclude) set has nothing to equal")
-    } else {
-      const tolerated = [...settleCli.toleratedPaths('<change>')].sort()
-      if (JSON.stringify(excluded) !== JSON.stringify(tolerated)) {
-        problems.push(`the staging line's :(exclude) set ${JSON.stringify(excluded)} is not toleratedPaths('<change>') ${JSON.stringify(tolerated)}`)
-      }
-    }
+  // The pathspecs come from the CLI, are checked non-empty, and an empty file fails the round.
+  const pathspecsAt = fencedAt(SETTLE_PATHSPECS)
+  const checkAt = fencedAt(SETTLE_PATHSPECS_CHECK)
+  if (pathspecsAt === -1 || checkAt === -1 || stageAt === -1 || !(pathspecsAt < checkAt && checkAt < stageAt)) {
+    problems.push('the staging line does not read a pathspec file `interlock settle staging-pathspecs` wrote and `test -s` checked first')
+  }
+  if (!paragraphs.some(p => p.includes('ROUND FAILED') && p.includes('staging-pathspecs') && p.includes('whole tree'))) {
+    problems.push('no paragraph fails the round with ROUND FAILED when staging-pathspecs leaves an empty file (the whole tree)')
+  }
+  if (typeof settleCli.toleratedPaths !== 'function') {
+    problems.push('lib/settle-cli.mjs exports no toleratedPaths, so the staging pathspecs have nothing to equal')
   }
   // The revert reads its paths from the CLI, NUL-terminated, literally; never a typed pathspec.
   const restore = fence.find(f => /\brestore --staged --worktree --source=HEAD\b/.test(f.line))
@@ -1966,9 +1979,10 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   const problemsOf = edit => settleSkillProblems(edit(shipped))
   const fails = (problems, token) => assert.ok(problems.some(p => p.includes(token)), problems.join(' | '))
   const TREE = 'git status --porcelain=v1 -z --untracked-files=all | interlock settle tree-check --change <change> --status -'
-  const STAGE = "git add -A -- . ':(exclude)openspec/changes/<change>/settle-summary.md' ':(exclude)docs/notes/compound.md'"
+  const STAGE = 'git add -A --pathspec-from-file=.claude/ship/settle/pathspecs-r<r> --pathspec-file-nul'
+  const PATHSPECS = 'interlock settle staging-pathspecs --change <change> --nul > .claude/ship/settle/pathspecs-r<r>'
   const RESTORE_TAIL = 'git --literal-pathspecs restore --staged --worktree --source=HEAD --pathspec-from-file=- --pathspec-file-nul'
-  assert.ok(shipped.includes(TREE) && shipped.includes(STAGE) && shipped.includes(RESTORE_TAIL), 'the doctored cases edit lines the shipped skill no longer carries')
+  assert.ok(shipped.includes(TREE) && shipped.includes(STAGE) && shipped.includes(PATHSPECS) && shipped.includes(RESTORE_TAIL), 'the doctored cases edit lines the shipped skill no longer carries')
 
   // The tree check dropped from before the clear, or moved after it.
   fails(problemsOf(t => t.replace(`${TREE}\n`, '')), 'before the `rm -rf .claude/ship/settle` line')
@@ -2009,9 +2023,11 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   fails(problemsOf(t => t.replaceAll('TEST PROFILE CHANGED', 'PROFILE TOUCHED')), 'TEST PROFILE CHANGED')
   fails(problemsOf(t => t.replace(/(^cp \.claude\/ship\/settle\/profile-r<r>\.json \.claude\/testing\/profile\.json)$/m, '$1\nrm -f .claude/testing/profile.json')), 'shares a fence with the snapshot restore')
 
-  // Staging: no bare sweep, and the exclusions are the tolerated set.
+  // Staging: no bare sweep, the pathspecs are the CLI's, and an empty file fails the round.
   fails(problemsOf(t => t.replace(STAGE, 'git add -A')), 'bare `git add -A`')
-  fails(problemsOf(t => t.replace(` ':(exclude)docs/notes/compound.md'`, '')), "toleratedPaths('<change>')")
+  fails(problemsOf(t => t.replace(`${PATHSPECS}\n`, '')), 'staging-pathspecs` wrote and `test -s` checked first')
+  fails(problemsOf(t => t.replace('test -s .claude/ship/settle/pathspecs-r<r>\n', '')), 'staging-pathspecs` wrote and `test -s` checked first')
+  fails(problemsOf(t => t.replace('git would read the empty list as the whole tree', 'git would stage nothing')), 'ROUND FAILED when staging-pathspecs')
 
   // The revert reads literal, NUL-terminated paths.
   fails(problemsOf(t => t.replace('git --literal-pathspecs restore', 'git restore')), '--literal-pathspecs')
@@ -2172,7 +2188,7 @@ test('TOOL-ECONOMY Rule 5 carries the routing tokens and names the five roles', 
       '`null`',
       'omit',
       'never',
-      ...['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance']
+      ...['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance', 'artifact-reviewer']
     ],
     'shared/TOOL-ECONOMY.md Rule 5'
   )
@@ -2320,7 +2336,7 @@ test('the settle meter attributes a spawn by its brief, so both skills hand the 
   // lib/settle-meter.mjs `roleOf` reads a dimension's `# Dimension:` heading and the
   // conformance worker's first line off the spawn's prompt; a skill that paraphrased
   // the brief would leave every such agent unattributed (PR #26 review, M9).
-  assert.ok(skillText('review-code').includes('use it verbatim'), 'skills/review-code/SKILL.md must hand each dimension brief over verbatim')
+  assert.ok(skillText('review-code').includes('with the printed prompt as its whole prompt'), 'skills/review-code/SKILL.md must hand each dimension the printed prompt as its whole prompt')
   assert.ok(
     skillText('settle').includes('printed briefing as its whole prompt'),
     'skills/settle/SKILL.md must hand the conformance worker the printed briefing as its whole prompt'
@@ -2353,4 +2369,226 @@ test('docs/01-first-hour.md names the OpenSpec floor the doctor enforces', () =>
   assert.match(String(floor), /^\d+\.\d+\.\d+$/, 'OPENSPEC_MIN_VERSION is an exported x.y.z constant')
   const text = readFileSync(join(ROOT, 'docs', '01-first-hour.md'), 'utf8')
   assert.ok(text.includes(floor), `docs/01-first-hour.md must name OpenSpec ${floor}`)
+})
+
+test('spec gates once and states the bounded pin rule; review-artifacts offers the scoped re-gate and says what a blocker is', () => {
+  // One gate per spec run. On 2026-10-29 a wide change was re-gated five times
+  // with a fresh reviewer each round: the blockers never converged, one of them
+  // ("the pin list is incomplete") cannot be satisfied before the code exists,
+  // and the rounds cost about a million subagent tokens. The rule that stops it
+  // lives in prose, so it is pinned here. Tokens, not sentences.
+  const spec = skillText('spec')
+  const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
+  assertRoutingTokens(gate, ['once', 'not a loop', 're-gate nothing', '--since'], 'skills/spec/SKILL.md §5')
+  const tests = sectionOfSkill(spec, /^#### Where the tests go$/m)
+  assertRoutingTokens(
+    tests,
+    ['bounded rule', 'never during a remediation stage', 'names the assertion and the requirement'],
+    'skills/spec/SKILL.md "Where the tests go"'
+  )
+  const brief = sectionOfSkill(spec, /^### 1b\. Load the explore brief$/m)
+  assertRoutingTokens(brief, ['epic of briefs', 'does not converge'], 'skills/spec/SKILL.md §1b')
+
+  const review = skillText('review-artifacts')
+  const where = 'skills/review-artifacts/SKILL.md'
+  const fm = parseFrontmatter(review)
+  assert.ok((fm.values['argument-hint'] || '').includes('--since'), `${where} argument-hint must offer --since`)
+  const allowed = fm.values['allowed-tools'] || ''
+  assert.match(allowed, /Bash\(git diff \*\)/, `${where} instructs git diff in its re-gate but does not admit it`)
+  assert.match(allowed, /Bash\(git status \*\)/, `${where} instructs git status in its re-gate but does not admit it`)
+  assert.doesNotMatch(allowed, /Bash\(git \*\)/, `${where}'s grant must stay narrowed to the two verbs the re-gate uses`)
+  const since = sectionOfSkill(review, /^## A scoped re-gate: `--since <findings file>`$/m)
+  assertRoutingTokens(since, ['judges the fix', 'changed hunk', 'Re-check each earlier blocker'], `${where} --since section`)
+  const output = sectionOfSkill(review, /^## Output$/m)
+  assertRoutingTokens(output, ['fail its own verification', 'bounded pin rule', 'never a blocker'], `${where} Output`)
+})
+
+test('review-artifacts routes one strict reviewer by role, and spec passes --strict through to the gate', () => {
+  // Without these tokens the strict depth is prose nobody asserts: the lookup, the
+  // banners and the fallback would each stop running on the first reword.
+  const review = skillText('review-artifacts')
+  const where = 'skills/review-artifacts/SKILL.md'
+  const fm = parseFrontmatter(review)
+  assert.ok((fm.values['argument-hint'] || '').includes('--strict'), `${where} argument-hint must offer --strict`)
+  assert.match(fm.values['allowed-tools'] || '', /\bAgent\b/, `${where} spawns the strict reviewer but does not admit Agent`)
+  const depth = sectionOfSkill(review, /^## Depth$/m)
+  assertRoutingTokens(
+    depth,
+    [
+      'interlock routing artifact-reviewer --json',
+      'interlock routing artifact-reviewer --depth strict --json',
+      'GATE DEPTH',
+      'ROUTING UNAVAILABLE',
+      'STRICT REVIEW UNREAD',
+      '`banners`',
+      '`null`',
+      'omit',
+      'exactly one Agent call',
+      'verbatim',
+      'writes no file'
+    ],
+    `${where} Depth`
+  )
+  const spec = skillText('spec')
+  const sfm = parseFrontmatter(spec)
+  assert.ok((sfm.values['argument-hint'] || '').includes('--strict'), 'skills/spec/SKILL.md argument-hint must offer --strict')
+  const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
+  assertRoutingTokens(gate, ['/interlock:review-artifacts <name> --strict'], 'skills/spec/SKILL.md §5')
+})
+
+test('the spec skill acts on the validate width: wide stops with an epic of briefs, absent is spoken, no cap is restated', () => {
+  const text = skillText('spec')
+  for (const token of ['width.wide', 'CHANGE WIDE:', 'CHANGE WIDTH: not reported by this CLI', 'epic of briefs']) {
+    assert.ok(text.includes(token), `skills/spec/SKILL.md must carry the token \`${token}\``)
+  }
+  assert.ok(!text.includes('publishes no cap'), 'skills/spec/SKILL.md must not say the CLI publishes no cap')
+  assert.ok(!/max capabilities\D{0,3}\d/.test(text), 'skills/spec/SKILL.md must not restate a max capabilities number')
+  assert.ok(!/max tasks\D{0,3}\d/.test(text), 'skills/spec/SKILL.md must not restate a max tasks number')
+})
+
+// --- the proof of coverage in the skills (spec: review/regression-dimension, review/review-briefs, review/settle-loop) ---
+
+test('the regression brief asks every end path, what stays live, deleted tests, measured promises and stale text outside the changed lines', () => {
+  const brief = readFileSync(join(SKILLS_DIR, 'review-code', 'dimensions', 'regression.md'), 'utf8')
+  assert.equal(brief.split('\n')[0], '# Dimension: regression')
+  for (const token of [
+    '"dimension": "regression"',
+    'every end path',
+    'starts',
+    'stays live',
+    'who reads it',
+    'in an unchanged line or an unchanged file is enumerated like one in the diff',
+    'deleted or weakened test',
+    'measure',
+    'outside the changed lines',
+    'without a measurement is a suggestion at most',
+    '"coverage"'
+  ]) {
+    assert.ok(brief.includes(token), `dimensions/regression.md must carry ${token}`)
+  }
+  assert.ok(!brief.includes('specGap'), 'dimensions/regression.md must not mention specGap')
+})
+
+test('review-code relays the CLI\'s dimension and skeptic prompts, runs the proof line after the skeptics, and keeps no skeptic brief', () => {
+  const skill = skillText('review-code')
+  const where = 'skills/review-code/SKILL.md'
+  const lines = fencedLines(join(SKILLS_DIR, 'review-code', 'SKILL.md'))
+  const at = pattern => lines.findIndex(l => pattern.test(l))
+  const dimension = at(/^interlock review brief --dimension <name> --base <base>/)
+  const skeptics = at(/^interlock review brief --skeptics --findings <f>/)
+  const draft = at(/^interlock review --findings [^\n]*--draft --out <draft>/)
+  const proof = at(/^interlock review proof --review <draft>$/)
+  const rerun = at(/^interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts>[^\n]*--draft --out <next draft>/)
+  const promote = at(/^interlock review --rerun-of <last draft>[^\n]*--metrics <change>/)
+  for (const [i, what] of [[dimension, 'brief --dimension'], [skeptics, 'brief --skeptics'], [draft, 'the draft write'], [proof, 'the proof line'], [rerun, 'the --rerun-of merge'], [promote, 'the promote write']]) {
+    assert.ok(i !== -1, `${where} has no fenced ${what} line`)
+  }
+  assert.ok(skeptics < proof && draft < proof && proof < promote, `${where} must run the proof line after the skeptic line and before the record's final review line`)
+  assert.ok(!lines.filter(l => /--draft/.test(l)).some(l => /--metrics/.test(l)), 'a draft writes no metrics')
+  assert.ok(skill.includes('as its whole prompt'), `${where} must relay the printed prompt as the whole prompt`)
+  assert.ok(!/^> /m.test(skill), `${where} still carries a blockquoted brief`)
+  assert.ok(skill.includes('interlock-graph covers --changed - --update'), `${where} §1 must run interlock-graph covers --update`)
+  for (const token of ['GRAPH STALE:', 'BLAST RADIUS SKIPPED', 'PROOF CAP REACHED', 'LEDGER REJECTED:', '`degraded`']) {
+    assert.ok(skill.includes(token), `${where} must carry ${token}`)
+  }
+  assert.doesNotMatch(skill, /do not run (npm )?tests?/i, `${where} tells a reviewer not to run tests`)
+})
+
+test('the settle skill runs no proof line, and resolves an archived change through the CLI', () => {
+  const settle = skillText('settle')
+  const where = 'skills/settle/SKILL.md'
+  const lines = fencedLines(join(SKILLS_DIR, 'settle', 'SKILL.md'))
+  assert.ok(!lines.some(l => /\binterlock review proof\b/.test(l)), `${where} must run no interlock review proof line`)
+  const derive = lines.find(l => /\| interlock settle archived-change --name-status - --json$/.test(l))
+  assert.ok(derive, `${where} §2 must pipe into interlock settle archived-change --name-status -`)
+  assert.match(derive, /^git diff --name-status -M origin\/<target branch>\.\.\.HEAD \|/, 'the name-status line is read with -M')
+  assert.ok(!/ -- /.test(derive.split('|')[0]), 'the name-status line carries no pathspec')
+  for (const token of ['CHANGE READ FROM ARCHIVE:', 'Classify no name-status line yourself']) {
+    assert.ok(settle.includes(token), `${where} must carry ${token}`)
+  }
+  assert.ok(settle.includes('<dir>/settle-summary.md'), `${where} §8 must write the summary into the archived directory`)
+})
+
+// --- PR #29 review M8, E3 and the review-code proof exit 2: pins for instructions nothing asserted ---
+
+test('the spec skill\'s wide path runs no artifact gate and writes no autonomy line', () => {
+  const where = 'skills/spec/SKILL.md'
+  const wide = skillText('spec').split('\n').find(l => l.startsWith('- `width.wide` true:'))
+  assert.ok(wide, `${where} has no \`width.wide\` true bullet`)
+  for (const token of ['CHANGE WIDE:', 'run no `/interlock:review-artifacts`', 'write no `interlock autonomy` line', 'checkpoint', 'epic of briefs']) {
+    assert.ok(wide.includes(token), `${where}'s wide path must carry ${token}`)
+  }
+})
+
+test('review-artifacts reads decisions.md, holding a needs_human row for the person and checking an agent_resolved one', () => {
+  const where = 'skills/review-artifacts/SKILL.md'
+  const read = paragraphWith(skillText('review-artifacts'), '`decisions.md`')
+  assertRoutingTokens(read, ['`decisions.md` when it exists', '`needs_human`', 'not a finding', '`agent_resolved`', '`design.md`'], `${where} artifact read`)
+})
+
+test('review-artifacts states that the prompt, not its allowed-tools, bounds what the strict reviewer writes', () => {
+  // The reviewer is spawned with no subagent_type, so no agent definition narrows
+  // its tools; review-code states the same limit for its dimension agents.
+  const where = 'skills/review-artifacts/SKILL.md'
+  const depth = sectionOfSkill(skillText('review-artifacts'), /^## Depth$/m)
+  const bound = paragraphWith(depth, 'do not reach an agent it spawns')
+  assertRoutingTokens(bound, ['`allowed-tools`', 'do not reach an agent it spawns', '`subagent_type`', 'writes-no-file', 'is the bound'], `${where} Depth`)
+  assert.ok(skillText('review-code').includes('do not reach an agent it spawns'), 'skills/review-code/SKILL.md must keep stating the same bound')
+})
+
+test('the settle skill pre-approves the empty-pathspec check it runs before staging', () => {
+  // Dropping the grant would raise a permission prompt in the middle of the loop.
+  const where = 'skills/settle/SKILL.md'
+  const settle = skillText('settle')
+  const allowed = parseFrontmatter(settle).values['allowed-tools'] || ''
+  assert.ok(allowed.split(/\s+(?=[A-Z])/).includes('Bash(test -s .claude/ship/settle/pathspecs-r*)'), `${where}'s allowed-tools must carry Bash(test -s .claude/ship/settle/pathspecs-r*)`)
+  const lines = fencedLines(join(SKILLS_DIR, 'settle', 'SKILL.md'))
+  const check = lines.findIndex(l => l === 'test -s .claude/ship/settle/pathspecs-r<r>')
+  const stage = lines.findIndex(l => l.startsWith('git add -A --pathspec-from-file=.claude/ship/settle/pathspecs-r<r>'))
+  assert.ok(check !== -1 && stage !== -1 && check < stage, `${where} must run the test -s check on the pathspec file before the staging line`)
+})
+
+test('review-code prints the CLI\'s archive line when the change is read from the archive', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const para = paragraphWith(skillText('review-code'), 'CHANGE READ FROM ARCHIVE:')
+  assertRoutingTokens(para, ['When the output carries `CHANGE READ FROM ARCHIVE:`', 'print that line'], where)
+})
+
+test('review-code says what an exit 2 from the proof line means: print it, loop no more, promote the draft unproven', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const skill = skillText('review-code')
+  const para = paragraphWith(skill, 'PROOF UNANSWERED:')
+  assertRoutingTokens(
+    para,
+    ['exits 2', 'not an adjudicated review', 'carries no proof', 'names no dimension to re-run', '`no diff given`', 'PROOF UNANSWERED: <its standard-error line>', 're-run nothing', 'do not run the proof line again', 'Promote the last draft', 'REVIEW NOT PROVEN', 'never report the review as proven or clean'],
+    `${where} §3`
+  )
+  const lines = fencedLines(join(SKILLS_DIR, 'review-code', 'SKILL.md'))
+  const proof = lines.findIndex(l => l === 'interlock review proof --review <draft>')
+  const promote = lines.findIndex(l => /^interlock review --rerun-of <last draft>[^\n]*--metrics <change>/.test(l))
+  assert.ok(proof !== -1 && promote !== -1, `${where} lost the proof or the promote line`)
+  assert.ok(skill.indexOf('PROOF UNANSWERED:') > skill.indexOf('interlock review proof --review <draft>') && skill.indexOf('PROOF UNANSWERED:') < skill.indexOf('interlock review --rerun-of <last draft>'), `${where} must say what exit 2 means between the proof line and the promote line`)
+})
+
+test('review-code\'s description names every bundled dimension and marks the conditional ones, with no count', () => {
+  // E3: the description is the text a session sees first. It named neither
+  // `regression` nor that devops, security, domain and blast-radius are conditional.
+  const where = 'skills/review-code/SKILL.md'
+  const skill = skillText('review-code')
+  const desc = (parseFrontmatter(skill).values.description || '').toLowerCase()
+  const spoken = name => name.replace('-', ' ')
+  const rows = [...skill.matchAll(/^\| ([a-z-]+) \| `\$\{CLAUDE_SKILL_DIR\}\/dimensions\/\1\.md` \| (.+) \|$/gm)].map(m => ({ name: m[1], always: m[2].includes('in `review.dimensions`') }))
+  const bundled = readdirSync(join(SKILLS_DIR, 'review-code', 'dimensions')).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')).sort()
+  assert.deepEqual(rows.map(r => r.name).sort(), bundled, `${where}'s dimension table must list every bundled brief`)
+  const conditional = desc.indexOf('only when')
+  assert.ok(conditional !== -1, `${where}'s description must mark the conditional dimensions with "only when"`)
+  const opens = desc.lastIndexOf('plus ', conditional)
+  assert.ok(opens !== -1, `${where}'s description must open its conditional list with "plus"`)
+  for (const { name, always } of rows) {
+    const at = desc.includes(name) ? desc.indexOf(name) : desc.indexOf(spoken(name))
+    assert.ok(at !== -1, `${where}'s description must name the ${name} dimension`)
+    if (always) assert.ok(at < opens, `${where}'s description lists ${name}, which can always run, among the conditional ones`)
+    else assert.ok(at > opens && at < conditional, `${where}'s description must mark ${name} as conditional`)
+  }
+  assert.doesNotMatch(desc, /\b(\d+|two|three|four|five|six|seven|eight|nine)\s+(review\s+)?(dimensions|reviewers)\b/, `${where}'s description must not count the dimensions`)
 })

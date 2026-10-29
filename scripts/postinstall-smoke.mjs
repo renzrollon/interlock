@@ -231,6 +231,10 @@ export const INVENTORY = [
   { bin: I, argv: ['gate', '--findings', '{in}/blocker.json', '--json'], codes: [1], keys: ['passed', 'blockers', 'autonomyOutcome.blockers'] },
   { bin: I, argv: ['gate', '--findings', '{in}/empty.json', '--metrics', CHANGE, '--json'], codes: [0], keys: ['passed', 'metrics.written'] },
   { bin: I, argv: ['review', '--findings', '{in}/blocker.json', '--verdicts', '{in}/empty.json', '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--metrics', CHANGE, '--json'], codes: [0], keys: ['counts.surviving', 'surviving'] },
+  { bin: I, argv: ['review', '--findings', '{in}/blocker.json', '--verdicts', '{in}/empty.json', '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--draft', '--out', '{in}/review-draft.json', '--json'], codes: [0], keys: ['proof.proven', 'inputs.answers'] },
+  { bin: I, argv: ['review', 'proof', '--review', '{in}/review-draft.json'], codes: [1], check: r => (/^re-run: qa$/m.test(r.stdout.split('\n')[0]) ? '' : `the first line is not the re-run answer: ${r.stdout.split('\n')[0]}`) },
+  { bin: I, argv: ['review', 'brief', '--dimension', 'regression', '--base', 'HEAD~1'], codes: [0], check: r => (/^# Dimension: regression$/m.test(r.stdout) ? '' : 'the bundled regression rubric was not read from the install') },
+  { bin: I, argv: ['review', 'brief', '--skeptics', '--findings', '{in}/blocker.json', '--json'], codes: [0], keys: ['prompts'], check: r => (stepOf(r).prompts.length === 2 ? '' : 'not two skeptic prompts') },
   { bin: I, argv: ['review-policy', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['humanPaths', 'excludePaths'] },
   { bin: I, argv: ['domain-context', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['selected'] },
   { bin: I, argv: ['drift', '--changed', 'src/a.mjs', '--json'], codes: [0], keys: ['unarchived', 'stale', 'orphans'] },
@@ -287,6 +291,20 @@ export const INVENTORY = [
     keys: ['clean', 'dirty', 'tolerated'],
     input: ' M src/a.mjs\0?? json\0',
     check: r => (stepOf(r).dirty.length === 2 ? '' : 'the two dirty paths were not both named')
+  },
+  {
+    bin: I,
+    argv: ['settle', 'staging-pathspecs', '--change', CHANGE, '--nul'],
+    codes: [0],
+    check: r => (r.stdout.startsWith('.\0:(exclude)') ? '' : 'the pathspecs do not open with . and an exclude')
+  },
+  {
+    bin: I,
+    argv: ['settle', 'archived-change', '--name-status', '-', '--json'],
+    codes: [0],
+    keys: ['change', 'dir', 'renamed'],
+    input: 'A\topenspec/changes/archive/2026-10-28-x/tasks.md\n',
+    check: r => (stepOf(r).change === 'x' ? '' : 'the change added whole was not named')
   },
   {
     bin: I,

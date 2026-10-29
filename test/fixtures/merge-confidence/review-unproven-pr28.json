@@ -1,0 +1,302 @@
+{
+  "change": {
+    "name": "add-widget-catalogue",
+    "capabilities": [
+      "widgets/catalogue"
+    ]
+  },
+  "changedPaths": [
+    "src/widgets/catalogue.ts",
+    "test/widgets/catalogue.test.ts"
+  ],
+  "headSha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+  "artifacts": {
+    "proposal.md": "## Why\n\nList the widgets a shop sells in one catalogue view.\n",
+    "design.md": "## Decisions\n\nD1. The catalogue reads the existing widget store.\n",
+    "tasks.md": "- [x] 1.1 Render the catalogue\n"
+  },
+  "review": {
+    "surviving": [],
+    "dismissed": [],
+    "droppedByQuality": [],
+    "droppedByPolicy": [],
+    "counts": {
+      "raised": 0,
+      "droppedByPolicy": 0,
+      "dismissed": 0,
+      "droppedByQuality": 0,
+      "surviving": 0,
+      "dismissalsRejected": 0
+    },
+    "dimensionStats": {},
+    "anomalies": {
+      "orphanVerdicts": [],
+      "malformedVerdicts": [],
+      "requirementCitations": [],
+      "specGapShape": []
+    },
+    "policyProblems": [],
+    "dimensions": {
+      "selected": [
+        "language",
+        "technical-lead",
+        "domain",
+        "blast-radius"
+      ],
+      "ran": [
+        "language",
+        "technical-lead",
+        "domain",
+        "blast-radius"
+      ],
+      "unavailable": [],
+      "skipped": [],
+      "depth": "lean",
+      "completed": true
+    },
+    "proof": {
+      "proven": false,
+      "reason": "gaps in coverage",
+      "dimensions": [
+        "language",
+        "technical-lead",
+        "domain",
+        "blast-radius"
+      ],
+      "unproven": [
+        {
+          "dimension": "language",
+          "reason": "coverage not recorded"
+        },
+        {
+          "dimension": "technical-lead",
+          "reason": "coverage not recorded"
+        },
+        {
+          "dimension": "domain",
+          "reason": "coverage not recorded"
+        },
+        {
+          "dimension": "blast-radius",
+          "reason": "coverage not recorded"
+        }
+      ],
+      "unread": [],
+      "uncited": [
+        "hooks/mod.mjs",
+        "lib/meter-palette.mjs",
+        "lib/settle-meter.mjs",
+        "lib/spec-meter.mjs"
+      ],
+      "changed": 4,
+      "cited": 0,
+      "carried": [],
+      "reruns": 0
+    }
+  },
+  "verify": {
+    "halt": false,
+    "reason": null,
+    "context": "final",
+    "haltingKinds": [
+      "unit"
+    ],
+    "unit": {
+      "halt": false,
+      "reason": "unit suite is green",
+      "status": "green",
+      "ran": true,
+      "exitCode": 0,
+      "counts": {
+        "total": 42,
+        "passed": 42,
+        "failed": 0,
+        "skipped": 0
+      },
+      "clusters": [],
+      "weakened": null,
+      "weakenedCheck": "ok",
+      "preExisting": false,
+      "signals": []
+    },
+    "e2e": {
+      "halt": false,
+      "blocking": false,
+      "passed": true,
+      "status": "green",
+      "reason": "e2e suite is green",
+      "repairable": false,
+      "counts": {
+        "total": 6,
+        "passed": 6,
+        "failed": 0,
+        "skipped": 0
+      },
+      "clusters": [],
+      "signals": []
+    },
+    "coverage": {
+      "halt": false,
+      "blocking": false,
+      "advisory": true,
+      "ran": true,
+      "pct": 91.2,
+      "changedLines": 120,
+      "coveredLines": 109,
+      "perFile": [],
+      "warnings": [],
+      "signals": []
+    },
+    "typecheck": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "signals": [
+      {
+        "level": "info",
+        "kind": "lint",
+        "reason": "no-detectable-command",
+        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
+      }
+    ],
+    "banners": [
+      "VERIFICATION SKIPPED: reason=no-detectable-command"
+    ],
+    "skipped": [
+      {
+        "kind": "lint",
+        "reason": "no-detectable-command",
+        "detail": "no lint command in the profile or from the caller"
+      }
+    ]
+  },
+  "checklist": {
+    "skipped": false,
+    "reason": null,
+    "change": "add-widget-catalogue",
+    "outsideSpecs": 0,
+    "changedFiles": [
+      "src/widgets/catalogue.ts"
+    ],
+    "verdictsRequired": 5
+  },
+  "handoff": {
+    "scenariosChecked": 5,
+    "scenariosUnconfirmed": 0,
+    "requirementsChecked": 4,
+    "requirementsUnconfirmed": 0
+  },
+  "pipeline": {
+    "sha": "1f3a5c7e9b2d4f6a8c0e1f3a5c7e9b2d4f6a8c0e",
+    "checks": [
+      {
+        "name": "unit",
+        "state": "pass",
+        "required": true
+      },
+      {
+        "name": "lint",
+        "state": "pass",
+        "required": true
+      },
+      {
+        "name": "preview-deploy",
+        "state": "skipped",
+        "required": false
+      }
+    ]
+  },
+  "coverage": {
+    "configured": true,
+    "headTotalPct": 85.4,
+    "baseTotalPct": 85,
+    "baseSha": "0e8c6a4f2d0b8e6c4a2f0e8c6a4f2d0b8e6c4a2f",
+    "baseIsAncestor": true,
+    "diffPct": 91.2,
+    "changedLines": 120,
+    "unreportedFiles": [],
+    "unreportedAddedLines": 0
+  },
+  "diff": {
+    "changedLines": 120,
+    "changedFiles": 2
+  },
+  "ledger": {
+    "total": 1,
+    "needsHuman": 0,
+    "agentResolved": 1,
+    "invalidCount": 0,
+    "invalid": 0,
+    "exists": true,
+    "missing": false,
+    "unparseable": false,
+    "changeExists": true,
+    "blocking": false,
+    "rows": [
+      {
+        "id": "D1",
+        "question": "Read the existing widget store or add a new one?",
+        "class": "agent_resolved",
+        "valid": true
+      }
+    ]
+  },
+  "drift": {
+    "root": ".",
+    "unarchived": [],
+    "stale": {
+      "skipped": false,
+      "reason": null,
+      "broken": [],
+      "aging": [],
+      "indexed": 4,
+      "graphBuiltAt": "2026-10-11T09:00:00Z"
+    },
+    "orphans": {
+      "skipped": false,
+      "reason": null,
+      "orphans": [],
+      "considered": 1
+    },
+    "hasFindings": false
+  },
+  "run": {
+    "halted": false,
+    "trajectoryComplete": true,
+    "stageMarkerGaps": 0,
+    "rejectedReports": 0,
+    "permissionPrompts": 0,
+    "autoModeDenials": 0,
+    "leftoverTasks": 0
+  },
+  "reviewPolicy": {
+    "ref": "origin/main",
+    "humanPaths": [
+      "lib/release"
+    ],
+    "problems": [],
+    "differsFromBase": false
+  },
+  "living": {
+    "skipped": null,
+    "partial": null,
+    "requirementsRequired": 4,
+    "omitted": [],
+    "source": "base origin/main"
+  },
+  "specCoverage": {
+    "added": [
+      {
+        "path": "src/widgets/catalogue.ts",
+        "namedBy": "delta"
+      }
+    ],
+    "lost": [],
+    "legacy": [],
+    "repo": {
+      "named": 12,
+      "total": 40
+    }
+  }
+}

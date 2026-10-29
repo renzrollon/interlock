@@ -129,86 +129,6 @@ Rationale: the verify planner already separates "not configured" from "budget ex
 - **THEN** the suite signal is green
 - **AND** it carries the flag naming the absent type checker
 
-### Requirement: The review signals SHALL read the adjudicated review
-
-The review input SHALL be the adjudicated review as the review command or the run's review step writes it. A surviving blocker, or a surviving finding whose severity is outside the published severities, SHALL make the blockers signal (`review.blockers`) red. Surviving warnings above the published cap SHALL make the warnings signal (`review.warnings`) amber, marked as needing a fix. An absent review input SHALL make the ran signal (`review.ran`) amber with the reason that no review ran. A dimension record showing that the review did not complete, that a selected dimension could not run with its rubric, or that a selected dimension is recorded neither as run nor as unable to run, SHALL make the ran signal amber. A selected `domain` or `blast-radius` dimension recorded as skipped SHALL count as accounted for, because those two are skipped for want of a graph and the record says so; a skip recorded under any other name SHALL NOT, so a selected `security` dimension that is only skipped still reads amber. A review input that records no dimension selection SHALL be green on the ran signal with a flag, because the counts prove a review happened and only the record of its coverage is missing. A dimension record that names the `domain` dimension as skipped for want of a graph SHALL leave the ran signal's band as the rest of the record decides it and SHALL add the `domain-skipped` flag; one that names the `blast-radius` dimension as skipped for want of a graph SHALL likewise leave the band and SHALL add the `blast-radius-skipped` flag. The dimension record MAY come from the run's review step or from the record the review command's `--dimensions` option stamps, and the ran signal SHALL read both alike. A review in which a refutation was refused for citing nothing, or in which a surviving blocker or warning had fewer verdicts than the published floor, SHALL be amber on the adversarial signal (`review.adversarial`), marked as needing more evidence. A review from which the quality band removed a blocker, or a finding whose severity is outside the published severities, SHALL be amber on the adversarial signal, marked as needing a person, with the finding named in the evidence: the skeptics' vote kept it, and it is in no surviving list for the blockers signal to read. A warning or a suggestion the band removed SHALL NOT move the signal, and neither SHALL a review input that carries no list of what the band removed.
-
-#### Scenario: Happy path — a clean adjudicated review is green on every review signal
-
-- **GIVEN** a review input with no surviving blocker, surviving warnings at or under the cap, no refused refutation, every surviving finding adjudicated by at least the floor number of skeptics, and a dimension record showing every selected dimension ran with its rubric
-- **WHEN** the merge confidence is assessed
-- **THEN** the blockers, warnings, ran and adversarial signals are all green with no flag
-
-#### Scenario: Failure — a surviving blocker is red
-
-- **GIVEN** a review input with one surviving blocker
-- **WHEN** the merge confidence is assessed
-- **THEN** the blockers signal is red and the verdict is `BLOCK`
-- **AND** the evidence names the blocker's file and title
-
-#### Scenario: Failure — a finding with an unrecognised severity is red
-
-- **GIVEN** a review input whose one surviving finding carries a severity outside the published severities
-- **WHEN** the merge confidence is assessed
-- **THEN** the blockers signal is red and the verdict is `BLOCK`
-- **AND** the evidence names the finding and the severity that was rejected
-
-#### Scenario: Failure — surviving warnings above the cap are amber
-
-- **GIVEN** a review input with no surviving blocker and one more surviving warning than the published cap
-- **WHEN** the merge confidence is assessed
-- **THEN** the warnings signal is amber, marked as needing a fix
-- **AND** its reason names the warning cap and its published value
-
-#### Scenario: Edge case — no review input is amber, and a review with no dimension record is a flag
-
-- **GIVEN** one assessment with no review input and another whose review input carries counts but no dimension record
-- **WHEN** both are assessed
-- **THEN** the first reads the ran signal amber with the reason that no review ran
-- **AND** the second reads the ran signal green with a flag saying the dimension record is absent
-
-#### Scenario: Edge case — an incomplete review is amber on the ran signal
-
-- **GIVEN** one review input whose dimension record says the review did not complete, and another whose dimension record names a selected dimension that could not run with its rubric
-- **WHEN** both are assessed
-- **THEN** each reads the ran signal amber
-- **AND** the first's reason says the review did not complete, and the second's names the dimension
-
-#### Scenario: Edge case — a skipped domain review is a flag, not a band
-
-- **GIVEN** one review input whose dimension record shows every selected dimension ran and names `domain` as skipped because no graph exists, and another identical except that a selected dimension could not run with its rubric
-- **WHEN** both are assessed
-- **THEN** the first reads the ran signal green with the `domain-skipped` flag and scores below the same input without the skip
-- **AND** the second reads the ran signal amber and still carries the `domain-skipped` flag
-
-#### Scenario: Edge case — a skipped blast-radius review is a flag, not a band
-
-- **GIVEN** one review input whose dimension record shows every selected dimension ran and names `blast-radius` as skipped because no graph exists, and another that names both `domain` and `blast-radius` as skipped
-- **WHEN** both are assessed
-- **THEN** the first reads the ran signal green with the `blast-radius-skipped` flag and scores below the same input without the skip
-- **AND** the second reads the ran signal green and carries both flags, and `blast-radius-skipped` has its row in the delivery documentation's flag table
-
-#### Scenario: Edge case — the record the review skill writes reads green, and a skipped security review does not
-
-- **GIVEN** the dimension record exactly as `skills/review-code/SKILL.md` shows it, which selects `blast-radius`, leaves it out of `ran` and names it under `skipped` with its reason, stamped by `interlock review --dimensions … --head H --out <file>`; and a record that selects `security`, leaves it out of `ran` and names it under `skipped`
-- **WHEN** `interlock merge-confidence --review <file>` assesses the first for head H, and the second is assessed alike
-- **THEN** the first reads the ran signal green with the `blast-radius-skipped` flag
-- **AND** the second reads the ran signal amber, naming `security` as a selected dimension with no record that it ran
-
-#### Scenario: Edge case — a refused refutation, and a finding with too few verdicts, are amber on the adversarial signal
-
-- **GIVEN** one review input in which one refutation was refused for citing nothing, and another whose one surviving warning had fewer verdicts than the published floor
-- **WHEN** both are assessed
-- **THEN** each reads the adversarial signal amber, marked as needing more evidence
-- **AND** the second's reason names the verdict floor and its published value
-
-#### Scenario: Failure — a blocker the quality band removed holds the verdict for a person
-
-- **GIVEN** a review input with no surviving blocker, whose list of findings removed by the quality band holds one blocker that two skeptics voted real
-- **WHEN** the merge confidence is assessed
-- **THEN** the blockers signal is green and the adversarial signal is amber, marked as needing a person, its evidence naming the finding
-- **AND** the verdict is `HUMAN`, and the same input with a warning in the blocker's place reads the adversarial signal green
-
 ### Requirement: The risk signal SHALL be computed over the touched paths and SHALL never be red
 
 The risk signal (`risk.class`) SHALL classify the changed paths, and only the changed paths, with the existing risk classifier in its paths-only mode: the change's artifact text SHALL NOT be read at merge, and the classifier's severity path rules SHALL be evaluated over the changed paths that are neither documentation nor test paths. A signal whose only rule reads artifact text SHALL therefore not fire at merge, and a diff whose only clue was such a word SHALL read the class its paths earn. A class within the published merge-allowed classes SHALL be green. A class above them SHALL be amber, marked as needing a person, with the classifier's driving signal in the evidence. The risk signal SHALL NOT resolve red, because touching a sensitive path is a reason for a person to decide, not a defect the machine found. The classifier's other callers, the continuity gate and the spec-stage checkpoint, SHALL keep reading both sources.
@@ -1030,7 +950,7 @@ Rationale: the loop that produces these records produces one of each per pushed 
 
 #### Scenario: Happy path — three records for this head
 
-- **GIVEN** a review record with no surviving finding, a final verification verdict with a green suite, and a handoff whose counts match the command's, each carrying `head` equal to the head commit
+- **GIVEN** a review record with no surviving finding and a proof that holds, a final verification verdict with a green suite, and a handoff whose counts match the command's, each carrying `head` equal to the head commit
 - **WHEN** the command runs with them as `--review`, `--verify` and `--handoff`
 - **THEN** the review-ran signal is green, the suite signal reads the verdict, and the conformance signals read the counts
 - **AND** nothing about a head is said on standard error
@@ -1046,7 +966,7 @@ Rationale: the loop that produces these records produces one of each per pushed 
 
 - **GIVEN** a review record with `surviving` and no `head`, a verdict and a handoff with no `head`; and `interlock verify judge` run with `--head H`
 - **WHEN** the command runs with the three records, and the verdict of the judge run is read
-- **THEN** each record is read as it was before the key existed, with nothing about a head on standard error
+- **THEN** each record's head is read as it was before the key existed, with nothing about a head on standard error
 - **AND** the judge's verdict carries `head` equal to H
 
 ### Requirement: The ran signal's evidence SHALL name the depth the review record carries
@@ -1057,7 +977,7 @@ Rationale: a verdict that does not say how thorough its review was is a verdict 
 
 #### Scenario: Happy path — a lean record is named and green
 
-- **GIVEN** a review input with no surviving blocker, warnings under the cap, and a dimension record showing every selected dimension ran and carrying `depth: lean`
+- **GIVEN** a review input with no surviving blocker, warnings under the cap, a dimension record showing every selected dimension ran and carrying `depth: lean`, and a proof that holds
 - **WHEN** the merge confidence is assessed
 - **THEN** the ran signal is green with no flag and its evidence carries `depth: lean`
 - **AND** the score equals the score of the same input with `depth: strict`
@@ -1071,7 +991,134 @@ Rationale: a verdict that does not say how thorough its review was is a verdict 
 
 #### Scenario: Edge case — a record without a depth reads as before
 
-- **GIVEN** a review input whose dimension record carries no `depth`
+- **GIVEN** a review input whose dimension record carries no `depth`, and a proof that holds
 - **WHEN** the merge confidence is assessed
 - **THEN** the ran signal's band, flags and reason are what they were before this requirement
 - **AND** no evidence line names a depth
+
+### Requirement: The blockers, warnings and adversarial signals SHALL read the adjudicated review and name the proof they stand on
+
+The review input SHALL be the adjudicated review as the review command or the run's review step writes it. A surviving blocker, or a surviving finding whose severity is outside the published severities, SHALL make `review.blockers` red. Surviving warnings above the published cap SHALL make `review.warnings` amber, needing a fix. A refused refutation, or a surviving blocker or warning with fewer verdicts than the published floor, SHALL make `review.adversarial` amber, needing more evidence. A blocker or an unrecognised-severity finding the quality band removed SHALL make it amber, needing a person, the finding named; a removed warning or suggestion, or an input with no removed list, SHALL NOT move it. A green `review.blockers` or `review.warnings` SHALL say whether the review's proof holds.
+
+#### Scenario: Happy path — a clean adjudicated review is green on every review signal
+
+- **GIVEN** a review input with no surviving blocker, surviving warnings at or under the cap, no refused refutation, every surviving finding adjudicated by at least the floor number of skeptics, a dimension record showing every selected dimension ran with its rubric, and a proof that holds
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers, warnings, ran and adversarial signals are all green with no flag
+- **AND** the blockers signal's reason says the proof holds
+
+#### Scenario: Failure — a surviving blocker is red
+
+- **GIVEN** a review input with one surviving blocker
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers signal is red and the verdict is `BLOCK`
+- **AND** the evidence names the blocker's file and title
+
+#### Scenario: Failure — a finding with an unrecognised severity is red
+
+- **GIVEN** a review input whose one surviving finding carries a severity outside the published severities
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers signal is red and the verdict is `BLOCK`
+- **AND** the evidence names the finding and the severity that was rejected
+
+#### Scenario: Failure — surviving warnings above the cap are amber
+
+- **GIVEN** a review input with no surviving blocker and one more surviving warning than the published cap
+- **WHEN** the merge confidence is assessed
+- **THEN** the warnings signal is amber, marked as needing a fix
+- **AND** its reason names the warning cap and its published value
+
+#### Scenario: Edge case — a refused refutation, and a finding with too few verdicts, are amber on the adversarial signal
+
+- **GIVEN** one review input in which one refutation was refused for citing nothing, and another whose one surviving warning had fewer verdicts than the published floor
+- **WHEN** both are assessed
+- **THEN** each reads the adversarial signal amber, marked as needing more evidence
+- **AND** the second's reason names the verdict floor and its published value
+
+#### Scenario: Failure — a blocker the quality band removed holds the verdict for a person
+
+- **GIVEN** a review input with no surviving blocker, whose list of findings removed by the quality band holds one blocker that two skeptics voted real
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers signal is green and the adversarial signal is amber, marked as needing a person, its evidence naming the finding
+- **AND** the verdict is `HUMAN`, and the same input with a warning in the blocker's place reads the adversarial signal green
+
+#### Scenario: Edge case — zero findings from an unproven review do not read as clean
+
+- **GIVEN** the PR #28 round-0 review record: no surviving finding, four dimensions in `ran`, and a proof naming all four unproven
+- **WHEN** the merge confidence is assessed
+- **THEN** the blockers signal is green and its reason says the review raised no finding and its proof does not hold
+- **AND** the verdict is not `MERGE`
+
+### Requirement: The ran signal SHALL read the dimension record and the proof of coverage
+
+`review.ran` SHALL be amber, needing more evidence, when: there is no review input; the record shows the review did not complete; a selected dimension could not run with its rubric or is recorded neither as run nor as unable to run; the proof names an unproven dimension, a dimension with unread inputs, or an uncited changed source file, each named in the evidence; or the input carries no proof or no dimension record (D2). A selected `domain` or `blast-radius` skipped for want of a graph SHALL count as accounted for and add `domain-skipped` or `blast-radius-skipped`; a skip under any other name SHALL NOT. A record from the run's review step and one `--dimensions` stamps SHALL read alike.
+
+#### Scenario: Edge case — no review input is amber, and a review with no dimension record is amber
+
+- **GIVEN** one assessment with no review input and another whose review input carries counts but no dimension record
+- **WHEN** both are assessed
+- **THEN** the first reads the ran signal amber with the reason that no review ran
+- **AND** the second reads the ran signal amber, needing more evidence, with the reason that the review recorded neither its dimensions nor its coverage
+
+#### Scenario: Edge case — an incomplete review is amber on the ran signal
+
+- **GIVEN** one review input whose dimension record says the review did not complete, and another whose dimension record names a selected dimension that could not run with its rubric
+- **WHEN** both are assessed
+- **THEN** each reads the ran signal amber
+- **AND** the first's reason says the review did not complete, and the second's names the dimension
+
+#### Scenario: Edge case — a skipped domain review is a flag, not a band
+
+- **GIVEN** one review input whose dimension record shows every selected dimension ran and names `domain` as skipped because no graph exists, with a proof that holds, and another identical except that a selected dimension could not run with its rubric
+- **WHEN** both are assessed
+- **THEN** the first reads the ran signal green with the `domain-skipped` flag and scores below the same input without the skip
+- **AND** the second reads the ran signal amber and still carries the `domain-skipped` flag
+
+#### Scenario: Edge case — a skipped blast-radius review is a flag, not a band
+
+- **GIVEN** one review input whose dimension record shows every selected dimension ran and names `blast-radius` as skipped because no graph exists, with a proof that holds, and another that names both `domain` and `blast-radius` as skipped
+- **WHEN** both are assessed
+- **THEN** the first reads the ran signal green with the `blast-radius-skipped` flag and scores below the same input without the skip
+- **AND** the second reads the ran signal green and carries both flags, and `blast-radius-skipped` has its row in the delivery documentation's flag table
+
+#### Scenario: Edge case — the record the review skill writes reads green, and a skipped security review does not
+
+- **GIVEN** the dimension record exactly as `skills/review-code/SKILL.md` shows it, which selects `blast-radius`, leaves it out of `ran` and names it under `skipped` with its reason, stamped by `interlock review --dimensions … --head H --out <file>` with ledgers that prove coverage; and a record that selects `security`, leaves it out of `ran` and names it under `skipped`
+- **WHEN** `interlock merge-confidence --review <file>` assesses the first for head H, and the second is assessed alike
+- **THEN** the first reads the ran signal green with the `blast-radius-skipped` flag
+- **AND** the second reads the ran signal amber, naming `security` as a selected dimension with no record that it ran
+
+#### Scenario: Failure — the PR #28 review is amber on the ran signal
+
+- **GIVEN** the PR #28 round-0 record: four dimensions ran, each raised nothing and recorded no coverage, and four changed source files are uncited
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is amber, needing more evidence, and its evidence names the four unproven dimensions and the four uncited files
+- **AND** the verdict is `HUMAN`
+
+#### Scenario: Edge case — a dimension with an unread input is named with it
+
+- **GIVEN** a review whose proof names `technical-lead` under `unread` with the input `delta specs`, and is otherwise proven
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is amber and its evidence names `technical-lead` and `delta specs`
+
+#### Scenario: Edge case — a review that raised findings still needs its coverage proved
+
+- **GIVEN** a review with one surviving warning whose proof lists one changed source file as uncited
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is amber naming that file, and the warnings signal is green
+
+### Requirement: A dimension that ran on a degraded input SHALL be a flag on the ran signal, not a band
+
+A dimension record MAY carry `degraded`, a list of `{ name, reason }` naming a dimension that ran on a cut or stale input: `domain` when the domain text left requirements out, `blast-radius` when the graph did not cover the diff. `review.ran` SHALL add `domain-partial` or `blast-radius-partial` for such an entry and SHALL leave its band as the rest of the record decides it. A `degraded` entry naming any other dimension SHALL be refused by the review command.
+
+#### Scenario: Happy path — a cut domain text is flagged
+
+- **GIVEN** a proven review whose dimension record names `domain` under `degraded` with the reason that five requirements were left out
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is green with the `domain-partial` flag and scores below the same input without it
+
+#### Scenario: Edge case — a stale graph is flagged, and both can stand together
+
+- **GIVEN** a proven review whose dimension record names both `domain` and `blast-radius` under `degraded`
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is green with both `domain-partial` and `blast-radius-partial`, and each has its row in the delivery documentation's flag table

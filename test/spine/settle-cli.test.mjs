@@ -14,7 +14,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +29,17 @@ const HEAD = 'a'.repeat(40)
 const OTHER_HEAD = 'b'.repeat(40)
 const BEFORE_HEAD = 'c'.repeat(40)
 
-const SUBCOMMANDS = ['comment', 'replies', 'remediate-brief', 'fixer-result', 'conformance-brief', 'test-paths', 'tree-check']
+const SUBCOMMANDS = [
+  'comment',
+  'replies',
+  'remediate-brief',
+  'fixer-result',
+  'conformance-brief',
+  'test-paths',
+  'tree-check',
+  'staging-pathspecs',
+  'archived-change'
+]
 
 let dir
 let seq = 0
@@ -82,11 +92,12 @@ function finding(over = {}) {
  * `head` of null leaves the key out; `surviving` of undefined leaves the list
  * out and writes the raw `findings` instead (a record nobody adjudicated).
  */
-function record({ head = HEAD, surviving, name } = {}) {
+function record({ head = HEAD, surviving, name, proof } = {}) {
   seq += 1
   const file = join(dir, `${name || 'review'}-${seq}.json`)
   const body = {}
   if (head !== null) body.head = head
+  if (proof !== undefined) body.proof = proof
   if (surviving === undefined) body.findings = [finding()]
   else {
     body.surviving = surviving
@@ -102,7 +113,7 @@ const idsOf = list => list.map(x => (typeof x === 'string' ? x : x.id))
 
 // ── 1.9 scaffold ────────────────────────────────────────────────────────────
 
-test('settle --help prints the seven subcommands with their flags and exits 0', () => {
+test('settle --help prints every subcommand with its flags and exits 0', () => {
   const r = run(['settle', '--help'])
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
   for (const sub of SUBCOMMANDS) {
@@ -111,7 +122,7 @@ test('settle --help prints the seven subcommands with their flags and exits 0', 
   assert.ok(r.stdout.includes('--before'), `--help should carry the usage lines, --before among them:\n${r.stdout}`)
 })
 
-test('settle help prints the same seven usage lines as the exported help, and exits 0', () => {
+test('settle help prints the same usage lines as the exported help, and exits 0', () => {
   assert.deepEqual([...SETTLE_SUBCOMMANDS], SUBCOMMANDS)
   const r = settle('help')
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
@@ -184,7 +195,7 @@ test('comment --json prints { head, round, findings } with id, key, severity, fi
   const r = settle('comment', [...commentArgs(record({ surviving: TWO }), { round: 3 }), '--json'])
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
   const out = JSON.parse(r.stdout)
-  assert.deepEqual(Object.keys(out).sort(), ['findings', 'head', 'round'])
+  assert.deepEqual(Object.keys(out).sort(), ['findings', 'head', 'proof', 'round'])
   assert.equal(out.head, HEAD)
   assert.equal(out.round, 3)
   assert.deepEqual(out.findings, TWO.map(f => ({
@@ -207,8 +218,14 @@ test('comment: a record without surviving exits 1, prints nothing, and says it i
   assert.ok(/not an adjudicated review/i.test(r.stderr), `stderr: ${r.stderr}`)
 })
 
+/** A proof that holds, as `interlock review` records it. */
+const PROVEN = {
+  proven: true, reason: null, dimensions: ['language', 'regression'],
+  unproven: [], unread: [], uncited: [], changed: 2, cited: 2, carried: [], reruns: 0
+}
+
 test('comment: nothing survived prints one paragraph naming the sha and the round, and exits 0', () => {
-  const r = settle('comment', commentArgs(record({ surviving: [] }), { round: 1 }))
+  const r = settle('comment', commentArgs(record({ surviving: [], proof: PROVEN }), { round: 1 }))
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
   const text = r.stdout.trim()
   assert.ok(text.length > 0, 'no comment printed')
@@ -217,6 +234,52 @@ test('comment: nothing survived prints one paragraph naming the sha and the roun
   assert.ok(/round 1/i.test(text), `should name round 1: ${text}`)
   assert.ok(/no (surviving )?finding/i.test(text), `should say no finding survived: ${text}`)
   assert.ok(!/^\|/m.test(text), 'an empty list has no table rows')
+  assert.match(text, /Coverage: ran language, regression; 2 of 2 changed source file\(s\) cited\./)
+})
+
+// ── the proof of coverage on the comment (spec: review/settle-loop) ────────────
+
+const PR28_FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'review-proof', 'pr28')
+const PR28_HEAD = 'e177e7de66d7db4ca8b0441ce9f2c41248751803'
+const PR28_RAN = ['language', 'technical-lead', 'domain', 'blast-radius']
+const PR28_UNCITED = ['hooks/mod.mjs', 'lib/meter-palette.mjs', 'lib/settle-meter.mjs', 'lib/spec-meter.mjs']
+const PR28_PROOF = {
+  proven: false, reason: 'gaps in coverage', dimensions: PR28_RAN,
+  unproven: PR28_RAN.map(d => ({ dimension: d, reason: 'coverage not recorded' })),
+  unread: [], uncited: PR28_UNCITED, changed: 4, cited: 0, carried: [], reruns: 0
+}
+
+test('pr28: the round-0 record prints REVIEW NOT PROVEN naming the four dimensions and four files, never called clean', () => {
+  const r0 = JSON.parse(readFileSync(join(PR28_FIXTURES, 'review-r0.json'), 'utf8'))
+  seq += 1
+  const file = join(dir, `pr28-${seq}.json`)
+  writeFileSync(file, JSON.stringify({ ...r0, proof: PR28_PROOF }))
+  const r = settle('comment', ['--review', file, '--head', PR28_HEAD, '--round', '0'])
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.ok(r.stdout.startsWith('REVIEW NOT PROVEN'), r.stdout)
+  for (const name of [...PR28_RAN, ...PR28_UNCITED]) assert.ok(r.stdout.includes(name), `does not name ${name}: ${r.stdout}`)
+  assert.ok(!r.stdout.includes('raised no surviving finding'), r.stdout)
+
+  // The record exactly as the round wrote it, with no proof at all, is not clean either.
+  const bare = settle('comment', ['--review', join(PR28_FIXTURES, 'review-r0.json'), '--head', PR28_HEAD, '--round', '0'])
+  assert.equal(bare.code, 0, `stderr: ${bare.stderr}`)
+  assert.ok(bare.stdout.startsWith('REVIEW NOT PROVEN'), bare.stdout)
+  assert.ok(!bare.stdout.includes('raised no surviving finding'), bare.stdout)
+})
+
+test('comment: an unproven record with findings ends with a REVIEW NOT PROVEN: line; a proven one with the coverage line', () => {
+  const unproven = settle('comment', commentArgs(record({ surviving: TWO, proof: { ...PROVEN, proven: false, reason: 'gaps in coverage', uncited: ['lib/z.mjs'] } })))
+  assert.equal(unproven.code, 0, `stderr: ${unproven.stderr}`)
+  const last = unproven.stdout.trim().split('\n').pop()
+  assert.match(last, /^REVIEW NOT PROVEN: /)
+  assert.ok(last.includes('lib/z.mjs'), last)
+  const proven = settle('comment', commentArgs(record({ surviving: TWO, proof: PROVEN })))
+  assert.match(proven.stdout.trim().split('\n').pop(), /^Coverage: ran language, regression; 2 of 2 changed source file\(s\) cited\.$/)
+})
+
+test('comment --json carries the proof', () => {
+  const r = settle('comment', [...commentArgs(record({ surviving: [], proof: PROVEN })), '--json'])
+  assert.deepEqual(JSON.parse(r.stdout).proof, PROVEN)
 })
 
 // ── 1.11 replies ────────────────────────────────────────────────────────────
@@ -1058,6 +1121,73 @@ const TC = ['--change', 'demo-change', '--status', '-']
 test('tree-check: the tolerated paths are the summary and the notes file, exactly', () => {
   assert.deepEqual(toleratedPaths('demo-change'), ['openspec/changes/demo-change/settle-summary.md', NOTES_PATH])
   assert.equal(NOTES_PATH, 'docs/notes/compound.md')
+})
+
+test('tree-check: an archived change\'s settle-summary.md is tolerated', () => {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-settle-archived-'))
+  try {
+    mkdirSync(join(root, 'openspec', 'changes', 'archive', '2026-10-28-x'), { recursive: true })
+    writeFileSync(join(root, 'openspec', 'changes', 'archive', '2026-10-28-x', 'proposal.md'), '# x\n')
+    const r = run(['settle', 'tree-check', '--change', 'x', '--status', '-', '--json'], {
+      cwd: root,
+      input: '?? openspec/changes/archive/2026-10-28-x/settle-summary.md\0'
+    })
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+    assert.deepEqual(JSON.parse(r.stdout).tolerated, ['openspec/changes/archive/2026-10-28-x/settle-summary.md'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('staging-pathspecs --nul prints . and one :(exclude) per tolerated path, the archived summary included', () => {
+  const active = settle('staging-pathspecs', ['--change', 'demo-change', '--nul'])
+  assert.equal(active.code, 0, `stderr: ${active.stderr}`)
+  assert.deepEqual(active.stdout.split('\0'), ['.', ...toleratedPaths('demo-change').map(p => `:(exclude)${p}`), ''])
+  // toleratedPaths keeps its one-argument form; the archived directory is an optional second.
+  assert.deepEqual(toleratedPaths('x', 'openspec/changes/archive/2026-10-28-x'), [
+    'openspec/changes/archive/2026-10-28-x/settle-summary.md',
+    NOTES_PATH
+  ])
+
+  const root = mkdtempSync(join(tmpdir(), 'interlock-settle-stage-'))
+  try {
+    mkdirSync(join(root, 'openspec', 'changes', 'archive', '2026-10-28-x'), { recursive: true })
+    writeFileSync(join(root, 'openspec', 'changes', 'archive', '2026-10-28-x', 'proposal.md'), '# x\n')
+    const archived = run(['settle', 'staging-pathspecs', '--change', 'x', '--nul'], { cwd: root })
+    assert.equal(archived.code, 0, `stderr: ${archived.stderr}`)
+    assert.ok(archived.stdout.split('\0').includes(':(exclude)openspec/changes/archive/2026-10-28-x/settle-summary.md'), archived.stdout)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+
+  const noChange = settle('staging-pathspecs', ['--nul'])
+  assert.equal(noChange.code, 1)
+  assert.equal(noChange.stdout, '')
+})
+
+test('pr28: archived-change reads the name-status and prints the one change added whole', () => {
+  const nameStatus = readFileSync(join(PR28_FIXTURES, 'name-status.txt'), 'utf8')
+  const r = settle('archived-change', ['--name-status', '-', '--json'], { input: nameStatus })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.change, 'draw-the-settle-and-spec-panes-as-cards')
+  assert.equal(out.dir, 'openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards')
+  assert.deepEqual(out.renamed, [
+    'openspec/changes/archive/2026-10-26-route-prose-spawns-by-role',
+    'openspec/changes/archive/2026-10-28-agree-with-openspec-1-15'
+  ])
+  const plain = settle('archived-change', ['--name-status', '-'], { input: nameStatus })
+  assert.equal(plain.stdout, 'draw-the-settle-and-spec-panes-as-cards\n')
+
+  const two = 'A\topenspec/changes/archive/2026-10-01-a/tasks.md\nA\topenspec/changes/archive/2026-10-02-b/tasks.md\n'
+  const both = settle('archived-change', ['--name-status', '-'], { input: two })
+  assert.equal(both.code, 1)
+  assert.equal(both.stdout, '')
+  assert.ok(both.stderr.includes('2026-10-01-a') && both.stderr.includes('2026-10-02-b'), both.stderr)
+
+  const none = settle('archived-change', ['--name-status', '-'], { input: 'M\tlib/a.mjs\n' })
+  assert.equal(none.code, 1)
+  assert.equal(none.stdout, '')
 })
 
 test('tree-check: empty status is clean; tolerated paths alone are clean and named', () => {

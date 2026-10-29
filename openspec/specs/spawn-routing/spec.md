@@ -7,7 +7,7 @@ The model and effort a prose skill passes when it spawns a subagent come from on
 
 ### Requirement: The prose spawn roles and their routing SHALL be published, not restated
 
-The model and effort a prose skill passes when it spawns a subagent SHALL come from one table, `SPAWN_ROUTING` in `lib/limits.mjs`, with one row per role — `explore-investigator`, `review-dimension`, `review-skeptic`, `settle-fixer`, `settle-conformance` — each a `{ model, effort }` pair, and a row MAY carry a `strict` override, itself a `{ model, effort }` pair that applies when the review depth is `strict`; the `review-dimension` row SHALL carry one. `model` SHALL be one of `haiku`, `sonnet`, `opus` or `null`; `effort` SHALL be one of `low`, `medium`, `high`, `xhigh`, `max` or `null`; `null` means the parameter is omitted and the host's default applies; an override's fields SHALL obey the same vocabulary. The `review-skeptic` and `settle-fixer` rows SHALL carry `EFFORT.skeptic` itself, not a copy of its value. `interlock limits` SHALL print one row per role and one per override, and `interlock limits --json` SHALL emit the table under `routing`. No skill file SHALL spell a model slug or an effort level as a spawn parameter.
+The model and effort a prose skill passes when it spawns a subagent SHALL come from one table, `SPAWN_ROUTING` in `lib/limits.mjs`, with one row per role — `explore-investigator`, `review-dimension`, `review-skeptic`, `settle-fixer`, `settle-conformance`, `artifact-reviewer` — each a `{ model, effort }` pair, and a row MAY carry a `strict` override, itself a `{ model, effort }` pair that applies when the review depth is `strict`; the `review-dimension` row SHALL carry one. `model` SHALL be one of `haiku`, `sonnet`, `opus` or `null`; `effort` SHALL be one of `low`, `medium`, `high`, `xhigh`, `max` or `null`; `null` means the parameter is omitted and the host's default applies; an override's fields SHALL obey the same vocabulary. The `review-skeptic` and `settle-fixer` rows SHALL carry `EFFORT.skeptic` itself, not a copy of its value. `interlock limits` SHALL print one row per role and one per override, and `interlock limits --json` SHALL emit the table under `routing`. No skill file SHALL spell a model slug or an effort level as a spawn parameter.
 
 Rationale: a model slug in prose is a threshold a model can re-argue and five files can drift apart; a table the CLI publishes changes once.
 
@@ -15,12 +15,12 @@ Rationale: a model slug in prose is a threshold a model can re-argue and five fi
 
 - **GIVEN** the installed CLI
 - **WHEN** `interlock limits` runs
-- **THEN** its output carries a `routing:` row for each of the five roles and one for the `review-dimension` strict override, printing `inherit` where the table holds `null`
-- **AND** `interlock limits --json` carries the same five roles under `routing`, each with `model` and `effort`, and the `strict` override on `review-dimension`
+- **THEN** its output carries a `routing:` row for each of the six roles and one for the `review-dimension` strict override, printing `inherit` where the table holds `null`
+- **AND** `interlock limits --json` carries the same six roles under `routing`, each with `model` and `effort`, and the `strict` override on `review-dimension`
 
 #### Scenario: Failure — a skill that spells a model or a level fails its pin
 
-- **GIVEN** a skill file among explore, review-code, settle and spec that contains `model: sonnet` or `effort: low` as a spawn parameter
+- **GIVEN** a skill file among explore, review-code, settle, spec and review-artifacts that contains `model: sonnet` or `effort: low` as a spawn parameter
 - **WHEN** the skill pin test runs
 - **THEN** it fails naming that skill file
 
@@ -66,7 +66,7 @@ Rationale: a model slug in prose is a threshold a model can re-argue and five fi
 
 - **WHEN** `interlock routing not-a-role --json` runs
 - **THEN** it exits non-zero
-- **AND** standard error names the five known roles
+- **AND** standard error names the six known roles
 - **AND** standard output is empty
 
 #### Scenario: Happy path — the strict override applies at the strict depth only
@@ -91,7 +91,7 @@ Rationale: a model slug in prose is a threshold a model can re-argue and five fi
 
 ### Requirement: Each prose spawn site SHALL read its role's routing before spawning and SHALL say when it could not
 
-The five spawn sites — explore's investigators, review-code's dimension reviewers, review-code's skeptics, settle's fixer and settle's conformance worker — SHALL each instruct the skill to read its routing once before the first spawn of that role: explore and settle through `interlock routing <role> --json`, review-code through one `interlock routing --json` call, with `--depth strict` under `--strict`, whose answer carries both of its roles under `roles` and the depth's review shape under `review`. Each site SHALL pass the role's `model` and `effort` on every Agent call of that role with a `null` meaning the parameter is omitted, SHALL print every line of `banners` verbatim, and, when the command exits non-zero, SHALL print `ROUTING UNAVAILABLE: <first line>` and spawn at the session defaults — for review-code, the strict depth's dimension set and per-finding skeptics, the review the skill ran before routing existed. Routing SHALL never stop a skill. `skills/spec/SKILL.md` SHALL state that spec spawns nothing itself and that explore's investigators are routed by role. Explore's `allowed-tools` SHALL pre-approve `Bash(interlock *)`. `shared/TOOL-ECONOMY.md` SHALL carry the rule. Each site's instruction SHALL be pinned by token in `test/skills.test.mjs`.
+The six spawn sites — explore's investigators, review-code's dimension reviewers, review-code's skeptics, settle's fixer, settle's conformance worker and the artifact gate's strict reviewer — SHALL each instruct the skill to read its routing once before the first spawn of that role: explore and settle through `interlock routing <role> --json`, review-artifacts through `interlock routing artifact-reviewer --json` with `--depth strict` under `--strict`, review-code through one `interlock routing --json` call, with `--depth strict` under `--strict`, whose answer carries both of its roles under `roles` and the depth's review shape under `review`. Each site SHALL pass the role's `model` and `effort` on every Agent call of that role with a `null` meaning the parameter is omitted, SHALL print every line of `banners` verbatim, and, when the command exits non-zero, SHALL print `ROUTING UNAVAILABLE: <first line>` and spawn at the session defaults — for review-code, the strict depth's dimension set and per-finding skeptics, the review the skill ran before routing existed. Routing SHALL never stop a skill. `skills/spec/SKILL.md` SHALL state that spec spawns nothing itself and that explore's investigators are routed by role. Explore's `allowed-tools` SHALL pre-approve `Bash(interlock *)`. `shared/TOOL-ECONOMY.md` SHALL carry the rule. Each site's instruction SHALL be pinned by token in `test/skills.test.mjs`.
 
 #### Scenario: Happy path — explore routes its investigators
 
@@ -113,6 +113,14 @@ The five spawn sites — explore's investigators, review-code's dimension review
 - **WHEN** the skill spawns the fixer and later the conformance worker
 - **THEN** the fixer carries the `settle-fixer` routing and the worker the `settle-conformance` routing
 - **AND** the fixer paragraph still carries every token pinned before this change
+
+#### Scenario: Happy path — the artifact gate routes its strict reviewer
+
+- **GIVEN** `/interlock:review-artifacts <change> --strict`
+- **WHEN** the skill reaches its depth section
+- **THEN** it runs `interlock routing artifact-reviewer --depth strict --json` once and prints `GATE DEPTH: strict`
+- **AND** its one Agent call carries that answer's `model` and `effort`, omitting whichever is `null`, and every line of `banners` is printed verbatim before the spawn
+- **AND** without `--strict` the same skill runs `interlock routing artifact-reviewer --json`, prints `GATE DEPTH:` with the depth it answered, and spawns no agent
 
 #### Scenario: Failure — the routing command fails and the spawn still happens
 

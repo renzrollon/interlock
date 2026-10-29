@@ -1,0 +1,46 @@
+M	CHANGELOG.md
+M	README.md
+M	docs/07-cli-and-configuration.md
+M	docs/13-the-guards.md
+M	hooks/mod.mjs
+M	lib/meter-palette.mjs
+M	lib/settle-meter.mjs
+M	lib/spec-meter.mjs
+R100	openspec/changes/route-prose-spawns-by-role/.openspec.yaml	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/.openspec.yaml
+R100	openspec/changes/route-prose-spawns-by-role/decisions.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/decisions.md
+R100	openspec/changes/route-prose-spawns-by-role/design.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/design.md
+R100	openspec/changes/route-prose-spawns-by-role/proposal.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/proposal.md
+A	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/settle-summary.md
+R100	openspec/changes/route-prose-spawns-by-role/specs/review/merge-confidence/spec.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/specs/review/merge-confidence/spec.md
+R100	openspec/changes/route-prose-spawns-by-role/specs/review/review-depth/spec.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/specs/review/review-depth/spec.md
+R100	openspec/changes/route-prose-spawns-by-role/specs/review/settle-loop/spec.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/specs/review/settle-loop/spec.md
+R100	openspec/changes/route-prose-spawns-by-role/specs/spawn-routing/spec.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/specs/spawn-routing/spec.md
+R100	openspec/changes/route-prose-spawns-by-role/tasks.md	openspec/changes/archive/2026-10-26-route-prose-spawns-by-role/tasks.md
+R100	openspec/changes/agree-with-openspec-1-15/.openspec.yaml	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/.openspec.yaml
+R100	openspec/changes/agree-with-openspec-1-15/decisions.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/decisions.md
+R100	openspec/changes/agree-with-openspec-1-15/design.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/design.md
+R100	openspec/changes/agree-with-openspec-1-15/proposal.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/proposal.md
+A	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/settle-summary.md
+R100	openspec/changes/agree-with-openspec-1-15/specs/hooks/tool-guards/spec.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/specs/hooks/tool-guards/spec.md
+R100	openspec/changes/agree-with-openspec-1-15/specs/openspec-cli/spec.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/specs/openspec-cli/spec.md
+R100	openspec/changes/agree-with-openspec-1-15/tasks.md	openspec/changes/archive/2026-10-28-agree-with-openspec-1-15/tasks.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/.openspec.yaml
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/decisions.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/design.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/proposal.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/specs/hooks/settle-meter/spec.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/specs/hooks/spec-meter/spec.md
+A	openspec/changes/archive/2026-10-28-draw-the-settle-and-spec-panes-as-cards/tasks.md
+M	openspec/specs/hooks/settle-meter/spec.md
+M	openspec/specs/hooks/spec-meter/spec.md
+M	openspec/specs/hooks/tool-guards/spec.md
+A	openspec/specs/openspec-cli/spec.md
+M	openspec/specs/review/merge-confidence/spec.md
+A	openspec/specs/review/review-depth/spec.md
+M	openspec/specs/review/settle-loop/spec.md
+A	openspec/specs/spawn-routing/spec.md
+M	test/mod/settle-meter.test.ts
+M	test/mod/spec-meter.test.ts
+M	test/spine/meter-palette.test.mjs
+M	test/spine/settle-meter.test.mjs
+M	test/spine/spec-meter.test.mjs

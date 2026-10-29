@@ -29,7 +29,7 @@ import {
 import { cpus, tmpdir } from 'node:os'
 import { basename, join, dirname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { EFFORT, LIMITS } from '../../lib/limits.mjs'
+import { EFFORT, LIMITS, REVIEW_DEPTH } from '../../lib/limits.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
 import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
@@ -753,7 +753,7 @@ test('the review briefing inlines every selected dimension\'s criteria and the p
     )
     const review = toTail(root, change, ['--review'])
     const briefing = readFileSync(join(root, review.spawns[0].promptPath), 'utf8')
-    for (const name of ['language', 'architecture', 'qa', 'technical-lead']) {
+    for (const name of REVIEW_DEPTH.strict.dimensions) {
       assert.match(briefing, new RegExp(`## ${name}\\n`), `${name}'s heading is missing`)
     }
     // The criteria themselves, not just the heading: a heading with nothing
@@ -6434,7 +6434,8 @@ function assertUnderDomainOnly(briefing, marker) {
     assert.ok(briefing.indexOf(`\n## ${other}\n`) < at, `${other} must come before domain`)
   }
 }
-const ALWAYS_ON = ['language', 'architecture', 'qa', 'technical-lead']
+// The published strict always-on set, `regression` included (spec: ship/run-program).
+const ALWAYS_ON = [...REVIEW_DEPTH.strict.dimensions]
 
 // --- run start pins the commit ----------------------------------------------
 
@@ -6619,10 +6620,10 @@ test('a graph linking a changed file to a living spec selects domain, records it
     const review = toReview(root, change, ['--review'])
     const dims = manifestOf(root).reviewDimensions
 
-    assert.deepEqual(dims.selected.slice(0, 5), [...ALWAYS_ON, 'domain'], 'domain follows the always-on four')
+    assert.deepEqual(dims.selected.slice(0, ALWAYS_ON.length + 1), [...ALWAYS_ON, 'domain'], 'domain follows the always-on set')
     assert.match(dims.reasons.domain, /docs\/guide/)
     assert.match(dims.reasons.domain, /README\.md/)
-    assert.deepEqual(dims.domain.capabilities, [{ capability: 'docs/guide', via: 'linked', files: ['README.md'] }])
+    assert.deepEqual(dims.domain.capabilities, [{ capability: 'docs/guide', via: 'linked', files: ['README.md'], count: 1 }])
     assert.equal(dims.domain.ref, sha, 'read from the start commit')
     assert.ok(!(dims.skipped || []).some(d => d.name === 'domain'))
     assert.equal(dims.notSelected, undefined, 'it was selected')
@@ -6735,6 +6736,29 @@ test('no graph and nothing declared skips domain out loud', () => {
     assert.ok(closed.banners.includes(banners[0]))
   } finally {
     cleanup(root)
+  }
+})
+
+test('a living-spec scan that cannot read the start commit raises DOMAIN CITATIONS UNREAD; one that can raises nothing', () => {
+  // The graph holds no file node, so a changed source file is ungraphed and the
+  // run reads every living spec at the start commit for a citation of it.
+  const unread = domainRepo()
+  try {
+    file(unread.root, 'lib/ungraphed.mjs', 'export {}\n')
+    toReview(unread.root, unread.change, ['--review'], { startSha: 'f'.repeat(40) })
+    const banners = bannersWith(unread.root, 'DOMAIN CITATIONS UNREAD')
+    assert.equal(banners.length, 1, JSON.stringify(manifestOf(unread.root).banners))
+    assert.match(banners[0], /could not be listed .*matched only against the living specs that were read/)
+  } finally {
+    cleanup(unread.root)
+  }
+  const read = domainRepo()
+  try {
+    file(read.root, 'lib/ungraphed.mjs', 'export {}\n')
+    toReview(read.root, read.change, ['--review'])
+    assert.deepEqual(bannersWith(read.root, 'DOMAIN CITATIONS UNREAD'), [])
+  } finally {
+    cleanup(read.root)
   }
 })
 
@@ -6889,11 +6913,28 @@ const HANDOFF_OK = {
   scenariosUnconfirmed: 0
 }
 
+/**
+ * Write a review whose every selected dimension answers with a ledger citing what
+ * the run changed, so its proof holds (spec: review/review-proof, the run's step).
+ */
+function writeLedgeredReview(root, shape) {
+  const { findings, verdicts } = reviewFiles(shape)
+  const changed = git(root, ['status', '--porcelain']).split('\n').map(l => l.slice(3).trim()).filter(Boolean)
+  const checked = [...new Set(['README.md', ...changed])].map(p => ({ what: 'the changed file', at: `${p}:1` }))
+  const answers = manifestOf(root).reviewDimensions.selected.map(dimension => ({
+    dimension,
+    findings: findings.find(f => f.dimension === dimension)?.findings || [],
+    coverage: { checked, unread: [] }
+  }))
+  file(root, '.claude/ship/findings.json', answers)
+  file(root, '.claude/ship/verdicts.json', verdicts)
+}
+
 /** Drive a strict run, clean review and all, to the commit step. */
 function strictToCommit(root, change, handoff = HANDOFF_OK) {
   const review = toTail(root, change, ['--strict'])
   assert.equal(review.action, 'review')
-  writeReview(root, { dismissed: 1 })
+  writeLedgeredReview(root, { dismissed: 1 })
   const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
   assert.equal(verified.action, 'verify-final')
   const handoffStep = run(root, [...verified.then.argv]).step
@@ -9182,4 +9223,112 @@ test('an unconfigured run with no consults carries no advisor line and no field'
   const unrecorded = walk(false, { skip: [0] })
   assert.equal(lineOf(unrecorded.summary), null)
   assert.ok(!('advisorConsults' in unrecorded))
+})
+
+// --- the run's review step records a proof (spec: review/review-proof) ----------
+
+/** Drive a strict run to its first review record, with a worker that answers `answers(selected)`. */
+function strictReviewed(root, change, answers, verdicts = []) {
+  const review = toTail(root, change, ['--strict'])
+  file(root, '.claude/ship/findings.json', answers(manifestOf(root).reviewDimensions.selected))
+  file(root, '.claude/ship/verdicts.json', verdicts)
+  return run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+}
+
+const ledgered = (dimension, findings = [], at = ['README.md:1']) => ({
+  dimension,
+  findings,
+  coverage: { checked: at.map(a => ({ what: 'the change', at: a })), unread: [] }
+})
+
+test('a strict close over a review whose worker returned no ledgers carries one REVIEW NOT PROVEN banner', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const verified = strictReviewed(root, change, selected => selected.map(dimension => ({ dimension, findings: [] })))
+    assert.equal(verified.action, 'verify-final')
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(record.proof.proven, false)
+    for (const u of record.proof.unproven) assert.equal(u.reason, 'coverage not recorded')
+    const handoff = run(root, [...verified.then.argv]).step
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    const closed = closeAt(root, realCommit(root)).step
+    const banners = closed.banners.filter(b => b.startsWith('REVIEW NOT PROVEN'))
+    assert.equal(banners.length, 1, JSON.stringify(closed.banners))
+    assert.equal(commit.action, 'commit')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a strict fix round that re-reviews one dimension carries the others\' ledgers, and a clean one stays proven', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const blocker = { severity: 'blocker', file: 'README.md', line: 1, title: 'blocker 1', description: 'd', suggestion: 's' }
+    const upheld = [1, 2].map(i => ({
+      findingTitle: 'blocker 1', file: 'README.md', isReal: true, confidence: 0.9, reasoning: `skeptic ${i}`,
+      evidence: 'README.md:1', refinedSeverity: 'blocker', qualityScore: 4, severityScore: 4
+    }))
+    const round1 = strictReviewed(
+      root,
+      change,
+      selected => selected.map(d => ledgered(d, d === 'technical-lead' ? [blocker] : [])),
+      upheld
+    )
+    assert.equal(round1.action, 'remediate')
+    const first = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(first.proof.proven, true, JSON.stringify(first.proof))
+
+    // The fixer changes README.md; only technical-lead is re-reviewed, and it cites the fix.
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing, fixed\n')
+    file(root, '.claude/ship/findings.json', [ledgered('technical-lead')])
+    file(root, '.claude/ship/verdicts.json', [])
+    run(root, [...round1.then.argv], { results: [{ ok: true }] })
+    const second = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.ok(second.coverage.language && second.coverage.language.carried, 'language\'s ledger is carried')
+    assert.deepEqual(second.proof.unproven, [], 'no dimension the round did not re-run is unproven')
+    assert.equal(second.proof.proven, true, JSON.stringify(second.proof))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a strict run through a fix round and the verdict round closes with its proof intact and no REVIEW NOT PROVEN banner', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const blocker = { severity: 'blocker', file: 'README.md', line: 1, title: 'blocker 1', description: 'd', suggestion: 's' }
+    const upheld = [1, 2].map(i => ({
+      findingTitle: 'blocker 1', file: 'README.md', isReal: true, confidence: 0.9, reasoning: `skeptic ${i}`,
+      evidence: 'README.md:1', refinedSeverity: 'blocker', qualityScore: 4, severityScore: 4
+    }))
+    const round1 = strictReviewed(
+      root,
+      change,
+      selected => selected.map(d => ledgered(d, d === 'technical-lead' ? [blocker] : [])),
+      upheld
+    )
+    assert.equal(round1.action, 'remediate')
+
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing, fixed\n')
+    file(root, '.claude/ship/findings.json', [ledgered('technical-lead')])
+    file(root, '.claude/ship/verdicts.json', [])
+    const verdictRound = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verdictRound.action, 'verdict', JSON.stringify(verdictRound.action))
+    const fixed = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(fixed.proof.proven, true, JSON.stringify(fixed.proof))
+
+    // The verdict round fixes and re-reviews nothing; the findings file is left as the fix round wrote it.
+    const verified = run(root, [...verdictRound.then.argv], { results: [{ ok: true }] }).step
+    assert.equal(verified.action, 'verify-final', JSON.stringify(verified))
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.equal(record.proof.proven, true, JSON.stringify(record.proof))
+    assert.equal(record.proof.reason, null)
+
+    const handoff = run(root, [...verified.then.argv]).step
+    const commit = run(root, [...handoff.then.argv], { results: [HANDOFF_OK] }).step
+    assert.equal(commit.action, 'commit')
+    const closed = closeAt(root, realCommit(root)).step
+    assert.deepEqual(closed.banners.filter(b => b.startsWith('REVIEW NOT PROVEN')), [], JSON.stringify(closed.banners))
+  } finally {
+    cleanup(root)
+  }
 })

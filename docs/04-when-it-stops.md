@@ -184,7 +184,7 @@ So stopping mid-wave costs the whole rest of that wave. This is one place Interl
 
 Resume also only works **within the same Claude Code session**. If you exit Claude Code while `ship` is running, the next session starts it fresh — no cached results, no partial credit. On a long run, leave the session open.
 
-**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A **`--strict`** run crosses that easily — several waves of up to 8 implementers, four to seven review dimensions, two skeptics per blocker and warning, then one fixer per file. Default (lean) ship is implementers plus verify plus commit, and usually stays under the warning. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
+**A `Large workflow` warning appears in the task panel.** Claude Code flags a run scheduling more than 25 agents or projecting more than 1.5M tokens (v2.1.203+). A **`--strict`** run crosses that easily — several waves of up to 8 implementers, the strict depth's always-on review dimensions plus any conditional ones the diff triggers, two skeptics per blocker and warning, then one fixer per file. Default (lean) ship is implementers plus verify plus commit, and usually stays under the warning. **The warning is advisory: it does not pause, cap, or halt the run.** It is pointing you at `/workflows` in case the size is a surprise. If it is not, ignore it.
 
 The related `workflowSizeGuideline` setting (`/config`, default `medium`) is advice Claude follows when it *writes* a workflow. `ship` ships as a pre-written script, so the guideline should not throttle it — but that is read from how the setting is documented rather than measured, so if you see wave sizes that disagree with `interlock limits`, that would be the first thing to check.
 
@@ -764,7 +764,7 @@ The reason is usually a repository with no commit yet, or a run whose manifest w
 
 ### `DOMAIN REVIEW SKIPPED` and `DOMAIN REVIEW PARTIAL`
 
-The `domain` review dimension judges the diff against the living requirements of the capabilities it touches: contradicting a requirement in force is a blocker, and it must cite the requirement. It is selected only when the run can name those capabilities, from two sources: a capability that a reliable `openspec/specs/` link in the code graph ties to a changed file, and a capability the change declares with a delta spec of its own. When the run cannot, it says so rather than leaving the dimension out silently:
+The `domain` review dimension judges the diff against the living requirements of the capabilities it touches: contradicting a requirement in force is a blocker, and it must cite the requirement. It is selected only when the run can name those capabilities, from three sources: a capability that a reliable `openspec/specs/` link in the code graph ties to a changed file, a capability whose living spec cites a changed source file the graph does not hold (see `DOMAIN CITATIONS UNREAD` below), and a capability the change declares with a delta spec of its own. When the run cannot, it says so rather than leaving the dimension out silently:
 
 ```
 DOMAIN REVIEW SKIPPED: <reason>
@@ -785,6 +785,16 @@ The first is a selection made without a graph: only the capabilities the change 
 A clean domain review under this banner is not evidence that the omitted requirements are respected. Read the omitted headings in the record (`reviewDimensions.domain.omitted` on the run manifest) and check those against the diff. On a repository with large specs the size cut is common: the bound is global, so a large first capability can leave later ones with little. The banner makes that visible; it does not move the bound.
 
 Neither banner changes the exit code. A graph that was built but links no changed file to any spec raises neither: that is recorded as "not selected" with the unlinked paths, because an unlinked file is a gap in the specs, not a fault in the review, and the spec audit (`interlock spec-audit`) is where that gap is measured.
+
+### `DOMAIN CITATIONS UNREAD`
+
+A changed source file the graph does not hold (one created after the graph was built, or an executable under `bin/` the graph never indexes) can still select a capability: the run reads every living spec at the start commit, in one batched git read, and takes each capability whose spec cites that file's path. A changed doc or config file the graph does not hold never starts that read. When the read could not list or read the specs, the run says so:
+
+```
+DOMAIN CITATIONS UNREAD: the living specs at <sha> could not be listed (<git's words>) — a changed source file the graph does not hold was matched only against the living specs that were read
+```
+
+It means a capability that cites one of those files may be missing from the `domain` selection. Capabilities the graph links, and the ones the change declares, were still selected, so the review ran; the files are listed under `ungraphed` in the selection. Fix the cause the line names (usually a start commit git cannot read in this checkout), then run `interlock domain-context --changed <files> --base <sha>` to see the selection the review should have had. `interlock domain-context` prints the same line, on standard error with `--json`, and the merge evidence carries it as a note. It does not change the exit code.
 
 ### A review or a round that left no findings list, and `REVIEW WORK FILE NOT CLEARED`
 

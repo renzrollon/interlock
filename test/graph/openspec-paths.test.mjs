@@ -160,3 +160,53 @@ describe('openspec spec→file links read through specMentionedPaths', () => {
     assert.equal(edge[2], 'L5');
   });
 });
+
+// An archived change's deltas were merged into openspec/specs/ at archive time,
+// so its design and proposal describe a past state of the code. They used to be
+// indexed anyway: a dozen archived designs linked to live files by implements_spec
+// and old prose competed with the living spec in retrieval.
+describe('archived changes stay out of the graph and out of retrieval', () => {
+  let tmp;
+  let graph;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-archive-'));
+    copyDir(FIXTURE, tmp);
+    const live = path.join(tmp, 'openspec', 'changes', 'add-widgets');
+    const archived = path.join(tmp, 'openspec', 'changes', 'archive', '2026-01-01-old-widgets');
+    fs.mkdirSync(live, { recursive: true });
+    fs.mkdirSync(archived, { recursive: true });
+    fs.writeFileSync(path.join(live, 'design.md'), '# Design\n\nTouches `internal/service/handler.py` for zebrawidget.\n');
+    fs.writeFileSync(path.join(archived, 'design.md'), '# Design\n\nTouches `internal/service/handler.py` for zebrawidget.\n');
+    graph = buildGraph(tmp).graph;
+  });
+
+  it('indexes an active change but not an archived one', () => {
+    const sources = graph.nodes.filter((n) => n.type === 'openspec').map((n) => n.source_file);
+    assert.ok(sources.some((f) => f.startsWith('openspec/changes/add-widgets/')), 'active change is indexed');
+    assert.ok(!sources.some((f) => f.includes('/archive/')), `archive leaked: ${sources}`);
+  });
+
+  it('emits no implements_spec edge from an archived file', () => {
+    const edges = graph.links.filter((e) => e.relation === 'implements_spec');
+    assert.ok(edges.some((e) => e.source_file.startsWith('openspec/changes/add-widgets/')));
+    assert.ok(!edges.some((e) => e.source_file.includes('/archive/')));
+  });
+
+  it('does not retrieve archived prose', async () => {
+    const { retrieveMarkdownSections } = await import('../../lib/graph/retrieve/markdown.mjs');
+    const out = retrieveMarkdownSections(tmp, { query: 'zebrawidget' });
+    const files = JSON.stringify(out);
+    assert.ok(files.includes('add-widgets'), 'active change is retrievable');
+    assert.ok(!files.includes('/archive/'), 'archived change was retrieved');
+  });
+
+  it('leaves an archived change out of a docs index over openspec/changes, unless the archive is named', async () => {
+    const { buildDocsIndex } = await import('../../lib/graph/retrieve/docs-index.mjs');
+    const paths = buildDocsIndex(tmp, { dirs: ['openspec/changes'] }).files.map((f) => f.path);
+    assert.ok(paths.includes('openspec/changes/add-widgets/design.md'), `active change is indexed: ${paths}`);
+    assert.ok(!paths.some((p) => p.includes('/archive/')), `archive leaked into the docs index: ${paths}`);
+    const named = buildDocsIndex(tmp, { dirs: ['openspec/changes/archive'] }).files.map((f) => f.path);
+    assert.deepEqual(named, ['openspec/changes/archive/2026-01-01-old-widgets/design.md']);
+  });
+});

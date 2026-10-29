@@ -17,10 +17,11 @@ const ROLES = [
   'review-dimension',
   'review-skeptic',
   'settle-fixer',
-  'settle-conformance'
+  'settle-conformance',
+  'artifact-reviewer'
 ]
 
-test('the table holds the five roles and the depth table the two depths', () => {
+test('the table holds the six roles and the depth table the two depths', () => {
   assert.deepEqual([...ROUTING_ROLES].sort(), [...ROLES].sort())
   assert.deepEqual([...REVIEW_DEPTHS].sort(), ['lean', 'strict'])
 })

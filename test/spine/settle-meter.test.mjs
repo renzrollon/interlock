@@ -33,6 +33,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { assembleSettleRemediatePrompt } from '../../lib/prompts/settle-remediate.mjs'
+import { assembleDimensionPrompt } from '../../lib/prompts/review-dimension.mjs'
+import { assembleSkepticPrompts } from '../../lib/prompts/review-skeptics.mjs'
+import { SKEPTIC_ROLES } from '../../lib/review-roles.mjs'
 import { clockText, durationText } from '../../lib/meter-time.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import {
@@ -112,7 +115,8 @@ const ROUTING = json({
     'review-dimension': { model: 'sonnet', effort: 'medium' },
     'review-skeptic': { model: null, effort: 'xhigh' },
     'settle-fixer': { model: null, effort: 'xhigh' },
-    'settle-conformance': { model: 'sonnet', effort: null }
+    'settle-conformance': { model: 'sonnet', effort: null },
+    'artifact-reviewer': { model: null, effort: null }
   },
   review: { dimensions: ['language', 'technical-lead'], skeptics: 'per-review' },
   banners: [],
@@ -1537,10 +1541,10 @@ test('the banners area repeats the routing lines\' banners verbatim, or reads no
 
 // --- the pins (D10) -----------------------------------------------------------
 
-test('the role-source pin: roleOf classifies each bundled dimension brief, both skeptic blockquotes and both CLI-printed first lines', () => {
+test('the role-source pin: roleOf classifies each bundled dimension brief, every assembled dimension and skeptic prompt, and both CLI-printed first lines', () => {
   const dir = join(ROOT, 'skills', 'review-code', 'dimensions')
   const files = readdirSync(dir).filter(f => f.endsWith('.md'))
-  assert.equal(files.length, 8, 'the eight bundled dimension briefs')
+  assert.equal(files.length, 9, 'the nine bundled dimension briefs')
   for (const f of files) {
     const text = readFileSync(join(dir, f), 'utf8')
     const first = text.split('\n')[0]
@@ -1548,23 +1552,38 @@ test('the role-source pin: roleOf classifies each bundled dimension brief, both 
     const r = roleOf(text)
     assert.ok(r && r.role === 'dimension', `${f}: roleOf does not classify its brief as a dimension`)
     assert.equal(r.label, first.replace(/^# Dimension: /, ''), f)
+    // Every prompt `interlock review brief --dimension` prints, through the assembler itself.
+    const assembled = assembleDimensionPrompt({
+      dimension: f.slice(0, -3),
+      rubric: text,
+      base: 'origin/main',
+      changed: [{ path: 'lib/a.mjs', ranges: [[1, 2]] }],
+      changedSources: ['lib/a.mjs'],
+      policyProse: 'Blockers must cite evidence.',
+      reviewContext: '# Review context'
+    })
+    assert.deepEqual(roleOf(assembled), r, `${f}: the assembled prompt is attributed as its brief is`)
   }
 
-  // The two skeptic blockquotes of skills/review-code/SKILL.md, handed to the agent verbatim.
-  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8').split('\n')
-  const quoteAfter = heading => {
-    const at_ = skill.findIndex(l => heading.test(l))
-    assert.ok(at_ >= 0, `skills/review-code/SKILL.md lost the heading ${heading}`)
-    const quote = skill.slice(at_ + 1).find(l => l.startsWith('> '))
-    assert.ok(quote, `no blockquote after ${heading}`)
-    return quote.slice(2)
+  // The skeptic sentences are defined once, in the import-free roles module, and
+  // every skeptic prompt the assembler prints opens with one as a whole line.
+  assert.deepEqual(SKEPTIC_ROLES.map(r => r.sentence), ['You are a skeptical code reviewer.', 'You are an independent reviewer giving a second opinion.'])
+  const findings = [
+    { dimension: 'qa', severity: 'warning', file: 'lib/a.mjs', line: 1, title: 'one', description: 'd' },
+    { dimension: 'regression', severity: 'blocker', file: 'hooks/mod.mjs', line: 636, title: 'two', description: 'd' }
+  ]
+  for (const skeptics of ['per-review', 'per-finding']) {
+    const { prompts } = assembleSkepticPrompts({ findings, skeptics })
+    assert.ok(prompts.length >= 2, skeptics)
+    for (const p of prompts) {
+      const role = SKEPTIC_ROLES.find(r => r.skeptic === p.skeptic)
+      assert.equal(p.prompt.split('\n')[0], role.sentence, `${skeptics} ${p.skeptic} opens with its sentence as a whole line`)
+      assert.deepEqual(roleOf(p.prompt), { role: 'skeptic', label: role.label })
+    }
   }
-  const refute = quoteAfter(/^\*\*Skeptic 1\b/)
-  const second = quoteAfter(/^\*\*Skeptic 2\b/)
-  assert.ok(refute.startsWith('You are a skeptical code reviewer.'), `skeptic 1 now opens: ${refute}`)
-  assert.ok(second.startsWith('You are an independent reviewer giving a second opinion.'), `skeptic 2 now opens: ${second}`)
-  assert.deepEqual([roleOf(refute).role, roleOf(refute).label], ['skeptic', 'refute'])
-  assert.deepEqual([roleOf(second).role, roleOf(second).label], ['skeptic', 'second opinion'])
+  // The skill keeps no skeptic brief of its own.
+  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8')
+  assert.ok(!/^> You are a/m.test(skill), 'skills/review-code/SKILL.md still blockquotes a skeptic brief')
 
   // The remediate prompt the CLI assembles, through the real module.
   const prompt = assembleSettleRemediatePrompt({
@@ -1584,10 +1603,12 @@ test('the role-source pin: roleOf classifies each bundled dimension brief, both 
   assert.equal(roleOf(firstLine).role, 'conformance')
 })
 
-test('the role-source pin: a policy block followed by a dimension brief is that dimension, as review-code composes it', () => {
-  const skill = readFileSync(join(ROOT, 'skills', 'review-code', 'SKILL.md'), 'utf8')
-  assert.ok(skill.includes('REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate)'), 'the policy block\'s delimiter changed')
-  const composed = `--- REPOSITORY REVIEW POLICY (advice, not overriding the rubric or the evidence gate) ---\nImportant means a regression a user can see.\n---\n\n${brief('qa')}`
+test('the role-source pin: a policy block followed by a dimension brief is that dimension, as the dimension assembler frames it', () => {
+  // The CLI frames the policy block now (lib/prompts/review-dimension.mjs); the skill relays the printed prompt.
+  const printed = assembleDimensionPrompt({ dimension: 'qa', rubric: brief('qa'), base: 'main', changed: [], policyProse: 'Important means a regression a user can see.' })
+  const heading = printed.split('\n').find(l => l.startsWith('REPOSITORY REVIEW POLICY'))
+  assert.ok(heading, 'the assembled prompt carries no repository review policy block')
+  const composed = `${heading}\n\"\"\"\nImportant means a regression a user can see.\n\"\"\"\n\n${brief('qa')}`
   const r = roleOf(composed)
   assert.equal(r.role, 'dimension')
   assert.equal(r.label, 'QA')
@@ -1858,10 +1879,10 @@ test('M13: a review that skipped or could not run a dimension says so on its row
 test('M15: every keyed line kind is spelled by some line of the settle or review-code skill', () => {
   const lines = [
     ...fencedLines('skills/settle/SKILL.md', ['interlock', 'gh', 'glab', 'git']),
-    ...fencedLines('skills/review-code/SKILL.md', ['interlock'])
+    ...fencedLines('skills/review-code/SKILL.md', ['interlock', 'interlock-graph'])
   ].map(l => l.line)
   for (const file of ['skills/settle/SKILL.md', 'skills/review-code/SKILL.md']) {
-    for (const m of readFileSync(join(ROOT, file), 'utf8').matchAll(/`(interlock [^`]+)`/g)) lines.push(m[1])
+    for (const m of readFileSync(join(ROOT, file), 'utf8').matchAll(/`(interlock(?:-graph)? [^`]+)`/g)) lines.push(m[1])
   }
   const seen = new Set(lines.flatMap(l => settleLines(l).map(s => s.kind)).filter(Boolean))
   assert.deepEqual(SETTLE_KINDS.filter(k => !seen.has(k)), [])
@@ -2187,4 +2208,54 @@ test('the review\'s M2: every folded agent row of the PR #25 pass fits a settle 
   const drawn = agents.map(l => ({ text: l.text, width: l.text.length + CARD_CHROME + SETTLE_GUTTER + DEPTH_INDENT * ((l.depth > 1 ? l.depth : 1) - 1) }))
   const widest = drawn.reduce((a, b) => (b.width > a.width ? b : a))
   assert.ok(widest.width <= floor, `the widest folded agent row needs ${widest.width} columns: ${widest.text}`)
+})
+
+// --- the proof lines (spec: hooks/settle-meter, keyed lines) ----------------------
+
+test('own kind: the brief, proof, staging, archived-change and graph-covers lines are their own kinds, never review records', () => {
+  const kinds = [
+    ['interlock review brief --dimension regression --base origin/main', 'review-brief'],
+    ['interlock review brief --skeptics --findings f.json --json', 'review-brief'],
+    ['interlock review proof --review .claude/ship/settle/review-r0.json', 'review-proof'],
+    ['interlock settle staging-pathspecs --change x --nul', 'staging-pathspecs'],
+    ['interlock settle archived-change --name-status - --json', 'archived-change'],
+    ['interlock-graph covers --changed - --update', 'graph-covers'],
+    ['interlock review --findings f --verdicts v --draft --out d.json --json', 'review-draft']
+  ]
+  for (const [command, kind] of kinds) {
+    assert.deepEqual(settleLines(command).map(s => s.kind), [kind], command)
+  }
+  const piped = settleLines('git diff --name-status -M 251cebe...e177e7d | interlock settle archived-change --name-status - --json')
+  assert.deepEqual(piped.map(s => s.kind), [null, 'archived-change'])
+})
+
+test('not proven: an unproven record\'s review row reads not proven with its counts, and the proof line is a row of its own', () => {
+  const s = live()
+  const record = {
+    counts: { raised: 0, dismissed: 0, surviving: 0 },
+    head: 'e177e7de66d7db4ca8b0441ce9f2c41248751803',
+    dimensions: { ran: ['language', 'technical-lead', 'domain', 'blast-radius'], skipped: [] },
+    proof: {
+      proven: false,
+      unproven: ['language', 'technical-lead', 'domain', 'blast-radius'].map(d => ({ dimension: d, reason: 'coverage not recorded' })),
+      unread: [],
+      uncited: ['hooks/mod.mjs', 'lib/meter-palette.mjs', 'lib/settle-meter.mjs', 'lib/spec-meter.mjs']
+    }
+  }
+  run(s, 'interlock review --findings f --verdicts v --head e177e7d --out .claude/ship/settle/review-r0.json --json', JSON.stringify(record), 100)
+  const rows = groupRows(s, 'review')
+  const row = rows.find(t => t.includes('0 raised'))
+  assert.ok(row && row.includes('not proven · 4 unproven · 0 unread · 4 uncited'), rows.join('\n'))
+  cross(s, errBash('interlock review proof --review .claude/ship/settle/review-r0.json', 1, 're-run: language\n  language: unproven'), 110)
+  const proof = groupRows(s, 'review').find(t => t.includes('proof re-run'))
+  assert.ok(proof && proof.endsWith('proof re-run: language · exit 1'), groupRows(s, 'review').join('\n'))
+})
+
+test('draft: a --draft line is a draft row, not the round\'s record', () => {
+  const s = live()
+  const record = { counts: { raised: 1, dismissed: 0, surviving: 1 }, dimensions: { ran: ['language'] }, proof: { proven: true } }
+  run(s, 'interlock review --findings f --verdicts v --draft --out .claude/ship/settle/review-r0.json.draft.json --json', JSON.stringify(record), 100)
+  const row = groupRows(s, 'review').find(t => t.includes('draft ·'))
+  assert.ok(row && row.includes('proven'), groupRows(s, 'review').join('\n'))
+  assert.equal(s.reviews.size, 0, 'a draft names no round record')
 })

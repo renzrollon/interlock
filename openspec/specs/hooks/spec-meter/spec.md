@@ -41,13 +41,13 @@ The keyed lines and the fields read from each:
 - `interlock drift --json`: `unarchived`, `stale.broken`, `stale.aging`, by count
 - `interlock note match … --json`: `rows` by count, `omitted` and `unreadable`; or `error` with `candidates` when the change did not resolve, read as the ledger and validate lines read it
 - `interlock ledger … --json`: `blocking`, `needsHuman`, `invalidCount`, `missing`, `unparseable`
-- `interlock validate … --json`: `ready` and `problems`, or `error` with `candidates`
+- `interlock validate … --json`: `ready` and `problems`, or `error` with `candidates`; and, when the record carries `width`, `width.wide` and `width.over`, never required
 - `interlock gate … --json`: `passed`, `counts`, `malformed`, `metrics.written`, `metrics.reason`
 - `interlock autonomy record` and `interlock autonomy clean`: the command tokens only; no level, no count and no text of the result
 - `interlock ready … --json`: `ready`, and `blockers` by count
 - `interlock notify checkpoint`
 
-The stage on the status line SHALL be composed from those fields in the CLI's words, for example: `status 2/4 done · next: design`, `notes 2 matched (omitted 0)`, `ledger blocking (needs_human 2 · invalid 0)`, `ledger missing`, `validate READY`, `validate NOT READY (problems 2)`, `gate BLOCKED (blocker 1 · warning 3)`, `gate PASS (metrics not written)`, `autonomy record`, `ready false (blockers 2)`, `checkpoint`.
+The stage on the status line SHALL be composed from those fields in the CLI's words, for example: `status 2/4 done · next: design`, `notes 2 matched (omitted 0)`, `ledger blocking (needs_human 2 · invalid 0)`, `ledger missing`, `validate READY`, `validate READY · WIDE (capabilities)`, `validate NOT READY (problems 2)`, `gate BLOCKED (blocker 1 · warning 3)`, `gate PASS (metrics not written)`, `autonomy record`, `ready false (blockers 2)`, `checkpoint`.
 
 Reading rules:
 - Segments SHALL be applied in the command's order.
@@ -56,7 +56,7 @@ Reading rules:
 - A result that does not parse as JSON, or that lacks the fields the line names, SHALL be shown as that line with `(unparsed)` and its first line of text on the pane, never as a verdict, and SHALL leave one debug-log line.
 - An artifact table whose every artifact is `done` SHALL read `status 4/4 done` and never `complete`.
 - Every other Bash call, including any `interlock advisor` line, SHALL be passed through at the first line, its result unread.
-- The module SHALL compare no count against any threshold and SHALL show no `quiet <n> min`.
+- The module SHALL compare no count against any threshold and SHALL show no `quiet <n> min`: `WIDE` is composed from the CLI's `width.wide` field alone, never from `width.capabilities` or `width.tasks` against a cap.
 
 #### Scenario: Happy path — the ladder advances in the CLI's words
 
@@ -69,6 +69,7 @@ Reading rules:
 - **THEN** the status line reads, in turn, `interlock spec: add-the-thing · status 2/4 done · next: design`, `… · ledger blocking (needs_human 2 · invalid 0)`, `… · validate READY`, `… · gate BLOCKED (blocker 1 · warning 3)`
 - **AND** the pane's artifact table carries four rows with OpenSpec's own status words, and its ledger, validate and gate lines carry the same fields
 - **AND** when `interlock note match "add-the-thing" --json` resolves with two `rows`, `omitted: 0` and `unreadable: 1`, the status line reads `… · notes 2 matched (omitted 0)` and the pane's notes line reads `notes: 2 matched · omitted 0 · unreadable 1`
+- **AND** when `interlock validate "add-the-thing" --json` resolves with `ready: true` and `width: { wide: true, over: ["capabilities"] }`, the status line reads `… · validate READY · WIDE (capabilities)` and the pane's validate line reads `validate: ready true · problems 0 · wide (capabilities)`; with `ready: true` and no `width` field it reads `… · validate READY` as before
 
 #### Scenario: Failure — a text-only gate line is shown as unparsed, never as a verdict
 

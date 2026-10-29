@@ -308,6 +308,60 @@ test('stageText says every row of the table in the CLI\'s words', () => {
   assert.equal(stageText(null), null)
 })
 
+// --- the width on the validate line (spec: hooks/spec-meter; design D6) ------
+//
+// `WIDE` is composed from the CLI's own `width.wide` boolean and `width.over`
+// list. The module compares nothing: counts it is handed beside them are never
+// read against a cap, and a record from an older CLI with no `width` reads as
+// it always did.
+
+test('a validate record carrying width.wide composes WIDE (<over>) on the status line and the pane', () => {
+  const ok = stdout => ({ result: { stdout, stderr: '', interrupted: false }, text: stdout })
+  const record = width => readResult(
+    'validate',
+    'interlock validate "add-the-thing" --json',
+    ok(JSON.stringify({ ready: true, problems: [], ...(width ? { width } : {}) }, null, 2))
+  )
+
+  const wide = record({ wide: true, over: ['capabilities'] })
+  assert.equal(stageText(wide), 'validate READY · WIDE (capabilities)')
+
+  const spec = liveSpec()
+  const change = spec.changes.get('add-the-thing')
+  change.validate = wide
+  spec.stage = wide
+  assert.equal(specStatusText(spec), 'interlock spec: add-the-thing · validate READY · WIDE (capabilities)')
+  assert.equal(specPaneLines(spec).find(l => l.key === 'spec-validate')?.text, 'validate: ready true · problems 0 · wide (capabilities)')
+
+  // An older CLI prints no width: the line reads exactly as before.
+  const bare = record(null)
+  assert.equal(stageText(bare), 'validate READY')
+  change.validate = bare
+  assert.equal(specPaneLines(spec).find(l => l.key === 'spec-validate')?.text, 'validate: ready true · problems 0')
+})
+
+test('WIDE is read from the boolean alone, never from the counts against a cap', () => {
+  const ok = stdout => ({ result: { stdout, stderr: '', interrupted: false }, text: stdout })
+  const entry = readResult(
+    'validate',
+    'interlock validate "add-the-thing" --json',
+    ok(JSON.stringify({ ready: true, problems: [], width: { wide: false, capabilities: 99, tasks: 99, over: [] } }, null, 2))
+  )
+  assert.equal(stageText(entry), 'validate READY')
+  assert.doesNotMatch(stageText(entry), /WIDE/i)
+
+  const spec = liveSpec()
+  spec.changes.get('add-the-thing').validate = entry
+  assert.doesNotMatch(specPaneLines(spec).find(l => l.key === 'spec-validate')?.text, /wide/i)
+
+  // And a hand-built entry with counts but no boolean composes nothing either.
+  assert.equal(stageText({ kind: 'validate', ready: true, problems: [], width: { capabilities: 99, tasks: 99 } }), 'validate READY')
+  assert.equal(
+    stageText({ kind: 'validate', ready: true, problems: [], width: { wide: false, capabilities: 99, tasks: 99 } }),
+    'validate READY'
+  )
+})
+
 /** A live spec record named `add-the-thing`, with what the happy path left. */
 function liveSpec() {
   const spec = freshSpec()
@@ -714,7 +768,16 @@ function fencedCommandLines(file) {
 // design D10 names `--json` on it as a follow-up), so it is read by nobody.
 // `openspec --version` is the spec skill's CLI-presence probe: it either prints
 // a version or stops the run before anything is named, so there is nothing to meter.
-const UNREAD_BY_NAME = ['openspec validate "<name>"', 'openspec --version']
+// The two `interlock routing artifact-reviewer` lines are the review-artifacts
+// skill's routing lookup: the spec pane counts the strict Agent call under spawns
+// and the findings file under writes, so it keys no line for the lookup
+// (route-a-strict-artifact-reviewer design D5).
+const UNREAD_BY_NAME = [
+  'openspec validate "<name>"',
+  'openspec --version',
+  'interlock routing artifact-reviewer --json',
+  'interlock routing artifact-reviewer --depth strict --json'
+]
 
 test('every fenced openspec and interlock line in the three skills is one the meter classifies or names as unread', () => {
   const all = SKILL_FILES.flatMap(fencedCommandLines)
