@@ -52,6 +52,8 @@ const ALLOWED = [
   new RegExp(['refs/merge', 'requests/'].join('-'), 'g'),
   // A data: URI can hold the two letters between word boundaries in base64.
   /data:[^\s"'`)>]+/g,
+  // So can a lockfile's Subresource Integrity hash (`sha512-…` base64).
+  /\bsha(?:256|384|512)-[A-Za-z0-9+/]+={0,2}/g,
 ]
 
 export function strip(line) {
@@ -230,6 +232,12 @@ test('matcher: a data: URI is stripped, base64 around it is not', () => {
   const uri = `data:image/png;base64,iVBOR/${SHORT}/${SHORT.toUpperCase()}+x=`
   assert.equal(matches(`<img src="${uri}">`), false)
   assert.equal(matches(`<img src="${uri}"> ${SHORT}`), true)
+})
+
+test('matcher: an integrity hash is stripped, the word beside it is not', () => {
+  const hash = `sha512-ja1E3y+a+${SHORT}HO4Rm/${SHORT}+x==`
+  assert.equal(matches(`"integrity": "${hash}",`), false)
+  assert.equal(matches(`"integrity": "${hash}", ${SHORT}`), true)
 })
 
 test('matcher: only the [Unreleased] slice of CHANGELOG.md is scanned, minus the rename note', () => {

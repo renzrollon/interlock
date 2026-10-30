@@ -577,7 +577,8 @@ function contract(stub, env = {}) {
     const r = spawnSync(process.execPath, [CONTRACT, '--openspec', stub], {
       encoding: 'utf8',
       timeout: 60_000,
-      env: withNode({ PATH: '', HOME: home, ...env })
+      // TMPDIR is forwarded: a sandbox that denies /tmp denies the script's scratch project.
+      env: withNode({ PATH: '', HOME: home, ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}), ...env })
     })
     return { status: r.status, out: `${r.stdout || ''}${r.stderr || ''}`, stdout: r.stdout || '' }
   } finally {
