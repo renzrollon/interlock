@@ -43,7 +43,7 @@ import { PROCESS_CRITERIA, walkTrajectory } from './trajectory.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** The CLI whose exit codes are the graders. */
-export const INTERLOCK_BIN = join(HERE, '..', '..', 'bin', 'interlock')
+export const INTERLOCK_BIN = join(HERE, '..', '..', 'cli', 'interlock')
 
 /** Criterion identifiers. Stable: they are keys in a committed history record. */
 export const CRITERIA = Object.freeze({

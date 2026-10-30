@@ -135,7 +135,7 @@ test('nothing reads the card back, so a hand-edited one cannot change a later ru
   // `explore-` prefix that separates briefs from halt cards.
   const sources = [
     ...sourcesUnder(join(ROOT, 'lib'), ['.mjs']),
-    ...sourcesUnder(join(ROOT, 'bin'), ['']).filter(f => /interlock/.test(f)),
+    ...sourcesUnder(join(ROOT, 'cli'), ['']).filter(f => /interlock/.test(f)),
     ...sourcesUnder(join(ROOT, 'workflows'), ['.js', '.mjs']),
     ...sourcesUnder(join(ROOT, 'hooks'), ['.mjs'])
   ]
@@ -539,7 +539,7 @@ test('a halted run with a rejected handoff report names the task ids, and a run 
 // <change> --ids …`: a form the CLI read as change "tick" and refused. Every
 // other test here asserts the card's TEXT; this one runs the commands in it.
 
-const CLI = join(ROOT, 'bin', 'interlock')
+const CLI = join(ROOT, 'cli', 'interlock')
 
 /** Every `interlock …` command line a card prints: fenced lines and inline code spans. */
 function printedCommands(card) {

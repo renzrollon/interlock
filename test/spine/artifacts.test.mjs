@@ -594,7 +594,7 @@ async function livingRepo() {
   spec('alpha', 'alpha edited after the base\n')
   rmSync(join(dir, 'openspec', 'specs', 'review'), { recursive: true })
   spec('gamma', 'gamma added after the base\n')
-  // bin/interlock's gitText, counted.
+  // cli/interlock's gitText, counted.
   const calls = []
   const gitText = (root, args, { input, encoding = 'utf8' } = {}) => {
     calls.push(args[0])

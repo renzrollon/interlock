@@ -312,7 +312,7 @@ test('appendNotes with zero rows creates no file', () => {
 // checkout's table at once (PR #20 review). Each read-modify-write must see the
 // rows the other wrote, or a row is lost and an id is handed out twice.
 
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 /** Run `interlock note add` as its own process; resolves with its exit and output. */
 function noteAdd(root, n) {

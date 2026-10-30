@@ -100,7 +100,7 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         id: caps
         run: |
-          CEIL=$(./bin/interlock limits --json \
+          CEIL=$(./cli/interlock limits --json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.smokeCostUsd))')
           echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
       - name: Run smoke evals
@@ -133,21 +133,21 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         id: promotion
         run: |
-          if ./bin/interlock evals promote --history evals/history --json > promotion.json; then
+          if ./cli/interlock evals promote --history evals/history --json > promotion.json; then
             echo "blocking=true" >> "$GITHUB_OUTPUT"
             echo "Eval promotion: every case is promoted — a failing verdict fails this job." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "blocking=false" >> "$GITHUB_OUTPUT"
             echo "Eval promotion: advisory. \`interlock evals promote\` did not report every case promotable:" >> "$GITHUB_STEP_SUMMARY"
           fi
-          ./bin/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
+          ./cli/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
       - name: Triage the results
         if: steps.cred.outputs.present == 'true'
         # Derived, not fixed: advisory unless the promotion decision says every
         # case has earned blocking status. With no history committed this
         # resolves to true, which is the advisory posture by decision.
         continue-on-error: ${{ steps.promotion.outputs.blocking != 'true' }}
-        run: ./bin/interlock evals triage --results evals-results.json
+        run: ./cli/interlock evals triage --results evals-results.json
       - name: Upload report
         if: steps.cred.outputs.present == 'true'
         uses: actions/upload-artifact@v7
@@ -186,10 +186,10 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         id: caps
         run: |
-          CEIL=$(./bin/interlock limits --json \
+          CEIL=$(./cli/interlock limits --json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.fullRunCostUsd))')
           echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
-          RUNS=$(./bin/interlock limits --json \
+          RUNS=$(./cli/interlock limits --json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.runsPerCase))')
           echo "runs=$RUNS" >> "$GITHUB_OUTPUT"
       - name: Run full eval suite
@@ -222,18 +222,18 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         id: promotion
         run: |
-          if ./bin/interlock evals promote --history evals/history --json > promotion.json; then
+          if ./cli/interlock evals promote --history evals/history --json > promotion.json; then
             echo "blocking=true" >> "$GITHUB_OUTPUT"
             echo "Eval promotion: every case is promoted — a failing verdict fails this job." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "blocking=false" >> "$GITHUB_OUTPUT"
             echo "Eval promotion: advisory. \`interlock evals promote\` did not report every case promotable:" >> "$GITHUB_STEP_SUMMARY"
           fi
-          ./bin/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
+          ./cli/interlock evals promote --history evals/history >> "$GITHUB_STEP_SUMMARY" || true
       - name: Triage the results
         if: steps.cred.outputs.present == 'true'
         continue-on-error: ${{ steps.promotion.outputs.blocking != 'true' }}
-        run: ./bin/interlock evals triage --results evals-results.json
+        run: ./cli/interlock evals triage --results evals-results.json
       - name: Upload report
         if: steps.cred.outputs.present == 'true'
         uses: actions/upload-artifact@v7

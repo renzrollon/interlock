@@ -366,3 +366,23 @@ test('an extensionless executable under bin/ is a source file the proof counts; 
   for (const p of ['bin/interlock', 'tools/bin/deploy', 'lib/a.mjs']) assert.equal(isReviewSource(p), true, p)
   for (const p of ['bin/run.sh', 'bin/sub/tool', 'node_modules/x/bin/tool', 'bin/.hidden', 'README']) assert.equal(isReviewSource(p), false, p)
 })
+
+test('an extensionless executable under cli/ is a source file the proof counts, and a changed one nobody cited is listed', () => {
+  const proof = computeProof({
+    ran: ['language'],
+    answers: [{ dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')]) }],
+    changedPaths: ['cli/interlock', 'lib/a.mjs', 'cli/run.sh', 'node_modules/x/cli/tool', 'cli/.hidden']
+  })
+  assert.deepEqual(proof.uncited, ['cli/interlock'])
+  assert.equal(proof.proven, false)
+  assert.equal(proof.changed, 2)
+  for (const p of ['cli/interlock', 'tools/cli/deploy', 'lib/a.mjs']) assert.equal(isReviewSource(p), true, p)
+  for (const p of ['cli/run.sh', 'cli/sub/tool', 'node_modules/x/cli/tool', 'cli/.hidden']) assert.equal(isReviewSource(p), false, p)
+
+  const cited = computeProof({
+    ran: ['language'],
+    answers: [{ dimension: 'language', findings: [], coverage: ledger([at('the dispatch', 'cli/interlock:3'), at('a', 'lib/a.mjs:1')]) }],
+    changedPaths: ['cli/interlock', 'lib/a.mjs']
+  })
+  assert.deepEqual(cited.uncited, [])
+})

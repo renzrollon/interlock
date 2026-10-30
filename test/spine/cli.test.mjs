@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
 import { resolveRouting } from '../../lib/routing.mjs'
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
 
 let dir
 
@@ -5456,20 +5456,20 @@ test('domain-context selects a capability via cited for a changed file the graph
 const CITES = paths =>
   `# cap\n\n## Requirements\n\n### Requirement: It is cited\n\nIt SHALL live in ${paths.map(p => `\`${p}\``).join(' and ')}.\n\n#### Scenario: x\n\n- **WHEN** y\n- **THEN** z\n`
 
-test('domain-context: a docs-only change the graph does not hold selects nothing by citation; bin/interlock still does', () => {
+test('domain-context: a docs-only change the graph does not hold selects nothing by citation; cli/interlock still does', () => {
   const repo = gitRepo('domain-cited-docs', {
-    'openspec/specs/review/skill/spec.md': CITES(['skills/review-code/SKILL.md', 'bin/interlock']),
+    'openspec/specs/review/skill/spec.md': CITES(['skills/review-code/SKILL.md', 'cli/interlock']),
     'skills/review-code/SKILL.md': '# skill\n',
-    'bin/interlock': '#!/usr/bin/env node\n'
+    'cli/interlock': '#!/usr/bin/env node\n'
   })
   writeGraph(repo.root, [])
   const docs = runJson(['domain-context', '--changed', 'skills/review-code/SKILL.md', '--root', repo.root])
   assert.deepEqual(docs.capabilities, [], 'a doc the graph never indexes is not an ungraphed source file')
   assert.equal(docs.ungraphed, null)
   assert.equal(docs.citedUnread, null)
-  const bin = runJson(['domain-context', '--changed', 'bin/interlock', '--root', repo.root])
+  const bin = runJson(['domain-context', '--changed', 'cli/interlock', '--root', repo.root])
   assert.deepEqual(bin.capabilities.map(c => [c.capability, c.via]), [['review/skill', 'cited']])
-  assert.deepEqual(bin.ungraphed.files.map(f => f.path), ['bin/interlock'])
+  assert.deepEqual(bin.ungraphed.files.map(f => f.path), ['cli/interlock'])
 })
 
 test('domain-context --base lists the living capabilities at the base, not the working tree', () => {

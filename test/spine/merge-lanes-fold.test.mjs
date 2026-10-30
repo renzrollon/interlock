@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
 
 // Identity comes from the environment, so the suite never depends on whatever
 // the developer running it has configured — and never writes their name into a

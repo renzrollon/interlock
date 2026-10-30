@@ -132,7 +132,7 @@ test('promote() on an unknown path reports no-entry', () => {
 
 // --- an unreadable record is preserved and spoken ---------------------------------
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
 const CORRUPT = '{"review-artifacts": {"runs": 7, \u0000 not json'
 
 function cli(home, args) {

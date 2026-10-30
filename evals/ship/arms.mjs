@@ -13,7 +13,7 @@
 // could then be the harness rather than the loop (design D5).
 //
 // WHY THE LOOP ARM RUNS ON THE ACP HOST. `workflows/ship.js` needs the Workflow
-// tool and cannot be driven from a shell. `bin/interlock-ship-acp` takes every
+// tool and cannot be driven from a shell. `cli/interlock-ship-acp` takes every
 // decision from the same CLI and differs only in where its agents come from. The
 // cost of that choice — no per-tier model routing, no interactive-runtime launch
 // behaviour — is stated in `evals/ship/README.md` and carried on every row, not
@@ -30,7 +30,7 @@ import { interlock, runUnitCommand, shell } from './graders.mjs'
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 /** The driver the loop arm runs. */
-export const SHIP_ACP_BIN = join(HERE, '..', '..', 'bin', 'interlock-ship-acp')
+export const SHIP_ACP_BIN = join(HERE, '..', '..', 'cli', 'interlock-ship-acp')
 
 /** The host identity carried on every row produced here. */
 export const HOST_ID = 'acp'

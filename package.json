@@ -7,13 +7,13 @@
     "node": ">=18"
   },
   "bin": {
-    "interlock": "bin/interlock",
-    "interlock-graph": "bin/interlock-graph",
-    "interlock-run": "bin/interlock-run",
-    "interlock-ship-acp": "bin/interlock-ship-acp"
+    "interlock": "cli/interlock",
+    "interlock-graph": "cli/interlock-graph",
+    "interlock-run": "cli/interlock-run",
+    "interlock-ship-acp": "cli/interlock-ship-acp"
   },
   "files": [
-    "bin",
+    "cli",
     "lib",
     "workflows",
     "skills",

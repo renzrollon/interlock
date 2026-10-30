@@ -12,7 +12,7 @@ import * as paths from '../../lib/graph/paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(__dirname, 'fixtures', 'mini-app');
-const BIN = path.join(__dirname, '..', '..', 'bin', 'interlock-graph');
+const BIN = path.join(__dirname, '..', '..', 'cli', 'interlock-graph');
 const MARKER = 'GRAPH SKIPPED UNREADABLE';
 
 const roots = [];

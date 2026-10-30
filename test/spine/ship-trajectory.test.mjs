@@ -31,7 +31,7 @@ import {
 } from '../../evals/ship/trajectory.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 const SAMPLE = JSON.parse(
   readFileSync(join(ROOT, 'evals', 'ship', 'sample', 'process-runs.json'), 'utf8')
 )

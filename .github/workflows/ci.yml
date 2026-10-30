@@ -104,12 +104,12 @@ jobs:
       # executables rather than importing the libraries they wrap.
       - name: interlock surface
         run: |
-          ./bin/interlock surface --changed src/Button.tsx docs/readme.md --json \
+          ./cli/interlock surface --changed src/Button.tsx docs/readme.md --json \
             | grep -q '"needsManualTestPlan": true'
       - name: interlock gate blocks on a blocker
         run: |
           echo '[{"dimension":"qa","findings":[{"severity":"blocker","file":"a.ts","title":"t","description":"d"}]}]' > /tmp/f.json
-          if ./bin/interlock gate --findings /tmp/f.json; then
+          if ./cli/interlock gate --findings /tmp/f.json; then
             echo "gate should have exited non-zero on a blocker"; exit 1
           fi
       - name: interlock waves caps fan-out
@@ -121,7 +121,7 @@ jobs:
             }));
             require("fs").writeFileSync("/tmp/c.json", JSON.stringify({tasks}));
           '
-          ./bin/interlock waves --classified /tmp/c.json --max-parallel 8 --json \
+          ./cli/interlock waves --classified /tmp/c.json --max-parallel 8 --json \
             | node -e '
               let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
                 const p = JSON.parse(s);
@@ -132,7 +132,7 @@ jobs:
             '
       - name: interlock-graph builds a graph
         run: |
-          ./bin/interlock-graph build . >/dev/null
+          ./cli/interlock-graph build . >/dev/null
           test -f .claude/graph/graph.json
           test -f .claude/graph/GRAPH_REPORT.md
 

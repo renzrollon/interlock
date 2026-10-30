@@ -1,6 +1,6 @@
 # 07 — The CLIs: reference and configuration
 
-The plugin puts three executables on your `PATH` — `interlock`, `interlock-graph` and `interlock-run` — plus the `interlock-ship-acp` deprecation shim. Every subcommand runs without a model and without the network, with one named exception ([push notifications](#the-one-network-call-push-notifications)). They exist so that any decision the loop made can be re-run by you, on the same inputs, and give the same answer.
+The plugin ships three executables in its `cli/` directory — `interlock`, `interlock-graph` and `interlock-run` — plus the `interlock-ship-acp` deprecation shim, and its SessionStart hook puts that directory on the session's `PATH` ([the PATH handoff](#the-path-handoff-and-openspec-interlock-openspec)). The directory is `cli/`, not `bin/`, because the plugin directory's policy asks a plugin to ship readable scripts outside `bin/`. Every subcommand runs without a model and without the network, with one named exception ([push notifications](#the-one-network-call-push-notifications)). They exist so that any decision the loop made can be re-run by you, on the same inputs, and give the same answer.
 
 This page is the reference. [06 — Why it works](./06-why-it-works.md) explains why each decision moved out of prose; [04 — When it stops](./04-when-it-stops.md) explains every banner these commands print.
 
@@ -371,7 +371,7 @@ Claude Code has an advisor tool of its own: a stronger model a session may consu
 
 ### Where the loop itself lives
 
-The wave loop, the halt conditions and the verification order live in `lib/run.mjs`, which emits the whole program as steps — the agents to spawn, with their briefings, and the exact `interlock` argv to call once they return. `workflows/ship.js` and the experimental `bin/interlock-run` are interpreters of that program, not two copies of it: each spawns what a step names and calls what it names next, and branches on nothing — not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of; control flow written twice in two drivers is control flow that drifts.
+The wave loop, the halt conditions and the verification order live in `lib/run.mjs`, which emits the whole program as steps — the agents to spawn, with their briefings, and the exact `interlock` argv to call once they return. `workflows/ship.js` and the experimental `cli/interlock-run` are interpreters of that program, not two copies of it: each spawns what a step names and calls what it names next, and branches on nothing — not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of; control flow written twice in two drivers is control flow that drifts.
 
 Without a shape flag, the classifier recommends `solo` or `waves` and the planner honours it inside the envelope `interlock limits` publishes; `--solo` and `--waves` force it. The plan preview names the mode before anything is spawned.
 
@@ -394,6 +394,19 @@ The two inputs a fresh worktree lacks are read through, never copied. `run start
 
 ---
 
+## The PATH handoff and OpenSpec: `interlock openspec`
+
+Claude Code does not put `cli/` on any PATH by itself. The SessionStart preflight appends `export PATH="$PATH":'<plugin>/cli':'<data>/openspec/<pinned version>'` to `CLAUDE_ENV_FILE`, after your own entries, so a bare `interlock` in a skill resolves to the plugin's copy and your own `interlock` still wins. It also exports `INTERLOCK_PLUGIN_DATA` (the data directory) when none is set, because `CLAUDE_PLUGIN_DATA` reaches hooks but not the Bash tool. A session started before the plugin was enabled has neither: run `node "${CLAUDE_PLUGIN_ROOT}/cli/interlock"` by full path, or start a new session. PowerShell commands get none of these variables.
+
+| Command | What it does |
+|---|---|
+| `interlock openspec provision [--json]` | Installs the pinned OpenSpec into `<data>/openspec/<version>/`: `npm ci --ignore-scripts` against the lockfile the plugin pins, a launcher with telemetry off, a `--version` smoke run, then an atomic rename. Needs Node.js 20.19+, npm and the registry. Every refusal names its cause and exits 1. The one command that installs anything |
+| `interlock openspec which [--json]` | Prints which OpenSpec resolves (`path`, `provisioned` or `none`), its `bin`, the data directory and where it came from (`dataDirSource`), and the `pin`. Use it to run a printed `openspec archive` outside Claude Code |
+
+The data directory is `INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then `<XDG_CACHE_HOME or ~/.cache>/interlock`. A user's own `openspec` on PATH wins over the provisioned one; `interlock doctor`'s `openspec` row names which it resolved.
+
+---
+
 ## The one network call: push notifications
 
 A ship run that halts or completes while nobody is watching can push you a message. It is off by default. Nothing is read from or written to the repo tree for this. Inside Claude Code the same two values can be set as plugin options (`ntfy topic`, which is masked, and `ntfy server`). Each option has a session-start hook of its own, `hooks/notify-option.mjs`, which the manifest hands the option's value and the host runs only when that option is saved. The hook writes the matching variable below into the session's environment, where the session's commands read it. A variable you already provided wins. `interlock doctor` at session start runs beside those hooks and cannot see an option, so with only an option set its `notify` row in the session-start report reads `skip` and says so; run `interlock doctor` from the session afterwards and the row reads `ok` and names the server.
@@ -403,7 +416,7 @@ A ship run that halts or completes while nobody is watching can push you a messa
 | `INTERLOCK_NTFY_TOPIC` | The [ntfy](https://ntfy.sh) topic to post to. Unset (the default) means `run close` posts nothing, and the suite never makes a request. Treat the value as a secret — anyone who knows it reads every message, since it is the only authentication the public server offers. |
 | `INTERLOCK_NTFY_URL` | The ntfy server, defaulting to the public `https://ntfy.sh`. Point it at a self-hosted server if the public relay is not an acceptable trust boundary for your halt reasons. |
 
-With a topic set, both `workflows/ship.js` and `bin/interlock-run` pass `--notify` on every close, so one message goes out per terminal outcome — `high` priority on `SHIP HALTED`, default priority otherwise — naming only the summary's first line, the change and the run id, never the topic, the working directory or the project slug. A failed push shows up as `push: failed — <reason>` in the summary and a `PUSH FAILED: <reason>` banner, and never changes the run's exit code. See [when it stops](./04-when-it-stops.md#push-failed) for the failure modes, or run a one-off yourself:
+With a topic set, both `workflows/ship.js` and `cli/interlock-run` pass `--notify` on every close, so one message goes out per terminal outcome — `high` priority on `SHIP HALTED`, default priority otherwise — naming only the summary's first line, the change and the run id, never the topic, the working directory or the project slug. A failed push shows up as `push: failed — <reason>` in the summary and a `PUSH FAILED: <reason>` banner, and never changes the run's exit code. See [when it stops](./04-when-it-stops.md#push-failed) for the failure modes, or run a one-off yourself:
 
 ```bash
 interlock notify --title "<title>" --body "<body>"
@@ -467,7 +480,7 @@ INTERLOCK_ACP_COMMAND="<your-acp-agent>" interlock-run <change-name> --host acp
 An adapter under `lib/host/` is a transport plus a declaration of what that host cannot do, and the run program reads the declaration rather than branching on a name. What that means for a run:
 
 - **The whole loop, including `--strict`.** Adversarial review, bounded remediation, the verdict and the handoff artifacts are steps `interlock run` emits, so every host interprets them the way it interprets a batch. A strict run here halts on the same terms as one on Claude Code.
-- **A lane reaches the CLI that wrote its briefing.** Briefings name `interlock` bare. The runner puts the directory of the binary it runs first on each lane's PATH and drops any later copy of that directory, so the name resolves to the CLI that emitted the step. A headless session appends plugin `bin/` directories after the PATH it inherited, which is why the directory placed first wins. The rest of the environment is the operator's, including `CLAUDE_CODE_EFFORT_LEVEL`.
+- **A lane reaches the CLI that wrote its briefing.** Briefings name `interlock` bare. The runner puts the directory of the binary it runs first on each lane's PATH and drops any later copy of that directory, so the name resolves to the CLI that emitted the step. A headless session appends plugin `cli/` directories after the PATH it inherited, which is why the directory placed first wins. The rest of the environment is the operator's, including `CLAUDE_CODE_EFFORT_LEVEL`.
 - **Isolation is the runner's, on every host.** Under `--isolate-waves` the step names one worktree path per lane, the runner creates it from the batch's merge base — a snapshot of the shared tree, never HEAD, so a later batch sees every earlier fold — and `interlock run record-batch` halts with `LANE BASE MISMATCH` before folding anything if a lane's worktree is not checked out at that snapshot, then folds the clean lanes and halts naming the path and both lanes when two of them mutated the same file — created, modified or deleted it, so a rename's source counts against a lane that edited it.
 - **The runner names the billing path it is on.** Every summary prints `RUNNER HOST: <id> (experimental)`. A run over the Claude binary — directly, or through ACP — prints `SUBSCRIPTION PATH: programmatic`, because `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit; the interactive Workflow runtime is the path that change exempted, which is why `/interlock:ship` stays the default and this runner is not started for you. A Codex run with neither `CODEX_API_KEY` nor `OPENAI_API_KEY` prints `CHATGPT PLAN PATH`. A host with no hooks prints `HOOKS NOT IN FORCE (<host>)`. The receipt records the host, its billing path and its hook availability.
 - **What a host cannot do is declared, not discovered.** Codex and Qwen have no equivalent of the `PreToolUse` guards, so nothing stops a repair step from weakening a test there except the CLI's own unit-suite shrink check. Qwen reports no token accounting, so every wave and the run total are recorded as `unknown` — never as zero.
@@ -491,6 +504,7 @@ Every banner the runner prints, with what to do about it, is in [04 — When it 
 | `INTERLOCK_ACP_COMMAND` | `interlock-run --host acp` | The ACP agent command to drive |
 | `INTERLOCK_RUN_HOST` | `interlock-run` | Default for `--host` |
 | `INTERLOCK_CLAUDE_PERMISSION_MODE` | `interlock-run --host claude` | The lanes' `--permission-mode`; default `bypassPermissions`. Any other mode adds `--permission-prompts none` where the CLI lists it, and a `PERMISSION PROMPTS NOT SUPPRESSED (claude)` banner where it does not |
+| `INTERLOCK_PLUGIN_DATA` | `interlock openspec provision` and `which`, `interlock doctor`, the SessionStart preflight | The data directory the pinned OpenSpec is provisioned into. Wins over `CLAUDE_PLUGIN_DATA`; the preflight exports it into the session when unset. See [the PATH handoff](#the-path-handoff-and-openspec-interlock-openspec) |
 | `INTERLOCK_STATE_HOME` | `interlock run start` and every command that reads or writes a corpus; `interlock-graph`'s query commands | Pins the [state home](#where-a-runs-records-go-the-state-home) when no `--state-home` is given |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | Claude Code; `run start --host workflow` | **Leave unset.** Below 2.1.251, or with the version unknown, every tier runs on that model (bannered); from 2.1.251 it is only the default (noted) |
 | `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` | Claude Code; `run start --host workflow` | **Leave unset**, or every agent runs on one model (bannered, model selection recorded `forced`) |

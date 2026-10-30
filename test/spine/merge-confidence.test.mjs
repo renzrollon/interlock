@@ -2486,7 +2486,7 @@ test('the module is pure: no node: import, no fs, no child process, no clock', (
 // does. So these drive the built CLI in temporary git repositories.
 // =============================================================================
 
-const CLI = join(ROOT, 'bin', 'interlock')
+const CLI = join(ROOT, 'cli', 'interlock')
 const CLI_CHANGE = 'add-widget-catalogue'
 const CLI_SOURCE = 'src/widgets/catalogue.ts'
 const CLI_SCENARIOS = 5

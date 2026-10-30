@@ -1,7 +1,7 @@
 // The run program, driven end to end against a real temp repository.
 //
 // This is the test the two-driver arrangement never had. Loop policy used to
-// live in `workflows/ship.js` and `bin/interlock-ship-acp`, and what covered it
+// live in `workflows/ship.js` and `cli/interlock-ship-acp`, and what covered it
 // was a harness that stubbed every agent and a parity test that compared the two
 // drivers' prompts after the fact — so a branch either driver took wrong was
 // caught only if someone had thought to pin that exact sentence.
@@ -59,7 +59,7 @@ import {
 import { nextStep } from '../../lib/waves.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 // --- a repository to run against --------------------------------------------
 
@@ -364,7 +364,7 @@ test('the close takes an envelope from any step of its run and refuses one from 
 
 // --- every continuation names a real subcommand -----------------------------
 
-test('every then.argv a run emits names a subcommand bin/interlock dispatches', () => {
+test('every then.argv a run emits names a subcommand cli/interlock dispatches', () => {
   // Read the dispatch table the way test/workflows.test.mjs reads it: from the
   // source, so a step naming an argv nobody implements fails here rather than
   // at 2am inside an unattended run.
@@ -393,7 +393,7 @@ test('every then.argv a run emits names a subcommand bin/interlock dispatches', 
       assert.equal(argv[0], 'run', `a continuation left the run family: ${argv.join(' ')}`)
       assert.ok(
         subcommands.has(argv[1]),
-        `the program emitted \`interlock ${argv.join(' ')}\`, and bin/interlock dispatches no ` +
+        `the program emitted \`interlock ${argv.join(' ')}\`, and cli/interlock dispatches no ` +
           `"${argv[1]}" subcommand`
       )
     }
@@ -782,7 +782,7 @@ test('a dimension whose criteria cannot be read is named in the briefing and ban
   const plugin = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
   try {
     cpSync(join(ROOT, 'package.json'), join(plugin, 'package.json'))
-    for (const dir of ['bin', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
+    for (const dir of ['cli', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
     cpSync(
       join(ROOT, 'skills', 'review-code', 'dimensions'),
       join(plugin, 'skills', 'review-code', 'dimensions'),
@@ -799,7 +799,7 @@ test('a dimension whose criteria cannot be read is named in the briefing and ban
     const step = JSON.parse(
       execFileSync(
         process.execPath,
-        [join(plugin, 'bin', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
+        [join(plugin, 'cli', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
         { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
       )
     )
@@ -1220,7 +1220,7 @@ const runs = root => join(root, '.claude', 'ship', 'runs')
 // --- the trajectory is fatal, the outcome corpus is not (spec: ship-run) ----
 //
 // `.claude/ship/runs` is `fatal: true` in lib/doctor.mjs's STATE_DIRS, and
-// `wave-state` in bin/interlock has always exited 1 when its append did not
+// `wave-state` in cli/interlock has always exited 1 when its append did not
 // land. The live `interlock run` path used to warn and walk on — into the tick
 // and into the commit — so a run nobody could reconstruct still ticked boxes
 // and shipped. These tests are the difference, and the last of them is the
@@ -5326,7 +5326,7 @@ const FOUR_LANES = {
   }))
 }
 
-/** A host record as `bin/interlock-run` forwards it: `{ label, ...host }` (design D7). */
+/** A host record as `cli/interlock-run` forwards it: `{ label, ...host }` (design D7). */
 function hostRecord(label, over = {}) {
   return {
     label,
@@ -6967,7 +6967,7 @@ function reviewWithoutRubric(root, change, rubric, flags = ['--review']) {
   const plugin = mkdtempSync(join(tmpdir(), 'interlock-plugin-'))
   try {
     cpSync(join(ROOT, 'package.json'), join(plugin, 'package.json'))
-    for (const dir of ['bin', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
+    for (const dir of ['cli', 'lib']) cpSync(join(ROOT, dir), join(plugin, dir), { recursive: true })
     cpSync(
       join(ROOT, 'skills', 'review-code', 'dimensions'),
       join(plugin, 'skills', 'review-code', 'dimensions'),
@@ -6983,7 +6983,7 @@ function reviewWithoutRubric(root, change, rubric, flags = ['--review']) {
     return JSON.parse(
       execFileSync(
         process.execPath,
-        [join(plugin, 'bin', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
+        [join(plugin, 'cli', 'interlock'), 'run', 'record-batch', '--results', '.claude/ship/results.json', '--json'],
         { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
       )
     )
@@ -8908,7 +8908,7 @@ test('the manifest records the CLI version and path, and every emitted step carr
     const started = run(root, ['run', 'start', '--change', change]).step
     const manifest = manifestOf(root)
     assert.equal(manifest.cli.version, PKG_VERSION)
-    assert.equal(manifest.cli.path, realpathSync(BIN), 'the path is the realpath of the running bin/interlock')
+    assert.equal(manifest.cli.path, realpathSync(BIN), 'the path is the realpath of the running cli/interlock')
     assert.equal(manifest.plugin, null, 'no plugin root was given, so none is claimed')
     assert.equal(startsWithAny(bannersOf(started), 'CLI VERSION SKEW'), false)
 

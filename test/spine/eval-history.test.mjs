@@ -36,7 +36,7 @@ import { renderReportHtml } from '../../lib/report-html.mjs'
 import { recordResults, sweepExitCode } from '../../evals/ship/run.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 const roots = []
 function scratch(name) {

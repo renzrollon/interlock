@@ -6,8 +6,8 @@
 // gate blocks, whether a path has earned autonomy. Skills call these commands
 // and act on the JSON; they do not recompute the answers.
 //
-// Claude Code puts a plugin's bin/ on the Bash tool's PATH, so skills invoke
-// this as a bare `interlock` command.
+// The SessionStart preflight (hooks/preflight.mjs) appends the plugin's cli/ to
+// the Bash tool's PATH, so skills invoke this as a bare `interlock` command.
 //
 // This file is also the *only* way the dynamic-workflow runtime reaches any of
 // `lib/`. That runtime cannot `import()` and has no filesystem or shell of its
@@ -196,6 +196,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { openspecCommand } from '../lib/openspec-cli.mjs'
 import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
 import { domainContextCommand, reviewCommand } from '../lib/review-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
@@ -235,6 +236,13 @@ Usage:
                                             openspec CLI, git, the test profile,
                                             the permission allowlist, and the
                                             writability of the run-state dirs
+  interlock openspec provision [--json]    Install the pinned OpenSpec CLI into the
+                                            plugin data directory (npm, install scripts
+                                            off, telemetry off); the one command that
+                                            installs anything
+  interlock openspec which [--json]         Print which OpenSpec CLI resolves (PATH or
+                                            provisioned), its path, the data directory
+                                            and the pin
   interlock drift [--changed <files>]        Report unarchived changes, broken spec
                                             references, aging specs, and orphan code
   interlock conformance [change]            List the spec scenarios a change must satisfy
@@ -3949,6 +3957,10 @@ async function main() {
 
     case 'settle':
       settleCommand(cliIo, root, positional, flags, json)
+      break
+
+    case 'openspec':
+      openspecCommand(cliIo, positional, flags, json)
       break
 
     case 'ready': {

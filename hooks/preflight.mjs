@@ -41,6 +41,17 @@
 // the output it got before. The file is outcome-class: losing it costs the
 // band, never the session.
 //
+// Before the doctor runs, it hands the session its PATH (spec:
+// hooks/session-preflight; design "The preflight hands the session its PATH").
+// The host runs `CLAUDE_ENV_FILE` as shell code before each later Bash command,
+// and this hook appends two lines to it, each in its own `try`:
+// `export PATH="$PATH":'<plugin>/cli':'<data>/openspec/<pinned version>'`, so
+// a bare `interlock` resolves to this plugin's `cli/` after anything the user
+// already has, and the provisioned OpenSpec is found by the next command; then
+// `export INTERLOCK_PLUGIN_DATA='<data>'`, so the commands provision into the
+// directory the host gave this plugin. Neither line is printed: stdout is
+// context. A failure is one stderr line, and the session starts as before.
+//
 // It reads and writes nothing for the push. A plugin option reaches the
 // session's commands through a hook of its own, `hooks/notify-option.mjs`,
 // which the host runs only for an option the person saved; the manifest's
@@ -48,7 +59,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -56,11 +67,75 @@ const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 /** Doctor check ids whose failure stops /interlock:spec and /interlock:bootstrap, not just ship. */
 const AUTHORING_CHECKS = new Set(['openspec', 'binaries'])
 
-/** Prefer the bundled binary (always present next to this hook), fall back to PATH. */
+/** Prefer the bundled CLI (always present next to this hook), fall back to PATH. */
 function interlockBin() {
-  const bundled = join(PLUGIN_ROOT, 'bin', 'interlock')
+  const bundled = join(PLUGIN_ROOT, 'cli', 'interlock')
   if (existsSync(bundled)) return bundled
   return 'interlock' // let PATH resolution decide; a miss throws ENOENT below
+}
+
+/**
+ * Run `bin` with `args`. The bundled CLI runs through this process's own Node,
+ * so its mode bit does not matter; a bare name is left to PATH.
+ */
+function execInterlock(bin, args, options) {
+  if (isAbsolute(bin)) return execFileSync(process.execPath, [bin, ...args], options)
+  return execFileSync(bin, args, options)
+}
+
+/**
+ * The plugin data directory the session's commands use: the operator's own
+ * `INTERLOCK_PLUGIN_DATA`, else the host's `CLAUDE_PLUGIN_DATA`, else null.
+ */
+function pluginDataDir(env) {
+  for (const name of ['INTERLOCK_PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']) {
+    const value = env[name]
+    if (typeof value === 'string' && value.trim() !== '') return value
+  }
+  return null
+}
+
+/**
+ * Append the session's PATH line and its data-directory export to the
+ * session's environment file, before the doctor runs. Each step is its own
+ * `try`; a failure is one stderr line and never stops the hook. Nothing here
+ * writes to stdout.
+ */
+async function handOffSessionEnv() {
+  const file = process.env.CLAUDE_ENV_FILE
+  if (typeof file !== 'string' || !file) return
+  let sessionEnv
+  try {
+    sessionEnv = await import(new URL('../lib/session-env.mjs', import.meta.url).href)
+  } catch (err) {
+    process.stderr.write(`interlock preflight: the session PATH was not written: ${(err && err.message) || String(err)}\n`)
+    return
+  }
+
+  try {
+    const entries = [join(PLUGIN_ROOT, 'cli')]
+    const data = pluginDataDir(process.env)
+    if (data) {
+      try {
+        const { OPENSPEC_PIN } = await import(new URL('../lib/openspec-pin.mjs', import.meta.url).href)
+        entries.push(join(data, 'openspec', OPENSPEC_PIN.version))
+      } catch (err) {
+        process.stderr.write(`interlock preflight: the OpenSpec pin could not be read, so PATH gains no OpenSpec directory: ${(err && err.message) || String(err)}\n`)
+      }
+    }
+    const { dropped } = sessionEnv.appendPath(file, entries, process.platform)
+    if (dropped) {
+      process.stderr.write(`interlock preflight: ${dropped} PATH entr${dropped === 1 ? 'y' : 'ies'} left out: a line break, a NUL or a path delimiter in the plugin's directories\n`)
+    }
+  } catch (err) {
+    process.stderr.write(`interlock preflight: the session PATH was not written: ${(err && err.message) || String(err)}\n`)
+  }
+
+  try {
+    sessionEnv.appendExport(file, 'INTERLOCK_PLUGIN_DATA', process.env.CLAUDE_PLUGIN_DATA, process.env)
+  } catch (err) {
+    process.stderr.write(`interlock preflight: INTERLOCK_PLUGIN_DATA was not exported: ${(err && err.message) || String(err)}\n`)
+  }
 }
 
 /**
@@ -73,7 +148,7 @@ function interlockBin() {
 function run() {
   let raw
   try {
-    raw = execFileSync(interlockBin(), ['doctor', '--json'], {
+    raw = execInterlock(interlockBin(), ['doctor', '--json'], {
       cwd: process.cwd(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -90,7 +165,7 @@ function run() {
         message:
           `interlock preflight could not run: ${(err && err.message) || String(err)}\n` +
           `The \`interlock\` binary is not resolvable from this session. Inside Claude Code the ` +
-          `plugin's bin/ is normally injected; if you see this, reinstall the plugin. The session ` +
+          `plugin's cli/ is normally appended to PATH by this preflight; if you see this, reinstall the plugin. The session ` +
           `continues — this preflight is advisory.`,
         stateHome: null,
         surface: null,
@@ -299,6 +374,7 @@ function report(message) {
 try {
   const cwd = process.cwd()
   const source = await sessionSource()
+  await handOffSessionEnv()
   const { message, stateHome, surface, doctor } = run()
   const notes = await interruptedNotes(cwd, stateHome)
   const lines = [message, ...notes.lines].filter(Boolean)

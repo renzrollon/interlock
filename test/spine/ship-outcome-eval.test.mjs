@@ -654,7 +654,7 @@ test('no gate, skill or workflow step consumes an outcome-eval result', () => {
   // in the loop. A reader appearing in a gate is the one change this eval must
   // never make.
   const offenders = []
-  for (const dir of ['lib', 'bin', 'workflows', 'skills', 'hooks']) {
+  for (const dir of ['lib', 'cli', 'workflows', 'skills', 'hooks']) {
     const found = spawnSync(
       'sh',
       ['-c', `grep -rl "ship-outcomes" ${dir} 2>/dev/null || true`],

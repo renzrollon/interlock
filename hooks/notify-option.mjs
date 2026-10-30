@@ -26,7 +26,7 @@
 // never judges the value's shape: `readNotifyConfig` does that where the value
 // is used, and names the variable without the value.
 
-import { appendFileSync } from 'node:fs'
+import { appendExport } from '../lib/session-env.mjs'
 
 /** The variable each kind of option is exported as. */
 const VARIABLES = new Map([
@@ -34,34 +34,13 @@ const VARIABLES = new Map([
   ['url', 'INTERLOCK_NTFY_URL']
 ])
 
-/** How a reference the host passed through as written begins. */
-const UNSUBSTITUTED = '${user_config.'
-
-/** A single-quoted shell word. */
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-/** A value worth exporting: text, not blank, on one line, and not a reference left as written. */
-function publishable(value) {
-  return typeof value === 'string' && value.trim() !== '' && !/[\0\r\n]/.test(value) && !value.includes(UNSUBSTITUTED)
-}
-
-/** A variable the operator's own environment already carries. */
-function provided(name) {
-  const value = process.env[name]
-  return typeof value === 'string' && value.trim() !== ''
-}
-
 let variable
 try {
   const [kind, value] = process.argv.slice(2)
   variable = VARIABLES.get(kind)
-  const file = process.env.CLAUDE_ENV_FILE
-  if (variable && publishable(value) && typeof file === 'string' && file && !provided(variable)) {
-    // One short line in a single write: the other option's hook appends beside this one.
-    appendFileSync(file, `export ${variable}=${shellQuote(value.trim())}\n`)
-  }
+  // The quoting, the publishable check and the operator's own value are
+  // lib/session-env.mjs's, shared with the preflight's PATH handoff.
+  if (variable) appendExport(process.env.CLAUDE_ENV_FILE, variable, value, process.env)
 } catch (err) {
   const reason = String((err && err.message) || err).replace(/\s+/g, ' ')
   process.stderr.write(`interlock notify option: ${variable || 'the option'} was not exported (ignored): ${reason}\n`)

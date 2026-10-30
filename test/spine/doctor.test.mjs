@@ -62,9 +62,12 @@ import {
 } from '../../lib/doctor.mjs'
 import { AGENT_USAGE_DIR } from '../../lib/agent-usage.mjs'
 import { HANDOFF_DIR } from '../../lib/resume-card.mjs'
+// A dynamic import, so a pin that is not generated yet fails the provisioned-source
+// cases by name instead of failing every pre-existing case in this file at link time.
+const pinModule = await import('../../lib/openspec-pin.mjs').catch(() => null)
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(REPO, 'bin', 'interlock')
+const BIN = join(REPO, 'cli', 'interlock')
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'interlock-doctor-'))
@@ -211,7 +214,7 @@ function fakePlugin(dir, { version = '9.9.9', omit = [], engines = '>=18', name 
   const root = join(dir, name)
   file(root, 'package.json', { name: 'interlock', engines: { node: engines } })
   file(root, '.claude-plugin/plugin.json', { name: 'interlock', version, workflows: './workflows' })
-  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'bin/interlock', 'bin/interlock-graph']) {
+  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'cli/interlock', 'cli/interlock-graph']) {
     if (omit.includes(rel)) continue
     file(root, rel, '// stub\n')
   }
@@ -509,25 +512,39 @@ test('binaries absent from PATH but present in the plugin are ok: the session-st
     const report = diagnose(dir, baseOpts(dir, { env: { PATH: '' } }))
     const binaries = byId(report, 'binaries')
     assert.equal(binaries.status, 'ok')
-    assert.match(binaries.detail, /run from the plugin's bin\//)
+    assert.match(binaries.detail, /run from the plugin's cli\//)
     assert.ok(!report.warnings.includes('binaries'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
-test('a binary neither on PATH nor in the plugin\'s bin/ fails', () => {
+test('a binary neither on PATH nor in the plugin\'s cli/ fails', () => {
   const dir = tmp()
   try {
-    const pluginRoot = fakePlugin(dir, { omit: ['bin/interlock-graph'] })
+    const pluginRoot = fakePlugin(dir, { omit: ['cli/interlock-graph'] })
     const report = diagnose(dir, baseOpts(dir, { pluginRoot, env: { PATH: '' } }))
     const binaries = byId(report, 'binaries')
     assert.equal(binaries.status, 'fail')
-    assert.match(binaries.detail, /interlock, interlock-graph resolve neither on PATH nor in the plugin's bin\//)
+    assert.match(binaries.detail, /interlock, interlock-graph resolve neither on PATH nor in the plugin's cli\//)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * The no-CLI fix of the openspec row: it begins with the provisioning command, names the
+ * Node floor and npm the provisioned route needs, and keeps the npm install command as
+ * the user's own route.
+ */
+function assertLeadsWithProvisioning(fix) {
+  const provision = doctorModule.OPENSPEC_PROVISION
+  assert.equal(typeof provision, 'string', 'lib/doctor.mjs exports OPENSPEC_PROVISION')
+  assert.ok(fix.startsWith(provision), `the fix must begin with ${provision}; got ${fix}`)
+  assert.match(fix, /20\.19\.0/, `the fix must name the Node floor; got ${fix}`)
+  assert.match(fix, /\bnpm\b/, `the fix must name npm; got ${fix}`)
+  assert.ok(fix.includes(OPENSPEC_INSTALL), `the fix must still spell the install command; got ${fix}`)
+}
 
 test('openspec absent with no project at all fails; absent with a project only warns', () => {
   const dir = tmp()
@@ -537,11 +554,14 @@ test('openspec absent with no project at all fails; absent with a project only w
     assert.equal(noProject.status, 'fail')
     assert.ok(noProject.fix.includes(OPENSPEC_INSTALL), `the fail fix must spell the install command; got ${noProject.fix}`)
     assert.match(noProject.fix, /openspec init/)
+    // Pins "The doctor SHALL name the OpenSpec it resolved and lead its fix with provisioning".
+    assertLeadsWithProvisioning(noProject.fix)
     file(dir, 'openspec/config.yaml', 'project: test\n')
     const withProject = byId(diagnose(dir, baseOpts(dir, { env: noOpenSpec })), 'openspec')
     assert.equal(withProject.status, 'warn')
     assert.match(withProject.detail, /ship reads artifacts from disk/)
     assert.ok(withProject.fix.includes(OPENSPEC_INSTALL), `the warn fix must spell the install command; got ${withProject.fix}`)
+    assertLeadsWithProvisioning(withProject.fix)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -2145,7 +2165,7 @@ function npmCopy(dir, version, name = 'npm') {
   const prefix = join(dir, name)
   const pkg = join(prefix, 'lib', 'node_modules', '@renzrollon', 'interlock')
   file(pkg, 'package.json', { name: '@renzrollon/interlock', version })
-  const real = file(pkg, 'bin/interlock', '#!/bin/sh\nexit 0\n')
+  const real = file(pkg, 'cli/interlock', '#!/bin/sh\nexit 0\n')
   chmodSync(real, 0o755)
   mkdirSync(join(prefix, 'bin'), { recursive: true })
   symlinkSync(real, join(prefix, 'bin', 'interlock'))
@@ -2296,14 +2316,14 @@ test('a relative PATH entry never resolves a binary planted in the working direc
   try {
     // An untrusted checkout carrying its own interlock, and a plugin layout beside it.
     stubBin(dir, 'interlock')
-    stubBin(join(dir, 'bin'), 'interlock')
+    stubBin(join(dir, 'cli'), 'interlock')
     file(dir, '.claude-plugin/plugin.json', { name: 'interlock', version: PLUGIN_VERSION })
     process.chdir(dir)
-    const env = { PATH: '.:./bin' }
+    const env = { PATH: '.:./cli' }
     assert.equal(whichSync('interlock', env), null, 'a relative entry resolved a binary in the cwd')
-    assert.equal(cliComparisonRoot({}, env, '/own').source, 'own', 'a relative entry was taken for a plugin bin/')
+    assert.equal(cliComparisonRoot({}, env, '/own').source, 'own', 'a relative entry was taken for a plugin cli/')
     assert.equal(checkCliVersion({ root: '/own', source: 'own' }, env).status, 'skip')
-    assert.equal(whichSync('interlock', { PATH: join(dir, 'bin') }), join(dir, 'bin', 'interlock'), 'an absolute entry still resolves')
+    assert.equal(whichSync('interlock', { PATH: join(dir, 'cli') }), join(dir, 'cli', 'interlock'), 'an absolute entry still resolves')
   } finally {
     process.chdir(cwd)
     rmSync(dir, { recursive: true, force: true })
@@ -2351,12 +2371,12 @@ test('an npm copy at the plugin\'s version is ok', () => {
   }
 })
 
-test('the plugin\'s own bin/ on PATH is ok, whatever it answers', () => {
+test('the plugin\'s own cli/ on PATH is ok, whatever it answers', () => {
   const dir = tmp()
   try {
     const pluginRoot = versionedPlugin(dir)
-    const own = join(pluginRoot, 'bin')
-    // fakePlugin lays bin/interlock down as plain text; give it the mode bit so
+    const own = join(pluginRoot, 'cli')
+    // fakePlugin lays cli/interlock down as plain text; give it the mode bit so
     // a PATH scan finds it. It prints nothing, so only recognising it as the
     // plugin's own can make this row ok.
     chmodSync(join(own, 'interlock'), 0o755)
@@ -2464,14 +2484,14 @@ test('CLAUDE_PLUGIN_ROOT names the plugin the PATH CLI is compared with', () => 
   }
 })
 
-test('a plugin bin/ later on PATH is the plugin an earlier npm copy is compared with (the `! interlock doctor` case)', () => {
+test('a plugin cli/ later on PATH is the plugin an earlier npm copy is compared with (the `! interlock doctor` case)', () => {
   const dir = tmp()
   try {
     const plugin = versionedPlugin(dir)
-    chmodSync(join(plugin, 'bin', 'interlock'), 0o755)
+    chmodSync(join(plugin, 'cli', 'interlock'), 0o755)
     const copy = npmCopy(dir, '1.7.0')
     const ownRoot = npmPackageDir(copy)
-    const env = { PATH: [copy.binDir, join(plugin, 'bin')].join(':') }
+    const env = { PATH: [copy.binDir, join(plugin, 'cli')].join(':') }
     const comparison = cliComparisonRoot({}, env, ownRoot)
     assert.deepEqual(comparison, { root: plugin, source: 'path' })
     const row = checkCliVersion(comparison, env)
@@ -2480,9 +2500,9 @@ test('a plugin bin/ later on PATH is the plugin an earlier npm copy is compared 
     assert.match(row.evidence.join('\n'), /plugin root found on PATH/)
     // Newer and equal copies compare as usual.
     const newer = npmCopy(dir, '1.9.0', 'npm-newer')
-    assert.equal(checkCliVersion(comparison, { PATH: [newer.binDir, join(plugin, 'bin')].join(':') }).status, 'warn')
+    assert.equal(checkCliVersion(comparison, { PATH: [newer.binDir, join(plugin, 'cli')].join(':') }).status, 'warn')
     const equal = npmCopy(dir, PLUGIN_VERSION, 'npm-equal')
-    assert.equal(checkCliVersion(comparison, { PATH: [equal.binDir, join(plugin, 'bin')].join(':') }).status, 'ok')
+    assert.equal(checkCliVersion(comparison, { PATH: [equal.binDir, join(plugin, 'cli')].join(':') }).status, 'ok')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -2493,10 +2513,10 @@ test('no plugin directory on PATH leaves the row a skip', () => {
   try {
     const copy = npmCopy(dir, '1.7.0')
     const ownRoot = npmPackageDir(copy)
-    // A bin/ with an interlock but no .claude-plugin/plugin.json beside it is not a plugin.
+    // A cli/ with an interlock but no .claude-plugin/plugin.json beside it is not a plugin.
     const notPlugin = join(dir, 'tools')
-    file(notPlugin, 'bin/interlock', '#!/bin/sh\n')
-    const env = { PATH: [copy.binDir, join(notPlugin, 'bin'), gitOnlyDir(dir)].join(':') }
+    file(notPlugin, 'cli/interlock', '#!/bin/sh\n')
+    const env = { PATH: [copy.binDir, join(notPlugin, 'cli'), gitOnlyDir(dir)].join(':') }
     const comparison = cliComparisonRoot({}, env, ownRoot)
     assert.equal(comparison.source, 'own')
     const row = checkCliVersion(comparison, env)
@@ -2511,10 +2531,10 @@ test('CLAUDE_PLUGIN_ROOT wins over a plugin found on PATH', () => {
   const dir = tmp()
   try {
     const onPath = versionedPlugin(dir, '1.8.0')
-    chmodSync(join(onPath, 'bin', 'interlock'), 0o755)
+    chmodSync(join(onPath, 'cli', 'interlock'), 0o755)
     const named = fakePlugin(dir, { version: '2.0.0', name: 'named-plugin' })
     const copy = npmCopy(dir, '1.7.0')
-    const env = { PATH: [copy.binDir, join(onPath, 'bin')].join(':'), CLAUDE_PLUGIN_ROOT: named }
+    const env = { PATH: [copy.binDir, join(onPath, 'cli')].join(':'), CLAUDE_PLUGIN_ROOT: named }
     const comparison = cliComparisonRoot({}, env, npmPackageDir(copy))
     assert.deepEqual(comparison, { root: named, source: 'env' })
     assert.match(checkCliVersion(comparison, env).detail, /plugin is 2\.0\.0$/)
@@ -2638,6 +2658,188 @@ test('a profile the doctor passes is one verification accepts', async () => {
     file(dir, '.claude/testing/profile.json', good)
     assert.equal(byId(diagnose(dir, baseOpts(dir)), 'test-profile').status, 'ok')
     assert.doesNotThrow(() => planVerification(good))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The OpenSpec the doctor resolved: PATH or the provisioned pin (spec: openspec-cli)
+// ---------------------------------------------------------------------------
+//
+// The data directory is passed as INTERLOCK_PLUGIN_DATA in `env`, never read from the
+// process, and the PATH of every case below is built here: a developer's own
+// `openspec` must not decide whether the row names a provisioned copy.
+
+/** The pinned version; a pin that is not generated yet fails the case that needs it, by name. */
+function pinVersion() {
+  assert.ok(pinModule, 'lib/openspec-pin.mjs does not exist: the pin is generated by scripts/pin-openspec.mjs')
+  return pinModule.OPENSPEC_PIN.version
+}
+
+/** The marker a launcher carries in its first 512 bytes. */
+const LAUNCHER_MARKER = 'interlock:openspec-launcher'
+
+/** A stub launcher for `version` under the data directory `data`, as provisioning leaves it. */
+function provisionedLauncher(data, version) {
+  const path = file(join(data, 'openspec', version), 'openspec', `#!/bin/sh\n# ${LAUNCHER_MARKER}\necho ${version}\n`)
+  chmodSync(path, 0o755)
+  return path
+}
+
+/** An `openspec` that is not the launcher, in a fresh directory, with these leading bytes. */
+function openspecWithBytes(dir, name, bytes) {
+  const path = join(dir, name, 'openspec')
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, bytes)
+  chmodSync(path, 0o755)
+  return path
+}
+
+/**
+ * Doctor options whose PATH holds `pathDirs` and a directory of stubs that includes no
+ * `openspec`, with the data directory at <dir>/plugin-data.
+ */
+function openspecOpts(dir, { pathDirs = [], nodeVersion = 'v22.11.0', probe } = {}) {
+  const noOpenSpec = join(dir, 'no-openspec-bin')
+  mkdirSync(noOpenSpec, { recursive: true })
+  for (const name of ['interlock', 'interlock-graph']) stubBin(noOpenSpec, name)
+  const data = join(dir, 'plugin-data')
+  return {
+    data,
+    opts: baseOpts(dir, {
+      env: { PATH: [...pathDirs, noOpenSpec].join(':'), INTERLOCK_PLUGIN_DATA: data },
+      nodeVersion,
+      probeVersion: probe || (() => '99.0.0')
+    })
+  }
+}
+
+test('a provisioned pin is ok, and the evidence names the source, the path and the version', () => {
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const version = pinVersion()
+    const { data, opts } = openspecOpts(dir, { probe: () => version })
+    const launcher = provisionedLauncher(data, version)
+    const row = byId(diagnose(dir, opts), 'openspec')
+    assert.equal(row.status, 'ok', `${row.detail} ${row.fix || ''}`)
+    const evidence = row.evidence.join('\n')
+    assert.match(evidence, /provisioned/)
+    assert.ok(evidence.includes(launcher), `the evidence must name the path; got ${evidence}`)
+    assert.ok(evidence.includes(version), `the evidence must name the version; got ${evidence}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a user\'s own openspec on PATH is named as the PATH source, and it wins over a provisioned pin', () => {
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const version = pinVersion()
+    const own = openspecWithBytes(dir, 'own-bin', '#!/bin/sh\nexit 0\n')
+    const { data, opts } = openspecOpts(dir, { pathDirs: [dirname(own)] })
+    provisionedLauncher(data, version)
+    const row = byId(diagnose(dir, opts), 'openspec')
+    assert.equal(row.status, 'ok', `${row.detail} ${row.fix || ''}`)
+    const evidence = row.evidence.join('\n')
+    assert.match(evidence, /PATH/)
+    assert.ok(evidence.includes(own), `the evidence must name the PATH copy; got ${evidence}`)
+    assert.doesNotMatch(evidence, /provisioned/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a PATH whose only openspec is a launcher for another version resolves nothing, and leads with provisioning', () => {
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const stale = openspecWithBytes(dir, 'stale-launcher-bin', `#!/bin/sh\n# ${LAUNCHER_MARKER}\necho 1.14.3\n`)
+    const { opts } = openspecOpts(dir, { pathDirs: [dirname(stale)] })
+    const row = byId(diagnose(dir, opts), 'openspec')
+    assert.equal(row.status, 'warn')
+    assert.ok(String(row.fix).startsWith(doctorModule.OPENSPEC_PROVISION), `got ${row.fix}`)
+    const everything = [row.detail, row.fix, ...(row.evidence || [])].join('\n')
+    assert.ok(!everything.includes(stale), `the launcher on PATH was reported as a CLI: ${everything}`)
+    assert.doesNotMatch((row.evidence || []).join('\n'), /your PATH/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the node row: Node 22 with a provisioned launcher is ok', () => {
+  const dir = tmp()
+  try {
+    const version = pinVersion()
+    const { data, opts } = openspecOpts(dir, { nodeVersion: 'v22.11.0', probe: () => version })
+    provisionedLauncher(data, version)
+    assert.equal(byId(diagnose(dir, opts), 'node').status, 'ok')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the node row: Node 18 with a provisioned launcher warns, naming 20.19.0', () => {
+  const dir = tmp()
+  try {
+    const version = pinVersion()
+    const { data, opts } = openspecOpts(dir, { nodeVersion: 'v18.20.8', probe: () => version })
+    provisionedLauncher(data, version)
+    const row = byId(diagnose(dir, opts), 'node')
+    assert.equal(row.status, 'warn')
+    assert.match(row.detail, /20\.19\.0/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the node row: Node 18 with a script on PATH warns, also when PATH holds a symlink to it', () => {
+  const dir = tmp()
+  try {
+    const script = openspecWithBytes(dir, 'script-bin', '#!/usr/bin/env node\nconsole.log("1.15.0")\n')
+    const direct = byId(diagnose(dir, openspecOpts(dir, { pathDirs: [dirname(script)], nodeVersion: 'v18.20.8' }).opts), 'node')
+    assert.equal(direct.status, 'warn')
+    assert.match(direct.detail, /20\.19\.0/)
+
+    // The link's own directory and name hold no `#!`; the bytes are read at the realpath.
+    const link = join(dir, 'link-bin', 'openspec')
+    mkdirSync(dirname(link), { recursive: true })
+    symlinkSync(script, link)
+    const linked = byId(diagnose(dir, openspecOpts(dir, { pathDirs: [dirname(link)], nodeVersion: 'v18.20.8' }).opts), 'node')
+    assert.equal(linked.status, 'warn')
+    assert.match(linked.detail, /20\.19\.0/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the node row: Node 18 with an ELF openspec on PATH, or with nothing resolved, does not name 20.19.0', () => {
+  const dir = tmp()
+  try {
+    const elf = openspecWithBytes(dir, 'elf-bin', Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(64)]))
+    const standalone = byId(diagnose(dir, openspecOpts(dir, { pathDirs: [dirname(elf)], nodeVersion: 'v18.20.8' }).opts), 'node')
+    assert.doesNotMatch(JSON.stringify(standalone), /20\.19\.0/, 'a standalone binary does not run on the user\'s Node')
+
+    const nothing = byId(diagnose(dir, openspecOpts(dir, { nodeVersion: 'v18.20.8' }).opts), 'node')
+    assert.doesNotMatch(JSON.stringify(nothing), /20\.19\.0/, 'the openspec row carries the fix for an absent CLI')
+    const row = byId(diagnose(dir, openspecOpts(dir, { nodeVersion: 'v18.20.8' }).opts), 'openspec')
+    assert.ok(String(row.fix).startsWith(doctorModule.OPENSPEC_PROVISION), `got ${row.fix}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the plugin row fails naming cli/interlock when that file is absent from the plugin root', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = fakePlugin(dir)
+    // This plugin has no `interlock` file.
+    rmSync(join(pluginRoot, 'cli', 'interlock'), { force: true })
+    const row = byId(diagnose(dir, baseOpts(dir, { pluginRoot })), 'plugin')
+    assert.equal(row.status, 'fail')
+    assert.match(row.evidence.join('\n'), /missing: cli\/interlock\b/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -5,7 +5,7 @@
 // Development and CI tooling only. `scripts/` is not in package.json `files`, so
 // this never ships. CI runs it against the installed tarball
 // (`$RUNNER_TEMP/prefix/bin`); test/spine/postinstall-smoke.test.mjs runs it
-// against the working tree's own `bin/`, so an inventory regression fails
+// against the working tree's own `cli/`, so an inventory regression fails
 // `npm test` instead of only a pipeline most contributors never wait for.
 //
 // Usage:
@@ -205,6 +205,16 @@ export const INVENTORY = [
     argv: ['routing', 'not-a-role', '--json'],
     codes: [1],
     check: r => (r.stdout === '' && /roles:/.test(r.stderr) ? '' : 'an unknown role printed on stdout, or did not name the roles')
+  },
+
+  // The OpenSpec resolution: `which` reads and prints. `provision` installs from a registry, so
+  // the smoke only proves it is a known leaf that refuses a flag it does not read, and runs nothing.
+  { bin: I, argv: ['openspec', 'which', '--json'], codes: [0], keys: ['source', 'dataDir', 'dataDirSource', 'pin'] },
+  {
+    bin: I,
+    argv: ['openspec', 'provision', '--not-a-flag'],
+    codes: [2],
+    check: r => (/--not-a-flag/.test(r.stderr) && /openspec provision/.test(r.stderr) ? '' : 'the refusal does not name the flag and the subcommand')
   },
 
   // Preflight: the doctor reads the installed plugin and the binary on PATH, which

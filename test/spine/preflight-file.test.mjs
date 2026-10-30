@@ -354,7 +354,7 @@ test('lib/preflight-file.mjs imports only ./limits.mjs', () => {
 
 test('buildPreflightReport carries a check\'s evidence line for line, and an absent one as []', () => {
   const evidence = [
-    'interlock → /usr/local/lib/node_modules/@renzrollon/interlock/bin/interlock',
+    'interlock → /usr/local/lib/node_modules/@renzrollon/interlock/cli/interlock',
     'interlock 1.7.0',
     'plugin 1.8.0'
   ]
@@ -388,12 +388,12 @@ test('the file round-trips the cli-version evidence through readPreflightReport'
       parsed: true,
       ok: false,
       counts: { ok: 0, warn: 0, fail: 1, skip: 0 },
-      checks: [{ id: 'cli-version', status: 'fail', detail: 'CLI VERSION SKEW', fix: 'npm i -g @renzrollon/interlock@1.8.0', evidence: ['/p/bin/interlock', '1.7.0', '1.8.0'] }]
+      checks: [{ id: 'cli-version', status: 'fail', detail: 'CLI VERSION SKEW', fix: 'npm i -g @renzrollon/interlock@1.8.0', evidence: ['/p/cli/interlock', '1.7.0', '1.8.0'] }]
     }
   })
   const read = readPreflightReport(JSON.stringify(report))
   assert.equal(read.problem, undefined)
-  assert.deepEqual(read.report.doctor.checks[0].evidence, ['/p/bin/interlock', '1.7.0', '1.8.0'])
+  assert.deepEqual(read.report.doctor.checks[0].evidence, ['/p/cli/interlock', '1.7.0', '1.8.0'])
   // A fail row still draws the band; the evidence changes what the file keeps, not what is drawn.
   assert.equal(shouldDraw(read.report), true)
 })

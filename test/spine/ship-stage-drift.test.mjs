@@ -25,7 +25,7 @@ import { publishStageLine } from '../../lib/prompts/stage.mjs'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DRIVERS = [
   join(ROOT, 'workflows', 'ship.js'),
-  join(ROOT, 'bin', 'interlock-ship-acp')
+  join(ROOT, 'cli', 'interlock-ship-acp')
 ]
 
 const posix = s => s.replace(/\\/g, '/')
@@ -118,7 +118,7 @@ test('the tail\'s stage lines are rendered by the CLI, on the briefing that publ
       `lib/prompts/${module} must take the rendered fragment rather than build one`
     )
   }
-  for (const driver of [join(ROOT, 'workflows', 'ship.js'), join(ROOT, 'bin', 'interlock-ship-acp')]) {
+  for (const driver of [join(ROOT, 'workflows', 'ship.js'), join(ROOT, 'cli', 'interlock-ship-acp')]) {
     assert.doesNotMatch(
       readFileSync(driver, 'utf8'),
       /stageLines?\b/,

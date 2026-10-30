@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url'
 import { readRunLog } from '../../lib/run-log.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(REPO, 'bin', 'interlock')
+const BIN = join(REPO, 'cli', 'interlock')
 const FIXTURES = join(REPO, 'test', 'fixtures', 'ship')
 const VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version
 

@@ -82,7 +82,7 @@ for (const fileName of workflowFiles) {
 
 test('ship.js invokes only interlock subcommands that exist', () => {
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const usage = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const usage = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
 
   // Top-level commands the CLI dispatches on, read from its own switch so this
   // cannot drift from the implementation the way a hardcoded list would.
@@ -232,7 +232,7 @@ test('a halt records an outcome and a receipt, on both drivers', () => {
   // and a halted run is its most informative record. The close is one sequence —
   // receipt, terminal event, outcome — and a halt goes through it rather than
   // recording on its own.
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     const stopBody = /async function stop\(reason\)[\s\S]*?\n}/.exec(text)
     assert.ok(stopBody, `${driver} no longer has a recognizable stop()`)
@@ -313,7 +313,7 @@ test('the classifier briefing forbids collision-as-group, and no driver restates
   // The whole point of moving it: there is one statement of the rule, and the
   // cross-driver parity test that used to compare two is gone because there is
   // nothing left to compare.
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     assert.doesNotMatch(
       readFileSync(driver, 'utf8'),
       /shared file is NOT a reason for a new group/,
@@ -387,7 +387,7 @@ test('lane briefings go through assembleImplementerPrompt, never an inline templ
   // No driver assembles one. The Workflow script cannot even hold the text: it
   // is handed a path and a hash (design D2), and the ACP driver is handed the
   // assembled string on the step.
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     assert.doesNotMatch(
       text,
@@ -721,7 +721,7 @@ test('the docs state why the Workflow runtime stays the default, in one place', 
 // run that could not print it WITH a reason. Both are driven through the real
 // binary, because the seam being tested is the driver's, not the adapter's.
 
-const RUNNER_BIN = join(ROOT, 'bin', 'interlock-run')
+const RUNNER_BIN = join(ROOT, 'cli', 'interlock-run')
 const ACP_FIXTURE = join(ROOT, 'test', 'fixtures', 'acp', 'agent.mjs')
 
 /** A temp repo with one classified task, ready for a lean ship run. */
@@ -978,11 +978,11 @@ test('a runner lane resolves interlock with bin/ first, ahead of a decoy', () =>
     assert.match(stdout, /SHIP COMPLETE/, `a summary must be printed:\n${stdout}`)
     const lines = readFileSync(log, 'utf8').split('\n').filter(line => line !== '')
     assert.ok(lines.length >= 2, `expected at least 2 lane PATH lines, got ${lines.length}`)
-    const binDir = join(ROOT, 'bin')
+    const binDir = join(ROOT, 'cli')
     for (const line of lines) {
       const entries = line.split(delimiter)
-      assert.equal(entries[0], binDir, `bin/ must lead the lane PATH:\n${line}`)
-      assert.ok(entries.indexOf(decoy) > 0, `the decoy must remain after bin/:\n${line}`)
+      assert.equal(entries[0], binDir, `cli/ must lead the lane PATH:\n${line}`)
+      assert.ok(entries.indexOf(decoy) > 0, `the decoy must remain after cli/:\n${line}`)
     }
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -1508,7 +1508,7 @@ test('the shim prints its deprecation line on stderr and forwards every argument
     try {
       const out = execFileSync(
         process.execPath,
-        [join(ROOT, 'bin', 'interlock-ship-acp'), change, '--no-commit', '--root', '.'],
+        [join(ROOT, 'cli', 'interlock-ship-acp'), change, '--no-commit', '--root', '.'],
         {
           cwd: root,
           encoding: 'utf8',
@@ -1536,7 +1536,7 @@ test('the shim prints its deprecation line on stderr and forwards every argument
 })
 
 test('the shim says the new name and the removal schedule', () => {
-  const shim = readFileSync(join(ROOT, 'bin', 'interlock-ship-acp'), 'utf8')
+  const shim = readFileSync(join(ROOT, 'cli', 'interlock-ship-acp'), 'utf8')
   assert.match(shim, /interlock-ship-acp is now interlock-run --host acp/)
   assert.match(shim, /process\.stderr\.write/, 'on stderr')
   assert.match(shim, /removed in the next minor version/)
@@ -1696,7 +1696,7 @@ test('the network lives in exactly one module, and in neither driver', () => {
     }
   }
   walk(join(ROOT, 'lib'))
-  for (const rel of ['bin/interlock', 'bin/interlock-graph', 'bin/interlock-run', 'workflows/ship.js']) {
+  for (const rel of ['cli/interlock', 'cli/interlock-graph', 'cli/interlock-run', 'workflows/ship.js']) {
     sources.push(join(ROOT, rel))
   }
 
@@ -1714,7 +1714,7 @@ test('the network lives in exactly one module, and in neither driver', () => {
 
   // And neither driver knows what a relay is. They request the push; the CLI
   // decides whether one is configured and what it says.
-  for (const rel of ['bin/interlock-run', 'workflows/ship.js']) {
+  for (const rel of ['cli/interlock-run', 'workflows/ship.js']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.ok(!text.includes('ntfy'), `${rel} names the relay`)
     assert.ok(!text.includes('INTERLOCK_NTFY'), `${rel} reads the push configuration itself`)
@@ -1850,7 +1850,7 @@ test('succeeded tasks are ticked by the CLI, from what it recorded', () => {
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   assert.match(run, /tickTasks\(root, manifest\.change, verdict\.tickIds\)/)
   assert.match(run, /TASK TICK FAILED:/, 'and a tick that could not be written is said out loud')
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     assert.doesNotMatch(readFileSync(driver, 'utf8'), /tasks tick|tick the checkbox/)
   }
 })
@@ -1914,7 +1914,7 @@ test('ship.js uses haiku for its mechanical control-plane relays', () => {
 // derivation reaches the spawn.
 
 test('no driver mirrors laneEffort or laneModel any more', () => {
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     for (const name of ['laneEffort', 'laneModel', 'laneLabel', 'LANE_EFFORT', 'LANE_DISPATCH']) {
       assert.doesNotMatch(
@@ -1966,7 +1966,7 @@ test('a control-plane relay copies stdout and is told to interpret nothing', () 
   // program rather than one of six actions, that it is a relay and not a worker.
   // Listing allowed actions would be loop knowledge in a driver; refusing to
   // interpret is not.
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     assert.doesNotMatch(text, /Report the step/)
   }
@@ -1997,7 +1997,7 @@ test('a relay that produced no readable step stops the run rather than guessing'
   assert.match(text, /return await stop\('the run program returned no step/)
   // `run next` is what a caller uses to re-read the state deliberately, and it
   // is a CLI subcommand rather than a prompt telling a model to run one.
-  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
   assert.match(cli, /sub === 'next'/)
 })
 
@@ -2010,7 +2010,7 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
   // run-log specifically shows up among the dispatched subcommands ship.js
   // actually calls, and that the CLI dispatch table recognizes it.
   const text = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
-  const usage = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const usage = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
 
   // The script no longer logs anything itself — the CLI records every event
   // from the step it emitted, which is strictly better: an instruction a model
@@ -2036,7 +2036,7 @@ test('ship.js logs the ship-run trajectory through run-log, never by touching fs
 // and no second copy of the rules or of the implementer briefing on the ACP
 // side. Without them, "the shared source of truth is the CLI" is a comment.
 
-const RUNNER_DRIVER = join(ROOT, 'bin', 'interlock-run')
+const RUNNER_DRIVER = join(ROOT, 'cli', 'interlock-run')
 
 /** Run the runner binary and read back its exit code and stderr. */
 function spawnRunner(args) {
@@ -2071,7 +2071,7 @@ test('both drivers request the close push, and neither decides anything about it
   // `--notify` is unconditional on both drivers by design (D1): the CLI owns
   // whether a topic is configured. A driver that grew a condition here would
   // be a driver deciding policy, and the two would drift apart silently.
-  for (const rel of ['workflows/ship.js', 'bin/interlock-run']) {
+  for (const rel of ['workflows/ship.js', 'cli/interlock-run']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     const start = text.indexOf('function closeArgs()')
     assert.ok(start !== -1, `${rel} no longer assembles its close arguments in closeArgs()`)
@@ -2091,7 +2091,7 @@ test('both drivers request the close push, and neither decides anything about it
 test("the runner forwards the plan shape and continue mode to `run start`", () => {
   const driver = readFileSync(RUNNER_DRIVER, 'utf8')
   const start = driver.indexOf("'run',\n  'start',")
-  assert.ok(start !== -1, 'bin/interlock-run no longer assembles a `run start` argv')
+  assert.ok(start !== -1, 'cli/interlock-run no longer assembles a `run start` argv')
   // The argv ends at the capabilities it always closes with; `indexOf('])')`
   // would stop at the first `: [])` ternary, one line in.
   const end = driver.indexOf('--host-capabilities', start)
@@ -2149,7 +2149,7 @@ test('the runner and ship.js drive the same interlock subcommands', () => {
   const script = readFileSync(join(WORKFLOWS_DIR, 'ship.js'), 'utf8')
   const driver = readFileSync(RUNNER_DRIVER, 'utf8')
   const dispatched = new Set(
-    [...readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8').matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1])
+    [...readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8').matchAll(/^\s*case '([a-z-]+)':/gm)].map(m => m[1])
   )
 
   const fromScript = invokedSubcommands(script)
@@ -2811,7 +2811,7 @@ test('an isolated batch captures the shared tree\'s base commit before its lanes
     /could not capture the shared-tree base commit before an isolated batch/,
     'and an unreadable base halts rather than being guessed'
   )
-  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
   assert.match(cli, /'write-tree'/, 'the snapshot is a tree written from a temporary index')
   assert.match(cli, /'commit-tree'/, 'committed without moving a ref')
   assert.match(cli, /':\(exclude\)\.claude\/ship'/, 'with the run state left out of it')
@@ -2875,7 +2875,7 @@ test('the lane cap is stated once, read by the planner, and never restated in th
     /LANE_CAPS\.byTier/,
     'lib/waves.mjs must read the per-tier lane cap — a cap only a test reads is a cap in prose'
   )
-  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
   assert.match(readFileSync(join(ROOT, 'lib', 'limits.mjs'), 'utf8'), /export const LANE_CAPS = \{/)
   assert.match(cli, /interlock limits/, 'the CLI publishes the caps it reads')
 
@@ -3026,7 +3026,7 @@ test('the step schema is stated once, by the party that builds the step', () => 
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   assert.match(run, /export const STEP_SCHEMA = 'interlock\.run-step\/1'/)
   assert.match(run, /const PASS_THROUGH = Object\.freeze\(\[/, 'the carried fields are named once')
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     assert.doesNotMatch(
       text,
@@ -3767,7 +3767,7 @@ test('no agent is in the corpus line\'s path at all', () => {
   const run = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8')
   // Under the state home the run recorded (ship/state-home).
   assert.match(run, /appendOutcome\(home, \{[\s\S]{0,160}observed: observedFromReceipt\(receipt\)/)
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     assert.doesNotMatch(
       readFileSync(driver, 'utf8'),
       /outcomes append|record-outcome|record-receipt/,
@@ -4526,7 +4526,7 @@ function policySurface(path) {
 test('neither driver states any policy the run program emits', t => {
   const drivers = [
     ['workflows/ship.js', join(WORKFLOWS_DIR, 'ship.js')],
-    ['bin/interlock-run', RUNNER_DRIVER]
+    ['cli/interlock-run', RUNNER_DRIVER]
   ]
   for (const [name, path] of drivers) {
     const surface = policySurface(path)
@@ -4548,7 +4548,7 @@ test('neither driver reads the fields the relay carries for the ship meter', () 
   const fields = ['plan', 'recorded', 'skipped', 'waveIndex', 'batchIndex', 'batchCount']
   for (const [name, path] of [
     ['workflows/ship.js', join(WORKFLOWS_DIR, 'ship.js')],
-    ['bin/interlock-run', RUNNER_DRIVER]
+    ['cli/interlock-run', RUNNER_DRIVER]
   ]) {
     const surface = policySurface(path)
     for (const field of fields) {
@@ -4845,7 +4845,7 @@ test('both drivers carry the task-shape flags, refuse the contradiction, and for
   // but a flag one driver takes and the other silently drops is a run that
   // degraded because of which host launched it, which is the failure the host
   // registry exists to make impossible.
-  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'bin', 'interlock-run')]) {
+  for (const driver of [join(WORKFLOWS_DIR, 'ship.js'), join(ROOT, 'cli', 'interlock-run')]) {
     const text = readFileSync(driver, 'utf8')
     assert.match(text, /contradictory task-shape flags/, `${driver} must refuse --tdd --no-tdd`)
     assert.match(
@@ -4866,7 +4866,7 @@ test('both drivers carry the task-shape flags, refuse the contradiction, and for
 
   // interlock-run refuses unknown flags by name, and derives the known set from
   // its own USAGE — so the flags must be documented there or they are unusable.
-  const runner = readFileSync(join(ROOT, 'bin', 'interlock-run'), 'utf8')
+  const runner = readFileSync(join(ROOT, 'cli', 'interlock-run'), 'utf8')
   for (const flag of ['--tdd', '--no-tdd']) {
     assert.match(
       runner,

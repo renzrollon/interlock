@@ -625,7 +625,7 @@ test('a changed file absent from the graph and cited by no spec selects nothing 
 // --- cited selection reads only for a changed SOURCE file (review fixes on PR #29, M3) ---
 
 const CITING_SKILL_AND_BIN = {
-  'review/skill': '### Requirement: It is cited\n\nIt SHALL live in `skills/review-code/SKILL.md`, and `bin/interlock` SHALL call it.\n'
+  'review/skill': '### Requirement: It is cited\n\nIt SHALL live in `skills/review-code/SKILL.md`, and `cli/interlock` SHALL call it.\n'
 }
 
 test('a docs-only change the graph does not hold selects nothing by citation and lists nothing as ungraphed', () => {
@@ -642,13 +642,13 @@ test('a docs-only change the graph does not hold selects nothing by citation and
 
 test('an extensionless executable under bin/ the graph never indexes is still selected by citation', () => {
   const r = selectDomainCapabilities({
-    changedPaths: ['bin/interlock'],
+    changedPaths: ['cli/interlock'],
     edges: [],
     graphFiles: ['hooks/mod.mjs'],
-    livingTexts: { ...CITING_SKILL_AND_BIN, other: 'Only `bin/interlock-graph` and bin/interlock.mjs are named here.\n' }
+    livingTexts: { ...CITING_SKILL_AND_BIN, other: 'Only `cli/interlock-graph` and cli/interlock.mjs are named here.\n' }
   })
-  assert.deepEqual(r.capabilities, [{ capability: 'review/skill', via: 'cited', files: ['bin/interlock'], count: 1 }])
-  assert.deepEqual(r.ungraphed.files, [{ path: 'bin/interlock', citedBy: ['review/skill'] }])
+  assert.deepEqual(r.capabilities, [{ capability: 'review/skill', via: 'cited', files: ['cli/interlock'], count: 1 }])
+  assert.deepEqual(r.ungraphed.files, [{ path: 'cli/interlock', citedBy: ['review/skill'] }])
 })
 
 test('citedSelectionInputs reads every living spec once, and only when a changed source file is ungraphed', async () => {

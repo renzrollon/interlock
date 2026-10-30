@@ -10,20 +10,22 @@ This page takes you from install to one committed change. Onboard the repo once,
 | Dynamic workflows **enabled** | `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. The run banners this rather than hiding it — see [when it stops](./04-when-it-stops.md#model-routing-overridden). |
 | `CLAUDE_CODE_EFFORT_LEVEL` **unset** | Its effort twin. If it is set every agent runs at that effort, whatever the plan assigned to each step. The run banners it as `EFFORT ROUTING OVERRIDDEN` — see [when it stops](./04-when-it-stops.md#effort-routing-overridden). |
-| The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. Installed below. |
-| Node.js ≥ 18 | Runs the three bundled CLIs: `interlock`, `interlock-graph` and `interlock-run`. |
+| The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. Used from your PATH when present, otherwise provisioned for you (below). |
+| Node.js ≥ 18 | Runs the three bundled CLIs: `interlock`, `interlock-graph` and `interlock-run`. Provisioning OpenSpec needs Node.js 20.19+ and npm. |
 | A git repo with code in it | `bootstrap` documents what already exists. |
 
 ## Install
 
-Interlock drives the `openspec` CLI, so install it and initialize it in the repo first ([OpenSpec quick start](https://github.com/Fission-AI/OpenSpec#quick-start)):
+Interlock drives the `openspec` CLI. If one is on your PATH it is used. If not, the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`, which installs a pinned OpenSpec from the npm registry (about 16 MB; npm verifies every package against the lockfile the plugin pins, install scripts are off and telemetry is off) into the plugin's data directory. That needs Node.js 20.19+ and npm. Run `interlock openspec which` to see which copy resolves and where; use it to run a printed `openspec archive` from your own terminal. The plugin's `cli/` directory reaches the session's PATH through its SessionStart hook, and PowerShell commands get none of those session variables.
+
+The npm route is the alternative: install it yourself and initialize it in the repo ([OpenSpec quick start](https://github.com/Fission-AI/OpenSpec#quick-start)):
 
 ```bash
 npm install -g @fission-ai/openspec@latest
 cd your-project && openspec init
 ```
 
-If you skip this step, `/interlock:spec`, `/interlock:bootstrap` and `/interlock:dispatch` stop at their first command with this install line, and `interlock doctor` reports it. The oldest OpenSpec Interlock's authoring skills rely on is `1.8.0`; below it `interlock doctor` warns. Before 1.7.0 the CLI reads nested `specs/<area>/<capability>/spec.md` deltas as "No deltas found" and archives without syncing them; 1.7.x syncs them, but its `openspec validate` passes a change whose `## MODIFIED` block drops a scenario, which its `openspec archive` then refuses.
+If no OpenSpec resolves and provisioning cannot run (no npm, a Node below 20.19.0, a registry the sandbox blocks), `/interlock:spec` and `/interlock:bootstrap` stop and quote why, `/interlock:dispatch` names the command, and `interlock doctor` reports it. The oldest OpenSpec Interlock's authoring skills rely on is `1.8.0`; below it `interlock doctor` warns. Before 1.7.0 the CLI reads nested `specs/<area>/<capability>/spec.md` deltas as "No deltas found" and archives without syncing them; 1.7.x syncs them, but its `openspec validate` passes a change whose `## MODIFIED` block drops a scenario, which its `openspec archive` then refuses.
 
 OpenSpec itself requires **Node.js 20.19.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them ([03](./03-openspec-vs-interlock.md)).
 

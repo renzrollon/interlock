@@ -79,7 +79,7 @@ jobs:
         if: steps.cred.outputs.present == 'true'
         id: caps
         run: |
-          CEIL=$(./bin/interlock limits --json \
+          CEIL=$(./cli/interlock limits --json \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).evals.shipEvalCostUsd))')
           echo "ceiling=$CEIL" >> "$GITHUB_OUTPUT"
           echo "Outcome eval ceiling: \$$CEIL (evals.shipEvalCostUsd, read from interlock limits)" >> "$GITHUB_STEP_SUMMARY"

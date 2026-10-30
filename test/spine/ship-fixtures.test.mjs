@@ -40,7 +40,7 @@ import {
 } from '../../evals/ship/fixtures.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 const fixtures = readFixtures()
 

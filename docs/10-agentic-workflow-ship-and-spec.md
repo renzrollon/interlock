@@ -15,7 +15,7 @@ Interlock is the product this repository *is*. Stock OpenSpec is what Interlock 
 
 ## 1. Executive review
 
-**Verdict.** The spec → human checkpoint → ship design is unusually honest for this category. Control flow for ship lives in a script (`workflows/ship.js`), policy lives in a CLI you can run with no model (`bin/interlock`), and the one required human stop sits where a wrong idea is cheapest to kill. That split is real, not marketing. The weak spots are dogfooding, host lock-in, and a default ship path that no longer reviews the diff.
+**Verdict.** The spec → human checkpoint → ship design is unusually honest for this category. Control flow for ship lives in a script (`workflows/ship.js`), policy lives in a CLI you can run with no model (`cli/interlock`), and the one required human stop sits where a wrong idea is cheapest to kill. That split is real, not marketing. The weak spots are dogfooding, host lock-in, and a default ship path that no longer reviews the diff.
 
 ### What's strong
 
@@ -153,7 +153,7 @@ End-to-end, default (lean): **validate → classify/plan waves → implement in 
 
 `--solo` / `--waves` choose the plan's *shape* instead of its tail. Absent both, the classifier emits a `recommendedMode` beside its per-task classification and the planner honours a solo recommendation only inside the envelope `interlock limits` publishes, refusing it with a named warning above that; `--solo` forces solo even above the envelope, `--waves` refuses it outright, and passing both halts at parse rather than picking one. The mode reaches `interlock waves`, `plan fingerprint` and `plan reuse` as `--mode`, so a stored plan built under a different override is re-planned rather than adopted.
 
-Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli` the loop itself lives in `lib/run.mjs`, and the script is an interpreter of the steps `interlock run` emits — see §5 and [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine). The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental runner (`bin/interlock-run`), which interprets the same steps over a vendor coding CLI — `--host claude | acp | codex | qwen` — instead.
+Source of truth used to be `workflows/ship.js`; since `emit-wave-steps-from-cli` the loop itself lives in `lib/run.mjs`, and the script is an interpreter of the steps `interlock run` emits — see §5 and [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine). The skill `skills/ship/SKILL.md` only parses args and calls `Workflow({ scriptPath, args })`. If the Workflow tool is missing, it **halts**. It does not fall back to implementing in chat, and it does not auto-start the experimental runner (`cli/interlock-run`), which interprets the same steps over a vendor coding CLI — `--host claude | acp | codex | qwen` — instead.
 
 ### Step by step (lean)
 
@@ -268,12 +268,12 @@ Claude Code session (your chat)
   openspec CLI                templates and schema, no model
 ```
 
-The host-specific part shrank to two things: an interpreter (spawn what a step names, call what it names next) and a transport (the Workflow `agent()`/`pipeline()` globals here, a vendor CLI subprocess for `bin/interlock-run`). No driver holds the loop, the branching or a prompt's text — `lib/run.mjs` does, so they cannot drift the way two full copies of the loop used to.
+The host-specific part shrank to two things: an interpreter (spawn what a step names, call what it names next) and a transport (the Workflow `agent()`/`pipeline()` globals here, a vendor CLI subprocess for `cli/interlock-run`). No driver holds the loop, the branching or a prompt's text — `lib/run.mjs` does, so they cannot drift the way two full copies of the loop used to.
 
 | Layer | Where it lives | What it decides |
 |---|---|---|
-| Policy | `bin/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path, its merge base (a snapshot of the shared tree holding every earlier fold, never HEAD) and the `LANE BASE MISMATCH` check that every lane forked from it |
-| Interpreter | `workflows/ship.js`, `bin/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
+| Policy | `cli/interlock`, `lib/` | Wave order, caps, verdicts, the gate, the receipt — and, under `--isolate-waves`, each lane's worktree path, its merge base (a snapshot of the shared tree holding every earlier fold, never HEAD) and the `LANE BASE MISMATCH` check that every lane forked from it |
+| Interpreter | `workflows/ship.js`, `cli/interlock-run` | Nothing. Spawn what a step names, create the worktree it names, call the argv it names |
 | Transport | the Workflow runtime; `lib/host/{claude-cli,acp,codex,qwen}.mjs` | How a prompt reaches a model, and what that host cannot do — declared, and bannered by the runner |
 
 Claude Code owns the agent loop: tools, permissions, compaction, subagent spawn, workflow runtime ([How Claude Code works](https://code.claude.com/docs/en/how-claude-code-works)). Interlock is the harness around that loop, and [08](./08-harness-landscape.md) maps its parts.
@@ -301,7 +301,7 @@ Claude Code owns the agent loop: tools, permissions, compaction, subagent spawn,
 - **Ship trajectory** — `.claude/ship/runs/<runId>.jsonl`. Verbose on disk, not loaded into implementers. `interlock run-log show`.
 - **Spill** — `.claude/ship/spill/<runId>/`. Locator + preview in context; full log on disk.
 - **Halt resume card** — `.claude/handoff/ship-<change>-<runId>.md`, written by `run close` and only when a run halts. It shares a directory with the explore briefs above, and that is all it shares with them: a brief is spec's durable input and *is* read back, a card is ship's terminal record and nothing reads it at all — not the next ship, which decides what to skip from the stored plan fingerprint, and not dispatch. The `ship-` prefix is what keeps the two apart. [04](./04-when-it-stops.md#reading-a-ship-halted-run) has what it contains.
-- **Learned constraints** — `.claude/memory/MEMORY.md` plus one file per entry. Current examples: backticks in `bin/interlock` USAGE; ship.js prose grepped by `test/workflows.test.mjs`.
+- **Learned constraints** — `.claude/memory/MEMORY.md` plus one file per entry. Current examples: backticks in `cli/interlock` USAGE; ship.js prose grepped by `test/workflows.test.mjs`.
 - **Context pack** — not in this plugin. External skill writes `openspec/changes/<name>/.claude/context-pack.md`. Ship does not Read it.
 
 ### How tokens are actually spent on a ship run

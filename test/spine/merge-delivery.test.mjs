@@ -20,7 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { MERGE_LABELS } from '../../lib/merge-confidence.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 const PIPELINE_FIXTURES = join(ROOT, 'test', 'fixtures', 'pipeline')
 const CHANGE = 'add-widget-catalogue'
 const WIDGET_SOURCE = 'src/widgets/catalogue.ts'

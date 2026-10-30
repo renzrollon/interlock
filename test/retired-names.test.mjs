@@ -88,7 +88,7 @@ export function inSurface(path) {
   if (/^docs\/assets\/flow-[^/]*\.svg$/.test(path)) return true
   if (path === 'site/DESIGN-PROMPT.md') return true
   if (/^site\/[^/]*\.html$/.test(path)) return true
-  return /^(skills|shared|bin|lib|hooks|scripts|workflows|\.claude-plugin|test)\//.test(path)
+  return /^(skills|shared|cli|lib|hooks|scripts|workflows|\.claude-plugin|test)\//.test(path)
 }
 
 // CHANGELOG.md: only the [Unreleased] section is shipped surface. Inside it,
@@ -142,7 +142,7 @@ test('retired names: the surface list covers what the requirement names and leav
   for (const p of [
     'README.md', 'REVIEW.md', 'CHANGELOG.md', 'docs/07-cli-and-configuration.md', 'docs/assets/flow-dark.svg',
     'skills/settle/SKILL.md', 'shared/CONTEXT-HYGIENE.md', 'site/index.html', 'site/DESIGN-PROMPT.md',
-    'bin/interlock', 'lib/settle-cli.mjs', 'hooks/guard-commit.mjs', 'scripts/gen-flow-svg.mjs',
+    'cli/interlock', 'lib/settle-cli.mjs', 'hooks/guard-commit.mjs', 'scripts/gen-flow-svg.mjs',
     'workflows/ship.js', '.claude-plugin/plugin.json', 'test/skills.test.mjs',
   ]) assert.equal(inSurface(p), true, p)
   for (const p of [
@@ -160,7 +160,7 @@ test(`retired names: 'interlock ${SHORT} comment' exits non-zero and writes noth
   // A scratch cwd, so a command that did write would leave a trace we can see.
   const cwd = mkdtempSync(join(tmpdir(), 'retired-names-'))
   try {
-    const r = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), SHORT, 'comment'], { cwd, encoding: 'utf8' })
+    const r = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), SHORT, 'comment'], { cwd, encoding: 'utf8' })
     assert.notEqual(r.status, 0, 'the retired command must not run')
     assert.match(`${r.stdout}${r.stderr}`, /unknown command/i)
     assert.equal(existsSync(join(cwd, '.claude', 'ship', 'settle')), false)
@@ -191,7 +191,7 @@ test('matcher: every shape of the retired name is caught', () => {
 
 test('matcher: a phrase a line wrap split is caught on its first line', () => {
   const help = ['  2  the pipeline is not the merge', "     request's head pipeline", 'ok'].join('\n')
-  assert.deepEqual(scan('bin/interlock', help), ['bin/interlock:1: 2  the pipeline is not the merge'])
+  assert.deepEqual(scan('cli/interlock', help), ['cli/interlock:1: 2  the pipeline is not the merge'])
   const comment = ['  // what it pipes to the merge', '  // request', '  # the merge-', '  # request step'].join('\n')
   assert.deepEqual(scan('scripts/x.mjs', comment), ['scripts/x.mjs:1: // what it pipes to the merge', 'scripts/x.mjs:3: # the merge-'])
   // Each word on its own line is not the phrase, and an allowed id stays allowed across a wrap.

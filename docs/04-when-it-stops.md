@@ -788,7 +788,7 @@ Neither banner changes the exit code. A graph that was built but links no change
 
 ### `DOMAIN CITATIONS UNREAD`
 
-A changed source file the graph does not hold (one created after the graph was built, or an executable under `bin/` the graph never indexes) can still select a capability: the run reads every living spec at the start commit, in one batched git read, and takes each capability whose spec cites that file's path. A changed doc or config file the graph does not hold never starts that read. When the read could not list or read the specs, the run says so:
+A changed source file the graph does not hold (one created after the graph was built, or an executable under `cli/` the graph never indexes) can still select a capability: the run reads every living spec at the start commit, in one batched git read, and takes each capability whose spec cites that file's path. A changed doc or config file the graph does not hold never starts that read. When the read could not list or read the specs, the run says so:
 
 ```
 DOMAIN CITATIONS UNREAD: the living specs at <sha> could not be listed (<git's words>) — a changed source file the graph does not hold was matched only against the living specs that were read

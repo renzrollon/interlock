@@ -47,7 +47,7 @@ import { renderReportHtml } from '../../lib/report-html.mjs'
 import { STATE_HOME_ENV } from '../../lib/state-home.mjs'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(REPO, 'bin', 'interlock')
+const BIN = join(REPO, 'cli', 'interlock')
 
 // Every report in this file resolves a state home, and the resolver reads
 // INTERLOCK_STATE_HOME and asks git. Neither the developer's environment nor a
