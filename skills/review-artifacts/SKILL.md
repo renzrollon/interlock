@@ -2,7 +2,7 @@
 name: review-artifacts
 description: Review OpenSpec change artifacts before anyone writes code — architecture quality and design completeness, then spec completeness and testability. Catches a wrong idea at the cheapest possible moment. Use after generating proposal, design, tasks and delta specs, and before implementing.
 license: MIT
-compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock CLI.
+compatibility: Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[change-name] [--strict] [--since <findings file>]"
 allowed-tools: Bash(interlock *) Bash(openspec *) Bash(git diff *) Bash(git status *) Read Glob Grep Agent
 metadata:

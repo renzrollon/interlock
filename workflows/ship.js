@@ -8,7 +8,7 @@ export const meta = {
 //
 // This used to be `skills/ship/SKILL.md`: eleven numbered headings of prose a
 // model was asked to follow in order. Then it became a script that held the
-// loop, the branching and every agent's briefing — and `bin/interlock-ship-acp`
+// loop, the branching and every agent's briefing — and `cli/interlock-ship-acp`
 // held a second copy of the same, sharing this file's policy by evaluating
 // marked blocks of its source through `new Function`. Every new classifier
 // field, banner or prompt sentence had to be added twice, and this repository's

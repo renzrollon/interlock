@@ -1,19 +1,19 @@
 {
   "name": "@renzrollon/interlock",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "Spec-driven development for Claude Code, layered on OpenSpec. You read one spec; parallel agents ship it to a tested commit.",
   "type": "module",
   "engines": {
     "node": ">=18"
   },
   "bin": {
-    "interlock": "bin/interlock",
-    "interlock-graph": "bin/interlock-graph",
-    "interlock-run": "bin/interlock-run",
-    "interlock-ship-acp": "bin/interlock-ship-acp"
+    "interlock": "cli/interlock",
+    "interlock-graph": "cli/interlock-graph",
+    "interlock-run": "cli/interlock-run",
+    "interlock-ship-acp": "cli/interlock-ship-acp"
   },
   "files": [
-    "bin",
+    "cli",
     "lib",
     "workflows",
     "skills",

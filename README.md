@@ -33,17 +33,24 @@ Interlock is a [Claude Code](https://claude.com/claude-code) plugin layered on [
 | | |
 |---|---|
 | Claude Code **v2.1.154+** with dynamic workflows enabled | `/interlock:ship` runs as a [workflow](https://code.claude.com/docs/en/workflows). If workflows are turned off, by your settings, an org policy or a Pro plan that has not enabled them in `/config`, the command exists but the run cannot start |
-| Node.js **20.19+** | OpenSpec needs 20.19+. Interlock's own CLIs need only 18 |
+| Node.js **20.19+** with npm | What provisioning OpenSpec needs. The plugin itself, which ships readable scripts only, needs Node 18+ |
 | A git repository with code in it | Bootstrap describes what already exists |
 
 The full table, including two environment variables that must stay unset, is in [the first hour](docs/01-first-hour.md#before-you-start).
 
-**1. Install the OpenSpec CLI.** In your terminal, once per machine:
+**1. OpenSpec: usually nothing to do.** If you have `openspec` on your PATH, Interlock uses it. Otherwise the first `/interlock:spec` or `/interlock:bootstrap` provisions a pinned copy by running `interlock openspec provision`, which needs Node.js 20.19+ and npm. To install it yourself instead, in your terminal:
 
 ```bash
 npm install -g @fission-ai/openspec@latest
 openspec --version        # prints a version when it worked
 ```
+
+What provisioning does, so nothing about it is a surprise:
+
+- It downloads from the npm registry, about 16 MB, and npm verifies every package against the lockfile pinned in the plugin; a package whose bytes differ is refused.
+- Install scripts are off, and OpenSpec's telemetry is off for the provisioned copy.
+- It writes into the plugin's data directory (`INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, else `~/.cache/interlock`) and nowhere else. `interlock openspec which` prints which OpenSpec resolves and where, so you can run a printed `openspec archive` outside Claude Code. A copy in `~/.cache/interlock` is not on the session's PATH; provisioning says so and prints its full path.
+- The plugin's `cli/` directory is put on the session's PATH by its SessionStart hook. PowerShell commands get none of those session variables.
 
 **2. Install the plugin.** In Claude Code, once per machine:
 

@@ -32,10 +32,11 @@ openspec --version
 
 If it does not print a version, **stop here**, before `openspec init`, before `interlock-graph build`, before spawning any explorer or writing any file — even when `openspec/config.yaml` already exists, because the specs this skill writes are only done once `openspec validate` passes.
 
-- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line and give the install command `npm install -g @fission-ai/openspec@latest`, or the project's own package manager if it pins openspec.
+- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line, then run `interlock openspec provision`, which installs the pinned OpenSpec into the plugin's own data directory, and probe `openspec --version` again. If provisioning exits non-zero, quote its first line and stop; a sandbox-refused write means one run of the same command outside the sandbox. The user's own route stays `npm install -g @fission-ai/openspec@latest`, or the project's own package manager if it pins openspec.
+- A bare `interlock` or `interlock-graph` that answers `command not found` means this session predates the plugin. Until a new session, run `node "${CLAUDE_PLUGIN_ROOT}/cli/interlock"` (or `…/cli/interlock-graph`) instead; those calls match no allow rule, so each asks for approval.
 - Any other error: the CLI is installed but does not run. Do not call it missing and do not offer the install line. Quote its error; the usual cause is a Node.js older than OpenSpec's floor, 20.19.0.
 
-Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, and do not hand-write `openspec/config.yaml` or `openspec/specs/` — the CLI owns those formats.
+Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, except by running `interlock openspec provision`, and do not hand-write `openspec/config.yaml` or `openspec/specs/` — the CLI owns those formats.
 
 ```bash
 # Initialize OpenSpec if this repo has never been initialized.

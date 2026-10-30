@@ -7,6 +7,21 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-31
+
+### Changed
+
+- **The executables moved from `bin/` to `cli/`.** `interlock`, `interlock-graph`, `interlock-run` and `interlock-ship-acp` are unchanged files at a new path, because the plugin directory asks a plugin to ship readable scripts outside `bin/`. `package.json`'s `bin` map points at `cli/`, so an npm global install still links the same four names, and the SessionStart preflight puts the plugin's `cli/` on the session's PATH.
+- **`/interlock:spec` and `/interlock:bootstrap` provision OpenSpec when it is missing.** `interlock openspec provision` installs one pinned release from the npm registry (about 16 MB, verified against a pinned lockfile, install scripts off, telemetry off) into the plugin's data directory; it needs Node.js 20.19+ and npm. A user's own `openspec` on PATH is used first. `interlock openspec which` prints what resolves. `interlock doctor` names the OpenSpec it resolved and leads its fix with provisioning.
+
+### Added
+
+- **`interlock openspec provision|which`, `INTERLOCK_PLUGIN_DATA`, and `scripts/openspec-contract.mjs`,** the opt-in check a pin bump runs against a candidate OpenSpec.
+
+### Upgrading
+
+- Anything that runs `<plugin root>/bin/<name>` by path must run `<plugin root>/cli/<name>`. A session started before the plugin was updated has no `cli/` on its PATH; start a new session, or run `node "${CLAUDE_PLUGIN_ROOT}/cli/interlock"` by full path.
+
 ## [1.12.0] - 2026-10-29
 
 ### Added
