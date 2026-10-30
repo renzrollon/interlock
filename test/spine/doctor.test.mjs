@@ -519,6 +519,29 @@ test('binaries absent from PATH but present in the plugin are ok: the session-st
   }
 })
 
+test('bundled binaries: the evidence says when this PATH does not carry the plugin cli/, and stays quiet when it does', () => {
+  const dir = tmp()
+  try {
+    const pluginRoot = fakePlugin(dir)
+    const cliDir = join(pluginRoot, 'cli')
+    const absent = byId(diagnose(dir, baseOpts(dir, { pluginRoot, env: { PATH: '' } })), 'binaries')
+    assert.equal(absent.status, 'ok', 'a warn would be drawn at every session start')
+    const note = absent.evidence.find(e => e.includes('does not carry'))
+    assert.ok(note, `no PATH evidence line:\n${absent.evidence.join('\n')}`)
+    for (const token of [cliDir, 'before the plugin was enabled', 'command not found', 'new session']) {
+      assert.ok(note.includes(token), `the evidence lacks ${JSON.stringify(token)}: ${note}`)
+    }
+    // A PATH that lists the plugin's cli/ (trailing separator or not) draws no such line.
+    for (const entry of [cliDir, `${cliDir}/`]) {
+      const present = byId(diagnose(dir, baseOpts(dir, { pluginRoot, env: { PATH: entry } })), 'binaries')
+      assert.equal(present.status, 'ok')
+      assert.ok(!present.evidence.some(e => e.includes('does not carry')), `a PATH holding ${entry} still drew the line:\n${present.evidence.join('\n')}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a binary neither on PATH nor in the plugin\'s cli/ fails', () => {
   const dir = tmp()
   try {
@@ -2714,6 +2737,26 @@ function openspecOpts(dir, { pathDirs = [], nodeVersion = 'v22.11.0', probe } = 
     })
   }
 }
+
+test('a provisioned launcher is probed through node, with the launcher as the first argument', () => {
+  // A shebang script cannot be exec'd on Windows, so the doctor runs it as `node <launcher> --version`.
+  const dir = tmp()
+  try {
+    file(dir, 'openspec/config.yaml', 'project: test\n')
+    const version = pinVersion()
+    const calls = []
+    const { data, opts } = openspecOpts(dir, { probe: (bin, args) => (calls.push([bin, args]), version) })
+    const launcher = provisionedLauncher(data, version)
+    const row = byId(diagnose(dir, opts), 'openspec')
+    assert.equal(row.status, 'ok', `${row.detail} ${row.fix || ''}`)
+    const viaNode = calls.filter(([bin]) => bin === process.execPath)
+    assert.equal(viaNode.length, 1, `expected one probe through process.execPath, got ${JSON.stringify(calls)}`)
+    assert.deepEqual(viaNode[0][1], [launcher, '--version'])
+    assert.ok(!calls.some(([bin]) => bin === launcher), 'the launcher itself must not be exec\'d')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('a provisioned pin is ok, and the evidence names the source, the path and the version', () => {
   const dir = tmp()

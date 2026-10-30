@@ -35,7 +35,7 @@ Interlock SHALL record one OpenSpec npm release: its package name, its version, 
 
 ### Requirement: Provisioning SHALL install only the pinned lockfile, verified by npm, and place it only after it runs
 
-`interlock openspec provision` SHALL install the pinned lockfile with npm's lockfile-exact install, with install scripts off, into a staging directory under the plugin's data directory. It SHALL write a launcher there, run the launcher's `--version` and require it to report the pinned version, and only then place the staging directory atomically as the per-version directory, removing older versions' directories. A run that finds the version already in place SHALL install nothing.
+`interlock openspec provision` SHALL install the pinned lockfile with npm's lockfile-exact install, with install scripts off, into a staging directory under the plugin's data directory. It SHALL write a launcher there, run the launcher's `--version` and require it to report the pinned version, and only then place the staging directory atomically as the per-version directory, removing older versions' directories. A run that finds the version already in place SHALL install nothing. Before it stages, a run SHALL remove the staging directories of runs that no longer exist (a pid that is not alive, or a directory older than twice the install timeout) and say how many, and SHALL leave the staging directory of a live, recent run alone. On win32 it SHALL also write an `openspec.cmd` beside the launcher, carrying the same marker, because a PATH lookup there finds only PATHEXT suffixes.
 
 #### Scenario: Happy path — a clean install is verified, run and placed
 
@@ -84,6 +84,26 @@ Interlock SHALL record one OpenSpec npm release: its package name, its version, 
 - **WHEN** `interlock openspec provision` runs
 - **THEN** it places the version under `${XDG_CACHE_HOME:-$HOME/.cache}/interlock/openspec/<version>/`
 - **AND** its output says the plugin's data directory was not available
+
+#### Scenario: Edge case — a staging directory left by a dead or long-gone run is swept and counted
+
+- **GIVEN** a data directory holding `openspec/.9.9.9.partial-<pid>/` for a pid that is not alive, and `openspec/.9.9.8.partial-<pid>/` for a live pid whose mtime is older than twice the install timeout
+- **WHEN** provisioning succeeds
+- **THEN** both directories are gone
+- **AND** its output says `Removed 2 stale staging directories left by an interrupted provision.`
+
+#### Scenario: Edge case — a live, recent run's staging directory is left in place
+
+- **GIVEN** a data directory holding `openspec/.9.9.7.partial-<pid>/` for another live pid, modified within twice the install timeout
+- **WHEN** provisioning succeeds
+- **THEN** that directory still exists, and the output does not report it removed
+
+#### Scenario: Edge case — on win32 a batch launcher is written and is not mistaken for a user's CLI
+
+- **GIVEN** provisioning on win32
+- **WHEN** it succeeds
+- **THEN** `openspec.cmd` exists beside `openspec`, carries the launcher marker in a `@rem` line, runs `node "%~dp0openspec" %*` and exits with its errorlevel
+- **AND** a PATH lookup on win32 that finds it does not report a user's CLI
 
 ### Requirement: Provisioning SHALL leave a newer version's directory in place
 

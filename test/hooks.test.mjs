@@ -809,6 +809,59 @@ test('notify-option: an unknown kind writes nothing, and a file that cannot be w
   }
 })
 
+test('notify-option: a second session start with the same option adds no second line', () => {
+  const { root, envFile } = optionRoot()
+  try {
+    for (let i = 0; i < 3; i++) {
+      const r = runNotifyOption(['topic', 'my-topic'], { cwd: root, envFile })
+      assert.equal(r.status, 0, r.stderr)
+    }
+    assert.equal(readFileSync(envFile, 'utf8'), "export INTERLOCK_NTFY_TOPIC='my-topic'\n")
+    // A different value is a different line, and a file with no trailing break does not join them.
+    writeFileSync(envFile, 'alias x=y')
+    runNotifyOption(['topic', 'my-topic'], { cwd: root, envFile })
+    runNotifyOption(['topic', 'my-topic'], { cwd: root, envFile })
+    assert.equal(readFileSync(envFile, 'utf8'), "alias x=y\nexport INTERLOCK_NTFY_TOPIC='my-topic'\n")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('session env: appendExport reports a write only when a line was written, and a read error other than a missing file throws', async () => {
+  const { appendExport } = await import('../lib/session-env.mjs')
+  const { root, envFile } = optionRoot()
+  try {
+    assert.equal(appendExport(envFile, 'INTERLOCK_X', 'v', {}), true)
+    assert.equal(appendExport(envFile, 'INTERLOCK_X', 'v', {}), false)
+    rmSync(envFile)
+    assert.equal(appendExport(envFile, 'INTERLOCK_X', 'v', {}), true, 'a missing file reads as empty')
+    // A directory cannot be read as text: that is not ENOENT, so it throws.
+    assert.throws(() => appendExport(root, 'INTERLOCK_X', 'v', {}))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('notify-option: a plugin tree without lib/session-env.mjs is one stderr line and exit 0, not a link error', () => {
+  const { root } = optionRoot()
+  try {
+    const tree = join(root, 'plugin-copy')
+    mkdirSync(join(tree, 'hooks'), { recursive: true })
+    copyFileSync(NOTIFY_OPTION, join(tree, 'hooks', 'notify-option.mjs'))
+    const envFile = join(root, 'env-file')
+    const base = { ...process.env, CLAUDE_ENV_FILE: envFile }
+    delete base.INTERLOCK_NTFY_TOPIC
+    const r = spawnSync(process.execPath, [join(tree, 'hooks', 'notify-option.mjs'), 'topic', 'secret-topic'], { cwd: root, input: '', encoding: 'utf8', env: base })
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(r.stdout, '')
+    assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr)
+    assert.match(r.stderr, /interlock notify option: .*was not exported \(ignored\)/)
+    assert.doesNotMatch(r.stderr, /secret-topic/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('notify-option: the script makes no request of its own', () => {
   // The hook's whole import closure: the hook itself, and lib/session-env.mjs, which
   // holds the export it writes (hooks/session-preflight, task 3.2). Together they

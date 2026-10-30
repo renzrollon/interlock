@@ -83,7 +83,7 @@ test('a cut gives the living checklist no no-graph flag: the cut is omitted requ
 })
 
 test('the run selects alike: its review step records the verb\'s capabilities and order', async () => {
-  // The run's selection is `gatherDomain` in lib/run.mjs, reached through the
+  // The run's selection is `gatherDomain` in lib/run-base.mjs, reached through the
   // review step; test/spine/run.test.mjs drives that step over real repositories.
   // Here the two callers above are held to the same inputs builder the run calls.
   const { citedSelectionInputs, selectDomainCapabilities } = await import('../../lib/prompts/domain-context.mjs')

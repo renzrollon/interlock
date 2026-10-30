@@ -100,7 +100,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      # The bin/ scripts are what land on a user's PATH, so exercise them as
+      # The cli/ scripts are what land on a user's PATH, so exercise them as
       # executables rather than importing the libraries they wrap.
       - name: interlock surface
         run: |

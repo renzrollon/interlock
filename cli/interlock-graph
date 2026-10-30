@@ -3,4 +3,4 @@
 // The SessionStart preflight (hooks/preflight.mjs) appends the plugin's cli/ to
 // the Bash tool's PATH, so skills invoke this as a bare `interlock-graph`
 // command with no path resolution ladder.
-import './../lib/graph/cli.mjs';
+import '../lib/graph/cli.mjs'

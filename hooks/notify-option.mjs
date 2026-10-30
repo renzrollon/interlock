@@ -20,13 +20,12 @@
 //
 // WHAT IT NEVER DOES. It prints nothing to standard output, because a
 // session-start hook's output becomes context and the topic is a capability.
-// It exits 0 on every path. It leaves a variable the operator already provided
+// It exits 0 on every path, including one where lib/session-env.mjs cannot be
+// loaded (it is imported inside the try). It leaves a variable the operator already provided
 // as it is. It writes nothing for a value that is empty, that carries a line
 // break or a NUL, or that still reads as a reference nobody substituted. It
 // never judges the value's shape: `readNotifyConfig` does that where the value
 // is used, and names the variable without the value.
-
-import { appendExport } from '../lib/session-env.mjs'
 
 /** The variable each kind of option is exported as. */
 const VARIABLES = new Map([
@@ -36,6 +35,11 @@ const VARIABLES = new Map([
 
 let variable
 try {
+  // Loaded inside the try, not at link time: a missing or broken module must
+  // reach the stderr line below and exit 0, as the preflight's handoff does.
+  // (The specifier is a literal: it resolves against this file, and the
+  // import-closure pin in test/hooks.test.mjs reads it.)
+  const { appendExport } = await import('../lib/session-env.mjs')
   const [kind, value] = process.argv.slice(2)
   variable = VARIABLES.get(kind)
   // The quoting, the publishable check and the operator's own value are

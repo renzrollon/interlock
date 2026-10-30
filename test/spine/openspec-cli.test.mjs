@@ -30,6 +30,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -41,12 +42,15 @@ import {
   OPENSPEC_INSTALL,
   OPENSPEC_PROVISION,
   PROVISION_TIMEOUT_MS,
+  cmdLauncherSource,
   launcherSource,
+  openspecCommand,
   provision,
   resolveOpenSpec,
   telemetryOff
 } from '../../lib/openspec-cli.mjs'
 import { OPENSPEC_PIN } from '../../lib/openspec-pin.mjs'
+import { pathEntries, whichSync } from '../../lib/which.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const CONTRACT = join(ROOT, 'scripts', 'openspec-contract.mjs')
@@ -462,6 +466,169 @@ test('the launcher passes arguments and the exit status through and sets both te
   } finally {
     s.cleanup()
   }
+})
+
+// ---------------------------------------------------------------------------
+// Pruning, the user cache, `which`, stale staging directories, win32
+// ---------------------------------------------------------------------------
+
+test('provision: an older version is removed and named in the message; a newer one is left alone', async () => {
+  const s = setup()
+  try {
+    provisioned(s.data, '0.1.0')
+    provisioned(s.data, '99.0.0')
+    const r = await run(s, fakeSpawn().spawn)
+    assert.equal(r.ok, true, r.message)
+    assert.deepEqual(leftovers(s), [VERSION, '99.0.0'])
+    assert.match(r.message, /Removed 0\.1\.0, older than this pin/)
+    assert.ok(!r.message.includes('99.0.0'), 'a newer pin is not reported as removed')
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('provision: in the user cache the message says the directory is not on PATH and names the launcher; with it on PATH it does not', async () => {
+  const s = setup()
+  try {
+    const home = join(s.root, 'home')
+    mkdirSync(home, { recursive: true })
+    const bin = join(home, '.cache', 'interlock', 'openspec', VERSION, 'openspec')
+    const off = await provision({ env: { PATH: s.npmDir, HOME: home }, spawn: fakeSpawn().spawn, platform: process.platform, nodeVersion: NODE_OK })
+    assert.equal(off.ok, true, off.message)
+    assert.equal(off.onPath, false)
+    assert.equal(off.bin, bin)
+    assert.match(off.message, /is not on PATH/)
+    assert.ok(off.message.includes(`run it as ${bin}`), off.message)
+
+    const on = await provision({ env: { PATH: `${s.npmDir}:${dirname(bin)}`, HOME: home }, spawn: fakeSpawn().spawn, platform: process.platform, nodeVersion: NODE_OK })
+    assert.equal(on.ok, true, on.message)
+    assert.equal(on.already, true)
+    assert.equal(on.onPath, true)
+    assert.ok(!/not on PATH/.test(on.message), on.message)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('openspec which: text output says "not on PATH" for a provisioned copy PATH does not hold, and not when it does', () => {
+  const t = scratch()
+  try {
+    const data = join(t.root, 'data')
+    const bin = provisioned(data)
+    const say = env => {
+      const out = []
+      openspecCommand({ env, platform: process.platform, emit: (_json, _obj, text) => out.push(text), die: m => assert.fail(m) }, ['openspec', 'which'], {}, false)
+      return out.join('')
+    }
+    const off = say({ PATH: '', INTERLOCK_PLUGIN_DATA: data })
+    assert.match(off, /^openspec: provisioned -> /m)
+    assert.match(off, /^not on PATH: a bare `openspec` does not find this copy; run it as /m)
+    assert.ok(off.includes(bin), off)
+    const on = say({ PATH: dirname(bin), INTERLOCK_PLUGIN_DATA: data })
+    assert.ok(!/not on PATH/.test(on), on)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('provision: a staging directory of a dead run, and an old one, are removed and counted; a live, fresh one is left', async () => {
+  const s = setup()
+  try {
+    const now = Date.now()
+    put(join(s.openspecDir, '.9.9.9.partial-111', 'x'), 'x')
+    put(join(s.openspecDir, '.9.9.8.partial-222', 'x'), 'x')
+    put(join(s.openspecDir, '.9.9.7.partial-333', 'x'), 'x')
+    const longAgo = new Date(now - 3 * PROVISION_TIMEOUT_MS)
+    utimesSync(join(s.openspecDir, '.9.9.8.partial-222'), longAgo, longAgo)
+    const r = await provision({
+      env: s.env,
+      spawn: fakeSpawn().spawn,
+      platform: process.platform,
+      nodeVersion: NODE_OK,
+      alive: pid => pid !== 111,
+      now
+    })
+    assert.equal(r.ok, true, r.message)
+    assert.deepEqual(leftovers(s), ['.9.9.7.partial-333', VERSION])
+    assert.match(r.message, /Removed 2 stale staging directories left by an interrupted provision\./)
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('provision: one removed staging directory is counted in the singular, and the running process own pid is never swept', async () => {
+  const s = setup()
+  try {
+    put(join(s.openspecDir, '.9.9.9.partial-111', 'x'), 'x')
+    put(join(s.openspecDir, `.9.9.8.partial-${process.pid}`, 'x'), 'x')
+    const r = await provision({ env: s.env, spawn: fakeSpawn().spawn, platform: process.platform, nodeVersion: NODE_OK, alive: pid => pid !== 111 })
+    assert.equal(r.ok, true, r.message)
+    assert.match(r.message, /Removed 1 stale staging directory left by an interrupted provision\./)
+    // This process's own pid is never swept (the run stages under it), whatever `alive` says.
+    assert.ok(existsSync(join(s.openspecDir, `.9.9.8.partial-${process.pid}`)))
+  } finally {
+    s.cleanup()
+  }
+})
+
+test('provision: on win32 it also writes an openspec.cmd carrying the marker, which a PATH lookup does not mistake for a user CLI', async () => {
+  const s = setup()
+  const posix = setup()
+  try {
+    const r = await provision({ env: s.env, spawn: fakeSpawn().spawn, platform: 'win32', nodeVersion: NODE_OK })
+    assert.equal(r.ok, true, r.message)
+    assert.equal(r.bin, join(s.openspecDir, VERSION, 'openspec'), 'what provisionedBin returns is unchanged')
+    const cmd = join(s.openspecDir, VERSION, 'openspec.cmd')
+    const text = readFileSync(cmd, 'utf8')
+    assert.ok(text.slice(0, 512).includes(LAUNCHER_MARKER))
+    assert.ok(text.startsWith('@rem'), 'the marker rides a @rem comment')
+    assert.ok(text.includes('node "%~dp0openspec" %*') && text.includes('exit /b %errorlevel%'))
+    assert.ok(!/[^\r]\n/.test(text), 'CRLF throughout')
+    assert.equal(text, cmdLauncherSource())
+
+    // PATHEXT is spelled in lower case so the lookup also matches on a case-sensitive file system.
+    const found = resolveOpenSpec({ platform: 'win32', env: { Path: dirname(r.bin), PATHEXT: '.cmd', INTERLOCK_PLUGIN_DATA: s.data } })
+    assert.notEqual(found.source, 'path')
+    assert.equal(found.source, 'provisioned')
+    assert.equal(found.onPath, true)
+
+    // A user's own openspec.cmd (no marker) is still the path source.
+    const own = put(join(s.root, 'own', 'openspec.cmd'), '@echo off\r\n')
+    const mine = resolveOpenSpec({ platform: 'win32', env: { Path: join(s.root, 'own'), PATHEXT: '.cmd', INTERLOCK_PLUGIN_DATA: s.data } })
+    assert.equal(mine.source, 'path')
+    assert.equal(mine.bin, own)
+
+    const p = await provision({ env: posix.env, spawn: fakeSpawn().spawn, platform: process.platform, nodeVersion: NODE_OK })
+    assert.equal(p.ok, true, p.message)
+    assert.ok(!existsSync(join(posix.openspecDir, VERSION, 'openspec.cmd')), 'no .cmd off win32')
+  } finally {
+    s.cleanup()
+    posix.cleanup()
+  }
+})
+
+test('whichSync: an accept callback skips a rejected candidate and returns the next; the platform picks the separator', () => {
+  const t = scratch()
+  try {
+    const a = execFile(join(t.root, 'a'), 'tool', { marker: true })
+    const b = execFile(join(t.root, 'b'), 'tool')
+    const env = { PATH: `${join(t.root, 'a')}:${join(t.root, 'b')}` }
+    assert.equal(whichSync('tool', env), a, 'no accept: the first wins, as before')
+    assert.equal(whichSync('tool', env, { accept: f => f !== a }), b)
+    assert.equal(whichSync('tool', env, { accept: () => false }), null)
+    // On win32 the separator is ';', so a ':' PATH is one (unusable) entry.
+    assert.equal(whichSync('tool', env, { platform: 'win32' }), null)
+    assert.equal(whichSync('tool', { Path: `${join(t.root, 'b')};${join(t.root, 'a')}`, PATHEXT: '' }, { platform: 'win32' }), b)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('pathEntries splits by the given platform, reads Path on win32, and drops empty entries', () => {
+  assert.deepEqual(pathEntries({ PATH: '/a::/b:' }, 'linux'), ['/a', '/b'])
+  assert.deepEqual(pathEntries({ PATH: '/a;/b:/c' }, 'linux'), ['/a;/b', '/c'])
+  assert.deepEqual(pathEntries({ Path: 'C:\\a;;C:\\b;' }, 'win32'), ['C:\\a', 'C:\\b'])
+  assert.deepEqual(pathEntries({}, 'linux'), [])
 })
 
 // ---------------------------------------------------------------------------
