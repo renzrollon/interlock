@@ -49,7 +49,7 @@ What provisioning does, so nothing about it is a surprise:
 
 - It downloads from the npm registry, about 16 MB, and npm verifies every package against the lockfile pinned in the plugin; a package whose bytes differ is refused.
 - Install scripts are off, and OpenSpec's telemetry is off for the provisioned copy.
-- It writes into the plugin's data directory (`INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, else `~/.cache/interlock`) and nowhere else. `interlock openspec which` prints which OpenSpec resolves and where, so you can run a printed `openspec archive` outside Claude Code.
+- It writes into the plugin's data directory (`INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, else `~/.cache/interlock`) and nowhere else. `interlock openspec which` prints which OpenSpec resolves and where, so you can run a printed `openspec archive` outside Claude Code. A copy in `~/.cache/interlock` is not on the session's PATH; provisioning says so and prints its full path.
 - The plugin's `cli/` directory is put on the session's PATH by its SessionStart hook. PowerShell commands get none of those session variables.
 
 **2. Install the plugin.** In Claude Code, once per machine:

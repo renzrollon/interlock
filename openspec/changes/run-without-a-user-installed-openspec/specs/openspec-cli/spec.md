@@ -35,7 +35,7 @@ Interlock SHALL record one OpenSpec npm release: its package name, its version, 
 
 ### Requirement: Provisioning SHALL install only the pinned lockfile, verified by npm, and place it only after it runs
 
-`interlock openspec provision` SHALL install the pinned lockfile with npm's lockfile-exact install, with install scripts off, into a staging directory under the plugin's data directory. It SHALL write a launcher there, run the launcher's `--version` and require it to report the pinned version, and only then place the staging directory atomically as the per-version directory, removing other versions' directories. A run that finds the version already in place SHALL install nothing.
+`interlock openspec provision` SHALL install the pinned lockfile with npm's lockfile-exact install, with install scripts off, into a staging directory under the plugin's data directory. It SHALL write a launcher there, run the launcher's `--version` and require it to report the pinned version, and only then place the staging directory atomically as the per-version directory, removing older versions' directories. A run that finds the version already in place SHALL install nothing.
 
 #### Scenario: Happy path — a clean install is verified, run and placed
 
@@ -84,6 +84,34 @@ Interlock SHALL record one OpenSpec npm release: its package name, its version, 
 - **WHEN** `interlock openspec provision` runs
 - **THEN** it places the version under `${XDG_CACHE_HOME:-$HOME/.cache}/interlock/openspec/<version>/`
 - **AND** its output says the plugin's data directory was not available
+
+### Requirement: Provisioning SHALL leave a newer version's directory in place
+
+Provisioning SHALL remove only the directories of versions older than the pin. The data directory does not vary with the plugin's version, so a newer version's directory belongs to another Interlock sharing it, and SHALL be left in place.
+
+#### Scenario: Edge case — a newer version's directory is left in place
+
+- **GIVEN** a data directory holding `openspec/99.0.0/`, another Interlock's newer pin, and no directory for the pinned version
+- **WHEN** provisioning succeeds
+- **THEN** `openspec/99.0.0/` still exists beside the pinned version's directory
+
+### Requirement: A provisioned launcher that PATH does not hold SHALL be named by its full path
+
+When the launcher's directory is not on PATH, a successful `interlock openspec provision` and `interlock openspec which` SHALL say so and name the launcher's full path, because a bare `openspec` does not find it. The doctor's `openspec` row SHALL warn for a pin in the user cache whose directory PATH does not hold, because the session preflight never adds that directory.
+
+#### Scenario: Edge case — provisioning names a launcher whose directory is not on PATH
+
+- **GIVEN** a process whose PATH does not hold `<data>/openspec/<version>/`, as with the user cache
+- **WHEN** provisioning succeeds, or finds the version already in place
+- **THEN** its output says that directory is not on PATH, so a bare `openspec` does not find the copy
+- **AND** it names the launcher's full path
+
+#### Scenario: Edge case — a pin in the user cache that PATH does not hold warns
+
+- **GIVEN** an initialised OpenSpec project, neither `INTERLOCK_PLUGIN_DATA` nor `CLAUDE_PLUGIN_DATA` set, no `openspec` on PATH, and a launcher for the pin provisioned under `$HOME/.cache/interlock/`
+- **WHEN** `interlock doctor --json` runs
+- **THEN** the `openspec` row is `warn`
+- **AND** it names the launcher's directory as not on PATH and the launcher's full path
 
 ### Requirement: Provisioning SHALL name every reason it could not finish
 

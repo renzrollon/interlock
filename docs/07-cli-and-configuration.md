@@ -400,10 +400,10 @@ Claude Code does not put `cli/` on any PATH by itself. The SessionStart prefligh
 
 | Command | What it does |
 |---|---|
-| `interlock openspec provision [--json]` | Installs the pinned OpenSpec into `<data>/openspec/<version>/`: `npm ci --ignore-scripts` against the lockfile the plugin pins, a launcher with telemetry off, a `--version` smoke run, then an atomic rename. Needs Node.js 20.19+, npm and the registry. Every refusal names its cause and exits 1. The one command that installs anything |
+| `interlock openspec provision [--json]` | Installs the pinned OpenSpec into `<data>/openspec/<version>/`: `npm ci --ignore-scripts` against the lockfile the plugin pins, a launcher with telemetry off, a `--version` smoke run, then an atomic rename. It then removes the directories of versions older than the pin, and leaves a newer one, another Interlock's pin, alone. When the launcher's directory is not on PATH it says so and prints the launcher's full path. Needs Node.js 20.19+, npm and the registry. Every refusal names its cause and exits 1. The one command that installs anything |
 | `interlock openspec which [--json]` | Prints which OpenSpec resolves (`path`, `provisioned` or `none`), its `bin`, the data directory and where it came from (`dataDirSource`), and the `pin`. Use it to run a printed `openspec archive` outside Claude Code |
 
-The data directory is `INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then `<XDG_CACHE_HOME or ~/.cache>/interlock`. A user's own `openspec` on PATH wins over the provisioned one; `interlock doctor`'s `openspec` row names which it resolved.
+The data directory is `INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then `<XDG_CACHE_HOME or ~/.cache>/interlock`. A user's own `openspec` on PATH wins over the provisioned one; `interlock doctor`'s `openspec` row names which it resolved. The preflight never puts the `~/.cache/interlock` fallback on PATH, so a copy provisioned there is not found by a bare `openspec`. `provision`, `which` and the doctor's `openspec` row (a `warn`) say so and name the launcher's full path; add its directory to PATH, or provision from a session with the plugin enabled.
 
 ---
 
