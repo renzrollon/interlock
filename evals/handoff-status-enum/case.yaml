@@ -19,7 +19,7 @@ execution:
   prompt: |
     Implement exactly one task from OpenSpec change "tick-tasks-from-recorded-outcomes".
 
-    TASK 2.1: Add a `--dry-run` flag to `bin/interlock record-batch` that prints the tasks it would tick and exits 0 without writing tasks.md. Unit-test it in `test/spine/`.
+    TASK 2.1: Add a `--dry-run` flag to `cli/interlock record-batch` that prints the tasks it would tick and exits 0 without writing tasks.md. Unit-test it in `test/spine/`.
 
     CONTEXT — read only what your tier needs:
       tier 1: the task description alone

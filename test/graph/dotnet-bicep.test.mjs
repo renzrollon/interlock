@@ -15,7 +15,7 @@ import { consumers, explain } from '../../lib/graph/graph/query.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures');
-const BIN = path.join(__dirname, '..', '..', 'bin', 'interlock-graph');
+const BIN = path.join(__dirname, '..', '..', 'cli', 'interlock-graph');
 const EXTRACT = path.join(__dirname, '..', '..', 'lib', 'graph', 'extract');
 
 const tmpRoots = [];

@@ -533,7 +533,7 @@ test('the ACP driver forwards the shape flag and briefs no lane of its own', () 
   // Neither host tells the assembler anything now. The CLI reads the mode off
   // the step the state machine emitted, assembles the briefing, and puts it on
   // the spawn. So what is asserted here is that the driver holds none of it.
-  const driver = readFileSync(join(ROOT, 'bin', 'interlock-run'), 'utf8')
+  const driver = readFileSync(join(ROOT, 'cli', 'interlock-run'), 'utf8')
   assert.doesNotMatch(
     driver,
     /assembleImplementerPrompt|next\.mode|const solo\b/,
@@ -580,14 +580,14 @@ test(
 
 // --- the driver, end to end (spec: workflow-host) ---------------------------
 //
-// Everything above tests the adapter. This drives `bin/interlock-ship-acp`
+// Everything above tests the adapter. This drives `cli/interlock-ship-acp`
 // itself, against the fixture agent in `--ship` mode and a real temp
 // repository, because the property the workflow-host spec states is about the
 // DRIVER: it must reach the strict tail's steps and close on the run's own
 // verdict rather than refusing a flag. It exited `2` on `--strict` until
 // `emit-strict-tail-from-cli`, so an exit code is the assertion.
 
-const ACP_DRIVER_BIN = join(ROOT, 'bin', 'interlock-ship-acp')
+const ACP_DRIVER_BIN = join(ROOT, 'cli', 'interlock-ship-acp')
 
 function shipRepo() {
   const root = mkdtempSync(join(tmpdir(), 'interlock-acp-ship-'))

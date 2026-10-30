@@ -38,6 +38,16 @@ Create the change through the OpenSpec CLI (`openspec new change`), not by hand,
 - **Accessibility**: what Interlock aims for, its known limitations and how a barrier is handled are in [ACCESSIBILITY.md](./ACCESSIBILITY.md).
 - Everyone taking part follows the [code of conduct](./CODE_OF_CONDUCT.md).
 
+## Bumping the OpenSpec pin
+
+Interlock provisions one pinned OpenSpec release (`lib/openspec-pin.mjs`, generated). To move it:
+
+```bash
+node scripts/pin-openspec.mjs X.Y.Z && node cli/interlock openspec provision && node scripts/openspec-contract.mjs
+```
+
+The first command regenerates the pin from a lockfile it resolves (it needs npm and the registry, and refuses an entry that is not sha512, not from the npm registry, or has an install script). The second installs it. The third runs every OpenSpec command the skills rely on against that copy in a scratch project, and prints one line naming the CLI, its version and how many checks passed. Paste that line into the pull request. The contract script is opt-in and not part of `npm test` or CI, which install nothing; the unit suite runs it against a stub CLI only. Then update `OPENSPEC_MIN_VERSION` in `lib/doctor.mjs` if the floor moved.
+
 ## Model evals
 
 The deterministic spine is unit-tested; the model-facing surface (prompts, skills, shared contracts) is regression-tested against a real model by the `evals/` case suite. How to run it, what it gates, and how to add a case from an observed failure are in [docs/14 — Evals](./docs/14-evals.md).

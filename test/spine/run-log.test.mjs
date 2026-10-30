@@ -1883,13 +1883,13 @@ test('the run-start event carries the CLI and the plugin versions', () => {
     runId: RUN_ID,
     type: 'run-start',
     mode: 'checkpoint',
-    cli: { version: '1.8.0', path: '/opt/interlock/bin/interlock' },
+    cli: { version: '1.8.0', path: '/opt/interlock/cli/interlock' },
     plugin: { version: '1.8.0', root: '/opt/plugins/interlock' }
   })
   assert.equal(r.written, true)
   const record = JSON.parse(lines(r.path)[0])
   assert.equal(record.cli.version, '1.8.0')
-  assert.equal(record.cli.path, '/opt/interlock/bin/interlock')
+  assert.equal(record.cli.path, '/opt/interlock/cli/interlock')
   assert.equal(record.plugin.version, '1.8.0')
   assert.equal(record.plugin.root, '/opt/plugins/interlock')
 })
@@ -1899,7 +1899,7 @@ test('a run given no plugin root records the plugin as unknown, never as the CLI
     runId: RUN_ID,
     type: 'run-start',
     mode: 'checkpoint',
-    cli: { version: '1.8.0', path: '/opt/interlock/bin/interlock' },
+    cli: { version: '1.8.0', path: '/opt/interlock/cli/interlock' },
     plugin: null
   })
   const record = JSON.parse(lines(r.path)[0])

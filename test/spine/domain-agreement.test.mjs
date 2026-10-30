@@ -19,7 +19,7 @@ import { gatherLivingList } from '../../lib/merge-evidence.mjs'
 import { assessMergeConfidence } from '../../lib/merge-confidence.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 const PR28 = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'review-proof', 'pr28', 'domain-context.json'), 'utf8'))
 
 /** A repository holding the PR #28 living texts and changed files, with a graph that links them and lacks one file. */
@@ -83,7 +83,7 @@ test('a cut gives the living checklist no no-graph flag: the cut is omitted requ
 })
 
 test('the run selects alike: its review step records the verb\'s capabilities and order', async () => {
-  // The run's selection is `gatherDomain` in lib/run.mjs, reached through the
+  // The run's selection is `gatherDomain` in lib/run-base.mjs, reached through the
   // review step; test/spine/run.test.mjs drives that step over real repositories.
   // Here the two callers above are held to the same inputs builder the run calls.
   const { citedSelectionInputs, selectDomainCapabilities } = await import('../../lib/prompts/domain-context.mjs')
@@ -108,7 +108,7 @@ test('the run selects alike: its review step records the verb\'s capabilities an
 
 // --- one batched read of the living specs at a base (review fixes on PR #29, M3 and M10) ---
 
-/** pr28Repo, committed, with the git readers bin/interlock hands the merge evidence. */
+/** pr28Repo, committed, with the git readers cli/interlock hands the merge evidence. */
 function committedPr28(ungraphed) {
   const root = pr28Repo({ ungraphed })
   const env = { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.invalid' }

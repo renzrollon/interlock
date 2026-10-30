@@ -8,7 +8,7 @@ Every release's breaking changes are listed under `### Upgrading` in the [CHANGE
 
 ## Two installs, and why they can differ
 
-`/plugin install` puts the plugin in Claude Code's plugin cache and puts its `bin/` on the `PATH` of Claude Code's shell. `npm install -g @renzrollon/interlock` puts a second copy on the `PATH` of your own terminal ([07](./07-cli-and-configuration.md#install-the-clis-without-the-plugin)). They update separately. Updating the plugin does not touch the npm copy, so a machine can hold a plugin at one version and a global CLI a release or two behind it.
+`/plugin install` puts the plugin in Claude Code's plugin cache and puts its `cli/` on the `PATH` of Claude Code's shell, through the SessionStart hook. `npm install -g @renzrollon/interlock` puts a second copy on the `PATH` of your own terminal ([07](./07-cli-and-configuration.md#install-the-clis-without-the-plugin)). They update separately. Updating the plugin does not touch the npm copy, so a machine can hold a plugin at one version and a global CLI a release or two behind it.
 
 That matters because the plugin's skills and workflow call `interlock` by name. When a session's shell finds the older copy first, the skills run against a CLI that predates the flags they pass. A CLI older than 1.8.0 ignores a flag it does not know, so a review base or a plugin root the plugin hands it is dropped without a word. From 1.8.0 a CLI refuses an unknown flag by name and exits 2 (see [what the CLI now refuses](#what-the-cli-now-refuses)), but that protects only the copy you already updated.
 
@@ -29,11 +29,11 @@ The `!` runs the command from the Claude Code prompt, so it resolves `interlock`
 | older than the plugin, or too old to report a version | `fail`: `CLI VERSION SKEW: interlock on PATH is <x> (<path>), plugin is <y>`, or `CLI VERSION SKEW: interlock on PATH predates version reporting (<path>), plugin is <y>` | The preflight prints it at session start. This is the direction that silently drops arguments a skill passes. |
 | a binary whose version could not be read | `fail`: `CLI VERSION SKEW: the version of interlock on PATH (<path>) could not be read (<reason>), plugin is <y>` | `--version` timed out, was killed, exited non-zero without `Unknown command`, or printed no `major.minor.patch`. Run `<path> --version` and read its answer. |
 | newer than the plugin | `warn` | A mismatch worth saying, with one known break. 1.8.0 removed `interlock advisor`, which a 1.7.0 plugin's `/interlock:spec` still calls after a clean artifact review. The call exits 1 with `Unknown command`, and the skill reports it and goes on to the hand-off, so the spec finishes with no `advisor.md`. Update the plugin to the CLI's version, or update both together. |
-| the same version, or the plugin's own `bin/` | `ok` | Nothing to do. |
+| the same version, or the plugin's own `cli/` | `ok` | Nothing to do. |
 | not on `PATH` at all | `skip`: `interlock is not on PATH; the bundled binary runs` | Whether that is a problem is the `binaries` row's call. |
-| an npm copy, with no plugin to compare it with | `skip`: `the doctor ran outside a plugin session, so there was no plugin to compare …` | The doctor found no plugin root: none passed, no `CLAUDE_PLUGIN_ROOT`, and no plugin `bin/` later on `PATH`. Run it from the Claude Code prompt, or set `CLAUDE_PLUGIN_ROOT` to the plugin's directory. |
+| an npm copy, with no plugin to compare it with | `skip`: `the doctor ran outside a plugin session, so there was no plugin to compare …` | The doctor found no plugin root: none passed, no `CLAUDE_PLUGIN_ROOT`, and no plugin `cli/` later on `PATH`. Run it from the Claude Code prompt, or set `CLAUDE_PLUGIN_ROOT` to the plugin's directory. |
 
-The plugin the row compares with is, in order: `CLAUDE_PLUGIN_ROOT` when it is set, then the first plugin `bin/` on `PATH` that is not the npm copy itself. The plugin puts that `bin/` on the `PATH` of Claude Code's shell, so `! interlock doctor` finds it even when a global copy comes first. A copy run by name from a plain terminal has neither, and says so rather than comparing itself with itself. A copy older than the plugin's release may have no such row at all; the session-start preflight still catches it, because it runs the plugin's own bundled `bin/interlock doctor`.
+The plugin the row compares with is, in order: `CLAUDE_PLUGIN_ROOT` when it is set, then the first plugin `cli/` on `PATH` that is not the npm copy itself. The plugin's SessionStart hook puts that `cli/` on the `PATH` of Claude Code's shell, so `! interlock doctor` finds it even when a global copy comes first. A copy run by name from a plain terminal has neither, and says so rather than comparing itself with itself. A copy older than the plugin's release may have no such row at all; the session-start preflight still catches it, because it runs the plugin's own bundled `cli/interlock doctor`.
 
 A CLI that answers `--version` with `Unknown command` predates version reporting and is read as older than the plugin. A wrapper that prints `interlock 1.8.0` is read as `1.8.0`, and a prerelease such as `1.8.0-rc.1` is older than `1.8.0`. A plugin whose own version is not `major.minor.patch` leaves the row a `skip`. The row's `evidence` in `.claude/ship/preflight.json` carries the resolved path and both versions. A relative `PATH` entry such as `.` or `./bin` is skipped: the preflight runs the binary it finds, and a relative entry would find one in whatever repository the session opened.
 
@@ -47,9 +47,9 @@ When the preflight or `interlock doctor` reports a skew, the fix is one of two c
 npm i -g @renzrollon/interlock@<the plugin's version>
 ```
 
-for an npm copy, or, when the copy on `PATH` is not an npm install (a checkout, a wrapper, a shim), remove that path from `PATH` so the plugin's `bin/` is found. The plugin's version is the `version` in `.claude-plugin/plugin.json`, and it is the version `interlock doctor` prints in the same row. Pin the number rather than `latest`: a plugin that has not updated yet would then sit behind the CLI.
+for an npm copy, or, when the copy on `PATH` is not an npm install (a checkout, a wrapper, a shim), remove that path from `PATH` so the plugin's `cli/` is found. The plugin's version is the `version` in `.claude-plugin/plugin.json`, and it is the version `interlock doctor` prints in the same row. Pin the number rather than `latest`: a plugin that has not updated yet would then sit behind the CLI.
 
-Keep the two together whenever the plugin updates. If you only ever use the plugin, you can drop the global copy: the plugin puts its own `bin/` on the `PATH` of Claude Code's shell.
+Keep the two together whenever the plugin updates. If you only ever use the plugin, you can drop the global copy: the plugin puts its own `cli/` on the `PATH` of Claude Code's shell.
 
 ## What persists across an upgrade
 

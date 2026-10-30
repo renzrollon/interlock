@@ -89,7 +89,7 @@ function binarySpawningTestFiles(dir = TEST_DIR, into = []) {
     if (entry.isDirectory()) binarySpawningTestFiles(next, into)
     else if (entry.isFile() && entry.name.endsWith('.test.mjs') && next !== HERE) {
       const src = readFileSync(next, 'utf8')
-      if (/INTERLOCK_BIN|['"]bin['"],\s*['"]interlock/.test(src)) into.push(next)
+      if (/INTERLOCK_BIN|['"](?:bin|cli)['"],\s*['"]interlock/.test(src)) into.push(next)
     }
   }
   return into

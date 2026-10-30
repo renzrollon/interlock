@@ -29,7 +29,7 @@ decision** — the workflow branches on the status, never on parsed prose.
 
 | Checked | Decided by |
 |---|---|
-| Node version, plugin install, `bin/` on PATH, the `openspec` CLI, git, the test profile, the permission allowlist, the writability of the run-state directories | `interlock doctor` — exit 1 if any check would stop a zero-touch run |
+| Node version, plugin install, `cli/` on PATH, the `openspec` CLI (PATH or provisioned), git, the test profile, the permission allowlist, the writability of the run-state directories | `interlock doctor` — exit 1 if any check would stop a zero-touch run |
 
 `interlock doctor` also reports whether the eval harness is enabled and whether a
 model credential is present, when an eval suite exists at the plugin root. Those
@@ -196,7 +196,7 @@ bytes exist, not that a model followed them.
 
 | Layer | What it is | What it proves | What it does not prove |
 |---|---|---|---|
-| **Unit tests** (`npm test`) | Deterministic `node:test` over `lib/`, `bin/`, hooks, fixtures, eval *structure* | Policy, CLI exit codes, schema, isolation, fail-open | That a model followed an instruction |
+| **Unit tests** (`npm test`) | Deterministic `node:test` over `lib/`, `cli/`, hooks, fixtures, eval *structure* | Policy, CLI exit codes, schema, isolation, fail-open | That a model followed an instruction |
 | **Skill-token pins** (`test/skills.test.mjs`) | Regex/token assertions over `SKILL.md` bodies | The instruction is still on disk | The model will halt, route, or copy an enum |
 | **In-run CLI gates** | Exit-code decisions the ship loop branches on | One live run's artifacts, suite, trajectory | Recurring model behaviour across versions |
 | **True agent evals** (`evals/` cases + `evals/ship/`) | A model (or the real loop) in a controlled task, graded | Instruction-following and/or shipped outcome | Nothing, until they actually run and triage can read the results |

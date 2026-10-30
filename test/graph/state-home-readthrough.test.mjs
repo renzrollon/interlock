@@ -12,7 +12,7 @@ import { after, before, describe, it } from 'node:test';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
-const CLI = path.join(REPO, 'bin', 'interlock-graph');
+const CLI = path.join(REPO, 'cli', 'interlock-graph');
 const FIXTURE = path.join(__dirname, 'fixtures', 'mini-app');
 
 function copyDir(from, to) {

@@ -29,8 +29,8 @@ Interlock has one maintainer, so these are best-effort targets, not a contract. 
 Interlock runs on your machine with your permissions. It installs hooks into every Claude Code session, spawns agents and vendor CLIs, creates git worktrees and runs the commands its run program names. These are in scope:
 
 - **The hooks.** The `PreToolUse` and `SessionStart` guards registered in `.claude-plugin/plugin.json`, and `hooks/mod.mjs`. Examples: a hook that runs or writes something it was not asked to, or that writes outside the repository it runs in.
-- **The CLIs in `bin/`** and the argv they build. Examples: a path or argument that escapes into a shell or another command.
-- **The ship drivers.** `workflows/ship.js` and `bin/interlock-run` spawn agents and create lane worktrees, and the host adapters in `lib/host/` spawn vendor CLIs. Examples: a worktree or spawn that reaches outside the repository, or a credential passed to a host that was not meant to get it.
+- **The CLIs in `cli/`** and the argv they build. Examples: a path or argument that escapes into a shell or another command.
+- **The ship drivers.** `workflows/ship.js` and `cli/interlock-run` spawn agents and create lane worktrees, and the host adapters in `lib/host/` spawn vendor CLIs. Examples: a worktree or spawn that reaches outside the repository, or a credential passed to a host that was not meant to get it.
 - **The notify topic.** The ntfy topic is a credential, and anything that writes it to a log, a trajectory or a report is a vulnerability.
 - **The release supply chain.** `release.yml` publishes to npm with provenance, and `plugin-bundle.yml` commits the published tarball to the `release` branch. Examples: a path for a fork, a pull request or a tampered tarball to reach either.
 

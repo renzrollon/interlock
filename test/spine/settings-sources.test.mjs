@@ -1,7 +1,7 @@
 // The settings reader the doctor and the runner share, the redacted parse reason,
 // and the import closure of the ACP runner.
 //
-// The runner (`bin/interlock-run`) may import only node builtins and the host
+// The runner (`cli/interlock-run`) may import only node builtins and the host
 // port. `test/workflows.test.mjs` pins its DIRECT imports; this file walks the
 // whole closure, because a direct import of an allowed module can still drag the
 // policy modules in behind it (lib/host/advisor-banners.mjs once imported
@@ -111,7 +111,7 @@ function importClosure(entry) {
 }
 
 test('the runner\'s whole import closure holds no policy module and no bare specifier', () => {
-  const { files, bare } = importClosure(join(ROOT, 'bin', 'interlock-run'))
+  const { files, bare } = importClosure(join(ROOT, 'cli', 'interlock-run'))
   assert.ok(files.length > 3, `failed to walk the runner's imports: ${files}`)
   assert.ok(files.includes(join('lib', 'host', 'advisor-banners.mjs')), 'the walk reaches the advisor banners')
   assert.ok(files.includes(join('lib', 'settings-sources.mjs')), 'and the shared settings reader')

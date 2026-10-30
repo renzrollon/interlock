@@ -3,7 +3,7 @@
 // scripts/postinstall-smoke.mjs is what CI runs against the installed tarball:
 // it calls every subcommand a skill, the ship driver, the run program's steps or
 // a hook calls, and asserts the exit code and the JSON keys the caller reads.
-// Run here against `bin/`, the same inventory fails `npm test` the day a command
+// Run here against `cli/`, the same inventory fails `npm test` the day a command
 // a shipped surface calls stops working, instead of failing only in a pipeline
 // that most contributors never wait for.
 //
@@ -22,7 +22,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN_DIR = join(REPO, 'bin')
+const BIN_DIR = join(REPO, 'cli')
 const SCRIPT = join(REPO, 'scripts', 'postinstall-smoke.mjs')
 
 let scratch
@@ -59,7 +59,7 @@ test('the smoke runs clean against the repository bin and exits 0', () => {
     timeout: 180_000,
     env: {
       ...process.env,
-      // Led by the repository's bin/, so a bare `interlock` in the script — and
+      // Led by the repository's cli/, so a bare `interlock` in the script — and
       // the doctor's cli-version row — resolves to this tree and not to whatever
       // the developer installed globally.
       PATH: `${BIN_DIR}${delimiter}${process.env.PATH || ''}`,

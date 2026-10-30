@@ -206,8 +206,8 @@ function filesUnder(dir) {
   return out
 }
 
-test('only the pure configuration reader spells the advisor settings key under lib, bin, hooks and workflows', () => {
-  const files = ['lib', 'bin', 'hooks', 'workflows'].flatMap(filesUnder)
+test('only the pure configuration reader spells the advisor settings key under lib, cli, hooks and workflows', () => {
+  const files = ['lib', 'cli', 'hooks', 'workflows'].flatMap(filesUnder)
   assert.ok(files.length > 50, `the walk found only ${files.length} files, so it is not looking where it should`)
   assert.ok(files.includes(join('lib', 'advisor-tool.mjs')))
   const spelling = files.filter(f => readFileSync(join(ROOT, f), 'utf8').includes('advisorModel'))

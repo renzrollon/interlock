@@ -24,9 +24,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
-const GRAPH_BIN = join(ROOT, 'bin', 'interlock-graph')
-const RUN_BIN = join(ROOT, 'bin', 'interlock-run')
+const BIN = join(ROOT, 'cli', 'interlock')
+const GRAPH_BIN = join(ROOT, 'cli', 'interlock-graph')
+const RUN_BIN = join(ROOT, 'cli', 'interlock-run')
 const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
 
 let tmp
@@ -147,7 +147,7 @@ test('an unknown subcommand keeps its refusal and exit code', () => {
 
 // --- the flag table ------------------------------------------------------------
 
-test('every flag bin/interlock reads is in the global set or some subcommand set', async () => {
+test('every flag cli/interlock reads is in the global set or some subcommand set', async () => {
   const { global, leaves } = await loadFlagTable()
   const declared = new Set([...global])
   for (const set of leaves.values()) for (const n of set) declared.add(n)
@@ -157,7 +157,7 @@ test('every flag bin/interlock reads is in the global set or some subcommand set
   // `flags.x`, `flags['x']` and `num(flags, 'x')` are the three spellings a
   // handler reads a flag by. A helper that receives the whole object is scanned
   // too: note-cli is handed `flags` through the entry file's io bundle.
-  const sources = [join(ROOT, 'bin', 'interlock'), join(ROOT, 'lib', 'note-cli.mjs')]
+  const sources = [join(ROOT, 'cli', 'interlock'), join(ROOT, 'lib', 'note-cli.mjs')]
   const read = new Map()
   for (const file of sources) {
     const text = readFileSync(file, 'utf8')

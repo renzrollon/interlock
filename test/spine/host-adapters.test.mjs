@@ -917,8 +917,8 @@ function sweptSources() {
     }
   }
   walk(join(ROOT, 'lib'))
-  for (const entry of readdirSync(join(ROOT, 'bin'), { withFileTypes: true })) {
-    if (entry.isFile() && (entry.name.endsWith('.mjs') || !entry.name.includes('.'))) out.push(join(ROOT, 'bin', entry.name))
+  for (const entry of readdirSync(join(ROOT, 'cli'), { withFileTypes: true })) {
+    if (entry.isFile() && (entry.name.endsWith('.mjs') || !entry.name.includes('.'))) out.push(join(ROOT, 'cli', entry.name))
   }
   return out
 }
@@ -940,7 +940,7 @@ test('the sweep: modelMatches is called only from modelSubstitution, and modelSu
   const MODEL_MAP = join(ROOT, 'lib', 'host', 'model-map.mjs')
   const RUN = join(ROOT, 'lib', 'run.mjs')
   const sources = sweptSources()
-  assert.ok(sources.includes(join(ROOT, 'bin', 'interlock-run')), 'the sweep reads the extensionless executables')
+  assert.ok(sources.includes(join(ROOT, 'cli', 'interlock-run')), 'the sweep reads the extensionless executables')
 
   for (const path of sources) {
     const code = codeOf(path)
@@ -1262,12 +1262,12 @@ test('probeClaudeVersion reads the installed CLI\'s version, and a failed or hun
 
 // --- the runner closes on SIGINT and SIGTERM (spec: run-host-adapters) -------
 //
-// The real `bin/interlock-run` against the fake CLI, which holds every envelope
+// The real `cli/interlock-run` against the fake CLI, which holds every envelope
 // for `--fixture-delay` so a lane is in flight when the signal lands. What is
 // read back is what a killed run must leave behind: a `run-halt` that names the
 // signal, a resume card, and a non-zero exit.
 
-const RUNNER = join(ROOT, 'bin', 'interlock-run')
+const RUNNER = join(ROOT, 'cli', 'interlock-run')
 
 /** A temp repo with two path-disjoint tier-4 tasks: one batch of two lanes. */
 function signalRepo() {
@@ -1439,7 +1439,7 @@ test('a signal before run start has answered still closes, truthfully, with no m
 })
 
 test('a CLI refusal mid-run halts the runner through the close, naming the refusal, never as success', () => {
-  // `bin/interlock` answers an unknown flag with `{ error, unknownFlag, … }` on
+  // `cli/interlock` answers an unknown flag with `{ error, unknownFlag, … }` on
   // stdout and exit 2. A preload stands in for that answer to `run record-batch`,
   // so the runner meets it after lanes ran and a manifest exists.
   const { root, change } = signalRepo()
@@ -1451,7 +1451,7 @@ test('a CLI refusal mid-run halts the runner through the close, naming the refus
     [
       "const fs = require('node:fs')",
       'const argv = process.argv.slice(2)',
-      "if (/[\\\\/]bin[\\\\/]interlock$/.test(process.argv[1] || '') && argv[0] === 'run' && argv[1] === 'record-batch') {",
+      "if (/[\\\\/]cli[\\\\/]interlock$/.test(process.argv[1] || '') && argv[0] === 'run' && argv[1] === 'record-batch') {",
       `  fs.writeSync(1, JSON.stringify({ error: ${JSON.stringify(REFUSAL)}, unknownFlag: '--bogus', subcommand: 'run record-batch', cliVersion: 'test' }) + '\\n')`,
       '  process.exit(2)',
       '}',
@@ -1483,8 +1483,8 @@ test('a CLI refusal mid-run halts the runner through the close, naming the refus
 
 // --- the host-record channel, end to end (design D7, D9; spec: run-host-adapters) -
 //
-// The real `bin/interlock-run` over the fake CLI. What the runner sends the CLI
-// is observed from inside each `bin/interlock` process it starts: a `--require`
+// The real `cli/interlock-run` over the fake CLI. What the runner sends the CLI
+// is observed from inside each `cli/interlock` process it starts: a `--require`
 // preload records that process's argv and the two files it was handed, so the
 // assertions read the channel itself rather than a copy of the driver's logic.
 
@@ -1503,7 +1503,7 @@ function runnerEnv(extra) {
 /**
  * Run the runner to its close in a fresh two-lane repo, with every CLI call it
  * makes recorded. Returns the repo, stdout, and one `{argv, hostRecords,
- * results}` per `bin/interlock` call, in order.
+ * results}` per `cli/interlock` call, in order.
  */
 function observedRun({ fixtureFlags, env = {} }) {
   const { root, change } = signalRepo()
@@ -1517,7 +1517,7 @@ function observedRun({ fixtureFlags, env = {} }) {
     [
       "const fs = require('node:fs')",
       "const path = require('node:path')",
-      "if (/[\\\\/]bin[\\\\/]interlock$/.test(process.argv[1] || '') && process.env.INTERLOCK_TEST_CLI_LOG) {",
+      "if (/[\\\\/]cli[\\\\/]interlock$/.test(process.argv[1] || '') && process.env.INTERLOCK_TEST_CLI_LOG) {",
       '  const argv = process.argv.slice(2)',
       '  const file = flag => {',
       '    const at = argv.indexOf(flag)',
@@ -1621,7 +1621,7 @@ test('interlock-run keeps the host records out of results.json', () => {
 })
 
 test('the CLI raises the lane banners and agent-result events from the runner\'s host records', () => {
-  // The other half of the channel: `bin/interlock` reads --host-records and the
+  // The other half of the channel: `cli/interlock` reads --host-records and the
   // record path raises the banner and appends one agent-result per lane.
   const run = hostRecordsRun()
   assert.match(run.stdout, /TOOLS DENIED IN LANE: 1\.[12] 2 \(Bash, Edit\)/, run.stdout)
@@ -1660,6 +1660,6 @@ test('the runner states no lane banner and compares no model: the CLI decides bo
     ['the substitution verdict', /\bmodelSubstitution\s*\(/],
     ['a host record field read as a verdict', /servedModels|sessionModels|resultMissing|permissionDenials/]
   ]) {
-    assert.doesNotMatch(driver, token, `bin/interlock-run states ${what} (${token}) — it belongs in lib/run.mjs`)
+    assert.doesNotMatch(driver, token, `cli/interlock-run states ${what} (${token}) — it belongs in lib/run.mjs`)
   }
 })

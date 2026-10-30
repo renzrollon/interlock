@@ -29,7 +29,7 @@ const rel = abs => relative(ROOT, abs).split(sep).join('/')
 
 /**
  * Every relative specifier a module names: `import ... from`, `export ... from`,
- * a bare side-effect `import '...'` (which is how `bin/interlock-graph` reaches
+ * a bare side-effect `import '...'` (which is how `cli/interlock-graph` reaches
  * the whole graph CLI — a walk that only understood `from` would find nothing
  * there and pass on an empty closure), and `import('...')`.
  */
@@ -390,7 +390,7 @@ const DIRECTORY_FILE_BYTES = 262144
 const DIRECTORY_FILE_COUNT = 512
 // A warning zone below the size limit, so the file that is about to reach it
 // fails here one release early instead of holding a version at submission.
-// bin/interlock sat about 16 KB under the limit when PR #20's review raised it
+// cli/interlock sat about 16 KB under the limit when PR #20's review raised it
 // (M3), which is why the note handlers moved out of it (now lib/note-cli.mjs).
 const DIRECTORY_HEADROOM_BYTES = 16384
 
@@ -458,6 +458,106 @@ test('no shipped file names the host\'s option variables', () => {
     .map(f => f.path)
     .filter(path => readFileSync(join(ROOT, path)).includes(PREFIX))
   assert.deepEqual(named, [], `these shipped files spell ${PREFIX}:\n  ${named.join('\n  ')}`)
+})
+
+// ---------------------------------------------------------------------------
+// The bundle's shape: no top-level bin/, no compiled executable, no install-time
+// download (spec: distribution/npm-package). The directory holds a plugin for a
+// reviewer on `BUNDLES_BINARIES`, which covers files in bin/, compiled executables
+// elsewhere in the plugin and a `binaries` key in plugin.json, and a lockfile at the
+// root is one the host installs when the plugin is.
+// ---------------------------------------------------------------------------
+
+/** The first bytes of a compiled executable, by format. */
+const EXECUTABLE_SIGNATURES = [
+  ['ELF', [0x7f, 0x45, 0x4c, 0x46]],
+  ['Mach-O', [0xfe, 0xed, 0xfa, 0xce]],
+  ['Mach-O', [0xfe, 0xed, 0xfa, 0xcf]],
+  ['Mach-O', [0xce, 0xfa, 0xed, 0xfe]],
+  ['Mach-O', [0xcf, 0xfa, 0xed, 0xfe]],
+  ['Mach-O', [0xca, 0xfe, 0xba, 0xbe]],
+  ['PE', [0x4d, 0x5a]]
+]
+const ROOT_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json', 'bun.lock', 'bun.lockb']
+
+/** The format whose signature `head` begins with, or null. */
+function executableFormat(head) {
+  const bytes = Buffer.from(head || [])
+  const hit = EXECUTABLE_SIGNATURES.find(([, sig]) => bytes.length >= sig.length && sig.every((b, i) => bytes[i] === b))
+  return hit ? hit[0] : null
+}
+
+/**
+ * What is wrong with a bundle's shape, named. Pure: `entries` are `{ path, head }` (the
+ * first bytes of each shipped file), `bin` is package.json's `bin` map and `manifest`
+ * is plugin.json.
+ */
+function bundleShapeProblems({ entries, bin, manifest }) {
+  const problems = []
+  for (const { path, head } of entries) {
+    if (path.split('/')[0] === 'bin') problems.push(`${path} is under a top-level bin/`)
+    const format = executableFormat(head)
+    if (format) problems.push(`${path} is a compiled executable (${format})`)
+    if (!path.includes('/') && ROOT_LOCKFILES.includes(path)) problems.push(`${path} is a lockfile at the bundle root, which the host installs with the plugin`)
+  }
+  for (const [name, target] of Object.entries(bin || {})) {
+    if (!/^(?:\.\/)?cli\//.test(String(target))) problems.push(`bin.${name} points at ${target}, outside cli/`)
+  }
+  if (manifest && Object.hasOwn(manifest, 'binaries')) problems.push('.claude-plugin/plugin.json declares binaries')
+  return problems
+}
+
+/** The first four bytes of a shipped file. */
+function headOf(root, path) {
+  const buf = readFileSync(join(root, path))
+  return buf.subarray(0, 4)
+}
+
+test('the bundle as shipped has no top-level bin/, no compiled executable, no binaries key and no root lockfile', () => {
+  const shipped = shippedFiles(ROOT, pkg.files)
+  const entries = shipped.map(({ path }) => ({ path, head: headOf(ROOT, path) }))
+  const problems = bundleShapeProblems({ entries, bin: pkg.bin, manifest: readJson(PLUGIN_PATH) })
+  assert.deepEqual(problems, [], `the directory holds a plugin for a reviewer on:\n  ${problems.join('\n  ')}`)
+  for (const name of ['interlock', 'interlock-graph', 'interlock-run', 'interlock-ship-acp']) {
+    assert.equal(pkg.bin[name], `cli/${name}`, `bin.${name} must point under cli/`)
+    assert.ok(readFileSync(join(ROOT, `cli/${name}`), 'utf8').startsWith('#!/usr/bin/env node'), `cli/${name} must start with #!/usr/bin/env node`)
+    assert.ok((statSync(join(ROOT, `cli/${name}`)).mode & 0o111) !== 0, `cli/${name} must be executable`)
+  }
+})
+
+test('the shape check names a file under bin/, a bin entry outside cli/, each executable format, a binaries key and each root lockfile', () => {
+  const text = Buffer.from('export const x = 1\n')
+  const clean = [
+    { path: 'cli/interlock', head: Buffer.from('#!/u') },
+    { path: 'lib/openspec-pin.mjs', head: text },
+    { path: 'package.json', head: Buffer.from('{\n  ') }
+  ]
+  const cleanBin = { interlock: 'cli/interlock' }
+  assert.deepEqual(bundleShapeProblems({ entries: clean, bin: cleanBin, manifest: {} }), [])
+
+  const one = (entries, bin = cleanBin, manifest = {}) => bundleShapeProblems({ entries: [...clean, ...entries], bin, manifest })
+
+  assert.deepEqual(one([{ path: 'bin/interlock', head: Buffer.from('#!/u') }]), ['bin/interlock is under a top-level bin/'])
+  assert.deepEqual(one([{ path: 'bin', head: text }]), ['bin is under a top-level bin/'])
+  assert.deepEqual(one([{ path: 'lib/bin/helper', head: text }]), [], 'only a top-level bin/ counts')
+
+  assert.deepEqual(one([], { interlock: 'bin/interlock' }), ['bin.interlock points at bin/interlock, outside cli/'])
+  assert.deepEqual(one([], { interlock: 'lib/interlock' }), ['bin.interlock points at lib/interlock, outside cli/'])
+  assert.deepEqual(one([], { interlock: './cli/interlock' }), [])
+
+  for (const [format, sig] of EXECUTABLE_SIGNATURES) {
+    const head = Buffer.from([...sig, 0x00, 0x00])
+    assert.deepEqual(one([{ path: 'lib/vendor/tool', head }]), [`lib/vendor/tool is a compiled executable (${format})`], `${format} ${sig}`)
+  }
+  assert.deepEqual(one([{ path: 'lib/vendor/short', head: Buffer.from([0x7f, 0x45]) }]), [], 'a truncated signature is not one')
+
+  assert.deepEqual(one([], cleanBin, { name: 'interlock', binaries: {} }), ['.claude-plugin/plugin.json declares binaries'])
+
+  for (const name of ROOT_LOCKFILES) {
+    assert.match(one([{ path: name, head: text }]).join('\n'), new RegExp(`^${name.replace('.', '\\.')} is a lockfile at the bundle root`))
+  }
+  // A lockfile carried as data inside a module, or beside a fixture, is not a root lockfile.
+  assert.deepEqual(one([{ path: 'lib/openspec-pin.mjs', head: Buffer.from('{ "lo') }, { path: 'test/fixtures/package-lock.json', head: text }]), [])
 })
 
 // A `String.replace` whose replacement contained `$`` spliced this file's
@@ -542,7 +642,7 @@ function pluginRuntimePaths(root) {
   }
   const sources = [
     manifestPath,
-    ...['skills', 'agents', 'shared', 'workflows', 'hooks', 'lib', 'bin'].flatMap(d => walk(join(root, d)))
+    ...['skills', 'agents', 'shared', 'workflows', 'hooks', 'lib', 'cli'].flatMap(d => walk(join(root, d)))
   ]
   for (const file of sources) {
     for (const m of readFileSync(file, 'utf8').matchAll(PLUGIN_ROOT_PATH)) {

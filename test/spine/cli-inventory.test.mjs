@@ -184,7 +184,7 @@ function extractAll() {
   const js = [
     ['workflows/ship.js', 'driver', {}],
     ['lib/run.mjs', 'run', {}],
-    ['bin/interlock-run', 'run-driver', {}],
+    ['cli/interlock-run', 'run-driver', {}],
     ['lib/resume-card.mjs', 'resume-card', { templateLines: true }]
   ]
   for (const f of filesUnder(join(ROOT, 'hooks'), '.mjs')) js.push([rel(f), 'hooks', {}])

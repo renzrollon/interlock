@@ -498,7 +498,7 @@ export function defaultResponses() {
  *   token accounting; omitted, the script sees no such global at all.
  *   `classified` is what the `plan-waves` stub writes (default: one demo task); a
  *   `null` `plan-waves` response writes nothing. `cliBin` runs a different
- *   `bin/interlock` than this checkout's, to stand the previous release in for
+ *   `cli/interlock` than this checkout's, to stand the previous release in for
  *   the CLI; `stripCliVersion` removes `cliVersion` from every relayed step, to
  *   stand in for one without needing it installed (`'null'` nulls it instead).
  * @returns {Promise<{prompts: Array<{label: string, prompt: string, model?: string}>,
@@ -601,7 +601,7 @@ export async function runShip(opts = {}) {
         }
       }
       // `commandIn` already captured everything AFTER the binary name, and
-      // `runCli` invokes bin/interlock itself — so this is the subcommand and
+      // `runCli` invokes cli/interlock itself — so this is the subcommand and
       // its flags, passed through whole.
       // `env` reaches the CLI the way a session's environment reaches the
       // relay's shell: `run start` reads the host's routing variables itself.

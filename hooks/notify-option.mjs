@@ -20,13 +20,12 @@
 //
 // WHAT IT NEVER DOES. It prints nothing to standard output, because a
 // session-start hook's output becomes context and the topic is a capability.
-// It exits 0 on every path. It leaves a variable the operator already provided
+// It exits 0 on every path, including one where lib/session-env.mjs cannot be
+// loaded (it is imported inside the try). It leaves a variable the operator already provided
 // as it is. It writes nothing for a value that is empty, that carries a line
 // break or a NUL, or that still reads as a reference nobody substituted. It
 // never judges the value's shape: `readNotifyConfig` does that where the value
 // is used, and names the variable without the value.
-
-import { appendFileSync } from 'node:fs'
 
 /** The variable each kind of option is exported as. */
 const VARIABLES = new Map([
@@ -34,34 +33,18 @@ const VARIABLES = new Map([
   ['url', 'INTERLOCK_NTFY_URL']
 ])
 
-/** How a reference the host passed through as written begins. */
-const UNSUBSTITUTED = '${user_config.'
-
-/** A single-quoted shell word. */
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-/** A value worth exporting: text, not blank, on one line, and not a reference left as written. */
-function publishable(value) {
-  return typeof value === 'string' && value.trim() !== '' && !/[\0\r\n]/.test(value) && !value.includes(UNSUBSTITUTED)
-}
-
-/** A variable the operator's own environment already carries. */
-function provided(name) {
-  const value = process.env[name]
-  return typeof value === 'string' && value.trim() !== ''
-}
-
 let variable
 try {
+  // Loaded inside the try, not at link time: a missing or broken module must
+  // reach the stderr line below and exit 0, as the preflight's handoff does.
+  // (The specifier is a literal: it resolves against this file, and the
+  // import-closure pin in test/hooks.test.mjs reads it.)
+  const { appendExport } = await import('../lib/session-env.mjs')
   const [kind, value] = process.argv.slice(2)
   variable = VARIABLES.get(kind)
-  const file = process.env.CLAUDE_ENV_FILE
-  if (variable && publishable(value) && typeof file === 'string' && file && !provided(variable)) {
-    // One short line in a single write: the other option's hook appends beside this one.
-    appendFileSync(file, `export ${variable}=${shellQuote(value.trim())}\n`)
-  }
+  // The quoting, the publishable check and the operator's own value are
+  // lib/session-env.mjs's, shared with the preflight's PATH handoff.
+  if (variable) appendExport(process.env.CLAUDE_ENV_FILE, variable, value, process.env)
 } catch (err) {
   const reason = String((err && err.message) || err).replace(/\s+/g, ' ')
   process.stderr.write(`interlock notify option: ${variable || 'the option'} was not exported (ignored): ${reason}\n`)

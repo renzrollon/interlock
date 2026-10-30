@@ -8,8 +8,10 @@
 // under release N, or be refused by name, rather than assumed to.
 //
 // What it does (design D24):
-//   1. `git archive <tag> bin lib package.json` into a scratch directory. That
-//      is the whole CLI: zero runtime dependencies, so nothing else is needed.
+//   1. `git archive <tag> <cli dir> lib package.json` into a scratch directory.
+//      That is the whole CLI: zero runtime dependencies, so nothing else is
+//      needed. The CLI's directory is read from the tag's own package.json
+//      `bin` map, because tags cut before the move to `cli/` hold it in `bin/`.
 //   2. Build a scratch repository holding one fixed change.
 //   3. Drive that old CLI by hand, the way a host would, with every agent
 //      answered by a canned result: `run start` -> `run classified` (a
@@ -162,10 +164,39 @@ export function versionOfTag(tag) {
 
 // --- the old CLI -----------------------------------------------------------------
 
-/** Extract `bin`, `lib` and `package.json` as of `tag` into `dest`. */
+/**
+ * The path of the `interlock` executable as `tag`'s own package.json `bin` map
+ * names it: `bin/interlock` before the move to `cli/`, `cli/interlock` after.
+ */
+export function cliPathOfManifest(manifest) {
+  const bin = manifest && manifest.bin
+  const target = typeof bin === 'string' ? bin : bin && typeof bin === 'object' ? bin.interlock : null
+  if (typeof target !== 'string' || !target) return null
+  const rel = target.replace(/^\.\//, '')
+  if (isAbsolute(rel) || rel.split('/').includes('..') || !rel.includes('/')) return null
+  return rel
+}
+
+/**
+ * Extract the CLI's directory, `lib` and `package.json` as of `tag` into `dest`.
+ * Returns the executable's path relative to `dest`, as the tag's `bin` map names it.
+ */
 function extractCli(tag, dest) {
   mkdirSync(dest, { recursive: true })
-  const archive = spawnSync('git', ['archive', tag, 'bin', 'lib', 'package.json'], {
+  const shown = spawnSync('git', ['show', `${tag}:package.json`], { cwd: REPO, encoding: 'utf8' })
+  if (shown.status !== 0) {
+    die(`git show ${tag}:package.json failed: ${String(shown.stderr || shown.error || '').trim() || 'is the tag present locally? try git fetch --tags'}`)
+  }
+  let manifest
+  try {
+    manifest = JSON.parse(shown.stdout)
+  } catch (err) {
+    die(`${tag}'s package.json is not JSON: ${err.message}`)
+  }
+  const cliPath = cliPathOfManifest(manifest)
+  if (!cliPath) die(`${tag}'s package.json names no interlock entry in its bin map`)
+  const cliDir = cliPath.split('/')[0]
+  const archive = spawnSync('git', ['archive', tag, cliDir, 'lib', 'package.json'], {
     cwd: REPO,
     maxBuffer: 256 * 1024 * 1024
   })
@@ -174,7 +205,8 @@ function extractCli(tag, dest) {
   }
   const untar = spawnSync('tar', ['-x', '-C', dest], { input: archive.stdout })
   if (untar.status !== 0) die(`tar could not unpack the archive: ${String(untar.stderr || untar.error || '').trim()}`)
-  if (!existsSync(join(dest, 'bin', 'interlock'))) die(`${tag} holds no bin/interlock`)
+  if (!existsSync(join(dest, cliPath))) die(`${tag} holds no ${cliPath}`)
+  return cliPath
 }
 
 /** The scratch repository: one change, its tasks, and the files they name. */
@@ -392,13 +424,13 @@ function main() {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-cut-')))
   const root = join(scratch, 'repo')
   try {
-    extractCli(opts.tag, join(scratch, 'cli'))
+    const cliPath = extractCli(opts.tag, join(scratch, 'cli'))
     const cliVersion = JSON.parse(readFileSync(join(scratch, 'cli', 'package.json'), 'utf8')).version
     if (cliVersion !== version) die(`${opts.tag} archives package.json ${cliVersion}, not ${version}`)
 
     mkdirSync(root)
     buildRepo(root)
-    const cli = makeCli({ cliBin: join(scratch, 'cli', 'bin', 'interlock'), root, verbose: opts.verbose })
+    const cli = makeCli({ cliBin: join(scratch, 'cli', cliPath), root, verbose: opts.verbose })
     driveRun(cli, root)
 
     const dropped = copyOut({ root, scratch, outDir })

@@ -412,13 +412,13 @@ Then three stated trades, one line each:
 
 # APPENDIX B — The harness (two sections of The run tab; the rest is reference)
 
-Source of truth: `CLAUDE.md`, `lib/run.mjs`, `lib/host.mjs`, `lib/host/registry.mjs`, `workflows/ship.js`, `bin/interlock-run`, `hooks/*.mjs`, `lib/ship-stage.mjs`, `docs/06-why-it-works.md`, `docs/13-the-guards.md`.
+Source of truth: `CLAUDE.md`, `lib/run.mjs`, `lib/host.mjs`, `lib/host/registry.mjs`, `workflows/ship.js`, `cli/interlock-run`, `hooks/*.mjs`, `lib/ship-stage.mjs`, `docs/06-why-it-works.md`, `docs/13-the-guards.md`.
 
 ## B.1 Intro (reference)
 
 **Where Interlock sits inside Claude Code.**
 
-Intro: Interlock is a process layer with no harness of its own. It borrows Claude Code's: the Skill tool, the slash namespace, the Workflow runtime, subagent fan-out, the hook dispatch, and the injection of the plugin's `bin/` onto the PATH. Everything the loop decides lives below that line, in a zero-dependency Node CLI any host can shell out to. The diagram reads top to bottom: what the host provides, what the plugin adds in prose, what interprets, what decides, and what is written to disk.
+Intro: Interlock is a process layer with no harness of its own. It borrows Claude Code's: the Skill tool, the slash namespace, the Workflow runtime, subagent fan-out, the hook dispatch, and the session environment file through which the plugin's SessionStart preflight appends its `cli/` to the PATH. Everything the loop decides lives below that line, in a zero-dependency Node CLI any host can shell out to. The diagram reads top to bottom: what the host provides, what the plugin adds in prose, what interprets, what decides, and what is written to disk.
 
 ## B.2 The layers (reference; no diagram, no drawer, no lens on the page)
 
@@ -430,18 +430,18 @@ The layers, top to bottom: **host · guards · prose · drivers · policy · cli
 | `slash` | `/interlock:bootstrap` · `spec` · `ship` · `settle` | host | — | The four commands that are the product | — | `.claude-plugin/plugin.json` |
 | `workflow-rt` | Workflow runtime | host | code | Zero-touch: it accepts no mid-run user input | `import()`, the filesystem, a shell | external |
 | `subagents` | `interlock:worker` · `interlock:ping` | host | model | Isolated context per lane; reading, writing, running commands | `Skill`, `Agent`, `mcp__*` | `agents/worker.md`, `agents/ping.md` |
-| `path-inject` | plugin `bin/` on the PATH | host | code | Making `interlock` and `interlock-graph` bare commands | — | host behaviour |
+| `path-inject` | plugin `cli/` on the PATH | host | code | Making `interlock` and `interlock-graph` bare commands: the preflight appends `export PATH` to the host's `CLAUDE_ENV_FILE` | — | `hooks/preflight.mjs`, `lib/session-env.mjs` |
 | `hooks` | six hook scripts: a preflight, a recorder, four guards | guards | code | Denying a test edit during repair, a checkbox flip, an out-of-stage commit, a second ship launch nobody asked for | Blocking on anything it cannot establish | `hooks/*.mjs` |
 | `meter` | `hooks/mod.mjs`, the ship meter | guards | code | Drawing a live run: a status line, a pane, toasts | Deciding anything; a file write, a model call, the network | `hooks/mod.mjs` |
 | `skills` | sixteen `SKILL.md` | prose | model | Judgement framing; model-facing instruction | Restating any numeric threshold | `skills/` |
 | `ship-js` | `workflows/ship.js` | drivers | code | Spawning what a step names, the CLI relay, briefing by reference, the token counter | Branching on a flag, a mode, a count or a verdict | `workflows/ship.js` |
-| `runner` | `bin/interlock-run` (experimental) | drivers | code | The same loop over a vendor CLI; lane worktrees; banners | The same, plus holding any rule | `bin/interlock-run` |
+| `runner` | `cli/interlock-run` (experimental) | drivers | code | The same loop over a vendor CLI; lane worktrees; banners | The same, plus holding any rule | `cli/interlock-run` |
 | `run-mjs` | `lib/run.mjs`, the run program | policy | code | Emitting every step; taking every branch | Spawning, printing, importing a transport | `lib/run.mjs` |
 | `lib` | the pure decision modules | policy | code | One concern each: waves, verify, findings, remediate, risk, ready, ledger, drift, receipt | I/O beyond what the module's name implies | `lib/*.mjs` |
 | `prompts` | `lib/prompts/` | policy | code | Every briefing an agent receives | Being unregistered; the suite fails | `lib/prompts/` |
 | `limits` | `lib/limits.mjs` | policy | code | Every cap, once | A cap with no reader | `lib/limits.mjs` |
-| `cli` | `bin/interlock` | cli | code | Twenty-eight subcommands; exit codes are the contract | A model or the network, except `notify` | `bin/interlock` |
-| `graph-cli` | `interlock-graph` | cli | code | A deterministic import, symbol and spec graph with token-budgeted retrieval | Embeddings, a vector store, the network | `bin/interlock-graph`, `lib/graph/` |
+| `cli` | `cli/interlock` | cli | code | Twenty-eight subcommands; exit codes are the contract | A model or the network, except `notify` and `openspec provision` | `cli/interlock` |
+| `graph-cli` | `interlock-graph` | cli | code | A deterministic import, symbol and spec graph with token-budgeted retrieval | Embeddings, a vector store, the network | `cli/interlock-graph`, `lib/graph/` |
 | `report` | `interlock report` | cli | code | Indicators over the corpora, each with its denominator | Any verdict; any write | `lib/report.mjs` |
 | `hostport` | `lib/host.mjs` | port | code | Three operations: `spawn`, `mapPipeline`, `runCli` | A fourth operation | `lib/host.mjs` |
 | `registry` | `lib/host/registry.mjs` | port | code | Eight capability declarations per adapter | An adapter missing a key | `lib/host/registry.mjs` |
@@ -615,7 +615,7 @@ Source of truth: `lib/run.mjs` (the ship program, which emits every step), `lib/
 
 **The run, as a state machine.**
 
-Intro: `interlock run` emits the whole ship loop as versioned steps: the agents to spawn, the briefing each one carries, and the exact argv to call once they return. `workflows/ship.js` on Claude Code and the experimental `bin/interlock-run` are interpreters of those steps. Each spawns what a step names, writes the results, calls what the step names next, and branches on nothing: not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of. Control flow written twice in two drivers is control flow that drifts.
+Intro: `interlock run` emits the whole ship loop as versioned steps: the agents to spawn, the briefing each one carries, and the exact argv to call once they return. `workflows/ship.js` on Claude Code and the experimental `cli/interlock-run` are interpreters of those steps. Each spawns what a step names, writes the results, calls what the step names next, and branches on nothing: not a flag, not a mode, not a count, not a verdict. Control flow written as prose is control flow the model can talk itself out of. Control flow written twice in two drivers is control flow that drifts.
 
 Two vocabularies the diagram uses:
 - **Stage markers**, six, written to `.claude/ship/<change>/stage.json` and read by the guard hooks: `implement`, `verify`, `review`, `remediation`, `fix-tests`, `commit`.

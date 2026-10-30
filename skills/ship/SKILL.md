@@ -56,6 +56,8 @@ If a `/goal` is active, it is satisfied when the transcript contains `GOAL MET: 
 
 `mode` matters more than it looks. The outcome corpus compares continuity runs against checkpoint runs; a continuity run filed as a checkpoint makes that comparison say the opposite of the truth.
 
+If the run reports `command not found` for `interlock`, this session predates the plugin and its PATH has no plugin CLI. Say so, ask for a new session, and do not launch again.
+
 ## 3. If the Workflow tool is not available
 
 **Halt.** Do not fall back to implementing the change in this conversation.
@@ -64,4 +66,4 @@ If a `/goal` is active, it is satisfied when the transcript contains `GOAL MET: 
 
 Tell the user that, and that everything else in Interlock still works — `spec`, the reviews, `commit`. Do not offer to "just start on the first task".
 
-There is a second, experimental host — `bin/interlock-run`, which runs the same loop over a vendor coding CLI the user names (`--host claude | acp | codex | qwen`), `--strict` included: every step, the review and remediation rounds and the handoff among them, is emitted by `interlock run` and interpreted there as it is here. It is still a **separate binary this skill never invokes**, and it is still not a fallback for a missing Workflow tool. A user runs it themselves from a terminal; `/interlock:ship` is Claude Code only, and the runner refuses `--host workflow` from the other side.
+There is a second, experimental host — `cli/interlock-run`, which runs the same loop over a vendor coding CLI the user names (`--host claude | acp | codex | qwen`), `--strict` included: every step, the review and remediation rounds and the handoff among them, is emitted by `interlock run` and interpreted there as it is here. It is still a **separate binary this skill never invokes**, and it is still not a fallback for a missing Workflow tool. A user runs it themselves from a terminal; `/interlock:ship` is Claude Code only, and the runner refuses `--host workflow` from the other side.

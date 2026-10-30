@@ -23,7 +23,7 @@ import { findingId, findingKey } from '../../lib/findings.mjs'
 import { FIXED_LEGEND, SETTLE_HELP, SETTLE_SUBCOMMANDS, STOP_PREFIX, toleratedPaths } from '../../lib/settle-cli.mjs'
 import { NOTES_PATH } from '../../lib/notes.mjs'
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock')
+const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
 
 const HEAD = 'a'.repeat(40)
 const OTHER_HEAD = 'b'.repeat(40)

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'interlock-graph');
+const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock-graph');
 
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'interlock-covers-'));

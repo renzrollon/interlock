@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { outDirRefusal, CHANGE } from '../../scripts/cut-release-fixture.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 function cli(args, { cwd, bin = BIN } = {}) {
   const r = spawnSync(process.execPath, [bin, ...args], {
@@ -173,13 +173,13 @@ test('autonomy clean --json is an array of rows on every path; the corruption ri
 test('a CLI that cannot read its package.json says unknown, never null', () => {
   const dir = scratch('interlock-no-version-')
   try {
-    mkdirSync(join(dir, 'bin'))
-    cpSync(BIN, join(dir, 'bin', 'interlock'))
+    mkdirSync(join(dir, 'cli'))
+    cpSync(BIN, join(dir, 'cli', 'interlock'))
     cpSync(join(ROOT, 'lib'), join(dir, 'lib'), { recursive: true })
     // Node 18 has no module-syntax detection, so the extensionless bin needs the
     // package type to load at all. The manifest carries no version to read.
     writeFileSync(join(dir, 'package.json'), '{"type":"module"}\n')
-    const bin = join(dir, 'bin', 'interlock')
+    const bin = join(dir, 'cli', 'interlock')
 
     const flag = cli(['--version'], { cwd: dir, bin })
     assert.equal(flag.stdout, 'unknown\n')
@@ -202,7 +202,7 @@ test('a CLI that cannot read its package.json says unknown, never null', () => {
 
 // --- the flag table is a plain import ---------------------------------------------------
 
-test('bin/interlock imports the flag table by a plain literal specifier', () => {
+test('cli/interlock imports the flag table by a plain literal specifier', () => {
   const text = readFileSync(BIN, 'utf8')
   assert.match(text, /^import \{[^}]*\} from '\.\.\/lib\/cli-flags\.mjs'$/m)
   assert.doesNotMatch(text, /cli-fl' \+ 'ags|'\s*\+\s*'ags\.mjs/, 'no specifier built from pieces')

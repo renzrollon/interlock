@@ -73,7 +73,7 @@ function settlePaneLines(settle, columns) {
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const BIN = join(ROOT, 'bin', 'interlock')
+const BIN = join(ROOT, 'cli', 'interlock')
 
 // --- the shared kit: records, clock, Bash results, agent events ---------------
 

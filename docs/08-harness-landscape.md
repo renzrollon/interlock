@@ -16,7 +16,7 @@ Most of it is about `ship`. `/interlock:spec` is a skill in your own session, be
 | Agent loop | One conversation: prompt assembly, tool dispatch, transcript, compaction | The host's |
 | Tool surface | What an agent may touch | The host's tools, narrowed by Interlock's two agent types and its `PreToolUse` guards |
 | Run program | Which agents run, in what order, with which briefing | Interlock — `lib/run.mjs` |
-| Policy | Caps, gates and verdicts | Interlock — `bin/interlock` |
+| Policy | Caps, gates and verdicts | Interlock — `cli/interlock` |
 | Records | What a run leaves on disk | Interlock — trajectory, spill, receipt, corpora |
 | Process | Spec, checkpoint, ship | Interlock, over [OpenSpec's](./03-openspec-vs-interlock.md) artifacts |
 
@@ -29,15 +29,15 @@ The line between the two halves is deliberate. A decision with a correct answer 
 | Part | Lives in | Job | Detail |
 |---|---|---|---|
 | **Run program** | `lib/run.mjs`, called as `interlock run …` | Emits the ship loop one versioned step at a time: the agents to spawn (label, model, effort, tools, result schema, briefing) and the exact argv to call when they return | [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine) |
-| **Policy engine** | `bin/interlock`, `lib/` | Every decision with a correct answer: wave order, the caps, the verify verdict, the review gate, readiness. A gating command exits non-zero when it blocks | [07](./07-cli-and-configuration.md#interlock--the-deterministic-spine), [04](./04-when-it-stops.md#what-is-enforced-and-what-is-followed) |
+| **Policy engine** | `cli/interlock`, `lib/` | Every decision with a correct answer: wave order, the caps, the verify verdict, the review gate, readiness. A gating command exits non-zero when it blocks | [07](./07-cli-and-configuration.md#interlock--the-deterministic-spine), [04](./04-when-it-stops.md#what-is-enforced-and-what-is-followed) |
 | **Briefings** | `lib/prompts/` | Assembles every prompt a step carries. Each one is written to `.claude/ship/briefings/` with its own hash on the first line, and the implementer prompts are pinned by the fixtures in `test/fixtures/prompts/` | [06 §5.4](./06-why-it-works.md#54-the-loop-is-a-state-machine) |
-| **Drivers** | `workflows/ship.js`, `bin/interlock-run` | Interpreters. Spawn what a step names, create the worktree it names, call the argv it names. They hold no loop logic and branch on nothing | [07](./07-cli-and-configuration.md#where-the-loop-itself-lives) |
+| **Drivers** | `workflows/ship.js`, `cli/interlock-run` | Interpreters. Spawn what a step names, create the worktree it names, call the argv it names. They hold no loop logic and branch on nothing | [07](./07-cli-and-configuration.md#where-the-loop-itself-lives) |
 | **Host adapters** | `lib/host/` | One file per vendor CLI: a transport, plus a declaration of what that host cannot do | [07](./07-cli-and-configuration.md#interlock-run--the-experimental-runner) |
 | **Agent types** | `agents/ping.md`, `agents/worker.md` | The tool allowlist every spawn runs under. Neither may use `Skill`, `Agent` or an MCP tool, which also keeps the host's catalog out of each spawn's prefix | [06 §5.1](./06-why-it-works.md#51-isolation-is-the-point) |
 | **Guards** | `hooks/guard-*.mjs`, and the launch guard's branch of `hooks/mod.mjs` | Hooks the host runs outside the agent. During a run they deny a test edit in a repair stage, a hand-ticked task box, a commit outside the commit stage, and a second ship launch nobody asked for. Inert outside a run, and they fail open | [13](./13-the-guards.md) |
 | **Recorder and meters** | `hooks/recorder.mjs`, `hooks/mod.mjs` | Observe and decide nothing: what each agent spent, each permission event, a session that ended mid-run, and the live pane that draws a run | [13](./13-the-guards.md#the-ship-meter) |
 | **Records** | `.claude/ship/`, and the [state home](./07-cli-and-configuration.md#where-a-runs-records-go-the-state-home) | The run trajectory, spilled output, the receipt and the outcome corpus | [06 §5.5](./06-why-it-works.md#55-inspectability-a-run-leaves-a-transcript), [11](./11-the-indicators.md) |
-| **Graph** | `bin/interlock-graph` | Deterministic code retrieval inside a token budget, so an agent locates before it reads | [07](./07-cli-and-configuration.md#interlock-graph--the-local-code-knowledge-graph) |
+| **Graph** | `cli/interlock-graph` | Deterministic code retrieval inside a token budget, so an agent locates before it reads | [07](./07-cli-and-configuration.md#interlock-graph--the-local-code-knowledge-graph) |
 
 ---
 
@@ -63,7 +63,7 @@ step { spawns: [...], then: { argv } }
 
 On the way out, `interlock run close` writes the receipt, appends the outcome record and clears the stage marker. A halt closes the same way a commit does.
 
-The two drivers differ in one place. `bin/interlock-run` is ordinary Node and runs the argv itself. A Workflow script has no shell, so `workflows/ship.js` hands the argv to a small relay agent that runs it and copies the step back. A relay that returns an action the program does not emit is retried once, and then the run halts; it is never obeyed.
+The two drivers differ in one place. `cli/interlock-run` is ordinary Node and runs the argv itself. A Workflow script has no shell, so `workflows/ship.js` hands the argv to a small relay agent that runs it and copies the step back. A relay that returns an action the program does not emit is retried once, and then the run halts; it is never obeyed.
 
 Because neither driver branches, the loop exists once. `test/spine/host.test.mjs` drives a batch through a host that cannot reach a model at all, and the halt still comes out of the CLI's exit code.
 

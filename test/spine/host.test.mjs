@@ -3,7 +3,7 @@
 // The interesting assertion in this file is negative: a host that cannot reach a
 // model at all still gets the right halt, because the halt was never the host's
 // to compute. `createFakeHost` stubs the spawn side and leaves `runCli` pointed
-// at `bin/interlock`, so a test can drive `wave-state create` → `record-batch`
+// at `cli/interlock`, so a test can drive `wave-state create` → `record-batch`
 // end to end and check that the reason came out of the CLI's exit status and
 // stdout rather than out of the stub.
 //

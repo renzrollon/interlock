@@ -70,7 +70,7 @@ suite red grades red, because the suite was consulted and the claim was not.
 
 ## What it does NOT measure, and why
 
-**This eval runs on the ACP host** (`bin/interlock-ship-acp`), because that is
+**This eval runs on the ACP host** (`cli/interlock-ship-acp`), because that is
 the only host the loop can be driven from a shell on: `workflows/ship.js` needs
 the Workflow tool and cannot be driven headlessly. Three consequences follow, and
 they are stated here rather than left for a reader to infer from a number:

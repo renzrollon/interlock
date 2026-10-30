@@ -51,7 +51,7 @@ test('the documented ship caps are the ones the prose promised', () => {
 
 test('the run-step cap is published here rather than restated in a driver', () => {
   // This was `MAX_LOOP_STEPS = 200`, a literal in `workflows/ship.js` and again
-  // in `bin/interlock-ship-acp` — a loop bound stated in two places that the
+  // in `cli/interlock-ship-acp` — a loop bound stated in two places that the
   // cap-authority spec forbids stating anywhere but here. Its reader is
   // `lib/run.mjs`, which counts steps on the run manifest and halts.
   assert.equal(LIMITS.maxRunSteps, 200)
@@ -65,7 +65,7 @@ test('the run-step cap is published here rather than restated in a driver', () =
   // And neither driver may restate it. A driver's RUNAWAY_BACKSTOP is a
   // different thing — the host runtime's agent ceiling, not a policy cap — and
   // is asserted distinct in test/workflows.test.mjs.
-  for (const driver of [join(ROOT, 'workflows', 'ship.js'), join(ROOT, 'bin', 'interlock-ship-acp')]) {
+  for (const driver of [join(ROOT, 'workflows', 'ship.js'), join(ROOT, 'cli', 'interlock-ship-acp')]) {
     assert.doesNotMatch(
       readFileSync(driver, 'utf8'),
       /MAX_LOOP_STEPS/,
@@ -153,8 +153,8 @@ test('the wave board\'s widths are read by both renderers and the CLI, and the d
     assert.ok(reader.includes('LIMITS.waveBoardMinColumns'), `lib/${name} does not read the minimum width`)
     assert.ok(reader.includes('LIMITS.waveBoardDefaultColumns'), `lib/${name} does not read the default width`)
   }
-  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
-  assert.ok(cli.includes('LIMITS.waveBoardDefaultColumns'), 'bin/interlock does not read the default width')
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
+  assert.ok(cli.includes('LIMITS.waveBoardDefaultColumns'), 'cli/interlock does not read the default width')
   const doc = readFileSync(join(ROOT, 'docs', '07-cli-and-configuration.md'), 'utf8')
   assert.ok(doc.includes('interlock limits'), 'docs/07 does not point at interlock limits')
   for (const label of ['wave board min width (columns)', 'wave board default width (columns)']) {
@@ -225,9 +225,9 @@ test('formatLimits names every cap it prints', () => {
 //
 //   - Two accepted tokens per cap. A lib/bin/workflows reader names a cap as
 //     `<GROUP>.<cap>`; a CI reader names it as `<published>.<cap>`, the field
-//     the CLI publishes (`bin/interlock` emits EVAL_CAPS as `evals`). Matching
+//     the CLI publishes (`cli/interlock` emits EVAL_CAPS as `evals`). Matching
 //     only one form would fail one whole group on day one.
-//   - The bare group name never counts. `bin/interlock` contains
+//   - The bare group name never counts. `cli/interlock` contains
 //     `evals: EVAL_CAPS`, a whole-group forward to the printed surface; a
 //     matcher that accepted the bare identifier would find it there and mark
 //     every eval cap read, restoring exactly the blindness being removed.
@@ -236,7 +236,7 @@ test('formatLimits names every cap it prints', () => {
 // widening the sweep further is a separate judgement.
 
 test('every cap the limits surface prints is read by the code path it governs', () => {
-  const dirs = ['lib', 'bin', 'workflows', join('.github', 'workflows')]
+  const dirs = ['lib', 'cli', 'workflows', join('.github', 'workflows')]
   // The limits definition names every cap it prints, so counting it as a reader
   // would make this check vacuous. It is the one exclusion.
   const SELF = join(ROOT, 'lib', 'limits.mjs')
@@ -442,7 +442,7 @@ test('the outcome eval’s default model is a key in the published price table',
 })
 
 test('interlock limits --json emits the ceiling and the price table', () => {
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -495,7 +495,7 @@ test('the cost-per-task ceiling is published by interlock limits, in prose and i
   assert.equal(EVAL_CAPS.matrixCostUsd, 40)
   assert.match(formatLimits(), /eval cost-per-task sweep ceiling/)
   assert.match(formatLimits(), new RegExp(`cost-per-task sweep ceiling \\(by hand\\)\\s+\\$${EVAL_CAPS.matrixCostUsd}\\s*$`, 'm'))
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -550,7 +550,7 @@ test('no effort level is written beside an effort key outside the published tabl
     `\\beffort['"]?\\s*[:=]\\s*['"\`](${EFFORT_LEVEL_WORDS.join('|')})['"\`]`
   )
   const offenders = []
-  for (const rel of ['lib/run.mjs', 'lib/waves.mjs', 'workflows/ship.js', 'bin/interlock-run']) {
+  for (const rel of ['lib/run.mjs', 'lib/waves.mjs', 'workflows/ship.js', 'cli/interlock-run']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     const hit = text.split('\n').findIndex(line => pattern.test(line))
     if (hit !== -1) offenders.push(`${rel}:${hit + 1}`)
@@ -643,7 +643,7 @@ test('formatLimits prints the observed runtime slots beside the vendor default, 
 })
 
 test('interlock limits --json carries the observed runtime slots', () => {
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: '4' }
@@ -653,7 +653,7 @@ test('interlock limits --json carries the observed runtime slots', () => {
   assert.equal(payload.runtime.maxConcurrentAgents, RUNTIME.maxConcurrentAgents, 'the vendor fact is unchanged')
   assert.equal(payload.runtime.observed.observed, 4)
   assert.equal(payload.runtime.observed.source, 'env')
-  const text = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits'], {
+  const text = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits'], {
     cwd: ROOT,
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: undefined }
@@ -678,7 +678,7 @@ test('the inter-wave verify budget is published as a floor, in prose and in --js
     formatLimits(),
     new RegExp(`inter-wave verify budget \\(floor\\)\\s+${LIMITS.interWaveVerifyBudgetMs / 1000}s`)
   )
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -761,7 +761,7 @@ test('the domain-spec text cap is a positive integer in LIMITS, printed by inter
   )
   assert.ok(!('maxDomainSpecChars' in MERGE_BANDS), 'the cap bounds a prompt, it is not a merge threshold')
 
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -795,7 +795,7 @@ test('the change width caps are positive integers in LIMITS, printed by interloc
     'interlock limits does not print the task cap row carrying the cap'
   )
 
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -824,7 +824,7 @@ test('the domain-spec text cap is read by name under lib/, and the review skill 
 })
 
 test('interlock limits --json emits the merge bands under their own top-level key', () => {
-  const run = spawnSync(process.execPath, [join(ROOT, 'bin', 'interlock'), 'limits', '--json'], {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
     cwd: ROOT,
     encoding: 'utf8'
   })
@@ -840,7 +840,7 @@ test('interlock limits --json emits the merge bands under their own top-level ke
 // stay out of LIMITS and out of the positive-integer invariant. They join the
 // cap-authority sweep's discipline by hand: each is printed by `formatLimits`
 // and read by name by a module under lib/, with the bare group forward in
-// `bin/interlock` (`routing: SPAWN_ROUTING`) never counted as a reader.
+// `cli/interlock` (`routing: SPAWN_ROUTING`) never counted as a reader.
 
 /** Every `.mjs` under lib/ except the limits module itself, as `{ rel, text }`. */
 function libSources() {
@@ -891,7 +891,7 @@ test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward i
   assert.deepEqual(readers(/\bSPAWN_ROUTING\[|Object\.\w+\(SPAWN_ROUTING\)/), ['lib/routing.mjs'])
   assert.deepEqual(readers(/\bREVIEW_DEPTH\[|\bREVIEW_DEPTH\.default\b/), ['lib/routing.mjs'])
   // The forward exists, so the sweep must be refusing it on purpose.
-  const cli = readFileSync(join(ROOT, 'bin', 'interlock'), 'utf8')
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
   assert.match(cli, /routing: SPAWN_ROUTING/)
   assert.match(cli, /reviewDepth: REVIEW_DEPTH/)
   // Neither table is restated outside lib/ and the CLI: not by the hooks module,
@@ -899,7 +899,7 @@ test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward i
   const outside = [
     'hooks/mod.mjs',
     'workflows/ship.js',
-    'bin/interlock-run',
+    'cli/interlock-run',
     'skills/explore/SKILL.md',
     'skills/review-code/SKILL.md',
     'skills/settle/SKILL.md',

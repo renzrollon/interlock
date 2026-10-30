@@ -120,12 +120,11 @@ No degradation banners — graph, test profile, model routing, verification and 
 
 ```
 $ interlock doctor
-PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run, 1 warning(s)     [accent]
+PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run     [accent]
   root: /Users/you/projects/interlock
   [ok  ] node: Node v24.19.0 (plugin requires >=18, OpenSpec requires 20.19.0+)
   [ok  ] plugin: plugin 1.2.1 complete: workflow, both agent types, both binaries
-  [warn] binaries: interlock, interlock-graph not on PATH — present in the plugin's bin/, which Claude Code injects inside a session
-      fix: Nothing to do for a run inside Claude Code. For a plain shell: export PATH="/Users/you/projects/interlock/bin:$PATH"
+  [ok  ] binaries: interlock, interlock-graph run from the plugin's cli/ (/Users/you/projects/interlock/cli), which the session preflight appends to PATH
   [ok  ] openspec: openspec CLI available and this project is initialised
   [ok  ] git: git version 2.55.0 in a work tree
   [FAIL] test-profile: .claude/testing/profile.json is missing, so verification has no command to run and continuity refuses to start   [accent]
