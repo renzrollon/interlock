@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-31
+
 ### Changed
 
 - **The executables moved from `bin/` to `cli/`.** `interlock`, `interlock-graph`, `interlock-run` and `interlock-ship-acp` are unchanged files at a new path, because the plugin directory asks a plugin to ship readable scripts outside `bin/`. `package.json`'s `bin` map points at `cli/`, so an npm global install still links the same four names, and the SessionStart preflight puts the plugin's `cli/` on the session's PATH.
