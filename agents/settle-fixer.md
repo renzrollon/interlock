@@ -1,6 +1,6 @@
 ---
 name: settle-fixer
-description: Fix-round implementer for the Interlock settle loop. Edits the working tree to answer the findings its prompt quotes, runs the unit suite at most once, and writes the result file. Never invoke from a user conversation — only /interlock:settle spawns this type.
+description: Fix-round implementer for the Interlock settle loop. Edits the working tree to answer the findings its prompt quotes, runs the unit suite at most once, and writes the result file. Never invoke from a user conversation — only /interlock:settle spawns this type. When the /interlock:settle fix round names this type, that skill is the spawner and the spawn is the sanctioned use.
 tools: Read, Write, Edit, Grep, Glob, Bash
 disallowedTools: Skill, Agent, mcp__*
 ---

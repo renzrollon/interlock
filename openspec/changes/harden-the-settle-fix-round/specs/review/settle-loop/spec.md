@@ -32,7 +32,14 @@ When a round leaves something staged, the skill SHALL plan its verification with
 - **GIVEN** a round with no `.claude/ship/settle/profile-r<r>.json`, and another whose staged paths are all documentation
 - **WHEN** the skill plans each round's verification
 - **THEN** the prose says `--no-profile` replaces the profile flag when no copy exists, and each `verify exec` runs with the tool's timeout set to the profile's `unit.timeout_ms`
-- **AND** a plan with no step is a green round: the judge exits 0 and the round commits
+- **AND** a plan whose staged paths are all documentation plans no step and is a green round: the judge exits 0 and the round commits
+
+#### Scenario: Degraded path — a round the plan could not verify says so
+
+- **GIVEN** a round whose plan lists no `unit` step, and whose `skipped` entry for `unit` gives a reason other than `docs-only-changes` (no profile copy, or a profile with no unit command)
+- **WHEN** the judge exits 0
+- **THEN** the skill prints `ROUND UNVERIFIED: <that reason>` and the plan's banners before the commit, and says it again in the report
+- **AND** a documentation-only round, whose `unit` skip reason is `docs-only-changes`, prints no such line
 
 ### Requirement: The fixer SHALL be the plugin's bounded `settle-fixer` agent, briefed to run the unit suite one time at most
 
@@ -51,6 +58,13 @@ The plugin SHALL ship `agents/settle-fixer.md` with the worker's tool list, `Ski
 - **WHEN** the skill suite reads the fixer paragraph
 - **THEN** it names `interlock:settle-fixer` as the fixer's type, no fenced or prose line of the round names `general-purpose`, and the paragraph still carries `ONE`, `whole prompt`, `no ship guards` and `Do not fix anything yourself`
 - **AND** the routing lines `interlock routing settle-fixer --json` and `ROUTING UNAVAILABLE` stay as they were
+
+#### Scenario: Failure — the fixer type is unknown or the spawn is refused
+
+- **GIVEN** a host that reports `interlock:settle-fixer` as an unknown type, or a spawn that is refused
+- **WHEN** the skill reaches the fixer spawn
+- **THEN** it prints `ROUND FAILED: fixer type unavailable` with the tool's message and stops the loop early, with nothing staged, committed or pushed
+- **AND** it spawns no other type in its place and fixes nothing itself
 
 #### Scenario: Happy path — the briefing's lines
 

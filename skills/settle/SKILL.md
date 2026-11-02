@@ -242,6 +242,8 @@ git rev-parse HEAD
 
 **Spawn ONE `interlock:settle-fixer` subagent with the answer's `briefing` field as its whole prompt.** The plugin's definition of that type bounds its tools: it cannot spawn agents or invoke skills. It fixes the listed findings, writes `.claude/ship/settle/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does. Before the pass's first fixer, run `interlock routing settle-fixer --json` once, and reuse its answer in later rounds. Pass its `model` and `effort` on the fixer call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults: routing is a cost hint, never a reason to stop the round. Name no model and no effort level in this skill or in the prompt.
 
+**A fixer that cannot be spawned fails the round.** The type's description reserves it for this skill, and this round is the one spawn it names. When the Agent tool reports the fixer's type as unknown, or the spawn is refused or declined, print `ROUND FAILED: fixer type unavailable — <the tool's message, or the refusal>`, and stop the loop early. Spawn no other type in its place and fix nothing yourself: the type is what bounds the fixer's tools. Nothing was staged, committed or pushed; say so, and that `interlock doctor` names an install whose `agents/` lacks the file.
+
 **The head did not move.** Read it again:
 
 ```bash
@@ -338,7 +340,9 @@ Write one `{ kind, exitCode }` entry per step to `.claude/ship/settle/results-r<
 interlock verify judge --plan .claude/ship/settle/plan-r<r>.json --results .claude/ship/settle/results-r<r>.json --context inter-wave --head <sha> --json > .claude/ship/settle/verify-r<r>.json
 ```
 
-A plan with no step (every staged path is documentation) is a green round: the judge exits 0. Exit 0 goes on to the commit. Any other exit is a red round: print `ROUND FAILED: unit red — <reason>`, with the reason the verdict in `verify-r<r>.json` gives, or `the judge printed no verdict` when that file is empty. Commit nothing, push nothing, leave the round's changes staged, and stop the loop early. The round's files never share a name with the pass's `verify.json`.
+A plan whose staged paths are all documentation plans no step and is a green round: the judge exits 0. Exit 0 goes on to the commit. Any other exit is a red round: print `ROUND FAILED: unit red — <reason>`, with the reason the verdict in `verify-r<r>.json` gives, or `the judge printed no verdict` when that file is empty. Commit nothing, push nothing, leave the round's changes staged, and stop the loop early. The round's files never share a name with the pass's `verify.json`.
+
+**A round the plan could not verify says so before it commits.** Read the `unit` entry of the plan's `skipped` list in `plan-r<r>.json`. When the plan lists no `unit` step and that entry's reason is anything but `docs-only-changes` (with no profile copy it is `no-test-profile`; with a profile that has no unit command, `no-detectable-command`), the judge's exit 0 is not a green suite: print `ROUND UNVERIFIED: <that reason> — round <r> commits with its unit suite not run`, then every line of the plan's `banners` verbatim, and only then commit. Say it again in the report. A round whose staged paths are all documentation skips `unit` for `docs-only-changes`: it has nothing to verify and prints no such line.
 
 Then commit the round, naming the pull request and the round, and push it:
 
