@@ -230,7 +230,7 @@ The command defers two kinds of finding before it plans the round, and lists the
 
 **Read `reReviewDimensions`.** The answer is JSON: its `briefing` field is the fixer's briefing, and `reReviewDimensions` is the list of dimensions whose findings this round fixes. Keep that list for the round's re-review below; the first review of the pass never has one.
 
-**The loop runs while this exits 0, and ends only on the CLI's stop rule:** exit 1 with standard error beginning `interlock: STOP: ` (nothing left to fix, the round cap reached, a verdict that halts the rounds). Report the reason after `STOP:`; the loop ends, and goes on to §5d. Any other non-zero exit is a failure, never a stop: print `ROUND FAILED: <reason>` and stop the loop early. The cap is the CLI's: never count rounds against a number of your own.
+**The loop runs while this exits 0, and ends only on the CLI's stop rule:** exit 1 with standard error beginning `interlock: STOP: ` (nothing left to fix, the round cap reached, a verdict that halts the rounds). Report the reason after `STOP:`; the loop ends, and goes on to §5d. Standard error may carry two more lines after it. `ANOTHER PASS SUGGESTED:` names the blockers and warnings that survive and that no round of this pass will fix, such as a warning the last re-review added. `LEFT FOR A PERSON:` names the deferred findings no fix round can take. Print each line verbatim and say it again in the report. Start no pass and no round yourself: whether another pass is worth its cost is the person's call, and the loop never runs one by default. Any other non-zero exit is a failure, never a stop: print `ROUND FAILED: <reason>` and stop the loop early. The cap is the CLI's: never count rounds against a number of your own.
 
 **Who a round briefs.** The first round briefs every surviving blocker and warning. A later round is briefed only while a blocker survives, and then it takes the surviving warnings with it, so a warning a re-review adds is fixed only when a blocker also survives into the next round. Suggestions are never briefed. The CLI applies this rule; the skill only states it.
 
@@ -328,7 +328,7 @@ Plan the round's verification over those paths, with the round's profile copy (w
 interlock verify plan --profile .claude/ship/settle/profile-r<r>.json --context inter-wave --changed <staged paths> --json > .claude/ship/settle/plan-r<r>.json
 ```
 
-Run each planned step exactly as the plan gives it, once per step, each with the Bash tool's timeout set to the plan's `unit.timeout_ms` (or the tool's own maximum, when that is lower):
+Run each planned step exactly as the plan gives it, once per step, each with the Bash tool's timeout set to that step's `timeoutMs` in `plan-r<r>.json` (or the tool's own maximum, when that is lower; a step whose `timeoutMs` is null keeps the tool's default):
 
 ```bash
 interlock verify exec --kind <kind> --command "<command>"
@@ -340,7 +340,7 @@ Write one `{ kind, exitCode }` entry per step to `.claude/ship/settle/results-r<
 interlock verify judge --plan .claude/ship/settle/plan-r<r>.json --results .claude/ship/settle/results-r<r>.json --context inter-wave --head <sha> --json > .claude/ship/settle/verify-r<r>.json
 ```
 
-A plan whose staged paths are all documentation plans no step and is a green round: the judge exits 0. Exit 0 goes on to the commit. Any other exit is a red round: print `ROUND FAILED: unit red — <reason>`, with the reason the verdict in `verify-r<r>.json` gives, or `the judge printed no verdict` when that file is empty. Commit nothing, push nothing, leave the round's changes staged, and stop the loop early. The round's files never share a name with the pass's `verify.json`.
+A plan whose staged paths are all documentation plans no step and is a green round: the judge exits 0. Exit 0 goes on to the commit. Any other exit is a red round: print `ROUND FAILED: unit red — <reason>`, with the reason the verdict in `verify-r<r>.json` gives, or `the judge printed no verdict` when that file is empty. Commit nothing, push nothing, leave the round's changes staged, and stop the loop early. Name the staged paths, and say that the next `/interlock:settle` will not start on this tree until the person commits, unstages or discards them: the skill does none of that for them. The round's files never share a name with the pass's `verify.json`.
 
 **A round the plan could not verify says so before it commits.** Read the `unit` entry of the plan's `skipped` list in `plan-r<r>.json`. When the plan lists no `unit` step and that entry's reason is anything but `docs-only-changes` (with no profile copy it is `no-test-profile`; with a profile that has no unit command, `no-detectable-command`), the judge's exit 0 is not a green suite: print `ROUND UNVERIFIED: <that reason> — round <r> commits with its unit suite not run`, then every line of the plan's `banners` verbatim, and only then commit. Say it again in the report. A round whose staged paths are all documentation skips `unit` for `docs-only-changes`: it has nothing to verify and prints no such line.
 
@@ -363,15 +363,15 @@ Review the pushed head, independently of the fixer, scoped to the dimensions the
 
 The dimensions that raised nothing the round fixed are not run again, and their findings are carried, marked `carried`, into this round's record, so the reply table and the verdict read the whole pull request and not only the part that was re-examined. When `reReviewDimensions` is empty, write neither `--dimensions` nor `--carry`, and the review runs whole.
 
-Post what each finding of the round before became, `fixed`, `open` or `new`, as the command rendered it:
+Post what each finding of the round before became, `fixed`, `not re-raised`, `open` or `new`, as the command rendered it. Pass the round's fixer result with `--result`: a finding reads `fixed` only when that fixer claimed it and the re-review did not raise it again. One the re-review dropped that no fixer claimed reads `not re-raised`, because a fresh reviewer that did not mention a finding is not evidence that it was fixed:
 
 ```bash
-interlock settle replies --before .claude/ship/settle/review-r<r-1>.json --after .claude/ship/settle/review-r<r>.json --head <sha> | gh pr comment <n> --body-file -
+interlock settle replies --before .claude/ship/settle/review-r<r-1>.json --after .claude/ship/settle/review-r<r>.json --head <sha> --result .claude/ship/settle/remediate-r<r>.json | gh pr comment <n> --body-file -
 ```
 
 ```bash
 # GitLab — not exercised: GitLab has no reply-to-comment primitive here, so each table is a new note
-glab mr note <iid> --message "$(interlock settle replies --before .claude/ship/settle/review-r<r-1>.json --after .claude/ship/settle/review-r<r>.json --head <sha>)"
+glab mr note <iid> --message "$(interlock settle replies --before .claude/ship/settle/review-r<r-1>.json --after .claude/ship/settle/review-r<r>.json --head <sha> --result .claude/ship/settle/remediate-r<r>.json)"
 ```
 
 When `interlock settle replies` exits non-zero it rendered nothing, and nothing is posted: print `ROUND FAILED: <reason>` and stop the loop early. Otherwise the next round, from `review-r<r>.json`.

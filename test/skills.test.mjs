@@ -1754,8 +1754,36 @@ function settleSkillProblems(text) {
   }
   const stagedList = fencedAt(/^git diff --cached --name-only$/)
   if (stagedList === -1 || roundPlan === -1 || stagedList > roundPlan) problems.push('no fenced `git diff --cached --name-only` line before the round\'s plan line')
-  for (const token of ['ROUND FAILED: unit red', 'the judge printed no verdict', '--no-profile']) {
+  for (const token of ['ROUND FAILED: unit red', 'the judge printed no verdict', '--no-profile', 'ROUND UNVERIFIED', 'ROUND FAILED: fixer type unavailable']) {
     if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+  // The round's Bash timeout is the plan step's own field, not the profile's key.
+  if (!paragraphs.some(p => p.includes('timeoutMs') && p.includes('plan-r<r>.json'))) {
+    problems.push("no paragraph sets the round's Bash timeout from the plan step's timeoutMs")
+  }
+  // A red round leaves the index staged, so the next pass's tree-check refuses it: say so.
+  if (!paragraphs.some(p => p.includes('ROUND FAILED: unit red') && p.includes('Name the staged paths') && p.includes('will not start'))) {
+    problems.push('no paragraph tells the person a red round blocks the next settle until they clear the staged paths')
+  }
+  // The round's reply line hands replies the fixer's result, so `fixed` needs the fixer's claim.
+  const roundReplies = fence.filter(f => /^interlock settle replies\b/.test(f.line) && f.line.includes('--after .claude/ship/settle/review-r<r>.json'))
+  if (!roundReplies.length || !roundReplies.every(f => f.line.includes('--result .claude/ship/settle/remediate-r<r>.json'))) {
+    problems.push("the round's `interlock settle replies` line carries no --result .claude/ship/settle/remediate-r<r>.json")
+  }
+  if (!paragraphs.some(p => p.includes('not re-raised') && p.includes('--result') && p.includes('claimed'))) {
+    problems.push('no paragraph says a finding reads fixed only when the fixer claimed it, and not re-raised otherwise')
+  }
+  // A stop's advice lines are relayed, and the loop starts nothing on them.
+  if (!paragraphs.some(p => ['STOP:', 'ANOTHER PASS SUGGESTED:', 'LEFT FOR A PERSON:', 'verbatim', 'Start no pass'].every(t => p.includes(t)))) {
+    problems.push('no paragraph relays ANOTHER PASS SUGGESTED and LEFT FOR A PERSON verbatim after a STOP: and starts no pass')
+  }
+  // ROUND UNVERIFIED is printed for a non-docs unit skip, before the commit.
+  if (!paragraphs.some(p => p.includes('ROUND UNVERIFIED') && p.includes('docs-only-changes') && p.includes('only then commit'))) {
+    problems.push('no paragraph prints ROUND UNVERIFIED for a non-docs unit skip before the commit')
+  }
+  // A fixer type that cannot be spawned stops the round with no substitute.
+  if (!paragraphs.some(p => p.includes('fixer type unavailable') && p.includes('Spawn no other type') && p.includes('stop the loop early'))) {
+    problems.push('no paragraph fails the round when the fixer type cannot be spawned, with no substitute type')
   }
   if (!paragraphs.some(p => p.includes('ROUND FAILED: unit red') && p.includes('Commit nothing') && p.includes('push nothing') && p.includes('staged') && p.includes('stop the loop early'))) {
     problems.push('no paragraph prints ROUND FAILED: unit red, commits nothing, pushes nothing, leaves the round staged and stops the loop early')

@@ -20,7 +20,16 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { findingId, findingKey } from '../../lib/findings.mjs'
-import { FIXED_LEGEND, SETTLE_HELP, SETTLE_SUBCOMMANDS, STOP_PREFIX, toleratedPaths } from '../../lib/settle-cli.mjs'
+import {
+  ANOTHER_PASS_PREFIX,
+  FIXED_LEGEND,
+  LEFT_FOR_A_PERSON_PREFIX,
+  NOT_RERAISED_LEGEND,
+  SETTLE_HELP,
+  SETTLE_SUBCOMMANDS,
+  STOP_PREFIX,
+  toleratedPaths
+} from '../../lib/settle-cli.mjs'
 import { NOTES_PATH } from '../../lib/notes.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
@@ -371,18 +380,27 @@ const B = finding({ file: 'lib/b.mjs', line: 6, title: 'Bravo leaks a handle' })
 const C = finding({ file: 'lib/c.mjs', line: 7, title: 'Charlie shadows a name' })
 
 function repliesArgs(before, after, over = {}) {
-  return ['--before', before, '--after', after, '--head', over.head || HEAD]
+  return ['--before', before, '--after', after, '--head', over.head || HEAD, ...(over.result ? ['--result', over.result] : [])]
+}
+
+/** A fixer result that claims `fixed`, written under the temp dir; its path. */
+function claimed(fixed, notFixed = []) {
+  seq += 1
+  const file = join(dir, `claimed-${seq}.json`)
+  writeFileSync(file, JSON.stringify({ ok: true, fixed: fixed.map(f => idOf(f)), notFixed }))
+  return file
 }
 
 function tableRow(stdout, id) {
   return stdout.split('\n').find(l => l.startsWith('|') && l.includes(id))
 }
 
-test('replies: A,B before and B,C after reads fixed A, open B, new C in --json and in the table', () => {
+test('replies: A,B before and B,C after, the fixer claiming A, reads fixed A, open B, new C in --json and in the table', () => {
   const before = record({ head: BEFORE_HEAD, surviving: [A, B], name: 'before' })
   const after = record({ head: HEAD, surviving: [B, C], name: 'after' })
+  const result = claimed([A])
 
-  const j = settle('replies', [...repliesArgs(before, after), '--json'])
+  const j = settle('replies', [...repliesArgs(before, after, { result }), '--json'])
   assert.equal(j.code, 0, `stderr: ${j.stderr}`)
   const out = JSON.parse(j.stdout)
   assert.equal(out.head, HEAD)
@@ -391,7 +409,7 @@ test('replies: A,B before and B,C after reads fixed A, open B, new C in --json a
   assert.deepEqual(idsOf(out.new), [idOf(C)])
   assert.deepEqual({ fixed: out.counts.fixed, open: out.counts.open, new: out.counts.new }, { fixed: 1, open: 1, new: 1 })
 
-  const t = settle('replies', repliesArgs(before, after))
+  const t = settle('replies', repliesArgs(before, after, { result }))
   assert.equal(t.code, 0, `stderr: ${t.stderr}`)
   const heading = t.stdout.split('\n').find(l => /^#+\s/.test(l))
   assert.ok(heading && heading.includes(HEAD), `heading should name the sha: ${heading}`)
@@ -856,6 +874,39 @@ test('remediate-brief: a blocker surviving at the verdict round halts with STOP:
   assert.ok(/verdict round/i.test(r.stderr), `stderr should name the verdict round: ${r.stderr}`)
 })
 
+test('remediate-brief: a stop that leaves blockers or warnings no round will fix suggests another pass, naming them, after the STOP: line', () => {
+  const cap = publishedCap()
+  assert.ok(cap >= 2, `precondition: a published cap of at least two (got ${cap})`)
+  const r = settle('remediate-brief', briefArgs(record({ surviving: [W1, W2, SUGGESTION] }), 2))
+  assertStop(r, 'round 2, warnings only')
+  const lines = r.stderr.trim().split('\n')
+  const advice = lines.find(l => l.startsWith(ANOTHER_PASS_PREFIX))
+  assert.ok(advice, `no ${ANOTHER_PASS_PREFIX.trim()} line:\n${r.stderr}`)
+  assert.ok(lines.indexOf(advice) > 0, 'the advice follows the STOP: line')
+  assert.ok(advice.includes('2 warning(s)') && advice.includes(idOf(W1)) && advice.includes(idOf(W2)), advice)
+  assert.ok(!advice.includes(idOf(SUGGESTION)), 'a suggestion is never suggested for another pass')
+  assert.ok(advice.includes('/interlock:settle --review') && advice.includes('does not start one'), advice)
+  assert.ok(!r.stderr.includes(LEFT_FOR_A_PERSON_PREFIX), 'nothing was deferred')
+
+  const halt = settle('remediate-brief', briefArgs(record({ surviving: [BLOCKER] }), cap + 1))
+  assertStop(halt, 'verdict-round halt')
+  assert.ok(halt.stderr.includes(`${ANOTHER_PASS_PREFIX}1 blocker(s) survive`), halt.stderr)
+})
+
+test('remediate-brief: a stop with nothing left to fix suggests nothing, and deferred findings are left for a person', () => {
+  for (const [label, surviving] of [['empty', []], ['suggestions only', [SUGGESTION]]]) {
+    const r = settle('remediate-brief', briefArgs(record({ surviving }), 1))
+    assertStop(r, label)
+    assert.ok(!r.stderr.includes(ANOTHER_PASS_PREFIX) && !r.stderr.includes(LEFT_FOR_A_PERSON_PREFIX), `${label}: ${r.stderr}`)
+  }
+  const root = profileProject('rb-left-for-a-person', TEST_ROOT_PROFILE)
+  const r = settle('remediate-brief', briefArgs(record({ surviving: [PROTECTED_BLOCKER] }), 1), { cwd: root })
+  assertStop(r, 'one protected finding')
+  const left = r.stderr.split('\n').find(l => l.startsWith(LEFT_FOR_A_PERSON_PREFIX))
+  assert.ok(left && left.includes(idOf(PROTECTED_BLOCKER)) && left.includes(`protected test path ${PROTECTED_BLOCKER.file}`), r.stderr)
+  assert.ok(!r.stderr.includes(ANOTHER_PASS_PREFIX), 'a protected finding is no reason for another pass')
+})
+
 test('remediate-brief: a record with no surviving list, another head, or a bad round is refused without STOP:', () => {
   assertNoStop(settle('remediate-brief', briefArgs(record({ surviving: undefined }), 1)), 'no surviving list')
   const other = settle('remediate-brief', briefArgs(record({ head: OTHER_HEAD, surviving: [W1] }), 1))
@@ -973,7 +1024,7 @@ test('collapse: replies read a merged pair as one open finding on both sides', (
   const out = JSON.parse(settle('replies', [...repliesArgs(before, after), '--json']).stdout)
   assert.deepEqual(idsOf(out.open), [idOf(DUP_WARN)])
   assert.equal(out.open[0].severity, 'blocker')
-  assert.deepEqual(out.counts, { fixed: 0, open: 1, new: 0 })
+  assert.deepEqual(out.counts, { fixed: 0, notReRaised: 0, open: 1, new: 0 })
 })
 
 // ── reviewer text renders inert ─────────────────────────────────────────────
@@ -1066,8 +1117,53 @@ test('replies: the table renders reviewer text inert and prints the fixed legend
   const r = settle('replies', repliesArgs(before, after))
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
   assertInert(r.stdout, 'replies')
-  assert.equal(FIXED_LEGEND, 'fixed = not raised again under the same file and title by a fresh review; not a confirmation.')
+  assert.equal(
+    FIXED_LEGEND,
+    "fixed = the round's fixer claimed it and a fresh review did not raise it again under the same file and title; not a confirmation."
+  )
+  assert.equal(NOT_RERAISED_LEGEND, 'not re-raised = a fresh review did not raise it again, but no fixer claimed it: nothing shows it was fixed.')
   assert.ok(r.stdout.split('\n').includes(FIXED_LEGEND), `the legend is its own line:\n${r.stdout}`)
+  assert.ok(r.stdout.split('\n').includes(NOT_RERAISED_LEGEND), `the not re-raised legend is its own line:\n${r.stdout}`)
+})
+
+test('replies: a finding the re-review dropped that no fixer claimed reads not re-raised, never fixed', () => {
+  const before = record({ head: BEFORE_HEAD, surviving: [A, B, C], name: 'before' })
+  const after = record({ head: HEAD, surviving: [C], name: 'after' })
+
+  // No --result: nothing can read fixed.
+  const bare = JSON.parse(settle('replies', [...repliesArgs(before, after), '--json']).stdout)
+  assert.deepEqual(idsOf(bare.fixed), [])
+  assert.deepEqual(idsOf(bare.notReRaised).sort(), [idOf(A), idOf(B)].sort())
+  assert.equal(bare.counts.notReRaised, 2)
+
+  // The fixer claims A and C: A is fixed, B is not re-raised, and C, raised again, stays open.
+  const result = claimed([A, C])
+  const j = JSON.parse(settle('replies', [...repliesArgs(before, after, { result }), '--json']).stdout)
+  assert.deepEqual(idsOf(j.fixed), [idOf(A)])
+  assert.deepEqual(idsOf(j.notReRaised), [idOf(B)])
+  assert.deepEqual(idsOf(j.open), [idOf(C)])
+  assert.deepEqual(j.counts, { fixed: 1, notReRaised: 1, open: 1, new: 0 })
+
+  const t = settle('replies', repliesArgs(before, after, { result }))
+  assert.equal(t.code, 0, `stderr: ${t.stderr}`)
+  assert.ok(t.stdout.includes('1 fixed, 1 not re-raised, 1 open, 0 new.'), t.stdout)
+  assert.ok(tableRow(t.stdout, idOf(B)).includes('| not re-raised |'), tableRow(t.stdout, idOf(B)))
+  assert.ok(tableRow(t.stdout, idOf(A)).includes('| fixed |'), tableRow(t.stdout, idOf(A)))
+})
+
+test('replies: a --result that is missing, unparseable or not ok exits 1 and prints nothing', () => {
+  const before = record({ head: BEFORE_HEAD, surviving: [A], name: 'before' })
+  const after = record({ head: HEAD, surviving: [], name: 'after' })
+  for (const [label, result] of [
+    ['missing', join(dir, 'no-such-result.json')],
+    ['unparseable', resultFile('{ not json')],
+    ['not ok', resultFile({ ok: false, fixed: [], notFixed: [] })]
+  ]) {
+    const r = settle('replies', repliesArgs(before, after, { result }))
+    assert.equal(r.code, 1, `${label}: ${r.stderr}`)
+    assert.equal(r.stdout, '', `${label}: nothing on stdout`)
+    assert.match(r.stderr, /fixer result/, label)
+  }
 })
 
 // ── head binding refusals ───────────────────────────────────────────────────
@@ -1376,7 +1472,7 @@ test('replies: a carried finding that stays open reads open (carried), a plain o
   const byId = Object.fromEntries(out.open.map(x => [x.id, x]))
   assert.equal(byId[idOf(A)].carried, true)
   assert.ok(!('carried' in byId[idOf(B)]), 'a plain open finding carries no carried key')
-  assert.deepEqual(out.counts, { fixed: 0, open: 2, new: 0 })
+  assert.deepEqual(out.counts, { fixed: 0, notReRaised: 0, open: 2, new: 0 })
 })
 
 // ── deferrals: protected test paths and findings the last fixer declined ─────────

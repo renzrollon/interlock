@@ -277,9 +277,154 @@ The skill SHALL post the comment `interlock settle comment` printed and the tabl
 - **THEN** no paragraph of the loop's section says its GitHub lines are not exercised end to end, and neither the README nor docs/15 says the GitHub loop is unexercised
 - **AND** every `glab` line of the loop still sits in a block marked `not exercised`, and task 8.5 is ticked naming PR #25 and its head
 
+### Requirement: `interlock settle replies` SHALL compute each finding's status under the shared finding identity
+
+`interlock settle replies --before <file> --after <file> --head <sha> [--result <file>]` SHALL read two adjudicated review records, refuse either that lacks `surviving` and an after-record whose `head` is not the given sha, and, with `--result`, read the round's fixer result as `interlock settle fixer-result` validates one, refusing one that is missing, unparseable or not `ok: true` (exit 1, nothing on standard output). It SHALL compute: `fixed` for each surviving finding of the before-record whose key no surviving finding of the after-record shares and whose id the fixer result lists under `fixed`; `not re-raised` for each such finding whose id it does not list, and for every such finding when no `--result` is given; `open` for each whose key one does; `new` for each key of the after-record the before-record lacks. The key SHALL be `findingKey`: the file in its canonical repository form (`canonicalizePath`, or the trimmed spelling when it has none), a separator, and the title trimmed, with internal whitespace collapsed to one space, case-folded, and any trailing run of whitespace, `.`, `:`, `;` and `!` removed. It SHALL print a Markdown table whose heading names the sha, a counts line naming `fixed`, `not re-raised`, `open` and `new`, a fixed legend line saying that `fixed` means the round's fixer claimed the finding and a fresh review did not raise it again under the same file and title and is not a confirmation, a second legend line saying that `not re-raised` means a fresh review did not raise it again but no fixer claimed it, so nothing shows it was fixed, one row per finding with its id, status, file and title, and with `--json` `{ head, fixed, notReRaised, open, new, counts }`, `counts` carrying `notReRaised` beside the other three. An `open` finding that the after-record marks `carried` SHALL read `open (carried)` in the table and carry `carried: true` in its JSON entry, and the legend SHALL say that `carried` means the finding's dimension was not re-run and the finding was brought forward unexamined. The same file given as both records SHALL read every finding `open`.
+
+Rationale: a reply that says "fixed" is a claim that the fixer worked the finding and an independent re-review on the pushed head did not raise it again. A fresh reviewer that simply did not mention a finding reads the same as one that checked it was gone: on PR #31, three of the five findings the reply table called `fixed` were never briefed and their code was unchanged. The fixer's claim is the record that tells the two apart, and it already exists; and two readers of the same identity are the only way the comment's ids and the reply's statuses name the same things. The same-file case is how a round that changed nothing says so without a second review. A carried finding is open because nobody looked, not because somebody looked and found it still there, and the reader of the pull request is owed the difference.
+
+#### Scenario: Happy path — one fixed, one open, one new
+
+- **GIVEN** a before-record with findings A and B, an after-record with `head` H carrying B and a new finding C, and a fixer result whose `fixed` lists A
+- **WHEN** the command runs with `--head H --result <that result> --json`
+- **THEN** `fixed` holds A's id, `open` holds B's, `new` holds C's, `notReRaised` is empty, and `counts` reads one of each of the first three
+- **AND** the Markdown table's heading names H, the legend line says `fixed` is not a confirmation, and its rows carry the same ids
+
+#### Scenario: Happy path — a carried finding is open and says so
+
+- **GIVEN** a before-record with findings A and B and an after-record with `head` H carrying B marked `carried: true` and A unmarked
+- **WHEN** the command runs with `--head H`
+- **THEN** A's row reads `open` and B's row reads `open (carried)`, and the legend names `carried`
+- **AND** with `--json`, B's entry under `open` carries `carried: true` and A's does not
+
+#### Scenario: Failure — an after-record for another head
+
+- **GIVEN** an after-record whose `head` is not H
+- **WHEN** the command runs with `--head H`
+- **THEN** it exits 1 with nothing on standard output
+- **AND** standard error says the record describes another commit, naming both
+
+#### Scenario: Edge case — a re-cased, re-spaced, re-punctuated title is the same finding
+
+- **GIVEN** a before-record whose finding is titled `Missing null check.` in `lib/a.mjs` and an after-record carrying `missing  NULL check` in `lib/a.mjs` and `Missing null check.` in `lib/b.mjs`
+- **WHEN** the command runs
+- **THEN** the `lib/a.mjs` finding is `open` under one id, and the `lib/b.mjs` finding is `new`
+- **AND** `findingKey` of the two `lib/a.mjs` titles is one string, and so is the key of the same finding with its file spelled `./lib/a.mjs` and its title ending in a spaced period
+
+#### Scenario: Edge case — the same record on both sides
+
+- **GIVEN** one record with `head` H and findings A and B, given as both `--before` and `--after`
+- **WHEN** the command runs with `--head H --json`
+- **THEN** `open` holds A's and B's ids, and `fixed`, `notReRaised` and `new` are empty
+- **AND** the table's heading names H and carries two rows reading `open`
+
+#### Scenario: Edge case — a finding the re-review dropped that no fixer claimed
+
+- **GIVEN** a before-record with findings A, B and C, an after-record with `head` H carrying C, and a fixer result whose `fixed` lists A and C
+- **WHEN** the command runs with `--head H --json`, once without `--result` and once with it
+- **THEN** without it `fixed` is empty and `notReRaised` holds A's and B's ids; with it `fixed` holds A's id, `notReRaised` B's and `open` C's
+- **AND** the table reads `1 fixed, 1 not re-raised, 1 open, 0 new.`, B's row reads `not re-raised`, and both legend lines are printed, each its own line
+
+#### Scenario: Failure — a fixer result the command cannot use
+
+- **GIVEN** a `--result` that is missing, one that does not parse, and one whose `ok` is false
+- **WHEN** the command runs for each
+- **THEN** each exits 1 with nothing on standard output
+- **AND** standard error names the fixer result
+
+### Requirement: `interlock settle remediate-brief` SHALL brief a fix-only round under the ship loop's stop rule and the published cap
+
+`interlock settle remediate-brief --review <file> --round <n> --change <name> --head <sha> [--pr <n>] [--profile <file>] [--result <file>] [--previous <file>] [--out <file>]` SHALL build the round's plan with the same planner the ship loop uses and the limits `interlock limits` publishes, under the rule the ship loop applies: the first round plans every surviving blocker and warning; a later round plans a fix only while a surviving blocker remains, and otherwise the plan is built at the verdict round, one past the published cap, which plans nothing; a round beyond the verdict round is refused by the planner. Before the planner runs, the command SHALL defer two kinds of finding and hand the planner the rest: every blocker and warning whose file is one the test guard protects, with a reason naming the path and the guard and saying a person fixes it; and, when `--previous` names the fixer result of the round before — validated as `interlock settle fixer-result` validates one, and refused when it is for another round — every finding that result lists under `notFixed`, with that entry's reason quoted. When the plan has a fix to brief, the command SHALL print a briefing that lists each finding with its id inside a block labelled as quoted reviewer data, lists the deferred findings under `Deferred this round` with their reasons and the sentence that the fixer does not touch them, names the head and the pull request, names what the fixer must not edit, tells the fixer not to commit, and names the result file and its shape `{ ok, fixed, notFixed }`; with `--json` it SHALL also carry `reReviewDimensions`, the planner's list of the dimensions whose findings this round fixes, and `deferred`, the deferred findings as `{ id, reason }`. With `--out <file>` it SHALL write that `--json` answer to the file before it prints anything, as the round's briefing record, and a file it cannot write SHALL exit 1 with nothing on standard output and a reason without the prefix; on a stop or a refusal it SHALL write nothing. What the fixer must not edit SHALL be computed by the command from the test profile, or from the copy `--profile` names, with the guard's own roots and suffix rule, and the briefing SHALL tell apart no profile, a profile that could not be read and a profile that names no test root; the command SHALL take no list of protected paths from its caller. The briefing SHALL carry no re-review instruction. When the deferrals leave no blocker or warning for the planner, the command SHALL exit 1 with nothing on standard output and `STOP: nothing fixable remains` on standard error naming how many findings sit in protected paths and how many the round before's fixer declined. When the plan has nothing to fix or halts, for any reason the planner gives (an empty surviving list, suggestions only, the verdict round, unresolved blockers past the cap, a round past the verdict round), the command SHALL exit 1 with nothing on standard output and the planner's reason on standard error behind the fixed prefix `STOP:`; a reason that concerns the cap SHALL name the round and the published value. After the `STOP:` line of any stop, standard error SHALL carry a line opening `ANOTHER PASS SUGGESTED:` when blockers or warnings the planner kept survive. That line SHALL name each one's id and severity, say that a new `/interlock:settle --review` pass's first round briefs every surviving blocker and warning, and say that the loop does not start one. It SHALL also carry a line opening `LEFT FOR A PERSON:` when findings were deferred, naming each one's id and why no fix round can take it. Neither line SHALL be printed when there is nothing for it to name, and a suggestion SHALL never be named in either. An input it cannot use (a record with no surviving list, a record for another head, a round that is not a positive integer, a missing flag, a `--previous` for another round or without `fixed` and `notFixed`) SHALL exit 1 with a reason that never carries the prefix.
+
+Rationale: the round cap is a threshold and lives in the CLI, and the loop runs no extra round past it by default. A stop that leaves a warning the last re-review added, as on PR #31 where both of them were real, is one a new pass could fix, so the CLI names them and the person decides whether that pass is worth its cost; the skill loops while this command exits zero and never states a number. One stop rule, the ship loop's, so the loop neither briefs a fixer after the budget nor stops a round early. The prefix is what lets the loop tell its stop rule from a broken input: both exit 1, and only one of them means the review converged. The fixer does not re-review its own work: a fresh review of the pushed head does. A finding in a path the guard reverts, and a finding the last fixer already declined, are rounds the command can see will fix nothing; deferring them spends no fixer on them and hides nothing, because a deferred finding is still open in the reply table and still banded in the verdict.
+
+#### Scenario: Happy path — round one is briefed
+
+- **GIVEN** a record with two surviving warnings, `--round 1`, `--head H`, `--pr 7` and `--profile` naming a profile copy whose commands name `test/` as a test root
+- **WHEN** the command runs
+- **THEN** standard output names H, `#7`, both finding ids, `test/` under what the fixer must not edit, the result file and the keys `ok`, `fixed` and `notFixed`
+- **AND** it contains no `re-review` and tells the fixer not to commit, and with `--json` `reReviewDimensions` holds the dimensions of the two warnings and `deferred` is empty
+
+#### Scenario: Happy path — the answer is kept as the round's briefing record
+
+- **GIVEN** the record and flags of the scenario above, with `--out` naming a file under a directory that does not exist yet
+- **WHEN** the command runs
+- **THEN** it exits 0, and the file holds the same JSON object `--json` prints, with `round`, `head` and `findings`
+- **AND** when the same record is given at the verdict round, the command stops with `STOP:` and the file is not written
+
+#### Scenario: Happy path — a finding in a protected path is deferred, not briefed
+
+- **GIVEN** a record with one surviving blocker in `test/x.test.mjs` and one surviving warning in `lib/y.mjs`, `--round 1` and `--profile` naming a profile whose commands name `test/` as a test root
+- **WHEN** the command runs
+- **THEN** it exits 0, the quoted findings block carries the warning's id only, and `Deferred this round` lists the blocker's id with `protected test path test/x.test.mjs` and that a person fixes it
+- **AND** with `--json`, `findings` holds the warning's id, `deferred` holds the blocker's id with that reason, and `reReviewDimensions` holds the warning's dimension only
+
+#### Scenario: Happy path — a finding the last fixer declined is deferred with its reason
+
+- **GIVEN** a record with two surviving warnings W1 and W2 in `lib/`, `--round 2`, and `--previous` naming a round-1 fixer result whose `notFixed` holds W1 with the reason `needs a design decision`
+- **WHEN** the command runs with a surviving blocker B also present so that round 2 is briefed
+- **THEN** the briefing's quoted block carries B and W2, and `Deferred this round` carries W1 with `needs a design decision`
+- **AND** with `--json`, `deferred` holds W1 with that reason
+
+#### Scenario: Failure — nothing fixable remains
+
+- **GIVEN** a record whose only surviving findings are a blocker and a warning in `test/x.test.mjs`, `--round 1` and a profile naming `test/`; and separately the same record at `--round 2` with `--previous` naming a result whose `notFixed` holds both
+- **WHEN** the command runs for each
+- **THEN** each exits 1 with nothing on standard output and standard error beginning `interlock: STOP: nothing fixable remains`
+- **AND** the first names two in protected paths and zero declined, and the second names two in protected paths as well, because the protected deferral is applied first
+
+#### Scenario: Failure — the verdict round, and a round beyond it
+
+- **GIVEN** the same record and a `--round` equal to the `remediationRounds` value `interlock limits --json` publishes plus one; and the same record with that round plus two
+- **WHEN** the command runs for each
+- **THEN** each exits 1 with nothing on standard output and standard error beginning `interlock: STOP:`
+- **AND** the first's standard error names the round and the published cap, and the second's says the round is past the verdict round
+
+#### Scenario: Edge case — nothing to fix
+
+- **GIVEN** a record whose surviving list is empty, and another whose surviving findings are all suggestions
+- **WHEN** the command runs for each with `--round 1`
+- **THEN** each exits 1 with nothing on standard output
+- **AND** standard error begins `interlock: STOP:` and says there is nothing to remediate
+
+#### Scenario: Edge case — a later round with no blocker left
+
+- **GIVEN** a published cap of at least two, a record with two surviving warnings and `--round 2`, and another record with one surviving blocker and `--round 2`
+- **WHEN** the command runs for each
+- **THEN** the first exits 1 and standard error begins `interlock: STOP:` and names the verdict round and the published cap, because a round after the first is briefed only while a blocker survives
+- **AND** the second prints a briefing naming the blocker's id and exits 0
+
+#### Scenario: Failure — a broken input is not a stop
+
+- **GIVEN** a record that carries findings but no surviving list, a record whose `head` is not H, `--round 0`, and `--round 2` with `--previous` naming a round-3 fixer result
+- **WHEN** the command runs for each with `--head H`
+- **THEN** each exits 1 with nothing on standard output
+- **AND** no standard error carries `STOP:`, and the last names the round the result is for
+
+#### Scenario: Edge case — no profile, an unreadable profile, and a profile naming no root
+
+- **GIVEN** a record with one surviving warning in `test/x.test.mjs` and `--profile` naming, in turn, no file, a file that does not parse, and a profile whose commands name no test directory
+- **WHEN** the command runs for each with `--round 1`
+- **THEN** each prints a briefing carrying the warning's id and exits 0, because nothing is protected and so nothing is deferred
+- **AND** the three briefings say, in turn, that no profile exists, that the profile could not be read, and that the profile names no test root, each saying what that leaves protected
+
+#### Scenario: Edge case — a stop that leaves fixable findings suggests another pass
+
+- **GIVEN** a published cap of at least two, a record with two surviving warnings and a suggestion at `--round 2`, and a record with one surviving blocker at the verdict round
+- **WHEN** the command runs for each
+- **THEN** each exits 1 with standard error beginning `interlock: STOP:`, and a later line opens `ANOTHER PASS SUGGESTED:`
+- **AND** the first names `2 warning(s)` and both warnings' ids but not the suggestion's, and says the loop does not start one; the second names `1 blocker(s)`
+
+#### Scenario: Edge case — a stop with nothing left suggests nothing, and a deferred finding is left for a person
+
+- **GIVEN** a record whose surviving list is empty, a record of suggestions only, both at `--round 1`, and a record whose only surviving finding is a blocker in `test/x.test.mjs` with a profile naming `test/`
+- **WHEN** the command runs for each
+- **THEN** the first two carry neither `ANOTHER PASS SUGGESTED:` nor `LEFT FOR A PERSON:`
+- **AND** the third carries `LEFT FOR A PERSON:` naming the blocker's id and `protected test path test/x.test.mjs`, and no `ANOTHER PASS SUGGESTED:`
+
 ### Requirement: The skill SHALL stop a round whose precondition fails, and SHALL say which one failed
 
-Before the first review the skill SHALL compare the platform's head (`gh pr view <n> --json headRefOid --jq .headRefOid`) with `git rev-parse HEAD`, and on a difference SHALL print `HEAD NOT ON THE PLATFORM`, naming both, and skip the loop. It SHALL end the loop on a `remediate-brief` exit only when standard error begins `interlock: STOP:`, reporting the reason; any other non-zero exit of `remediate-brief`, `settle comment` or `settle replies` SHALL print `ROUND FAILED` with the reason and go on to the assessment, and a round's `verify judge` that exits non-zero SHALL print `ROUND FAILED: unit red` with its reason, commit nothing, and stop the loop early. It SHALL copy the test profile to `.claude/ship/settle/profile-r<r>.json` before briefing the round, record the head before spawning the fixer, and, after the fixer returns: end the loop with `FIXER COMMITTED` and nothing pushed when the head moved; and restore the profile from the copy, or remove one the fixer created, with `TEST PROFILE CHANGED` when the two differ. It SHALL name `interlock:settle-fixer` as the fixer's type and say that the fixer runs with no ship guards, its tools bounded by that definition. A push that fails SHALL end the loop and skip the ready mark. The pass's verification verdict (`verify.json`) SHALL be written to a temporary file and kept only when the judge printed one (`test -s`), so a halting verdict is kept and an empty file never lands; a round's judge writes `verify-r<r>.json` directly, nothing later reads it, and a round whose file is empty after a non-zero exit SHALL be stopped with `the judge printed no verdict` as its reason. Each verification step SHALL run with the tool's timeout set to the profile's `unit.timeout_ms`, and a step the tool killed SHALL be recorded as failed with the reason. The checks wait SHALL run in the background, and when it ends with checks unsettled the skill SHALL print `CHECKS STILL PENDING`. The ready step SHALL read `isDraft` on every pass, SHALL mark ready only a draft this pass created after a loop that did not stop early, and SHALL say why any other draft is still a draft.
+Before the first review the skill SHALL compare the platform's head (`gh pr view <n> --json headRefOid --jq .headRefOid`) with `git rev-parse HEAD`, and on a difference SHALL print `HEAD NOT ON THE PLATFORM`, naming both, and skip the loop. It SHALL end the loop on a `remediate-brief` exit only when standard error begins `interlock: STOP:`, reporting the reason and printing verbatim, and again in the report, any `ANOTHER PASS SUGGESTED:` or `LEFT FOR A PERSON:` line after it, and SHALL start no pass and no round on either; any other non-zero exit of `remediate-brief`, `settle comment` or `settle replies` SHALL print `ROUND FAILED` with the reason and go on to the assessment, and a round's `verify judge` that exits non-zero SHALL print `ROUND FAILED: unit red` with its reason, commit nothing, and stop the loop early. It SHALL copy the test profile to `.claude/ship/settle/profile-r<r>.json` before briefing the round, record the head before spawning the fixer, and, after the fixer returns: end the loop with `FIXER COMMITTED` and nothing pushed when the head moved; and restore the profile from the copy, or remove one the fixer created, with `TEST PROFILE CHANGED` when the two differ. It SHALL name `interlock:settle-fixer` as the fixer's type and say that the fixer runs with no ship guards, its tools bounded by that definition. A push that fails SHALL end the loop and skip the ready mark. The pass's verification verdict (`verify.json`) SHALL be written to a temporary file and kept only when the judge printed one (`test -s`), so a halting verdict is kept and an empty file never lands; a round's judge writes `verify-r<r>.json` directly, nothing later reads it, and a round whose file is empty after a non-zero exit SHALL be stopped with `the judge printed no verdict` as its reason. Each verification step SHALL run with the tool's timeout set to the profile's `unit.timeout_ms`, and a step the tool killed SHALL be recorded as failed with the reason. The checks wait SHALL run in the background, and when it ends with checks unsettled the skill SHALL print `CHECKS STILL PENDING`. The ready step SHALL read `isDraft` on every pass, SHALL mark ready only a draft this pass created after a loop that did not stop early, and SHALL say why any other draft is still a draft.
 
 Rationale: each of these is a state change the loop made as prose with no precondition. A fixer that commits its own test edit escapes the staged-path revert; a profile it rewrote changes the rule it is judged by; a stop and a broken input both exit 1; a review of a head the platform does not hold is posted against the wrong commit; a wait the tool cut short reads like a settled pipeline; a fix pushed before the suite ran puts a red head on the platform. Each one now has a check, a fixed token, or both.
 
@@ -288,7 +433,7 @@ Rationale: each of these is a state change the loop made as prose with no precon
 - **GIVEN** the shipped `skills/settle/SKILL.md`
 - **WHEN** the skill suite runs
 - **THEN** the headRefOid `--jq` line comes before the first `review-code` line, the profile copy line before the `remediate-brief` line, the `fixer-result` line between the fixer spawn and the staging line, and the round's `verify judge` line between the `git diff --cached --quiet` line and the commit line
-- **AND** the prose carries `STOP:`, `ROUND FAILED`, `unit red`, `FIXER COMMITTED`, `TEST PROFILE CHANGED`, `interlock:settle-fixer`, `test -s`, `run_in_background`, `CHECKS STILL PENDING`, `timeout_ms` and `isDraft`
+- **AND** the prose carries `STOP:`, `ANOTHER PASS SUGGESTED:`, `LEFT FOR A PERSON:`, `ROUND FAILED`, `unit red`, `FIXER COMMITTED`, `TEST PROFILE CHANGED`, `interlock:settle-fixer`, `test -s`, `run_in_background`, `CHECKS STILL PENDING`, `timeout_ms` and `isDraft`
 
 #### Scenario: Failure — a fixer that committed
 

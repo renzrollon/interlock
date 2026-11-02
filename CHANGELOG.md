@@ -15,6 +15,8 @@ this project adheres to Semantic Versioning 2.0.0.
 - **The settle meter keeps drawing rounds after a round verified:** a verify line inside an open round appends to it.
 - **The review depth banner carries counts:** `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`.
 - **The docs state the round rule and that `--strict` sets depth, not scope;** `merge-confidence` is passed `--changed <files>`.
+- **`settle replies` says `fixed` only when the fixer claimed it.** The skill passes `--result <fixer result>`. A finding the re-review dropped with no claim behind it reads `not re-raised`, under its own legend line, and `--json` gains `notReRaised`. On PR #31, three of the five `fixed` rows had never been briefed.
+- **A settle stop suggests another pass when one would help.** After `STOP:`, `remediate-brief` prints `ANOTHER PASS SUGGESTED:` naming the surviving blockers and warnings no round of this pass will fix, and `LEFT FOR A PERSON:` for deferred findings. The loop still runs no extra round.
 
 ### Fixed
 

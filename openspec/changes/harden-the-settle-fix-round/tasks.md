@@ -19,3 +19,9 @@ Pin rule for every task below: an assertion in `test/skills.test.mjs`, `test/spi
 ## 3. Integration
 
 - [x] 3.1 Run `npm test > $TMPDIR/harden-settle.log 2>&1; tail -20 $TMPDIR/harden-settle.log` and `npm run validate`; both green with no skipped assertion other than the six sandbox relay skips. Verify: the suite's summary line reports 0 failures.
+
+## 4. Follow-up from the PR #31 review
+
+- [x] 4.1 `interlock settle replies --result <file>`: `fixed` only for an id the fixer result claims, `not re-raised` for one the re-review dropped with no claim (decision D12); counts, `--json` `notReRaised`, a second legend line; the skill's round reply lines pass `--result .claude/ship/settle/remediate-r<r>.json`; docs/07 and docs/15. Pins in `test/spine/settle-cli.test.mjs` and `test/skills.test.mjs`. Verify: `node --test test/spine/settle-cli.test.mjs test/skills.test.mjs`.
+- [x] 4.2 `remediate-brief` stop advice (decision D13): after a `STOP:` line, `ANOTHER PASS SUGGESTED:` for surviving blockers and warnings no round of this pass will fix and `LEFT FOR A PERSON:` for deferred findings; the skill prints both verbatim, repeats them in the report and starts no pass. Pins as in 4.1. Verify: same files.
+- [x] 4.3 The blast-radius items: the round's Bash timeout reads the plan step's `timeoutMs`; a red round names its staged paths and says the next pass will not start; doctor's ok detail says three agent types; pins for `ROUND UNVERIFIED` and `fixer type unavailable`. Verify: `node --test test/skills.test.mjs test/spine/doctor.test.mjs`.
