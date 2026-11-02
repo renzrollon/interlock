@@ -31,7 +31,7 @@ A dimension's answer SHALL carry `coverage` beside `findings`: `checked`, a list
 
 ### Requirement: The review record SHALL carry a proof computed from the ledgers and the diff
 
-`interlock review` SHALL record `proof` beside `dimensions`: `unproven` names each ran dimension whose ledger is absent or rejected, or that raised no finding and checked nothing; `unread` names each ran dimension with an `unread` entry, with the entries; `uncited` lists each changed coverable source file no ran dimension cited in a checked entry or a finding. Coverable means what the spec-coverage signal counts, plus an extensionless file directly under a `bin/` directory, which is source no coverage tool attributes. The changed files SHALL be the union of `--changed` and git's own list for `--base`, with a rename counted under its new path only; with neither, or when git cannot list `--base`, the proof SHALL NOT hold.
+`interlock review` SHALL record `proof` beside `dimensions`: `unproven` names each ran dimension whose ledger is absent or rejected, or that raised no finding and checked nothing; `unread` names each ran dimension with an `unread` entry, with the entries; `uncited` lists each changed coverable source file no ran dimension cited in a checked entry or a finding. Coverable means what the spec-coverage signal counts, plus an extensionless file directly under a `bin/` or `cli/` directory, which is source no coverage tool attributes. The changed files SHALL be the union of `--changed` and git's own list for `--base`, with a rename counted under its new path only; with neither, or when git cannot list `--base`, the proof SHALL NOT hold.
 
 #### Scenario: Happy path — a proven review
 
@@ -92,6 +92,12 @@ A dimension's answer SHALL carry `coverage` beside `findings`: `checked`, a list
 - **GIVEN** a `language` ledger citing `lib/a.mjs`, carried at round 1 after `lib/a.mjs` changed, and carried again at round 2 when nothing else changed
 - **WHEN** the round-2 record is written
 - **THEN** the carried ledger's `carriedFrom` is still the head it was first carried from, and its entry on `lib/a.mjs` covers nothing
+
+#### Scenario: Edge case — an extensionless executable under `cli/` must be cited
+
+- **GIVEN** a review whose changed files are `cli/interlock` and `lib/a.mjs`, with ledgers citing only `lib/a.mjs`
+- **WHEN** the record is written
+- **THEN** `proof.uncited` lists `cli/interlock`, and `proof.proven` is false
 
 ### Requirement: The run's review step SHALL record the same proof
 

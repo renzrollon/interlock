@@ -442,7 +442,7 @@ The claude adapter SHALL parse the CLI's result envelope on every spawn, includi
 
 #### Scenario: Edge case — the no-policy sweep
 
-- **GIVEN** `bin/interlock-run` as shipped
+- **GIVEN** `cli/interlock-run` as shipped
 - **WHEN** the driver source is swept for policy
 - **THEN** it contains none of the lane banner texts and no comparison of a served model
 

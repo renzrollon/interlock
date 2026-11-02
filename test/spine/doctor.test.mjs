@@ -214,7 +214,7 @@ function fakePlugin(dir, { version = '9.9.9', omit = [], engines = '>=18', name 
   const root = join(dir, name)
   file(root, 'package.json', { name: 'interlock', engines: { node: engines } })
   file(root, '.claude-plugin/plugin.json', { name: 'interlock', version, workflows: './workflows' })
-  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'cli/interlock', 'cli/interlock-graph']) {
+  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'agents/settle-fixer.md', 'cli/interlock', 'cli/interlock-graph']) {
     if (omit.includes(rel)) continue
     file(root, rel, '// stub\n')
   }

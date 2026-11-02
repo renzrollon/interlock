@@ -21,6 +21,13 @@
 /** The change the captures name. */
 export const CHANGE = 'route-prose-spawns-by-role'
 
+/**
+ * The type a settle fixer spawns as: the plugin's own agent, not the host's general-purpose one
+ * (harden-the-settle-fix-round). Not a capture: the skill names it, so the kit's fixer spawns
+ * carry it. SPAWN_ROUTED above stays the captured dimension spawn, pinned byte for byte.
+ */
+export const SETTLE_FIXER_TYPE = 'interlock:settle-fixer'
+
 /** The pull request the captures name. */
 export const PR = 25
 

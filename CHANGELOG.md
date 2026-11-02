@@ -7,6 +7,21 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **A settle fix round verifies before it commits.** `interlock verify plan|exec|judge --context inter-wave` runs on the staged paths; a red unit suite or typecheck prints `ROUND FAILED: unit red`, commits and pushes nothing, and ends the loop early. A round the plan cannot verify (no profile copy, no unit command) still commits, after `ROUND UNVERIFIED: <reason>`.
+- **`settle comment` collapses suggestions.** Blockers and warnings render first; suggestions sit in one `<details>` block headed by their count. `--json` and the record are unchanged.
+- **The fixer is the plugin's `settle-fixer` agent** (`interlock:settle-fixer`), with no `Skill`, `Agent` or MCP tools; its briefing allows one unit-suite run at most. `interlock doctor` requires the file. A spawn that is refused or names an unknown type prints `ROUND FAILED: fixer type unavailable` and ends the loop.
+- **The settle meter keeps drawing rounds after a round verified:** a verify line inside an open round appends to it.
+- **The review depth banner carries counts:** `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`.
+- **The docs state the round rule and that `--strict` sets depth, not scope;** `merge-confidence` is passed `--changed <files>`.
+- **`settle replies` says `fixed` only when the fixer claimed it.** The skill passes `--result <fixer result>`. A finding the re-review dropped with no claim behind it reads `not re-raised`, under its own legend line, and `--json` gains `notReRaised`. On PR #31, three of the five `fixed` rows had never been briefed.
+- **A settle stop suggests another pass when one would help.** After `STOP:`, `remediate-brief` prints `ANOTHER PASS SUGGESTED:` naming the surviving blockers and warnings no round of this pass will fix, and `LEFT FOR A PERSON:` for deferred findings. The loop still runs no extra round.
+
+### Fixed
+
+- Correction to 1.10.0: its note that the GitHub loop was not exercised end to end was overtaken by PR #25 (2026-10-26, head `161f955`). The GitLab lines remain `not exercised`.
+
 ## [1.13.0] - 2026-10-31
 
 ### Changed

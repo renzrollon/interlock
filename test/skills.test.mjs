@@ -1617,6 +1617,7 @@ function settleSkillProblems(text) {
     [SETTLE_CLASSIFY, '`interlock settle test-paths`'],
     [/\| git --literal-pathspecs restore\b/, 'the test-path revert'],
     [/^git diff --cached --quiet\b/, '`git diff --cached --quiet`'],
+    [/^interlock verify judge\b(?=[^\n]*--context inter-wave)(?=[^\n]*--head)/, 'the round\'s `interlock verify judge` with `--context inter-wave` and `--head`'],
     [/^git push\b/, '`git push`'],
     [/^interlock settle replies\b/, '`interlock settle replies`'],
     [SETTLE_IS_DRAFT, '`gh pr view <n> --json isDraft --jq .isDraft`'],
@@ -1726,8 +1727,77 @@ function settleSkillProblems(text) {
     problems.push('no `gh pr ready` line between the last `interlock settle replies` and `interlock settle conformance-brief`')
   }
   if (conformance !== -1 && !/--head\b/.test(lines[conformance])) problems.push('the `interlock settle conformance-brief` line carries no --head')
-  const judge = fencedAt(/^interlock verify judge\b/)
-  if (judge !== -1 && !/--head\b/.test(lines[judge])) problems.push('the `interlock verify judge` line carries no --head')
+  const judge = fencedAt(/^interlock verify judge\b[^\n]*--context final/)
+  if (judge === -1) problems.push('no `interlock verify judge` line carries --context final')
+  else if (!/--head\b/.test(lines[judge])) problems.push('the `interlock verify judge` line carries no --head')
+
+  // The round verifies the staged tree before it commits (spec: review/settle-loop).
+  const roundPlan = fencedAt(/^interlock verify plan\b[^\n]*--context inter-wave/)
+  const roundExec = roundPlan === -1 ? -1 : fencedAt(/^interlock verify exec\b/, roundPlan)
+  const roundJudge = fencedAt(/^interlock verify judge\b[^\n]*--context inter-wave/)
+  if (roundPlan === -1) {
+    problems.push('no `interlock verify plan` line carries --context inter-wave')
+  } else {
+    for (const flag of ['--profile .claude/ship/settle/profile-r<r>.json', '--changed', '--json > .claude/ship/settle/plan-r<r>.json']) {
+      if (!lines[roundPlan].includes(flag)) problems.push(`the round's \`interlock verify plan\` line carries no ${flag}`)
+    }
+  }
+  if (roundJudge === -1) {
+    problems.push('no `interlock verify judge` line carries --context inter-wave')
+  } else {
+    for (const flag of ['--head', '--plan .claude/ship/settle/plan-r<r>.json', '--results .claude/ship/settle/results-r<r>.json', '> .claude/ship/settle/verify-r<r>.json']) {
+      if (!lines[roundJudge].includes(flag)) problems.push(`the round's \`interlock verify judge\` line carries no ${flag}`)
+    }
+    if (quiet === -1 || commit === -1 || !(quiet < roundPlan && roundPlan < roundExec && roundExec < roundJudge && roundJudge < commit)) {
+      problems.push('the round\'s plan, exec and judge lines are not, in that order, between the `git diff --cached --quiet` line and the commit line')
+    }
+  }
+  const stagedList = fencedAt(/^git diff --cached --name-only$/)
+  if (stagedList === -1 || roundPlan === -1 || stagedList > roundPlan) problems.push('no fenced `git diff --cached --name-only` line before the round\'s plan line')
+  for (const token of ['ROUND FAILED: unit red', 'the judge printed no verdict', '--no-profile', 'ROUND UNVERIFIED', 'ROUND FAILED: fixer type unavailable']) {
+    if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+  // The round's Bash timeout is the plan step's own field, not the profile's key.
+  if (!paragraphs.some(p => p.includes('timeoutMs') && p.includes('plan-r<r>.json'))) {
+    problems.push("no paragraph sets the round's Bash timeout from the plan step's timeoutMs")
+  }
+  // A red round leaves the index staged, so the next pass's tree-check refuses it: say so.
+  if (!paragraphs.some(p => p.includes('ROUND FAILED: unit red') && p.includes('Name the staged paths') && p.includes('will not start'))) {
+    problems.push('no paragraph tells the person a red round blocks the next settle until they clear the staged paths')
+  }
+  // The round's reply line hands replies the fixer's result, so `fixed` needs the fixer's claim.
+  const roundReplies = fence.filter(f => /^interlock settle replies\b/.test(f.line) && f.line.includes('--after .claude/ship/settle/review-r<r>.json'))
+  if (!roundReplies.length || !roundReplies.every(f => f.line.includes('--result .claude/ship/settle/remediate-r<r>.json'))) {
+    problems.push("the round's `interlock settle replies` line carries no --result .claude/ship/settle/remediate-r<r>.json")
+  }
+  if (!paragraphs.some(p => p.includes('not re-raised') && p.includes('--result') && p.includes('claimed'))) {
+    problems.push('no paragraph says a finding reads fixed only when the fixer claimed it, and not re-raised otherwise')
+  }
+  // A stop's advice lines are relayed, and the loop starts nothing on them.
+  if (!paragraphs.some(p => ['STOP:', 'ANOTHER PASS SUGGESTED:', 'LEFT FOR A PERSON:', 'verbatim', 'Start no pass'].every(t => p.includes(t)))) {
+    problems.push('no paragraph relays ANOTHER PASS SUGGESTED and LEFT FOR A PERSON verbatim after a STOP: and starts no pass')
+  }
+  // ROUND UNVERIFIED is printed for a non-docs unit skip, before the commit.
+  if (!paragraphs.some(p => p.includes('ROUND UNVERIFIED') && p.includes('docs-only-changes') && p.includes('only then commit'))) {
+    problems.push('no paragraph prints ROUND UNVERIFIED for a non-docs unit skip before the commit')
+  }
+  // A fixer type that cannot be spawned stops the round with no substitute.
+  if (!paragraphs.some(p => p.includes('fixer type unavailable') && p.includes('Spawn no other type') && p.includes('stop the loop early'))) {
+    problems.push('no paragraph fails the round when the fixer type cannot be spawned, with no substitute type')
+  }
+  if (!paragraphs.some(p => p.includes('ROUND FAILED: unit red') && p.includes('Commit nothing') && p.includes('push nothing') && p.includes('staged') && p.includes('stop the loop early'))) {
+    problems.push('no paragraph prints ROUND FAILED: unit red, commits nothing, pushes nothing, leaves the round staged and stops the loop early')
+  }
+  if (!paragraphs.some(p => p.includes('Who a round briefs') && p.includes('blocker survives') && p.includes('never briefed'))) {
+    problems.push('no paragraph states the round rule in words: a later round only while a blocker survives, suggestions never briefed')
+  }
+  if (!paragraphs.some(p => p.includes('REVIEW DEPTH:') && p.includes('always-on') && p.includes('triggered') && p.includes('as it reported it'))) {
+    problems.push('no paragraph relays the REVIEW DEPTH line with its always-on and triggered counts, once, as it reported it')
+  }
+  // The assessment's merge-confidence lines carry the changed files after the base.
+  for (const f of fence.filter(f => /^interlock merge-confidence\b[^\n]*--pipeline/.test(f.line))) {
+    if (!f.line.includes('--base origin/<target branch> --changed <files>')) problems.push(`a merge-confidence line carries no --base origin/<target branch> --changed <files>: line ${f.i + 1}`)
+  }
 
   // Nothing decides for the reader.
   for (const [pattern, what] of [
@@ -1797,9 +1867,16 @@ function settleSkillProblems(text) {
   const s5d = sectionOf(/^###\s+5d\b/)
   const s5g = sectionOf(/^###\s+5g\b/)
 
-  // §5's GitHub lines are marked unexercised until the task that records a run.
-  if (!s5 || !s5.text.split(/\n\s*\n/).some(p => ['not exercised end to end', '8.5', 'close-the-merge-request-loop'].every(t => p.includes(t)))) {
-    problems.push('§5 carries no paragraph marking its GitHub lines not exercised end to end until task 8.5 of close-the-merge-request-loop')
+  // §5's GitHub lines ran end to end on PR #25; the GitLab lines keep their own markers (pinned above).
+  if (!s5) {
+    problems.push('§5 was not found')
+  } else {
+    if (s5.text.split(/\n\s*\n/).some(p => p.includes('not exercised end to end'))) {
+      problems.push('§5 still carries a paragraph marking its GitHub lines not exercised end to end')
+    }
+    if (!s5.text.split(/\n\s*\n/).some(p => ['PR #25', '161f955', 'GitLab'].every(t => p.includes(t)))) {
+      problems.push('§5 carries no paragraph saying the GitHub lines ran end to end on PR #25 (head 161f955) and the GitLab lines carry their own markers')
+    }
   }
   if (!paragraphs.some(p => p.includes('Stopping early') && p.includes('nothing more is committed or pushed') && p.includes('§5d') && p.includes('§6'))) {
     problems.push('no Stopping early paragraph says nothing more is committed or pushed, keeps the §5d draft check and goes on to §6')
@@ -1879,14 +1956,15 @@ function settleSkillProblems(text) {
     problems.push('a remediate-brief line passes --protected, which the CLI computes from the profile')
   }
 
-  // One general-purpose fixer, unguarded and unreviewed, between two reads of HEAD.
-  const spawn = remediate === -1 ? -1 : lineAt(/`general-purpose`/, remediate + 1)
+  // One settle-fixer, unguarded and unreviewed, between two reads of HEAD.
+  const spawn = remediate === -1 ? -1 : lineAt(/`interlock:settle-fixer`/, remediate + 1)
+  if (text.includes('general-purpose')) problems.push('names `general-purpose`, which the fixer no longer is')
   if (spawn === -1) {
-    problems.push('no `general-purpose` fixer spawn after the remediate-brief line')
+    problems.push('no `interlock:settle-fixer` fixer spawn after the remediate-brief line')
   } else {
     const p = paragraphAt(spawn)
-    for (const token of ['ONE', 'whole prompt', 'no ship guards', 'Do not fix anything yourself']) {
-      if (!p.includes(token)) problems.push(`the general-purpose fixer spawn paragraph carries no ${token}`)
+    for (const token of ['ONE', 'whole prompt', 'no ship guards', 'Do not fix anything yourself', 'bounds its tools']) {
+      if (!p.includes(token)) problems.push(`the settle-fixer spawn paragraph carries no ${token}`)
     }
   }
   const fixerResult = fencedAt(/^interlock settle fixer-result\b/)
@@ -2084,10 +2162,13 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   fails(problemsOf(t => t.replaceAll('never count', 'count')), 'never count')
   fails(problemsOf(t => t.replace(/^(interlock settle remediate-brief [^\n]*)$/m, '$1 --protected test/')), '--protected')
 
-  // The fixer: one general-purpose subagent, unguarded, unreviewed, and checked.
-  fails(problemsOf(t => t.replace('`general-purpose`', 'fixer')), 'general-purpose')
+  // The fixer: one settle-fixer subagent, unguarded, unreviewed, and checked.
+  fails(problemsOf(t => t.replace('`interlock:settle-fixer`', 'fixer')), 'interlock:settle-fixer')
+  fails(problemsOf(t => t.replace('`interlock:settle-fixer`', '`general-purpose`')), 'general-purpose')
+  fails(problemsOf(t => `${t}\nSpawn a general-purpose agent.\n`), 'general-purpose')
+  fails(problemsOf(t => t.replace('bounds its tools', 'sets its tools')), 'bounds its tools')
   fails(problemsOf(t => t.replace('no ship guards', 'the usual guards')), 'no ship guards')
-  fails(problemsOf(t => t.replace('as its whole prompt.** It fixes', 'as a prompt.** It fixes')), 'whole prompt')
+  fails(problemsOf(t => t.replace('as its whole prompt.**', 'as a prompt.**')), 'whole prompt')
   fails(problemsOf(t => t.replace('Do not fix anything yourself', 'Fix what it missed')), 'Do not fix anything yourself')
   fails(problemsOf(t => t.replaceAll('FIXER COMMITTED', 'FIXER MOVED HEAD')), 'FIXER COMMITTED')
   fails(problemsOf(t => {
@@ -2132,8 +2213,30 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   fails(problemsOf(t => t.replace(/^(glab mr create --title "<title>") --description "\$\(cat <<'EOF'$/m, '$1 --description "<description so far>"')), '--description "<')
   fails(problemsOf(t => t.replace(/^git fetch origin <target branch>$/m, 'git fetch origin <target branch>\ngit push')), 'outside §4')
 
-  // §5's not-exercised marker.
-  fails(problemsOf(t => t.replace('task 8.5 of `close-the-merge-request-loop`', 'a later task')), 'not exercised end to end')
+  // §5's GitHub lines ran end to end: the old marker sentence returns, or the citation goes.
+  fails(problemsOf(t => t.replace('The GitHub lines of this section ran end to end', '**The GitHub lines of this section are not exercised end to end** until a later task records a run. They ran end to end')), 'still carries a paragraph marking')
+  fails(problemsOf(t => t.replace('PR #25 (2026-10-26, head `161f955`)', 'a pull request')), 'ran end to end on PR #25')
+
+  // The round's verification: red stops, the lines keep their order and their flags.
+  fails(problemsOf(t => t.replaceAll('ROUND FAILED: unit red', 'ROUND FAILED: tests')), 'ROUND FAILED: unit red')
+  fails(problemsOf(t => t.replace('Commit nothing, push nothing, leave the round\'s changes staged, and stop the loop early.', 'Go on.')), 'leaves the round staged')
+  fails(problemsOf(t => t.replace(/^(interlock verify plan [^\n]*--context inter-wave)/m, m => m.replace('--context inter-wave', '--context final'))), 'carries --context inter-wave')
+  fails(problemsOf(t => t.replace('--profile .claude/ship/settle/profile-r<r>.json --context inter-wave', '--profile .claude/testing/profile.json --context inter-wave')), 'profile-r<r>.json')
+  fails(problemsOf(t => t.replace('--context inter-wave --changed <staged paths>', '--context inter-wave')), 'carries no --changed')
+  fails(problemsOf(t => {
+    const line = t.match(/^interlock verify judge [^\n]*--context inter-wave[^\n]*$/m)[0]
+    return t.replace(`${line}\n`, '').replace(/^git push$/m, `git push\n${line}`)
+  }), 'not, in that order, between')
+  fails(problemsOf(t => t.replace(/^git diff --cached --name-only$/m, 'git diff --name-only')), 'git diff --cached --name-only')
+  fails(problemsOf(t => t.replace('> .claude/ship/settle/verify-r<r>.json', '> .claude/ship/settle/verify.json')), 'verify-r<r>.json')
+  // The pass's judge stays on its own file when the round's takes the anchor.
+  fails(problemsOf(t => t.replace('--context final --head <sha> --json > .claude/ship/settle/verify.json.tmp', '--context final --head <sha> --json > .claude/ship/settle/verify.json')), 'verify.json.tmp')
+
+  // The round rule, the relayed banner and the merge-confidence lines.
+  fails(problemsOf(t => t.replace('blocker survives', 'warning survives')), 'round rule in words')
+  fails(problemsOf(t => t.replace('never briefed', 'sometimes briefed')), 'round rule in words')
+  fails(problemsOf(t => t.replace('<a> always-on + <t> triggered', '<a> dimensions')), 'always-on and triggered')
+  fails(problemsOf(t => t.replace('--base origin/<target branch> --changed <files> --pipeline', '--base origin/<target branch> --pipeline')), '--changed <files>')
 })
 
 // ---------------------------------------------------------------------------
@@ -2231,7 +2334,7 @@ test('review-code reads one routing answer in the paragraph before the dimension
 
 test('settle routes its fixer in the fixer paragraph and its conformance worker in 5e', () => {
   const text = skillText('settle')
-  const fixer = paragraphWith(sectionOfSkill(text, /^### 5c\. /m), 'Spawn ONE `general-purpose` subagent')
+  const fixer = paragraphWith(sectionOfSkill(text, /^### 5c\. /m), 'Spawn ONE `interlock:settle-fixer` subagent')
   assertRoutingTokens(
     fixer,
     ['interlock routing settle-fixer --json', ...ROUTING_COMMON],
@@ -2300,12 +2403,31 @@ function depthCountProblems(text) {
   return [...plain.matchAll(before), ...plain.matchAll(after)].map(m => m[0])
 }
 
+/**
+ * The depth banner of review-code: printed once the set is chosen and before the first spawn, carrying
+ * the counts as placeholders (spec: review-depth). Tokens, not sentences, so a reword keeps the pin.
+ */
+function depthBannerProblems(text) {
+  const problems = []
+  const banner = text.indexOf('REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)')
+  if (banner < 0) problems.push('the banner line lacks <n> dimensions, <a> always-on and <t> triggered')
+  if (!text.includes('REVIEW DEPTH: <depth> (<n> dimensions: --dimensions)')) problems.push('the --dimensions form of the banner is missing')
+  const routing = text.indexOf('Routing is a cost hint')
+  const spawn = text.indexOf('Spawn one agent per dimension')
+  if (banner >= 0 && !(routing >= 0 && spawn >= 0 && banner > routing && banner < spawn)) {
+    problems.push('the banner is not printed after routing and before the first dimension spawn')
+  }
+  if (!/ROUTING UNAVAILABLE[^.\n]*print the same line with `strict`/.test(text)) problems.push('the ROUTING UNAVAILABLE form of the banner is missing')
+  return problems
+}
+
 test('review-code selects the depth with --strict, names the dimensions by review.dimensions and spawns skeptics by review.skeptics', () => {
   const text = skillText('review-code')
   const where = 'skills/review-code/SKILL.md'
   const fm = parseFrontmatter(text)
   assert.ok(fm.values['argument-hint'].includes('--strict'), `${where} argument-hint must carry --strict`)
   assert.ok(text.includes('REVIEW DEPTH:'), `${where} must print REVIEW DEPTH:`)
+  assert.deepEqual(depthBannerProblems(text), [], `${where} depth banner`)
 
   // The dimension table: the always-on rows read from the depth, and no row is `always`.
   const fanOut = sectionOfSkill(text, /^## 2\. Fan out the dimensions$/m)
@@ -2365,6 +2487,18 @@ test('neither review skill names a count of dimensions or skeptics beside lean o
   assert.ok(depthCountProblems('the lean depth runs two dimensions').length > 0)
   assert.ok(depthCountProblems('four dimensions at strict').length > 0)
   assert.deepEqual(depthCountProblems('the lean depth runs `review.dimensions`'), [])
+})
+
+test('the review-code depth banner carries the counts, and a doctored copy that drops them or moves the line is caught', () => {
+  const text = skillText('review-code')
+  assert.deepEqual(depthBannerProblems(text), [])
+  const banner = 'REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)'
+  assert.ok(depthBannerProblems(text.replace(banner, 'REVIEW DEPTH: <depth>')).length > 0, 'dropping the counts is caught')
+  assert.ok(depthBannerProblems(text.replace('<a> always-on + <t> triggered', '<a> always-on')).length > 0, 'dropping the triggered count is caught')
+  assert.ok(depthBannerProblems(text.replace('(<n> dimensions: --dimensions)', '')).length > 0, 'dropping the --dimensions form is caught')
+  const moved = text.replace(banner, 'REVIEW DEPTH: <depth>').replace('Routing is a cost hint', `${banner} Routing is a cost hint`)
+  assert.ok(depthBannerProblems(moved).length > 0, 'a banner printed before the set is chosen is caught')
+  assert.ok(depthBannerProblems(text.replace('print the same line with `strict`', 'print the line')).length > 0, 'dropping the ROUTING UNAVAILABLE form is caught')
 })
 
 // The scoped re-review and the two deferrals (spec: settle-loop).
