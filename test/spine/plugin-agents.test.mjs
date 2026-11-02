@@ -21,6 +21,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SHIP = join(ROOT, 'workflows', 'ship.js')
 const PING_MD = join(ROOT, 'agents', 'ping.md')
 const WORKER_MD = join(ROOT, 'agents', 'worker.md')
+const SETTLE_FIXER_MD = join(ROOT, 'agents', 'settle-fixer.md')
 
 function parseFrontmatter(text) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text)
@@ -57,12 +58,15 @@ function assertSlim(tools, label) {
 test('plugin agent files exist with slim frontmatter', () => {
   assert.ok(existsSync(PING_MD), 'agents/ping.md is missing')
   assert.ok(existsSync(WORKER_MD), 'agents/worker.md is missing')
+  assert.ok(existsSync(SETTLE_FIXER_MD), 'agents/settle-fixer.md is missing')
 
   const ping = parseFrontmatter(readFileSync(PING_MD, 'utf8'))
   const worker = parseFrontmatter(readFileSync(WORKER_MD, 'utf8'))
-  assert.ok(ping && worker, 'agent files must have YAML frontmatter')
+  const fixer = parseFrontmatter(readFileSync(SETTLE_FIXER_MD, 'utf8'))
+  assert.ok(ping && worker && fixer, 'agent files must have YAML frontmatter')
   assert.equal(ping.name, 'ping')
   assert.equal(worker.name, 'worker')
+  assert.equal(fixer.name, 'settle-fixer')
 
   const pingTools = splitList(ping.tools)
   const workerTools = splitList(worker.tools)
@@ -70,10 +74,19 @@ test('plugin agent files exist with slim frontmatter', () => {
   assert.deepEqual(workerTools, [...WORKER_TOOLS])
   assertSlim(pingTools, 'agents/ping.md')
   assertSlim(workerTools, 'agents/worker.md')
+  const fixerTools = splitList(fixer.tools)
+  assert.deepEqual(fixerTools, [...WORKER_TOOLS], 'the settle fixer carries the worker\'s tools exactly')
+  assertSlim(fixerTools, 'agents/settle-fixer.md')
+  assert.ok(
+    /Never invoke from a user conversation — only \/interlock:settle spawns this type\./.test(fixer.description),
+    'the settle fixer description must carry the never-invoke line'
+  )
+  assert.ok(!('model' in fixer), 'the settle fixer names no model')
 
   for (const [label, fm] of [
     ['ping', ping],
-    ['worker', worker]
+    ['worker', worker],
+    ['settle-fixer', fixer]
   ]) {
     const denied = splitList(fm.disallowedTools)
     for (const need of ['Skill', 'Agent', 'mcp__*']) {

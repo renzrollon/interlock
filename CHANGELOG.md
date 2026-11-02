@@ -7,6 +7,19 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **A settle fix round verifies before it commits.** `interlock verify plan|exec|judge --context inter-wave` runs on the staged paths; a red unit suite or typecheck prints `ROUND FAILED: unit red`, commits and pushes nothing, and ends the loop early.
+- **`settle comment` collapses suggestions.** Blockers and warnings render first; suggestions sit in one `<details>` block headed by their count. `--json` and the record are unchanged.
+- **The fixer is the plugin's `settle-fixer` agent** (`interlock:settle-fixer`), with no `Skill`, `Agent` or MCP tools; its briefing allows one unit-suite run at most. `interlock doctor` requires the file.
+- **The settle meter keeps drawing rounds after a round verified:** a verify line inside an open round appends to it.
+- **The review depth banner carries counts:** `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`.
+- **The docs state the round rule and that `--strict` sets depth, not scope;** `merge-confidence` is passed `--changed <files>`.
+
+### Fixed
+
+- Correction to 1.10.0: its note that the GitHub loop was not exercised end to end was overtaken by PR #25 (2026-10-26, head `161f955`). The GitLab lines remain `not exercised`.
+
 ## [1.13.0] - 2026-10-31
 
 ### Changed

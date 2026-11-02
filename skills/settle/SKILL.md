@@ -140,7 +140,7 @@ Then read the new pull request's number or iid and target branch as §2 does.
 
 Only with `--review`, and only once the pull request exists (§2 found it, or §4 created it). Without `--review` the skill runs nothing in this section: it assesses as before, and passes no file from `.claude/ship/settle/` to the assessment.
 
-**The GitHub lines of this section are not exercised end to end** until task 8.5 of `close-the-merge-request-loop` records a run of the whole loop on a live pull request: each command is tested on its own, the loop as a whole is not. The GitLab lines carry their own `not exercised` markers.
+The GitHub lines of this section ran end to end on a live pull request, PR #25 (2026-10-26, head `161f955`). The GitLab lines carry their own `not exercised` markers.
 
 The loop produces its evidence in a fixed order, and each step depends on the one before: a review of the pull request's diff, the findings comment, fix rounds that each commit, push, re-review the pushed head and reply, the ready mark, the confirmation, the verification, the platform's checks, and only then the assessment. Everything it writes lives under `.claude/ship/settle/`.
 
@@ -184,7 +184,7 @@ Below, `<sha>` is the head the step describes, `git rev-parse HEAD` at that step
 /interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r0.json [--strict]
 ```
 
-The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth>`; print that line once, as it reported it, and not again for the rounds. `review-code` proves its own coverage before it writes that record, re-running what it could not prove; post the comment from the record it wrote and add no proof step of your own. A record left unproven at the cap says so in its comment.
+The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`; print that line once, as it reported it, and not again for the rounds. `review-code` proves its own coverage before it writes that record, re-running what it could not prove; post the comment from the record it wrote and add no proof step of your own. A record left unproven at the cap says so in its comment.
 
 ### 5b. Post the findings
 
@@ -232,13 +232,15 @@ The command defers two kinds of finding before it plans the round, and lists the
 
 **The loop runs while this exits 0, and ends only on the CLI's stop rule:** exit 1 with standard error beginning `interlock: STOP: ` (nothing left to fix, the round cap reached, a verdict that halts the rounds). Report the reason after `STOP:`; the loop ends, and goes on to §5d. Any other non-zero exit is a failure, never a stop: print `ROUND FAILED: <reason>` and stop the loop early. The cap is the CLI's: never count rounds against a number of your own.
 
+**Who a round briefs.** The first round briefs every surviving blocker and warning. A later round is briefed only while a blocker survives, and then it takes the surviving warnings with it, so a warning a re-review adds is fixed only when a blocker also survives into the next round. Suggestions are never briefed. The CLI applies this rule; the skill only states it.
+
 **Record the head** before the fixer runs:
 
 ```bash
 git rev-parse HEAD
 ```
 
-**Spawn ONE `general-purpose` subagent with the answer's `briefing` field as its whole prompt.** It fixes the listed findings, writes `.claude/ship/settle/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does. Before the pass's first fixer, run `interlock routing settle-fixer --json` once, and reuse its answer in later rounds. Pass its `model` and `effort` on the fixer call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults: routing is a cost hint, never a reason to stop the round. Name no model and no effort level in this skill or in the prompt.
+**Spawn ONE `interlock:settle-fixer` subagent with the answer's `briefing` field as its whole prompt.** The plugin's definition of that type bounds its tools: it cannot spawn agents or invoke skills. It fixes the listed findings, writes `.claude/ship/settle/remediate-r<r>.json`, and does not commit. It runs with no ship guards: there is no stage marker, so the hook that refuses test edits does not fire, and the revert below is the only protection the tests have. Do not fix anything yourself, and do not review the fixer's work: the fresh review below does. Before the pass's first fixer, run `interlock routing settle-fixer --json` once, and reuse its answer in later rounds. Pass its `model` and `effort` on the fixer call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults: routing is a cost hint, never a reason to stop the round. Name no model and no effort level in this skill or in the prompt.
 
 **The head did not move.** Read it again:
 
@@ -312,7 +314,33 @@ git diff --cached --quiet
 interlock settle replies --before .claude/ship/settle/review-r<r-1>.json --after .claude/ship/settle/review-r<r-1>.json --head <sha> | gh pr comment <n> --body-file -
 ```
 
-Otherwise commit the round, naming the pull request and the round, and push it:
+Otherwise verify the round before it commits, so a red head is never pushed. List the staged paths:
+
+```bash
+git diff --cached --name-only
+```
+
+Plan the round's verification over those paths, with the round's profile copy (with no copy, plan with `--no-profile` in place of `--profile`):
+
+```bash
+interlock verify plan --profile .claude/ship/settle/profile-r<r>.json --context inter-wave --changed <staged paths> --json > .claude/ship/settle/plan-r<r>.json
+```
+
+Run each planned step exactly as the plan gives it, once per step, each with the Bash tool's timeout set to the plan's `unit.timeout_ms` (or the tool's own maximum, when that is lower):
+
+```bash
+interlock verify exec --kind <kind> --command "<command>"
+```
+
+Write one `{ kind, exitCode }` entry per step to `.claude/ship/settle/results-r<r>.json`, then judge the round for the staged tree:
+
+```bash
+interlock verify judge --plan .claude/ship/settle/plan-r<r>.json --results .claude/ship/settle/results-r<r>.json --context inter-wave --head <sha> --json > .claude/ship/settle/verify-r<r>.json
+```
+
+A plan with no step (every staged path is documentation) is a green round: the judge exits 0. Exit 0 goes on to the commit. Any other exit is a red round: print `ROUND FAILED: unit red — <reason>`, with the reason the verdict in `verify-r<r>.json` gives, or `the judge printed no verdict` when that file is empty. Commit nothing, push nothing, leave the round's changes staged, and stop the loop early. The round's files never share a name with the pass's `verify.json`.
+
+Then commit the round, naming the pull request and the round, and push it:
 
 ```bash
 git commit -m "fix(review): answer the PR #<n> review round <r>" -m "Refs: #<n>"
@@ -462,7 +490,7 @@ A non-zero exit of `interlock pipeline` stops the assessment: it printed nothing
 ### 6b. The verdict
 
 ```bash
-interlock merge-confidence <change> --base origin/<target branch> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --json
+interlock merge-confidence <change> --base origin/<target branch> --changed <files> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --json
 ```
 
 - Pass `--run .claude/ship/merge-confidence.json` only when that file exists (Glob for it). It is the evidence a ship run's close wrote. The command decides whether it may be used, and says why on standard error when it takes nothing from it, or when it carries the run record to a later commit and drops the rest: report that reason.
@@ -492,7 +520,7 @@ When the `ci.pipeline` signal says the pipeline input describes another commit, 
 The same inputs, with `--markdown` in place of `--json`:
 
 ```bash
-interlock merge-confidence <change> --base origin/<target branch> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --markdown
+interlock merge-confidence <change> --base origin/<target branch> --changed <files> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --markdown
 ```
 
 It prints one block, beginning with its own `## Merge confidence` heading. That block goes into the description **as printed**: no line changed, reordered, summarised or dropped. It names the commit and the base it was computed for.
@@ -615,7 +643,7 @@ Only with `--confidence-comment`. Post the block from §6c as a comment, unedite
 
 ```bash
 # GitHub — straight from the command, so nothing is retyped
-interlock merge-confidence <change> --base origin/<target branch> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --markdown | gh pr comment <n> --body-file -
+interlock merge-confidence <change> --base origin/<target branch> --changed <files> --pipeline .claude/ship/pipeline.json --run .claude/ship/merge-confidence.json --review .claude/ship/settle/review-r<last>.json --verify .claude/ship/settle/verify.json --handoff .claude/ship/settle/handoff.json --coverage .claude/ship/settle/coverage.json --markdown | gh pr comment <n> --body-file -
 # GitLab — not exercised
 glab mr note <iid> -m "<the block, as printed>"
 ```

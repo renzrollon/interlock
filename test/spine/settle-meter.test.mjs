@@ -177,7 +177,7 @@ const FIXER_PROMPT = JSON.parse(R.BASH_SETTLE_BRIEF.result.stdout).briefing
 const WORKER_PROMPT = `Confirm change "${CHANGE}" against its diff at head ${H161}.\n\nScenarios — for each one below, read the implementation.`
 
 /** The engine's spawn event: the captured one with the prompt, model and type of this agent. */
-function spawnEvent(prompt, { model, agentId, resolved, subagentType = 'general-purpose', parentModel = 'claude-opus-5-5' }) {
+function spawnEvent(prompt, { model, agentId, resolved, subagentType = prompt === FIXER_PROMPT ? R.SETTLE_FIXER_TYPE : 'general-purpose', parentModel = 'claude-opus-5-5' }) {
   const input = { ...R.SPAWN_ROUTED.input, prompt, subagentType, parentModel }
   if (model === undefined) delete input.model
   else input.model = model
@@ -1799,6 +1799,41 @@ test('M6: the call\'s exit is drawn only on the stage that set it', () => {
   const passed = inRound1()
   cross(passed, commitPush, 1000)
   assert.ok(groupRows(passed, 'round 1').some(t => t.includes('commit fix(review)') && t.includes('push exit 0')))
+})
+
+test('a round\'s verification lands in its round: plan, exec, judge, commit and push are all drawn there and verify never opens', () => {
+  const planR1 = okBash('interlock verify plan --profile .claude/ship/settle/profile-r1.json --context inter-wave --changed lib/a.mjs --json > .claude/ship/settle/plan-r1.json')
+  const judgeR1 = okBash(`interlock verify judge --plan .claude/ship/settle/plan-r1.json --results .claude/ship/settle/results-r1.json --context inter-wave --head ${H161} --json > .claude/ship/settle/verify-r1.json`)
+  const s = inRound1()
+  cross(s, routingFixer, 330)
+  cross(s, R.BASH_SETTLE_FIXER_RESULT, 980)
+  cross(s, planR1, 985)
+  cross(s, verifyExec, 990)
+  cross(s, judgeR1, 995)
+  cross(s, commitPush, 1000)
+  const round = groupRows(s, 'round 1')
+  assert.ok(round.some(t => t.includes('verify plan · exit 0')), round.join('\n'))
+  assert.ok(round.some(t => t.includes('verify unit · exit 0')), round.join('\n'))
+  assert.ok(round.some(t => t.includes('verify judge · exit 0')), round.join('\n'))
+  assert.ok(round.some(t => t.includes('commit fix(review)') && t.includes('push exit 0')), round.join('\n'))
+  assert.equal(headingAt(settlePaneLines(s, 144), 'verify'), -1, 'no verify group is drawn')
+})
+
+test('a pass-level verify after the conformance brief still opens verify, and a red judge inside a round draws in the round', () => {
+  const s = inRound1()
+  cross(s, routingConformance, 1050)
+  cross(s, conformanceBrief, 1052)
+  cross(s, verifyPlan, 1300)
+  cross(s, verifyExec, 1310)
+  cross(s, verifyJudge, 1320)
+  const verify = groupRows(s, 'verify')
+  assert.ok(verify.some(t => t.includes('plan exit 0')) && verify.some(t => t.includes('exec unit exit 0')) && verify.some(t => t.includes('judge exit 0')), verify.join('\n'))
+  assert.ok(!groupRows(s, 'round 1').some(t => t.includes('verify ')), 'the pass-level lines are not drawn in the round')
+
+  const red = inRound1()
+  cross(red, errBash(verifyJudge.command.replace('--context final', '--context inter-wave'), 1, ''), 995)
+  assert.ok(groupRows(red, 'round 1').some(t => t.includes('verify judge · exit 1')), groupRows(red, 'round 1').join('\n'))
+  assert.equal(headingAt(settlePaneLines(red, 144), 'verify'), -1, 'a red judge in a round opens nothing')
 })
 
 test('M7: a conformance brief with nothing to confirm draws the stderr line the CLI wrote', () => {

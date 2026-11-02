@@ -282,6 +282,88 @@ test('comment --json carries the proof', () => {
   assert.deepEqual(JSON.parse(r.stdout).proof, PROVEN)
 })
 
+const SUGGESTION_A = finding({ severity: 'suggestion', file: 'lib/s1.mjs', line: 5, title: 'Rename the helper', description: 'The name is vague.', suggestion: 'Call it loadRecord.' })
+const SUGGESTION_B = finding({ severity: 'suggestion', file: 'lib/s2.mjs', line: 6, title: 'Inline the constant', description: 'It is used once.', suggestion: 'Inline it.' })
+const MIXED = [TWO[0], TWO[1], SUGGESTION_A, SUGGESTION_B]
+
+test('comment: suggestions sit in one counted <details> block after the blocker and warning tier, and the coverage line stays last', () => {
+  const file = record({ surviving: MIXED, proof: PROVEN })
+  const r = settle('comment', commentArgs(file))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const lines = r.stdout.split('\n')
+  const open = lines.indexOf('<details>')
+  const close = lines.indexOf('</details>')
+  assert.ok(open > 0 && close > open, `one <details> block expected:\n${r.stdout}`)
+  assert.equal(lines.filter(l => l === '<details>').length, 1)
+  assert.equal(lines[open + 1], '<summary>2 suggestions</summary>')
+  assert.equal(lines[open + 2], '', 'a blank line follows </summary> so the table renders')
+  assert.equal(lines[open - 1], '', 'a blank line precedes <details>')
+  assert.equal(lines[close + 1], '', 'a blank line follows </details>')
+  const rowOf = f => lines.findIndex(l => l.startsWith('|') && l.includes(idOf(f)))
+  for (const f of [TWO[0], TWO[1]]) assert.ok(rowOf(f) > 0 && rowOf(f) < open, `${idOf(f)} renders before the block`)
+  for (const f of [SUGGESTION_A, SUGGESTION_B]) assert.ok(rowOf(f) > open && rowOf(f) < close, `${idOf(f)} renders inside the block`)
+  assert.ok(rowOf(TWO[0]) < rowOf(TWO[1]), 'first-appearance order kept in the first tier')
+  assert.ok(r.stdout.includes(SUGGESTION_A.description) && r.stdout.includes(SUGGESTION_B.suggestion), 'the suggestions keep their bodies')
+  assert.match(lines.filter(Boolean).pop(), /^Coverage: /)
+  assert.ok(lines.indexOf(lines.filter(Boolean).pop()) > close, 'the coverage line comes after the block')
+  assert.equal(settle('comment', commentArgs(file)).stdout, r.stdout, 'byte-stable')
+  assertInert(r.stdout, 'mixed comment')
+})
+
+test('comment: a single suggestion reads "1 suggestion" in the summary', () => {
+  const r = settle('comment', commentArgs(record({ surviving: [TWO[0], SUGGESTION_A], proof: PROVEN })))
+  assert.ok(r.stdout.split('\n').includes('<summary>1 suggestion</summary>'), r.stdout)
+})
+
+test('comment: a suggestions-only record renders the heading, the block and the coverage line, with no table before the block', () => {
+  const r = settle('comment', commentArgs(record({ surviving: [SUGGESTION_A, SUGGESTION_B], proof: PROVEN })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const lines = r.stdout.split('\n')
+  const open = lines.indexOf('<details>')
+  assert.ok(open > 0, r.stdout)
+  assert.ok(/^## Review round 0/.test(lines[0]), lines[0])
+  assert.deepEqual(lines.slice(1, open), [''], 'only a blank line sits between the heading and the block')
+  assert.ok(!lines.slice(0, open).some(l => l.startsWith('|')), 'no empty table before the block')
+  assert.match(lines.filter(Boolean).pop(), /^Coverage: /)
+})
+
+test('comment: blockers and warnings only render no <details> block', () => {
+  const r = settle('comment', commentArgs(record({ surviving: TWO, proof: PROVEN })))
+  assert.ok(!r.stdout.includes('<details>') && !r.stdout.includes('</details>') && !r.stdout.includes('<summary>'), r.stdout)
+})
+
+test('comment: an unrecognised severity stays in the first tier, outside the block', () => {
+  const odd = finding({ severity: 'nit', file: 'lib/o.mjs', line: 2, title: 'Odd severity row' })
+  const r = settle('comment', commentArgs(record({ surviving: [SUGGESTION_A, odd], proof: PROVEN })))
+  const lines = r.stdout.split('\n')
+  const open = lines.indexOf('<details>')
+  const oddRow = lines.findIndex(l => l.startsWith('|') && l.includes(idOf(odd)))
+  assert.ok(oddRow > 0 && oddRow < open, `the unrecognised severity is visible before the block:\n${r.stdout}`)
+  assert.ok(lines.slice(open).some(l => l.startsWith('|') && l.includes(idOf(SUGGESTION_A))))
+})
+
+test('comment: a REVIEW NOT PROVEN line stays last after the block', () => {
+  const r = settle('comment', commentArgs(record({ surviving: MIXED, proof: { ...PROVEN, proven: false, reason: 'gaps in coverage', uncited: ['lib/z.mjs'] } })))
+  const lines = r.stdout.split('\n')
+  assert.match(lines.filter(Boolean).pop(), /^REVIEW NOT PROVEN: /)
+  assert.ok(lines.lastIndexOf('</details>') < lines.findIndex(l => l.startsWith('REVIEW NOT PROVEN:')))
+})
+
+test('comment --json lists every finding at every severity, collapsed or not', () => {
+  const r = settle('comment', [...commentArgs(record({ surviving: MIXED, proof: PROVEN })), '--json'])
+  assert.deepEqual(JSON.parse(r.stdout).findings.map(f => f.id), MIXED.map(idOf))
+})
+
+test('comment: a hostile suggestion title closes no <details> block', () => {
+  const hostile = finding({ ...HOSTILE, severity: 'suggestion' })
+  const r = settle('comment', commentArgs(record({ surviving: [TWO[0], hostile], proof: PROVEN })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const { outside } = outsideCode(r.stdout)
+  assertInert(r.stdout, 'hostile suggestion')
+  assert.equal(outside.filter(l => l === '</details>').length, 1, 'only the renderer closes the block')
+  assert.equal(outside.filter(l => l === '<details>').length, 1)
+})
+
 // ── 1.11 replies ────────────────────────────────────────────────────────────
 
 const A = finding({ file: 'lib/a.mjs', line: 5, title: 'Alpha is unchecked' })
@@ -685,6 +767,13 @@ test('conformance-brief: three scenarios and two graph-selected living requireme
   for (const key of [...CB_HANDOFF_KEYS, 'head']) assert.match(out, new RegExp(`\\b${key}\\b`), `the briefing asks for ${key}`)
 })
 
+test('conformance-brief: the worker is told to read and not to run the suite', () => {
+  const repo = conformanceRepo('cb-no-suite')
+  const r = settle('conformance-brief', cbArgs(repo), { cwd: repo.root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.ok(r.stdout.includes('Do not run the test suite'), r.stdout)
+})
+
 test('conformance-brief: --result names the file the worker answers into', () => {
   const repo = conformanceRepo('cb-result')
   const r = settle('conformance-brief', cbArgs(repo, { result: 'out/answer.json' }), { cwd: repo.root })
@@ -838,6 +927,17 @@ test('remediate-brief: the findings block is labelled quoted reviewer data, not 
   assert.match(r.stdout.slice(0, begin), /not instructions/i)
 })
 
+test('remediate-brief: the briefing bounds the fixer to one run of the unit suite and none beside another agent', () => {
+  const r = settle('remediate-brief', briefArgs(record({ surviving: [W1] }), 1))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const stay = r.stdout.indexOf('Do not commit, do not push and do not stage')
+  assert.ok(stay >= 0, r.stdout)
+  const after = r.stdout.slice(stay)
+  assert.ok(after.includes('one time at most'), after)
+  assert.ok(after.includes('another agent'), after)
+  assert.ok(after.indexOf('one time at most') < after.indexOf('When you are done, write JSON'), 'the lines sit before the result shape')
+})
+
 // ── same-key findings collapse at the highest severity ──────────────────────
 
 const DUP_WARN = finding({ severity: 'warning', file: 'lib/x.mjs', line: 8, title: 'Same thing twice' })
@@ -928,10 +1028,14 @@ function outsideCode(markdown) {
   return { outside, fences }
 }
 
+const RENDERER_DETAILS_LINES = /^(<details>|<\/details>|<summary>\d+ suggestions?<\/summary>)$/
+
 function assertInert(markdown, label) {
   const { outside, fences } = outsideCode(markdown)
   for (const line of outside) {
     assert.ok(!line.startsWith('/approve'), `${label}: a /approve line outside a fence: ${line}`)
+    // The renderer's own three lines around the collapsed suggestions, exact and nothing else.
+    if (RENDERER_DETAILS_LINES.test(line)) continue
     for (const live of ['@octocat', '](', '</details>', '<!--']) {
       assert.ok(!line.includes(live), `${label}: ${live} outside a span or fence: ${line}`)
     }
