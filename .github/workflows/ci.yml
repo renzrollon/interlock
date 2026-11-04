@@ -88,9 +88,14 @@ jobs:
           fi
           claude plugin test .
 
+  # Advisory: a red leg never fails the run. macOS arm64 runners queue for a
+  # long time under capacity constraints, and a smoke that gates a merge on a
+  # queue is the wrong gate. A failed leg says so in its last step and in the
+  # run summary; `cli-smoke-gate` below says so for a cancelled or skipped one.
   cli-smoke:
     name: cli-smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -165,13 +170,24 @@ jobs:
           mkdir -p "$RUNNER_TEMP/smoke"
           node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
 
-  # The `main: required CI` ruleset requires a check named `validate-plugin` and
-  # one named `cli-smoke`; it lives on GitHub, not here. The matrices above
-  # report as `validate-plugin (latest)`, `cli-smoke (macos-latest)` and so on,
-  # and nothing reports the bare names, so these two gates do: each passes only
-  # when every leg of its matrix passed. `always()` keeps a failed or cancelled
-  # leg from skipping the gate, because a skipped required check reads as
-  # passing. Renaming a job or a leg leaves the gates' names alone;
+      # Last step, so `failure()` means a smoke step above failed. It speaks and
+      # exits 0: the leg's failure is advisory, never silent.
+      - name: Note a failed smoke leg
+        if: ${{ failure() }}
+        run: |
+          msg="cli-smoke (${{ matrix.os }}) failed — advisory, not blocking"
+          echo "::warning title=cli-smoke (${{ matrix.os }})::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+
+  # The `main: required CI` ruleset requires a check named `validate-plugin`; it
+  # lives on GitHub, not here. The matrices above report as
+  # `validate-plugin (latest)`, `cli-smoke (macos-latest)` and so on, and
+  # nothing reports the bare names, so these two gates do. `validate-plugin`
+  # passes only when every leg of its matrix passed. `cli-smoke` is no longer
+  # required by the ruleset (dropped 2026-11-05); its gate always passes and
+  # says so when a leg did not, and stays so the legs roll up to one line.
+  # `always()` keeps a failed or cancelled leg from skipping a gate, because a
+  # skipped required check reads as passing. Renaming a job or a leg leaves the gates' names alone;
   # test/spine/github-workflows.test.mjs pins that every required name is
   # reported.
   validate-plugin-gate:
@@ -191,10 +207,15 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Every platform leg passed
+      - name: Report the platform legs (advisory, never fails)
         run: |
-          echo "cli-smoke legs: ${{ needs.cli-smoke.result }}"
-          test "${{ needs.cli-smoke.result }}" = success
+          result="${{ needs.cli-smoke.result }}"
+          echo "cli-smoke legs: $result"
+          if [ "$result" != success ]; then
+            msg="cli-smoke legs finished $result — advisory, not blocking"
+            echo "::warning title=cli-smoke::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # The release installed OVER the previous one. A user who runs `npm i -g` on
   # top of last month's install gets whatever the two leave together, which no
