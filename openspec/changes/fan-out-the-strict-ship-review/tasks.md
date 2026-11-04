@@ -20,3 +20,9 @@ Pin rule for every task below: an assertion that pins a meaning the delta specs 
 ## 3. Integration
 
 - [x] 3.1 Run `npm test > $TMPDIR/fanout.log 2>&1; tail -20 $TMPDIR/fanout.log` and `npm run validate`; both green, with no skipped assertion beyond the six sandbox relay skips, and the fake-host strict run in `test/spine/host.test.mjs` passes through `review`, `run found`, `skeptics`, `run reviewed` and `remediate`. Verify: the suite's summary line reports 0 failures.
+
+## 4. PR #33 review round 1 and the blast radius
+
+- [x] 4.1 Round-1 code findings: `changedRanges` takes `linesOf` and reads only the observed paths the diff does not name (`lineCount` in `lib/review-scope.mjs`); `foldDimensionAnswers` returns a `kind` per not-run entry (`empty` for a whitespace-only file), takes the run's `fileOf`, and bounds the mismatched value (`boundedValue`); `notRunBanner` replaces `mismatchOf` and appends a reviewer's own `detail`; `verdictsWrittenTo` replaces the skeptic prompt's closing "write nothing" line for ship and leaves settle's prompt unchanged; the work-file and `remediate.mjs` comments name `run found`. Verify: `node --test test/spine/review-fanout.test.mjs test/spine/review-scope.test.mjs test/spine/prompts.test.mjs`.
+- [x] 4.2 Banner tests owed by the two surviving warnings and the blast radius's UAT checks a test can run: `REVIEW RANGES UNREAD`, `REVIEW WIDER THAN MAX PARALLEL` on both steps and its negatives, the reviewer's detail, the empty answer, the bounded mismatch, B6 (the draft survives the clear), B7 (the `skeptic` kind on the trajectory) and the skeptic briefing's single answer path. Verify: `node --test test/spine/run.test.mjs`.
+- [x] 4.3 Prose: docs/04 (the effort line and the review-wave faults), docs/13 (the single-slot stage marker during a fan-out), and design D5 and Risks (the marker limit, why skeptic files are cleared once, and the strict tail moving out of `lib/run.mjs` in the next epic change). Verify: `npm test`.

@@ -20,11 +20,18 @@ After the review step, `interlock run found` MUST read each selected dimension's
 - **THEN** the step carries `REVIEW INCOMPLETE: qa — no answer file`, the manifest records `qa` as not run and the review as not completed, and the four other ledgers are folded
 - **AND** the skeptics step is still emitted over the findings that were written, and the run does not halt
 
+#### Scenario: Failure — an empty answer file, and a reviewer that said why
+
+- **GIVEN** the same run, whose `qa` answer file holds only whitespace, and whose `language` reviewer wrote no file and returned `{ ok: false, detail: "ran out of context" }`
+- **WHEN** `interlock run found` runs
+- **THEN** the step carries `REVIEW INCOMPLETE: qa — .claude/ship/review/dimensions/qa.json is empty` and `REVIEW INCOMPLETE: language — no answer file; the reviewer reported: ran out of context`, and both are recorded as not run
+
 #### Scenario: Failure — an answer under another dimension's name is not adjudicated
 
 - **GIVEN** a `security` answer file whose `dimension` field reads `architecture`
 - **WHEN** `interlock run found` runs
 - **THEN** the step carries `REVIEW ANSWER MISMATCHED: security wrote architecture`, `security` is recorded as not run, and the file's findings are not folded
+- **AND** a `dimension` value that is not a string is printed as its JSON, and any value is cut to one line of at most 80 characters, so a reviewer cannot put arbitrary text into a relayed banner
 
 #### Scenario: Edge case — nothing to judge
 

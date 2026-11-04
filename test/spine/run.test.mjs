@@ -9848,3 +9848,188 @@ test('a strict run through a fix round and the verdict round closes with its pro
     cleanup(root)
   }
 })
+
+// --- the fan-out's spoken edges (PR #33 review) -------------------------------
+
+test('a review whose start commit cannot be diffed says REVIEW RANGES UNREAD and still briefs every reviewer with the paths', () => {
+  const { root, change } = repo()
+  try {
+    const sha = 'f'.repeat(40)
+    const review = toReview(root, change, ['--review'], { startSha: sha })
+    assert.equal(review.action, 'review')
+    const banner = (review.banners || []).find(b => b.startsWith(`REVIEW RANGES UNREAD: git diff against ${sha.slice(0, 7)} failed (`))
+    assert.ok(banner, JSON.stringify(review.banners))
+    assert.match(banner, /\) — reviewers get the changed paths without line ranges$/)
+    const selected = manifestOf(root).reviewDimensions.selected
+    assert.deepEqual(review.spawns.map(sp => sp.label), selected.map(d => `review-${d}`), 'still one spawn per selected dimension')
+    for (const sp of review.spawns) {
+      assert.match(sp.prompt, /README\.md/, `${sp.label} lists the changed path`)
+      assert.ok(!/README\.md: \d+/.test(sp.prompt), `${sp.label} lists no line range`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review or skeptics step wider than --max-parallel says so, and one at or under it, or without the flag, does not', () => {
+  const wideLine = (action, n, max) =>
+    `REVIEW WIDER THAN MAX PARALLEL: the ${action} step spawns ${n} agents and --max-parallel is ${max} — ` +
+    `the flag bounds implementer batches only; this step is not chunked, so a runner host starts all ${n} at once`
+  const wideOf = step => (step.banners || []).filter(b => String(b).startsWith('REVIEW WIDER THAN MAX PARALLEL'))
+  const drive = flags => {
+    const { root, change } = repo()
+    const review = toTail(root, change, flags)
+    writeFanout(root, { blockers: 1, warnings: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    return { root, review, found }
+  }
+  const wide = drive(['--review', '--max-parallel', '2'])
+  try {
+    assert.ok(wide.review.spawns.length > 2)
+    assert.deepEqual(wideOf(wide.review), [wideLine('review', wide.review.spawns.length, 2)])
+    assert.equal(wide.found.action, 'skeptics')
+    assert.ok(wide.found.spawns.length > 2)
+    assert.deepEqual(wideOf(wide.found), [wideLine('skeptics', wide.found.spawns.length, 2)])
+  } finally {
+    cleanup(wide.root)
+  }
+  const none = drive(['--review'])
+  try {
+    assert.deepEqual(wideOf(none.review), [])
+    assert.deepEqual(wideOf(none.found), [])
+  } finally {
+    cleanup(none.root)
+  }
+  const probe = drive(['--review'])
+  const width = Math.max(probe.review.spawns.length, probe.found.spawns.length)
+  cleanup(probe.root)
+  const enough = drive(['--review', '--max-parallel', String(width)])
+  try {
+    assert.deepEqual(wideOf(enough.review), [])
+    assert.deepEqual(wideOf(enough.found), [])
+  } finally {
+    cleanup(enough.root)
+  }
+})
+
+test('a reviewer that wrote no file but said why has its reason on the banner; without one the banner is bare', () => {
+  for (const [detail, expected] of [
+    ['ran out of context', 'REVIEW INCOMPLETE: qa — no answer file; the reviewer reported: ran out of context'],
+    [undefined, 'REVIEW INCOMPLETE: qa — no answer file']
+  ]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeFanout(root, { warnings: 1 }, { omitDimensions: ['qa'] })
+      const at = manifestOf(root).reviewDimensions.selected.indexOf('qa')
+      const results = review.spawns.map(() => ({ ok: true }))
+      results[at] = detail === undefined ? { ok: false } : { ok: false, detail }
+      const found = run(root, [...review.then.argv], { results }).step
+      const banners = (found.banners || []).filter(b => b.startsWith('REVIEW INCOMPLETE: qa'))
+      assert.deepEqual(banners, [expected])
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('a whitespace-only answer file is recorded as empty, with the path on the banner', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeFanout(root, { warnings: 1 }, { omitDimensions: ['qa'] })
+    file(root, `${DIMENSIONS_DIR}/qa.json`, '  \n\t\n')
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.ok(
+      (found.banners || []).includes('REVIEW INCOMPLETE: qa — .claude/ship/review/dimensions/qa.json is empty'),
+      JSON.stringify(found.banners)
+    )
+    const qa = manifestOf(root).reviewDimensions.notRun.find(d => d.name === 'qa')
+    assert.equal(qa.kind, 'empty')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a mismatched answer banner bounds the dimension it quotes and prints an object as JSON', () => {
+  const long = 'x'.repeat(200)
+  for (const [dimension, expected] of [
+    [long, `REVIEW ANSWER MISMATCHED: qa wrote ${'x'.repeat(80)}…`],
+    [{ name: 'language' }, 'REVIEW ANSWER MISMATCHED: qa wrote {"name":"language"}']
+  ]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeFanout(root, { warnings: 1 }, { omitDimensions: ['qa'] })
+      file(root, `${DIMENSIONS_DIR}/qa.json`, { dimension, findings: [] })
+      const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+      const banner = (found.banners || []).find(b => b.startsWith('REVIEW ANSWER MISMATCHED: qa'))
+      assert.equal(banner, expected)
+      assert.ok(!banner.includes('[object Object]'))
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('the first review step clears the answer directories and leaves review.draft.json alone', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change, ['--review'])
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const draft = { keep: 'me', findings: [] }
+    file(root, '.claude/ship/review/review.draft.json', draft)
+    file(root, `${DIMENSIONS_DIR}/stale.json`, { dimension: 'language', findings: [] })
+    file(root, `${SKEPTICS_DIR}/stale.json`, [])
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    assert.equal(review.action, 'review')
+    assert.equal(existsSync(join(root, DIMENSIONS_DIR)), false)
+    assert.equal(existsSync(join(root, SKEPTICS_DIR)), false)
+    assert.deepEqual(jsonAt(root, '.claude/ship/review/review.draft.json'), draft)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the trajectory records reviewers as kind review and skeptics as kind skeptic', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeFanout(root, { blockers: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    const events = readFileSync(join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .filter(e => e.type === 'agent-spawn')
+    const kindOf = label => events.find(e => e.label === label)?.kind
+    for (const sp of review.spawns) assert.equal(kindOf(sp.label), 'review', sp.label)
+    for (const sp of found.spawns) assert.equal(kindOf(sp.label), 'skeptic', sp.label)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('each skeptics-step briefing names only its own verdict file, once, and drops the write-nothing line', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeFanout(root, { blockers: 1, warnings: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.ok(found.spawns.length >= 2)
+    const paths = found.spawns.map(sp => `${SKEPTICS_DIR}/${sp.label}.json`)
+    found.spawns.forEach((sp, i) => {
+      assert.equal(sp.prompt.split(paths[i]).length - 1, 1, `${sp.label} names its own path once`)
+      paths.forEach((other, j) => {
+        if (j !== i) assert.ok(!sp.prompt.includes(other), `${sp.label} names ${other}`)
+      })
+      assert.ok(!sp.prompt.includes('Write nothing else: no file, no edit to the tree.'), sp.label)
+    })
+  } finally {
+    cleanup(root)
+  }
+})

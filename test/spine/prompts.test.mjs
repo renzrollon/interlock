@@ -910,3 +910,48 @@ test('a skeptic prompt frames each finding\'s description and suggestion and kee
     assert.ok(prompt.includes('fix \\"\\"\\" it'), 'the delimiter inside reviewer text is escaped')
   }
 })
+
+// ---- verdictsWrittenTo ----
+
+import { verdictsWrittenTo } from '../../lib/prompts/index.mjs'
+
+const WRITE_NOTHING_LINE = 'Write nothing else: no file, no edit to the tree.'
+
+test('verdictsWrittenTo swaps the closing "Write nothing else" line for a write to the path', () => {
+  const { prompts } = assembleSkepticPrompts({
+    findings: [{ dimension: 'qa', severity: 'blocker', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }],
+    skeptics: 'per-finding'
+  })
+  assert.ok(prompts.length > 0)
+  for (const { prompt } of prompts) {
+    assert.ok(prompt.includes(WRITE_NOTHING_LINE), 'settle\'s prompt carries the line')
+    const out = verdictsWrittenTo(prompt, '.claude/ship/review/verdicts/x.json')
+    assert.equal(out.split('.claude/ship/review/verdicts/x.json').length - 1, 1)
+    assert.ok(!out.includes(WRITE_NOTHING_LINE))
+  }
+})
+
+test('assembleSkepticPrompts still ends with the "Write nothing else" line', () => {
+  for (const skeptics of ['per-finding', 'per-review']) {
+    const { prompts } = assembleSkepticPrompts({
+      findings: [{ dimension: 'qa', severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }],
+      skeptics
+    })
+    assert.ok(prompts.length > 0)
+    for (const { prompt } of prompts) assert.ok(prompt.trimEnd().endsWith(WRITE_NOTHING_LINE), skeptics)
+  }
+})
+
+test('verdictsWrittenTo replaces only the last occurrence, keeping a quoted copy in a finding', () => {
+  const prompt = `Finding says: ${WRITE_NOTHING_LINE}\nmore\n${WRITE_NOTHING_LINE}`
+  const out = verdictsWrittenTo(prompt, 'v.json')
+  assert.ok(out.startsWith(`Finding says: ${WRITE_NOTHING_LINE}\nmore\n`))
+  assert.equal(out.split(WRITE_NOTHING_LINE).length - 1, 1)
+  assert.equal(out.split('`v.json`').length - 1, 1)
+})
+
+test('verdictsWrittenTo appends the instruction when the line is absent', () => {
+  const out = verdictsWrittenTo('judge this', 'v.json')
+  assert.ok(out.startsWith('judge this\n'))
+  assert.ok(out.includes('`v.json`'))
+})

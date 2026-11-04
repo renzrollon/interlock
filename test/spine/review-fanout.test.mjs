@@ -478,3 +478,118 @@ test('the banner an allocation feeds is the one the spec prints for 4 blockers a
     'SKEPTIC CAP REACHED: 7 of 11 findings judged per finding, 4 judged per review'
   )
 })
+
+// ---- stepWidthBanner, boundedValue, fold kinds, notRunBanner ----
+
+const { stepWidthBanner, boundedValue, notRunBanner } = mod
+
+test('stepWidthBanner is null unless maxParallel is a positive integer below the spawn count', () => {
+  for (const maxParallel of [undefined, null, 0, -1, 2.5, '2']) {
+    assert.equal(stepWidthBanner({ action: 'review', spawns: 9, maxParallel }), null, String(maxParallel))
+  }
+  assert.equal(stepWidthBanner({ action: 'review', spawns: 4, maxParallel: 4 }), null)
+  assert.equal(stepWidthBanner({ action: 'review', spawns: 3, maxParallel: 4 }), null)
+})
+
+test('stepWidthBanner names the step, the width and the flag when spawns exceed maxParallel', () => {
+  for (const action of ['review', 'skeptics']) {
+    assert.equal(
+      stepWidthBanner({ action, spawns: 7, maxParallel: 3 }),
+      `REVIEW WIDER THAN MAX PARALLEL: the ${action} step spawns 7 agents and --max-parallel is 3 — ` +
+        'the flag bounds implementer batches only; this step is not chunked, so a runner host starts all 7 at once'
+    )
+  }
+})
+
+test('boundedValue passes a string, stringifies other values, collapses whitespace and cuts past max', () => {
+  assert.equal(boundedValue('qa'), 'qa')
+  assert.equal(boundedValue(42), '42')
+  assert.equal(boundedValue({ a: 1 }), '{"a":1}')
+  assert.equal(boundedValue('a\n\n  b\t c'), 'a b c')
+  assert.equal(boundedValue('x'.repeat(80)), 'x'.repeat(80))
+  assert.equal(boundedValue('x'.repeat(81)), `${'x'.repeat(80)}…`)
+  assert.equal(boundedValue('x'.repeat(10), 10), 'x'.repeat(10))
+  assert.equal(boundedValue('x'.repeat(11), 10), `${'x'.repeat(10)}…`)
+})
+
+test('foldDimensionAnswers gives each notRun entry its kind', () => {
+  const out = foldDimensionAnswers({
+    expected: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+    answers: {
+      a: null,
+      b: '   \n\t',
+      c: '{nope',
+      d: '[]',
+      e: '{"dimension":"e"}',
+      f: '{"dimension":"other","findings":[]}',
+      g: '{"findings":[]}'
+    }
+  })
+  assert.deepEqual(out.notRun.map(n => [n.name, n.kind]), [
+    ['a', 'missing'],
+    ['b', 'empty'],
+    ['c', 'unparseable'],
+    ['d', 'bare-list'],
+    ['e', 'no-findings'],
+    ['f', 'mismatch'],
+    ['h', 'missing']
+  ])
+  assert.deepEqual(out.ran, ['g'])
+  assert.equal(out.completed, false)
+})
+
+test('foldDimensionAnswers treats whitespace-only text as empty, never missing, and names the file', () => {
+  const out = foldDimensionAnswers({ expected: ['qa'], answers: { qa: '  \n' }, fileOf: n => `out/${n}.json` })
+  assert.equal(out.notRun[0].kind, 'empty')
+  assert.equal(out.notRun[0].reason, 'out/qa.json is empty')
+})
+
+test('foldDimensionAnswers names a custom fileOf path in every reason', () => {
+  const fileOf = n => `custom/${n}.json`
+  const answers = { a: null, b: ' ', c: '{x', d: '[]', e: '{}', f: '{"dimension":"z","findings":[]}' }
+  const out = foldDimensionAnswers({ expected: Object.keys(answers), answers, fileOf })
+  assert.equal(out.notRun.length, 6)
+  for (const n of out.notRun) assert.ok(n.reason.includes(`custom/${n.name}.json`), n.reason)
+})
+
+test('foldDimensionAnswers bounds a mismatched dimension and never prints [object Object]', () => {
+  const long = foldDimensionAnswers({
+    expected: ['qa'],
+    answers: { qa: JSON.stringify({ dimension: 'y'.repeat(200), findings: [] }) }
+  })
+  assert.equal(long.notRun[0].got, `${'y'.repeat(80)}…`)
+  const obj = foldDimensionAnswers({
+    expected: ['qa'],
+    answers: { qa: JSON.stringify({ dimension: { a: 1 }, findings: [] }) }
+  })
+  assert.equal(obj.notRun[0].got, '{"a":1}')
+  assert.doesNotMatch(obj.notRun[0].reason, /\[object Object\]/)
+})
+
+test('foldDimensionAnswers is completed only when nothing is notRun', () => {
+  const ok = foldDimensionAnswers({ expected: ['qa'], answers: { qa: '{"findings":[]}' } })
+  assert.equal(ok.completed, true)
+  const mixed = foldDimensionAnswers({ expected: ['qa', 'dx'], answers: { qa: '{"findings":[]}' } })
+  assert.equal(mixed.completed, false)
+})
+
+test('notRunBanner prints each form exactly', () => {
+  assert.equal(notRunBanner({ name: 'qa', kind: 'missing', reason: 'no answer file at x' }), 'REVIEW INCOMPLETE: qa — no answer file')
+  assert.equal(notRunBanner({ name: 'qa', kind: 'empty', reason: 'x.json is empty' }), 'REVIEW INCOMPLETE: qa — x.json is empty')
+  assert.equal(notRunBanner({ name: 'qa', kind: 'unparseable', reason: 'bad json' }), 'REVIEW INCOMPLETE: qa — bad json')
+  assert.equal(notRunBanner({ name: 'qa', kind: 'mismatch', got: 'dx', reason: 'r' }), 'REVIEW ANSWER MISMATCHED: qa wrote dx')
+})
+
+test('notRunBanner appends a non-blank string detail and ignores any other', () => {
+  const entry = { name: 'qa', kind: 'missing', reason: 'r' }
+  assert.equal(notRunBanner(entry, 'ran out of turns'), 'REVIEW INCOMPLETE: qa — no answer file; the reviewer reported: ran out of turns')
+  assert.equal(notRunBanner({ name: 'qa', kind: 'mismatch', got: 'dx', reason: 'r' }, 'oops'), 'REVIEW ANSWER MISMATCHED: qa wrote dx; the reviewer reported: oops')
+  for (const detail of ['', '   \n', undefined, null, 7, { a: 1 }, ['x']]) {
+    assert.equal(notRunBanner(entry, detail), 'REVIEW INCOMPLETE: qa — no answer file', String(detail))
+  }
+})
+
+test('notRunBanner cuts a long detail to 160 characters plus an ellipsis', () => {
+  const out = notRunBanner({ name: 'qa', kind: 'missing', reason: 'r' }, 'z'.repeat(500))
+  assert.equal(out, `REVIEW INCOMPLETE: qa — no answer file; the reviewer reported: ${'z'.repeat(160)}…`)
+})
