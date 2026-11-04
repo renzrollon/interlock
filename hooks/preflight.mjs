@@ -54,8 +54,7 @@
 //
 // It reads and writes nothing for the push. A plugin option reaches the
 // session's commands through a hook of its own, `hooks/notify-option.mjs`,
-// which the host runs only for an option the person saved; the manifest's
-// entry for this hook names no option, so it runs for everyone.
+// which reads the option from the environment the host gives hooks.
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'

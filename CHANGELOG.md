@@ -7,6 +7,29 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-04
+
+### Changed
+
+- **One hook carries the push options, and it takes no argument.** The plugin directory's Validate refused the manifest with "Command path can't be followed": the two `hooks/notify-option.mjs` entries passed `${user_config.ntfy_topic}` and `${user_config.ntfy_url}` as arguments, and a hook command may name no variable but `${CLAUDE_PLUGIN_ROOT}`. One entry, `node "${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs"`, now reads both options from the variables the host exports to hook processes and exports `INTERLOCK_NTFY_TOPIC` and `INTERLOCK_NTFY_URL` as before. Nothing changes for a run or for a variable you set yourself. A test fails on any hook command that holds another variable, a command substitution or a wildcard, and on any hook that is not that one command. The variables are the ones the host sets from the saved options, so the plugin still asks for the topic through its options and reads no credential of the installer's. With no option saved the hook loads nothing. An export it could not write is one line on standard error per variable, kept in the host's debug log; when a saved option did not reach the session, `interlock doctor`'s `notify` row names the hook.
+
+- **A settle fix round verifies before it commits.** `interlock verify plan|exec|judge --context inter-wave` runs on the staged paths; a red unit suite or typecheck prints `ROUND FAILED: unit red`, commits and pushes nothing, and ends the loop early. A round the plan cannot verify (no profile copy, no unit command) still commits, after `ROUND UNVERIFIED: <reason>`.
+- **`settle comment` collapses suggestions.** Blockers and warnings render first; suggestions sit in one `<details>` block headed by their count. `--json` and the record are unchanged.
+- **The fixer is the plugin's `settle-fixer` agent** (`interlock:settle-fixer`), with no `Skill`, `Agent` or MCP tools; its briefing allows one unit-suite run at most. `interlock doctor` requires the file. A spawn that is refused or names an unknown type prints `ROUND FAILED: fixer type unavailable` and ends the loop.
+- **The settle meter keeps drawing rounds after a round verified:** a verify line inside an open round appends to it.
+- **The review depth banner carries counts:** `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`.
+- **The docs state the round rule and that `--strict` sets depth, not scope;** `merge-confidence` is passed `--changed <files>`.
+- **`settle replies` says `fixed` only when the fixer claimed it.** The skill passes `--result <fixer result>`. A finding the re-review dropped with no claim behind it reads `not re-raised`, under its own legend line, and `--json` gains `notReRaised`. On PR #31, three of the five `fixed` rows had never been briefed.
+- **A settle stop suggests another pass when one would help.** After `STOP:`, `remediate-brief` prints `ANOTHER PASS SUGGESTED:` naming the surviving blockers and warnings no round of this pass will fix, and `LEFT FOR A PERSON:` for deferred findings. The loop still runs no extra round.
+
+### Removed
+
+- **The preflight and the runner read no credential.** `interlock doctor` drops its `claude-bare` and `evals-credential` rows, and its `prompt-cache` row no longer names an authentication mode: each read whether a key or token variable was set, by name and never by value, and the plugin directory holds a plugin for any read of a credential that could reach a server — its own remedy is to remove every such read, which 1.6.0 left for a reviewer. Nothing changes for a run. `interlock-run --host codex` decides `CHATGPT PLAN PATH (codex)` from `codex login status`, read once when the host is created, instead of from two key variables; a status it cannot read prints `CODEX LOGIN NOT INSPECTED (codex)`. A test fails on any shipped file but this one that spells a credential variable or file.
+
+### Fixed
+
+- Correction to 1.10.0: its note that the GitHub loop was not exercised end to end was overtaken by PR #25 (2026-10-26, head `161f955`). The GitLab lines remain `not exercised`.
+
 ## [1.13.0] - 2026-10-31
 
 ### Changed
