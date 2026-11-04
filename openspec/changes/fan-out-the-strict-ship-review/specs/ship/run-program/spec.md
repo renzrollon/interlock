@@ -11,7 +11,7 @@ After the review step, `interlock run found` MUST read each selected dimension's
 - **GIVEN** a strict run whose review step dispatched five dimensions, each of which wrote `.claude/ship/review/dimensions/<dimension>.json` holding `{ dimension, findings, coverage }`, two findings being a blocker and a warning
 - **WHEN** the driver calls `interlock run found`
 - **THEN** the findings work file holds the five ledgers, the manifest records all five dimensions as run and the review as completed
-- **AND** the step's action is `skeptics` with four spawns of kind `skeptic`, labelled `skeptic-<id>-refute` and `skeptic-<id>-second-opinion` for each of the two findings, each briefing naming `.claude/ship/review/skeptics/<label>.json` as the only file it writes, and `then.argv` names `run reviewed`
+- **AND** the step's action is `skeptics` with four spawns of kind `skeptic`, labelled `skeptic-<id>-refute` and `skeptic-<id>-second-opinion` for each of the two findings, each briefing naming `.claude/ship/review/skeptics/<label>.json` as the only file it writes besides the `review` stage marker its stage line asks for, and `then.argv` names `run reviewed`
 
 #### Scenario: Failure — one reviewer wrote nothing
 
@@ -68,6 +68,17 @@ The spawns of a `skeptics` step MUST be bounded by `maxSkepticSpawns`, a cap sta
 - **WHEN** the review step and then the skeptics step are emitted
 - **THEN** the review step carries `REVIEW WAVE: 6 reviewers (<model>/<effort>), 0 skeptics (<model>/<effort>)`, because `run found` has not counted them yet
 - **AND** the skeptics step carries `REVIEW WAVE: 6 reviewers (<model>/<effort>), 4 skeptics (<model>/<effort>)`, with `inherit` printed on either where the routing holds `null`
+
+### Requirement: A review or skeptics step wider than the run's --max-parallel SHALL say so
+
+A review or skeptics step whose spawns outnumber the `--max-parallel` the run was started with MUST carry `REVIEW WIDER THAN MAX PARALLEL`, naming the step, its spawn count and the flag's value, because no driver chunks a step and a runner host starts every spawn of it at once. The step's spawns MUST be the same with or without the flag.
+
+#### Scenario: Failure — a step wider than the operator's --max-parallel is said
+
+- **GIVEN** a strict run started with `--max-parallel 2` that selects six dimensions and whose review raises two blockers
+- **WHEN** the review step and then the skeptics step are emitted
+- **THEN** the review step carries `REVIEW WIDER THAN MAX PARALLEL: the review step spawns 6 agents and --max-parallel is 2` and the skeptics step the same line for its four spawns
+- **AND** a run started without `--max-parallel`, or with one at least as wide as the step, carries no such line, and neither step's spawns change
 
 ### Requirement: `interlock run reviewed` SHALL fold the skeptics' verdicts and set aside an unanswered pair
 
@@ -185,6 +196,13 @@ When the run manifest carries a review flag, the waves' completion MUST be follo
 - **WHEN** the `review` step is emitted
 - **THEN** every reviewer's briefing lists the tracked file with the two hunks' line ranges from the diff against the start commit, and the untracked file as one whole-file range
 - **AND** a run that pinned no start commit lists the observed paths with no ranges under the branch word, and the step carries `REVIEW BASE NOT PINNED` as today
+
+#### Scenario: Failure — the diff against the start commit cannot be read
+
+- **GIVEN** a run that pinned its start commit, where `git diff` against that commit fails
+- **WHEN** the `review` step is emitted
+- **THEN** every reviewer's briefing lists the observed changed paths with no line ranges, and the step carries `REVIEW RANGES UNREAD: git diff against <sha> failed (<reason>)`
+- **AND** the step still carries one reviewer spawn per selected dimension and continues to `interlock run found`
 
 #### Scenario: Edge case — handoff without review
 

@@ -30,6 +30,7 @@ None.
 - `effort-routing`: the review and skeptic spawns carry the routing table's strict-depth values; the remediation spawn keeps the published skeptic effort; the spawn-kind closure gains `skeptic`.
 - `spawn-routing`: the run program is a code reader of the table through `lib/routing.mjs`, with no site prose and no new role.
 - `workflow-host`: the strict tail every host interprets gains the `skeptics` step.
+- `spec/compound-notes`: the ship reviewer's finding shape that lists `specGap` as optional moves from the retired single-worker briefing to each reviewer's own briefing.
 
 ## Impact
 

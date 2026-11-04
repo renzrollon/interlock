@@ -817,6 +817,16 @@ SKEPTIC CAP REACHED: <n> of <m> findings judged per finding, <k> judged per revi
 - **`SKEPTIC VERDICTS MISSING`** names skeptics whose file is absent, unparseable or not a list. Both verdicts of that skeptic's pair are set aside, the sibling that did answer included, so a finding is never dismissed on one verdict. The finding survives with no verdict, and merge confidence flags its verdict count.
 - **`SKEPTIC CAP REACHED`** means the findings outnumbered the pairs the `skeptic spawns (per skeptics step)` row of `interlock limits` allows. Blockers are judged per finding first, then warnings; the rest share one pair that reads all of them. The shared pair's findings are judged on fewer eyes per finding, and the line says how many.
 
+### `REVIEW WIDER THAN MAX PARALLEL`
+
+You started the run with `--max-parallel`, and a review or skeptics step carries more spawns than that:
+
+```
+REVIEW WIDER THAN MAX PARALLEL: the <review|skeptics> step spawns <w> agents and --max-parallel is <n> — the flag bounds implementer batches only; this step is not chunked, so a runner host starts all <w> at once
+```
+
+`--max-parallel` is the width of the planner's implementer batches. The review step is sized by the selected dimensions, and the skeptics step by the `skeptic spawns (per skeptics step)` row of `interlock limits`. No driver splits a step into smaller groups. On `/interlock:ship` the Workflow runtime queues spawns past its own slots (see `WAVE WIDER THAN RUNTIME SLOTS` above). On `interlock-run` every host adapter starts all of a step's spawns together, so a machine or a rate limit you sized with `--max-parallel` sees the step's full width. The review is not changed by this, and nothing halts. The line exists so the extra processes are never a surprise. Without `--max-parallel`, nothing is printed.
+
 ### A review or a round that left no findings list, and `REVIEW WORK FILE NOT CLEARED`
 
 A strict run adjudicates only findings this review wrote. The reviewers and skeptics write answer files under `.claude/ship/review/`, and the run folds them into two work files, the findings and the verdicts, under `.claude/ship/`, a directory no run clears. So the run removes both work files and both answer directories when it first emits the review step. A review that writes nothing therefore leaves nothing behind, and an earlier run's clean result can never stand in for this one's. The reviewer, skeptic and remediation briefings all tell the agent to write an empty list, `[]`, or a ledger with an empty findings list, when nothing is found: a clean result is a file with a list in it.
