@@ -1,0 +1,71 @@
+# Design
+
+## Context
+
+See proposal.md, Why. The strict tail is emitted by `reviewStep` (`lib/run.mjs:1629-1753`): one spawn, kind `review`, effort `EFFORT.skeptic`, briefed by `assembleReviewPrompt` to run every selected dimension and two skeptics per finding in its own context and to write the two work files, `.claude/ship/findings.json` and `.claude/ship/verdicts.json`, itself. `runReviewed` (`run.mjs:2022`) reads the single result, sets `manifest.reviewDimensions.completed`, and hands the files to `adjudicateReview` (`run.mjs:1941`), which runs `resolveReview`, the dimension record, the proof, `review.json`, the metrics and the first remediation plan. `remediateStep` and `runRemediated` brief one worker per round to fix, re-review and re-judge in one context, rewriting the same two files.
+
+Everything the fan-out needs already exists for the settle loop: `assembleDimensionPrompt` (`lib/prompts/review-dimension.mjs:111`), `assembleSkepticPrompts` (`lib/prompts/review-skeptics.mjs:117`), the hunk parser `interlock review brief` uses for changed line ranges (`lib/review-cli.mjs:289-343`), `resolveRouting` (`lib/routing.mjs:107`), `carriesFindingsList` and `findingId` (`lib/findings.mjs:204, 234`), and `resolveReview`, which already takes an array of `{ dimension, findings, coverage }` ledgers and a flat verdict list. The constraints that shape the design: steps are versioned records whose spawns a driver runs without reading action or kind; results arrive positional; the relay to the Workflow host costs about half a kilobyte per spawn against a recorded 23 KB failure; `lib/run.mjs` has about 12 KB of headroom under the shipped-file size cap; only `lib/routing.mjs` may index the routing tables; every cap is a `LIMITS` key with a printed row and a CLI reader; and a reword of a briefing's first line moves the settle meter's pins.
+
+## Goals / Non-Goals
+
+**Goals:**
+- One spawn per selected dimension, one spawn per skeptic prompt, each blind to the others, each writing one file, folded and adjudicated by the CLI.
+- The remediation rounds, the adjudication, the proof, the metrics and the merge verdict read exactly what they read today.
+- No model slug, effort level, count or cap outside `lib/limits.mjs` and the CLI.
+- Every degradation spoken on the step: an unanswered reviewer, an unanswered skeptic, a cap reached, a routing override.
+
+**Non-Goals:**
+- Splitting the fix round from its re-review (epic phase 3). The round's worker still re-reviews `reReviewDimensions` and runs skeptics in its own context, and rewrites the two work files.
+- Host chunking of a wide step, a `fanout` capability key, bannering `CLAUDE_CODE_SUBAGENT_EFFORT` or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (phase 4), and the Code Review interop (phase 6).
+- `blast-radius` in ship's selection (D13), a proof re-run inside the run, a second metrics schema (D14), and any value in the routing table (D18).
+
+## Decisions
+
+**D1 — First review only; rounds untouched.** The fold writes the findings work file in the ledger shape the round's worker already rewrites, and the verdicts work file as the flat list it already rewrites, so `runRemediated`, `adjudicateReview` and the proof carry run unchanged. The alternative, fanning out the rounds too, needs the fixer split from its re-review and a second cap, and belongs to the next change of the epic. Evidence: `lib/run.mjs:1760-1843, 2122-2133`; `docs/notes/2026-10-31-five-epics.md` Epic 2 phases 3-6.
+
+**D4 — Two verbs, one new action.** The review step's continuation becomes `run found`; it folds the answers and emits a `skeptics` step whose continuation is `run reviewed`. `ACTIONS` (`run.mjs:217`) gains `skeptics`; `makeStep` refuses anything else. `run reviewed` keeps its name because every reader of the trajectory and every test fixture names it. Alternative rejected: folding both in `run reviewed` with a second results file, which would make one verb answer two steps and break `checkSequence`.
+
+**D3 — Answer files by expected name, never by glob.** Reviewers write `.claude/ship/review/dimensions/<dimension>.json`; skeptics write `.claude/ship/review/skeptics/<label>.json`. `run found` reads the names `manifest.reviewDimensions.selected` holds; `run reviewed` reads the names `manifest.skeptics.expected` holds, recorded by `run found` as `[{ label, role, findingIds }]`. Both directories are removed with the two work files under the existing one-shot guard (`run.mjs:1675-1686`), so a file left by an earlier run is never read as this run's. Settle's draft lives at `.claude/ship/review/review.draft.json` and is not under either directory. Per-run state stays in the working root, as `ship/state-home` requires.
+
+**D5 — Labels, kinds, stage.** Labels `review-<dimension>`, `skeptic-<F-id>-<role>` and `skeptic-review-<role>` are unique within a run, which the meter (`hooks/mod.mjs`) and the usage join need; the remediation labels are unchanged. Reviewers keep kind `review`; skeptics are a new kind `skeptic`, added to `AGENT_KINDS` (`lib/run-log.mjs:118`) and to the published-effort set the effort-routing suite enumerates (`test/spine/run.test.mjs:4378`). Both steps publish the `review` stage line through `publishStageLine('review', change, ++manifest.stageIndex)`, each spawn's briefing carrying it, so the stage-drift pin holds and no new stage joins `STAGES`.
+
+**D2 — Routing through the resolver.** `lib/run.mjs` imports `resolveRouting` from `lib/routing.mjs` and calls it twice per run: `review-dimension` at depth `strict` for the reviewers, `review-skeptic` for the skeptics. A `null` is placed on the spawn as today and the drivers omit it. The resolver's `banners` are carried on the step. `EFFORT.skeptic` stays the remediation spawn's effort. Alternatives: (i) `EFFORT.skeptic` for every reviewer honours the old wording and gives the owner no knob; (iii) new `ship-*` rows break the six-role text and duplicate values. Evidence: `test/spine/limits.test.mjs:891-892`; `lib/routing.mjs:57-67, 107-112`.
+
+**D10 — The dimension briefing is settle's, plus ship's two blocks.** `assembleDimensionPrompt` gains three options, each absent for settle so its output stays byte-identical and `review brief` and the settle meter's first-line pins do not move: `answerPath`, passed through to `renderProofRules`, which then renders "write only `<answerPath>`: your ledger, nothing else in the tree you judge" in place of "You write nothing", followed by the counts-only sentence the retired briefing carried, that the reviewer reports only that it finished and pastes no ledger or dimension report into its result, which `test/workflows.test.mjs` pins on the ship-side prompt instead of on `review.mjs`; `stageLine`, rendered first as the ship assemblers render it; and `rejectedReports`, rendered as the `UNVALIDATED REPORTS` block. That block's renderer moves from `lib/prompts/review.mjs` into `review-dimension.mjs`, and `review.mjs` with `assembleReviewPrompt` is retired: nothing reaches it once the review step briefs per dimension, and the prompt-integrity requirement fails an assembler the check cannot reach. Ship also passes `policyProse`, `domainText` for the `domain` reviewer, `reviewContext` when `.claude/graph/REVIEW_CONTEXT.md` exists, `changedSources` and the artifact paths. A reviewer whose rubric is unreadable is still dispatched with a synthesized `# Dimension: <name>` header and the sentence that it works from the name alone, and is recorded `unavailable`, as today (D3 of emit-strict-tail-from-cli).
+
+**D16 — Changed line ranges.** The hunk parser at `lib/review-cli.mjs:289-343` is lifted into an exported function both callers use. Ship runs it over `git diff -U0 <startSha>` against the working tree when the manifest pinned a start commit, adds an untracked observed path as one whole-file range and a deleted path with no ranges, and when no start commit was pinned passes `base` as the branch word and the observed paths with no ranges, under the existing `REVIEW BASE NOT PINNED` banner.
+
+**D11 — The skeptic briefings are settle's.** `run found` calls `assembleSkepticPrompts({ findings, skeptics, exclude })` with the folded findings flattened, the shape from `listRouting({}, { depth: 'strict' }).review.skeptics`, and `exclude` holding the ids of findings the review policy's Do-Not-Report paths exclude (`pathExcludedBy`, `lib/review-core.mjs:528`), so no skeptic is briefed on a finding the adjudication will drop. Each prompt is extended by the stage line and the sentence naming its verdict file. The openings come from `lib/review-roles.mjs` unchanged, so the settle meter attributes a ship skeptic as it attributes a settle one.
+
+**D6 — Cap allocation.** `LIMITS.maxSkepticSpawns` is a positive integer with a printed row `skeptic spawns (per skeptics step)`. The allocation is pure: order the judged findings blockers first, then warnings, each in finding order; while two more spawns fit, give the next finding its pair; when findings remain and the cap is reached, the last pair inside the cap becomes a per-review pair over every remaining finding, and the step carries `SKEPTIC CAP REACHED: <n> of <m> findings judged per finding, <k> judged per review`. The step never exceeds the cap; the cap counts spawns and the allocation is in pairs, so an odd cap leaves one slot unused. `run found` reads `LIMITS.maxSkepticSpawns` by that token, which satisfies the cap-authority sweep.
+
+**D7 — An unanswered skeptic sets aside its pair.** `run reviewed` reads each expected file; one that is absent, unparseable or not a list sets aside both verdicts of its pair, so a finding is never dismissed on a single verdict, and raises `SKEPTIC VERDICTS MISSING: <labels>`. The finding then reaches `resolveReview` with no verdict, survives, and merge confidence flags its vote count under `minVerdictsPerFinding`. No special-casing in `resolveReview` is needed.
+
+**D8 — Per-dimension `ran`.** `run found` records `manifest.reviewDimensions.ran` (the dimensions whose file was read under its own name), `notRun` as `[{ name, reason }]`, and `completed = notRun.length === 0`. `dimensionRecord` reads `ran` from the manifest instead of deriving it from `completed`. A dimension that did not run is bannered `REVIEW INCOMPLETE: <name> — <reason>`, and the run continues to the skeptics and the adjudication, which is what today's `completed:false` path does.
+
+**D9 — No agent-added dimension.** `REVIEW_RESULT_SCHEMA` loses `addedDimensions`; a reviewer's answer whose `dimension` field is another name is bannered `REVIEW ANSWER MISMATCHED: <expected> wrote <got>`, recorded under `notRun`, and not folded. The two run-program requirements that named the channel are replaced rather than modified, because their names say "agent-added" and "with their rubric".
+
+**D15 — Nothing to judge.** When the assembler returns no prompt, `run found` writes `[]` to the verdicts work file, records `manifest.skeptics = { expected: [], prompts: 0 }`, and calls the same adjudication `run reviewed` calls, returning its continuation. The runner and the Workflow driver see one fewer step and nothing else.
+
+**D12 — No legacy branch.** `run reviewed` without `manifest.skeptics` halts naming `run found`. A run whose review step was emitted by an older CLI cannot cross into this one mid-tail; the halt says so instead of reading whatever verdicts file an earlier run left.
+
+**D13 — Blast radius stays out.** Adding it is a `selectDimensions` rule (graph present) plus the staleness check `review-code` runs through `interlock-graph covers`, which the run program does not run today. Noted for a later change.
+
+**D14 — Metrics unchanged.** The review metrics record keeps `interlock.review-metrics/1` and its four counts; reviewer and skeptic counts live on the manifest (`reviewDimensions`, `skeptics`) and in the trajectory's spawn events; `interlock report` reads neither, which this decision accepts.
+
+**Result schemas.** `REVIEW_RESULT_SCHEMA` becomes `{ ok, stageMarkerWarning?, detail? }` for a reviewer; a new `SKEPTIC_RESULT_SCHEMA` is the same shape. Neither defines `briefing`, which the Workflow driver adds. The prompt registry in `lib/prompts/index.mjs` gains the ship-side inputs for both assemblers so the integrity check reaches every assembled prompt, and `EXPECTED_PROMPT_LABELS` carries `review-` and `skeptic-` as prefixes.
+
+**The pure module.** `lib/review-fanout.mjs` holds the fold of dimension answers, the fold of skeptic verdicts, the cap allocation and the two banners, each a function over already-read contents, so `lib/run.mjs` adds only the reads and the step wiring and stays under the size cap. It imports from `lib/findings.mjs` and `lib/prompts/review-skeptics.mjs` only.
+
+## Risks / Trade-offs
+
+- [Reviewer effort drops from `xhigh` to the session default while D18 is open] → The step's `REVIEW WAVE` banner prints the resolved values on every run, and the value is one table edit; the trade is the epic's bet, stated in the brief.
+- [A nine-spawn review step or a sixteen-spawn skeptics step on a runtime with fewer slots queues] → `RUNTIME.maxConcurrentAgents` is 16 and the proposed cap is 16; the lane-batch width banner is not extended to tail steps in this change, which the brief lists under phase 4.
+- [Test pins across fifteen files move with the shape] → Known pins are named in tasks.md with the bounded rule for the rest; the smoke check's `review.md` with four `# Dimension:` headings becomes four `review-<dimension>.md` files with one each.
+- [`findingId` collides for two findings with the same file and title from different dimensions] → Unchanged from settle today; both findings share one skeptic pair and both receive its verdicts.
+- [A reviewer with `Write` and `Edit` tools edits the tree it judges] → Unchanged from today's single worker; the briefing names the one file it may write, and the `review` stage marker is published as before.
+- [Thirteen agent-resolved rows and two owner rows] → D17 and D18 block continuity on purpose; nothing in the tasks depends on D18, and D17's value is the one literal the implementer needs.
+
+## Open Questions
+
+None that change the specs or the tasks. D17 (the cap's value) and D18 (the strict row's value) are the owner's, recorded in decisions.md.
