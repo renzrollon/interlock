@@ -277,9 +277,10 @@ test('the skew step runs the harness case by its exact title and fails when that
 // repository, and requires these check names. A matrix leg reports as
 // `job (value)`, so a required bare name that no job reports blocks every merge
 // with every check green. Mirrors the live list; a change to the ruleset is a
-// change here. `test (24)` and `upgrade-install` run on every pull request but
-// are advisory: a red one does not block a merge until the ruleset requires it.
-const REQUIRED_CHECKS = ['test (18)', 'test (20)', 'test (22)', 'validate-plugin', 'cli-smoke', 'Outcome eval prepare (model-free)']
+// change here. `test (24)`, `upgrade-install` and `cli-smoke` run on every pull
+// request but are advisory: a red one does not block a merge until the ruleset
+// requires it (`cli-smoke` was dropped from the ruleset on 2026-11-05).
+const REQUIRED_CHECKS = ['test (18)', 'test (20)', 'test (22)', 'validate-plugin', 'Outcome eval prepare (model-free)']
 
 /** The check names one job reports: its `name:` (or id), once per leg of a one-key matrix. */
 function reportedChecks(job) {
@@ -319,6 +320,26 @@ test('a gate that reports a matrix under its bare name runs always and passes on
     const body = gate.lines.join('\n')
     assert.match(body, new RegExp(`^ {4}needs:\\s*\\[?\\s*${matrixJob}\\s*\\]?\\s*$`, 'm'), `${gate.name} must wait on ${matrixJob}`)
     assert.match(body, /^ {4}if:\s*\$\{\{\s*always\(\)\s*\}\}\s*$/m, `${gate.name} must run even when a leg failed`)
+    // cli-smoke is advisory by decision: its gate is pinned to the opposite below.
+    if (check === 'cli-smoke') continue
     assert.match(body, new RegExp(`test "\\$\\{\\{ needs\\.${matrixJob}\\.result \\}\\}" = success`), `${gate.name} must pass only on success`)
   }
+})
+
+test('cli-smoke is advisory: a red or abandoned leg never fails the run, and says so', () => {
+  // macOS arm64 runners queue for a long time; the smoke must not gate a merge.
+  // Advisory is not silent: the leg and the gate each name a non-green result.
+  const ci = workflowNamed('ci.yml')
+  const smoke = jobNamed(ci, 'cli-smoke')
+  assert.match(smoke, /^ {4}continue-on-error:\s*true\s*$/m, 'the cli-smoke legs must be continue-on-error')
+  assert.match(smoke, /if:\s*\$\{\{\s*failure\(\)\s*\}\}/, 'a failed cli-smoke leg must say so in a failure() step')
+  assert.match(smoke, /::warning title=cli-smoke/, 'a failed cli-smoke leg must raise a warning annotation')
+  assert.match(smoke, /GITHUB_STEP_SUMMARY/, 'a failed cli-smoke leg must write to the run summary')
+  const gate = jobs(ci.code).find(job => reportedChecks(job).length === 1 && reportedChecks(job)[0] === 'cli-smoke')
+  assert.ok(gate, 'no job reports cli-smoke')
+  const body = gate.lines.join('\n')
+  assert.doesNotMatch(body, /\btest\s+"/, 'the cli-smoke gate must not fail on a leg result')
+  assert.doesNotMatch(body, /\bexit\s+[1-9]/, 'the cli-smoke gate must never exit non-zero')
+  assert.match(body, /needs\.cli-smoke\.result/, 'the cli-smoke gate must read the legs result')
+  assert.match(body, /::warning title=cli-smoke/, 'the cli-smoke gate must warn when a leg did not succeed')
 })

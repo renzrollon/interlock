@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **`cli-smoke` is advisory in CI.** macOS arm64 runners queue for a long time under capacity constraints, and a smoke that gates a merge on that queue is the wrong gate. Both OS legs are now `continue-on-error`; a failed leg writes a warning annotation and a run-summary line, and the `cli-smoke` gate job always passes and says so when a leg was cancelled or skipped. `cli-smoke` is also no longer a required check on the `main: required CI` ruleset, so nothing about it blocks a merge. A test pins both halves.
+
 ## [1.14.0] - 2026-11-04
 
 ### Changed
