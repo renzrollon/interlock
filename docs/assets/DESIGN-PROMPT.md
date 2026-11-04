@@ -134,7 +134,7 @@ PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run     [accent]
   [skip] notify: INTERLOCK_NTFY_TOPIC is not set — optional; an unattended run that stops will not reach you   [dim]
 ```
 
-(The real output continues with three more `[skip]` rows — `prompt-cache`, `evals-harness`, `evals-credential`. Cut for length; the frame ends at `notify`.)
+(The real output continues with two more `[skip]` rows — `prompt-cache`, `evals-harness`. Cut for length; the frame ends at `notify`.)
 
 ### B4 — halted run (rendered by `formatRunSummary`)
 

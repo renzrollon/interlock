@@ -1,0 +1,40 @@
+## PR #32 credential-read removal review — code review, regression and performance
+
+Scope: `f5e3696...75ce095` (1 commit, 21 files). No changes were made during review.
+
+**Gate:** No build step (per `.claude/CLAUDE.md`). `npm run validate` passes. `npm test`: 4593 pass, 0 fail, 11 skipped. Six notify-relay tests skip because the sandbox denies loopback binding; `lib/notify.mjs` is not in this diff. Four live-host or ACP tests are opt-in by env (`INTERLOCK_LIVE_HOSTS`, `INTERLOCK_ACP_COMMAND`). One upgrade-harness test runs only in CI (`INTERLOCK_HARNESS_BIN`). No skip is caused by this diff. Lint: the repo has no lint step, so 0 new errors.
+
+### 🔴 Critical / High
+
+(none)
+
+### 🟡 Medium – Low
+
+| # | Sev | Category | Issue | Location | Suggested fix |
+|---|---|---|---|---|---|
+| M1 | Low–Med | `docs` `regression` | docs/04 still says the `prompt-cache` row reports "which authentication mode was detected". This PR deleted `detectAuthMode`, and the row now says it does not inspect the mode. The same file's codex banner table was updated in this PR, so the stale claim sits about 400 lines from a corrected one. | `docs/04-when-it-stops.md:170` | Reword to "…in which scopes, and says the documented defaults depend on an authentication mode it does not inspect". Pin it by token in the docs test (assert `docs/04` does not contain `authentication mode was detected`). |
+| M2 | Low | `docs` `correctness` | The living specs contradict the code until the change is archived: the `claude-bare` requirement, the auth-mode scenarios and the env-based `CHATGPT PLAN PATH` scenario. The deltas cover all of these (REMOVED titles match the living ones; MODIFIED keeps all 3 living scenarios). `tasks.md` has no archive step. Design D3 already notes that the `evals/prerequisites` Purpose paragraph ("nor a model credential") is not synced by `openspec archive`. | `openspec/specs/hooks/session-preflight/spec.md:115-139`; `openspec/specs/hooks/session-preflight/spec.md:229-245`; `openspec/specs/run-host-adapters/spec.md:91-104`; `openspec/specs/evals/prerequisites/spec.md:4` | Archive `remove-every-credential-read` with the merge, and edit the Purpose paragraph by hand in the same commit. |
+| M3 | Low | `observability` | `CODEX LOGIN NOT INSPECTED` covers four causes: a missing binary, a hang, unrecognised output, and an `INTERLOCK_CODEX_COMMAND` wrapper that does not forward `login status`. The banner names only `codex login status`, and the docs row says to run that yourself, which does not apply to a wrapper. | `lib/host/codex.mjs:68-70`; `docs/04-when-it-stops.md:576` | Put the probed argv in the banner (`host.command` + ` login status`). In the docs row, say that a wrapper which does not forward `login status` lands here and does no harm. |
+| M4 | Low | `security` `docs` | README:187 now promises the doctor "names no key or token variable and opens no credential file". The pin backing it is a closed list of 10 literal substrings. It does not include codex's credential file `auth.json`, `.netrc`, `AWS_SECRET_ACCESS_KEY`, `GOOGLE_APPLICATION_CREDENTIALS` or `find-generic-password` (keychain). It also passes a concatenated name (`'ANTHROPIC_' + 'API_KEY'`). None of these appear in shipped code today. | `test/spine/package.test.mjs:469-480`; `README.md:187` | Add those 5 spellings to `NAMES`; a grep shows 0 shipped hits, so the pin stays green. Optionally word the README as "names no credential variable or file" so it claims what the pin checks. |
+| M5 | Low | `correctness` | `checkPromptCache` still destructures `env`, and `diagnose` still passes it. Its only reader, `detectAuthMode(env)`, was deleted. The parameter is dead, and with no lint step nothing will flag it. | `lib/doctor.mjs:1406`; `lib/doctor.mjs:1747` | Drop `env` from the signature and from the call. `checkMods` and `checkAdvisor` keep theirs because they read it. |
+
+### ❓ To investigate
+
+- `probeLoginStatus` classes every `Logged in using …` other than ChatGPT as `api-key` with no banner (`lib/host/codex.mjs:101`). That includes the `access token` and `personal access token` strings listed in design D4. If either is plan-backed, the plan path is spent without a banner. Check with `codex login status 2>&1` under each login type. If they are plan-backed, route them to `unknown` so the not-inspected banner speaks.
+- With `CODEX_API_KEY` exported and a stored ChatGPT login, nobody has confirmed which credential `codex exec` uses. If the env key wins, `CHATGPT PLAN PATH` is a false positive. The fixture test at `test/spine/host-adapters.test.mjs:401` ("env keys change nothing") encodes the assumption without checking it. Check with a one-lane `interlock-run --host codex` and the OpenAI usage page.
+- A wrapper `INTERLOCK_CODEX_COMMAND` that forwards its argv as a prompt (`exec codex exec "$@"`) would receive `login status` as a prompt, for up to 10 s, once per run. This was not traced against any real wrapper.
+
+### ✅ Checked, no issue
+
+- The probe classifies its output and never quotes it. `said` never reaches a banner, an event or an error, so the masked key that an API-key login prints cannot leak (`lib/host/codex.mjs:88-105`).
+- The probe timeout holds when a grandchild keeps the pipes open. I ran it against a shim that spawns an 8 s grandchild with inherited stdio: `probeLoginStatus(…, { timeoutMs: 500 })` returned `unknown` in 503 ms.
+- `createCodexHost` has 1 production caller (`lib/host/registry.mjs:132` ← `cli/interlock-run:290`), and it runs once per run. Lane spawns reuse the host, so the probe never repeats per lane. `interlock run`, `doctor` and the SessionStart preflight never build a host.
+- Startup cost is at most 10 s of synchronous block, before any manifest or trajectory exists, with no concurrent work. It matches the `probeHelpFlags` precedent in `lib/host/claude-cli.mjs` (same `spawnSync`, same 10 s bound). One side effect: Ctrl-C during a hung probe is handled only after the probe returns.
+- Removed symbols `CODEX_KEY_ENVS`, `onChatGptPlan`, `chatGptPlan`, `checkClaudeBare`, `EVAL_CREDENTIAL_VARS`, `detectAuthMode`, and the ids `claude-bare` and `evals-credential` have 0 remaining readers in `cli/ lib/ hooks/ skills/ workflows/ scripts/ evals/ site/`. Only CHANGELOG history, one dated `docs/notes` line, the living specs (M2) and 2 negative test assertions mention them.
+- `host.banners` has one reader, `cli/interlock-run:381`, which guards with `Array.isArray` and a non-empty-string filter. The claude adapter already sets frozen `banners`; acp and qwen leave it undefined, which the loop tolerates.
+- Readers of doctor rows: `hooks/preflight.mjs` acts only on `fail` rows and `counts.warn`. `scripts/postinstall-smoke.mjs` reads `plugin`, `binaries` and `cli-version`, and `canary.yml` reads `cli-version`. Nothing counts rows or keys on a removed id.
+- Eval gating does not depend on the removed row. `evals.yml` has its own credential step, and `evals/ship/*` reads its key itself. Neither is in `package.json` `files`, so the pin does not scan them.
+- The pin enumerates files with `shippedFiles(ROOT, pkg.files)`, like its sibling pins, and passes at HEAD.
+- The diff deletes 14 `test(` titles and adds 12. Each deleted title protected behaviour this PR removes on purpose (D1–D4): the claude-bare block, the two auth-mode tests and `onChatGptPlan`. The rest are the env-based codex runner tests, now rewritten against the probe. The `evals-harness` fail-open, no-suite-no-row, `prompt-cache` never-fail and no-effective-lifetime assertions all remain.
+- Project rules: no dependency added (`package.json` is not in the diff). No threshold is restated in prose. Guards fail open: the probe never throws, and the doctor rows stay `ok`/`skip`. Degradation is spoken: the `NOT INSPECTED` banner, and the `prompt-cache` row's "which this report does not inspect". No test was weakened to pass: the `/Set /` fix regex follows the new fix text.
+- OpenSpec deltas: the REMOVED titles match the living titles (4 in evals/prerequisites, 2 in hooks/session-preflight), and the run-host-adapters MODIFIED block keeps all 3 living scenario titles.

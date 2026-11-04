@@ -184,7 +184,7 @@ It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `ope
 - **Where it goes.** To the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL` (the public `https://ntfy.sh` by default), under the topic in the plugin's `ntfy topic` option or `INTERLOCK_NTFY_TOPIC`. With no topic set, no request is ever made.
 - **What identifies you.** No account, key or token goes with the request. The topic is the only thing in it that identifies you, so treat it as a secret.
 - **How an option reaches the CLI.** A plugin option reaches hooks only, so each option has a session-start hook of its own, which the host runs only when that option is saved, and it writes the matching variable into the session's environment unless you already set it.
-- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; those requests are those tools'. `interlock doctor` reports whether `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` is set, by name and never by value. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
+- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; those requests are those tools'. `interlock doctor` reads no credential: it names no key or token variable and opens no credential file. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
 
 Interlock makes no other request.
 

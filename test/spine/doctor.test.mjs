@@ -35,7 +35,6 @@ import * as claudeEnv from '../../lib/host/claude-env.mjs'
 // name instead of failing the whole file at link time.
 import * as doctorModule from '../../lib/doctor.mjs'
 import {
-  checkClaudeBare,
   checkCliVersion,
   cliComparisonRoot,
   isNpmPackageRoot,
@@ -803,12 +802,12 @@ function pluginWithSuite(dir) {
   return root
 }
 
-test('a plugin root with an eval suite reports both prerequisite rows', () => {
+test('a plugin root with an eval suite reports the enablement row and no credential row', () => {
   const dir = tmp()
   try {
     const report = diagnose(dir, baseOpts(dir, { pluginRoot: pluginWithSuite(dir) }))
     assert.ok(byId(report, 'evals-harness'))
-    assert.ok(byId(report, 'evals-credential'))
+    assert.ok(!report.checks.some(c => c.id === 'evals-credential'), 'no row reads a credential')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -820,7 +819,6 @@ test('a plugin root with no eval suite reports neither row', () => {
     const report = diagnose(dir, baseOpts(dir))
     const ids = report.checks.map(c => c.id)
     assert.ok(!ids.includes('evals-harness'), 'no suite, no prerequisite to report')
-    assert.ok(!ids.includes('evals-credential'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -830,11 +828,11 @@ test('an absent prerequisite is skipped with a reason, never failed and never wa
   const dir = tmp()
   try {
     const report = diagnose(dir, baseOpts(dir, { pluginRoot: pluginWithSuite(dir) }))
-    for (const id of ['evals-harness', 'evals-credential']) {
+    for (const id of ['evals-harness']) {
       const row = byId(report, id)
       assert.equal(row.status, 'skip', `${id} must skip, not fail`)
       assert.ok(row.detail.length > 0, `${id} states what is missing`)
-      assert.match(row.fix, /export|Set one of/, `${id} states how to supply it`)
+      assert.match(row.fix, /Set /, `${id} states how to supply it`)
       assert.ok(!report.failures.includes(id))
       assert.ok(!report.warnings.includes(id))
     }
@@ -843,7 +841,7 @@ test('an absent prerequisite is skipped with a reason, never failed and never wa
   }
 })
 
-test('a present prerequisite reports satisfied, and never the credential value', () => {
+test('a present enablement reports satisfied, and a credential in the environment is neither named nor echoed', () => {
   const dir = tmp()
   try {
     const secret = 'sk-ant-SUPERSECRETVALUE'
@@ -855,13 +853,15 @@ test('a present prerequisite reports satisfied, and never the credential value',
       })
     )
     assert.equal(byId(report, 'evals-harness').status, 'ok')
-    assert.equal(byId(report, 'evals-credential').status, 'ok')
-    assert.match(byId(report, 'evals-credential').detail, /ANTHROPIC_API_KEY is set/, 'the name, not the value')
+    assert.ok(!report.checks.some(c => c.id === 'evals-credential'), 'no row reads a credential')
 
-    // Neither surface: the human rendering, nor the structured payload that gets
-    // written to disk and pasted into issues.
-    assert.doesNotMatch(formatDoctor(report), new RegExp(secret))
-    assert.doesNotMatch(JSON.stringify(report), new RegExp(secret))
+    // Neither surface — the human rendering, nor the structured payload that
+    // gets written to disk and pasted into issues — names the variable or
+    // carries its value.
+    for (const surface of [formatDoctor(report), JSON.stringify(report)]) {
+      assert.doesNotMatch(surface, new RegExp(secret))
+      assert.doesNotMatch(surface, /ANTHROPIC_API_KEY/)
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -883,7 +883,7 @@ test('a prerequisite check that cannot run degrades to skipped, not to a failure
       }
     )
     const rows = evalPrerequisiteChecks(root, hostile)
-    assert.equal(rows.length, 2)
+    assert.equal(rows.length, 1)
     for (const row of rows) {
       assert.equal(row.status, 'skip')
       assert.match(row.detail, /could not run: environment unreadable/)
@@ -1124,14 +1124,17 @@ test('a lifetime set in any readable scope counts, and no scope wins a printed v
   }
 })
 
-test('the row names the detected auth mode and never claims an effective lifetime', () => {
+test('the row names no authentication mode, reads no credential, and never claims an effective lifetime', () => {
   const dir = tmp()
   try {
     const report = promptCacheReport(dir, {}, { ANTHROPIC_API_KEY: 'sk-not-a-real-key' })
     const row = byId(report, 'prompt-cache')
-    assert.match(row.detail, /auth mode: API key/)
-    // Presence only — the value never reaches the report.
+    assert.doesNotMatch(row.detail, /auth mode/)
+    // Neither the variable's name nor its value reaches the report.
     assert.doesNotMatch(JSON.stringify(report), /sk-not-a-real-key/)
+    assert.doesNotMatch(JSON.stringify(report), /ANTHROPIC_API_KEY/)
+    // The degradation is spoken: the mode the defaults depend on is not inspected.
+    assert.match(row.detail, /which this report does not inspect/)
     // And nothing asserts what the running session is actually getting.
     assert.doesNotMatch(row.detail, /currently|in force|effective lifetime is/)
     assert.match(row.detail, /nothing exposes the lifetime a session is actually running under/)
@@ -1140,14 +1143,12 @@ test('the row names the detected auth mode and never claims an effective lifetim
   }
 })
 
-test('an undetectable auth mode is named as undetected rather than guessed', () => {
-  const dir = tmp()
-  try {
-    const row = byId(promptCacheReport(dir), 'prompt-cache')
-    assert.match(row.detail, /auth mode: not determined/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
+test('docs/04 describes the prompt-cache row as not inspecting the authentication mode', () => {
+  // The row stopped naming a mode; the human-facing paragraph must not keep
+  // promising one.
+  const docs = readFileSync(join(REPO, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.doesNotMatch(docs, /authentication mode was detected/)
+  assert.match(docs, /`prompt-cache` row[^\n]*authentication mode the row does not inspect/)
 })
 
 test('the prompt-cache row is never fail, whatever the env or the settings tree holds', () => {
@@ -1969,13 +1970,13 @@ test('the state-home row is never fail, whatever it is handed', () => {
   assert.equal(checkStateHome('/r', hostile).status, 'skip')
 })
 
-test('a worktree report prints both rows and a state-home header in the existing format', () => {
+test('a worktree report prints the state-home row and header in the existing format', () => {
   fenced(() => {
     const { dir, main, worktree } = worktreeFixture()
     try {
       const text = formatDoctor(diagnose(worktree, baseOpts(dir)))
       assert.match(text, /^ {2}\[ok {2}\] state-home: /m)
-      assert.match(text, /^ {2}\[skip\] claude-bare: /m)
+      assert.match(text, /^ {2}\[skip\] prompt-cache: /m)
       assert.ok(text.includes(`  state home: ${main}\n`), text)
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -1983,118 +1984,7 @@ test('a worktree report prints both rows and a state-home header in the existing
   })
 })
 
-// ---------------------------------------------------------------------------
-// claude-bare — would a bare print-mode run have a credential? Advice only.
-// ---------------------------------------------------------------------------
-
-const SENTINEL = 'sk-test-SENTINEL'
-
-test('the claude-bare row is ok with ANTHROPIC_API_KEY set, naming it and never its value', () => {
-  const dir = tmp()
-  try {
-    const opts = baseOpts(dir)
-    const report = diagnose(dir, { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: SENTINEL } })
-    const row = byId(report, 'claude-bare')
-    assert.equal(row.status, 'ok')
-    assert.match(row.detail, /ANTHROPIC_API_KEY is set/)
-    assert.ok(!JSON.stringify(row).includes(SENTINEL), 'the row carries the value')
-    assert.ok(!JSON.stringify(report).includes(SENTINEL), 'the JSON report carries the value')
-    assert.ok(!formatDoctor(report).includes(SENTINEL), 'the human report carries the value')
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the claude-bare row is ok with an apiKeyHelper in the user scope beside an unreadable project file', () => {
-  const dir = tmp()
-  try {
-    const helper = '/opt/helpers/key-helper-SENTINEL.sh'
-    const userSettings = file(dir, 'home/.claude/settings.json', { apiKeyHelper: helper })
-    const projectSettings = file(dir, '.claude/settings.json', '{ not json')
-    const sources = [
-      { scope: 'user', path: userSettings },
-      { scope: 'project', path: projectSettings }
-    ]
-    const report = diagnose(dir, baseOpts(dir, { settingsSources: sources }))
-    const row = byId(report, 'claude-bare')
-    assert.equal(row.status, 'ok', row.detail)
-    assert.match(row.detail, /apiKeyHelper is configured in user settings/)
-    // The broken sibling belongs to other rows; this one neither reports nor fails on it.
-    assert.doesNotMatch(row.detail, /not valid JSON/)
-    assert.ok(!JSON.stringify(row).includes(projectSettings), 'the unreadable file is not this row\'s to report')
-    assert.ok(!JSON.stringify(row).includes(helper), 'the helper is named by scope, never by value')
-    assert.ok(!report.failures.includes('claude-bare'))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('with neither a key nor a helper the claude-bare row is skip, says why, and names the fix', () => {
-  const dir = tmp()
-  try {
-    const report = diagnose(dir, baseOpts(dir))
-    const row = byId(report, 'claude-bare')
-    assert.equal(row.status, 'skip')
-    assert.match(row.detail, /a bare print-mode run would have no credential/)
-    assert.match(row.detail, /set ANTHROPIC_API_KEY or configure apiKeyHelper/)
-    assert.match(row.fix, /ANTHROPIC_API_KEY/)
-    assert.match(row.fix, /apiKeyHelper/)
-    // The vendor fact, and the simple-mode variable, are carried either way.
-    assert.match(row.detail, /CLAUDE_CODE_SIMPLE is not set/)
-    assert.match(row.detail, /--bare/)
-    assert.match(row.detail, /default for -p/)
-    assert.match(row.detail, /OAuth and the keychain are never read/)
-    assert.match(row.detail, /--host claude/)
-    assert.match(row.detail, /--plugin-dir/)
-    assert.ok(!report.failures.includes('claude-bare'))
-    assert.ok(!report.warnings.includes('claude-bare'))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the claude-bare row says when CLAUDE_CODE_SIMPLE is set', () => {
-  const row = checkClaudeBare({ CLAUDE_CODE_SIMPLE: '1', ANTHROPIC_API_KEY: SENTINEL }, { sources: [] })
-  assert.equal(row.status, 'ok')
-  assert.match(row.detail, /CLAUDE_CODE_SIMPLE is set/)
-  assert.ok(!JSON.stringify(row).includes(SENTINEL))
-})
-
-test('the claude-bare row is never fail, whatever the env or the settings hold', () => {
-  const dir = tmp()
-  try {
-    const hostile = new Proxy(
-      {},
-      {
-        get(_t, prop) {
-          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
-          throw new Error('environment unreadable')
-        }
-      }
-    )
-    const direct = checkClaudeBare(hostile, { sources: [] })
-    assert.equal(direct.status, 'skip')
-    assert.match(direct.detail, /could not run: environment unreadable/)
-
-    const report = diagnose(dir, { ...baseOpts(dir), env: hostile })
-    assert.equal(byId(report, 'claude-bare').status, 'skip')
-    assert.ok(!report.failures.includes('claude-bare'))
-
-    // A settings "file" that is a directory, and a sources list that throws.
-    mkdirSync(join(dir, 'settings-dir'))
-    assert.equal(checkClaudeBare({}, { sources: [{ scope: 'user', path: join(dir, 'settings-dir') }] }).status, 'skip')
-    const throwing = new Proxy([], {
-      get() {
-        throw new Error('sources unreadable')
-      }
-    })
-    assert.equal(checkClaudeBare({}, { sources: throwing }).status, 'skip')
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the claude-bare and state-home rows change no exit status: clean stays clean either way', () => {
+test('the state-home row changes no exit status: clean stays clean', () => {
   const dir = tmp()
   try {
     assert.ok(gitInit(dir), 'this assertion needs a real work tree')
@@ -2103,15 +1993,9 @@ test('the claude-bare and state-home rows change no exit status: clean stays cle
     file(dir, '.claude/settings.json', ALL_ALLOWED)
     const opts = baseOpts(dir)
 
-    const without = diagnose(dir, opts)
-    assert.equal(byId(without, 'claude-bare').status, 'skip')
-    assert.equal(byId(without, 'state-home').status, 'ok')
-    assert.equal(without.ok, true, without.failures.join(', '))
-
-    const withKey = diagnose(dir, { ...opts, env: { ...opts.env, ANTHROPIC_API_KEY: SENTINEL } })
-    assert.equal(byId(withKey, 'claude-bare').status, 'ok')
-    assert.equal(withKey.ok, true, withKey.failures.join(', '))
-    assert.deepEqual(withKey.failures, without.failures)
+    const report = diagnose(dir, opts)
+    assert.equal(byId(report, 'state-home').status, 'ok')
+    assert.equal(report.ok, true, report.failures.join(', '))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

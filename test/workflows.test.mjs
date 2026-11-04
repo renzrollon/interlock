@@ -20,6 +20,7 @@ import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
 import { laneTitle } from '../lib/lane.mjs'
+import { CHATGPT_PLAN_BANNER, LOGIN_NOT_INSPECTED_BANNER } from '../lib/host/codex.mjs'
 import { FIXTURE_CLASSIFIED_PATH } from './fixtures/hosts/ship-answers.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -614,7 +615,6 @@ test('the docs carry every banner the runner prints, verbatim', () => {
   for (const banner of [
     'RUNNER HOST',
     'SUBSCRIPTION PATH: programmatic',
-    'CHATGPT PLAN PATH',
     'HOOKS NOT IN FORCE',
     'MODEL ROUTING UNAVAILABLE',
     'EFFORT ROUTING UNAVAILABLE',
@@ -631,6 +631,20 @@ test('the docs carry every banner the runner prints, verbatim', () => {
   // The one host-only banner the CLI raises rather than the driver.
   assert.ok(readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8').includes('TOKEN USAGE NOT REPORTED'))
   assert.ok(docs.includes('TOKEN USAGE NOT REPORTED'))
+})
+
+test('the docs carry both banners the codex adapter raises, verbatim', () => {
+  // The adapter, not the driver, writes these: it asks `codex login status` once
+  // at creation and the driver only carries `host.banners` to the close.
+  const adapter = readFileSync(join(ROOT, 'lib', 'host', 'codex.mjs'), 'utf8')
+  const docs = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  for (const banner of [CHATGPT_PLAN_BANNER, LOGIN_NOT_INSPECTED_BANNER]) {
+    const name = banner.slice(0, banner.indexOf(':'))
+    assert.ok(docs.includes(name), `docs/04 does not explain ${name}`)
+    assert.ok(!readFileSync(RUNNER_DRIVER, 'utf8').includes(name), `the driver spells ${name} itself`)
+  }
+  assert.ok(adapter.includes('CHATGPT PLAN PATH (codex)'))
+  assert.ok(adapter.includes('CODEX LOGIN NOT INSPECTED (codex)'))
 })
 
 test('the runner collects effort events in a list of its own and reads the unapplied set off them', () => {
@@ -942,8 +956,6 @@ function runRunnerCaptured(host, { fixture, fixtureFlags = [], flags = [], env =
       timeout: 180000,
       env: {
         ...process.env,
-        CODEX_API_KEY: undefined,
-        OPENAI_API_KEY: undefined,
         CLAUDE_CODE_EFFORT_LEVEL: undefined,
         ...(commandEnv && fixture
           ? { [commandEnv]: [process.execPath, fixture, ...fixtureFlags].join(' ') }
@@ -1082,7 +1094,7 @@ test('the runner names its host, and the billing banner is per host', () => {
   }
 })
 
-test('a Codex run with no API key names the ChatGPT plan path and the absent guards', () => {
+test('a Codex run on a ChatGPT login names the ChatGPT plan path and the absent guards', () => {
   const { root, change } = runnerRepo()
   try {
     const stdout = runRunner('codex', {
@@ -1102,18 +1114,35 @@ test('a Codex run with no API key names the ChatGPT plan path and the absent gua
   }
 })
 
-test('a Codex run WITH an API key does not claim the ChatGPT plan path', () => {
+test('a Codex run on an API-key login does not claim the ChatGPT plan path', () => {
   const { root, change } = runnerRepo()
   try {
     const stdout = runRunner('codex', {
       fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
-      fixtureFlags: ['--fixture-ship'],
-      env: { CODEX_API_KEY: 'sk-test', INTERLOCK_MODEL_MAP: '{"codex":{"sonnet":"gpt-5-codex"}}' },
+      fixtureFlags: ['--fixture-ship', '--fixture-login=api-key'],
+      env: { INTERLOCK_MODEL_MAP: '{"codex":{"sonnet":"gpt-5-codex"}}' },
       root,
       change
     })
     assert.doesNotMatch(stdout, /CHATGPT PLAN PATH/, stdout)
+    assert.doesNotMatch(stdout, /CODEX LOGIN NOT INSPECTED/, stdout)
     assert.doesNotMatch(stdout, /MODEL ROUTING UNAVAILABLE/, `a mapped slug is routed:\n${stdout}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a Codex run whose login status cannot be read says so instead of guessing', () => {
+  const { root, change } = runnerRepo()
+  try {
+    const stdout = runRunner('codex', {
+      fixture: join(HOST_FIXTURES, 'fake-codex.mjs'),
+      fixtureFlags: ['--fixture-ship', '--fixture-login=garbage'],
+      root,
+      change
+    })
+    assert.match(stdout, /CODEX LOGIN NOT INSPECTED \(codex\)/, stdout)
+    assert.doesNotMatch(stdout, /CHATGPT PLAN PATH/, stdout)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

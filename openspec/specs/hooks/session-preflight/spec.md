@@ -112,18 +112,16 @@ The row SHALL be `ok` when both are configured and `skip` when either is not, an
 - **THEN** that setting is reported as configured
 - **AND** no scope's value is printed as a recommendation over another's
 
-### Requirement: The prompt-cache row SHALL report configuration, never an effective lifetime
+### Requirement: The prompt-cache row SHALL report configuration and read no credential, never an effective lifetime
 
-The host exposes no effective prompt-cache lifetime to a hook, a script, or any command's output. The row SHALL therefore report only what the settings files and environment state, and SHALL NOT assert what lifetime a session is actually running under. It SHALL name the detected authentication mode where that mode changes the default lifetime, so an operator can tell whether a default they are relying on applies to them.
+The `prompt-cache` row SHALL report only what the settings files state and SHALL NOT assert what lifetime a session is actually running under, because the host exposes no effective lifetime. It SHALL read no credential variable to determine an authentication mode, and SHALL say that the documented defaults depend on the host build and the authentication mode, which the report does not inspect.
 
-Reporting an unverifiable effective lifetime would be a fabricated measurement, which is the failure this requirement exists to prevent.
+#### Scenario: Happy path — the row reads no credential
 
-#### Scenario: Happy path — the row states what is configured and what mode was detected
-
-- **GIVEN** a session whose authentication mode is detectable
+- **GIVEN** a credential variable is set in the environment
 - **WHEN** `interlock doctor` runs
-- **THEN** the `prompt-cache` row names the detected authentication mode
-- **AND** it does not claim what lifetime the current session's requests are receiving
+- **THEN** the `prompt-cache` row names no authentication mode and no credential variable
+- **AND** the variable's value appears nowhere in the report
 
 #### Scenario: Failure — no effective lifetime is asserted
 
@@ -132,12 +130,11 @@ Reporting an unverifiable effective lifetime would be a fabricated measurement, 
 - **THEN** the row does not state that any particular lifetime is in force
 - **AND** it states only that the settings are unset and what the host's documented defaults depend on
 
-#### Scenario: Edge case — an undetectable authentication mode is named as undetected
+#### Scenario: Edge case — the uninspected mode is said, not guessed
 
-- **GIVEN** a session whose authentication mode cannot be determined from the environment
 - **WHEN** `interlock doctor` runs
-- **THEN** the row says the mode was not determined
-- **AND** it does not guess a mode in order to name a default
+- **THEN** the `prompt-cache` row says the documented defaults depend on an authentication mode the report does not inspect
+- **AND** it names no default as the one in force
 
 ### Requirement: The SessionStart hook process SHALL fail open, and SHALL be registered and tested as a process
 
@@ -225,30 +222,6 @@ The SessionStart hook SHALL read the interrupted-run notes in the project root a
 - **WHEN** the SessionStart hook runs
 - **THEN** its advisory output is exactly the preflight's existing confirmation or failure report
 - **AND** no notes directory is created
-
-### Requirement: The preflight SHALL report whether a bare headless run would have a credential, as advice
-
-`interlock doctor` SHALL carry a `claude-bare` row that reports, by name and never by value, whether `ANTHROPIC_API_KEY` is set or an `apiKeyHelper` is configured in a settings scope the doctor reads, whether `CLAUDE_CODE_SIMPLE` is set, and the vendor fact that the headless documentation recommends `--bare` and says it will become the default for print mode, under which OAuth and the keychain are never read and a plugin loads only through its directory flag. The row SHALL be `ok` when a key or a helper is present and `skip` otherwise, SHALL never be `fail`, and SHALL NOT change the preflight's exit status.
-
-#### Scenario: Happy path — a key is present
-
-- **GIVEN** an environment with `ANTHROPIC_API_KEY` set
-- **WHEN** the doctor runs
-- **THEN** the `claude-bare` row is `ok`, names the key by name only, and prints no value
-
-#### Scenario: Failure — neither key nor helper
-
-- **GIVEN** an environment with no key and settings with no `apiKeyHelper`
-- **WHEN** the doctor runs
-- **THEN** the row is `skip`, says a bare print-mode run would have no credential, and names the fix
-- **AND** the doctor's exit status is unchanged by the row
-
-#### Scenario: Edge case — a helper in one scope and an unreadable settings file
-
-- **GIVEN** an `apiKeyHelper` in the user scope and a project settings file that is not valid JSON
-- **WHEN** the doctor runs
-- **THEN** the row is `ok` naming the user scope
-- **AND** the unreadable file is not reported by this row and does not make it `fail`
 
 ### Requirement: The preflight SHALL report the state home and probe each state directory where it lives
 

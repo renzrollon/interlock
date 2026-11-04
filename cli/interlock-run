@@ -42,7 +42,6 @@ import { laneEnv } from '../lib/host.mjs'
 import { createHost, drivesClaudeBinary, HOST_IDS } from '../lib/host/registry.mjs'
 import { MODEL_MAP_ENV } from '../lib/host/model-map.mjs'
 import { EFFORT_LEVEL_ENV, effortLevelOverride } from '../lib/host/effort.mjs'
-import { CODEX_KEY_ENVS, onChatGptPlan } from '../lib/host/codex.mjs'
 import { cliVersion } from '../lib/version.mjs'
 import { advisorBanners } from '../lib/host/advisor-banners.mjs'
 
@@ -374,16 +373,11 @@ if (effortOverride) {
       `that effort, so the per-step effort in the plan is not in effect`
   )
 }
-if (hostId === 'codex' && onChatGptPlan(process.env)) {
-  banners.push(
-    `CHATGPT PLAN PATH (codex): neither ${CODEX_KEY_ENVS.join(' nor ')} is set, so this run spends ` +
-      `the ChatGPT plan's device-auth session — it goes stale in about a week, and OpenAI directs ` +
-      `unattended volume to an API key`
-  )
-}
 // Whatever the adapter itself degraded on at creation — on the claude host, a
-// mode that can prompt on a CLI that cannot be told not to (design D10). The
-// adapter wrote the words; this file only carries them to the close.
+// mode that can prompt on a CLI that cannot be told not to (design D10); on the
+// codex host, the billing path `codex login status` reported, or that it could
+// not be read. The adapter wrote the words; this file only carries them to the
+// close.
 for (const banner of Array.isArray(host.banners) ? host.banners : []) {
   if (typeof banner === 'string' && banner) banners.push(banner)
 }
