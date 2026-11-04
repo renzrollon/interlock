@@ -35,12 +35,12 @@ The eval job SHALL report its result without failing the build for any case that
 
 ### Requirement: The eval job runs separately from the existing CI workflow
 
-The eval job SHALL live in its own workflow definition with its own trigger filter, so that filtering it by path does not narrow the triggers of the existing unit, validation and smoke jobs.
+The eval job SHALL live in its own workflow definition with its own trigger filter, so that filtering it by path does not narrow the triggers of the existing unit and validation jobs.
 
 #### Scenario: Existing jobs keep running on every change
 
 - **WHEN** a change touches no model-facing file
-- **THEN** the unit, plugin-validation and CLI-smoke jobs still run
+- **THEN** the unit and plugin-validation jobs still run
 - **AND** the eval job is skipped
 
 #### Scenario: Model-facing change triggers evals

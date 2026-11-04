@@ -1,0 +1,91 @@
+name: CLI smoke
+
+# MANUAL ONLY. The packed-tarball smoke stalled runners and turned the pull
+# request's status red without finding a defect a unit test or the
+# `upgrade-install` job would not, so it no longer runs on a push or a pull
+# request and is not a required check. Start it from the Actions tab
+# (`workflow_dispatch`) before a release or when an installed binary is in
+# doubt. test/spine/github-workflows.test.mjs pins that it has no other trigger.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cli-smoke:
+    name: cli-smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # The cli/ scripts are what land on a user's PATH, so exercise them as
+      # executables rather than importing the libraries they wrap.
+      - name: interlock surface
+        run: |
+          ./cli/interlock surface --changed src/Button.tsx docs/readme.md --json \
+            | grep -q '"needsManualTestPlan": true'
+      - name: interlock gate blocks on a blocker
+        run: |
+          echo '[{"dimension":"qa","findings":[{"severity":"blocker","file":"a.ts","title":"t","description":"d"}]}]' > /tmp/f.json
+          if ./cli/interlock gate --findings /tmp/f.json; then
+            echo "gate should have exited non-zero on a blocker"; exit 1
+          fi
+      - name: interlock waves caps fan-out
+        run: |
+          node -e '
+            const tasks = Array.from({length: 20}, (_, i) => ({
+              id: `1.${i+1}`, group: 1, description: "t",
+              tier: 2, model: "sonnet", isTestTask: false
+            }));
+            require("fs").writeFileSync("/tmp/c.json", JSON.stringify({tasks}));
+          '
+          ./cli/interlock waves --classified /tmp/c.json --max-parallel 8 --json \
+            | node -e '
+              let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+                const p = JSON.parse(s);
+                const widest = Math.max(...p.waves.flatMap(w => w.batches.map(b => b.length)));
+                if (widest > 8) { console.error("fan-out cap breached:", widest); process.exit(1); }
+                console.log("max batch size:", widest);
+              });
+            '
+      - name: interlock-graph builds a graph
+        run: |
+          ./cli/interlock-graph build . >/dev/null
+          test -f .claude/graph/graph.json
+          test -f .claude/graph/GRAPH_REPORT.md
+
+      # The tarball is what a user who never installs the plugin gets. `npm pack`
+      # succeeding proves only that a whitelist exists — a `files` list missing a
+      # reachable lib/ file packs and installs cleanly and dies at first use. So
+      # install the tarball into a throwaway prefix and run the real binaries
+      # from it. The bin map is read from package.json so a renamed binary
+      # cannot fall out of this smoke silently.
+      - name: pack the tarball and run every installed binary
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination "$RUNNER_TEMP"
+          tgz=$(ls "$RUNNER_TEMP"/*.tgz)
+          npm install -g "$tgz" --prefix "$RUNNER_TEMP/prefix"
+          for name in $(node -e 'process.stdout.write(Object.keys(require("./package.json").bin).join("\n"))'); do
+            echo "--- $name --help"
+            "$RUNNER_TEMP/prefix/bin/$name" --help >/dev/null
+          done
+          echo "--- interlock limits"
+          "$RUNNER_TEMP/prefix/bin/interlock" limits >/dev/null
+
+      # Every command a skill, the ship driver, the run program or a hook calls,
+      # run from the installed prefix with its exit code and the JSON keys its
+      # caller reads asserted. Runs on Linux and on macOS: a path-resolution
+      # defect in an installed binary can appear on only one of them.
+      - name: run the post-install smoke inventory from the prefix
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"

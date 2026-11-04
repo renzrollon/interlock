@@ -85,18 +85,23 @@ Plugin validation SHALL run under the newest engine and under the minimum engine
 - **WHEN** continuous integration next runs
 - **THEN** the floor leg installs the new minimum with no edit to the workflow
 
-### Requirement: The suite SHALL run on every supported and current Node major, and the smoke on macOS
+### Requirement: The suite SHALL run on every supported and current Node major, and the tarball smoke SHALL be started by hand
 
-The unit suite SHALL run on Node 18, 20, 22 and 24. The tarball smoke SHALL run on Linux and on macOS. Every check name the repository's required-checks ruleset names SHALL be reported by some job. A matrix whose legs report under suffixed names SHALL be gated by a job that reports the bare name. That gate SHALL run even when a leg fails, and SHALL pass only when every leg passed.
+The unit suite SHALL run on Node 18, 20, 22 and 24. The tarball smoke SHALL run on Linux and on macOS, from its own workflow that only a manual dispatch starts; no push, pull request or schedule SHALL start it and no required check SHALL depend on it. Every check name the repository's required-checks ruleset names SHALL be reported by some job. A matrix whose legs report under suffixed names SHALL be gated by a job that reports the bare name. That gate SHALL run even when a leg fails, and SHALL pass only when every leg passed.
 
-#### Scenario: Happy path — a macOS-only path defect is caught
+#### Scenario: Happy path — a macOS-only path defect is caught on demand
 
 - **GIVEN** a defect that appears only under macOS path resolution in an installed binary
-- **WHEN** continuous integration runs
+- **WHEN** the tarball smoke is dispatched by hand
 - **THEN** the macOS smoke fails
+
+#### Scenario: A push or pull request does not start the smoke
+
+- **WHEN** a change is pushed or a pull request is opened
+- **THEN** the tarball smoke does not run and the pull request's status does not wait on it
 
 #### Scenario: Failure — a matrix renames a required check
 
-- **GIVEN** a required check named `cli-smoke` and a matrix whose legs report as `cli-smoke (<os>)`
+- **GIVEN** a required check named `validate-plugin` and a matrix whose legs report as `validate-plugin (<engine>)`
 - **WHEN** no job reports the bare name
-- **THEN** the suite fails naming `cli-smoke`
+- **THEN** the suite fails naming `validate-plugin`

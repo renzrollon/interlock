@@ -88,106 +88,12 @@ jobs:
           fi
           claude plugin test .
 
-  # Advisory: a red leg never fails the run. macOS arm64 runners queue for a
-  # long time under capacity constraints, and a smoke that gates a merge on a
-  # queue is the wrong gate. A failed leg says so in its last step and in the
-  # run summary; `cli-smoke-gate` below says so for a cancelled or skipped one.
-  cli-smoke:
-    name: cli-smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-      # The cli/ scripts are what land on a user's PATH, so exercise them as
-      # executables rather than importing the libraries they wrap.
-      - name: interlock surface
-        run: |
-          ./cli/interlock surface --changed src/Button.tsx docs/readme.md --json \
-            | grep -q '"needsManualTestPlan": true'
-      - name: interlock gate blocks on a blocker
-        run: |
-          echo '[{"dimension":"qa","findings":[{"severity":"blocker","file":"a.ts","title":"t","description":"d"}]}]' > /tmp/f.json
-          if ./cli/interlock gate --findings /tmp/f.json; then
-            echo "gate should have exited non-zero on a blocker"; exit 1
-          fi
-      - name: interlock waves caps fan-out
-        run: |
-          node -e '
-            const tasks = Array.from({length: 20}, (_, i) => ({
-              id: `1.${i+1}`, group: 1, description: "t",
-              tier: 2, model: "sonnet", isTestTask: false
-            }));
-            require("fs").writeFileSync("/tmp/c.json", JSON.stringify({tasks}));
-          '
-          ./cli/interlock waves --classified /tmp/c.json --max-parallel 8 --json \
-            | node -e '
-              let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
-                const p = JSON.parse(s);
-                const widest = Math.max(...p.waves.flatMap(w => w.batches.map(b => b.length)));
-                if (widest > 8) { console.error("fan-out cap breached:", widest); process.exit(1); }
-                console.log("max batch size:", widest);
-              });
-            '
-      - name: interlock-graph builds a graph
-        run: |
-          ./cli/interlock-graph build . >/dev/null
-          test -f .claude/graph/graph.json
-          test -f .claude/graph/GRAPH_REPORT.md
-
-      # The tarball is what a user who never installs the plugin gets. `npm pack`
-      # succeeding proves only that a whitelist exists — a `files` list missing a
-      # reachable lib/ file packs and installs cleanly and dies at first use. So
-      # install the tarball into a throwaway prefix and run the real binaries
-      # from it. The bin map is read from package.json so a renamed binary
-      # cannot fall out of this smoke silently.
-      - name: pack the tarball and run every installed binary
-        run: |
-          set -euo pipefail
-          npm pack --pack-destination "$RUNNER_TEMP"
-          tgz=$(ls "$RUNNER_TEMP"/*.tgz)
-          npm install -g "$tgz" --prefix "$RUNNER_TEMP/prefix"
-          for name in $(node -e 'process.stdout.write(Object.keys(require("./package.json").bin).join("\n"))'); do
-            echo "--- $name --help"
-            "$RUNNER_TEMP/prefix/bin/$name" --help >/dev/null
-          done
-          echo "--- interlock limits"
-          "$RUNNER_TEMP/prefix/bin/interlock" limits >/dev/null
-
-      # Every command a skill, the ship driver, the run program or a hook calls,
-      # run from the installed prefix with its exit code and the JSON keys its
-      # caller reads asserted. Runs on Linux and on macOS: a path-resolution
-      # defect in an installed binary can appear on only one of them.
-      - name: run the post-install smoke inventory from the prefix
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/smoke"
-          node scripts/postinstall-smoke.mjs "$RUNNER_TEMP/prefix/bin" . "$RUNNER_TEMP/smoke"
-
-      # Last step, so `failure()` means a smoke step above failed. It speaks and
-      # exits 0: the leg's failure is advisory, never silent.
-      - name: Note a failed smoke leg
-        if: ${{ failure() }}
-        run: |
-          msg="cli-smoke (${{ matrix.os }}) failed — advisory, not blocking"
-          echo "::warning title=cli-smoke (${{ matrix.os }})::$msg"
-          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
-
   # The `main: required CI` ruleset requires a check named `validate-plugin`; it
-  # lives on GitHub, not here. The matrices above report as
-  # `validate-plugin (latest)`, `cli-smoke (macos-latest)` and so on, and
-  # nothing reports the bare names, so these two gates do. `validate-plugin`
-  # passes only when every leg of its matrix passed. `cli-smoke` is no longer
-  # required by the ruleset (dropped 2026-11-05); its gate always passes and
-  # says so when a leg did not, and stays so the legs roll up to one line.
-  # `always()` keeps a failed or cancelled leg from skipping a gate, because a
-  # skipped required check reads as passing. Renaming a job or a leg leaves the gates' names alone;
+  # lives on GitHub, not here. The matrix above reports as
+  # `validate-plugin (latest)` and so on, and nothing reports the bare name, so
+  # this gate does: it passes only when every leg of the matrix passed. `always()` keeps a failed or cancelled
+  # leg from skipping the gate, because a skipped required check reads as
+  # passing. Renaming a job or a leg leaves the gate's name alone;
   # test/spine/github-workflows.test.mjs pins that every required name is
   # reported.
   validate-plugin-gate:
@@ -200,22 +106,6 @@ jobs:
         run: |
           echo "validate-plugin legs: ${{ needs.validate-plugin.result }}"
           test "${{ needs.validate-plugin.result }}" = success
-
-  cli-smoke-gate:
-    name: cli-smoke
-    needs: cli-smoke
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Report the platform legs (advisory, never fails)
-        run: |
-          result="${{ needs.cli-smoke.result }}"
-          echo "cli-smoke legs: $result"
-          if [ "$result" != success ]; then
-            msg="cli-smoke legs finished $result — advisory, not blocking"
-            echo "::warning title=cli-smoke::$msg"
-            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
-          fi
 
   # The release installed OVER the previous one. A user who runs `npm i -g` on
   # top of last month's install gets whatever the two leave together, which no
