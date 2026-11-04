@@ -988,6 +988,9 @@ test('the notify row ignores the host\'s option variable', () => {
     assert.match(notify.detail, /INTERLOCK_NTFY_TOPIC/)
     assert.match(notify.detail, /ntfy topic/)
     assert.match(notify.detail, /unattended/)
+    // A saved option the session still cannot see is the one silent case: the row names the hook that should have carried it.
+    assert.match(notify.detail, /already saved/)
+    assert.match(notify.detail, /hooks\/notify-option\.mjs/)
     assert.doesNotMatch(JSON.stringify(report), /from-plugin/)
     assert.doesNotMatch(formatDoctor(report), /from-plugin/)
 
