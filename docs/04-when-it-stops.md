@@ -797,9 +797,29 @@ DOMAIN CITATIONS UNREAD: the living specs at <sha> could not be listed (<git's w
 
 It means a capability that cites one of those files may be missing from the `domain` selection. Capabilities the graph links, and the ones the change declares, were still selected, so the review ran; the files are listed under `ungraphed` in the selection. Fix the cause the line names (usually a start commit git cannot read in this checkout), then run `interlock domain-context --changed <files> --base <sha>` to see the selection the review should have had. `interlock domain-context` prints the same line, on standard error with `--json`, and the merge evidence carries it as a note. It does not change the exit code.
 
+### The review wave: `REVIEW WAVE`, `REVIEW INCOMPLETE`, `REVIEW ANSWER MISMATCHED`, `REVIEW RANGES UNREAD`, `SKEPTIC VERDICTS MISSING` and `SKEPTIC CAP REACHED`
+
+A strict run's review is a wave of spawns, one per selected dimension, then a second wave of skeptics. Each degradation of it is a line on the step, never a quiet fallback. None is a halt: the run goes on to the adjudication with what it has.
+
+```
+REVIEW WAVE: <n> reviewers (<model>/<effort>), <m> skeptics (<model>/<effort>)
+REVIEW INCOMPLETE: <dimension> — <reason>
+REVIEW ANSWER MISMATCHED: <expected> wrote <got>
+REVIEW RANGES UNREAD: git diff against <sha> failed (<reason>) — reviewers get the changed paths without line ranges
+SKEPTIC VERDICTS MISSING: <label>, <label>
+SKEPTIC CAP REACHED: <n> of <m> findings judged per finding, <k> judged per review
+```
+
+- **`REVIEW WAVE`** is the routing the wave resolved, from the `review-dimension` and `review-skeptic` rows of `interlock routing`. A model or effort the table leaves unset prints `inherit`: the spawn runs at the session's own setting, and the line is how you see that. The skeptic count is zero on the review step, because the findings that fix it do not exist yet; the `skeptics` step carries its own count. It changes no verdict.
+- **`REVIEW INCOMPLETE`** names a dimension whose reviewer left no usable answer file, with the file and the fault: no file, not JSON, or no findings list. The dimension is recorded as not run, the review as not completed, and `review.ran` reads amber. The other dimensions' findings are adjudicated as usual.
+- **`REVIEW ANSWER MISMATCHED`** means a reviewer's file named a different dimension than the one it was asked to write. The file is not folded, so one reviewer cannot stand in for another, and the dimension is recorded as not run.
+- **`REVIEW RANGES UNREAD`** means the run could not diff the working tree against its start commit, so each reviewer is given the changed paths without their changed line ranges and judges the hunks from the files themselves. Coverage and the adjudication are unchanged; fix what git names, usually a start commit this checkout cannot read.
+- **`SKEPTIC VERDICTS MISSING`** names skeptics whose file is absent, unparseable or not a list. Both verdicts of that skeptic's pair are set aside, the sibling that did answer included, so a finding is never dismissed on one verdict. The finding survives with no verdict, and merge confidence flags its verdict count.
+- **`SKEPTIC CAP REACHED`** means the findings outnumbered the pairs the `skeptic spawns (per skeptics step)` row of `interlock limits` allows. Blockers are judged per finding first, then warnings; the rest share one pair that reads all of them. The shared pair's findings are judged on fewer eyes per finding, and the line says how many.
+
 ### A review or a round that left no findings list, and `REVIEW WORK FILE NOT CLEARED`
 
-A strict run adjudicates only findings this review wrote. The review worker writes its findings and verdicts to two work files under `.claude/ship/`, a directory no run clears, so the run removes both files when it first emits the review step. A review that writes nothing therefore leaves nothing behind, and an earlier run's clean result can never stand in for this one's. The review and remediation briefings both tell the agent to write an empty list, `[]`, when nothing is found: a clean result is a file with a list in it.
+A strict run adjudicates only findings this review wrote. The reviewers and skeptics write answer files under `.claude/ship/review/`, and the run folds them into two work files, the findings and the verdicts, under `.claude/ship/`, a directory no run clears. So the run removes both work files and both answer directories when it first emits the review step. A review that writes nothing therefore leaves nothing behind, and an earlier run's clean result can never stand in for this one's. The reviewer, skeptic and remediation briefings all tell the agent to write an empty list, `[]`, or a ledger with an empty findings list, when nothing is found: a clean result is a file with a list in it.
 
 A findings file that is absent, is not JSON, or holds none of the shapes a findings list takes carries no findings list. What the run does about it depends on where it is, and each is said as a line in the close summary:
 
@@ -808,7 +828,7 @@ review did not complete: .claude/ship/findings.json carries no findings list (<w
 round <n> was not re-reviewed: .claude/ship/findings.json carries no findings list (<why>); the <k> finding(s) that survived the last adjudication stand unchanged
 ```
 
-- **At the review.** The review is recorded as not completed, whatever the review step reported about itself, and the run goes on to final verification, as it does for a step that returned nothing usable. `review.json` carries `dimensions.completed: false` and an empty `ran`, and the merge verdict reads `review.ran` amber: a review that did not complete, never a review that found nothing. It costs a look and grants nothing.
+- **At the review.** The reviewer that wrote no usable file is recorded as not run, whatever its spawn reported about itself, and the run goes on, as it does for a step that returned nothing usable. `review.json` carries `dimensions.completed: false` and a `ran` that leaves that dimension out, and the merge verdict reads `review.ran` amber: a review that did not complete, never a review that found nothing. It costs a look and grants nothing.
 - **In a remediation round.** Read as an empty review, such a round would clear the very blockers it was asked to fix, and the run would commit. So the round is adjudicated from the surviving findings of the last adjudication, unchanged, and the next round or the verdict is planned from them. A blocker that survived is still a blocker at the verdict round, where the run halts on it.
 - **When the last adjudication cannot be read back either.** The run halts, naming both files (`.claude/ship/findings.json` and `.claude/ship/review.json`). There is nothing to stand on, and a halt is the one outcome that cannot clear a blocker.
 
@@ -818,7 +838,7 @@ round <n> was not re-reviewed: .claude/ship/findings.json carries no findings li
 REVIEW WORK FILE NOT CLEARED: <path> could not be removed (<reason>) — what an earlier run left there may be adjudicated as this review's
 ```
 
-The usual cause is a read-only `.claude/ship/`. The run continues. If the reviewer then writes its own files the banner cost nothing; if it writes none, the adjudication reads what was left there, which is exactly what the removal exists to prevent. Read the findings in `review.json` against this run's diff before trusting them, fix the permissions, and run again.
+The usual cause is a read-only `.claude/ship/`. The run continues. If the reviewers then write their own files the banner cost nothing; if they write none, the adjudication reads what was left there, which is exactly what the removal exists to prevent. Read the findings in `review.json` against this run's diff before trusting them, fix the permissions, and run again.
 
 `interlock gate`, `interlock review` and `interlock remediate` apply the same rule by hand: an input with no findings list exits 1 with the reason on stderr and nothing on stdout, and an empty list is how to say nothing was found ([07](./07-cli-and-configuration.md)).
 

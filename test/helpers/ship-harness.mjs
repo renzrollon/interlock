@@ -34,8 +34,9 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { basename, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findingId } from '../../lib/findings.mjs'
 import { INTERLOCK_BIN, runCli as hostRunCli } from '../../lib/host.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -204,8 +205,12 @@ export const EXPECTED_PROMPT_LABELS = Object.freeze([
   'verify',
   // The strict tail. It is in the contract rather than left to whichever runs
   // the suite happens to exercise, because a briefing behind an opt-in flag is
-  // exactly the one that stops being checked without anyone noticing.
-  'review',
+  // exactly the one that stops being checked without anyone noticing. The
+  // review is a fan-out now: one `review-<dimension>` spawn per selected
+  // dimension and one `skeptic-…` spawn per skeptic prompt, so both are
+  // prefixes and there is no bare `review` label to expect any more.
+  'review-',
+  'skeptic-',
   'remediate-',
   'handoff',
   'commit'
@@ -224,9 +229,12 @@ export function shipSource() {
 /**
  * A findings/verdicts pair that adjudicates to exactly the counts asked for.
  *
- * The strict tail is driven by FILES now: the review agent writes findings and
- * verdicts, and `interlock run reviewed` adjudicates them with the run's own
- * observed changed paths (`emit-strict-tail-from-cli`, design D2). So a fixture
+ * The strict tail is driven by FILES now: each reviewer writes its dimension's
+ * ledger, each skeptic its verdicts, `interlock run found` and `interlock run
+ * reviewed` fold them, and the CLI adjudicates with the run's own observed
+ * changed paths (`emit-strict-tail-from-cli`, design D2;
+ * `fan-out-the-strict-ship-review`, D3). A fixing round still rewrites the two
+ * work files `reviewFiles` produces. So a fixture
  * cannot simply state "raised 2, surviving 1" — that number is computed, which
  * is the point. It states the two files, and the CLI's own arithmetic produces
  * the counts.
@@ -269,6 +277,69 @@ export function reviewFiles({ blockers = 0, warnings = 1, dismissed = 1, file = 
   for (let i = 0; i < warnings; i++) add(`warning ${i + 1}`, 'warning', true)
   for (let i = 0; i < dismissed; i++) add(`dismissed ${i + 1}`, 'warning', false)
   return { findings: [{ dimension: 'language', findings: raised }], verdicts }
+}
+
+/**
+ * The answer file a review or skeptic briefing names, or null when it names
+ * none. Both the reviewer's briefing ("write only `<path>`") and the skeptic's
+ * (the sentence naming its verdict file) carry the path whole, so the agent
+ * they stand in for is told where to write exactly as a model would be.
+ */
+export function answerPathIn(briefing) {
+  const m = /\.claude\/ship\/review\/(?:dimensions|skeptics)\/[A-Za-z0-9._-]+\.json/.exec(String(briefing))
+  return m ? m[0] : null
+}
+
+/**
+ * What a stubbed reviewer writes: the ledger of the dimension its briefing
+ * names, findings under `language` and an empty, run-and-clean ledger under
+ * every other dimension. Returns the one-line report a reviewer is allowed.
+ *
+ * @param {{ write: (rel: string, value: unknown) => string, briefing?: string }} ctx
+ * @param {object} [shape]  `reviewFiles`' shape
+ */
+export function reviewerAnswer(ctx, shape) {
+  const path = answerPathIn(ctx.briefing)
+  if (!path) return { ok: false, detail: 'the briefing names no answer file' }
+  const dimension = basename(path, '.json')
+  const { findings } = reviewFiles(shape)
+  ctx.write(path, { dimension, findings: dimension === 'language' ? findings[0].findings : [] })
+  return { ok: true }
+}
+
+/**
+ * What a stubbed skeptic writes: its own verdicts for the finding ids its
+ * briefing lists, the first of each finding's pair for `refute` and the second
+ * for `second-opinion`, as one verdict list in the one file it names.
+ *
+ * @param {string} label  the skeptic spawn's label
+ * @param {{ write: (rel: string, value: unknown) => string, briefing?: string }} ctx
+ * @param {object} [shape]  `reviewFiles`' shape
+ */
+export function skepticAnswer(label, ctx, shape) {
+  const path = answerPathIn(ctx.briefing)
+  if (!path) return { ok: false, detail: 'the briefing names no answer file' }
+  const briefed = [...String(ctx.briefing).matchAll(/^### (F-[0-9a-f]{8}) /gm)].map(m => m[1])
+  const role = /second-opinion$/.test(label) ? 1 : 0
+  const byId = new Map()
+  for (const v of reviewFiles(shape).verdicts) {
+    const id = findingId({ file: v.file, title: v.findingTitle })
+    byId.set(id, [...(byId.get(id) || []), v])
+  }
+  ctx.write(path, briefed.flatMap(id => (byId.get(id) || []).filter((_, i) => i % 2 === role)))
+  return { ok: true }
+}
+
+/**
+ * The two responders a strict run needs, keyed by label prefix, for a test that
+ * wants the review to raise something other than the default one warning:
+ * `responses: { ...reviewResponders({ blockers: 1, warnings: 0, dismissed: 0 }) }`.
+ */
+export function reviewResponders(shape) {
+  return {
+    'review-': (label, n, ctx) => reviewerAnswer(ctx, shape),
+    'skeptic-': (label, n, ctx) => skepticAnswer(label, ctx, shape)
+  }
 }
 
 /** A handoff packet the wave state machine would accept. */
@@ -444,9 +515,11 @@ function lookup(responses, label) {
 /**
  * The default answers. Every key is an agent label (or a label prefix ending in
  * `-`); the value is the result object, or a function of
- * `(label, callIndex, ctx)` where `ctx` is `{ root, write }` — the third
- * argument is how a stubbed tail agent writes the work files the CLI then
- * adjudicates, which is the only way the strict path can be driven at all.
+ * `(label, callIndex, ctx)` where `ctx` is `{ root, write, briefing }` — the
+ * third argument is how a stubbed tail agent writes the files the CLI then
+ * folds and adjudicates, which is the only way the strict path can be driven at
+ * all. `briefing` is the text of the briefing file the spawn was pointed at, so
+ * a responder can write the answer file that briefing names.
  *
  * There is no entry for a step's continuation: those come from the CLI, run for
  * real. What is canned here is only what a MODEL would have produced.
@@ -459,14 +532,12 @@ export function defaultResponses() {
     verify: { results: [{ kind: 'unit', exitCode: 0, total: 1, passed: 1, failed: 0 }] },
     // Two findings raised, one refuted by both skeptics with a citation in the
     // diff, one warning surviving — computed by the CLI from these files, not
-    // asserted by the agent. The result carries counts nobody reads: `run
-    // reviewed` adjudicates the files and never the report.
-    review: (label, n, ctx) => {
-      const { findings, verdicts } = reviewFiles()
-      ctx.write('.claude/ship/findings.json', findings)
-      ctx.write('.claude/ship/verdicts.json', verdicts)
-      return { ok: true }
-    },
+    // asserted by the agent. The review is a fan-out: each `review-<dimension>`
+    // spawn writes the one answer file its briefing names and each `skeptic-…`
+    // spawn the one verdict file its briefing names, so the default responders
+    // read that path off the briefing (`ctx.briefing`). Their results carry
+    // nothing the run reads: `run found` and `run reviewed` fold the files.
+    ...reviewResponders(),
     // A fixer that fixes nothing: the files it was asked to rewrite are left as
     // the review wrote them, so the re-adjudication finds the same warning and
     // no blocker, and the run walks to the verdict. A test that wants a fixer
@@ -655,7 +726,7 @@ export async function runShip(opts = {}) {
       }
       prompts.push({ label, title, prompt: briefing, model: options.model, isolation: options.isolation, ...effortOf(options) })
       const canned = lookup(responses, label)
-      const body = materialize(typeof canned === 'function' ? canned(label, n, ctx) : canned)
+      const body = materialize(typeof canned === 'function' ? canned(label, n, { ...ctx, briefing }) : canned)
       if (body === null) return null
       plannerWrites(label, body)
       // The acknowledgement the script requires back. Supplied by default so an

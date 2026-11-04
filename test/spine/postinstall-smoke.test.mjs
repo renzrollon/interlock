@@ -191,6 +191,22 @@ test('the inventory holds the record-batch -> judge -> strict review chain, in t
   assert.ok(batch < judge && judge < strict, `the chain is out of order: record-batch ${batch}, judge ${judge}, strict ${strict}`)
 })
 
+test('the strict chain folds the reviewers with run found between the review step and run reviewed', async () => {
+  // Spec ship/run-program: the review step continues to `interlock run found`, which emits the
+  // skeptics step whose continuation is `run reviewed` (fan-out-the-strict-ship-review, D4).
+  const entries = await inventory()
+  const strict = entries.findIndex(e => e.argv.includes('--strict') && /\brun start\b/.test(line(e)))
+  const after = pattern => entries.findIndex((e, i) => i > strict && pattern.test(line(e)))
+  const review = after(/\brun record-batch\b/)
+  const found = after(/\brun found\b/)
+  const reviewed = after(/\brun reviewed\b/)
+  assert.ok(strict >= 0 && review > strict, 'no strict run reaches its review step')
+  assert.ok(found > review, `no \`run found\` follows the strict review step (review ${review}, found ${found})`)
+  assert.ok(reviewed > found, `\`run reviewed\` does not follow \`run found\` (found ${found}, reviewed ${reviewed})`)
+  assert.equal(typeof entries[review].check, 'function', 'the review step is checked for its per-dimension reviewers')
+  assert.equal(typeof entries[found].check, 'function', 'run found is checked for the skeptics step')
+})
+
 test('every notify entry carries an empty topic, so the smoke never makes a request', async () => {
   const entries = await inventory()
   for (const entry of entries.filter(e => e.argv[0] === 'notify')) {

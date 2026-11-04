@@ -41,7 +41,7 @@ There is no penalty for mixing. A change proposed by `/openspec-propose` can be 
 | Artifact review before code exists | end of `spec` |
 | The human checkpoint as the product's one deliberate stop | between `spec` and `ship` |
 | Dependency-ordered wave execution with parallel subagents and context isolation | `ship` |
-| Adversarially verified diff review — two skeptics try to refute every finding | `ship --review` / `--strict`, or `/interlock:review-code` |
+| Adversarially verified diff review — one reviewer per dimension, then two skeptics try to refute every finding | `ship --review` / `--strict`, or `/interlock:review-code` |
 | Deterministic decisions in code rather than prose: `interlock waves`, `surface`, `gate`, `validate` | throughout |
 | Repo onboarding for brownfield projects, plus a local code knowledge graph | `bootstrap` |
 | Spec-drift detection — completed changes never archived, and living specs older than the code they describe | `interlock drift`, surfaced in `spec`, `settle` and the ship summary |

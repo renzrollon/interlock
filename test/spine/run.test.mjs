@@ -30,6 +30,8 @@ import { cpus, tmpdir } from 'node:os'
 import { basename, join, dirname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EFFORT, LIMITS, REVIEW_DEPTH } from '../../lib/limits.mjs'
+import { findingId } from '../../lib/findings.mjs'
+import { resolveRouting } from '../../lib/routing.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
 import { SKIP_VERIFY_RED } from '../../lib/waves.mjs'
 import { assembleImplementerPrompt } from '../../lib/prompts/implementer.mjs'
@@ -670,11 +672,86 @@ function reviewFiles({ blockers = 0, warnings = 0, dismissed = 0, dimension = 'l
   return { findings: [{ dimension, findings: raised }], verdicts }
 }
 
-/** Write what a review or fixing round would have written. */
+/** Write what a FIXING ROUND rewrites: the two work files a round's worker owns. */
 function writeReview(root, shape) {
   const { findings, verdicts } = reviewFiles(shape)
   file(root, '.claude/ship/findings.json', findings)
   file(root, '.claude/ship/verdicts.json', verdicts)
+}
+
+// --- the first review is a fan-out (fan-out-the-strict-ship-review) ----------
+//
+// One reviewer per selected dimension writes `<DIMENSIONS_DIR>/<dimension>.json`
+// and one skeptic per prompt writes `<SKEPTICS_DIR>/<label>.json`, where the
+// label is `skeptic-<F-id>-<role>`. `run found` folds the first, `run reviewed`
+// the second. A fixing round is not fanned out: its worker still rewrites the
+// two work files, which `writeReview` above writes.
+
+const DIMENSIONS_DIR = '.claude/ship/review/dimensions'
+const SKEPTICS_DIR = '.claude/ship/review/skeptics'
+const SKEPTIC_ROLES = ['refute', 'second-opinion']
+
+/** The label of the skeptic spawn that judges one finding in one role. */
+const skepticLabel = (finding, role) => `skeptic-${findingId(finding)}-${role}`
+
+/**
+ * Write the answer files the first review's agents would have written, from a
+ * findings list (`[{ dimension, findings }]`, a ledger's `coverage` kept when it
+ * has one) and the flat verdict list a pair of skeptics would have returned.
+ *
+ * Every selected dimension answers, under its own name: the ledgers of that
+ * name, or an empty one that ran and found nothing. A ledger under a dimension
+ * the run did not select is a fixture defect, so it fails here by name. Each
+ * finding's verdicts go to its two skeptics' files by position, the first to
+ * `refute` and the second to `second-opinion`.
+ *
+ * @param {{ omitDimensions?: string[], omitSkeptics?: string[] }} [opts]
+ *   dimensions or skeptic labels that write nothing
+ */
+function writeFanoutFiles(root, ledgers, verdicts, { omitDimensions = [], omitSkeptics = [] } = {}) {
+  const selected = manifestOf(root).reviewDimensions.selected
+  for (const ledger of ledgers) {
+    assert.ok(selected.includes(ledger.dimension), `fixture: ${ledger.dimension} was not selected (${selected.join(', ')})`)
+  }
+  for (const dimension of selected) {
+    if (omitDimensions.includes(dimension)) continue
+    const mine = ledgers.filter(l => l.dimension === dimension)
+    const coverage = mine.find(l => l.coverage)?.coverage
+    file(root, `${DIMENSIONS_DIR}/${dimension}.json`, {
+      dimension,
+      findings: mine.flatMap(l => l.findings),
+      ...(coverage ? { coverage } : {})
+    })
+  }
+  const byFinding = new Map()
+  for (const v of verdicts) {
+    const id = findingId({ file: v.file, title: v.findingTitle })
+    byFinding.set(id, [...(byFinding.get(id) || []), v])
+  }
+  for (const [id, list] of byFinding) {
+    SKEPTIC_ROLES.forEach((role, r) => {
+      const label = `skeptic-${id}-${role}`
+      if (!omitSkeptics.includes(label)) file(root, `${SKEPTICS_DIR}/${label}.json`, list.filter((_, i) => i % 2 === r))
+    })
+  }
+}
+
+/** Write what the first review's reviewers and skeptics would have written for `shape`. */
+function writeFanout(root, shape, opts) {
+  const { findings, verdicts } = reviewFiles(shape)
+  writeFanoutFiles(root, findings, verdicts, opts)
+}
+
+/**
+ * Follow a review step to its adjudication: `run found` with a result per
+ * reviewer, then `run reviewed` with a result per skeptic when `run found`
+ * emitted a skeptics step. What comes back is the last call's, so a caller reads
+ * the remediation, the final verification or the halt the adjudication chose.
+ */
+function finishReview(root, review, { env } = {}) {
+  const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })), env })
+  if (found.step.action !== 'skeptics') return found
+  return run(root, [...found.step.then.argv], { results: found.step.spawns.map(() => ({ ok: true })), env })
 }
 
 /**
@@ -700,13 +777,26 @@ test('a strict run emits review, remediation, the verdict, verification, handoff
   try {
     const review = toTail(root, change, ['--strict'])
     assert.equal(review.action, 'review')
-    assert.equal(review.spawns.length, 1, 'one worker fans out the dimensions in its own context')
-    assert.equal(review.spawns[0].label, 'review')
-    assert.deepEqual(review.then.argv, ['run', 'reviewed'])
+    // One spawn per selected dimension, each its own reviewer in its own context
+    // (spec: ship/run-program, "emit the review, remediation and handoff steps").
+    const selected = manifestOf(root).reviewDimensions.selected
+    assert.deepEqual(
+      review.spawns.map(sp => sp.label),
+      selected.map(dimension => `review-${dimension}`),
+      'one reviewer per selected dimension, labelled by it'
+    )
+    assert.ok(selected.length >= REVIEW_DEPTH.strict.dimensions.length, 'the published always-on set is selected')
+    for (const sp of review.spawns) assert.equal(sp.kind, 'review', sp.label)
+    assert.deepEqual(review.then.argv, ['run', 'found'], 'the review continues to the fold, not to the adjudication')
 
-    // One blocker raised and upheld: round one has something to fix.
-    writeReview(root, { blockers: 1 })
-    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    // One blocker raised: `run found` folds the reviewers' answers and emits the
+    // skeptics step; `run reviewed` folds the skeptics' verdicts and plans round
+    // one, which has something to fix.
+    writeFanout(root, { blockers: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.deepEqual(found.then.argv, ['run', 'reviewed'])
+    const round1 = run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) }).step
     assert.equal(round1.action, 'remediate')
     assert.equal(round1.round, 1)
     assert.deepEqual(round1.then.argv, ['run', 'remediated', '--round', '1'])
@@ -743,7 +833,7 @@ test('a strict run emits review, remediation, the verdict, verification, handoff
   }
 })
 
-test('the review briefing inlines every selected dimension\'s criteria and the policy prose', () => {
+test('each reviewer\'s briefing inlines its own dimension\'s criteria and the policy prose, and no other dimension\'s', () => {
   const { root, change } = repo()
   try {
     file(
@@ -752,21 +842,33 @@ test('the review briefing inlines every selected dimension\'s criteria and the p
       '# Review policy\n\n## What "Important" means\n\nIn this repo, a naming nit is a suggestion.\n'
     )
     const review = toTail(root, change, ['--review'])
-    const briefing = readFileSync(join(root, review.spawns[0].promptPath), 'utf8')
+    const selected = manifestOf(root).reviewDimensions.selected
     for (const name of REVIEW_DEPTH.strict.dimensions) {
-      assert.match(briefing, new RegExp(`## ${name}\\n`), `${name}'s heading is missing`)
+      assert.ok(selected.includes(name), `${name} is on the published always-on set`)
     }
-    // The criteria themselves, not just the heading: a heading with nothing
-    // under it is exactly the failure inlining exists to remove.
-    const rubric = readFileSync(
-      join(ROOT, 'skills', 'review-code', 'dimensions', 'qa.md'),
-      'utf8'
-    ).trim()
-    assert.ok(briefing.includes(rubric), 'the qa criteria were not inlined')
-    assert.match(briefing, /In this repo, a naming nit is a suggestion\./)
-    assert.match(briefing, /REPOSITORY REVIEW POLICY/)
-    // And the agent is not asked to run the command that used to adjudicate it.
-    assert.doesNotMatch(briefing, /interlock (review|remediate|surface|conformance)\b/)
+    assert.equal(review.spawns.length, selected.length)
+    for (const spawn of review.spawns) {
+      const name = spawn.label.replace(/^review-/, '')
+      const briefing = readFileSync(join(root, spawn.promptPath), 'utf8')
+      assert.match(briefing, new RegExp(`^# Dimension: ${name}$`, 'm'), `${name}'s briefing opens its own rubric`)
+      // The criteria themselves, not just the heading: a heading with nothing
+      // under it is exactly the failure inlining exists to remove.
+      const rubric = readFileSync(join(ROOT, 'skills', 'review-code', 'dimensions', `${name}.md`), 'utf8').trim()
+      assert.ok(briefing.includes(rubric), `the ${name} criteria were not inlined`)
+      for (const other of selected.filter(d => d !== name)) {
+        assert.doesNotMatch(briefing, new RegExp(`^# Dimension: ${other}$`, 'm'), `${name}'s briefing carries ${other}'s criteria`)
+      }
+      assert.match(briefing, /In this repo, a naming nit is a suggestion\./)
+      assert.match(briefing, /REPOSITORY REVIEW POLICY/)
+      // It names the one file it writes, and only that one.
+      assert.ok(briefing.includes(`${DIMENSIONS_DIR}/${name}.json`), `${name}'s briefing does not name its answer file`)
+      assert.ok(
+        !briefing.includes(`${DIMENSIONS_DIR}/${selected.find(d => d !== name)}.json`),
+        `${name}'s briefing names another reviewer's answer file`
+      )
+      // And the agent is not asked to run the command that used to adjudicate it.
+      assert.doesNotMatch(briefing, /interlock (review|remediate|surface|conformance)\b/)
+    }
   } finally {
     cleanup(root)
   }
@@ -805,18 +907,21 @@ test('a dimension whose criteria cannot be read is named in the briefing and ban
     )
 
     assert.equal(step.action, 'review')
-    const briefing = readFileSync(join(root, step.spawns[0].promptPath), 'utf8')
-    assert.match(
-      briefing,
-      /No criteria could be read for "qa" — this reviewer works from the dimension name alone\./
-    )
+    // The reviewer is still dispatched: a synthesized header, and the sentence
+    // that it works from the name alone.
+    const qa = step.spawns.find(sp => sp.label === 'review-qa')
+    assert.ok(qa, `no review-qa spawn: ${step.spawns.map(sp => sp.label)}`)
+    const briefing = readFileSync(join(root, qa.promptPath), 'utf8')
+    assert.match(briefing, /^# Dimension: qa$/m)
+    assert.match(briefing, /works from the dimension name alone/)
     assert.ok(
       (step.banners || []).some(b => b.startsWith('REVIEW RUBRIC UNAVAILABLE: qa')),
       `no REVIEW RUBRIC UNAVAILABLE banner for qa: ${JSON.stringify(step.banners)}`
     )
     // The other reviewers are unaffected: one unreadable file degrades one of them.
-    assert.doesNotMatch(briefing, /No criteria could be read for "language"/)
-    assert.match(briefing, /## language\n# Dimension: language/)
+    const language = readFileSync(join(root, step.spawns.find(sp => sp.label === 'review-language').promptPath), 'utf8')
+    assert.doesNotMatch(language, /works from the dimension name alone/)
+    assert.match(language, /^# Dimension: language$/m)
   } finally {
     rmSync(plugin, { recursive: true, force: true })
     cleanup(root)
@@ -827,8 +932,8 @@ test('blockers surviving the verdict halt the run, and no commit is ever emitted
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--strict'])
-    writeReview(root, { blockers: 1 })
-    let step = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    let step = finishReview(root, review).step
 
     // Every fixing round leaves the blocker standing, so the budget runs out.
     const actions = []
@@ -858,7 +963,7 @@ test('blockers surviving the verdict halt the run, and no commit is ever emitted
   }
 })
 
-test('raising the remediation cap buys one more fixing round, with no driver change', () => {
+test('raising the remediation cap buys one more fixing round, with no driver change', async () => {
   // The property a literal silently breaks. Driven IN-PROCESS with the cap
   // raised on the live `LIMITS` object: patching lib/limits.mjs on disk would
   // be visible to every other test file `node --test` is running in parallel,
@@ -880,9 +985,16 @@ test('raising the remediation cap buys one more fixing round, with no driver cha
     const review = toTail(root, change, ['--review'])
     assert.equal(review.action, 'review')
 
+    // The fold is a second in-process entry point beside `runReviewed`. It is
+    // imported here rather than at the top of the file so that a program without
+    // it fails this test alone, not every test in the file.
+    const { runFound } = await import('../../lib/run.mjs')
+
     LIMITS.remediationRounds = cap + 1
-    writeReview(root, { blockers: 1 })
-    let step = runReviewed(ctx, { results: [{ ok: true }] })
+    writeFanout(root, { blockers: 1 })
+    let step = runFound(ctx, { results: review.spawns.map(() => ({ ok: true })) })
+    assert.equal(step.action, 'skeptics')
+    step = runReviewed(ctx, { results: step.spawns.map(() => ({ ok: true })) })
     let fixRounds = 0
     while (step.action === 'remediate') {
       fixRounds += 1
@@ -902,8 +1014,8 @@ test('a clean review skips remediation entirely and goes straight to final verif
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--review'])
-    writeReview(root, { dismissed: 1 })
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { dismissed: 1 })
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'verify-final', 'nothing survived, so no round is worth spending')
   } finally {
     cleanup(root)
@@ -928,28 +1040,56 @@ test('--handoff alone emits the handoff step and never a review', () => {
   }
 })
 
-test('a dimension the reviewer added is adjudicated and recorded on the manifest', () => {
+test('a reviewer cannot add a dimension: an answer file nobody was briefed for is never read', () => {
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--review'])
-    assert.deepEqual(
-      review.spawns[0].label,
-      'review',
-      'the selection travels on the manifest, not on the spawn label'
+    assert.ok(
+      review.spawns.every(sp => /^review-/.test(sp.label) && sp.label !== 'review-security'),
+      'a docs+README diff selects neither optional dimension'
     )
-    // Findings under a dimension the CLI did not select.
-    writeReview(root, { warnings: 1, dimension: 'security' })
-    const next = run(root, [...review.then.argv], {
-      results: [{ ok: true, addedDimensions: [{ name: 'security', reason: 'the diff touches a token path' }] }]
-    }).step
-    assert.ok(['remediate', 'verify-final'].includes(next.action))
+    // Every briefed reviewer finds nothing; an unbriefed one's file holds a blocker.
+    writeFanout(root, {})
+    file(root, `${DIMENSIONS_DIR}/security.json`, {
+      dimension: 'security',
+      findings: reviewFiles({ blockers: 1 }).findings[0].findings
+    })
+    const next = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(next.action, 'verify-final', 'nothing briefed raised anything, so nothing is judged or fixed')
 
-    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
-    assert.deepEqual(manifest.reviewDimensions.added, [
-      { name: 'security', reason: 'the diff touches a token path' }
-    ])
-    assert.ok(!manifest.reviewDimensions.selected.includes('security'), 'a docs+README diff selects neither optional dimension')
-    assert.equal(manifest.review.counts.raised, 1, 'the added dimension\'s finding was adjudicated like any other')
+    const manifest = manifestOf(root)
+    assert.equal(manifest.reviewDimensions.added, undefined, 'the agent-added channel has no writer')
+    assert.ok(!manifest.reviewDimensions.ran.includes('security'))
+    assert.equal(manifest.review.counts.raised, 0, 'the unbriefed file\'s finding was not adjudicated')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an answer under another dimension\'s name is bannered as mismatched, recorded as not run, and not folded', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    // `language` raises a warning, so the skeptics step exists to carry the banners.
+    writeFanout(root, { warnings: 1 })
+    file(root, `${DIMENSIONS_DIR}/qa.json`, {
+      dimension: 'language',
+      findings: reviewFiles({ blockers: 1 }).findings[0].findings
+    })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.ok(
+      (found.banners || []).some(b => b === 'REVIEW ANSWER MISMATCHED: qa wrote language'),
+      `no mismatch banner: ${JSON.stringify(found.banners)}`
+    )
+
+    const dims = manifestOf(root).reviewDimensions
+    assert.ok(!dims.ran.includes('qa'))
+    assert.deepEqual(dims.notRun.map(d => d.name), ['qa'])
+    assert.match(dims.notRun[0].reason, /language/)
+    assert.equal(dims.completed, false)
+    // Only the warning `language` raised is briefed to skeptics, not qa's blocker.
+    assert.equal(found.spawns.length, 2, 'one pair, for the one folded finding')
   } finally {
     cleanup(root)
   }
@@ -962,8 +1102,8 @@ test('run close records the autonomy outcome for a strict run and nothing for a 
   const clean = repo()
   try {
     const review = toTail(clean.root, clean.change, ['--strict'])
-    writeReview(clean.root, { dismissed: 1 })
-    run(clean.root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(clean.root, { dismissed: 1 })
+    finishReview(clean.root, review)
     run(clean.root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] })
     const entry = ladder(clean.root)['review-code']
     assert.equal(entry.runs, 1)
@@ -976,8 +1116,8 @@ test('run close records the autonomy outcome for a strict run and nothing for a 
   const halted = repo()
   try {
     const review = toTail(halted.root, halted.change, ['--strict'])
-    writeReview(halted.root, { blockers: 1 })
-    run(halted.root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(halted.root, { blockers: 1 })
+    finishReview(halted.root, review)
     run(halted.root, ['run', 'close', '--halt', 'unresolved blockers'], { expectExit: 1 })
     assert.equal(ladder(halted.root)['review-code'].blockers_caught, 1)
   } finally {
@@ -999,8 +1139,8 @@ test('a strict close whose ladder file is unreadable says so and still records t
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--strict'])
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
     file(root, '.claude/autonomy.json', '{ not json')
     const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
     assert.ok(
@@ -1028,8 +1168,8 @@ test('a strict close that could not write the ladder says AUTONOMY RECORD NOT WR
   const dotClaude = join(root, '.claude')
   try {
     const review = toTail(root, change, ['--strict'])
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
     file(root, '.claude/autonomy.json', '{ not json')
     for (const dir of ['learning', 'metrics', 'handoff']) mkdirSync(join(dotClaude, dir), { recursive: true })
     // `.claude` cannot take a new entry, so the unreadable file cannot be moved
@@ -1066,8 +1206,8 @@ test('the commit briefing of a strict run carries no autonomy instruction', () =
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--strict'])
-    writeReview(root, { dismissed: 1 })
-    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { dismissed: 1 })
+    const verified = finishReview(root, review).step
     const handoff = run(root, [...verified.then.argv]).step
     const commit = run(root, [...handoff.then.argv], { results: [{ ok: true }] }).step
     assert.equal(commit.action, 'commit')
@@ -1082,11 +1222,293 @@ test('a tail continuation called out of sequence is refused like any other', () 
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--review'])
-    assert.deepEqual(review.then.argv, ['run', 'reviewed'])
+    assert.deepEqual(review.then.argv, ['run', 'found'])
     // The verdict's continuation, called while the program is waiting for the
     // review's. Skipping ahead would adjudicate a round that never ran.
     const { code } = run(root, ['run', 'remediated', '--round', '1'], { expectExit: 1 })
     assert.equal(code, 1)
+    // The adjudication's continuation, called while the program waits for the
+    // fold: the skeptics step would never be emitted and no verdict file read.
+    const skipped = runAny(root, ['run', 'reviewed'], { results: [{ ok: true }] })
+    assert.equal(skipped.code, 1)
+    assert.match(skipped.stderr + JSON.stringify(skipped.step), /out of sequence[\s\S]*run found/)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run reviewed without a run found record halts naming run found and reads no verdicts file an earlier run left', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    // An earlier run's work files and this run's skeptic files are all on disk;
+    // the program was never told the reviewers' answers were folded.
+    writeFanout(root, { blockers: 1 })
+    writeReview(root, { blockers: 1 })
+    setManifest(root, { lastThen: null })
+    const halted = runAny(root, ['run', 'reviewed'], { results: [{ ok: true }] }).step
+    assert.equal(halted.action, 'halt')
+    assert.match(halted.reason, /run found/)
+    assert.equal(manifestOf(root).review, undefined, 'nothing was adjudicated from the work files left behind')
+    assert.equal(review.action, 'review')
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- run found: the fold, and the skeptics step ------------------------------
+
+/** `inherit` where the routing holds null, the way the wave banner prints it. */
+const routingText = r => `${r.model ?? 'inherit'}/${r.effort ?? 'inherit'}`
+
+test('run found folds the reviewers and emits one skeptic spawn per prompt, each writing its own verdict file', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    const reviewers = review.spawns.length
+    const wave = resolveRouting('review-dimension', process.env, { depth: 'strict' })
+    const judges = resolveRouting('review-skeptic', process.env)
+    const waveRow = b => new RegExp(`^REVIEW WAVE: ${reviewers} reviewers \\(.+\\), \\d+ skeptics \\(.+\\)$`).test(String(b))
+    // Nothing is counted before the fold, so the review step says 0 skeptics.
+    assert.ok(
+      (review.banners || []).includes(`REVIEW WAVE: ${reviewers} reviewers (${routingText(wave)}), 0 skeptics (${routingText(judges)})`),
+      `no wave banner on the review step: ${JSON.stringify(review.banners)}`
+    )
+
+    writeFanout(root, { blockers: 1, warnings: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.deepEqual(found.then.argv, ['run', 'reviewed'])
+
+    const { findings } = reviewFiles({ blockers: 1, warnings: 1 })
+    const raised = findings[0].findings.map(f => ({ file: f.file, title: f.title }))
+    const expected = raised.flatMap(f => SKEPTIC_ROLES.map(role => skepticLabel(f, role)))
+    assert.deepEqual(found.spawns.map(sp => sp.label).sort(), [...expected].sort(), 'a refuter and a second opinion per finding')
+    for (const sp of found.spawns) {
+      assert.equal(sp.kind, 'skeptic', sp.label)
+      const briefing = readFileSync(join(root, sp.promptPath), 'utf8')
+      // The one file it writes is named, and no other skeptic's is.
+      assert.ok(briefing.includes(`${SKEPTICS_DIR}/${sp.label}.json`), `${sp.label}: its own verdict file is not named`)
+      for (const other of expected.filter(l => l !== sp.label)) {
+        assert.ok(!briefing.includes(`${SKEPTICS_DIR}/${other}.json`), `${sp.label} was told about ${other}'s file`)
+      }
+    }
+
+    // Four skeptics are counted now, and the step says what they spend.
+    assert.ok(
+      (found.banners || []).includes(`REVIEW WAVE: ${reviewers} reviewers (${routingText(wave)}), 4 skeptics (${routingText(judges)})`),
+      `no wave banner on the skeptics step: ${JSON.stringify(found.banners)}`
+    )
+    assert.ok((review.banners || []).some(waveRow) && (found.banners || []).some(waveRow))
+
+    // The findings work file holds the readable ledgers, and the manifest says all of them ran.
+    const folded = JSON.parse(readFileSync(join(root, '.claude/ship/findings.json'), 'utf8'))
+    assert.equal(folded.length, manifestOf(root).reviewDimensions.selected.length)
+    assert.deepEqual(manifestOf(root).reviewDimensions.notRun, [])
+    assert.equal(manifestOf(root).reviewDimensions.completed, true)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('run found never briefs a skeptic on a finding the review policy excludes, and the adjudication counts it dropped', () => {
+  const { root, change } = domainRepo({ graph: false, reviewMd: '# Review policy\n\n## Do Not Report\n\n- docs/\n' })
+  try {
+    const review = toReview(root, change, ['--review'])
+    const { findings, verdicts } = reviewFiles({ blockers: 1 })
+    findings[0].findings.push({
+      severity: 'blocker',
+      file: 'docs/guide.md',
+      line: 1,
+      title: 'an excluded blocker',
+      description: 'on an excluded path',
+      suggestion: 'fix it'
+    })
+    writeFanoutFiles(root, findings, verdicts)
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.deepEqual(
+      found.spawns.map(sp => sp.label).sort(),
+      SKEPTIC_ROLES.map(role => skepticLabel({ file: 'README.md', title: 'blocker 1' }, role)).sort(),
+      'only the finding on a reportable path is judged'
+    )
+    const excludedId = findingId({ file: 'docs/guide.md', title: 'an excluded blocker' })
+    for (const sp of found.spawns) {
+      const briefing = readFileSync(join(root, sp.promptPath), 'utf8')
+      assert.ok(!briefing.includes(excludedId) && !briefing.includes('an excluded blocker'), `${sp.label} was briefed on it`)
+    }
+    run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) })
+    const { counts } = manifestOf(root).review
+    assert.equal(counts.droppedByPolicy, 1)
+    assert.equal(counts.raised, 2)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a review that raised nothing to judge adjudicates at once: an empty verdict list and no skeptics step', () => {
+  for (const [label, ledgers] of [
+    ['nothing raised', []],
+    [
+      'only suggestions',
+      [{ dimension: 'language', findings: [{ severity: 'suggestion', file: 'README.md', line: 1, title: 'a nit', description: 'x', suggestion: 'y' }] }]
+    ]
+  ]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      writeFanoutFiles(root, ledgers, [])
+      const next = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+      assert.notEqual(next.action, 'skeptics', label)
+      assert.equal(next.action, 'verify-final', `${label}: the adjudication's continuation, as run reviewed would return it`)
+      assert.deepEqual(JSON.parse(readFileSync(join(root, '.claude/ship/verdicts.json'), 'utf8')), [], label)
+      assert.ok(manifestOf(root).review, `${label}: the review was adjudicated`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('the skeptics step is bounded by the published cap, blockers first, with one per-review pair for the rest', async () => {
+  const cap = LIMITS.maxSkepticSpawns
+  const { runFound } = await import('../../lib/run.mjs')
+  try {
+    for (const [blockers, warnings] of [[3, 2], [4, 7]]) {
+      const { root, change } = repo()
+      try {
+        const review = toTail(root, change, ['--review'])
+        const ctx = { root, warn: () => {}, deps: { observedChangedPaths: () => ['README.md'] } }
+        LIMITS.maxSkepticSpawns = 16
+        writeFanout(root, { blockers, warnings })
+        const step = runFound(ctx, { results: review.spawns.map(() => ({ ok: true })) })
+        assert.equal(step.action, 'skeptics')
+        const labels = step.spawns.map(sp => sp.label)
+        const capReached = (step.banners || []).filter(b => String(b).startsWith('SKEPTIC CAP REACHED'))
+        if (blockers + warnings <= 8) {
+          assert.equal(labels.length, 2 * (blockers + warnings), 'two per finding under the cap')
+          assert.deepEqual(capReached, [], 'nothing was bounded')
+          continue
+        }
+        assert.equal(labels.length, 16, 'the cap, and no more')
+        const { findings } = reviewFiles({ blockers, warnings })
+        const judgedEach = findings[0].findings.slice(0, 7)
+        const expected = [
+          ...judgedEach.flatMap(f => SKEPTIC_ROLES.map(role => skepticLabel(f, role))),
+          'skeptic-review-refute',
+          'skeptic-review-second-opinion'
+        ]
+        assert.deepEqual([...labels].sort(), [...expected].sort(), 'a pair for each of the four blockers and the first three warnings, then one pair for the rest')
+        assert.deepEqual(capReached, ['SKEPTIC CAP REACHED: 7 of 11 findings judged per finding, 4 judged per review'])
+        const perReview = readFileSync(join(root, step.spawns.find(sp => sp.label === 'skeptic-review-refute').promptPath), 'utf8')
+        for (const f of findings[0].findings.slice(7)) assert.ok(perReview.includes(f.title), `the shared pair is not briefed on ${f.title}`)
+      } finally {
+        cleanup(root)
+      }
+    }
+  } finally {
+    LIMITS.maxSkepticSpawns = cap
+  }
+})
+
+// --- the review step's changed line ranges -----------------------------------
+
+test('every reviewer is told the changed line ranges: hunks against the start commit, an untracked file whole', () => {
+  const { root, change } = repo()
+  try {
+    file(root, 'big.txt', Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join('\n') + '\n')
+    commitAll(root, 'a file with room for two hunks')
+    const batch = toFirstBatch(root, change, ['--review'])
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`)
+    lines[1] = 'changed 2'
+    lines[8] = 'changed 9'
+    writeFileSync(join(root, 'big.txt'), lines.join('\n') + '\n')
+    file(root, 'fresh.txt', 'a\nb\nc\n')
+    const review = run(root, [...batch.then.argv], {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
+    }).step
+    assert.equal(review.action, 'review')
+    for (const sp of review.spawns) {
+      const briefing = readFileSync(join(root, sp.promptPath), 'utf8')
+      assert.match(briefing, /^ {2}- big\.txt: 2, 9$/m, `${sp.label}: the tracked file's two hunks`)
+      assert.match(briefing, /^ {2}- fresh\.txt: 1-3$/m, `${sp.label}: the untracked file as one whole-file range`)
+    }
+    assert.deepEqual((review.banners || []).filter(b => String(b).startsWith('REVIEW BASE NOT PINNED')), [])
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a run with no start commit lists the observed paths with no ranges and says the base is not pinned', () => {
+  const { root, change } = repo()
+  try {
+    const review = toReview(root, change, ['--review'], { startSha: null })
+    assert.ok((review.banners || []).some(b => String(b).startsWith('REVIEW BASE NOT PINNED')), JSON.stringify(review.banners))
+    for (const sp of review.spawns) {
+      const briefing = readFileSync(join(root, sp.promptPath), 'utf8')
+      assert.match(briefing, /^ {2}- README\.md: no changed lines/m, `${sp.label}: the path, with no ranges`)
+      assert.doesNotMatch(briefing, /^ {2}- README\.md: \d/m, `${sp.label}: no range was invented`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- run reviewed: the verdicts a skeptic did not write ----------------------
+
+/** A blocker both skeptics would dismiss: the only vote that survives a missing file would dismiss it. */
+function dismissedBlocker() {
+  const { findings, verdicts } = reviewFiles({ dismissed: 1 })
+  for (const f of findings[0].findings) f.severity = 'blocker'
+  return { findings, verdicts, id: findingId({ file: 'README.md', title: 'dismissed 1' }) }
+}
+
+test('a skeptic that wrote nothing, or not a list, sets aside its pair: the finding survives and the label is named', () => {
+  for (const [label, damage] of [
+    ['no file', (root, path) => rmSync(join(root, path))],
+    ['not a list', (root, path) => file(root, path, { note: 'I could not decide' })]
+  ]) {
+    const { root, change } = repo()
+    try {
+      const review = toTail(root, change, ['--review'])
+      const { findings, verdicts, id } = dismissedBlocker()
+      writeFanoutFiles(root, findings, verdicts)
+      const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+      assert.equal(found.action, 'skeptics', label)
+      // The second opinion's dismissal is the one verdict that does arrive.
+      const missing = `skeptic-${id}-refute`
+      const stillThere = `skeptic-${id}-second-opinion`
+      damage(root, `${SKEPTICS_DIR}/${missing}.json`)
+      assert.ok(existsSync(join(root, SKEPTICS_DIR, `${stillThere}.json`)), `${label}: fixture: the other verdict is on disk`)
+
+      const reviewed = run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) }).step
+      const banners = [...(reviewed.banners || []), ...(manifestOf(root).banners || [])]
+      assert.ok(banners.some(b => String(b).startsWith('SKEPTIC VERDICTS MISSING:') && String(b).includes(missing)), `${label}: ${JSON.stringify(banners)}`)
+      assert.ok(!banners.some(b => String(b).startsWith('SKEPTIC VERDICTS MISSING:') && String(b).includes(stillThere)), `${label}: the answered skeptic is not named`)
+      assert.equal(reviewed.action, 'remediate', `${label}: one dismissal is not a verdict`)
+      assert.equal(manifestOf(root).review.counts.dismissed, 0, label)
+      assert.equal(manifestOf(root).review.counts.blockers, 1, label)
+      assert.deepEqual(JSON.parse(readFileSync(join(root, '.claude/ship/verdicts.json'), 'utf8')), [], `${label}: both of the pair's verdicts are set aside`)
+    } finally {
+      cleanup(root)
+    }
+  }
+})
+
+test('run reviewed concatenates every skeptic\'s list into the verdicts work file and says nothing is missing', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    const shape = { blockers: 1, warnings: 1 }
+    writeFanout(root, shape)
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    const reviewed = run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) }).step
+    const folded = JSON.parse(readFileSync(join(root, '.claude/ship/verdicts.json'), 'utf8'))
+    assert.equal(folded.length, reviewFiles(shape).verdicts.length, 'every verdict of every readable file')
+    assert.deepEqual(
+      [...(reviewed.banners || []), ...(manifestOf(root).banners || [])].filter(b => String(b).startsWith('SKEPTIC VERDICTS MISSING')),
+      []
+    )
+    assert.equal(reviewed.action, 'remediate')
   } finally {
     cleanup(root)
   }
@@ -3948,10 +4370,18 @@ test('the review briefing names every task that filed no validated report, and n
     assert.ok(prompt.includes('the cap is'), 'and why its report was rejected')
     assert.ok(prompt.includes('README.md'), 'and the path it reported touching')
     assert.ok(!prompt.includes(REJECTED_SUMMARY), 'but never the text of the rejected packet')
-    assert.ok(
-      prompt.indexOf('UNVALIDATED REPORTS') < prompt.indexOf('## '),
-      'ahead of the dimensions it is handed to'
-    )
+    // The review is a fan-out, so EVERY reviewer's own briefing carries the block,
+    // after its rubric and scope and ahead of the rules it judges under (spec
+    // ship/run-program, "emit the review, remediation and handoff steps": the
+    // briefing carries the run's unvalidated-reports block).
+    for (const sp of review.spawns) {
+      assert.ok(sp.prompt.includes(`[${rejectedId}]`), `${sp.label} is told which task`)
+      const at = sp.prompt.indexOf('UNVALIDATED REPORTS')
+      assert.ok(
+        at > sp.prompt.indexOf('SCOPE (computed by the CLI') && at < sp.prompt.indexOf('RUN AND MEASURE'),
+        `${sp.label}: after its own scope, ahead of the rules it judges under`
+      )
+    }
   } finally {
     cleanup(root)
   }
@@ -4298,16 +4728,37 @@ test('the final verify spawn carries the published verify effort', () => {
   }
 })
 
-test('the review and both remediation spawns carry the published skeptic effort', () => {
+test('the review spawns, the skeptic spawns and both remediation spawns carry their published routing', () => {
   const { root, change } = repo()
   try {
+    // The reviewers read the `review-dimension` row at the strict depth, the
+    // skeptics the `review-skeptic` row, both through the routing module; the
+    // remediation spawns keep the published skeptic effort. A null is a field
+    // the drivers omit, and is asserted as a null, not as a missing key.
+    const reviewers = resolveRouting('review-dimension', process.env, { depth: 'strict' })
+    const skeptics = resolveRouting('review-skeptic', process.env)
+
     const review = toTail(root, change, ['--strict'])
     assert.equal(review.action, 'review')
-    assert.equal(review.spawns[0].kind, 'review')
-    assert.equal(review.spawns[0].effort, EFFORT.skeptic, 'the review spawn')
+    assert.ok(review.spawns.length > 0)
+    for (const sp of review.spawns) {
+      assert.equal(sp.kind, 'review', sp.label)
+      assert.equal(sp.model, reviewers.model, `${sp.label} model`)
+      assert.equal(sp.effort, reviewers.effort, `${sp.label} effort`)
+    }
 
-    writeReview(root, { blockers: 1 })
-    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    assert.equal(found.action, 'skeptics')
+    assert.ok(found.spawns.length > 0)
+    for (const sp of found.spawns) {
+      assert.equal(sp.kind, 'skeptic', sp.label)
+      assert.equal(sp.model, skeptics.model, `${sp.label} model`)
+      assert.equal(sp.effort, skeptics.effort, `${sp.label} effort`)
+      assert.equal(sp.effort, EFFORT.skeptic, `${sp.label}: the review-skeptic row holds the published skeptic effort`)
+    }
+
+    const round1 = run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) }).step
     assert.equal(round1.action, 'remediate')
     assert.equal(round1.spawns[0].kind, 'remediate')
     assert.equal(round1.spawns[0].effort, EFFORT.skeptic, 'the fixing-round remediation spawn')
@@ -4317,6 +4768,25 @@ test('the review and both remediation spawns carry the published skeptic effort'
     assert.equal(verdict.action, 'verdict')
     assert.equal(verdict.spawns[0].kind, 'remediate')
     assert.equal(verdict.spawns[0].effort, EFFORT.skeptic, 'the verdict-round remediation spawn')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('an effort override in the environment is spoken once on the review step, and the spawns still carry the table\'s values', () => {
+  const { root, change } = repo()
+  try {
+    const batch = toFirstBatch(root, change, ['--strict'])
+    writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
+    const review = step0(root, batch.then.argv, {
+      results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id))),
+      env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' }
+    })
+    assert.equal(review.action, 'review')
+    const spoken = (review.banners || []).filter(b => String(b).startsWith('EFFORT ROUTING OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=high'))
+    assert.equal(spoken.length, 1, JSON.stringify(review.banners))
+    const table = resolveRouting('review-dimension', {}, { depth: 'strict' })
+    for (const sp of review.spawns) assert.equal(sp.effort, table.effort, sp.label)
   } finally {
     cleanup(root)
   }
@@ -4335,8 +4805,8 @@ test('the planner, handoff and commit spawns inherit the host effort', () => {
     const review = run(root, [...batch.then.argv], {
       results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
     }).step
-    writeReview(root, { dismissed: 1 })
-    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { dismissed: 1 })
+    const verified = finishReview(root, review).step
     assert.equal(verified.action, 'verify-final')
 
     const handoff = run(root, [...verified.then.argv]).step
@@ -4375,7 +4845,7 @@ test('the replan ping inherits the host effort', () => {
 
 // The two sets the effort-routing spec names. A kind in neither is a spawn that
 // would ship at an unstated default, so it fails here naming itself.
-const PUBLISHED_EFFORT_KINDS = ['implementer', 'verify', 'review', 'remediate']
+const PUBLISHED_EFFORT_KINDS = ['implementer', 'verify', 'review', 'skeptic', 'remediate']
 const INHERITING_KINDS = ['ping', 'planner', 'handoff', 'commit']
 
 /** The argument text of every `spawn(` call in `source` — the definition excluded. */
@@ -5793,8 +6263,9 @@ test('a linked-worktree run writes its corpora to the main checkout and keeps it
       env
     })
     assert.equal(review.action, 'review')
-    writeReview(w.worktree, {})
-    step0(w.worktree, review.then.argv, { results: [{ ok: true }], env })
+    writeFanout(w.worktree, {})
+    // Nothing raised, so `run found` has nothing to judge and adjudicates at once.
+    step0(w.worktree, review.then.argv, { results: review.spawns.map(() => ({ ok: true })), env })
 
     // The stage marker an agent publishes from its own working directory.
     writeStage(w.change, 'review', { root: w.worktree })
@@ -6416,22 +6887,25 @@ function toReview(root, change, flags, over) {
   }).step
 }
 
-/** Write a findings/verdicts pair whose findings all cite the given requirement. */
+/** Write the first review's answers, every finding citing the given requirement. */
 function writeCitedReview(root, shape, requirement) {
   const { findings, verdicts } = reviewFiles(shape)
   for (const group of findings) for (const f of group.findings) if (requirement) f.requirement = requirement
-  file(root, '.claude/ship/findings.json', findings)
-  file(root, '.claude/ship/verdicts.json', verdicts)
+  writeFanoutFiles(root, findings, verdicts)
 }
 
-/** Everything under `## domain` and nothing before it carries the marker. */
-function assertUnderDomainOnly(briefing, marker) {
-  const at = briefing.indexOf('\n## domain\n')
-  assert.notEqual(at, -1, 'the briefing has no `## domain` section')
-  assert.ok(briefing.indexOf(marker) > at, `${marker} is not inside the domain section`)
-  assert.ok(!briefing.slice(0, at).includes(marker), `${marker} leaked into another dimension's criteria`)
-  for (const other of ALWAYS_ON) {
-    assert.ok(briefing.indexOf(`\n## ${other}\n`) < at, `${other} must come before domain`)
+/** One reviewer's briefing off a review step, by dimension. */
+function reviewerBriefing(root, step, dimension) {
+  const spawn = step.spawns.find(sp => sp.label === `review-${dimension}`)
+  assert.ok(spawn, `no review-${dimension} spawn among ${step.spawns.map(sp => sp.label).join(', ')}`)
+  return briefingOf(root, { spawns: [spawn] })
+}
+
+/** The marker is in the `domain` reviewer's briefing and in no other reviewer's. */
+function assertUnderDomainOnly(root, step, marker) {
+  assert.ok(reviewerBriefing(root, step, 'domain').includes(marker), `${marker} is not in the domain reviewer's briefing`)
+  for (const spawn of step.spawns.filter(sp => sp.label !== 'review-domain')) {
+    assert.ok(!briefingOf(root, { spawns: [spawn] }).includes(marker), `${marker} leaked into ${spawn.label}'s briefing`)
   }
 }
 // The published strict always-on set, `regression` included (spec: ship/run-program).
@@ -6469,8 +6943,8 @@ test('a working copy that adds an exclusion is not applied, and the run says so 
     // The change edits its own policy so that the file it touched is out of review.
     file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- dist/\n- README.md\n')
 
-    writeReview(root, { blockers: 1 })
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'remediate', 'the blocker survives: the start commit excluded only dist/')
     assert.equal(manifestOf(root).review.counts.blockers, 1)
 
@@ -6495,8 +6969,8 @@ test('a working copy that drops an exclusion does not lift it', () => {
     const review = toReview(root, change, ['--review'])
     rmSync(join(root, 'REVIEW.md'))
 
-    writeReview(root, { blockers: 1 })
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'verify-final', 'the start commit excluded README.md, so the finding on it is dropped')
     const banners = bannersWith(root, 'POLICY DIFFERS FROM BASE')
     assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
@@ -6516,8 +6990,8 @@ test('an unchanged policy applies the start commit\'s exclusions and raises noth
     try {
       const review = toReview(root, change, ['--review'])
       file(root, 'REVIEW.md', working)
-      writeReview(root, { blockers: 1 })
-      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      writeFanout(root, { blockers: 1 })
+      const next = finishReview(root, review).step
       assert.equal(next.action, 'verify-final', `${label}: the exclusion is applied`)
       assert.deepEqual(bannersWith(root, 'POLICY DIFFERS FROM BASE'), [], `${label}: nothing differs`)
     } finally {
@@ -6536,11 +7010,12 @@ test('uncommitted prose is still inlined while the start commit\'s lists are app
       '# Review policy\n\n## What "Important" means\n\nIn this repo, a naming nit is a suggestion.\n\n## Do Not Report\n\n- README.md\n'
     )
     const review = toReview(root, change, ['--review'])
-    const briefing = briefingOf(root, review)
-    assert.match(briefing, /In this repo, a naming nit is a suggestion\./, 'prose comes from the working tree')
+    for (const spawn of review.spawns) {
+      assert.match(briefingOf(root, { spawns: [spawn] }), /In this repo, a naming nit is a suggestion\./, `${spawn.label}: prose comes from the working tree`)
+    }
 
-    writeReview(root, { blockers: 1 })
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'remediate', 'the working copy\'s exclusion is not applied: the start commit has no REVIEW.md')
     assert.equal(bannersWith(root, 'POLICY DIFFERS FROM BASE').length, 1, JSON.stringify(manifestOf(root).banners))
     assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [], 'a pinned run is not unpinned')
@@ -6565,8 +7040,8 @@ test('a run with no start commit reads the working tree and raises REVIEW BASE N
       assert.doesNotMatch(afterStep[0], /living requirements/i, 'domain does not run here, so it reads none')
       assert.ok(review.banners.includes(afterStep[0]), 'the review step carries it')
 
-      writeReview(root, { blockers: 1 })
-      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      writeFanout(root, { blockers: 1 })
+      const round1 = finishReview(root, review).step
       assert.equal(round1.action, 'remediate')
       assert.equal(bannersWith(root, 'REVIEW BASE NOT PINNED').length, 1, 'adjudication does not raise it again')
 
@@ -6589,8 +7064,8 @@ test('a run with no start commit applies the working copy\'s lists', () => {
   try {
     file(root, 'REVIEW.md', '# Review policy\n\n## Do Not Report\n\n- README.md\n')
     const review = toReview(root, change, ['--review'], { startSha: null })
-    writeReview(root, { blockers: 1 })
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'verify-final', 'both the prose and the lists come from the working tree, and the banner says so')
   } finally {
     cleanup(root)
@@ -6613,7 +7088,7 @@ test('REVIEW BASE NOT PINNED names the living requirements when the domain dimen
 
 // --- the domain dimension ----------------------------------------------------
 
-test('a graph linking a changed file to a living spec selects domain, records it, and delivers the text only under ## domain', () => {
+test('a graph linking a changed file to a living spec selects domain, records it, and delivers the text only to the domain reviewer', () => {
   const { root, change } = domainRepo()
   try {
     const sha = headOf(root)
@@ -6630,9 +7105,9 @@ test('a graph linking a changed file to a living spec selects domain, records it
     assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW'), [])
     assert.deepEqual(bannersWith(root, 'REVIEW BASE NOT PINNED'), [])
 
-    const briefing = briefingOf(root, review)
-    assertUnderDomainOnly(briefing, ALPHA_COMMITTED)
-    assertUnderDomainOnly(briefing, BETA_IN_FORCE)
+    assertUnderDomainOnly(root, review, ALPHA_COMMITTED)
+    assertUnderDomainOnly(root, review, BETA_IN_FORCE)
+    const briefing = reviewerBriefing(root, review, 'domain')
     assert.ok(briefing.includes(REQ_ALPHA) && briefing.includes(REQ_BETA), 'whole requirements, with their headings')
   } finally {
     cleanup(root)
@@ -6650,7 +7125,7 @@ test('the living requirements are read from the start commit, not the edited wor
     const review = run(root, [...batch.then.argv], {
       results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
     }).step
-    const briefing = briefingOf(root, review)
+    const briefing = reviewerBriefing(root, review, 'domain')
     assert.ok(briefing.includes(ALPHA_COMMITTED), 'the committed requirement is quoted')
     assert.ok(!briefing.includes(ALPHA_EDITED), 'the edited one is not')
   } finally {
@@ -6668,7 +7143,7 @@ test('with no start commit the living requirements come from the working tree, a
     const review = run(root, [...batch.then.argv], {
       results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
     }).step
-    const briefing = briefingOf(root, review)
+    const briefing = reviewerBriefing(root, review, 'domain')
     assert.ok(briefing.includes(ALPHA_EDITED))
     assert.ok(!briefing.includes(ALPHA_COMMITTED))
     assert.equal(manifestOf(root).reviewDimensions.domain.ref, null)
@@ -6698,12 +7173,12 @@ test('no graph and a declared capability is partial: domain runs, the banner say
     // superseded, BETA stays in force, and the change's own heading is listed.
     assert.ok(JSON.stringify(dims.domain.superseded).includes(REQ_ALPHA), JSON.stringify(dims.domain.superseded))
     assert.match(JSON.stringify(dims.domain.specifiedByChange).replace(/\s+/g, ' '), /SHALL name every command/)
-    const briefing = briefingOf(root, review)
+    const briefing = reviewerBriefing(root, review, 'domain')
     assert.ok(!briefing.includes(ALPHA_COMMITTED), 'a requirement the change modifies is not quoted as in force')
     assert.ok(briefing.includes(BETA_IN_FORCE))
 
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
     const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
     assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
     assert.ok(closed.banners.includes(banners[0]))
@@ -6727,10 +7202,10 @@ test('no graph and nothing declared skips domain out loud', () => {
     assert.equal(banners.length, 1, JSON.stringify(manifestOf(root).banners))
     assert.match(banners[0], /no graph/i)
     assert.deepEqual(bannersWith(root, 'DOMAIN REVIEW PARTIAL'), [])
-    assert.doesNotMatch(briefingOf(root, review), /\n## domain\n/)
+    assert.ok(!review.spawns.some(sp => sp.label === 'review-domain'), 'no domain reviewer was dispatched')
 
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
     const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
     assert.ok(closed.summary.includes(banners[0]), 'the banner is in the close summary')
     assert.ok(closed.banners.includes(banners[0]))
@@ -6788,7 +7263,7 @@ test('a remediation re-review of domain carries the same text from the same base
     file(root, LIVING_SPEC_PATH, livingSpec(ALPHA_EDITED))
 
     writeCitedReview(root, { blockers: 1, dimension: 'domain' }, `${LIVING_SPEC_PATH}#${REQ_ALPHA}`)
-    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    const round1 = finishReview(root, review).step
     assert.equal(round1.action, 'remediate')
     assert.deepEqual(round1.spawns.length, 1)
 
@@ -6805,8 +7280,8 @@ test('a remediation re-review of another dimension carries no domain text', () =
   const { root, change } = domainRepo()
   try {
     const review = toReview(root, change, ['--review'])
-    writeReview(root, { blockers: 1, dimension: 'language' })
-    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1, dimension: 'language' })
+    const round1 = finishReview(root, review).step
     assert.equal(round1.action, 'remediate')
     const prompt = briefingOf(root, round1)
     assert.ok(!prompt.includes(ALPHA_COMMITTED) && !prompt.includes(BETA_IN_FORCE))
@@ -6829,10 +7304,9 @@ test('adjudication checks a citation against the start commit\'s spec, reports a
     const [first, second] = findings[0].findings
     first.requirement = `${LIVING_SPEC_PATH}#${NEW_HEADING}`
     second.requirement = `${LIVING_SPEC_PATH}#${REQ_ALPHA}`
-    file(root, '.claude/ship/findings.json', findings)
-    file(root, '.claude/ship/verdicts.json', verdicts)
+    writeFanoutFiles(root, findings, verdicts)
 
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    const next = finishReview(root, review).step
     assert.equal(next.action, 'remediate')
     assert.equal(manifestOf(root).review.counts.blockers, 2, 'both findings are adjudicated as without their citation')
 
@@ -6914,8 +7388,9 @@ const HANDOFF_OK = {
 }
 
 /**
- * Write a review whose every selected dimension answers with a ledger citing what
- * the run changed, so its proof holds (spec: review/review-proof, the run's step).
+ * Write a first review whose every selected dimension answers, in its own file,
+ * with a ledger citing what the run changed, so its proof holds (spec:
+ * review/review-proof, the run's step).
  */
 function writeLedgeredReview(root, shape) {
   const { findings, verdicts } = reviewFiles(shape)
@@ -6926,8 +7401,7 @@ function writeLedgeredReview(root, shape) {
     findings: findings.find(f => f.dimension === dimension)?.findings || [],
     coverage: { checked, unread: [] }
   }))
-  file(root, '.claude/ship/findings.json', answers)
-  file(root, '.claude/ship/verdicts.json', verdicts)
+  writeFanoutFiles(root, answers, verdicts)
 }
 
 /** Drive a strict run, clean review and all, to the commit step. */
@@ -6935,7 +7409,7 @@ function strictToCommit(root, change, handoff = HANDOFF_OK) {
   const review = toTail(root, change, ['--strict'])
   assert.equal(review.action, 'review')
   writeLedgeredReview(root, { dismissed: 1 })
-  const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+  const verified = finishReview(root, review).step
   assert.equal(verified.action, 'verify-final')
   const handoffStep = run(root, [...verified.then.argv]).step
   assert.equal(handoffStep.action, 'handoff')
@@ -7015,19 +7489,22 @@ test('a review whose rubrics were all readable records no unavailable dimension'
 
 // --- review.json carries the dimension record (D4) ---------------------------
 
-test('run reviewed writes the dimension record: every selected dimension ran when the worker reported ok', () => {
+test('the review record says every selected dimension ran when each wrote its own answer', () => {
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--review'])
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
 
     const manifest = manifestOf(root)
     const selected = manifest.reviewDimensions.selected
+    assert.deepEqual(manifest.reviewDimensions.ran, selected, 'the manifest holds the per-dimension fact')
+    assert.deepEqual(manifest.reviewDimensions.notRun, [])
+    assert.equal(manifest.reviewDimensions.completed, true)
     const dims = jsonAt(root, REVIEW_JSON).dimensions
     assert.ok(dims && typeof dims === 'object', 'review.json carries no dimension record')
     assert.deepEqual(dims.selected, selected)
-    assert.deepEqual(dims.ran, selected, 'dispatched with its rubric in a review the worker reported complete')
+    assert.deepEqual(dims.ran, selected, 'each answer file was read under its own name')
     assert.deepEqual(dims.unavailable, [])
     assert.equal(dims.completed, true)
     // No graph and no declared capability: domain was refused, and the record says so.
@@ -7040,74 +7517,97 @@ test('run reviewed writes the dimension record: every selected dimension ran whe
   }
 })
 
-test('the dimension record names an unreadable rubric as unavailable and never as run', () => {
+test('the dimension record names an unreadable rubric as unavailable, and as run because its reviewer answered', () => {
   const { root, change } = repo()
   try {
     const review = reviewWithoutRubric(root, change, 'qa')
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
 
     const selected = manifestOf(root).reviewDimensions.selected
     assert.ok(selected.includes('qa'), 'qa was selected; only its rubric was unreadable')
     const dims = jsonAt(root, REVIEW_JSON).dimensions
     assert.deepEqual(dims.selected, selected)
     assert.deepEqual(dims.unavailable, ['qa'])
-    assert.ok(!dims.ran.includes('qa'), 'a dimension without its rubric did not run')
-    assert.deepEqual(dims.ran, selected.filter(d => d !== 'qa'))
+    assert.deepEqual(dims.ran, selected, 'qa was dispatched on its name alone and answered')
     assert.equal(dims.completed, true)
   } finally {
     cleanup(root)
   }
 })
 
-test('a review whose worker returned nothing usable records completed:false and no dimension as run', () => {
-  for (const reported of [undefined, [{ ok: false, detail: 'the worker died' }]]) {
+for (const [label, leave] of [
+  ['wrote no answer file', () => {}],
+  ['wrote a file that is not JSON', root => file(root, `${DIMENSIONS_DIR}/qa.json`, '{oops')],
+  ['wrote an object with no findings list', root => file(root, `${DIMENSIONS_DIR}/qa.json`, { dimension: 'qa', summary: 'nothing' })]
+]) {
+  test(`a reviewer that ${label} is recorded as not run with its reason, and the others are folded`, () => {
     const { root, change } = repo()
     try {
       const review = toTail(root, change, ['--review'])
-      writeReview(root, { dismissed: 1 })
-      run(root, [...review.then.argv], reported === undefined ? {} : { results: reported })
+      writeFanout(root, { warnings: 1 }, { omitDimensions: ['qa'] })
+      leave(root)
+      const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+      assert.equal(found.action, 'skeptics', 'the run does not halt: the other ledgers are folded and judged')
+      const banner = (found.banners || []).find(b => b.startsWith('REVIEW INCOMPLETE: qa'))
+      assert.ok(banner, `no REVIEW INCOMPLETE banner for qa: ${JSON.stringify(found.banners)}`)
+      assert.match(banner, /^REVIEW INCOMPLETE: qa — \S/)
+      if (label === 'wrote no answer file') assert.equal(banner, 'REVIEW INCOMPLETE: qa — no answer file')
 
-      const dims = jsonAt(root, REVIEW_JSON).dimensions
-      assert.equal(dims.completed, false, JSON.stringify(dims))
-      assert.deepEqual(dims.ran, [], 'nothing is recorded as run when the review did not complete')
-      assert.ok(dims.selected.length > 0, 'what the CLI selected is still recorded')
+      const dims = manifestOf(root).reviewDimensions
+      assert.ok(!dims.ran.includes('qa'))
+      assert.deepEqual(dims.ran, dims.selected.filter(d => d !== 'qa'))
+      assert.deepEqual(dims.notRun.map(d => d.name), ['qa'])
+      assert.equal(typeof dims.notRun[0].reason, 'string')
+      assert.equal(dims.completed, false)
+
+      // The skeptics are still briefed on what the other reviewers raised.
+      assert.equal(found.spawns.length, 2)
+      run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) })
+      const record = jsonAt(root, REVIEW_JSON).dimensions
+      assert.equal(record.completed, false, JSON.stringify(record))
+      assert.deepEqual(record.ran, dims.ran)
     } finally {
       cleanup(root)
     }
-  }
-})
+  })
+}
 
-test('a dimension the reviewer added is recorded as run and not as selected', () => {
+test('a review no reviewer answered records completed:false and no dimension as run, and goes on to final verification', () => {
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--review'])
-    writeReview(root, { warnings: 1, dimension: 'security' })
-    run(root, [...review.then.argv], {
-      results: [{ ok: true, addedDimensions: [{ name: 'security', reason: 'the diff touches a token path' }] }]
-    })
-
-    const selected = manifestOf(root).reviewDimensions.selected
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: false, detail: 'the reviewer died' })) }).step
+    assert.equal(found.action, 'verify-final', 'no skeptics step, and the run does not halt')
     const dims = jsonAt(root, REVIEW_JSON).dimensions
-    assert.ok(!dims.selected.includes('security'), 'the CLI never selected it')
-    assert.deepEqual(dims.selected, selected)
-    assert.ok(dims.ran.includes('security'), 'it ran: the worker said so and its findings were adjudicated')
-    assert.deepEqual([...dims.ran].sort(), [...selected, 'security'].sort())
+    assert.equal(dims.completed, false, JSON.stringify(dims))
+    assert.deepEqual(dims.ran, [], 'nothing is recorded as run when no reviewer answered')
+    assert.ok(dims.selected.length > 0, 'what the CLI selected is still recorded')
+    assert.deepEqual(
+      manifestOf(root).reviewDimensions.notRun.map(d => d.name),
+      dims.selected,
+      'every dimension is named, with its reason'
+    )
+    // Spoken on the step or in the run's banners, once per dimension.
+    const spoken = new Set(
+      [...(found.banners || []), ...(manifestOf(root).banners || [])].filter(b => String(b).startsWith('REVIEW INCOMPLETE:'))
+    )
+    assert.equal(spoken.size, dims.selected.length, JSON.stringify([...spoken]))
   } finally {
     cleanup(root)
   }
 })
 
 test('a remediation round rewrites review.json with the same dimension record', () => {
-  for (const firstReport of [{ ok: true }, null]) {
+  for (const omitDimensions of [[], ['qa']]) {
     const { root, change } = repo()
     try {
       const review = toTail(root, change, ['--review'])
-      writeReview(root, { blockers: 1 })
-      const round1 = run(root, [...review.then.argv], firstReport ? { results: [firstReport] } : {}).step
+      writeFanout(root, { blockers: 1 }, { omitDimensions })
+      const round1 = finishReview(root, review).step
       assert.equal(round1.action, 'remediate')
       const first = jsonAt(root, REVIEW_JSON).dimensions
-      assert.equal(first.completed, firstReport !== null)
+      assert.equal(first.completed, omitDimensions.length === 0)
 
       // The fixer cleared it; the adjudication rewrites the file.
       writeReview(root, {})
@@ -7875,12 +8375,14 @@ test('a terminal append that fails after the assessment reassesses from the same
 //
 // Shapes pinned here, so the red wave and the green wave agree:
 //
-//   - the review step removes `.claude/ship/findings.json` and `verdicts.json`
-//     when it is first emitted, and only then: `manifest.reviewDimensions` is the
-//     marker, so deriving the step again removes nothing (D24).
-//   - `run reviewed` over a findings file that is absent, unparseable or carries
-//     no findings list records the review as not completed, with a note holding
-//     `no findings list`, and goes on to final verification (D10).
+//   - the review step removes `.claude/ship/findings.json` and `verdicts.json`,
+//     and the two answer directories `.claude/ship/review/dimensions/` and
+//     `.claude/ship/review/skeptics/`, when it is first emitted, and only then:
+//     `manifest.reviewDimensions` is the marker, so deriving the step again
+//     removes nothing (D24; fan-out-the-strict-ship-review D3).
+//   - `run found` over reviewers' answer files that are absent, unparseable or
+//     carry no findings list records each such dimension as not run, with its
+//     reason, the review as not completed, and goes on (D10; D8 of the fan-out).
 //   - `run remediated` over such a file keeps the last adjudication's surviving
 //     findings, with a note holding `not re-reviewed`; when `review.json` cannot
 //     be read back either, it halts naming both files (D10).
@@ -7913,59 +8415,72 @@ test('a strict close given a host record reads run.integrity green: every observ
   }
 })
 
-test('the review step removes the work files an earlier run left, and deriving the step again removes nothing', () => {
+test('the review step removes the work files and answer files an earlier run left, and deriving the step again removes nothing', () => {
   const { root, change } = repo()
   try {
-    // An earlier run's findings and verdicts, holding no blocker.
+    // An earlier run's findings and verdicts, holding no blocker, and an earlier
+    // run's reviewer and skeptic answers, holding a blocker no skeptic doubted.
     writeReview(root, { dismissed: 1 })
+    const stale = reviewFiles({ blockers: 1 })
+    file(root, `${DIMENSIONS_DIR}/language.json`, { dimension: 'language', findings: stale.findings[0].findings })
+    file(root, `${SKEPTICS_DIR}/skeptic-${findingId(stale.findings[0].findings[0])}-refute.json`, stale.verdicts)
     const batch = toFirstBatch(root, change, ['--strict'])
-    assert.ok(existsSync(join(root, FINDINGS_FILE)), 'precondition: nothing before the review step clears the work files')
-    assert.ok(existsSync(join(root, VERDICTS_FILE)))
+    for (const left of [FINDINGS_FILE, VERDICTS_FILE, `${DIMENSIONS_DIR}/language.json`]) {
+      assert.ok(existsSync(join(root, left)), `precondition: nothing before the review step clears ${left}`)
+    }
     writeFileSync(join(root, 'README.md'), 'hello\nand the thing\n')
     const review = run(root, [...batch.then.argv], {
       results: batch.spawns.map((_, i) => laneOk(batch.lanes[i].map(t => t.id)))
     }).step
     assert.equal(review.action, 'review')
-    assert.ok(!existsSync(join(root, FINDINGS_FILE)), 'the earlier findings are gone before the reviewer starts')
-    assert.ok(!existsSync(join(root, VERDICTS_FILE)), 'and so are the earlier verdicts')
+    for (const gone of [FINDINGS_FILE, VERDICTS_FILE]) {
+      assert.ok(!existsSync(join(root, gone)), `${gone} is gone before the reviewers start`)
+    }
+    for (const dir of [DIMENSIONS_DIR, SKEPTICS_DIR]) {
+      assert.deepEqual(existsSync(join(root, dir)) ? readdirSync(join(root, dir)) : [], [], `${dir} holds nothing of an earlier run`)
+    }
 
-    // The reviewer has started writing. The step is derived again, as a driver
+    // The reviewers have started writing. The step is derived again, as a driver
     // that lost it would ask: nothing this review wrote may be removed.
-    writeReview(root, { blockers: 1 })
-    const findings = read(root, FINDINGS_FILE)
-    const verdicts = read(root, VERDICTS_FILE)
+    writeFanout(root, { blockers: 1 })
+    const written = dir => readdirSync(join(root, dir)).sort().map(name => [name, read(root, join(dir, name))])
+    const before = [written(DIMENSIONS_DIR), written(SKEPTICS_DIR)]
+    assert.ok(before[0].length > 0 && before[1].length > 0, 'precondition: the fixture wrote answers')
     setManifest(root, { lastThen: null })
     const again = run(root, ['run', 'next']).step
     assert.equal(again.action, 'review')
-    assert.equal(read(root, FINDINGS_FILE), findings)
-    assert.equal(read(root, VERDICTS_FILE), verdicts)
+    assert.deepEqual([written(DIMENSIONS_DIR), written(SKEPTICS_DIR)], before)
 
     // And what it wrote is what is adjudicated.
-    const round1 = run(root, [...again.then.argv], { results: [{ ok: true }] }).step
+    const round1 = finishReview(root, again).step
     assert.equal(round1.action, 'remediate')
+    assert.equal(manifestOf(root).review.counts.blockers, 1, 'the earlier run\'s blocker was never counted')
   } finally {
     cleanup(root)
   }
 })
 
 for (const [label, leave] of [
-  ['writes no findings file', () => {}],
-  ['leaves a findings file that is not JSON', root => file(root, FINDINGS_FILE, '{oops')],
-  ['leaves an object with no findings list', root => file(root, FINDINGS_FILE, { summary: 'nothing to report' })],
-  ['leaves an empty object', root => file(root, FINDINGS_FILE, {})]
+  ['wrote no answer file', () => {}],
+  ['wrote a file that is not JSON', (root, dimension) => file(root, `${DIMENSIONS_DIR}/${dimension}.json`, '{oops')],
+  ['wrote an object with no findings list', (root, dimension) => file(root, `${DIMENSIONS_DIR}/${dimension}.json`, { dimension, summary: 'nothing to report' })],
+  ['wrote an empty object', (root, dimension) => file(root, `${DIMENSIONS_DIR}/${dimension}.json`, {})]
 ]) {
-  test(`a review step that reports ok and ${label} is recorded as not completed, and the run goes on to final verification`, () => {
+  test(`a review whose every reviewer ${label} is recorded as not completed, and the run goes on to final verification`, () => {
     const { root, change } = repo()
     try {
-      // An earlier run's clean result must not stand in for this review's.
+      // An earlier run's clean result and its answers must not stand in for this review's.
       writeReview(root, { dismissed: 1 })
+      file(root, `${DIMENSIONS_DIR}/language.json`, { dimension: 'language', findings: reviewFiles({ blockers: 1 }).findings[0].findings })
       const review = toTail(root, change, ['--strict'])
       assert.equal(review.action, 'review')
-      leave(root)
-      const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      for (const spawn of review.spawns) leave(root, spawn.label.replace(/^review-/, ''))
+      const next = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
       assert.equal(next.action, 'verify-final', 'a review that did not complete does not stop the run')
 
-      assert.ok(hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+      const dims = manifestOf(root).reviewDimensions
+      assert.deepEqual(dims.notRun.map(d => d.name), dims.selected, JSON.stringify(dims.notRun))
+      for (const d of dims.notRun) assert.match(d.reason, /\S/, `${d.name} has no reason`)
       const record = jsonAt(root, REVIEW_JSON)
       assert.equal(record.dimensions.completed, false)
       assert.deepEqual(record.dimensions.ran, [])
@@ -7978,14 +8493,14 @@ for (const [label, leave] of [
   })
 }
 
-test('a findings file holding an empty list is a completed review that found nothing', () => {
+test('an answer holding an empty findings list is a dimension that ran and found nothing', () => {
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--strict'])
-    file(root, FINDINGS_FILE, [])
-    const next = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, {})
+    const next = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
     assert.equal(next.action, 'verify-final')
-    assert.ok(!hasNote(root, 'no findings list'), JSON.stringify(notesOf(root)))
+    assert.deepEqual(manifestOf(root).reviewDimensions.notRun, [])
     assert.ok(!hasNote(root, 'did not complete'), JSON.stringify(notesOf(root)))
     const record = jsonAt(root, REVIEW_JSON)
     assert.equal(record.dimensions.completed, true)
@@ -8000,7 +8515,7 @@ test('at close, a review that wrote no findings reads review.ran amber as not co
   const { root, change } = shippedRepo()
   try {
     const review = toTail(root, change, ['--strict'])
-    const verified = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    const verified = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
     assert.equal(verified.action, 'verify-final')
     const handoffStep = run(root, [...verified.then.argv]).step
     const commit = run(root, [...handoffStep.then.argv], { results: [HANDOFF_OK] }).step
@@ -8022,8 +8537,8 @@ test('a remediation round that leaves no findings list keeps the blocker, record
   const { root, change } = repo()
   try {
     const review = toTail(root, change, ['--strict'])
-    writeReview(root, { blockers: 1 })
-    let step = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    let step = finishReview(root, review).step
     const survivors = jsonAt(root, REVIEW_JSON).surviving
     assert.equal(survivors.length, 1, 'precondition: the review left one surviving blocker')
 
@@ -8057,8 +8572,8 @@ for (const [label, spoil] of [
     const { root, change } = repo()
     try {
       const review = toTail(root, change, ['--strict'])
-      writeReview(root, { blockers: 1 })
-      const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+      writeFanout(root, { blockers: 1 })
+      const round1 = finishReview(root, review).step
       assert.equal(round1.action, 'remediate')
 
       file(root, FINDINGS_FILE, {})
@@ -8119,8 +8634,8 @@ test('a size cut of the domain text raises one DOMAIN REVIEW PARTIAL line, namin
     assert.ok(review.banners.includes(banner))
 
     // Two rounds: the review, then a fixing round that reviews again.
-    writeReview(root, { blockers: 1 })
-    const round1 = run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+    writeFanout(root, { blockers: 1 })
+    const round1 = finishReview(root, review).step
     assert.equal(round1.action, 'remediate')
     writeReview(root, {})
     run(root, [...round1.then.argv], { results: [{ ok: true }] })
@@ -8153,8 +8668,8 @@ test('no graph and a cut together are still one DOMAIN REVIEW PARTIAL line, and 
     assert.match(banner, /not mapped/, 'the partial selection is stated')
     assert.ok(review.banners.includes(banner))
 
-    writeReview(root, { dismissed: 1 })
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    writeFanout(root, { dismissed: 1 })
+    finishReview(root, review)
     const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
     assert.equal(countOf(closed.summary, 'DOMAIN REVIEW PARTIAL'), 1, closed.summary)
   } finally {
@@ -8179,8 +8694,7 @@ function writeGapReview(root, gaps) {
     f.suggestion = `fix ${f.title}`
     if (gaps[i] !== undefined) f.specGap = gaps[i]
   })
-  file(root, '.claude/ship/findings.json', findings)
-  file(root, '.claude/ship/verdicts.json', verdicts)
+  writeFanoutFiles(root, findings, verdicts)
 }
 
 test('run reviewed appends a compound note per surviving specGap finding and carries the table onto the manifest', async () => {
@@ -8188,7 +8702,7 @@ test('run reviewed appends a compound note per surviving specGap finding and car
   try {
     const review = toTail(root, change, ['--review'])
     writeGapReview(root, [true, true, false, undefined])
-    const { step, code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const { step, code } = finishReview(root, review)
     assert.equal(code, 0)
 
     const manifest = manifestOf(root)
@@ -8228,7 +8742,7 @@ test('a resumed run whose notes are already in the table still names the table t
         id: `N${n}`, date: '2026-10-20', change, file: 'README.md', surprise: 's', rule: `fix warning ${n}`, source
       }))))
       writeGapReview(root, [true, true])
-      const { code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+      const { code } = finishReview(root, review)
       assert.equal(code, 0)
       const expected = own ? NOTES_TABLE : null
       assert.equal(manifestOf(root).notesPath ?? null, expected, `${label}: notesPath`)
@@ -8243,7 +8757,7 @@ test('run reviewed with no specGap survivor writes no table and carries no notes
   try {
     const review = toTail(root, change, ['--review'])
     writeGapReview(root, [false, undefined])
-    run(root, [...review.then.argv], { results: [{ ok: true }] })
+    finishReview(root, review)
     assert.ok(!existsSync(join(root, NOTES_TABLE)), 'no note was derived, so no file is created')
     assert.equal(manifestOf(root).notesPath ?? null, null)
   } finally {
@@ -8258,7 +8772,7 @@ test('a note table that cannot be written is a COMPOUND NOTES NOT WRITTEN banner
     // `docs/notes` is a file, so nothing can be created beneath it.
     file(root, 'docs/notes', 'not a directory\n')
     writeGapReview(root, [true])
-    const { step, code } = run(root, [...review.then.argv], { results: [{ ok: true }] })
+    const { step, code } = finishReview(root, review)
     assert.equal(code, 0, 'a lost note never changes the exit code')
     assert.notEqual(step.action, 'halt', 'a lost note never halts the run')
 
@@ -8385,6 +8899,7 @@ test('every run subcommand but start and close refuses a closed run', () => {
       ['run', 'next'],
       ['run', 'classified', '--classified', '.claude/ship/classified.json'],
       ['run', 'record-batch'],
+      ['run', 'found'],
       ['run', 'reviewed'],
       ['run', 'remediated', '--round', '1']
     ]) {
@@ -9140,8 +9655,10 @@ function strictBriefings(configured) {
       env
     })
     assert.equal(review.action, 'review')
-    writeReview(root, { blockers: 1 })
-    const remediate = step0(root, [...review.then.argv], { results: [{ ok: true }], env })
+    writeFanout(root, { blockers: 1 })
+    const found = step0(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })), env })
+    assert.equal(found.action, 'skeptics')
+    const remediate = step0(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })), env })
     assert.equal(remediate.action, 'remediate')
     return { implementers, remediation: grab(remediate.spawns) }
   } finally {
@@ -9227,12 +9744,11 @@ test('an unconfigured run with no consults carries no advisor line and no field'
 
 // --- the run's review step records a proof (spec: review/review-proof) ----------
 
-/** Drive a strict run to its first review record, with a worker that answers `answers(selected)`. */
+/** Drive a strict run to its first review record, with reviewers that answer `answers(selected)`. */
 function strictReviewed(root, change, answers, verdicts = []) {
   const review = toTail(root, change, ['--strict'])
-  file(root, '.claude/ship/findings.json', answers(manifestOf(root).reviewDimensions.selected))
-  file(root, '.claude/ship/verdicts.json', verdicts)
-  return run(root, [...review.then.argv], { results: [{ ok: true }] }).step
+  writeFanoutFiles(root, answers(manifestOf(root).reviewDimensions.selected), verdicts)
+  return finishReview(root, review).step
 }
 
 const ledgered = (dimension, findings = [], at = ['README.md:1']) => ({

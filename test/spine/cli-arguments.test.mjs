@@ -215,6 +215,24 @@ test('run close accepts every flag the ship drivers pass it', async () => {
   }
 })
 
+test('run found accepts the flags run reviewed does, and the usage documents it with --results', async () => {
+  // fan-out-the-strict-ship-review D4: `run found` is answered exactly as `run reviewed` is —
+  // the agents' results and, from a runner, its host records.
+  const { global, leaves } = await loadFlagTable()
+  const found = leaves.get('run found')
+  assert.ok(found, 'SUBCOMMAND_FLAGS needs a "run found" entry')
+  for (const flag of ['results', 'host-records']) {
+    assert.ok(found.has(flag) || global.has(flag), `run found must accept --${flag}`)
+  }
+  assert.deepEqual([...found].sort(), [...leaves.get('run reviewed')].sort())
+  const help = cli(['--help'])
+  assert.ok(
+    documentedForms(help.stdout).some(f => f.leaf.join(' ') === 'run found' && f.flags.has('results')),
+    'the usage block must document run found --results'
+  )
+  assert.match(help.stdout, /\(record-batch, judge, found, reviewed,/, 'found is in the set that takes --host-records')
+})
+
 test('routing accepts --depth and --json, refuses any other flag by name with exit 2, and documents its form', async () => {
   const { global, leaves } = await loadFlagTable()
   const routing = leaves.get('routing')

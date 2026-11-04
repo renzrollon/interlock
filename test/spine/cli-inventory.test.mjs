@@ -435,3 +435,23 @@ test('routing is a known subcommand, accepts --depth, and is in the smoke INVENT
   const routed = smoke.mod.INVENTORY.filter(entry => entry.argv[0] === 'routing')
   assert.ok(routed.length >= 2, 'the smoke runs routing for the table and for an unknown role')
 })
+
+test('every run found argv literal the run program spells resolves: known, accepted and smoked', async () => {
+  // fan-out-the-strict-ship-review D4: the review step's continuation is `interlock run found`.
+  const flags = await load('../../lib/cli-flags.mjs')
+  const smoke = await load('../../scripts/postinstall-smoke.mjs')
+  assert.ok(!flags.error && !smoke.error, 'the flag table and the smoke inventory must load')
+  const table = {
+    globalFlags: flags.mod.GLOBAL_FLAGS,
+    subcommandFlags: flags.mod.SUBCOMMAND_FLAGS,
+    inventory: smoke.mod.INVENTORY
+  }
+  const found = segments.filter(s => s.tokens[0] === 'run' && s.tokens[1] === 'found')
+  assert.ok(found.some(s => s.surface === 'run'), 'lib/run.mjs spells no `run found` continuation')
+  assert.deepEqual(checkSegments(found, table), [])
+  assert.deepEqual(checkSegments([seg('run found --results f --host-records h --json')], table), [])
+  assert.ok(
+    smoke.mod.INVENTORY.some(entry => entry.argv[0] === 'run' && entry.argv[1] === 'found'),
+    'the smoke runs run found'
+  )
+})
