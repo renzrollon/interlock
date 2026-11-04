@@ -18,6 +18,10 @@ this project adheres to Semantic Versioning 2.0.0.
 - **`settle replies` says `fixed` only when the fixer claimed it.** The skill passes `--result <fixer result>`. A finding the re-review dropped with no claim behind it reads `not re-raised`, under its own legend line, and `--json` gains `notReRaised`. On PR #31, three of the five `fixed` rows had never been briefed.
 - **A settle stop suggests another pass when one would help.** After `STOP:`, `remediate-brief` prints `ANOTHER PASS SUGGESTED:` naming the surviving blockers and warnings no round of this pass will fix, and `LEFT FOR A PERSON:` for deferred findings. The loop still runs no extra round.
 
+### Removed
+
+- **The preflight and the runner read no credential.** `interlock doctor` drops its `claude-bare` and `evals-credential` rows, and its `prompt-cache` row no longer names an authentication mode: each read whether a key or token variable was set, by name and never by value, and the plugin directory holds a plugin for any read of a credential that could reach a server — its own remedy is to remove every such read, which 1.6.0 left for a reviewer. Nothing changes for a run. `interlock-run --host codex` decides `CHATGPT PLAN PATH (codex)` from `codex login status`, read once when the host is created, instead of from two key variables; a status it cannot read prints `CODEX LOGIN NOT INSPECTED (codex)`. A test fails on any shipped file but this one that spells a credential variable or file.
+
 ### Fixed
 
 - Correction to 1.10.0: its note that the GitHub loop was not exercised end to end was overtaken by PR #25 (2026-10-26, head `161f955`). The GitLab lines remain `not exercised`.

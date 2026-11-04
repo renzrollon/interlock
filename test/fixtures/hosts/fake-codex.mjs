@@ -12,11 +12,40 @@
 // Modes (after a `--`):
 //   --fixture-ship / --fixture-no-usage / --fixture-fail / --fixture-no-output
 //   --fixture-echo / --fixture-write=PATH / --fixture-per-lane / --fixture-per-lane — as in fake-claude
+//   --fixture-login=MODE  how `codex login status` answers, on stderr as the
+//                  real CLI does: chatgpt (the default, so every --fixture-ship
+//                  run keeps its meaning) / api-key / none / garbage / fails
+//                  (exit 1, no status line) / hangs (never exits)
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { shipAnswer } from './ship-answers.mjs'
 
 const all = process.argv.slice(2)
+
+// `codex login status` — the adapter's one-time billing-path probe. Answered
+// before the `exec` slice, which would otherwise refuse it.
+const loginAt = all.indexOf('login')
+if (loginAt !== -1 && all[loginAt + 1] === 'status') {
+  const flag = all.find(a => a.startsWith('--fixture-login='))
+  const mode = flag ? flag.slice('--fixture-login='.length) : 'chatgpt'
+  const said = {
+    chatgpt: 'Logged in using ChatGPT',
+    'api-key': 'Logged in using an API key - sk-fixture****',
+    none: 'Not logged in',
+    garbage: 'something the adapter has never seen'
+  }
+  if (mode === 'hangs') {
+    // Block here, synchronously: an exit-free timer would let the script fall
+    // through to the `exec` checks below and exit on its own.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)
+  } else if (mode === 'fails') {
+    process.stderr.write('fake-codex: login status failed on purpose\n')
+    process.exit(1)
+  } else {
+    process.stderr.write(`${said[mode] ?? said.garbage}\n`)
+    process.exit(mode === 'none' ? 1 : 0)
+  }
+}
 // A fixture is invoked as `node fake-codex.mjs [--fixture-*] <the adapter's argv>`,
 // so the adapter's own invocation starts at its subcommand. Slicing there is
 // what lets `argv[0] === 'exec'` stay a real assertion about the adapter rather

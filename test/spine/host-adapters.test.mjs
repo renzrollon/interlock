@@ -31,7 +31,14 @@ import {
   readClaudeEnvelope,
   readLaneTranscript
 } from '../../lib/host/claude-cli.mjs'
-import { codexArgs, createCodexHost, onChatGptPlan, readCodexUsage } from '../../lib/host/codex.mjs'
+import {
+  CHATGPT_PLAN_BANNER,
+  LOGIN_NOT_INSPECTED_BANNER,
+  codexArgs,
+  createCodexHost,
+  probeLoginStatus,
+  readCodexUsage
+} from '../../lib/host/codex.mjs'
 import { createQwenHost, qwenArgs, readQwenEnvelope } from '../../lib/host/qwen.mjs'
 import { HOSTS, createHost } from '../../lib/host/registry.mjs'
 import { MODEL_MAP_ENV, modelMatches, parseModelMap, resolveModel } from '../../lib/host/model-map.mjs'
@@ -371,11 +378,28 @@ test('the envelope readers recover a payload and refuse a broken one', () => {
   assert.equal(readCodexUsage('{"msg":{"type":"task_started"}}\nnot json\n'), null, 'unknown is null, not zero')
 })
 
-test('the ChatGPT plan condition is the ABSENCE of both keys', () => {
-  assert.equal(onChatGptPlan({}), true)
-  assert.equal(onChatGptPlan({ CODEX_API_KEY: 'k' }), false)
-  assert.equal(onChatGptPlan({ OPENAI_API_KEY: 'k' }), false)
-  assert.equal(onChatGptPlan({ OPENAI_API_KEY: '  ' }), true, 'a blank key is not a key')
+test('codex: the login probe classifies codex login status from its output and never throws', () => {
+  const fixture = ADAPTERS.find(a => a.id === 'codex').fixture
+  const probe = (mode, opts) => probeLoginStatus(process.execPath, [fixture, `--fixture-login=${mode}`], opts)
+  assert.equal(probe('chatgpt'), 'chatgpt')
+  assert.equal(probe('api-key'), 'api-key')
+  assert.equal(probe('none'), 'none', 'a non-zero exit with a status line is still an answer')
+  assert.equal(probe('garbage'), 'unknown', 'an unrecognised answer is not guessed')
+  assert.equal(probe('fails'), 'unknown')
+  assert.equal(probeLoginStatus(join(FIXTURES, 'no-such-codex-binary')), 'unknown', 'a missing binary')
+  assert.equal(probe('hangs', { timeoutMs: 300 }), 'unknown', 'a hang is bounded')
+})
+
+test('codex: the host banners the ChatGPT plan path from the probe, says when it could not look, and reads no variable', () => {
+  const codex = ADAPTERS.find(a => a.id === 'codex')
+  const bannersOf = (fixtureFlags, env) => [...hosted(codex, { fixtureFlags, env }).banners]
+  assert.deepEqual(bannersOf([]), [CHATGPT_PLAN_BANNER], 'the fixture defaults to a ChatGPT login')
+  assert.deepEqual(bannersOf(['--fixture-login=api-key']), [])
+  assert.deepEqual(bannersOf(['--fixture-login=none']), [], 'no login fails at spawn, bannered there')
+  assert.deepEqual(bannersOf(['--fixture-login=garbage']), [LOGIN_NOT_INSPECTED_BANNER])
+  // A key variable in the environment changes nothing: the CLI decides.
+  assert.deepEqual(bannersOf([], { CODEX_API_KEY: 'k', OPENAI_API_KEY: 'k' }), [CHATGPT_PLAN_BANNER])
+  assert.ok(Object.isFrozen(hosted(codex).banners))
 })
 
 // --- the host record (design D7; spec: run-host-adapters — the whole envelope) -

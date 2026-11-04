@@ -460,6 +460,36 @@ test('no shipped file names the host\'s option variables', () => {
   assert.deepEqual(named, [], `these shipped files spell ${PREFIX}:\n  ${named.join('\n  ')}`)
 })
 
+test('no shipped file but the changelog names a credential variable or file', () => {
+  // The plugin directory holds a plugin that reads a credential from the
+  // installer's environment and can send data off the machine, and its own
+  // remedy is to remove every part that reads one. The plugin reads none; this
+  // pin keeps a name from coming back. CHANGELOG.md is history and may spell
+  // what an old version read.
+  const NAMES = [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'CODEX_API_KEY',
+    'OPENAI_API_KEY',
+    'apiKeyHelper',
+    'GITHUB_TOKEN',
+    'GH_TOKEN',
+    'GITLAB_TOKEN',
+    '.credentials.json'
+  ]
+  const named = shippedFiles(ROOT, pkg.files)
+    .map(f => f.path)
+    .filter(path => path !== 'CHANGELOG.md')
+    .map(path => {
+      const text = readFileSync(join(ROOT, path), 'latin1')
+      const hits = NAMES.filter(name => text.includes(name))
+      return hits.length ? `${path}: ${hits.join(', ')}` : null
+    })
+    .filter(Boolean)
+  assert.deepEqual(named, [], `these shipped files spell a credential name:\n  ${named.join('\n  ')}`)
+})
+
 // ---------------------------------------------------------------------------
 // The bundle's shape: no top-level bin/, no compiled executable, no install-time
 // download (spec: distribution/npm-package). The directory holds a plugin for a
