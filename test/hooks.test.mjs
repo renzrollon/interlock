@@ -687,6 +687,11 @@ const OPTION_VARIABLE = { topic: 'CLAUDE_PLUGIN_OPTION_NTFY_TOPIC', url: 'CLAUDE
  * saved option exported as the host's option variable (`{ topic, url }`).
  */
 function runNotifyOption(options, { cwd, envFile, env = {} }) {
+  // `{ topic, url }` only. An array or a misspelt key would run the hook with
+  // no option at all, and a case that expects nothing written would pass for
+  // the wrong reason (PR #34 review M1).
+  assert.ok(options && typeof options === 'object' && !Array.isArray(options), `options must be { topic, url }, not ${JSON.stringify(options)}`)
+  for (const kind of Object.keys(options)) assert.ok(kind in OPTION_VARIABLE, `unknown option ${JSON.stringify(kind)}: the hook reads topic and url`)
   const base = { ...process.env }
   // A developer's own session file, shell topic and saved options must not decide these cases.
   for (const name of ['CLAUDE_ENV_FILE', 'INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL', ...Object.values(OPTION_VARIABLE)]) delete base[name]
@@ -784,10 +789,18 @@ test('notify-option: with no environment file nothing is written anywhere and th
   const { root, envFile } = optionRoot()
   try {
     rmSync(envFile)
-    const r = runNotifyOption(['topic', 'my-topic'], { cwd: root })
+    const options = { topic: 'my-topic', url: 'https://example.invalid' }
+    const r = runNotifyOption(options, { cwd: root })
     assert.equal(r.status, 0, r.stderr)
     assert.equal(r.stdout, '')
+    assert.equal(r.stderr, '', 'a session without an environment file is not a failure to report')
     assert.deepEqual(readdirSync(root), [], 'the hook wrote a file of its own')
+    // The same options with a file: the values were arriving, so the run above
+    // wrote nothing for the file's absence and for no other reason.
+    const withFile = runNotifyOption(options, { cwd: root, envFile })
+    assert.equal(withFile.status, 0, withFile.stderr)
+    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_TOPIC'), 'my-topic')
+    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_URL'), 'https://example.invalid')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -811,6 +824,16 @@ test('notify-option: another option variable or an argument writes nothing, and 
     assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr)
     assert.match(refused.stderr, /INTERLOCK_NTFY_TOPIC/)
     assert.doesNotMatch(refused.stderr, /secret-topic/, 'the value never reaches standard error')
+    // Both options saved against the same directory: one line per variable, so
+    // neither lost export hides behind the other's line.
+    const refusedBoth = runNotifyOption({ topic: 'secret-topic', url: 'https://example.invalid' }, { cwd: root, envFile: root })
+    assert.equal(refusedBoth.status, 0)
+    assert.deepEqual(
+      refusedBoth.stderr.trim().split('\n').map(l => l.match(/^interlock notify option: (INTERLOCK_NTFY_[A-Z]+) was not exported \(ignored\)/)?.[1]),
+      ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL'],
+      refusedBoth.stderr
+    )
+    assert.doesNotMatch(refusedBoth.stderr, /secret-topic|example\.invalid/, 'a value reached standard error')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -849,21 +872,37 @@ test('session env: appendExport reports a write only when a line was written, an
   }
 })
 
-test('notify-option: a plugin tree without lib/session-env.mjs is one stderr line and exit 0, not a link error', () => {
+test('notify-option: a plugin tree without lib/session-env.mjs is one stderr line per saved option and exit 0, not a link error', () => {
   const { root } = optionRoot()
   try {
     const tree = join(root, 'plugin-copy')
     mkdirSync(join(tree, 'hooks'), { recursive: true })
     copyFileSync(NOTIFY_OPTION, join(tree, 'hooks', 'notify-option.mjs'))
     const envFile = join(root, 'env-file')
-    const base = { ...process.env, CLAUDE_ENV_FILE: envFile, CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'secret-topic' }
-    delete base.INTERLOCK_NTFY_TOPIC
-    const r = spawnSync(process.execPath, [join(tree, 'hooks', 'notify-option.mjs')], { cwd: root, input: '', encoding: 'utf8', env: base })
-    assert.equal(r.status, 0, r.stderr)
-    assert.equal(r.stdout, '')
-    assert.equal(r.stderr.trim().split('\n').length, 1, r.stderr)
-    assert.match(r.stderr, /interlock notify option: .*was not exported \(ignored\)/)
-    assert.doesNotMatch(r.stderr, /secret-topic/)
+    const run = options => {
+      const base = { ...process.env, CLAUDE_ENV_FILE: envFile, ...options }
+      for (const name of ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL', ...Object.values(OPTION_VARIABLE)]) if (!(name in options)) delete base[name]
+      return spawnSync(process.execPath, [join(tree, 'hooks', 'notify-option.mjs')], { cwd: root, input: '', encoding: 'utf8', env: base })
+    }
+    const lostLines = stderr => stderr.trim().split('\n').map(l => l.match(/^interlock notify option: (INTERLOCK_NTFY_[A-Z]+) was not exported \(ignored\)/)?.[1])
+    const topic = run({ CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'secret-topic' })
+    assert.equal(topic.status, 0, topic.stderr)
+    assert.equal(topic.stdout, '')
+    assert.deepEqual(lostLines(topic.stderr), ['INTERLOCK_NTFY_TOPIC'], topic.stderr)
+    assert.doesNotMatch(topic.stderr, /secret-topic/)
+    // Both options saved: every export the missing module costs is named on a line of its own.
+    const both = run({ CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'secret-topic', CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://example.invalid' })
+    assert.equal(both.status, 0, both.stderr)
+    assert.equal(both.stdout, '')
+    assert.deepEqual(lostLines(both.stderr), ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL'], both.stderr)
+    assert.doesNotMatch(both.stderr, /secret-topic|example\.invalid/)
+    // No option saved, which is most session starts: the hook loads nothing,
+    // so the missing module is never noticed, and nothing is said or written.
+    const none = run({})
+    assert.equal(none.status, 0, none.stderr)
+    assert.equal(none.stdout, '')
+    assert.equal(none.stderr, '', 'with no option saved there is nothing to export and nothing to say')
+    assert.equal(existsSync(envFile), false, 'the hook touched the environment file with nothing to write')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -1143,8 +1182,18 @@ test('session env: an env file in a directory that does not exist still prints t
   }
 })
 
-/** Every string a hook entry hands the host: its command and each argument. */
-const hookWords = hook => [hook.command, ...(Array.isArray(hook.args) ? hook.args : [])].filter(w => typeof w === 'string')
+/**
+ * Every string a hook entry hands the host: its command and each argument, and
+ * for a hook of another type its url and each header and env value. Nothing
+ * but command hooks ships; the extra fields keep a future entry under the rule.
+ */
+const hookWords = hook => [
+  hook.command,
+  ...(Array.isArray(hook.args) ? hook.args : []),
+  hook.url,
+  ...Object.values(hook.headers && typeof hook.headers === 'object' ? hook.headers : {}),
+  ...Object.values(hook.env && typeof hook.env === 'object' ? hook.env : {})
+].filter(w => typeof w === 'string')
 
 /** The one shape every registered hook has: node, then a quoted script under the plugin's hooks/. */
 const PLAIN_HOOK = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/[a-z][a-z0-9-]*\.mjs"$/
@@ -1162,7 +1211,7 @@ function commandPathProblems(manifest) {
   for (const [event, groups] of Object.entries(manifest.hooks || {})) {
     for (const hook of (groups || []).flatMap(g => g.hooks || [])) {
       const words = hookWords(hook)
-      const label = `${event} ${words.join(' ')}`
+      const label = `${event} ${[hook.type !== 'command' && hook.type, ...words].filter(Boolean).join(' ')}`
       for (const word of words) {
         const variables = [...word.matchAll(/\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|%([A-Za-z_][A-Za-z0-9_]*)%/g)]
           .map(m => m[1] ?? m[2] ?? m[3])
@@ -1171,7 +1220,10 @@ function commandPathProblems(manifest) {
         if (/\$\(|`/.test(word)) problems.push(`${label} holds a command substitution`)
         if (/[*?[\]]|\{[^}]*,[^}]*\}/.test(word.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, ''))) problems.push(`${label} holds a wildcard or brace pattern`)
       }
-      if (hook.type === 'command' && (!PLAIN_HOOK.test(hook.command || '') || (hook.args && hook.args.length))) {
+      // Every hook, whatever its `type` says or omits: a prompt, agent or http
+      // hook is not this command either, and a `type` left out must not skip
+      // the shape check (PR #34 review M2).
+      if (!PLAIN_HOOK.test(hook.command || '') || (hook.args && hook.args.length)) {
         problems.push(`${label} is not node "\${CLAUDE_PLUGIN_ROOT}/hooks/<file>.mjs" with no arguments`)
       }
     }
@@ -1189,7 +1241,7 @@ test('every hook the manifest registers is a plain path from ${CLAUDE_PLUGIN_ROO
   assert.ok(!JSON.stringify(manifest.hooks).includes('${user_config.'), 'a hook names an option reference')
 })
 
-test('the command-path pin names an option argument, another variable, a substitution and a wildcard', () => {
+test('the command-path pin names an option argument, another variable, a substitution, a wildcard, and a hook that is not the one command', () => {
   const shipped = {
     hooks: {
       SessionStart: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs"' }] }],
@@ -1216,6 +1268,15 @@ test('the command-path pin names an option argument, another variable, a substit
   assert.match(mutated(h => (h.command = 'node "${CLAUDE_PLUGIN_ROOT}/hooks/{a,b}.mjs"')), /wildcard or brace pattern/)
   assert.match(mutated(h => (h.command = 'node -e "import(process.argv[1])" "${CLAUDE_PLUGIN_ROOT}/hooks/a.mjs"')), /with no arguments/)
   assert.match(mutated(h => (h.command = 'sh -c \'cd ${CLAUDE_PLUGIN_ROOT} && exec node a.mjs\'')), /with no arguments/)
+  // `type` left out and a chained command: the shape check does not wait for `type: "command"`.
+  assert.match(mutated(h => { delete h.type; h.command = 'node "${CLAUDE_PLUGIN_ROOT}/hooks/a.mjs" && x' }), /^SessionStart node .* is not node .* with no arguments/m)
+  // An option reference in an http hook's url or header, or in an env value, is still a variable the directory cannot follow.
+  assert.match(mutated(h => { h.type = 'http'; delete h.command; h.url = 'https://example.invalid/${user_config.ntfy_topic}' }), /^SessionStart http .* names "user_config\.ntfy_topic"/m)
+  assert.match(mutated(h => { h.type = 'http'; delete h.command; h.url = 'https://example.invalid/'; h.headers = { Authorization: 'Bearer ${user_config.token}' } }), /names "user_config\.token"/)
+  assert.match(mutated(h => (h.env = { TOPIC: '${user_config.ntfy_topic}' })), /names "user_config\.ntfy_topic"/)
+  // A hook of another type is not the one command, whatever else it carries.
+  assert.match(mutated(h => { h.type = 'prompt'; delete h.command; h.prompt = 'say hello' }), /^SessionStart prompt is not node/m)
+  assert.match(mutated(h => { h.type = 'http'; delete h.command; h.url = 'https://example.invalid/' }), /is not node .* with no arguments/)
 })
 
 test('preflight: an internal throw is caught and the process still exits 0', () => {

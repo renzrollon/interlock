@@ -25,9 +25,17 @@
 // It exits 0 on every path, including one where lib/session-env.mjs cannot be
 // loaded (it is imported inside the try). It leaves a variable the operator
 // already provided as it is. It writes nothing for a value that is empty, that
-// carries a line break or a NUL, or that still reads as a reference nobody
-// substituted. It never judges the value's shape: `readNotifyConfig` does that
-// where the value is used, and names the variable without the value.
+// carries a line break or a NUL, or that reads as an option reference a host
+// left unsubstituted. It never judges the value's shape: `readNotifyConfig`
+// does that where the value is used, and names the variable without the value.
+//
+// WITH NO OPTION SAVED it loads nothing and says nothing. Its entry runs at
+// every session start of every installation, and most of them saved neither
+// option, so that path ends before the import below.
+//
+// A failure line here reaches the host's debug log only: a hook that exits 0
+// shows nothing to the person. `interlock doctor`'s `notify` row, run from the
+// session, is where a saved option that never arrived is seen.
 
 /** Each host option variable, and the variable it is exported as. */
 const OPTIONS = [
@@ -35,18 +43,23 @@ const OPTIONS = [
   ['CLAUDE_PLUGIN_OPTION_NTFY_URL', 'INTERLOCK_NTFY_URL']
 ]
 
+/** The options the host handed this process a value for. */
+const saved = OPTIONS.filter(([option]) => typeof process.env[option] === 'string' && process.env[option].trim() !== '')
+if (!saved.length) process.exit(0)
+
 let appendExport
 try {
   // Loaded inside the try, not at link time: a missing or broken module must
-  // reach the stderr line below and exit 0, as the preflight's handoff does.
+  // reach the stderr lines below and exit 0, as the preflight's handoff does.
   // (The specifier is a literal: it resolves against this file, and the
   // import-closure pin in test/hooks.test.mjs reads it.)
   ;({ appendExport } = await import('../lib/session-env.mjs'))
 } catch (err) {
-  fail('the options', err)
+  // Every saved option is lost at once, so each is named on a line of its own.
+  for (const [, variable] of saved) fail(variable, err)
 }
 if (appendExport) {
-  for (const [option, variable] of OPTIONS) {
+  for (const [option, variable] of saved) {
     // One option's failure does not cost the other its export.
     try {
       // The quoting, the publishable check and the operator's own value are
@@ -59,8 +72,8 @@ if (appendExport) {
 }
 process.exit(0)
 
-/** One stderr line naming what was not exported and why, never the value. */
-function fail(what, err) {
+/** One stderr line naming the variable that was not exported and why, never the value. */
+function fail(variable, err) {
   const reason = String((err && err.message) || err).replace(/\s+/g, ' ')
-  process.stderr.write(`interlock notify option: ${what} was not exported (ignored): ${reason}\n`)
+  process.stderr.write(`interlock notify option: ${variable} was not exported (ignored): ${reason}\n`)
 }
