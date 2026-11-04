@@ -476,7 +476,12 @@ test('no shipped file but the changelog names a credential variable or file', ()
     'GITHUB_TOKEN',
     'GH_TOKEN',
     'GITLAB_TOKEN',
-    '.credentials.json'
+    '.credentials.json',
+    'auth.json',
+    '.netrc',
+    'AWS_SECRET_ACCESS_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'find-generic-password'
   ]
   const named = shippedFiles(ROOT, pkg.files)
     .map(f => f.path)

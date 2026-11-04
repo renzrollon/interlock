@@ -1143,6 +1143,14 @@ test('the row names no authentication mode, reads no credential, and never claim
   }
 })
 
+test('docs/04 describes the prompt-cache row as not inspecting the authentication mode', () => {
+  // The row stopped naming a mode; the human-facing paragraph must not keep
+  // promising one.
+  const docs = readFileSync(join(REPO, 'docs', '04-when-it-stops.md'), 'utf8')
+  assert.doesNotMatch(docs, /authentication mode was detected/)
+  assert.match(docs, /`prompt-cache` row[^\n]*authentication mode the row does not inspect/)
+})
+
 test('the prompt-cache row is never fail, whatever the env or the settings tree holds', () => {
   const dir = tmp()
   try {
