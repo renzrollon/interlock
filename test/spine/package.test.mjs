@@ -450,14 +450,15 @@ test('the headroom pin names a file inside the zone and leaves the edge and an i
   ]), [`bin/inside is ${edge + 1} bytes, ${DIRECTORY_HEADROOM_BYTES - 1} under the 262144-byte limit; move code out before it holds a version`])
 })
 
-test('no shipped file names the host\'s option variables', () => {
-  // An option reaches a hook as the argument the manifest passes, and the
-  // session's commands as the shell variable that hook exports (design D6).
+test('hooks/notify-option.mjs is the only shipped file that names the host\'s option variables', () => {
+  // The host exports a plugin option to hook processes only; one hook reads it
+  // and exports the shell variable the session's commands read
+  // (read-plugin-options-from-the-hook-environment). CHANGELOG.md is history.
   const PREFIX = 'CLAUDE_PLUGIN_OPTION_'
   const named = shippedFiles(ROOT, pkg.files)
     .map(f => f.path)
-    .filter(path => readFileSync(join(ROOT, path)).includes(PREFIX))
-  assert.deepEqual(named, [], `these shipped files spell ${PREFIX}:\n  ${named.join('\n  ')}`)
+    .filter(path => path !== 'CHANGELOG.md' && readFileSync(join(ROOT, path)).includes(PREFIX))
+  assert.deepEqual(named, ['hooks/notify-option.mjs'], `the shipped files that spell ${PREFIX}:\n  ${named.join('\n  ')}`)
 })
 
 test('no shipped file but the changelog names a credential variable or file', () => {
