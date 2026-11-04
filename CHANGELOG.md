@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-04
+
 ### Changed
 
 - **One hook carries the push options, and it takes no argument.** The plugin directory's Validate refused the manifest with "Command path can't be followed": the two `hooks/notify-option.mjs` entries passed `${user_config.ntfy_topic}` and `${user_config.ntfy_url}` as arguments, and a hook command may name no variable but `${CLAUDE_PLUGIN_ROOT}`. One entry, `node "${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs"`, now reads both options from the variables the host exports to hook processes and exports `INTERLOCK_NTFY_TOPIC` and `INTERLOCK_NTFY_URL` as before. Nothing changes for a run or for a variable you set yourself. A test fails on any hook command that holds another variable, a command substitution or a wildcard, and on any hook that is not that one command. The variables are the ones the host sets from the saved options, so the plugin still asks for the topic through its options and reads no credential of the installer's. With no option saved the hook loads nothing. An export it could not write is one line on standard error per variable, kept in the host's debug log; when a saved option did not reach the session, `interlock doctor`'s `notify` row names the hook.
