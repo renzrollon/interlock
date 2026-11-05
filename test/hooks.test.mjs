@@ -700,6 +700,21 @@ test('session env: appendExport reports a write only when a line was written, an
   }
 })
 
+test('session env: publishable refuses what cannot be one shell line, and shellQuote keeps a quote inside one word', async () => {
+  const { publishable, shellQuote, appendExport } = await import('../lib/session-env.mjs')
+  for (const value of ['/a/plugin data', "it's", '${user_config.x}']) assert.equal(publishable(value), true, value)
+  for (const value of ['', '   ', 'a\nb', 'a\rb', 'a\0b', undefined, null, 42]) assert.equal(publishable(value), false, String(value))
+  assert.equal(shellQuote("it's"), `'it'\\''s'`)
+  const { root, envFile } = envFileRoot()
+  try {
+    assert.equal(appendExport(envFile, 'INTERLOCK_X', 'a\nexport EVIL=1', {}), false, 'a multi-line value was exported')
+    assert.equal(appendExport(envFile, 'INTERLOCK_X', "/data/it's", {}), true)
+    assert.equal(readFileSync(envFile, 'utf8'), `export INTERLOCK_X='/data/it'\\''s'\n`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('preflight: the hook writes nothing to the session\'s environment file, whatever the host\'s option variables hold', () => {
   const root = mkdtempSync(join(tmpdir(), 'interlock-preflight-notify-'))
   try {

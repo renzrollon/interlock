@@ -226,6 +226,18 @@ test('run close and notify keep accepting the retired push flags until 1.16.0', 
   }
 })
 
+test('the retired push flags and form are gone once the version reaches 1.16.0', async () => {
+  // The removal is promised in prose (CHANGELOG, D3, the source comments). This
+  // turns the promise into a red test at the bump that owes it, instead of a
+  // compatibility shim nobody remembers to delete.
+  const [major, minor] = VERSION.split('.').map(Number)
+  if (major === 1 && minor < 16) return
+  const { leaves } = await loadFlagTable()
+  assert.ok(!leaves.get('run close').has('notify'), 'run close still accepts the retired --notify at 1.16.0 or later')
+  assert.ok(!leaves.has('notify') || !['title', 'body', 'priority'].some(f => leaves.get('notify').has(f)), 'notify still accepts --title/--body/--priority at 1.16.0 or later')
+  assert.doesNotMatch(readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8'), /RETIRED_PUSH_/, 'lib/receipt.mjs still carries the retired push row at 1.16.0 or later')
+})
+
 test('run found accepts the flags run reviewed does, and the usage documents it with --results', async () => {
   // fan-out-the-strict-ship-review D4: `run found` is answered exactly as `run reviewed` is —
   // the agents' results and, from a runner, its host records.

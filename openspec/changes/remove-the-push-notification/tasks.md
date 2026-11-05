@@ -37,8 +37,8 @@
 - [x] 3.1 `README.md`: the network paragraph says Interlock makes no request of its own, names the tools that make their own, and points to Remote Control's push.
 - [x] 3.2 `docs/04`, `docs/07`, `docs/08`, `docs/13`, `docs/assets/DESIGN-PROMPT.md`, `SECURITY.md`, `.github/ISSUE_TEMPLATE/*.yml`, and the site brief `site/DESIGN-PROMPT.md`.
   - Owed, not done here:
-    - the exported `site/*.dc.html` pages still carry the push: the doctor's `notify` row (`FirstHour.dc.html`), the `PUSH FAILED` banner (`Why.dc.html`) and the push timeout (`Limits.dc.html`). Regenerate them from the brief, never by hand. `site/` does not ship, so the residue pin (2.2 e) cannot catch them. The `lib/notify.mjs` task titles in `Run.dc.html` are the recorded halted run (brief C.9) and stay;
     - `docs/assets/{doctor,halted,limits}.png` show the removed rows.
+  - Done by hand after the brief was fixed first: the three `site/*.dc.html` residues (the doctor's `notify` row in `FirstHour.dc.html`, the `PUSH FAILED` banner in `Why.dc.html`, the push timeout row in `Limits.dc.html`), now pinned by a `retired names` test over `site/*.html` and `site/DESIGN-PROMPT.md`. The `lib/notify.mjs` task titles in `Run.dc.html` are the recorded halted run (brief C.9) and stay.
   - `.claude/memory/` is gitignored; its two push entries are marked retired locally.
 - [x] 3.3 `CHANGELOG.md` `[Unreleased]`: a BREAKING `### Removed` entry and an `### Upgrading` note (D9).
 

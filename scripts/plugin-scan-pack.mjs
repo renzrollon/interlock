@@ -87,11 +87,16 @@ function main() {
     // A temporary index, so the real one and the working tree stay as they are.
     const env = { ...process.env, GIT_INDEX_FILE: join(work, 'index') }
     const gitDir = run('git', ['rev-parse', '--absolute-git-dir'])
-    run('git', ['--git-dir', gitDir, '--work-tree', bundle, 'add', '--all', '--force', '.'], { env, cwd: bundle })
+    // autocrlf off, so the staged bytes are the tarball's bytes whatever the
+    // operator's global git config says.
+    run('git', ['-c', 'core.autocrlf=false', '--git-dir', gitDir, '--work-tree', bundle, 'add', '--all', '--force', '.'], { env, cwd: bundle })
     const tree = run('git', ['write-tree'], { env })
 
     const head = run('git', ['rev-parse', '--short', 'HEAD'])
-    const dirty = run('git', ['status', '--porcelain', '--untracked-files=no']) !== ''
+    // npm pack packs the working tree, untracked files included, so a new file
+    // under a `files` path counts as uncommitted. Paths that do not ship do not.
+    const shipped = JSON.parse(readFileSync(join(bundle, 'package.json'), 'utf8')).files || []
+    const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'package.json', ...shipped]) !== ''
     const message =
       'temp: unpublished plugin bundle for a directory scan\n\n' +
       `npm pack of ${head} on ${current}${dirty ? ' with uncommitted changes' : ''}, plugin version ${version}, ` +
