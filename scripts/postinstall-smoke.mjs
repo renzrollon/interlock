@@ -57,7 +57,8 @@ const RUN_ID = '6e9d0b02-c70b-4d7a-9865-fa892722cecb'
 const HALTED = join('ship', 'halted-run-6e9d0b02')
 const CHANGE = 'add-thing'
 const CLASSIFIED = '.claude/ship/classified.json'
-const FINDINGS = '.claude/ship/findings.json'
+// Where each strict reviewer writes its answer (lib/run.mjs DIMENSION_ANSWERS_DIR).
+const ANSWERS = '.claude/ship/review/dimensions'
 // The head a pull-request review record is bound to; `settle` refuses a record bound to another.
 const SETTLE_HEAD = 'a'.repeat(40)
 
@@ -113,17 +114,31 @@ const runBatch = r => {
     : 'spawns carry no promptPath and promptSha256'
 }
 
-/** The strict tail's review step: the rubric of every selected dimension was read from the install. */
+/**
+ * The strict tail's review step: one `review-<dimension>` reviewer per selected dimension, each
+ * briefed by its own file under .claude/ship/briefings/ carrying its own rubric, read from the
+ * install, under its own `# Dimension: <name>` heading and no other reviewer's. (A rubric titled
+ * otherwise, `# Dimension: QA`, keeps its title beneath the name the run heads it with.)
+ */
 const reviewStep = (r, ctx) => {
   const j = stepOf(r)
   if (!j || j.action !== 'review') return `action ${j && j.action}, expected review`
   const unavailable = (j.banners || []).filter(b => /REVIEW RUBRIC UNAVAILABLE/.test(b))
   if (unavailable.length) return unavailable.join('; ')
-  const briefing = join(ctx.work, '.claude', 'ship', 'briefings', 'review.md')
-  if (!existsSync(briefing)) return 'no review briefing was written'
-  const text = readFileSync(briefing, 'utf8')
-  const headings = (text.match(/^# Dimension: /gm) || []).length
-  return headings >= 4 ? '' : `the review briefing carries ${headings} dimension rubrics, expected at least 4`
+  const reviewers = (j.spawns || []).filter(s => /^review-/.test(s.label))
+  if (reviewers.length < 4) return `the review step carries ${reviewers.length} review-* spawns, expected at least 4`
+  for (const s of reviewers) {
+    const briefing = join(ctx.work, String(s.promptPath || ''))
+    if (!s.promptPath || !briefing.startsWith(join(ctx.work, '.claude', 'ship', 'briefings')) || !existsSync(briefing)) {
+      return `${s.label} has no briefing file under .claude/ship/briefings/`
+    }
+    const headings = readFileSync(briefing, 'utf8').match(/^# Dimension: .+$/gm) || []
+    const others = reviewers.filter(o => o !== s).map(o => `# Dimension: ${o.label.slice('review-'.length)}`)
+    if (headings[0] !== `# Dimension: ${s.label.slice('review-'.length)}` || headings.some(h => others.includes(h))) {
+      return `${s.label}'s briefing carries ${JSON.stringify(headings)}, expected its own dimension heading first and no other reviewer's`
+    }
+  }
+  return ''
 }
 
 /**
@@ -407,16 +422,23 @@ export const INVENTORY = [
   { bin: I, argv: ['run', 'record-batch', '--results', '{in}/batch.json', '--json'], codes: [0], keys: ['action', 'then.argv', 'spawns'], check: reviewStep },
   {
     bin: I,
-    argv: ['run', 'reviewed', '--results', '{in}/review-ok.json', '--json'],
+    argv: ['run', 'found', '--results', '{in}/review-ok.json', '--json'],
     codes: [0],
-    keys: ['action', 'then.argv'],
+    keys: ['action', 'then.argv', 'spawns'],
     setup: ctx => {
-      // What the review agent leaves behind: a blocker on a file the run changed.
+      // What the reviewers leave behind: each its own answer file, `qa` holding a blocker on a
+      // file the run changed and the rest finding nothing.
       ctx.put('src/a.mjs', 'export const x = 1\nexport const y = 3\n')
-      ctx.put(FINDINGS, [{ dimension: 'qa', findings: [{ severity: 'blocker', file: 'src/a.mjs', line: 1, title: 't', description: 'd', evidence: 'src/a.mjs:1' }] }])
+      const manifest = JSON.parse(readFileSync(join(ctx.work, '.claude', 'ship', 'run.json'), 'utf8'))
+      for (const dimension of manifest.reviewDimensions.selected) {
+        const findings = dimension === 'qa' ? [{ severity: 'blocker', file: 'src/a.mjs', line: 1, title: 't', description: 'd', evidence: 'src/a.mjs:1' }] : []
+        ctx.put(`${ANSWERS}/${dimension}.json`, { dimension, findings, coverage: { checked: [], unread: [] } })
+      }
     },
-    check: action('remediate')
+    check: action('skeptics')
   },
+  // No skeptic wrote its verdicts, so the pair is set aside and the blocker survives to a round.
+  { bin: I, argv: ['run', 'reviewed', '--results', '{in}/review-ok.json', '--json'], codes: [0], keys: ['action', 'then.argv'], check: action('remediate') },
   { bin: I, argv: ['run', 'remediated', '--round', '1', '--results', '{in}/review-ok.json', '--json'], codes: [0], keys: ['action', 'then.argv'] },
   // `run replan` is offered only at a wave boundary after a verify suggested it, which one
   // wave cannot reach. Called now it must be refused by the sequence guard, which proves the

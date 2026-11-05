@@ -111,7 +111,7 @@ test('the tail\'s stage lines are rendered by the CLI, on the briefing that publ
   assert.match(run, /publishStageLine\('remediation', change, \+\+manifest\.stageIndex\)/)
   // And each is handed to the assembler as `stageLine`, so the briefing carries
   // it rather than the step.
-  for (const module of ['review.mjs', 'remediate.mjs']) {
+  for (const module of ['review-dimension.mjs', 'remediate.mjs']) {
     assert.match(
       readFileSync(join(ROOT, 'lib', 'prompts', module), 'utf8'),
       /stageLine/,

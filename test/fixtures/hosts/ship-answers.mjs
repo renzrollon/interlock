@@ -7,10 +7,14 @@
 // the run program itself exists to remove one layer up.
 //
 // Which step this is comes off the BRIEFING, because that is all a headless
-// vendor CLI ever receives: there is no label on the wire. The review answer
-// WRITES the findings and verdicts the CLI then adjudicates, since the strict
-// tail is driven by those files and never by a count the agent reports about
-// itself — a fixture that only returned numbers would exercise nothing.
+// vendor CLI ever receives: there is no label on the wire. The review is a
+// fan-out, so there are two answers to it: a dimension briefing (its own
+// `# Dimension: <name>` heading) WRITES that dimension's ledger to the file the
+// briefing names, and a skeptic briefing (its published opening sentence as a
+// whole line) WRITES the verdicts for the findings it lists to the file it
+// names. The CLI folds and adjudicates those files, since the strict tail is
+// driven by them and never by a count the agent reports about itself — a
+// fixture that only returned numbers would exercise nothing.
 //
 // The planner's answer WRITES the classification too, from the seed the test
 // left at FIXTURE_CLASSIFIED_PATH: `run start` removes any classified.json that
@@ -51,6 +55,53 @@ function plannerAnswer() {
   }
   write('.claude/ship/classified.json', seed)
   return { ok: true, taskCount: Array.isArray(seed.tasks) ? seed.tasks.length : 0 }
+}
+
+/** The answer file a review or skeptic briefing names, or null when it names none. */
+function answerPathIn(text) {
+  const m = /\.claude\/ship\/review\/(?:dimensions|skeptics)\/[A-Za-z0-9._-]+\.json/.exec(text)
+  return m ? m[0] : null
+}
+
+/**
+ * A reviewer's answer: the ledger of the one dimension its briefing names, with
+ * the fixture's findings under `language` and nothing under any other.
+ */
+function dimensionAnswer(text) {
+  const path = answerPathIn(text)
+  if (!path) return { ok: false, detail: 'the briefing names no answer file' }
+  const dimension = path.replace(/^.*\//, '').replace(/\.json$/, '')
+  write(path, { dimension, findings: dimension === 'language' ? reviewFiles().findings[0].findings : [] })
+  return { ok: true }
+}
+
+/**
+ * A skeptic's answer: a verdict for every finding its briefing lists, read off
+ * the `### F-… — severity — file:line` heading and the `Title:` line beneath
+ * it, voting real for every finding but the one the fixture refutes.
+ */
+function skepticAnswer(text) {
+  const path = answerPathIn(text)
+  if (!path) return { ok: false, detail: 'the briefing names no answer file' }
+  const verdicts = [
+    ...text.matchAll(/^### (F-[0-9a-f]{8}) — (\w+) — ([^\n]+?)(?::\d+)?\nDimension: [^\n]*\nTitle: ([^\n]+)/gm)
+  ].map(([, findingId, severity, file, title]) => {
+    const isReal = title !== 'a refuted warning'
+    return {
+      findingId,
+      findingTitle: title,
+      file,
+      isReal,
+      confidence: 0.9,
+      reasoning: 'skeptic',
+      evidence: `${file}:1`,
+      refinedSeverity: isReal ? severity : 'dismiss',
+      qualityScore: 4,
+      severityScore: isReal ? 4 : 1
+    }
+  })
+  write(path, verdicts)
+  return { ok: true }
 }
 
 /** Findings and verdicts that adjudicate to one surviving warning, no blocker. */
@@ -98,13 +149,14 @@ export function shipAnswer(text, { writePath = 'README.md', perLane = false, sch
     schema && Array.isArray(schema.required)
       ? schema.required.includes(key)
       : new RegExp(`"required":\\[[^\\]]*"${key}"`).test(text)
-  if (/Adversarially review the diff/.test(text)) {
-    const { findings, verdicts } = reviewFiles()
-    write('.claude/ship/findings.json', findings)
-    write('.claude/ship/verdicts.json', verdicts)
-    return { ok: true }
+  // A skeptic's opening sentence is a whole line of its briefing, and a
+  // dimension's heading is the first line of its rubric. The remediation
+  // briefing quotes rubrics too, so it is told apart first.
+  if (/^You are (a skeptical code reviewer|an independent reviewer giving a second opinion)\.$/m.test(text)) {
+    return skepticAnswer(text)
   }
   if (/^Remediation /m.test(text)) return { ok: true }
+  if (/^# Dimension: \S+$/m.test(text) && answerPathIn(text)) return dimensionAnswer(text)
   if (/Produce the handoff artifacts/.test(text)) {
     return { ok: true, manualTestPlan: false, skipReason: 'backend only', scenariosChecked: 0 }
   }

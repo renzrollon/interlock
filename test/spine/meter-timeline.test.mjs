@@ -99,6 +99,12 @@ test('an action the meter does not know reads verbatim, with no word of the mete
   assert.doesNotMatch(words, /ok|failed|current|done|running|waiting/)
 })
 
+test('the strict review\'s skeptics action is named as emitted and counts no lanes of a batch', () => {
+  assert.equal(stepText(stepOf(0, 1, { action: 'skeptics', wave: null })), 'skeptics')
+  assert.equal(stepText(stepOf(0, 1, { action: 'skeptics', spawns: [spawn('a', 'skeptic-F-1-refute'), spawn('b', 'skeptic-F-1-second-opinion')] })), 'skeptics')
+  assert.ok(!BATCH_ACTIONS.has('skeptics'))
+})
+
 // --- the timeline's order -----------------------------------------------------
 
 test('the launch, the steps and the orphan relays are laid by time, ties keeping their crossing order', () => {

@@ -189,6 +189,11 @@ test('every declared field for every type is exercised', () => {
   assert.deepEqual(records[4].spill, ['.claude/ship/spill/x/1-unit.log'])
 })
 
+test('the strict review\'s skeptic kind is declared, so a skeptic never reads back as other', () => {
+  assert.ok(AGENT_KINDS.includes('skeptic'))
+  assert.ok(AGENT_KINDS.includes('review'), 'reviewers keep their kind')
+})
+
 test('every agent kind the run program spawns is one AGENT_KINDS declares', () => {
   // The field mapper coerces an unlisted kind to `other` with no warning, so a
   // kind the program spawns but this enum omits is recorded as an

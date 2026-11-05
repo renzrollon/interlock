@@ -202,6 +202,8 @@ test('formatLimits names every cap it prints', () => {
   // The handoff cap has to be readable from the CLI: the workflow prompt tells
   // implementers to look it up there rather than restating the number.
   assert.match(text, /wave handoff budget/)
+  assert.match(text, /skeptic spawns \(per skeptics step\)/)
+  assert.match(text, new RegExp(String(LIMITS.maxSkepticSpawns)))
   assert.match(text, new RegExp(String(LIMITS.maxHandoffChars)))
   assert.ok(text.endsWith('\n'))
 })

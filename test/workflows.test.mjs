@@ -19,6 +19,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { delimiter, join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EFFORT } from '../lib/limits.mjs'
+import { assembleDimensionPrompt } from '../lib/prompts/review-dimension.mjs'
 import { laneTitle } from '../lib/lane.mjs'
 import { CHATGPT_PLAN_BANNER, LOGIN_NOT_INSPECTED_BANNER } from '../lib/host/codex.mjs'
 import { FIXTURE_CLASSIFIED_PATH } from './fixtures/hosts/ship-answers.mjs'
@@ -1983,7 +1984,14 @@ test('the review and remediation briefings ask for counts only', () => {
   // the diff. A result field carrying a dimension report would put kilobytes of
   // model prose on the wire where the CLI wants a number it did not have to
   // trust anyway.
-  const review = readFileSync(join(ROOT, 'lib', 'prompts', 'review.mjs'), 'utf8')
+  // The ship-side reviewer's briefing is the dimension assembler's, given an answer file.
+  const review = assembleDimensionPrompt({
+    dimension: 'language',
+    rubric: '# Dimension: language\n\nCheck idiomatic usage.',
+    base: 'abc1234',
+    changed: [],
+    answerPath: '.claude/ship/review/dimensions/language.json'
+  })
   const remediate = readFileSync(join(ROOT, 'lib', 'prompts', 'remediate.mjs'), 'utf8')
   assert.match(review, /do not paste dimension reports/i)
   assert.match(remediate, /do not paste fixer or skeptic/i)
@@ -2307,6 +2315,7 @@ const {
   handoffFor,
   makeRepo,
   reviewFiles,
+  reviewResponders,
   DEMO_CHANGE
 } = await import('./helpers/ship-harness.mjs')
 
@@ -2363,21 +2372,19 @@ test('recorded round consumption differs between a one-round and a two-round run
     ctx.write('.claude/ship/verdicts.json', verdicts)
     return { ok: true }
   }
-  const withBlocker = (label, n, ctx) => {
-    const { findings, verdicts } = reviewFiles({ blockers: 1, warnings: 0, dismissed: 0 })
-    ctx.write('.claude/ship/findings.json', findings)
-    ctx.write('.claude/ship/verdicts.json', verdicts)
-    return { ok: true }
-  }
+  // The first review is a fan-out: each `review-<dimension>` spawn writes its
+  // ledger and each `skeptic-…` spawn its verdicts, so the blocker is raised by
+  // the two responders keyed by those label prefixes, not by a `review` label.
+  const withBlocker = reviewResponders({ blockers: 1, warnings: 0, dismissed: 0 })
   const cleared = await runShip({
     keepRepo: true,
     args: 'demo-change --strict',
-    responses: { review: withBlocker, 'remediate-': clearing(1) }
+    responses: { ...withBlocker, 'remediate-': clearing(1) }
   })
   const persisted = await runShip({
     keepRepo: true,
     args: 'demo-change --strict',
-    responses: { review: withBlocker, 'remediate-': clearing(2) }
+    responses: { ...withBlocker, 'remediate-': clearing(2) }
   })
   try {
     assert.equal(recordedRounds(cleared.root), 1)

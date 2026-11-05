@@ -147,15 +147,22 @@ test('a driven run reaches every prompt the host itself still assembles', async 
 test('a prompt cannot escape the check by living behind a flag', async () => {
   // The host tail (review, remediation, handoff) is only built under --strict.
   // Coverage must not depend on which run modes the suite happens to exercise.
+  // The review is a fan-out: a `review-<dimension>` spawn per selected dimension
+  // and a `skeptic-…` spawn per skeptic prompt, so those two are prefixes. The
+  // retired single `review` worker has no label left to find.
   const lean = await runShip({})
   const strict = await runShip({ args: 'demo-change --strict' })
   const leanLabels = new Set(lean.prompts.map(p => p.label))
   const strictLabels = new Set(strict.prompts.map(p => p.label))
+  const under = (labels, prefix) => [...labels].filter(l => l.startsWith(prefix))
 
-  for (const optIn of ['review', 'handoff']) {
-    assert.ok(!leanLabels.has(optIn), `${optIn} should not run on a lean invocation`)
-    assert.ok(strictLabels.has(optIn), `${optIn} must be reachable and checked under --strict`)
+  for (const prefix of ['review-', 'skeptic-']) {
+    assert.deepEqual(under(leanLabels, prefix), [], `${prefix}* should not run on a lean invocation`)
+    assert.ok(under(strictLabels, prefix).length > 0, `${prefix}* must be reachable and checked under --strict`)
   }
+  assert.ok(!strictLabels.has('review'), 'the single review worker is retired: no spawn is labelled bare `review`')
+  assert.ok(!leanLabels.has('handoff'), 'handoff should not run on a lean invocation')
+  assert.ok(strictLabels.has('handoff'), 'handoff must be reachable and checked under --strict')
 })
 
 test('an unextractable prompt is a failure, not a smaller coverage number', async () => {

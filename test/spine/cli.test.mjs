@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
 import { resolveRouting } from '../../lib/routing.mjs'
+import { changedRanges } from '../../lib/review-scope.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
 
@@ -5421,6 +5422,58 @@ test('review brief names a deleted file under its old path, and a deleted line t
   assert.match(r.stdout, /^ {2}- lib\/kept\.sql: no changed lines/m)
   assert.doesNotMatch(r.stdout, /^ {2}- comment/m)
   assert.match(r.stdout, /^ {2}- lib\/gone\.mjs$/m, 'the deleted source is among those the proof counts')
+})
+
+// The hunk parser `review brief` and the ship run's review step share (fan-out-
+// the-strict-ship-review, D16): a pure function over the text of a `git diff -U0`.
+test('changedRanges reads the post-image hunks, names a deleted file with no ranges, and ignores a "-- x" line', () => {
+  const diff = [
+    'diff --git a/lib/a.mjs b/lib/a.mjs',
+    'index 1..2 100644',
+    '--- a/lib/a.mjs',
+    '+++ b/lib/a.mjs',
+    '@@ -3,0 +4,2 @@ context',
+    '+one',
+    '+two',
+    '@@ -10 +12 @@',
+    '-old',
+    '+new',
+    '@@ -20,3 +21,0 @@',
+    '-gone',
+    'diff --git a/lib/gone.mjs b/lib/gone.mjs',
+    'deleted file mode 100644',
+    '--- a/lib/gone.mjs',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-export const g = 1',
+    'diff --git a/lib/kept.sql b/lib/kept.sql',
+    '--- a/lib/kept.sql',
+    '+++ b/lib/kept.sql',
+    '@@ -1,2 +1 @@',
+    '--- comment',
+    '-select 1;',
+    '+select 2;'
+  ].join('\n')
+  assert.deepEqual(changedRanges(diff), [
+    { path: 'lib/a.mjs', ranges: [[4, 5], [12, 12]] },
+    { path: 'lib/gone.mjs', ranges: [] },
+    { path: 'lib/kept.sql', ranges: [[1, 1]] }
+  ])
+})
+
+test('changedRanges lists an observed path the diff does not name after the diff, whole when its lines are given, and never twice', () => {
+  const diff = ['diff --git a/lib/a.mjs b/lib/a.mjs', '--- a/lib/a.mjs', '+++ b/lib/a.mjs', '@@ -1 +1,2 @@', '-x', '+y', '+z'].join('\n')
+  assert.deepEqual(
+    changedRanges(diff, ['lib/a.mjs', { path: 'lib/fresh.mjs', lines: 3 }, 'README.md', { path: 'empty.txt', lines: 0 }, { path: 'lib/a.mjs', lines: 9 }]),
+    [
+      { path: 'lib/a.mjs', ranges: [[1, 2]] },
+      { path: 'lib/fresh.mjs', ranges: [[1, 3]] },
+      { path: 'README.md', ranges: [] },
+      { path: 'empty.txt', ranges: [] }
+    ]
+  )
+  assert.deepEqual(changedRanges('', ['only.md']), [{ path: 'only.md', ranges: [] }], 'no diff text: the observed paths, with no ranges')
+  assert.deepEqual(changedRanges(undefined), [])
 })
 
 // --- domain-context: the cut and the cited selection (spec: review/domain-review) ---

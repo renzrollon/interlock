@@ -242,7 +242,7 @@ Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `
 
 ## 7. Review: making dismissal expensive
 
-This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — the strict depth's always-on dimensions plus the conditional ones the diff triggers, two skeptics per finding, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
+This section is the `--review` / `--strict` tail. Default `ship` does not run it. `/interlock:review-code` is the same engine, on demand. The cost is real — the strict depth's always-on dimensions plus the conditional ones the diff triggers, each dimension its own agent, two skeptics per finding up to a cap the CLI publishes, then bounded remediation — and it is opt-in so a two-file change is not invoiced for proving the program is in charge.
 
 <p align="center">
   <img src="./assets/strict-complete.png" alt="Example ship --strict summary: nine findings raised, four dismissed by skeptics, two dropped as too weak, three surviving; three fixed; six of six spec scenarios confirmed; a commit." width="800">

@@ -65,6 +65,7 @@ import {
   runClassified,
   runClose,
   runCommit,
+  runFound,
   runJudge,
   runNext,
   runRecordBatch,
@@ -305,6 +306,7 @@ Usage:
   interlock run record-batch --results <f>   (interlock.run-step/1): the agents
   interlock run judge --context <ctx> --results <f>
   interlock run verify-final                 to spawn — label, model, effort,
+  interlock run found --results <f>
   interlock run reviewed --results <f>       agent type, tools, result schema and
   interlock run remediated --round <n> --results <f>
   interlock run commit --results <f>         a briefing file with its sha256 —
@@ -313,7 +315,7 @@ Usage:
   interlock run close [--halt <reason>]      names, writes the results, calls
                       [--host-banners <f>]
                       [--host-observed <f>]
-  (record-batch, judge, reviewed, remediated, commit, replan and close also
+  (record-batch, judge, found, reviewed, remediated, commit, replan and close also
   take --host-records <f>: the runner's per-spawn host observations, beside
   --results and never inside them)
                                             \`then.argv\`, and repeats until
@@ -324,16 +326,20 @@ Usage:
                                             is taken here from the run manifest
                                             (.claude/ship/run.json) and the wave
                                             state. The strict tail is part of
-                                            the program too: \`reviewed\`
-                                            adjudicates the findings and verdicts
-                                            the review step wrote and plans round
-                                            one, \`remediated --round <n>\`
+                                            the program too: \`found\` folds
+                                            the answer file each reviewer wrote
+                                            and emits one skeptic per prompt,
+                                            bounded by the published cap,
+                                            \`reviewed\` folds each skeptic's
+                                            verdict file, adjudicates and plans
+                                            round one, \`remediated --round <n>\`
                                             re-adjudicates and asks for the next
                                             round, the verdict or the halt, and
                                             \`commit\` records what the handoff
                                             wrote. No host carries the round
-                                            budget, and none may refuse a tail
-                                            flag. \`run close\` is the only one
+                                            budget or the skeptic cap, and none
+                                            may refuse a tail flag. \`run
+                                            close\` is the only one
                                             that exits non-zero — on a halt, or
                                             on a run whose trajectory cannot be
                                             reconstructed
@@ -4695,6 +4701,8 @@ async function main() {
         step = runJudge(ctx, { context, results: resultList, hostRecords })
       } else if (sub === 'verify-final') {
         step = runVerifyFinal(ctx)
+      } else if (sub === 'found') {
+        step = runFound(ctx, { results: resultList, hostRecords })
       } else if (sub === 'reviewed') {
         step = runReviewed(ctx, { results: resultList, hostRecords })
       } else if (sub === 'remediated') {
@@ -4731,7 +4739,7 @@ async function main() {
       } else {
         die(
           `unknown run subcommand: ${sub || '(none)'} — expected ` +
-            'start|classified|record-batch|judge|verify-final|reviewed|remediated|commit|replan|next|close'
+            'start|classified|record-batch|judge|verify-final|found|reviewed|remediated|commit|replan|next|close'
         )
       }
 
