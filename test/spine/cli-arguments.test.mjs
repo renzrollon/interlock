@@ -210,8 +210,19 @@ test('run close accepts every flag the ship drivers pass it', async () => {
   const { global, leaves } = await loadFlagTable()
   const runClose = leaves.get('run close')
   assert.ok(runClose, 'SUBCOMMAND_FLAGS needs a "run close" entry')
-  for (const flag of ['host-banners', 'host-observed', 'notify', 'results', 'host-records', 'halt']) {
+  for (const flag of ['host-banners', 'host-observed', 'results', 'host-records', 'halt']) {
     assert.ok(runClose.has(flag) || global.has(flag), `run close must accept --${flag}`)
+  }
+})
+
+test('run close and notify keep accepting the retired push flags until 1.16.0', async () => {
+  // remove-the-push-notification D3, D4: an older driver on PATH still passes
+  // `run close --notify`, and an unknown flag exits 2, which would fail the
+  // close and leave no receipt. A script's `notify --title` is told, not refused.
+  const { leaves } = await loadFlagTable()
+  assert.ok(leaves.get('run close').has('notify'), 'run close no longer accepts the retired --notify')
+  for (const flag of ['title', 'body', 'priority']) {
+    assert.ok(leaves.get('notify').has(flag), `notify no longer accepts the retired --${flag}`)
   }
 })
 

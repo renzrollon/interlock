@@ -158,7 +158,7 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
       [ADD_LABELS, ok('https://github.com/example/repo/pull/25')],
       [DRIFT, json({ root: '.', unarchived: [C], stale: { skipped: false, reason: null, broken: [], aging: [] } })],
       [SPEC_NEW_CHANGE, ok(`- Creating change '${S.CHANGE}'...\n✔ Created change '${S.CHANGE}'`)],
-      [SPEC_CHECKPOINT, ok('push: not configured — set INTERLOCK_NTFY_TOPIC')],
+      [SPEC_CHECKPOINT, ok(`checkpoint: ${S.CHANGE} — waiting for review; nothing is sent`)],
       [S.BASH_GATE_BLOCKED.command, captured(S.BASH_GATE_BLOCKED)]
     ]),
     spawned: []

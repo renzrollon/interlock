@@ -10,8 +10,8 @@
 // spec: distribution/release-gates — "The installed tarball SHALL run every
 // command the shipped surfaces call"; design D21.
 //
-// About 4 seconds. In the sandbox the notify entries use an empty topic and stay
-// offline, so nothing here needs a port or a host.
+// About 4 seconds. The CLI makes no request of its own, so nothing here needs a
+// port or a host.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -63,7 +63,8 @@ test('the smoke runs clean against the repository bin and exits 0', () => {
       // the doctor's cli-version row — resolves to this tree and not to whatever
       // the developer installed globally.
       PATH: `${BIN_DIR}${delimiter}${process.env.PATH || ''}`,
-      // Offline: a notify entry with a topic would make a request.
+      // A developer's leftover push topic changes nothing since
+      // remove-the-push-notification; emptied anyway so an older CLI on PATH stays offline.
       INTERLOCK_NTFY_TOPIC: '',
       CLAUDE_ENV_FILE: ''
     }
@@ -207,10 +208,16 @@ test('the strict chain folds the reviewers with run found between the review ste
   assert.equal(typeof entries[found].check, 'function', 'run found is checked for the skeptics step')
 })
 
-test('every notify entry carries an empty topic, so the smoke never makes a request', async () => {
+test('the notify entry checks the local checkpoint line, and no entry passes the retired --notify', async () => {
+  // remove-the-push-notification: `notify checkpoint` is the spec meter's local
+  // marker, and neither driver passes `--notify` to the close any more.
   const entries = await inventory()
-  for (const entry of entries.filter(e => e.argv[0] === 'notify')) {
-    const env = entry.env || {}
-    assert.equal(env.INTERLOCK_NTFY_TOPIC ?? '', '', `${line(entry)} must run with an empty topic`)
+  const notify = entries.filter(e => e.argv[0] === 'notify')
+  assert.ok(notify.length > 0, 'the smoke no longer runs notify checkpoint')
+  for (const entry of notify) {
+    assert.equal(typeof entry.check, 'function', `${line(entry)} is not checked`)
+    assert.equal(entry.check({ stdout: 'checkpoint: c — waiting for review; nothing is sent\n', stderr: '' }), '')
+    assert.notEqual(entry.check({ stdout: 'push: not configured\n', stderr: '' }), '', `${line(entry)} accepts the old push line`)
   }
+  for (const entry of entries) assert.ok(!entry.argv.includes('--notify'), `${line(entry)} passes the retired --notify`)
 })

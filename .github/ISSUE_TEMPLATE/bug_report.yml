@@ -41,7 +41,7 @@ body:
     attributes:
       label: interlock doctor
       description: |
-        Run `interlock doctor` in the repository where it happened and paste the whole output. It prints the plugin, Node and Claude Code versions. It never prints your notify topic, but it does print local paths: redact any you would rather not share.
+        Run `interlock doctor` in the repository where it happened and paste the whole output. It prints the plugin, Node and Claude Code versions. It prints local paths: redact any you would rather not share.
       render: text
     validations:
       required: true

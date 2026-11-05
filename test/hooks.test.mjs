@@ -675,191 +675,19 @@ test('preflight: the manifest still registers this hook on SessionStart', () => 
 })
 
 // ---------------------------------------------------------------------------
-// A plugin option reaches the session (read-plugin-options-from-the-hook-environment)
+// lib/session-env.mjs: the preflight's channel to the session's commands
 // ---------------------------------------------------------------------------
 
-const NOTIFY_OPTION = join(HOOKS, 'notify-option.mjs')
-
-const OPTION_VARIABLE = { topic: 'CLAUDE_PLUGIN_OPTION_NTFY_TOPIC', url: 'CLAUDE_PLUGIN_OPTION_NTFY_URL' }
-
-/**
- * Run the option hook as the host would: the script and no argument, with each
- * saved option exported as the host's option variable (`{ topic, url }`).
- */
-function runNotifyOption(options, { cwd, envFile, env = {} }) {
-  // `{ topic, url }` only. An array or a misspelt key would run the hook with
-  // no option at all, and a case that expects nothing written would pass for
-  // the wrong reason (PR #34 review M1).
-  assert.ok(options && typeof options === 'object' && !Array.isArray(options), `options must be { topic, url }, not ${JSON.stringify(options)}`)
-  for (const kind of Object.keys(options)) assert.ok(kind in OPTION_VARIABLE, `unknown option ${JSON.stringify(kind)}: the hook reads topic and url`)
-  const base = { ...process.env }
-  // A developer's own session file, shell topic and saved options must not decide these cases.
-  for (const name of ['CLAUDE_ENV_FILE', 'INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL', ...Object.values(OPTION_VARIABLE)]) delete base[name]
-  if (envFile !== undefined) base.CLAUDE_ENV_FILE = envFile
-  for (const [kind, value] of Object.entries(options)) if (value !== undefined) base[OPTION_VARIABLE[kind]] = value
-  return spawnSync(process.execPath, [NOTIFY_OPTION], { cwd, input: '', encoding: 'utf8', env: { ...base, ...env } })
-}
-
-/** What a shell that sources the session's environment file reads for `name`. */
-function sourced(envFile, name) {
-  const r = spawnSync('sh', ['-c', `. "$1"; printf %s "$${name}"`, 'sh', envFile], { encoding: 'utf8', env: { PATH: process.env.PATH } })
-  assert.equal(r.status, 0, r.stderr)
-  return r.stdout
-}
-
-function optionRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'interlock-notify-option-'))
+function envFileRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'interlock-session-env-'))
   const envFile = join(root, 'session-env')
   writeFileSync(envFile, '')
   return { root, envFile }
 }
 
-test('notify-option: a saved topic is exported, and a shell that sources the file reads it back', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    const r = runNotifyOption({ topic: 'my-topic' }, { cwd: root, envFile })
-    assert.equal(r.status, 0, r.stderr)
-    assert.equal(r.stdout, '', 'a session-start hook\'s output becomes context')
-    assert.equal(readFileSync(envFile, 'utf8'), "export INTERLOCK_NTFY_TOPIC='my-topic'\n")
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_TOPIC'), 'my-topic')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: a topic with a quote and a server survive the shell in one run, and the file defines nothing else', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    const r = runNotifyOption({ topic: "topic'name", url: 'https://example.invalid' }, { cwd: root, envFile })
-    assert.equal(r.status, 0, r.stderr)
-    assert.equal(r.stdout, '')
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_TOPIC'), "topic'name")
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_URL'), 'https://example.invalid')
-    const lines = readFileSync(envFile, 'utf8').split('\n').filter(Boolean)
-    assert.deepEqual(
-      lines.map(l => l.match(/^export ([A-Z_]+)='/)?.[1]),
-      ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL'],
-      `the file defines something else: ${JSON.stringify(lines)}`
-    )
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: an unsubstituted reference, an empty value and a value with a line break are written nowhere', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    for (const value of ['${user_config.ntfy_topic}', '', '   ', 'two\nlines', 'carriage\rreturn']) {
-      const r = runNotifyOption({ topic: value, url: value }, { cwd: root, envFile })
-      assert.equal(r.status, 0, `${JSON.stringify(value)}: ${r.stderr}`)
-      assert.equal(r.stdout, '', `${JSON.stringify(value)} printed to standard output`)
-      assert.equal(readFileSync(envFile, 'utf8'), '', `${JSON.stringify(value)} reached the environment file`)
-    }
-    // No option saved: the host exports neither variable, and the hook still runs.
-    const bare = runNotifyOption({}, { cwd: root, envFile })
-    assert.equal(bare.status, 0, bare.stderr)
-    assert.equal(bare.stdout, '')
-    assert.equal(readFileSync(envFile, 'utf8'), '')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: a variable the operator already provided is left alone', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    const topic = runNotifyOption({ topic: 'from-the-plugin' }, { cwd: root, envFile, env: { INTERLOCK_NTFY_TOPIC: 'from-the-shell' } })
-    assert.equal(topic.status, 0, topic.stderr)
-    assert.equal(topic.stdout, '')
-    assert.equal(readFileSync(envFile, 'utf8'), '', 'a shell topic the operator already provided is left alone')
-    const url = runNotifyOption({ url: 'https://plugin.invalid' }, { cwd: root, envFile, env: { INTERLOCK_NTFY_URL: 'https://shell.invalid' } })
-    assert.equal(url.status, 0, url.stderr)
-    assert.equal(readFileSync(envFile, 'utf8'), '', 'a shell server the operator already provided is left alone')
-    // The other option's variable does not stand in for this one's.
-    const other = runNotifyOption({ topic: 'from-the-plugin', url: 'https://plugin.invalid' }, { cwd: root, envFile, env: { INTERLOCK_NTFY_URL: 'https://shell.invalid' } })
-    assert.equal(other.status, 0, other.stderr)
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_TOPIC'), 'from-the-plugin')
-    assert.doesNotMatch(readFileSync(envFile, 'utf8'), /INTERLOCK_NTFY_URL/, 'the shell server was overwritten beside the topic')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: with no environment file nothing is written anywhere and the exit is 0', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    rmSync(envFile)
-    const options = { topic: 'my-topic', url: 'https://example.invalid' }
-    const r = runNotifyOption(options, { cwd: root })
-    assert.equal(r.status, 0, r.stderr)
-    assert.equal(r.stdout, '')
-    assert.equal(r.stderr, '', 'a session without an environment file is not a failure to report')
-    assert.deepEqual(readdirSync(root), [], 'the hook wrote a file of its own')
-    // The same options with a file: the values were arriving, so the run above
-    // wrote nothing for the file's absence and for no other reason.
-    const withFile = runNotifyOption(options, { cwd: root, envFile })
-    assert.equal(withFile.status, 0, withFile.stderr)
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_TOPIC'), 'my-topic')
-    assert.equal(sourced(envFile, 'INTERLOCK_NTFY_URL'), 'https://example.invalid')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: another option variable or an argument writes nothing, and a file that cannot be written is one stderr line', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    const other = runNotifyOption({}, { cwd: root, envFile, env: { CLAUDE_PLUGIN_OPTION_NTFY_TOKEN: 'my-topic', CLAUDE_PLUGIN_OPTION_ntfy_topic: 'my-topic' } })
-    assert.equal(other.status, 0, other.stderr)
-    assert.equal(other.stdout, '')
-    assert.equal(readFileSync(envFile, 'utf8'), '', 'a variable that is not one of the two options reached the environment file')
-    // The 1.6.0 manifest's argument form is not read: the value comes from the environment only.
-    const argued = spawnSync(process.execPath, [NOTIFY_OPTION, 'topic', 'my-topic'], { cwd: root, input: '', encoding: 'utf8', env: { PATH: process.env.PATH, CLAUDE_ENV_FILE: envFile } })
-    assert.equal(argued.status, 0, argued.stderr)
-    assert.equal(readFileSync(envFile, 'utf8'), '', 'an argument reached the environment file')
-    // A directory where the file should be: the append throws, and the hook says so and exits 0.
-    const refused = runNotifyOption({ topic: 'secret-topic' }, { cwd: root, envFile: root })
-    assert.equal(refused.status, 0)
-    assert.equal(refused.stdout, '')
-    assert.equal(refused.stderr.trim().split('\n').length, 1, refused.stderr)
-    assert.match(refused.stderr, /INTERLOCK_NTFY_TOPIC/)
-    assert.doesNotMatch(refused.stderr, /secret-topic/, 'the value never reaches standard error')
-    // Both options saved against the same directory: one line per variable, so
-    // neither lost export hides behind the other's line.
-    const refusedBoth = runNotifyOption({ topic: 'secret-topic', url: 'https://example.invalid' }, { cwd: root, envFile: root })
-    assert.equal(refusedBoth.status, 0)
-    assert.deepEqual(
-      refusedBoth.stderr.trim().split('\n').map(l => l.match(/^interlock notify option: (INTERLOCK_NTFY_[A-Z]+) was not exported \(ignored\)/)?.[1]),
-      ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL'],
-      refusedBoth.stderr
-    )
-    assert.doesNotMatch(refusedBoth.stderr, /secret-topic|example\.invalid/, 'a value reached standard error')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: a second session start with the same option adds no second line', () => {
-  const { root, envFile } = optionRoot()
-  try {
-    for (let i = 0; i < 3; i++) {
-      const r = runNotifyOption({ topic: 'my-topic' }, { cwd: root, envFile })
-      assert.equal(r.status, 0, r.stderr)
-    }
-    assert.equal(readFileSync(envFile, 'utf8'), "export INTERLOCK_NTFY_TOPIC='my-topic'\n")
-    // A different value is a different line, and a file with no trailing break does not join them.
-    writeFileSync(envFile, 'alias x=y')
-    runNotifyOption({ topic: 'my-topic' }, { cwd: root, envFile })
-    runNotifyOption({ topic: 'my-topic' }, { cwd: root, envFile })
-    assert.equal(readFileSync(envFile, 'utf8'), "alias x=y\nexport INTERLOCK_NTFY_TOPIC='my-topic'\n")
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
 test('session env: appendExport reports a write only when a line was written, and a read error other than a missing file throws', async () => {
   const { appendExport } = await import('../lib/session-env.mjs')
-  const { root, envFile } = optionRoot()
+  const { root, envFile } = envFileRoot()
   try {
     assert.equal(appendExport(envFile, 'INTERLOCK_X', 'v', {}), true)
     assert.equal(appendExport(envFile, 'INTERLOCK_X', 'v', {}), false)
@@ -870,62 +698,6 @@ test('session env: appendExport reports a write only when a line was written, an
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
-})
-
-test('notify-option: a plugin tree without lib/session-env.mjs is one stderr line per saved option and exit 0, not a link error', () => {
-  const { root } = optionRoot()
-  try {
-    const tree = join(root, 'plugin-copy')
-    mkdirSync(join(tree, 'hooks'), { recursive: true })
-    copyFileSync(NOTIFY_OPTION, join(tree, 'hooks', 'notify-option.mjs'))
-    const envFile = join(root, 'env-file')
-    const run = options => {
-      const base = { ...process.env, CLAUDE_ENV_FILE: envFile, ...options }
-      for (const name of ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL', ...Object.values(OPTION_VARIABLE)]) if (!(name in options)) delete base[name]
-      return spawnSync(process.execPath, [join(tree, 'hooks', 'notify-option.mjs')], { cwd: root, input: '', encoding: 'utf8', env: base })
-    }
-    const lostLines = stderr => stderr.trim().split('\n').map(l => l.match(/^interlock notify option: (INTERLOCK_NTFY_[A-Z]+) was not exported \(ignored\)/)?.[1])
-    const topic = run({ CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'secret-topic' })
-    assert.equal(topic.status, 0, topic.stderr)
-    assert.equal(topic.stdout, '')
-    assert.deepEqual(lostLines(topic.stderr), ['INTERLOCK_NTFY_TOPIC'], topic.stderr)
-    assert.doesNotMatch(topic.stderr, /secret-topic/)
-    // Both options saved: every export the missing module costs is named on a line of its own.
-    const both = run({ CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'secret-topic', CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://example.invalid' })
-    assert.equal(both.status, 0, both.stderr)
-    assert.equal(both.stdout, '')
-    assert.deepEqual(lostLines(both.stderr), ['INTERLOCK_NTFY_TOPIC', 'INTERLOCK_NTFY_URL'], both.stderr)
-    assert.doesNotMatch(both.stderr, /secret-topic|example\.invalid/)
-    // No option saved, which is most session starts: the hook loads nothing,
-    // so the missing module is never noticed, and nothing is said or written.
-    const none = run({})
-    assert.equal(none.status, 0, none.stderr)
-    assert.equal(none.stdout, '')
-    assert.equal(none.stderr, '', 'with no option saved there is nothing to export and nothing to say')
-    assert.equal(existsSync(envFile), false, 'the hook touched the environment file with nothing to write')
-  } finally {
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('notify-option: the script makes no request of its own', () => {
-  // The hook's whole import closure: the hook itself, and lib/session-env.mjs, which
-  // holds the export it writes (hooks/session-preflight, task 3.2). Together they
-  // import node:fs and nothing else.
-  const importsOf = path => {
-    const source = readFileSync(path, 'utf8')
-    assert.ok(!source.includes('fetch('), `${path} calls fetch`)
-    return [...source.matchAll(/\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(?\s*['"]([^'"]+)['"]/g)].map(m => m[1] || m[2])
-  }
-  const imported = importsOf(NOTIFY_OPTION)
-  assert.deepEqual(imported, ['../lib/session-env.mjs'], 'the option hook imports more than lib/session-env.mjs')
-  const shared = importsOf(join(ROOT, 'lib', 'session-env.mjs'))
-  assert.deepEqual(
-    [...imported, ...shared].filter(s => ['node:http', 'node:https', 'node:net'].includes(s)),
-    [],
-    'the option hook imports a network module'
-  )
-  assert.deepEqual(shared, ['node:fs'], 'lib/session-env.mjs imports more than node:fs')
 })
 
 test('preflight: the hook writes nothing to the session\'s environment file, whatever the host\'s option variables hold', () => {
@@ -950,7 +722,7 @@ test('preflight: the hook writes nothing to the session\'s environment file, wha
     // The preflight now writes the session's PATH there (the session-PATH cases below),
     // so what this pins is narrower than an empty file: it copies no push option.
     const written = readFileSync(envFile, 'utf8')
-    assert.doesNotMatch(written, /INTERLOCK_NTFY|topic'name|example\.invalid/, 'the preflight copied an option: hooks/notify-option.mjs does that')
+    assert.doesNotMatch(written, /INTERLOCK_NTFY|topic'name|example\.invalid/, 'the preflight copied a host option variable into the session')
     assert.doesNotMatch(r.stdout || '', /topic'name/)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -1203,8 +975,8 @@ const PLAIN_HOOK = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/[a-z][a-z0-9-]*\.mjs
  * (design D3 of read-plugin-options-from-the-hook-environment). Its rule: write
  * each path in full from `${CLAUDE_PLUGIN_ROOT}`, "with no other variable,
  * command substitution, wildcard, or inline program". A `${user_config.…}`
- * argument is such a variable; reading the host's option variable inside the
- * hook is the finding's own remedy.
+ * argument is such a variable. The plugin declares no option since
+ * remove-the-push-notification, so no hook needs one.
  */
 function commandPathProblems(manifest) {
   const problems = []
@@ -1231,20 +1003,20 @@ function commandPathProblems(manifest) {
   return problems
 }
 
-test('every hook the manifest registers is a plain path from ${CLAUDE_PLUGIN_ROOT}, and one hook carries the push options', () => {
+test('every hook the manifest registers is a plain path from ${CLAUDE_PLUGIN_ROOT}, and SessionStart runs only the preflight', () => {
   const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
   assert.deepEqual(commandPathProblems(manifest), [])
   // hooks/hooks.json registers no command hook of its own (it names the mod), and is held to the same rule.
   assert.deepEqual(commandPathProblems(JSON.parse(readFileSync(join(HOOKS, 'hooks.json'), 'utf8'))), [])
   const start = manifest.hooks.SessionStart.flatMap(g => g.hooks || []).map(h => h.command)
-  assert.deepEqual(start, ['node "${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs"', 'node "${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs"'])
+  assert.deepEqual(start, ['node "${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs"'])
   assert.ok(!JSON.stringify(manifest.hooks).includes('${user_config.'), 'a hook names an option reference')
 })
 
 test('the command-path pin names an option argument, another variable, a substitution, a wildcard, and a hook that is not the one command', () => {
   const shipped = {
     hooks: {
-      SessionStart: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs"' }] }],
+      SessionStart: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs"' }] }],
       SessionEnd: [{ hooks: [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/recorder.mjs"' }] }]
     }
   }
@@ -1257,7 +1029,7 @@ test('the command-path pin names an option argument, another variable, a substit
   // The 1.6.0 to 1.13.0 shape the directory refused.
   const refused = mutated(h => {
     h.command = 'node'
-    h.args = ['${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs', 'topic', '${user_config.ntfy_topic}']
+    h.args = ['${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs', 'topic', '${user_config.ntfy_topic}']
   })
   assert.match(refused, /^SessionStart node .* names "user_config\.ntfy_topic": only/m)
   assert.match(refused, /with no arguments/)
@@ -2570,7 +2342,6 @@ test('with hooks/hooks.json present, the manifest still holds every settings hoo
     'PreToolUse Edit|Write hooks/guard-tests.mjs',
     'PreToolUse Workflow hooks/guard-relaunch.mjs',
     'SessionEnd - hooks/recorder.mjs',
-    'SessionStart - hooks/notify-option.mjs',
     'SessionStart - hooks/preflight.mjs',
     'SubagentStart ^workflow-subagent$ hooks/recorder.mjs',
     'SubagentStop ^workflow-subagent$ hooks/recorder.mjs',

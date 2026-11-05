@@ -89,12 +89,11 @@ test('the wave handoff budget is pinned at 2000 characters', () => {
   assert.equal(LIMITS.maxHandoffChars, 2000)
 })
 
-test('the notify push timeout is pinned at 5000ms', () => {
-  // design D5, add-harden-unattended-ship-runs: a hanging relay must not stall
-  // the close. Read by `postNtfy` in lib/notify.mjs (task 1.1).
-  assert.equal(LIMITS.notifyTimeoutMs, 5000)
-  assert.match(formatLimits(), /push timeout \(ms\)/)
-  assert.match(formatLimits(), new RegExp(String(LIMITS.notifyTimeoutMs)))
+test('the removed push publishes no timeout', () => {
+  // remove-the-push-notification: the push and its `notifyTimeoutMs` went
+  // together, and a published cap with no reader is a threshold nobody obeys.
+  assert.equal('notifyTimeoutMs' in LIMITS, false)
+  assert.doesNotMatch(formatLimits(), /push timeout/)
 })
 
 test('the launch ledger max age is published and printed', () => {

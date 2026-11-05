@@ -931,115 +931,27 @@ test('the eval rows change no exit status: clean stays clean, broken breaks for 
 })
 
 // ---------------------------------------------------------------------------
-// Push notification advice — never a gate (design D5, D12)
+// No push row (remove-the-push-notification): the push is gone, and a doctor
+// that still read the topic variable would be the credential read the plugin
+// directory holds the plugin for.
 // ---------------------------------------------------------------------------
 
-test('the notify row is ok when a topic is configured, naming the server and never the topic', () => {
+test('the doctor carries no notify row and reads no push variable, whatever the environment holds', () => {
   const dir = tmp()
   try {
     file(dir, '.claude/testing/profile.json', PROFILE)
     file(dir, '.claude/settings.json', ALL_ALLOWED)
     const secret = 'super-secret-topic'
     const opts = baseOpts(dir)
-    const report = diagnose(dir, { ...opts, env: { ...opts.env, INTERLOCK_NTFY_TOPIC: secret } })
-    const notify = byId(report, 'notify')
-    assert.equal(notify.status, 'ok')
-    assert.match(notify.detail, /https:\/\/ntfy\.sh/)
-    assert.doesNotMatch(notify.detail, new RegExp(secret))
-    assert.doesNotMatch(JSON.stringify(report), new RegExp(secret))
-    assert.doesNotMatch(formatDoctor(report), new RegExp(secret))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the notify row honours a self-hosted server URL, still never the topic', () => {
-  const dir = tmp()
-  try {
-    file(dir, '.claude/testing/profile.json', PROFILE)
-    file(dir, '.claude/settings.json', ALL_ALLOWED)
-    const opts = baseOpts(dir)
-    const report = diagnose(dir, {
-      ...opts,
-      env: { ...opts.env, INTERLOCK_NTFY_TOPIC: 'a-topic', INTERLOCK_NTFY_URL: 'https://ntfy.example.internal' }
-    })
-    assert.match(byId(report, 'notify').detail, /https:\/\/ntfy\.example\.internal/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the notify row ignores the host\'s option variable', () => {
-  const dir = tmp()
-  try {
-    file(dir, '.claude/testing/profile.json', PROFILE)
-    file(dir, '.claude/settings.json', ALL_ALLOWED)
-    const opts = baseOpts(dir)
-    const report = diagnose(dir, {
-      ...opts,
-      env: {
-        ...opts.env,
-        CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: 'from-plugin',
-        CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example'
-      }
-    })
-    const notify = byId(report, 'notify')
-    assert.equal(notify.status, 'skip')
-    assert.match(notify.detail, /INTERLOCK_NTFY_TOPIC/)
-    assert.match(notify.detail, /ntfy topic/)
-    assert.match(notify.detail, /unattended/)
-    // A saved option the session still cannot see is the one silent case: the row names the hook that should have carried it.
-    assert.match(notify.detail, /already saved/)
-    assert.match(notify.detail, /hooks\/notify-option\.mjs/)
-    assert.doesNotMatch(JSON.stringify(report), /from-plugin/)
-    assert.doesNotMatch(formatDoctor(report), /from-plugin/)
-
-    // A shell topic beside the option: the server is the shell's or the default, never the option's.
-    const both = diagnose(dir, {
-      ...opts,
-      env: { ...opts.env, INTERLOCK_NTFY_TOPIC: 'a-topic', CLAUDE_PLUGIN_OPTION_NTFY_URL: 'https://plugin.example' }
-    })
-    assert.equal(byId(both, 'notify').status, 'ok')
-    assert.match(byId(both, 'notify').detail, /https:\/\/ntfy\.sh/)
-    assert.doesNotMatch(JSON.stringify(both), /plugin\.example/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the notify row is skip when no topic is configured, naming the variable, and is never a failure', () => {
-  const dir = tmp()
-  try {
-    file(dir, '.claude/testing/profile.json', PROFILE)
-    file(dir, '.claude/settings.json', ALL_ALLOWED)
-    const report = diagnose(dir, baseOpts(dir))
-    const notify = byId(report, 'notify')
-    assert.equal(notify.status, 'skip')
-    assert.match(notify.detail, /INTERLOCK_NTFY_TOPIC/)
-    assert.ok(!report.failures.includes('notify'))
-    assert.ok(!report.warnings.includes('notify'))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the notify row is never fail, whatever the env holds', () => {
-  const dir = tmp()
-  try {
-    file(dir, '.claude/testing/profile.json', PROFILE)
-    file(dir, '.claude/settings.json', ALL_ALLOWED)
-    const hostile = new Proxy(
-      {},
-      {
-        get(_t, prop) {
-          if (prop === Symbol.iterator || typeof prop === 'symbol') return undefined
-          throw new Error('environment unreadable')
-        }
-      }
-    )
-    const opts = baseOpts(dir)
-    const report = diagnose(dir, { ...opts, env: hostile })
-    assert.equal(byId(report, 'notify').status, 'skip')
+    const env = { ...opts.env, INTERLOCK_NTFY_TOPIC: secret, INTERLOCK_NTFY_URL: 'https://self-hosted.example', CLAUDE_PLUGIN_OPTION_NTFY_TOPIC: secret }
+    const report = diagnose(dir, { ...opts, env })
+    assert.equal(report.checks.find(c => c.id === 'notify'), undefined, 'a notify row is back')
+    const text = JSON.stringify(report) + formatDoctor(report)
+    for (const absent of [secret, 'self-hosted.example', 'INTERLOCK_NTFY', 'ntfy']) {
+      assert.ok(!text.includes(absent), `the report carries ${absent}`)
+    }
+    const source = readFileSync(fileURLToPath(new URL('../../lib/doctor.mjs', import.meta.url)), 'utf8')
+    assert.doesNotMatch(source, /INTERLOCK_NTFY|CLAUDE_PLUGIN_OPTION_|ntfy/i, 'lib/doctor.mjs names the push again')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

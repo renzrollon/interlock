@@ -43,7 +43,7 @@ body:
     id: doctor
     attributes:
       label: interlock doctor
-      description: Run `interlock doctor` and paste the output. It never prints your notify topic, but it does print local paths.
+      description: Run `interlock doctor` and paste the output. It prints local paths, so check them before you paste.
       render: text
     validations:
       required: true

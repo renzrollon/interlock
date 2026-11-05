@@ -205,7 +205,7 @@ test('a contract the whitelist does not cover is named; a manifest without types
 })
 
 test('the files whitelist never ships the repository-only directories', () => {
-  const never = ['test', 'openspec', 'docs', 'evals', '.claude']
+  const never = ['test', 'openspec', 'docs', 'evals', '.claude', 'CHANGELOG.md']
   for (const entry of pkg.files) {
     const e = entry.replace(/^\.\//, '').replace(/\/$/, '')
     assert.ok(
@@ -450,50 +450,224 @@ test('the headroom pin names a file inside the zone and leaves the edge and an i
   ]), [`bin/inside is ${edge + 1} bytes, ${DIRECTORY_HEADROOM_BYTES - 1} under the 262144-byte limit; move code out before it holds a version`])
 })
 
-test('hooks/notify-option.mjs is the only shipped file that names the host\'s option variables', () => {
-  // The host exports a plugin option to hook processes only; one hook reads it
-  // and exports the shell variable the session's commands read
-  // (read-plugin-options-from-the-hook-environment). CHANGELOG.md is history.
-  const PREFIX = 'CLAUDE_PLUGIN_OPTION_'
-  const named = shippedFiles(ROOT, pkg.files)
-    .map(f => f.path)
-    .filter(path => path !== 'CHANGELOG.md' && readFileSync(join(ROOT, path)).includes(PREFIX))
-  assert.deepEqual(named, ['hooks/notify-option.mjs'], `the shipped files that spell ${PREFIX}:\n  ${named.join('\n  ')}`)
-})
+// ---------------------------------------------------------------------------
+// What the plugin directory reads as a credential, and a send
+// (remove-the-push-notification). Its hold "Uses a credential from the user's
+// machine" pairs a read of a credential from the environment or a file with a
+// request off the machine, "even in a README example", and the bundle's text is
+// what it reads: shipped prose counts. Each rule is a named function with a
+// self-test, so a check that silently matches nothing fails here first.
+// ---------------------------------------------------------------------------
 
-test('no shipped file but the changelog names a credential variable or file', () => {
-  // The plugin directory holds a plugin that reads a credential from the
-  // installer's environment and can send data off the machine, and its own
-  // remedy is to remove every part that reads one. The plugin reads none; this
-  // pin keeps a name from coming back. CHANGELOG.md is history and may spell
-  // what an old version read.
-  const NAMES = [
-    'ANTHROPIC_API_KEY',
-    'ANTHROPIC_AUTH_TOKEN',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'CODEX_API_KEY',
-    'OPENAI_API_KEY',
-    'apiKeyHelper',
-    'GITHUB_TOKEN',
-    'GH_TOKEN',
-    'GITLAB_TOKEN',
-    '.credentials.json',
-    'auth.json',
-    '.netrc',
-    'AWS_SECRET_ACCESS_KEY',
-    'GOOGLE_APPLICATION_CREDENTIALS',
-    'find-generic-password'
-  ]
-  const named = shippedFiles(ROOT, pkg.files)
-    .map(f => f.path)
-    .filter(path => path !== 'CHANGELOG.md')
-    .map(path => {
-      const text = readFileSync(join(ROOT, path), 'latin1')
-      const hits = NAMES.filter(name => text.includes(name))
+/** Every shipped file that is not an image or a font, with its text. */
+function shippedTexts(root = ROOT, files = pkg.files) {
+  return shippedFiles(root, files)
+    .filter(e => !IMAGE_OR_FONT.test(e.path))
+    .map(e => ({ path: e.path, text: readFileSync(join(root, e.path), 'latin1') }))
+}
+
+// Credential variables and files, the host's option-variable prefix, and the
+// removed push's variables. No shipped file is excepted, the changelog included:
+// it no longer ships, and an exception for it was the gap the 1.14.0 scan held.
+const CREDENTIAL_NAMES = Object.freeze([
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'apiKeyHelper',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'GITLAB_TOKEN',
+  '.credentials.json',
+  'auth.json',
+  '.netrc',
+  'AWS_SECRET_ACCESS_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'find-generic-password',
+  'CLAUDE_PLUGIN_OPTION_',
+  'INTERLOCK_NTFY_'
+])
+
+/** `path: name, name` for each text that spells a credential name. */
+function credentialNameProblems(entries) {
+  return entries
+    .map(({ path, text }) => {
+      const hits = CREDENTIAL_NAMES.filter(name => text.includes(name))
       return hits.length ? `${path}: ${hits.join(', ')}` : null
     })
     .filter(Boolean)
-  assert.deepEqual(named, [], `these shipped files spell a credential name:\n  ${named.join('\n  ')}`)
+}
+
+// What the removed push left behind, were any of it to come back.
+const PUSH_RESIDUE = Object.freeze([/ntfy/i, /notify-option/, /notifyTimeoutMs/, /postNtfy/, /push timeout/i])
+
+/** `path: residue` for each text that still carries the removed push. */
+function pushResidueProblems(entries) {
+  return entries
+    .map(({ path, text }) => {
+      const hits = PUSH_RESIDUE.filter(re => re.test(text)).map(re => re.source)
+      return hits.length ? `${path}: ${hits.join(', ')}` : null
+    })
+    .filter(Boolean)
+}
+
+const NETWORK_MODULES = '(?:node:)?(?:http|https|http2|net|tls|dgram)|undici'
+const NETWORK_CONSTRUCTS = Object.freeze([
+  ['a fetch call', /(?<![\w$.])fetch\s*\(|\bglobalThis\.fetch\b/],
+  ['a network module import', new RegExp(`\\bfrom\\s*['"](?:${NETWORK_MODULES})['"]`)],
+  ['a network module import', new RegExp(`\\bimport\\s*\\(\\s*['"](?:${NETWORK_MODULES})['"]`)],
+  ['a network module import', new RegExp(`\\bimport\\s+['"](?:${NETWORK_MODULES})['"]`)],
+  ['a network module require', new RegExp(`\\brequire\\s*\\(\\s*['"](?:${NETWORK_MODULES})['"]`)],
+  ['a socket or request constructor', /\bnew\s+(?:WebSocket|EventSource|XMLHttpRequest)\b/]
+])
+
+/** A shipped file a JavaScript engine runs: by extension, or a node shebang. */
+const isScript = ({ path, text }) => /\.(?:mjs|cjs|js)$/.test(path) || /^#!.*\bnode\b/.test(text)
+
+/** `path: construct` for each shipped script that could open a connection. */
+function networkProblems(entries) {
+  return entries
+    .filter(isScript)
+    .flatMap(({ path, text }) => [...new Set(NETWORK_CONSTRUCTS.filter(([, re]) => re.test(text)).map(([what]) => what))].map(what => `${path}: ${what}`))
+}
+
+/**
+ * Where each `userConfig` option is referenced in the manifest, and the shipped
+ * files other than the manifest that spell an option reference. A sensitive
+ * option may reach only an MCP or LSP server's `env` or `headers`: hook args
+ * trip the directory's hook-command rule, and a hook that reads the option from
+ * its environment is the credential read this hold is about. An option nothing
+ * references is a value the person is asked for and that goes nowhere.
+ */
+function sensitiveOptionProblems(manifest, entries = []) {
+  const problems = []
+  const options = manifest && typeof manifest.userConfig === 'object' && manifest.userConfig ? manifest.userConfig : {}
+  const refs = new Map(Object.keys(options).map(key => [key, []]))
+  const visit = (value, path) => {
+    if (typeof value === 'string') {
+      for (const m of value.matchAll(/\$\{user_config\.([A-Za-z0-9_]+)\}/g)) {
+        if (!refs.has(m[1])) problems.push(`${path.join('.')} references ${m[1]}, which userConfig does not declare`)
+        else refs.get(m[1]).push(path)
+      }
+    } else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) visit(v, [...path, k])
+    }
+  }
+  for (const [key, value] of Object.entries(manifest || {})) if (key !== 'userConfig') visit(value, [key])
+  const serverField = path =>
+    (path[0] === 'mcpServers' || path[0] === 'lspServers') && path.length >= 4 && (path[2] === 'env' || path[2] === 'headers')
+  for (const [key, paths] of refs) {
+    if (!paths.length) problems.push(`${key} is declared and never referenced`)
+    if (options[key] && options[key].sensitive === true) {
+      for (const path of paths.filter(p => !serverField(p))) {
+        problems.push(`${key} is sensitive and reaches ${path.join('.')}: only an MCP or LSP server's env or headers may take it`)
+      }
+    }
+  }
+  for (const { path, text } of entries) {
+    if (path !== '.claude-plugin/plugin.json' && text.includes('${user_config.')) problems.push(`${path} spells an option reference`)
+  }
+  return problems
+}
+
+test('no shipped file names a credential variable, a credential file or the host\'s option variables', () => {
+  const problems = credentialNameProblems(shippedTexts())
+  assert.deepEqual(problems, [], `these shipped files spell a credential name:\n  ${problems.join('\n  ')}`)
+})
+
+test('the credential pin names each name it finds, and passes a file that spells none', () => {
+  assert.deepEqual(
+    credentialNameProblems([
+      { path: 'README.md', text: 'set GITHUB_TOKEN, then read CLAUDE_PLUGIN_OPTION_TOKEN' },
+      { path: 'CHANGELOG.md', text: 'the doctor read ANTHROPIC_API_KEY' },
+      { path: 'lib/a.mjs', text: "const v = env['INTERLOCK_NTFY_TOPIC']" },
+      { path: 'lib/b.mjs', text: 'nothing to see' }
+    ]),
+    ['README.md: GITHUB_TOKEN, CLAUDE_PLUGIN_OPTION_', 'CHANGELOG.md: ANTHROPIC_API_KEY', 'lib/a.mjs: INTERLOCK_NTFY_']
+  )
+})
+
+test('the changelog does not ship', () => {
+  // The directory reads shipped prose as evidence (its 1.6.0 report cited
+  // "CHANGELOG.md: host"), and the changelog names what earlier versions read.
+  // The repository keeps it; the bundle does not carry it.
+  assert.ok(!pkg.files.some(entry => entry.replace(/^\.\//, '') === 'CHANGELOG.md'), '"files" lists CHANGELOG.md again')
+  assert.ok(!shippedFiles(ROOT, pkg.files).some(e => e.path === 'CHANGELOG.md'), 'CHANGELOG.md is in the shipped file set')
+})
+
+test('no shipped file carries the removed push', () => {
+  const problems = pushResidueProblems(shippedTexts())
+  assert.deepEqual(problems, [], `the removed push is still named in:\n  ${problems.join('\n  ')}`)
+})
+
+test('the residue pin names a relay, an option hook and the retired cap, and passes the checkpoint marker', () => {
+  assert.deepEqual(
+    pushResidueProblems([
+      { path: 'README.md', text: 'push to the NTFY server' },
+      { path: 'hooks/x.mjs', text: "import('./notify-option.mjs')" },
+      { path: 'lib/limits.mjs', text: "['push timeout (ms)', LIMITS.notifyTimeoutMs]" },
+      { path: 'skills/spec/SKILL.md', text: 'interlock notify checkpoint "<change-name>"' }
+    ]),
+    ['README.md: ntfy', 'hooks/x.mjs: notify-option', 'lib/limits.mjs: notifyTimeoutMs, push timeout']
+  )
+})
+
+test('no shipped code opens a network connection', () => {
+  const problems = networkProblems(shippedTexts())
+  assert.deepEqual(problems, [], `these shipped files can reach the network:\n  ${problems.join('\n  ')}`)
+})
+
+test('the network check names a fetch, each import form, a require and a socket, and leaves argv words alone', () => {
+  const shebang = '#!/usr/bin/env node\n'
+  assert.deepEqual(
+    networkProblems([
+      { path: 'lib/a.mjs', text: 'const r = await fetch(url)' },
+      { path: 'lib/b.mjs', text: "import { request } from 'node:https'" },
+      { path: 'lib/c.mjs', text: "const net = await import('net')" },
+      { path: 'lib/d.cjs', text: "const { Agent } = require('undici')" },
+      { path: 'cli/tool', text: `${shebang}const ws = new WebSocket(url)` },
+      { path: 'lib/e.mjs', text: 'const f = globalThis.fetch' },
+      { path: 'lib/f.mjs', text: "spawnSync('git', ['fetch', 'origin']); // git fetch, never ours; also obj.fetch(x)" },
+      { path: 'lib/g.mjs', text: "import { readFileSync } from 'node:fs'" },
+      { path: 'README.md', text: 'call fetch(url) in your own code' }
+    ]),
+    [
+      'lib/a.mjs: a fetch call',
+      'lib/b.mjs: a network module import',
+      'lib/c.mjs: a network module import',
+      'lib/d.cjs: a network module require',
+      'cli/tool: a socket or request constructor',
+      'lib/e.mjs: a fetch call'
+    ]
+  )
+})
+
+test('a sensitive option reaches only a server\'s env or headers, and only the manifest spells an option reference', () => {
+  const problems = sensitiveOptionProblems(readJson(PLUGIN_PATH), shippedTexts())
+  assert.deepEqual(problems, [], `the manifest hands an option where it must not go:\n  ${problems.join('\n  ')}`)
+})
+
+test('the option check names hook args, an unused option, an undeclared reference and a file outside the manifest', () => {
+  const token = { type: 'string', title: 'Token', description: 'A token.', sensitive: true }
+  const hookArgs = {
+    userConfig: { token },
+    hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node', args: ['x.mjs', '${user_config.token}'] }] }] }
+  }
+  assert.deepEqual(sensitiveOptionProblems(hookArgs), [
+    "token is sensitive and reaches hooks.SessionStart.0.hooks.0.args.1: only an MCP or LSP server's env or headers may take it"
+  ])
+  assert.deepEqual(sensitiveOptionProblems({ userConfig: { token } }), ['token is declared and never referenced'])
+  const server = { userConfig: { token }, mcpServers: { api: { command: 'node', args: ['s.mjs'], env: { API_TOKEN: '${user_config.token}' } } } }
+  assert.deepEqual(sensitiveOptionProblems(server), [])
+  const headers = { userConfig: { token }, mcpServers: { api: { type: 'http', url: 'https://example.invalid', headers: { Authorization: 'Bearer ${user_config.token}' } } } }
+  assert.deepEqual(sensitiveOptionProblems(headers), [])
+  assert.deepEqual(sensitiveOptionProblems({ mcpServers: { api: { env: { X: '${user_config.other}' } } } }), [
+    'mcpServers.api.env.X references other, which userConfig does not declare'
+  ])
+  assert.deepEqual(sensitiveOptionProblems(server, [{ path: 'hooks/a.mjs', text: 'reads ${user_config.token}' }]), [
+    'hooks/a.mjs spells an option reference'
+  ])
 })
 
 // ---------------------------------------------------------------------------

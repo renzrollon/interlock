@@ -2468,105 +2468,17 @@ test('a host reporting cache fields for some spawns and not others degrades, nev
   }
 })
 
-// --- the close's identity rows, archive reminder and push (design D5/D7/D9) --
+// --- the close's identity rows, archive reminder, and the retired push ------
 //
-// Everything below drives the REAL close through the CLI, because that is the
-// only party that reads the environment, calls `detectUnarchived` and awaits
-// the one outbound request this codebase makes. The relay is a loopback
-// `http.createServer`: the suite never touches the network, and a test that
-// stubbed `fetch` would prove only that the stub works — not that the child
-// process the drivers actually spawn posts anything at all.
+// Everything below drives the REAL close through the CLI. The push was removed
+// (remove-the-push-notification); an older driver on PATH may still pass
+// `--notify`, so until 1.16.0 the close accepts it, sends nothing, and adds one
+// summary row. A topic left in the environment is set below on purpose: the
+// CLI must read it nowhere, and the network pins in test/spine/package.test.mjs
+// hold that no shipped module can open a connection at all.
 
-/**
- * Read back a `Title` header. Every headline contains an em dash, which is not
- * a ByteString, so it travels RFC 2047 encoded (`lib/notify.mjs`).
- */
-function decodeHeader(value) {
-  const match = /^=\?UTF-8\?B\?(.*)\?=$/.exec(value || '')
-  return match ? Buffer.from(match[1], 'base64').toString('utf8') : value
-}
-
-/**
- * A ntfy stand-in on loopback, in a process of its OWN.
- *
- * It cannot live in this one. Every command here goes through `execFileSync`,
- * which blocks this process's event loop for the whole child run — an
- * in-process server would never accept the connection, and the close would
- * report a five-second timeout that says nothing about the code under test.
- * So the relay is a separate node process and it records what it received to
- * a file this process reads after the close has returned.
- */
-async function relay(status = 200) {
-  const dir = mkdtempSync(join(tmpdir(), 'interlock-relay-'))
-  const log = join(dir, 'requests.jsonl')
-  const script = `
-    const { createServer } = require('node:http')
-    const { appendFileSync } = require('node:fs')
-    const server = createServer((req, res) => {
-      let body = ''
-      req.on('data', chunk => { body += chunk })
-      req.on('end', () => {
-        appendFileSync(${JSON.stringify(log)},
-          JSON.stringify({ url: req.url, method: req.method, headers: req.headers, body }) + '\\n')
-        res.writeHead(${status})
-        res.end('x')
-      })
-    })
-    server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'))
-  `
-  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
-  // Three ways this can end, and only one of them used to settle the promise: a
-  // spawn error, a child that exits before printing a port (a sandbox that
-  // cannot bind loopback), and a child that neither prints nor exits. Without
-  // the latter two the whole suite wedges instead of failing.
-  const port = await new Promise((resolve, reject) => {
-    let timer = null
-    const settle = (fn, value) => {
-      clearTimeout(timer)
-      fn(value)
-    }
-    timer = setTimeout(() => settle(reject, new Error('relay did not report a port within 5s')), 5000)
-    child.stdout.once('data', d => settle(resolve, Number(String(d).trim())))
-    child.once('error', err => settle(reject, err))
-    child.once('exit', code => settle(reject, new Error(`relay exited (${code}) before reporting a port`)))
-  }).catch(err => {
-    child.kill()
-    rmSync(dir, { recursive: true, force: true })
-    throw err
-  })
-  return {
-    url: `http://127.0.0.1:${port}`,
-    requests: () =>
-      existsSync(log)
-        ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
-        : [],
-    close: () => {
-      child.kill()
-      rmSync(dir, { recursive: true, force: true })
-    }
-  }
-}
-
-/**
- * False, or the reason the relay tests cannot run here. A sandbox that denies
- * binding loopback is an environment fact, not a result: the tests that need
- * the relay skip and say so, and any other probe failure skips nothing, so
- * they still run and fail where the cause is anything else.
- */
-function loopbackDenied() {
-  const probe = spawnSync(
-    process.execPath,
-    [
-      '-e',
-      "require('node:net').createServer()" +
-        ".on('error', e => process.exit(e.code === 'EPERM' || e.code === 'EACCES' ? 3 : 1))" +
-        ".listen(0, '127.0.0.1', function () { this.close() })"
-    ],
-    { stdio: 'ignore' }
-  )
-  return probe.status === 3 ? 'this environment denies binding loopback (a sandbox) — rerun outside it' : false
-}
-const LOOPBACK_DENIED = loopbackDenied()
+const RETIRED_ROW = '  push: removed — interlock sends no notifications'
+const OLD_PUSH_ENV = { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: 'http://127.0.0.1:9/' }
 
 /** A sibling change in the same tree, with every box ticked or none. */
 function siblingChange(root, name, { complete = true } = {}) {
@@ -2644,83 +2556,69 @@ test('a halted close prints no archive reminder — the change is not complete',
   }
 })
 
-test('a close without --notify makes no request, even with a topic configured', { skip: LOOPBACK_DENIED }, async () => {
-  const stub = await relay()
+test('a close without --notify prints no push row, even with a topic left in the environment', () => {
   const { root, change } = repo()
   try {
-    const closed = toCleanClose(root, change, [], {
-      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
-    })
-    assert.equal(stub.requests().length, 0, 'the driver requests the push; a configured topic alone never does')
+    const closed = toCleanClose(root, change, [], { env: OLD_PUSH_ENV })
+    assert.equal(closed.exitCode, 0)
     assert.doesNotMatch(closed.summary, /push:/)
+    assert.ok(!closed.summary.includes('secret-topic-abc'))
   } finally {
     cleanup(root)
-    await stub.close()
   }
 })
 
-test('a close with --notify posts the summary\'s own first line, at high priority on a halt', { skip: LOOPBACK_DENIED }, async () => {
-  const stub = await relay()
-  const { root, change } = repo()
+test('an older driver\'s --notify closes as before and says the push was removed', () => {
+  const plain = repo()
+  const retired = repo()
   try {
-    toTail(root, change, [])
-    const closed = run(root, ['run', 'close', '--halt', 'stopped for the test', '--notify'], {
-      expectExit: 1,
-      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: stub.url }
-    }).step
-
-    const posted = stub.requests()
-    assert.equal(posted.length, 1, 'exactly one push per close')
-    const [request] = posted
-    assert.equal(request.method, 'POST')
-    assert.equal(request.url, '/secret-topic-abc')
+    const without = toCleanClose(plain.root, plain.change)
+    const withFlag = toCleanClose(retired.root, retired.change, ['--notify'], { env: OLD_PUSH_ENV })
+    assert.equal(withFlag.exitCode, without.exitCode, 'the retired flag changed the exit code')
+    assert.deepEqual(withFlag.banners, without.banners, 'the retired flag raised a banner')
+    assert.equal(withFlag.summary.split('\n').filter(line => line === RETIRED_ROW).length, 1, withFlag.summary)
     assert.equal(
-      decodeHeader(request.headers.title),
-      closed.summary.split('\n')[0],
-      'the push and the print carry ONE headline, so they cannot disagree'
+      /No degradation banners/.test(withFlag.summary),
+      /No degradation banners/.test(without.summary),
+      'the row is a row, never a banner: it must not change the clean-run line'
     )
-    assert.equal(request.headers.priority, 'high', 'a halt is what the reader who walked away needs loudest')
-    assert.match(request.body, new RegExp(`^change: ${change}$`, 'm'))
-    assert.match(request.body, /^run: /m)
-    assert.match(closed.summary, /^ {2}push: sent \(ntfy\)$/m)
+    const manifest = JSON.parse(readFileSync(join(retired.root, '.claude/ship/run.json'), 'utf8'))
+    const trajectory = readFileSync(join(retired.root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
+    assert.doesNotMatch(trajectory, /PUSH|secret-topic-abc/, 'the retired request reached the trajectory')
   } finally {
-    cleanup(root)
-    await stub.close()
+    cleanup(plain.root)
+    cleanup(retired.root)
   }
 })
 
-test('a rejected push is a banner and a row, and never the exit code', { skip: LOOPBACK_DENIED }, async () => {
-  const forbidden = await relay(403)
+test('a halted close and a close before any run both accept the retired --notify and print the row', () => {
   const { root, change } = repo()
   try {
-    const closed = toCleanClose(root, change, ['--notify'], {
-      env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: forbidden.url }
-    })
-    assert.match(closed.summary, /^ {2}push: failed — HTTP 403$/m)
-    assert.ok(closed.banners.includes('PUSH FAILED: HTTP 403'), 'the failure is a degradation banner, not only a row')
-    assert.doesNotMatch(closed.summary, /No degradation banners/, 'a run with a banner must not claim it had none')
-    assert.equal(closed.exitCode, 0, 'the run happened; a relay that would not take the news did not unhappen it')
+    const early = run(root, ['run', 'close', '--halt', 'stopped before start', '--notify'], { expectExit: 1, env: OLD_PUSH_ENV }).step
+    assert.match(early.summary, /^ {2}run: none — the run halted before a plan was adopted$/m)
+    assert.ok(early.summary.split('\n').includes(RETIRED_ROW), early.summary)
+    toTail(root, change, [])
+    const halted = run(root, ['run', 'close', '--halt', 'stopped for the test', '--notify'], { expectExit: 1, env: OLD_PUSH_ENV }).step
+    assert.ok(halted.summary.split('\n').includes(RETIRED_ROW), halted.summary)
+    assert.ok(!halted.banners.some(b => /PUSH/.test(b)), `a banner names the push: ${halted.banners.join(' | ')}`)
   } finally {
     cleanup(root)
-    await forbidden.close()
   }
 })
 
-test('the topic reaches the relay and nothing else — not the summary, not the trajectory', { skip: LOOPBACK_DENIED }, async () => {
-  const forbidden = await relay(403)
+test('closing a foreign run with the retired --notify prints the row and still records nothing', () => {
   const { root, change } = repo()
-  const topic = 'secret-topic-abc'
   try {
-    const closed = toCleanClose(root, change, ['--notify'], {
-      env: { INTERLOCK_NTFY_TOPIC: topic, INTERLOCK_NTFY_URL: forbidden.url }
+    toFirstBatch(root, change)
+    editManifest(root, m => {
+      m.schema = 'interlock.run/2'
     })
-    assert.ok(!closed.summary.includes(topic), 'the topic is the relay\'s only auth — it is a capability, not a label')
-    const manifest = JSON.parse(readFileSync(join(root, '.claude/ship/run.json'), 'utf8'))
-    const trajectory = readFileSync(join(root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
-    assert.ok(!trajectory.includes(topic), 'nor may it reach the corpus the trajectory writes for later readers')
+    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
+    const closed = runAny(root, ['run', 'close', '--halt', 'x', '--notify'])
+    assert.ok(closed.step && closed.step.summary.split('\n').includes(RETIRED_ROW), JSON.stringify(closed.step))
+    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the foreign manifest was rewritten')
   } finally {
     cleanup(root)
-    await forbidden.close()
   }
 })
 

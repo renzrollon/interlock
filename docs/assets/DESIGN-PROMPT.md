@@ -50,7 +50,7 @@ Produce these artboards, each exported as a PNG at the stated pixel size and fil
 - hero: `Example output of /interlock:ship: the plan preview names the mode, six tasks in two waves with a maximum of eight parallel agents, two tasks serialized because they share a file; the run ends with SHIP COMPLETE, a commit hash and no degradation banners.`
 - doctor: `Example output of interlock doctor: nine checks, one FAIL on the missing test profile with the command that fixes it, and the permission allowlist reported as complete.`
 - plan-preview: `Example output of interlock waves: mode, wave and lane layout, and the warnings explaining each fold and serialization.`
-- halted: `Example SHIP HALTED summary: the halt reason, the one leftover task, a push notification sent, and a MODEL ROUTING OVERRIDDEN banner.`
+- halted: `Example SHIP HALTED summary: the halt reason, the one leftover task, and a MODEL ROUTING OVERRIDDEN banner.`
 - strict-complete: `Example ship --strict summary: nine findings raised, four dismissed by skeptics, two dropped as too weak, three surviving; three fixed; six of six spec scenarios confirmed; a commit.`
 - limits: `Example output of interlock limits: the caps the ship loop obeys, printed by the CLI.`
 
@@ -131,10 +131,9 @@ PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run     [accent]
       fix: Run /interlock:fix-tests once to discover and persist the project test setup.   [accent]
   [ok  ] permissions: all 7 required commands are allowed
   [ok  ] state-dirs: every run-state directory is writable or creatable
-  [skip] notify: INTERLOCK_NTFY_TOPIC is not set — optional; an unattended run that stops will not reach you   [dim]
 ```
 
-(The real output continues with two more `[skip]` rows — `prompt-cache`, `evals-harness`. Cut for length; the frame ends at `notify`.)
+(The real output continues with two `[skip]` rows — `prompt-cache`, `evals-harness`. Cut for length; the frame ends at `state-dirs`.)
 
 ### B4 — halted run (rendered by `formatRunSummary`)
 
@@ -147,7 +146,6 @@ SHIP HALTED — unit suite red after 2 root-cause repairs — budget spent      
   run: 2026-09-13T15-40-52Z-add-format-summary
   project: interlock
   cwd: /Users/you/projects/interlock
-  push: sent (ntfy)
 Do not start another ship run unless the user asks.
 
 LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / --strict to enable   [dim]
@@ -198,7 +196,7 @@ $ interlock limits
   solo envelope (max tasks in one lane)           20
 ```
 
-(The real output continues with verify, review-policy, push, eval and price rows. Cut for length.)
+(The real output continues with verify, review-policy, eval and price rows. Cut for length.)
 
 ---
 
@@ -241,7 +239,7 @@ console.log(formatRunSummary({ change: "add-format-summary", ...id, runId: "2026
   summary: { halted: "unit suite red after 2 root-cause repairs — budget spent",
     plan: { reused: true, status: "fingerprint-match", reason: "planning inputs unchanged" },
     waves: [waves[0], { wave: "2", kind: "code", ok: 1, failed: 1 }] },
-  flags: { review: false, handoff: false, conformance: false }, leftoverTaskIds: ["3.1"], push: { sent: true },
+  flags: { review: false, handoff: false, conformance: false }, leftoverTaskIds: ["3.1"],
   degradations: ["MODEL ROUTING OVERRIDDEN: CLAUDE_CODE_SUBAGENT_MODEL=sonnet — every tier ran on sonnet"] }))
 console.log(formatRunSummary({ change: "add-format-summary", ...id, runId: "2026-09-13T16-11-03Z-add-format-summary",
   summary: { plan: rebuilt, waves, review: { raised: 9, dismissed: 4, droppedByQuality: 2, surviving: 3 },

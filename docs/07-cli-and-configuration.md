@@ -1,6 +1,6 @@
 # 07 — The CLIs: reference and configuration
 
-The plugin ships three executables in its `cli/` directory — `interlock`, `interlock-graph` and `interlock-run` — plus the `interlock-ship-acp` deprecation shim, and its SessionStart hook puts that directory on the session's `PATH` ([the PATH handoff](#the-path-handoff-and-openspec-interlock-openspec)). The directory is `cli/`, not `bin/`, because the plugin directory's policy asks a plugin to ship readable scripts outside `bin/`. Every subcommand runs without a model and without the network, with one named exception ([push notifications](#the-one-network-call-push-notifications)). They exist so that any decision the loop made can be re-run by you, on the same inputs, and give the same answer.
+The plugin ships three executables in its `cli/` directory — `interlock`, `interlock-graph` and `interlock-run` — plus the `interlock-ship-acp` deprecation shim, and its SessionStart hook puts that directory on the session's `PATH` ([the PATH handoff](#the-path-handoff-and-openspec-interlock-openspec)). The directory is `cli/`, not `bin/`, because the plugin directory's policy asks a plugin to ship readable scripts outside `bin/`. Every subcommand runs without a model, and none makes a network request of its own; `interlock openspec provision` runs `npm` ([the network](#no-network-call-the-push-was-removed)). They exist so that any decision the loop made can be re-run by you, on the same inputs, and give the same answer.
 
 This page is the reference. [06 — Why it works](./06-why-it-works.md) explains why each decision moved out of prose; [04 — When it stops](./04-when-it-stops.md) explains every banner these commands print.
 
@@ -75,7 +75,7 @@ Each subcommand replaces a judgement the model used to re-derive in prose on eve
 | `interlock doctor` | Whether the host can carry an unattended run: the permission allowlist against the commands the flow shells out to (including the one your own `.claude/testing/profile.json` names), the Node version, the installed plugin's workflow and agent types, the OpenSpec CLI (warning below the `1.8.0` floor, where nested deltas archive without syncing or `openspec validate` passes a change `openspec archive` refuses), git, and whether the run-state directories can be written — each one where it lives, so from a linked worktree the trajectory directory is probed in the main checkout. Exits 1 when a check would stop a zero-touch run, prints the settings snippet that fixes it, and changes nothing itself. Its `state-home`, `advisor` and `mods` rows are advice and never fail — see the note under this table |
 | `interlock routing [<role>] [--depth lean\|strict]` | The model and effort a prose skill passes when it spawns a role, and the review depth's shape. USAGE: `interlock routing [<role>] [--depth lean\|strict]`. With a role it prints `routing <role> (<depth>): model <m> · effort <e>`; with none it prints `depth:`, one `routing <role>:` line per role, `review dimensions:` and `review skeptics:`. A null model or effort prints as `inherit` and the caller omits the parameter. `--json` carries `role`, `depth`, `model`, `effort`, `banners` and `overrides` (`effortLevel`, `subagentModelForce`); without a role it carries `depth`, `roles`, `review` (`dimensions`, `skeptics`), `banners` and `overrides`. A set `CLAUDE_CODE_EFFORT_LEVEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is printed as `EFFORT ROUTING OVERRIDDEN` or `MODEL ROUTING OVERRIDDEN`, never changed. An unknown role or depth exits 1 naming the known ones on stderr, with nothing on stdout. The depth is the published default when `--depth` is absent. The values are the `routing:` and `review depth:` rows of `interlock limits` (`routing` and `reviewDepth` in `--json`); none is restated here |
 | `interlock limits` | Every cap the loop obeys, so nothing restates one, among them the two `change width:` rows (the most delta specs and the most tasks a change carries before `validate` calls it wide) and the `skeptic spawns (per skeptics step)` row (the most skeptic agents one strict review spawns, spent in pairs; `maxSkepticSpawns` in `--json`). It also prints the `routing:` rows (the model and effort per spawn role, with a `(strict)` row where the strict depth differs) and the `review depth:` rows (the default depth, and each depth's dimensions and skeptics). Its last line adds the concurrency observed on this machine beside the vendor default: `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS=<n>` when set, otherwise the vendor default and the CPU count that may reduce it. `--json` carries it as `runtime.observed` |
-| `interlock notify` | The one outbound request this CLI makes — see below |
+| `interlock notify checkpoint <change>` | Marks the spec checkpoint for the spec meter. Local: one `checkpoint:` line, nothing sent, exit 0. The `--title` form is accepted until 1.16.0 and says the push was removed — see below |
 | `interlock evals` | Whether an eval results file shows a regression (`triage`), whether a case may move from advisory to blocking (`promote`), how often judged graders agreed with human labels (`calibrate`), and a draft case from a recorded run (`capture`). See [14](./14-evals.md) |
 | `interlock report` | Indicators over the three recorded corpora, read from the state home, every value with its denominator. Gates nothing, always exits 0. See [11](./11-the-indicators.md) |
 | `interlock outcomes` · `interlock autonomy` | Record a run's outcome, and per-path outcomes for the earned-autonomy ledger. **Nothing reads either to change what the workflow does**: no autonomy level and no accumulated outcome ever relaxes a gate. They exist so the question can be answered later, from evidence |
@@ -308,7 +308,7 @@ The same module draws an `/interlock:spec` run on a mods host, in a terminal and
 | `gate PASS`, `gate BLOCKED (blocker <n> · warning <n>)` | `interlock gate … --json`, with `metrics not written` when the CLI says so |
 | `autonomy record`, `autonomy clean` | the two `interlock autonomy` lines, by their command word only |
 | `ready true`, `ready false (blockers <n>)` | `interlock ready … --json` on the `--continue` path |
-| `checkpoint` | `interlock notify checkpoint` |
+| `checkpoint` | `interlock notify checkpoint`, which is local and sends nothing |
 
 A keyed line that printed no JSON, or JSON without the fields the line names, reads `<line> (unparsed)`. Its first line of output goes on the pane, and the debug log gets one line naming the reason. A name the CLI could not resolve reads `<line>: change not resolved`. The meter reads a keyed line that begins a command, or one between `&&`, `||` or `;` in a chained command. The lines it reads by their argv alone (`openspec new change`, `interlock autonomy`, `interlock notify checkpoint`) count from any position. A line whose output it reads counts when it is the only such line in the command. Two of them in one command are both shown as unparsed (`compound command`), because their output cannot be told apart. A line run in another form, such as behind a `cd …` with no separator or through a variable, is not read and stays `not run yet`.
 
@@ -407,20 +407,16 @@ The data directory is `INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, then `
 
 ---
 
-## The one network call: push notifications
+## No network call: the push was removed
 
-A ship run that halts or completes while nobody is watching can push you a message. It is off by default. Nothing is read from or written to the repo tree for this. Inside Claude Code the same two values can be set as plugin options (`ntfy topic`, which is masked, and `ntfy server`). One session-start hook, `hooks/notify-option.mjs`, reads each saved option from the variable the host exports to hook processes and writes the matching variable below into the session's environment, where the session's commands read it. A variable you already provided wins. `interlock doctor` at session start runs beside that hook and cannot see an option, so with only an option set its `notify` row in the session-start report reads `skip` and says so; run `interlock doctor` from the session afterwards and the row reads `ok` and names the server. If that later row still reads `skip` with the option saved, the host handed the option to no hook, and the row says so; the hook's own failure lines reach only the host's debug log, because a session-start hook that exits 0 shows nothing.
+Interlock makes no network request of its own and reads no credential. Through 1.14.0 a ship run's close could post one message to an ntfy topic; the plugin directory holds a plugin that reads a credential from the environment and sends it to a server, the topic was that credential, and 1.15.0 removed the push (change `remove-the-push-notification`). The plugin declares no option, and `interlock doctor` has no `notify` row.
 
-| Variable | Meaning |
-|---|---|
-| `INTERLOCK_NTFY_TOPIC` | The [ntfy](https://ntfy.sh) topic to post to. Unset (the default) means `run close` posts nothing, and the suite never makes a request. Treat the value as a secret — anyone who knows it reads every message, since it is the only authentication the public server offers. |
-| `INTERLOCK_NTFY_URL` | The ntfy server, defaulting to the public `https://ntfy.sh`. Point it at a self-hosted server if the public relay is not an acceptable trust boundary for your halt reasons. |
+Two forms stay accepted until 1.16.0, so nothing that still calls them breaks:
 
-With a topic set, both `workflows/ship.js` and `cli/interlock-run` pass `--notify` on every close, so one message goes out per terminal outcome — `high` priority on `SHIP HALTED`, default priority otherwise — naming only the summary's first line, the change and the run id, never the topic, the working directory or the project slug. A failed push shows up as `push: failed — <reason>` in the summary and a `PUSH FAILED: <reason>` banner, and never changes the run's exit code. See [when it stops](./04-when-it-stops.md#push-failed) for the failure modes, or run a one-off yourself:
+- `interlock run close --notify` from a driver older than the CLI on PATH: the close sends nothing, keeps its exit code and banners, and prints one summary row, `push: removed — interlock sends no notifications`. Neither current driver passes it.
+- `interlock notify --title <t>` from a script: it prints that same line and exits 0, the exit an unconfigured push always had.
 
-```bash
-interlock notify --title "<title>" --body "<body>"
-```
+`interlock notify checkpoint <change>` is not retired: it is the spec skill's checkpoint marker, which the spec meter keys on, and it prints one local line. To be reached while away from the terminal, use Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) push. If you saved an `ntfy topic` in an earlier version, remove it from the plugin's settings, unset any `INTERLOCK_NTFY_*` in your shell, and stop using the topic: anyone who knows it can still read what was sent to it.
 
 ---
 
@@ -497,8 +493,6 @@ Every banner the runner prints, with what to do about it, is in [04 — When it 
 
 | Variable | Read by | Effect |
 |---|---|---|
-| `INTERLOCK_NTFY_TOPIC` | `interlock notify`, `run close --notify` | Enables push notifications. Unset: no request is ever made |
-| `INTERLOCK_NTFY_URL` | same | ntfy server; default `https://ntfy.sh` |
 | `INTERLOCK_MODEL_MAP` | `interlock-run` | Planner tier slug → host model id, per host |
 | `INTERLOCK_ACP_MODEL_MAP` | `interlock-run --host acp` | Alias of the `acp` entry above |
 | `INTERLOCK_ACP_COMMAND` | `interlock-run --host acp` | The ACP agent command to drive |

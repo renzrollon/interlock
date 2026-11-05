@@ -42,7 +42,7 @@ The finding codes are not in the local `claude` binary, so no local check reprod
   - An unknown flag exits 2, and the drivers call `interlock` from PATH, where an older driver can meet a newer CLI. Without the flag, a close would fail and leave no receipt.
   - The flag does nothing except add one summary row, `RETIRED_PUSH_ROW`, exported once from `lib/receipt.mjs`.
   - It is a row, not a banner, so it neither removes the "No degradation banners" line nor reaches the trajectory's `degradations`.
-- **D4 — `interlock notify --title` is accepted until 1.16.0.** It prints `push: removed in 1.15.0 — interlock sends no notifications` and exits 0. That is the exit an unconfigured push always had, so a script calling it keeps working and is told.
+- **D4 — `interlock notify --title` is accepted until 1.16.0.** It prints `push: removed — interlock sends no notifications` and exits 0. That is the exit an unconfigured push always had, so a script calling it keeps working and is told.
 - **D5 — retire `ship/close-notification`.** Every requirement there is about the push. The change carries `retire_capabilities: true`, so archive deletes the emptied spec, whose Purpose a delta cannot rewrite. The hook-command rule from that capability moves to `distribution/npm-package`, because the bundle is what the directory judges.
 - **D6 — `CHANGELOG.md` stops shipping.**
   - The directory reads shipped prose as evidence: its 1.6.0 report cited "CHANGELOG.md: host".

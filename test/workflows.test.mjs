@@ -136,9 +136,6 @@ test('the degradation banner strings are kept verbatim, at whichever party raise
   for (const banner of [
     'VERIFICATION SKIPPED: reason=',
     'E2E FAILED (non-blocking by policy):',
-    // The push is the CLI's alone: the drivers pass `--notify` and know nothing
-    // about topics, servers or what a failed push is called.
-    'PUSH FAILED: ',
     // Moved, not dropped (name-workflow-spawn-overrides-and-stops): the model
     // override is read version-aware by `run start` from the CLI's own
     // environment, so the banner is the CLI's and the driver must not restate it.
@@ -1696,7 +1693,8 @@ test('a run with leftovers does not print a clean complete', () => {
     'ARCHIVE PENDING — ',
     'also unarchived: ',
     'run: none — the run halted before a plan was adopted',
-    'push: sent (ntfy)'
+    // The retired push's row (remove-the-push-notification D3).
+    'push: removed — interlock sends no notifications'
   ]) {
     assert.ok(receipt.includes(line), `the receipt no longer prints "${line}"`)
     assert.ok(!ship.includes(line), `ship.js restates the receipt's "${line}"`)
@@ -1713,10 +1711,11 @@ test('the archive fix command is one string, on every surface that prints it', (
   }
 })
 
-test('the network lives in exactly one module, and in neither driver', () => {
-  // The CLI makes ONE outbound request and README says so. The way that claim
-  // stops being true is a second `fetch` somewhere nobody looked, so this is a
-  // sweep rather than a pin on the module that has it.
+test('no module reaches the network, and neither driver names the removed push', () => {
+  // The CLI makes no request of its own since remove-the-push-notification, and
+  // README says so. The way that claim stops being true is a `fetch` somewhere
+  // nobody looked, so this is a sweep rather than a pin on one module. The
+  // package test's network check covers every shipped file the same way.
   const sources = []
   const walk = dir => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1736,26 +1735,28 @@ test('the network lives in exactly one module, and in neither driver', () => {
       return /\bfetch\(/.test(text) || text.includes('globalThis.fetch')
     })
     .map(path => path.slice(ROOT.length + 1))
-  assert.deepEqual(
-    withFetch,
-    ['lib/notify.mjs'],
-    `the CLI's one network call moved or multiplied: ${withFetch.join(', ')}`
-  )
+  assert.deepEqual(withFetch, [], `a module reaches the network again: ${withFetch.join(', ')}`)
 
-  // And neither driver knows what a relay is. They request the push; the CLI
-  // decides whether one is configured and what it says.
+  // And neither driver knows what a relay is, or passes the retired flag.
   for (const rel of ['cli/interlock-run', 'workflows/ship.js']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.ok(!text.includes('ntfy'), `${rel} names the relay`)
     assert.ok(!text.includes('INTERLOCK_NTFY'), `${rel} reads the push configuration itself`)
+    assert.ok(!text.includes("'--notify'"), `${rel} passes the retired --notify flag`)
   }
 })
 
-test('README names the one command that reaches the network, beside the claim that none does', () => {
+test('README says Interlock makes no network request of its own, and names the tools that make theirs', () => {
+  // The plugin directory reads the README as part of the bundle, "even in a
+  // README example" (remove-the-push-notification): it must describe no read
+  // of a secret from the environment, and it must name every party that does
+  // reach the network on a run's behalf.
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
-  assert.ok(readme.includes('interlock notify'), 'README no longer names the one exception')
-  assert.ok(readme.includes('INTERLOCK_NTFY_TOPIC'), 'README no longer documents where the topic comes from')
-  assert.ok(readme.includes('INTERLOCK_NTFY_URL'), 'README no longer documents the self-hosted server')
+  assert.ok(readme.includes('no network request of its own'), 'README no longer states the claim')
+  for (const tool of ['`gh`', '`glab`', '`git fetch`', '`interlock openspec provision`']) {
+    assert.ok(readme.includes(tool), `README no longer names ${tool} among the tools whose requests are their own`)
+  }
+  assert.doesNotMatch(readme, /INTERLOCK_NTFY|ntfy/i, 'README documents the removed push')
 })
 
 test('docs/04 has a section for each new banner a reader will grep for', () => {
@@ -2104,16 +2105,16 @@ function invokedSubcommands(text) {
   return names
 }
 
-test('both drivers request the close push, and neither decides anything about it', () => {
-  // `--notify` is unconditional on both drivers by design (D1): the CLI owns
-  // whether a topic is configured. A driver that grew a condition here would
-  // be a driver deciding policy, and the two would drift apart silently.
+test('neither driver requests a push from the close', () => {
+  // The push was removed (remove-the-push-notification). `run close` still
+  // accepts `--notify` until 1.16.0 for an older driver on PATH; a driver of
+  // this version that passed it again would be the two drifting apart.
   for (const rel of ['workflows/ship.js', 'cli/interlock-run']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     const start = text.indexOf('function closeArgs()')
     assert.ok(start !== -1, `${rel} no longer assembles its close arguments in closeArgs()`)
     const body = text.slice(start, text.indexOf('\n}', start))
-    assert.ok(body.includes("'--notify'"), `${rel}'s closeArgs() no longer requests the push`)
+    assert.ok(!body.includes("'--notify'"), `${rel}'s closeArgs() passes the retired --notify flag`)
   }
 })
 
@@ -3501,8 +3502,8 @@ test('the block is always printed: either the degradations, or that there were n
   )
 })
 
-test('identity rows, the push row and the archive reminder (design D7, D8, D9)', async () => {
-  const { formatRunSummary } = await import('../lib/receipt.mjs')
+test('identity rows, the retired push row and the archive reminder (design D7, D8, D9)', async () => {
+  const { formatRunSummary, RETIRED_PUSH_ROW } = await import('../lib/receipt.mjs')
   const base = { change: 'demo-change', summary: { plan: null }, flags: {}, degradations: [] }
 
   const defaults = formatRunSummary(base)
@@ -3539,13 +3540,15 @@ test('identity rows, the push row and the archive reminder (design D7, D8, D9)',
   assert.doesNotMatch(leftovers, /ARCHIVE PENDING/, 'leftovers are not a complete change either')
   assert.doesNotMatch(leftovers, /also unarchived/)
 
-  const failedPush = formatRunSummary({
-    ...base,
-    push: { sent: false, reason: 'HTTP 403' }
-  })
-  assert.match(failedPush, /^ {2}push: failed — HTTP 403$/m)
+  // An older driver's `--notify` (remove-the-push-notification D3): one row,
+  // and the degradation block exactly as it is without it.
+  const retiredPush = formatRunSummary({ ...base, pushRetired: true })
+  assert.equal(retiredPush.split('\n').filter(line => line === RETIRED_PUSH_ROW).length, 1, retiredPush)
+  assert.equal(retiredPush.replace(`${RETIRED_PUSH_ROW}\n`, ''), defaults, 'the retired row changed more than its own line')
+  // A truthy non-boolean is not the flag.
+  assert.doesNotMatch(formatRunSummary({ ...base, pushRetired: 'yes' }), /^ {2}push: /m)
 
-  for (const output of [defaults, clean, halted, leftovers, failedPush]) {
+  for (const output of [defaults, clean, halted, leftovers, retiredPush]) {
     const newLines = output
       .split('\n')
       .filter(line => /^ {2}(run|project|cwd|push|also unarchived): |^ARCHIVE PENDING —/.test(line))
