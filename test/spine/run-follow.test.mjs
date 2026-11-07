@@ -95,6 +95,48 @@ test('skipped lines are counted into the line the verb ends on, as a number or a
   assert.match(line, /asks for no relaunch\.$/, 'the halt line still ends as a record')
 })
 
+test('foreign-schema lines are said to be set aside, alone or beside the skipped count, as a number or as the reader\'s list', () => {
+  const done = { ...start, type: 'run-complete' }
+  assert.match(followStep([done], clock({ foreign: 1 })).line, /1 foreign-schema line, written by another release, was set aside\.$/)
+  assert.match(followStep([done], clock({ foreign: [{ line: 2, schema: 'x/9' }, { line: 5, schema: 'x/9' }] })).line, /2 foreign-schema lines[^.]*were set aside/)
+  const both = followStep([done], clock({ skipped: 2, foreign: 3 })).line
+  assert.match(both, /2 unparseable lines were skipped; 3 foreign-schema lines[^.]*were set aside\.$/)
+  assert.doesNotMatch(followStep([done], clock({ foreign: 0 })).line, /foreign/)
+  const halt = followStep([{ ...start, type: 'run-halt', reason: 'r' }], clock({ foreign: 1 })).line
+  assert.match(halt, /set aside\. This line is a record/)
+  const gaveUp = followStep([start], clock({ foreign: 1, lastWriteMs: NOW - MAX_AGE - 1 })).line
+  assert.match(gaveUp, /may have crashed\. 1 foreign-schema line/)
+})
+
+test('a reason that already ends in a period is not given a second one', () => {
+  const step = followStep([{ ...start, type: 'run-halt', reason: 'unit failures after 2 fix attempts.' }], clock())
+  assert.ok(step.line.includes('halted: unit failures after 2 fix attempts. This line'), step.line)
+  assert.ok(!step.line.includes('..'), step.line)
+  for (const reason of ['stopped!', 'why?']) {
+    assert.ok(followStep([{ ...start, type: 'run-halt', reason }], clock()).line.includes(`halted: ${reason} This line`))
+  }
+  assert.ok(followStep([{ ...start, type: 'run-halt', reason: 'no dot' }], clock()).line.includes('halted: no dot. This line'))
+})
+
+test('the end that counts is the last one after the last run-start, never the first one written', () => {
+  const oldHalt = { seq: 3, ts: '2026-11-07T10:30:00.000Z', runId: 'r-7', change: 'add-foo', type: 'run-halt', reason: 'the old halt' }
+  const restart = { ...start, seq: 4, ts: '2026-11-07T11:00:00.000Z' }
+  const work = { ...spawn, seq: 5, ts: '2026-11-07T11:05:00.000Z' }
+  // A run-start after the old halt: the run is at work again, nothing to print.
+  assert.deepEqual(followStep([start, spawn, oldHalt, restart, work], clock()), { done: false, exit: null, line: null })
+  // Its new end is the one printed.
+  const newHalt = { ...oldHalt, seq: 6, reason: 'the new halt' }
+  const line = followStep([start, spawn, oldHalt, restart, work, newHalt], clock()).line
+  assert.match(line, /halted: the new halt\./)
+  assert.doesNotMatch(line, /old halt/)
+  const complete = { ...oldHalt, seq: 6, type: 'run-complete', reason: undefined }
+  assert.match(followStep([start, oldHalt, restart, complete], clock()).line, /complete\./)
+  // Two ends after one start: the last one.
+  assert.match(followStep([start, oldHalt, { ...oldHalt, seq: 4, reason: 'the second halt' }], clock()).line, /the second halt/)
+  // No run-start at all: the last end is still the one that counts.
+  assert.match(followStep([oldHalt, { ...oldHalt, seq: 4, type: 'run-complete' }], clock()).line, /complete\./)
+})
+
 test('a halt with no reason says none was recorded, and a record with no change says so', () => {
   const step = followStep([{ type: 'run-halt', runId: 'r-1' }], clock())
   assert.match(step.line, /halted: no reason recorded/)

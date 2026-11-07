@@ -1328,6 +1328,20 @@ test('preflight: a report that cannot be written is one stderr line, and the ses
   }
 })
 
+test('preflight: the report is written through a sibling temp file renamed over the target', () => {
+  const source = readFileSync(join(HOOKS, 'preflight.mjs'), 'utf8')
+  assert.match(source, /renameSync\(tmp, path\)/, 'the report is renamed into place, not written in place')
+  const root = openspecRoot()
+  try {
+    runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.deepEqual(readdirSync(dirname(join(root, REPORT))).filter(f => f.endsWith('.tmp')), [], 'no temp file is left beside the report')
+    assert.ok(reportOf(root).schema, 'the report is whole')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('preflight: a failed write leaves no earlier session\'s report in place', () => {
   const root = openspecRoot()
   try {

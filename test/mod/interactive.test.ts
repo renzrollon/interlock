@@ -24,12 +24,14 @@ import { OUTCOMES, QUESTIONS } from '../../lib/checkpoint-card.mjs'
 import { drawPlanBoardRows } from '../../lib/draw-plan.mjs'
 import { MODS_MIN_HOST_VERSION } from '../../lib/host/claude-env.mjs'
 import { denyReason } from '../../lib/launch-rule.mjs'
+import { denyText } from '../fixtures/mod/refusals.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import * as P from '../fixtures/mod/preflight.mjs'
 import * as R from '../fixtures/mod/spec-run.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
 
 const PLUGIN = 'interlock'
+const RELAUNCH_REASON = denyReason('2026-10-05T06:00:00.000Z')
 const SURFACES = ['terminal', 'desktop'] as const
 type Surface = (typeof SURFACES)[number]
 const T0 = Date.parse('2026-11-06T10:15:00.000Z')
@@ -78,14 +80,17 @@ type World = {
   // What `ui.copy` answers for `isCopied`; `null` refuses the copy.
   copy: boolean | null
   copies: { text: string; surface: unknown }[]
-  // How `ui.notify` answers: sent, sent nowhere, or refused.
-  notify: 'sent' | 'no-channel' | 'refused'
+  // How `ui.notify` answers: sent, sent nowhere, refused, or never (a call that never settles).
+  notify: 'sent' | 'no-channel' | 'refused' | 'never'
   notices: { text: string; title: unknown }[]
   // What the engine's own `prompt.autocomplete` answers beneath the plugin.
   beneath: unknown
   // Whether the module is acting on its own, and what reached the engine while it was.
   acting: boolean
   acts: string[]
+  // The run id an accepted launch answers (`null`: a launch the CLI gave no id), and whether the settings form refuses it.
+  runId: string | null
+  denyLaunch: boolean
 }
 
 const ok = (stdout: string): Answer => ({ result: { stdout, stderr: '', interrupted: false }, text: stdout })
@@ -131,6 +136,8 @@ function world(on: any, over: Partial<World> = {}): World {
     beneath: ENGINE_ROWS,
     acting: false,
     acts: [],
+    runId: F.RUN_ID,
+    denyLaunch: false,
     ...over
   } as World
   const acted = (what: string) => {
@@ -169,6 +176,7 @@ function world(on: any, over: Partial<World> = {}): World {
   })
   on('ui.notify', (_$: any, e: any) => {
     w.notices.push({ text: e.text, title: e.title })
+    if (w.notify === 'never') return new Promise(() => {})
     if (w.notify === 'refused') return { deny: 'notifications refused' }
     return { value: w.notify === 'sent' ? { isSent: true, channel: 'terminal' } : { isSent: false, reason: 'no-channel' } }
   })
@@ -178,11 +186,20 @@ function world(on: any, over: Partial<World> = {}): World {
   on('tool.call', { tool: 'Workflow' }, () => {
     acted('tool.call Workflow')
     return {
-      result: { status: 'async_launched', taskId: 'w1', taskType: 'local_workflow', runId: F.RUN_ID, workflowName: 'interlock:ship', transcriptDir: '/t/wf' }
+      result: {
+        status: 'async_launched',
+        taskId: 'w1',
+        taskType: 'local_workflow',
+        ...(w.runId === null ? {} : { runId: w.runId }),
+        workflowName: 'interlock:ship',
+        transcriptDir: '/t/wf'
+      }
     }
   })
   on('tool.call', { tool: 'Bash' }, (_$: any, e: any) => (acted(`tool.call Bash ${e.command}`), w.bash.get(e.command) ?? ok('')))
   on('tool.call', { tool: 'Write' }, () => (acted('tool.call Write'), { result: {}, text: 'ok' }))
+  // The settings layer's guard-relaunch: a deny ends the call errored, as probe 2 captured.
+  on('classic.PreToolUse', (_$: any, e: any) => (e.tool === 'Workflow' && w.denyLaunch ? { deny: denyText(RELAUNCH_REASON, 'Workflow') } : {}))
   return w
 }
 
@@ -196,6 +213,13 @@ const step = ($: any, w: World, record: unknown, command = NEXT) => {
 const bash = ($: any, command: string) => $.tool.call({ tool: 'Bash', command })
 const loadSpec = ($: any) => $.prompt.submit({ ...R.PROMPT_SPEC, origin: { kind: 'composer' } })
 const writeFindings = ($: any) => $.tool.call({ tool: 'Write', file_path: FINDINGS, content: '{}' })
+/**
+ * Lets a notification the module started, and never awaited, settle: its
+ * fallback toast lands after the tool result returned (F-a984320e).
+ */
+async function settled() {
+  for (let n = 0; n < 20; n++) await Promise.resolve()
+}
 /** The module acting on its own: a press, a suggestion request, an interval period. */
 async function act<T>(w: World, fn: () => Promise<T>): Promise<T> {
   w.acting = true
@@ -460,6 +484,37 @@ test('a plan over the bound draws one line naming the cap by its limits label, a
   await ui.unmount()
 })
 
+// F-fe2c6019: an edge the renderer could not place is spoken under the diagram, never left out silently.
+test('a lane ordered after an id no lane holds draws the diagram and one dim line naming the edge left out', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  await launch($)
+  const lanes = [
+    [{ id: '9.1', tier: 2, model: 'sonnet', description: 'The first lane' }],
+    [{ id: '9.2', tier: 2, model: 'sonnet', description: 'The second lane' }]
+  ]
+  await step($, w, {
+    ...hugePlanStep(),
+    plan: { waves: [{ index: 0, group: 9, kind: 'impl', batches: [lanes] }], deferred: [{ id: '9.2', after: ['8.9'] }] }
+  })
+  const desktop = await meter($, 'desktop')
+  expect(await desktop.findAll({ type: 'Svg' })).toHaveLength(1)
+  const line = await desktop.find({ key: 'plan-diagram-unplaced' })
+  expect(line?.text).toMatch(/^1 dependency edge\(s\) not drawn: .*after 8\.9: no lane holds 8\.9$/)
+  const order = (await boxKeys(desktop)).filter((k: unknown) => typeof k === 'string')
+  expect(order.indexOf('plan-diagram-unplaced')).toBe(order.indexOf('plan-diagram') + 1)
+  const dim = tree(line).filter((n: any) => n?.type === 'Text')
+  expect(dim.length).toBeGreaterThan(0)
+  expect(dim[0].props.dimColor).toBe(true)
+  await desktop.unmount()
+  // A plan whose every edge was placed draws no such line.
+  await step($, w, F.ADOPTION_BATCH)
+  const placed = await meter($, 'desktop')
+  expect(await placed.find({ key: 'plan-diagram-unplaced' })).toBeUndefined()
+  await placed.unmount()
+  expect(w.acts).toEqual([])
+})
+
 test('a run whose plan was not relayed, and a board below its minimum width, draw no diagram and no line about one', async ($: any, on: any) => {
   const w = world(on)
   await start($)
@@ -509,6 +564,7 @@ for (const how of ['no-channel', 'refused'] as const) {
     await start($)
     await loadSpec($)
     for (const command of [NEW_CHANGE, STATUS, LEDGER, VALIDATE, GATE, CHECKPOINT]) await bash($, command)
+    await settled()
     expect(w.notices.map(n => n.text)).toEqual([SPEC_CHECKPOINT_LINE])
     expect(w.toasts).toEqual([SPEC_CHECKPOINT_LINE])
     expect(w.status.at(-1)).toBe(SPEC_CHECKPOINT_LINE)
@@ -553,6 +609,71 @@ test('a session the engine reported as not interactive is told nothing and toast
   expect(w.acts).toEqual([])
 })
 
+// F-a984320e, blast radius B3/B4/B8: nothing on a tool result's path, or the interval's, waits on the notification.
+test('a notification that never settles holds neither the relay\'s Bash result nor the spec skill\'s checkpoint line', async ($: any, on: any) => {
+  const w = world(on, { notify: 'never' })
+  await start($)
+  await launch($)
+  await step($, w, F.RUN_BATCH)
+  const halted = await step($, w, F.HALT)
+  expect(halted.text).toBe(F.stdout(F.HALT))
+  expect(w.notices.map(n => n.text)).toEqual([HALT_TEXT])
+  // The told key was marked before the call, so a pending halt is not asked for twice.
+  await step($, w, F.HALT)
+  expect(w.notices).toHaveLength(1)
+  const closed = await step($, w, F.CLOSE, CLOSE_CMD)
+  expect(closed.text).toBe(F.stdout(F.CLOSE))
+
+  await loadSpec($)
+  for (const command of [NEW_CHANGE, STATUS, LEDGER, VALIDATE, GATE]) await bash($, command)
+  const checkpoint = await bash($, CHECKPOINT)
+  expect(checkpoint.text).toBe(`checkpoint: ${C} — waiting for review; nothing is sent`)
+  expect(w.notices.map(n => n.text)).toEqual([HALT_TEXT, SPEC_CHECKPOINT_LINE])
+  // A pending call is not refused, so nothing is toasted in its place.
+  expect(w.toasts.filter(t => t === HALT_TEXT || t === SPEC_CHECKPOINT_LINE)).toEqual([])
+  expect(w.acts).toEqual([])
+})
+
+test('while the quiet notification is pending, a later period still redraws the word', async ($: any, on: any) => {
+  const w = world(on, { notify: 'never' })
+  await start($)
+  await launch($)
+  await step($, w, F.RUN_BATCH)
+  await act(w, () => w.clock.advance(LIMITS.meterQuietAfterMs))
+  expect(w.notices.map(n => n.text)).toEqual([`interlock: ${BATCH_POSITION} · ${QUIET_WORD}`])
+  const later = `quiet ${Math.floor((LIMITS.meterQuietAfterMs + 60_000) / 60_000)} min`
+  await act(w, () => w.clock.advance(60_000))
+  expect(w.status.at(-1)).toBe(`interlock: ${BATCH_POSITION} · ${later}`)
+  expect(w.notices).toHaveLength(1)
+  expect(w.acts).toEqual([])
+})
+
+// F-d8976ec7, F-9e68a52f, F-3c7bc5d8: a second run in one session is a new set of changes of state.
+for (const runId of [F.RUN_ID, null]) {
+  test(`a second run in the session ${runId === null ? 'with no run id ' : ''}is told its own quiet and halt; a repeat is skipped on the debug log`, async ($: any, on: any) => {
+    const w = world(on, { runId })
+    await start($)
+    for (let n = 1; n <= 2; n++) {
+      await w.clock.advance(60_000)
+      await human($)
+      await launch($)
+      await step($, w, F.RUN_BATCH)
+      await act(w, () => w.clock.advance(LIMITS.meterQuietAfterMs))
+      await step($, w, F.HALT)
+      await step($, w, F.HALT)
+      await step($, w, F.CLOSE, CLOSE_CMD)
+      expect(w.notices.map(x => x.text)).toEqual(
+        Array.from({ length: n }, () => [`interlock: ${BATCH_POSITION} · ${QUIET_WORD}`, HALT_TEXT]).flat()
+      )
+    }
+    // Per run, the repeated halt step and the halted close record each cross a told key.
+    const skipped = debugLines(w, /^interlock meter: halt:\S+ was already told; not told again$/).map(l => l.text)
+    expect(skipped).toHaveLength(4)
+    expect(new Set(skipped).size).toBe(runId === null ? 2 : 1)
+    expect(w.acts).toEqual([])
+  })
+}
+
 // --- suggestions (hooks/ship-meter "The module SHALL suggest open change names and recent run ids…") ---
 
 const row = (name: string, description: string) => ({ text: name, label: name, description })
@@ -583,6 +704,28 @@ test('a session that holds no report reads the preflight file once, at the first
   expect(first.suggestions.slice(0, 2)).toEqual([row('add-foo', 'open change'), row('add-bar', 'open change')])
   await autocomplete($, w, '/interlock:ship fix-')
   expect(w.reads).toEqual([P.PREFLIGHT_PATH])
+  expect(w.acts).toEqual([])
+})
+
+// Blast radius B7(a): a read that ran before the preflight wrote its file is not the session's last.
+test('a read that found no report is tried again a meter tick later, and not before', async ($: any, on: any) => {
+  const w = world(on)
+  await start($)
+  expect(await autocomplete($, w, '/interlock:ship add-')).toEqual(ENGINE_ROWS)
+  expect(w.reads).toEqual([P.PREFLIGHT_PATH])
+  // The preflight writes its file after the first read lost the race.
+  w.files.set(P.PREFLIGHT_PATH, P.stdout(P.REPORT_ALL_OK))
+  await w.clock.advance(LIMITS.meterTickMs - 1)
+  expect(await autocomplete($, w, '/interlock:ship add-')).toEqual(ENGINE_ROWS)
+  expect(w.reads).toEqual([P.PREFLIGHT_PATH])
+  await w.clock.advance(1)
+  const found = await autocomplete($, w, '/interlock:ship add-')
+  expect(found.suggestions.slice(0, 2)).toEqual([row('add-foo', 'open change'), row('add-bar', 'open change')])
+  expect(w.reads).toEqual([P.PREFLIGHT_PATH, P.PREFLIGHT_PATH])
+  // A report held is not read again.
+  await w.clock.advance(LIMITS.meterTickMs)
+  await autocomplete($, w, '/interlock:ship fix-')
+  expect(w.reads).toEqual([P.PREFLIGHT_PATH, P.PREFLIGHT_PATH])
   expect(w.acts).toEqual([])
 })
 
@@ -679,7 +822,25 @@ test('an engine one patch below the floor is told once, draws nothing for the ru
   await w.clock.advance(60_000)
   const second = await launch($)
   expect(second.deny).toBe(denyReason(new Date(T0 + 1000).toISOString()))
+  // The floor turns the panes off, never the guard's words (F-230d42e9): the refusal is toasted as at the floor.
+  expect(w.toasts).toHaveLength(2)
+  expect(w.toasts[1]).toBe(second.deny)
+  expect(w.acts).toEqual([])
+})
+
+test('below the floor the settings form\'s refusal is toasted once per text, and no pane is drawn', async ($: any, on: any) => {
+  const w = world(on, { version: BELOW, denyLaunch: true })
+  await start($)
   expect(w.toasts).toHaveLength(1)
+  for (let n = 0; n < 2; n++) {
+    const r = await launch($)
+    expect(r.isError).toBe(true)
+    expect(r.text).toBe(denyText(RELAUNCH_REASON, 'Workflow'))
+  }
+  expect(w.toasts.slice(1)).toEqual([RELAUNCH_REASON])
+  expect(w.opens).toEqual([])
+  expect(w.status).toEqual([])
+  expect(w.notices).toEqual([])
   expect(w.acts).toEqual([])
 })
 

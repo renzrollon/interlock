@@ -1,8 +1,11 @@
 // The ship meter: a hooks module that draws a ship run while it runs, and the
 // in-process form of the launch guard.
 //
-// Every hook here observes but one branch. The CLI decides; this module shows
-// what the CLI already said, the moment it says it: the step each `interlock`
+// It decides nothing. The launch guard's refusal, below, is the one refusal it
+// can answer; beside observing, it also drafts a printed line into an empty prompt
+// box (never submitting it), tells a change of state once as a notification,
+// and adds suggestion rows ahead of the engine's own. The CLI decides; this
+// module shows what the CLI already said, the moment it says it: the step each `interlock`
 // call printed (read off the ping's Bash result), the per-agent figures each
 // model request reported, and the plan windows the session reports. It joins
 // nothing into any record, and recognises no banner by its wording: it shows
@@ -297,8 +300,17 @@ const BOUNDARIES = new Map([
   ['fork', '/branch']
 ])
 
-let session = { interactive: false, surface: null, cwd: null }
+// `interactive` is the floor-gated flag every pane, band, status line,
+// notification and suggestion branches on; `engineInteractive` is what the
+// engine reported, which the launch guard's spoken refusal reads, so a session
+// below the mods floor is still told why its launch was refused (design D20).
+let session = { interactive: false, engineInteractive: false, surface: null, cwd: null }
 let run = freshRun()
+// Counts the ship launches this module accepted, so a run the CLI gave no id
+// is still told of under a key of its own (design D17).
+let launches = 0
+// Whether a surface with no Button element has been named on the debug log.
+let noButtonNamed = false
 // The session start's report, as last read (design D8): module state, reset
 // with the run on a reload and on the session boundary.
 let start = freshStart()
@@ -320,7 +332,9 @@ let told = new Map()
 let suggest = freshSuggest()
 
 function freshSuggest() {
-  return { read: false, missingNamed: false, shapeNamed: false }
+  // `readAt`: the clock's reading at the last read that found no report, or
+  // null; such a read is tried again a meter tick later (design D18).
+  return { read: false, readAt: null, missingNamed: false, shapeNamed: false }
 }
 
 function freshRun() {
@@ -328,6 +342,8 @@ function freshRun() {
     // idle → live (accepted launch) → closing (a close or halt step) → closed (the close record)
     phase: 'idle',
     runId: null,
+    // Which accepted launch this is, in the module's count; the told-key of a run with no id.
+    launch: null,
     workflowName: null,
     transcriptDir: null,
     change: null,
@@ -541,11 +557,13 @@ function startTick($) {
         if (!isMine(tick)) return
         if (changed) redrawWord($)
         else if (pulsed) $.ui.invalidate('ui.render')
+        // Started, never awaited: a notification that never settles holds no period (design D17).
         if (appeared) {
           run.quietStretch++
-          await tell($, { kind: 'quiet', runId: run.runId, change: run.change, statusText: statusText(), stretch: run.quietStretch })
+          tell($, { kind: 'quiet', runId: run.runId, launch: run.launch, change: run.change, statusText: statusText(), stretch: run.quietStretch })
         }
         await followBottom($)
+        if (!isMine(tick)) return
       } catch (err) {
         $.ui.log(`interlock meter: a quiet-figure period failed: ${messageOf(err)}`, { to: 'debug' })
       }
@@ -599,13 +617,17 @@ function toastSafe($, text, what) {
 /**
  * Tells one change of state (make-the-run-surfaces-interactive design D17): the
  * words and the key are `lib/run-tell.mjs`'s, built from fields the module
- * holds. A key already told is not told again. The engine's notification is
- * asked for once; when it answers that none was sent, or the call rejects, the
- * same words are toasted. Only an interactive session is told anything, so
- * below the mods floor nothing is. The module's one notification call. Never
- * throws.
+ * holds. A key already told is not told again, and the skip is named on the
+ * debug log. The key is marked told before the engine is asked, so a second
+ * crossing while the first is pending tells nothing. The engine's notification
+ * is asked for once and never awaited by the caller: a tool result, a spec line
+ * and an interval period each return whether or not the call ever settles.
+ * When it answers that none was sent, or the call rejects, the same words are
+ * toasted. Only an interactive session is told anything, so below the mods
+ * floor nothing is. The module's one notification call. Never throws, and the
+ * call it starts never rejects.
  */
-async function tell($, fields) {
+function tell($, fields) {
   if (!session.interactive) return
   let said = null
   try {
@@ -614,20 +636,32 @@ async function tell($, fields) {
     $.ui.log(`interlock meter: a notification was not built: ${messageOf(err)}`, { to: 'debug' })
     return
   }
-  if (!said || told.has(said.key)) return
-  told.set(said.key, fields.kind)
-  let sent = false
-  try {
-    const answer = await $.ui.notify(said.text, { title: TELL_TITLE })
-    sent = Boolean(answer) && answer.isSent === true
-    if (!sent) {
-      const reason = answer && typeof answer.reason === 'string' ? answer.reason : 'no reason given'
-      $.ui.log(`interlock meter: no notification was sent (${reason}); toasted instead`, { to: 'debug' })
-    }
-  } catch (err) {
-    $.ui.log(`interlock meter: the notification call was refused (${messageOf(err)}); toasted instead`, { to: 'debug' })
+  if (!said) return
+  if (told.has(said.key)) {
+    $.ui.log(`interlock meter: ${said.key} was already told; not told again`, { to: 'debug' })
+    return
   }
-  if (!sent) toastSafe($, said.text, 'a notification')
+  told.set(said.key, fields.kind)
+  // Its own rejection handling, inside: nothing that waits on the engine waits on this.
+  const send = async () => {
+    try {
+      let sent = false
+      try {
+        const answer = await $.ui.notify(said.text, { title: TELL_TITLE })
+        sent = Boolean(answer) && answer.isSent === true
+        if (!sent) {
+          const reason = answer && typeof answer.reason === 'string' ? answer.reason : 'no reason given'
+          $.ui.log(`interlock meter: no notification was sent (${reason}); toasted instead`, { to: 'debug' })
+        }
+      } catch (err) {
+        $.ui.log(`interlock meter: the notification call was refused (${messageOf(err)}); toasted instead`, { to: 'debug' })
+      }
+      if (!sent) toastSafe($, said.text, 'a notification')
+    } catch {
+      // A log or toast refused after the call: the told key stands, and nothing is thrown at the caller.
+    }
+  }
+  void send()
 }
 
 /**
@@ -678,10 +712,25 @@ async function draftLine($, line, act, surface) {
 /**
  * One label-only control per offered line, keyed under `prefix` in the order
  * the lines were printed: `Draft: <line>` or `Copy: <line>` (design D22). A
- * press runs the drafting helper and nothing else.
+ * press runs the drafting helper and nothing else. A surface whose element
+ * table holds no `Button` draws no control, and that is named on the debug log
+ * once; what the controls sit beneath is drawn as before.
  */
 function actionButtons($, e, prefix, actions) {
-  const { Button } = $.ui.resolve(e)
+  if (!actions.length) return []
+  let Button = null
+  try {
+    Button = $.ui.resolve(e).Button || null
+  } catch (err) {
+    if (!noButtonNamed) $.ui.log(`interlock meter: the surface's elements were not read for a control: ${messageOf(err)}`, { to: 'debug' })
+    noButtonNamed = true
+    return []
+  }
+  if (!Button) {
+    if (!noButtonNamed) $.ui.log(`interlock meter: this surface draws no Button; its offered lines carry no control`, { to: 'debug' })
+    noButtonNamed = true
+    return []
+  }
   return actions.map(({ line, act }, n) =>
     h(Button, {
       key: `${prefix}-action-${n}`,
@@ -1040,7 +1089,8 @@ async function applySpecLines($, held, lines, r) {
     if (now !== null) spec.lastActivityAt = now
     redrawSpec($)
     // The run was live when its lines were read, so a checkpoint now is the one it just reached (design D17).
-    if (spec.phase === 'checkpoint') await tell($, { kind: 'checkpoint', change: spec.current, statusText: specStatusText(spec) })
+    // Started, never awaited: the spec skill's Bash result does not wait on the notification.
+    if (spec.phase === 'checkpoint') tell($, { kind: 'checkpoint', change: spec.current, statusText: specStatusText(spec) })
   } catch (err) {
     $.ui.log(`interlock spec: a keyed line was not read: ${messageOf(err)}`, { to: 'debug' })
   }
@@ -1854,10 +1904,14 @@ async function applyRecord($, record, relayId) {
   $.ui.invalidate('ui.render')
   await followBottom($)
   // A halt is told when it crosses, and a run that did not halt at its close
-  // record; the close of a halted run tells nothing more (design D17).
+  // record; the close of a halted run tells nothing more (design D17). Started,
+  // never awaited: the driver's relay Bash result does not wait on the notification.
   if (held !== run) return
-  if (record.action === 'halt') await tell($, { kind: 'halt', runId: run.runId, change: run.change, reason: run.halt && run.halt.reason })
-  else if (isClose && !run.halt) await tell($, { kind: 'close', runId: run.runId, change: run.change, exitCode: record.exitCode })
+  if (record.action === 'halt') {
+    tell($, { kind: 'halt', runId: run.runId, launch: run.launch, change: run.change, reason: run.halt && run.halt.reason })
+  } else if (isClose && !run.halt) {
+    tell($, { kind: 'close', runId: run.runId, launch: run.launch, change: run.change, exitCode: record.exitCode })
+  }
 }
 
 async function openPane($, id = PANE, title = TITLE) {
@@ -1961,10 +2015,8 @@ async function drawHandoffPane($, e) {
     } catch (err) {
       out.push(h(Box, { key: `card-${n}-unread` }, h(Text, null, `${card.path}: cannot be read: ${messageOf(err)}`)))
     }
-    const actions = whole === null ? [] : offeredActions(whole)
-    if (actions.length) {
-      out.push(h(Box, { key: `card-${n}-actions`, flexDirection: 'column', flexShrink: 0 }, ...actionButtons($, e, `card-${n}`, actions)))
-    }
+    const controls = actionButtons($, e, `card-${n}`, whole === null ? [] : offeredActions(whole))
+    if (controls.length) out.push(h(Box, { key: `card-${n}-actions`, flexDirection: 'column', flexShrink: 0 }, ...controls))
   }
   return column(out)
 }
@@ -2438,7 +2490,19 @@ function drawDiagram($, e, board) {
     if (!Svg || !board.some(row => row.key.startsWith('lane:'))) return []
     const svg = drawPlanSvg(board)
     if (svg && typeof svg.source === 'string') {
-      return [h(Box, { key: 'plan-diagram', flexShrink: 0 }, h(Svg, { source: svg.source, alt: svg.alt }))]
+      const drawn = [h(Box, { key: 'plan-diagram', flexShrink: 0 }, h(Svg, { source: svg.source, alt: svg.alt }))]
+      // An edge the renderer could not place is spoken under the diagram, never left out silently.
+      const unplaced = Array.isArray(svg.unplaced) ? svg.unplaced.filter(u => typeof u === 'string' && u) : []
+      if (unplaced.length) {
+        drawn.push(
+          h(
+            Box,
+            { key: 'plan-diagram-unplaced', flexShrink: 0 },
+            h(Text, { dimColor: true, wrap: 'wrap' }, `${unplaced.length} dependency edge(s) not drawn: ${unplaced[0]}`)
+          )
+        )
+      }
+      return drawn
     }
     if (svg && typeof svg.reason === 'string') {
       return [h(Box, { key: 'plan-diagram-left-out', flexShrink: 0 }, h(Text, { dimColor: true, wrap: 'wrap' }, svg.reason))]
@@ -2537,8 +2601,10 @@ async function drawPane($, e) {
  * below `MODS_MIN_HOST_VERSION` is treated as not interactive, which every
  * pane, band, status line, notification and suggestion already branches on,
  * and one toast names both versions when the engine had reported the session
- * interactive. The launch guard's refusal does not branch on it and is kept.
- * A version that cannot be read, or is no version, leaves the session as the
+ * interactive. The launch guard's refusal does not branch on it and is kept,
+ * and so are its words: the refusal toast and its count read the engine's own
+ * report (`session.engineInteractive`), which this leaves as it was. A
+ * version that cannot be read, or is no version, leaves the session as the
  * engine reported it, with one debug line, because a guard fails open. Never
  * throws.
  */
@@ -2567,12 +2633,36 @@ function belowFloor($, version, unread) {
   }
 }
 
+/** The clock's reading for the suggestions' retry, or null when it cannot be read. Never throws. */
+async function suggestNow($) {
+  try {
+    const now = await $.clock.now()
+    return Number.isFinite(now) ? now : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a request should read the preflight file (design D18): the first
+ * that asks, and again after a read that found no report once a meter tick
+ * has passed since it, so a read that ran before the preflight wrote its file
+ * is not the session's last. A clock that cannot be read reads no more.
+ */
+async function readDue($) {
+  if (!suggest.read) return true
+  if (suggest.readAt === null) return false
+  const now = await suggestNow($)
+  return now !== null && now - suggest.readAt >= TICK_MS
+}
+
 /**
  * The suggestion rows for one `prompt.autocomplete` request (design D11, D18):
  * `lib/prompt-rows.mjs`'s rows from the held preflight report, or `null` when
  * the draft asks for no name, there is no report, the list it asks of is
  * `null`, or no name matches. A session that holds no report reads the
- * preflight file once, at the first request that asks; the first request that
+ * preflight file at the first request that asks, and again at a later request
+ * a meter tick after a read that found none; the first request that
  * then finds no report, or a `null` list, names which on the debug log, once a
  * session. Never throws.
  */
@@ -2580,9 +2670,11 @@ async function suggestionRows($, e) {
   try {
     const list = argumentOf(e)
     if (list === null) return null
-    if (!start.report && !suggest.read) {
+    if (!start.report && (await readDue($))) {
       suggest.read = true
       await readPreflight($, session.cwd)
+      // A read that found no report may have lost the race with the preflight's write: try it again a tick later.
+      if (!start.report) suggest.readAt = await suggestNow($)
     }
     let missing = null
     if (!start.report) missing = 'no preflight report'
@@ -2604,7 +2696,7 @@ async function suggestionRows($, e) {
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    session = { interactive: e.isInteractive === true, surface: e.surface || null, cwd: str(e.cwd) }
+    session = { interactive: e.isInteractive === true, engineInteractive: e.isInteractive === true, surface: e.surface || null, cwd: str(e.cwd) }
     stopTick()
     run = freshRun()
     start = freshStart()
@@ -2706,12 +2798,13 @@ export function register(on) {
     const { record, now } = await guardFacts($)
     const launch = isShipLaunch(e, record)
     const verdict = decideLaunch(record, now)
-    // The refusal is spoken to the person in the same words the model reads (design D5).
-    if (launch && session.interactive && verdict.reason) $.ui.toast(verdict.reason)
+    // The refusal is spoken to the person in the same words the model reads (design D5),
+    // below the mods floor too: the floor turns the panes off, never the guard's words (design D20).
+    if (launch && session.engineInteractive && verdict.reason) $.ui.toast(verdict.reason)
     if (launch && verdict.decision === 'deny') return { deny: verdict.reason }
     const r = await next(e)
     // The settings form's refusal, read off the result: a relaunch comes after its run closed (design D4).
-    if (session.interactive) speakRefusal($, r)
+    if (session.engineInteractive) speakRefusal($, r)
     const accepted = launch && r.isError !== true && isAcceptedLaunch(r.result)
     if (accepted) {
       await changeRecord($, 'ship launch', (current, at) =>
@@ -2739,6 +2832,9 @@ export function register(on) {
     run = freshRun()
     const launched = run
     run.phase = 'live'
+    run.launch = ++launches
+    // A new run is a new set of changes of state: what was told of the last run's halt, close and quiet goes (design D17).
+    for (const [key, kind] of told) if (kind !== 'checkpoint') told.delete(key)
     // The ship position takes the line at the launch itself, from a spec run or a settle run alike (design D5).
     if (handing || settle.phase !== 'idle') setStatus($)
     run.runId = str(r.result.runId)

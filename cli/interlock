@@ -1042,6 +1042,15 @@ run-log:
                          than "launch ledger max age (ms)" of interlock limits.
                          No trajectory or an unknown --run exits 1. Reads only;
                          the halt line is a record and asks for no relaunch.
+                         Without --run the newest trajectory is resolved once,
+                         at start: started before a new run writes its first
+                         event, follow follows the previous run (and prints its
+                         end at once if it already ended). The printed line
+                         names the run id; pass --run <id> to pin one run.
+                         The end that counts is the last run-halt/run-complete
+                         after the last run-start. Unparseable and
+                         foreign-schema lines are set aside, and the line says
+                         how many.
   Session-query (list/show/query) is read-only and never-throws, like
   "outcomes list": a missing run, a torn final line, or an unreadable log is
   reported, never an exception. Always exits 0 — reading the trajectory is

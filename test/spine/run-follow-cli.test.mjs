@@ -216,6 +216,36 @@ test('unparseable lines are skipped and counted in the complete line', async () 
   assert.match(r.lines[0], /2 unparseable lines were skipped/)
 })
 
+test('foreign-schema lines are said to be set aside in the line the verb ends on', async () => {
+  const home = freshHome()
+  const foreign = JSON.stringify({ schema: 'interlock.ship-run/0', seq: 2, runId: 'r-5', change: 'mixed', type: 'run-complete' })
+  trajectory(home, 'r-5', [event('r-5', 'mixed', 1, 'run-start'), foreign, '{torn', event('r-5', 'mixed', 4, 'run-halt', { reason: 'gate red' })])
+  const r = await follow(home, { run: 'r-5' })
+  assert.equal(r.code, 0)
+  assert.equal(r.lines.length, 1)
+  assert.match(r.lines[0], /halted: gate red\./)
+  assert.match(r.lines[0], /1 unparseable line was skipped; 1 foreign-schema line, written by another release, was set aside\./)
+})
+
+test('a trajectory holding an old halt and a later run-start is followed to its new end, not the old halt', async () => {
+  const home = freshHome()
+  const path = trajectory(home, 'r-4', [
+    event('r-4', 'again', 1, 'run-start'),
+    event('r-4', 'again', 2, 'run-halt', { reason: 'the first halt' }),
+    event('r-4', 'again', 3, 'run-start')
+  ])
+  const r = await follow(home, {
+    run: 'r-4',
+    onWait: (ms, i) => {
+      if (i === 1) appendFileSync(path, event('r-4', 'again', 4, 'run-complete') + '\n')
+    }
+  })
+  assert.equal(r.code, 0)
+  assert.deepEqual(r.waits, [LIMITS.meterTickMs], 'it waited for the new end rather than printing the old halt')
+  assert.match(r.lines[0], /r-4 \(again\) complete\./)
+  assert.doesNotMatch(r.lines[0], /first halt/)
+})
+
 test('the bounds are the limits module\'s: neither file spells a number of milliseconds, and both name the limits', () => {
   for (const file of ['lib/run-follow-cli.mjs', 'lib/run-follow.mjs']) {
     const code = readFileSync(join(ROOT, file), 'utf8')
@@ -283,4 +313,15 @@ test('the help says there is no quiet line, why, and names the age bound by its 
   const section = full.slice(full.indexOf('  follow [--run <id>]'), full.indexOf('  Session-query'))
   assert.match(section, /launch ledger max age \(ms\)/)
   assert.doesNotMatch(section, /\b\d{3,}\b/)
+})
+
+test('the help names the start-time race: no --run resolves the newest trajectory once, the line names the run id', () => {
+  const full = exec(['--help'], tmp).stdout
+  const section = full.slice(full.indexOf('  follow [--run <id>]'), full.indexOf('  Session-query'))
+  assert.match(section, /resolved once,\s+at start/)
+  assert.match(section, /follows the previous run/)
+  assert.match(section, /names the run id/)
+  assert.match(section, /--run <id> to pin/)
+  assert.match(section, /last run-halt\/run-complete\s+after the last run-start/)
+  assert.match(section, /foreign-schema lines are set aside/)
 })

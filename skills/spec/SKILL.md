@@ -290,10 +290,10 @@ If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and fo
 Without `--continue`, the run ended here. First print the checkpoint card:
 
 ```bash
-interlock checkpoint "<change-name>"
+interlock checkpoint "<change-name>" 2>"${TMPDIR:-/tmp}/interlock-checkpoint.err" || { printf 'checkpoint card: exit %s: ' "$?"; head -n 1 "${TMPDIR:-/tmp}/interlock-checkpoint.err"; }
 ```
 
-It prints the card; a non-zero exit is reported in one line and does not stop the hand-off.
+It prints the card. A non-zero exit is reported in one line, its code and the first line of its stderr: the rest stays in the file, so an older `interlock` without this verb cannot flood the turn. It does not stop the hand-off.
 
 The checkpoint waits for a human, so mark it for the spec meter:
 

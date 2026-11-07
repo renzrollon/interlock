@@ -56,7 +56,7 @@
 // (remove-the-push-notification).
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -372,13 +372,22 @@ async function listings(cwd, stateHome) {
  */
 async function writeReport(cwd, input) {
   let path = join(cwd, '.claude', 'ship', 'preflight.json')
+  let tmp = null
   try {
     const lib = await import(new URL('../lib/preflight-file.mjs', import.meta.url).href)
     path = join(cwd, lib.PREFLIGHT_FILE)
-    rmSync(path, { force: true })
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(lib.buildPreflightReport(input), null, 2) + '\n')
+    // Written whole beside the target and renamed over it, so a reader sees the
+    // earlier report or this one and never a missing or half-written file.
+    tmp = `${path}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(lib.buildPreflightReport(input), null, 2) + '\n')
+    renameSync(tmp, path)
   } catch (err) {
+    // A failed write leaves no earlier session's report standing as this one's.
+    for (const stale of [tmp, path]) {
+      if (!stale) continue
+      try { rmSync(stale, { force: true }) } catch { /* a directory there stays; nothing reads it as a report */ }
+    }
     process.stderr.write(`interlock preflight: report not written: ${path}: ${(err && err.message) || String(err)}\n`)
   }
 }

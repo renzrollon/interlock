@@ -102,3 +102,18 @@ test('the module imports nothing, so the hooks module can load it with no Node',
   assert.ok(!/\brequire\(|\bimport\(/.test(source), 'lib/run-tell.mjs loads a module dynamically')
   assert.ok(!source.includes('node:'), 'lib/run-tell.mjs names a node: module')
 })
+
+test('a run with no id is keyed by the caller\'s launch count, so two id-less runs are two keys', () => {
+  // F-d8976ec7: the shared `no-run` fallback told a second id-less run of a session nothing.
+  for (const kind of ['halt', 'close', 'quiet']) {
+    const first = tellOf({ kind, runId: null, launch: 1, change: 'c', stretch: 1 })
+    const second = tellOf({ kind, runId: null, launch: 2, change: 'c', stretch: 1 })
+    assert.notEqual(first.key, second.key, `${kind}: two launches share a key`)
+    assert.match(first.key, /no-run-1\b/)
+    assert.equal(first.text, second.text, `${kind}: the launch count reached the words`)
+  }
+  // A run id wins over the count, and with neither the key part is the stable word.
+  assert.equal(tellOf({ kind: 'halt', runId: 'r-7', launch: 3 }).key, 'halt:r-7')
+  assert.equal(tellOf({ kind: 'halt' }).key, 'halt:no-run')
+  for (const bad of [0, -1, 1.5, '2', null]) assert.equal(tellOf({ kind: 'halt', launch: bad }).key, 'halt:no-run')
+})

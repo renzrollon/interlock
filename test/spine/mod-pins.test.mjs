@@ -25,7 +25,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { specifiers, walkModule } from '../helpers/module-walk.mjs'
 import { GUARD_NAMES } from '../../lib/meter-refusals.mjs'
@@ -103,8 +103,10 @@ export const FORBIDDEN_TOKENS = Object.freeze([
   '$.model',
   // The prompt box may be read and filled by the drafting helper, never
   // submitted (make-the-run-surfaces-interactive design D4): the blanket
-  // `$.prompt` entry narrowed to its submission. A command run and a tool call
-  // would act for the person, so neither may be spelled either.
+  // `$.prompt` entry narrowed to its submission. Every other `$.prompt.`
+  // spelling but the read and the fill is refused by `promptReachProblems`
+  // below. A command run and a tool call would act for the person, so neither
+  // may be spelled either.
   '$.prompt.submit',
   '$.command.run',
   '$.tool.call',
@@ -396,6 +398,118 @@ test('the prompt read, the fill, the copy and the notification are each spelled 
   const draft = functionSource(source, 'draftLine')
   assert.ok(draft.indexOf('$.prompt.read(') < draft.indexOf('$.prompt.fill('), 'the drafting helper fills before it reads the box')
   assert.ok(draft.indexOf('$.prompt.fill(') < draft.indexOf('$.ui.copy('), 'the drafting helper copies before it tries the fill')
+})
+
+/** The two prompt-box methods the drafting helper may spell; any other is refused. */
+export const PROMPT_METHODS = Object.freeze(['read', 'fill'])
+
+/**
+ * Every reach for the engine's prompt surface in `source` that is not
+ * `$.prompt.read` or `$.prompt.fill`: a method outside `PROMPT_METHODS`
+ * (`$.prompt.submit`, `$.prompt.clear`, ...), the bare object (`$.prompt`,
+ * `$?.prompt`, a computed `$['prompt']`), or `prompt` destructured off `$`.
+ * The narrowed forbidden token names one spelling; this names them all
+ * (make-the-run-surfaces-interactive design D4, blast radius B7).
+ */
+export function promptReachProblems(source) {
+  const problems = []
+  for (const m of source.matchAll(/\$\s*(?:\?\.|\.)\s*prompt\b(\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*))?/g)) {
+    if (!m[2] || !PROMPT_METHODS.includes(m[2]) || m[0] !== `$.prompt.${m[2]}`) problems.push(m[0])
+  }
+  for (const m of source.matchAll(/\$\s*(?:\?\.)?\s*\[\s*['"`]prompt['"`]\s*\]/g)) problems.push(m[0])
+  for (const m of source.matchAll(/\{[^{}]*\bprompt\b[^{}]*\}\s*=\s*\$(?![\w$])/g)) problems.push(m[0].replace(/\s+/g, ' '))
+  return problems
+}
+
+test('the prompt surface is spelled only as its read and its fill, each once, inside the drafting helper', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.deepEqual(promptReachProblems(source), [], 'a prompt-surface spelling other than $.prompt.read and $.prompt.fill')
+  const draft = functionSource(source, 'draftLine')
+  assert.ok(draft, 'the module has no draftLine function')
+  for (const method of PROMPT_METHODS) {
+    const spelling = `$.prompt.${method}`
+    assert.equal(occurrences(source, spelling).length, 1, `the module spells ${spelling} ${occurrences(source, spelling).length} times, not once`)
+    assert.equal(occurrences(draft, spelling).length, 1, `${spelling} is not inside draftLine`)
+  }
+})
+
+test('the prompt-surface pin names every other spelling and passes the read and the fill', () => {
+  assert.deepEqual(promptReachProblems('await $.prompt.read()\nawait $.prompt.fill({ text })\n'), [])
+  for (const bad of [
+    '$.prompt.submit({ text })',
+    '$.prompt.clear()',
+    '$.prompt.append({ text })',
+    '$.prompt .read()',
+    '$?.prompt.read()',
+    '$.prompt?.fill()',
+    'const box = $.prompt',
+    "$['prompt'].submit()",
+    '$?.["prompt"]',
+    'const { prompt } = $',
+    'const { ui, prompt: p } = $'
+  ]) {
+    assert.notDeepEqual(promptReachProblems(bad), [], `the pin let through: ${bad}`)
+  }
+})
+
+// A surface whose element table holds no Button (blast radius B9). Every kit
+// surface (terminal, desktop, vscode, mobile) resolves one, so the module is
+// loaded here under a stand-in engine instead: it imports nothing that reaches
+// Node, and `h` is the engine's global.
+test('a surface with no Button draws the handoff cards with no control, and says so once on the debug log', async () => {
+  const P = await import('../fixtures/mod/preflight.mjs')
+  const { MODS_MIN_HOST_VERSION } = await import('../../lib/host/claude-env.mjs')
+  const hooks = []
+  const { register } = await import(pathToFileURL(moduleEntry()).href)
+  register((event, ...rest) => hooks.push({ event, filter: rest.length > 1 ? rest[0] : null, fn: rest.at(-1) }))
+  const hook = (event, match) =>
+    hooks.find(x => x.event === event && Object.entries(match || {}).every(([k, v]) => x.filter && x.filter[k] === v)).fn
+  const files = new Map([
+    [P.PREFLIGHT_PATH, P.stdout(P.REPORT_WITH_CARD)],
+    [P.CARD_PATH, P.ACTIONS_CARD_TEXT],
+    [P.SECOND_CARD_PATH, P.PLACEHOLDER_CARD_TEXT]
+  ])
+  const logs = []
+  const $ = {
+    ui: {
+      log: (text, o) => logs.push({ text, to: o && o.to }),
+      invalidate() {},
+      toast() {},
+      status() {},
+      open: async () => ({ isPlaced: true }),
+      resolve: () => ({ Box: 'Box', Text: 'Text', Markdown: 'Markdown' })
+    },
+    command: { register: async () => ({}) },
+    session: { version: async () => ({ version: MODS_MIN_HOST_VERSION }) },
+    fs: {
+      read: async path => {
+        if (files.has(path)) return files.get(path)
+        throw new Error(`ENOENT: ${path}`)
+      }
+    },
+    clock: { now: async () => 0 }
+  }
+  const nodes = el => (el && typeof el === 'object' ? [el, ...(el.children || []).flatMap(nodes)] : [])
+  const hadH = 'h' in globalThis
+  const previous = globalThis.h
+  globalThis.h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat() })
+  try {
+    await hook('session.start')($, { cwd: '/repo', surface: 'terminal', isInteractive: true }, async e => e)
+    await hook('command.run', { command: 'interlock-handoff' })($, { command: 'interlock-handoff', args: '' })
+    const render = hook('ui.render', { component: 'Pane', requestId: 'interlock-handoff' })
+    for (let n = 0; n < 2; n++) {
+      const drawn = nodes(await render($, { surface: 'terminal', component: 'Pane', requestId: 'interlock-handoff', props: {} }))
+      assert.deepEqual(drawn.filter(el => el.type === undefined || el.type === 'Button'), [], 'a control, or an element with no type, was drawn')
+      const keys = drawn.map(el => el.props.key).filter(Boolean)
+      assert.ok(keys.includes('card-0-body') && keys.includes('card-1-body'), `the cards were not drawn: ${keys.join(', ')}`)
+      assert.ok(!keys.some(k => k.endsWith('-actions')), 'an empty controls box was drawn')
+    }
+    const said = logs.filter(l => l.to === 'debug' && /draws no Button/.test(l.text))
+    assert.equal(said.length, 1, 'the missing Button was not said exactly once')
+  } finally {
+    if (hadH) globalThis.h = previous
+    else delete globalThis.h
+  }
 })
 
 /** Every non-comment line of `source` that spells a version number, as `line <n>: <text>`. */

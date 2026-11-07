@@ -822,6 +822,10 @@ test('the spec hand-off prints the checkpoint card and a failure does not stop i
   for (const token of ['prints the card', 'non-zero', 'one line', 'does not stop']) {
     assert.ok(step.includes(token), `the card step no longer says ${token}`)
   }
+  // Version skew: an older CLI prints its whole usage on stderr for an unknown verb.
+  for (const token of ['2>"${TMPDIR:-/tmp}/interlock-checkpoint.err"', '|| {', 'printf', '"$?"', 'head -n 1', 'stderr']) {
+    assert.ok(step.includes(token), `the card step no longer keeps stderr out of the turn: ${token}`)
+  }
 })
 
 test("the spec flow's gate lines ask for JSON and say which field is the verdict", () => {

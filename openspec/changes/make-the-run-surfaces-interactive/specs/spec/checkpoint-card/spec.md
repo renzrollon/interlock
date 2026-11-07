@@ -83,7 +83,7 @@ The card SHALL print `/interlock:ship <change>` under the outcome that it looks 
 
 ### Requirement: The spec skill SHALL print the card where it stops, and the line SHALL be pinned by token and left unread by the spec meter
 
-`skills/spec/SKILL.md` SHALL carry the fenced line `interlock checkpoint "<change-name>"` in its hand-off section, before `interlock notify checkpoint`. `test/skills.test.mjs` SHALL pin the line by its tokens and its place in the hand-off order. The line SHALL NOT be a keyed line of the spec meter: the meter passes it through unread, and the test that lists unread lines SHALL name it. A non-zero exit SHALL be reported in one line and SHALL NOT stop the hand-off.
+`skills/spec/SKILL.md` SHALL carry, in its hand-off section before `interlock notify checkpoint`, a fenced line beginning `interlock checkpoint "<change-name>"`, pinned in `test/skills.test.mjs` by its tokens and order and passed through unread by the spec meter. It SHALL keep its stderr in a file under `TMPDIR`, or `/tmp` when unset, with no command substitution. A non-zero exit SHALL be reported in one line, its code and the first stderr line, and SHALL NOT stop the hand-off.
 
 #### Scenario: Happy path — the card is printed before the checkpoint line
 
@@ -103,5 +103,6 @@ The card SHALL print `/interlock:ship <change>` under the outcome that it looks 
 
 - **GIVEN** a spec run whose `interlock checkpoint` line exits 1
 - **WHEN** the skill reaches its hand-off
-- **THEN** the skill's text says to report the first line of the output and go on to the notify line
+- **THEN** the line prints one line, the exit code and the first line of its stderr, and the skill goes on to the notify line
+- **AND** an older `interlock` that answers with its whole usage text puts only that first line into the turn
 - **AND** the checkpoint document names `interlock checkpoint <change-name>` as the way to print the card again in a later session

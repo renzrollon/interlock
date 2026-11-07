@@ -775,7 +775,7 @@ function fencedCommandLines(file) {
 const UNREAD_BY_NAME = [
   'openspec validate "<name>"',
   'openspec --version',
-  'interlock checkpoint "<change-name>"',
+  "interlock checkpoint \"<change-name>\" 2>\"${TMPDIR:-/tmp}/interlock-checkpoint.err\" || { printf 'checkpoint card: exit %s: ' \"$?\"; head -n 1 \"${TMPDIR:-/tmp}/interlock-checkpoint.err\"; }",
   'interlock routing artifact-reviewer --json',
   'interlock routing artifact-reviewer --depth strict --json'
 ]

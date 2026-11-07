@@ -31,6 +31,23 @@ Defines `interlock run-log follow`, a reader that waits on one ship run's trajec
 - **THEN** it prints one line naming `r-8`, `fix-baz` and the word `complete`, and exits 0 without waiting
 - **AND** the same verb with no `--run` follows `r-9`, and keeps following `r-9` when a newer trajectory `r-10` is written while it waits
 
+### Requirement: The end that counts SHALL be the run's latest, and the start-time race SHALL be said
+
+The terminal event that counts SHALL be the last `run-halt` or `run-complete` after the last `run-start`, never the first one the file holds, and a halt line SHALL end the reason with one period, never two. Because the newest trajectory is resolved one time at start, a follower started before a new run writes its first event follows the previous run; the printed line names the run id, and the verb's help SHALL say so.
+
+#### Scenario: Edge case — an old end before a later run-start is not the run's end
+
+- **GIVEN** a trajectory `r-4` holding a `run-start`, a `run-halt` with the reason `the first halt`, and a second `run-start`
+- **WHEN** `interlock run-log follow --run r-4` runs and a `run-complete` event is then appended
+- **THEN** it waits rather than printing the first halt, then prints one line naming `r-4` as complete
+- **AND** a halt whose recorded reason already ends in a period is printed with that one period
+
+#### Scenario: Failure — the help names the start-time race
+
+- **GIVEN** the shipped CLI
+- **WHEN** `interlock run-log follow --help` is printed
+- **THEN** it says the newest trajectory is resolved one time at start, that a follower started before a new run's first event follows the previous run, and that `--run <id>` pins one run
+
 ### Requirement: The follower SHALL poll at the published meter tick, give up at the published launch-ledger age, and print no quiet line
 
 Between reads the verb SHALL wait the period `interlock limits` prints as `meter tick (ms)`. When the followed trajectory was last written longer ago than `launch ledger max age (ms)` and holds neither terminal event, it SHALL print one line saying it stopped following a run with no recorded end, and exit 1. It SHALL print no line for a quiet run, because the trajectory records only the CLI's steps. Its help SHALL say so and name the give-up bound by its limits label.
@@ -58,7 +75,7 @@ Between reads the verb SHALL wait the period `interlock limits` prints as `meter
 
 ### Requirement: The follower SHALL only read, SHALL say when there is nothing to follow, and its halt line SHALL be a record, never a request
 
-The verb SHALL write nothing: no trajectory event, no metric and no other file. With no trajectory under the runs directory it SHALL print one line saying no run is recorded, and exit 1. A trajectory line it cannot parse SHALL be skipped, and the line it prints at the end SHALL say how many were. The halt line SHALL end by saying it is a record and asks for no relaunch, because a session's monitor may hand the line to a model.
+The verb SHALL write nothing: no event, metric or other file. With no trajectory under the runs directory it SHALL print one line saying no run is recorded, and exit 1. A trajectory line it cannot parse SHALL be skipped, and a line another release wrote under a foreign schema SHALL be set aside; the line it prints at the end SHALL say how many of each were. The halt line SHALL end by saying it is a record and asks for no relaunch, because a session's monitor may hand the line to a model.
 
 #### Scenario: Happy path — following leaves the trajectory as it was
 
@@ -79,4 +96,11 @@ The verb SHALL write nothing: no trajectory event, no metric and no other file. 
 - **GIVEN** a trajectory holding two lines that are not JSON and then a `run-complete` event
 - **WHEN** `interlock run-log follow` runs
 - **THEN** it prints the complete line, which says two lines were skipped
+- **AND** it exits 0
+
+#### Scenario: Edge case — a foreign-schema line is set aside and said
+
+- **GIVEN** a trajectory holding a `run-start`, one line tagged with another release's schema, one line that is not JSON, and a `run-halt` event
+- **WHEN** `interlock run-log follow` runs
+- **THEN** it prints the halt line, which says one unparseable line was skipped and one foreign-schema line was set aside
 - **AND** it exits 0

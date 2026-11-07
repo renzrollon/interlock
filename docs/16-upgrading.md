@@ -114,7 +114,7 @@ What replaces them is Claude Code's own advisor tool, which only you can turn on
 
 ## The push notification is removed
 
-From 1.15.0 Interlock sends no notification and the plugin declares no option ([07](./07-cli-and-configuration.md#no-network-call-the-push-was-removed)). Nothing tells you at run time that pushes stopped: no doctor row reads the variable, because reading it is the credential read the change removes. So check by hand once:
+From 1.15.0 Interlock makes no network call and sends no push of its own (the meter still asks the engine for a local notification), and the plugin declares no option ([07](./07-cli-and-configuration.md#no-network-call-the-push-was-removed)). Nothing tells you at run time that pushes stopped: no doctor row reads the variable, because reading it is the credential read the change removes. So check by hand once:
 
 - A saved `ntfy topic` in the plugin's settings is no longer read. Remove it.
 - An `INTERLOCK_NTFY_TOPIC` or `INTERLOCK_NTFY_URL` still exported in your shell is ignored by the 1.15.0 CLI. Unset it. While it stays set, a global npm copy older than 1.15.0 that your shell finds first still pushes through it. The preflight's `cli-version` row reports that copy as `CLI VERSION SKEW`, and the fix is the one [above](#bring-the-cli-to-the-plugins-version).

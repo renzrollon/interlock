@@ -1584,6 +1584,25 @@ test('a host that loaded the module before the floor rose is skip: 2.1.289 is be
   }
 })
 
+test('below the floor the mods row says whether the engine loads the module at all (probed 2026-11-07)', () => {
+  const dir = tmp()
+  try {
+    assert.equal(claudeEnv.MODS_LOAD_MIN_VERSION, '2.1.292')
+    assert.ok(claudeEnv.compareVersions(claudeEnv.MODS_LOAD_MIN_VERSION, claudeEnv.MODS_MIN_HOST_VERSION) < 0)
+    const loads = modsRow(dir, '2.1.294 (Claude Code)').row
+    assert.equal(loads.status, 'skip')
+    assert.match(loads.detail, /module loads, toasts the floor once and keeps its launch guard/)
+    assert.doesNotMatch(loads.detail, /refuses the hooks module/)
+    const refused = modsRow(dir, '2.1.291 (Claude Code)').row
+    assert.equal(refused.status, 'skip')
+    assert.match(refused.detail, /refuses the hooks module/)
+    assert.match(refused.detail, /2\.1\.292\+ to load/)
+    assert.match(refused.detail, /settings-hook launch guard/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('an unreadable version is skip, named unknown, with the Desktop sentence', () => {
   const dir = tmp()
   try {

