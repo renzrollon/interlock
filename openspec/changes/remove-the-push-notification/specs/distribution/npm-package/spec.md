@@ -62,6 +62,31 @@ Every hook the manifest registers SHALL be `node "${CLAUDE_PLUGIN_ROOT}/hooks/<f
 - **WHEN** the registration pin reads it
 - **THEN** it fails naming the event and the hook
 
+### Requirement: The scan pack SHALL build the bundle onto a local branch and SHALL NOT push
+
+`npm run scan-pack` (`scripts/plugin-scan-pack.mjs`) SHALL commit the unpacked `npm pack` of the working tree onto `temp/plugin-scan`, or the branch `--branch` names, through a temporary index, on top of that branch's tip, else `origin/<branch>`'s, else as a root commit. It SHALL leave the working tree, the real index and the checked-out branch as they were, and SHALL NOT push or open a network connection, and SHALL run `npm pack` offline with npm's update check off.
+
+#### Scenario: Happy path — the bundle lands on a local branch
+
+- **GIVEN** a clean checkout
+- **WHEN** `npm run scan-pack` runs
+- **THEN** the tree of the `temp/plugin-scan` tip holds exactly the files of the unpacked tarball
+- **AND** `git status` and the checked-out branch are what they were before the run
+- **AND** the output names `git push origin temp/plugin-scan` and the Validate as next steps, and nothing was pushed
+
+#### Scenario: Edge — an untracked file under a shipped path marks the pack
+
+- **GIVEN** an untracked file under a path that `files` lists
+- **WHEN** the scan pack runs again
+- **THEN** the new commit's parent is the previous tip
+- **AND** its message says `with uncommitted changes`
+
+#### Scenario: Failure — the target branch is checked out
+
+- **GIVEN** `--branch` names the branch that is checked out
+- **WHEN** the scan pack runs
+- **THEN** it exits 1 naming the branch and writes no ref
+
 ## REMOVED Requirements
 
 ### Requirement: No shipped file but the changelog SHALL name a credential variable or file

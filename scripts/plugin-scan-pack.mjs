@@ -15,7 +15,8 @@
 // commit's parent is the branch's current tip, or `origin/<branch>`'s, so a
 // plain push fast-forwards; with neither it is a root commit.
 //
-// What it never does: push, or touch the network. The push and the Validate
+// What it never does: push, or touch the network (`npm pack` runs with
+// --offline --no-update-notifier, so npm's weekly version check stays off too). The push and the Validate
 // are the owner's, and the script prints both steps.
 //
 // Exit codes: 0 the branch was written; 1 a step failed, named on stderr.
@@ -75,7 +76,7 @@ function main() {
 
   const work = mkdtempSync(join(tmpdir(), 'interlock-scan-pack-'))
   try {
-    const packed = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', work]))
+    const packed = JSON.parse(run('npm', ['pack', '--json', '--offline', '--no-update-notifier', '--pack-destination', work]))
     const file = packed[0] && packed[0].filename
     if (!file) throw new Error('npm pack reported no tarball')
     const unpacked = join(work, 'unpacked')
