@@ -46,4 +46,7 @@
 
 - [x] 4.1 `npm test`, `npm run validate`, `claude plugin test`, and OpenSpec 1.15.0 `validate remove-the-push-notification --strict`. `claude plugin validate --profile directory --strict` (2.1.318) passes the released 1.14.0 bundle as well, so its subset does not include this hold, and it cannot stand in for 4.3.
 - [x] 4.2 `npm pack --dry-run --json` lists no `CHANGELOG.md` and no push file, and `npm run scan-pack` builds the local branch.
-- [ ] 4.3 Owner: push `temp/plugin-scan`, run the directory's Validate, and confirm **Uses a credential from the user's machine** is gone before a release.
+- [x] 4.3 Owner: push `temp/plugin-scan`, run the directory's Validate, and confirm **Uses a credential from the user's machine** is gone before a release.
+  - Validated by the owner on 2026-11-05 against a local `plugin` branch at `d5041dc`, the pack of `b9292b8`. The ntfy read-and-send is no longer cited. Two Policy holds remain, and neither is Blocking:
+    - **Credential.** The hold is now attributed to `cli/interlock`: the doctor's read of the four settings files, paired with the `shell: true` spawn of the profile's test and coverage commands (`verify exec`, the coverage baseline). Both are core and stay. The read is what the `permissions` row needs, and dropping the user and managed scopes would make that row false-alarm. Left for the reviewer, and disclosed in the README (`1d971dd`).
+    - **Hooks.** Every hook is `node "${CLAUDE_PLUGIN_ROOT}/hooks/<f>.mjs"`, and a non-shell file run by a hook always goes to a reviewer. The checklist allows it, and it holds every version regardless.
