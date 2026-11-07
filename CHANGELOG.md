@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-11-07
+
 ### Added
 
 - **The run surfaces are interactive.** `/interlock-handoff` and `/interlock-spec` offer each command their card prints as a **Draft:** control (a **Copy:** control for a `claude --resume` line) that fills an empty prompt box, copies when the box holds text, and never submits. The `/interlock-meter` pane draws the wave plan as a diagram above the board outside a plain terminal. A change name or run id typed after the plugin's own commands is suggested from the preflight report. A halt, a close, a first quiet word and a spec checkpoint are told with a notification, with a toast when the host has no channel. Three new rows in `interlock limits` bound the diagram, the suggestions and the preflight lists.
