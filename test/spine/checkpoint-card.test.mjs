@@ -156,21 +156,22 @@ test('a field that was not passed reads not observed, never a zero or a pass', (
 
 const EXPECTED = [
   '/interlock:spec',
-  'interlock autonomy record spec --human-override',
   'interlock validate add-the-thing',
   `/interlock:review-artifacts add-the-thing --since ${FINDINGS}`,
   '/interlock:ship add-the-thing'
 ]
 
-test('printedCommands over the card returns exactly the five commands, each one time, in print order', () => {
+test('printedCommands over the card returns exactly the four commands, each one time, in print order', () => {
   assert.deepEqual(printedCommands(textOf(checkpointCard(FIELDS))), EXPECTED)
 })
 
-test('each send-back prints the bare skill and the record line', () => {
+test('each send-back prints the bare skill and no record line (decision D6)', () => {
   const [one, two] = checkpointCard(FIELDS).filter(line => line.key.startsWith('checkpoint-outcome-')).slice(0, 2)
   for (const line of [one, two]) {
-    assert.deepEqual(printedCommands(line.text), ['/interlock:spec', 'interlock autonomy record spec --human-override'], line.text)
+    assert.deepEqual(printedCommands(line.text), ['/interlock:spec'], line.text)
+    assert.doesNotMatch(line.text, /autonomy record|human-override/, line.text)
   }
+  assert.doesNotMatch(textOf(checkpointCard(FIELDS)), /human-override/, 'no outcome prints the override line')
 })
 
 test('with no findings file the blockers outcome prints no command and says none was observed', () => {
@@ -179,13 +180,13 @@ test('with no findings file the blockers outcome prints no command and says none
   const blockers = card.find(line => line.key === 'checkpoint-outcome-4')
   assert.deepEqual(printedCommands(blockers.text), [])
   assert.ok(blockers.text.includes('no findings file was observed'), blockers.text)
-  assert.deepEqual(printedCommands(textOf(card)), [EXPECTED[0], EXPECTED[1], EXPECTED[2], EXPECTED[4]])
+  assert.deepEqual(printedCommands(textOf(card)), [EXPECTED[0], EXPECTED[1], EXPECTED[3]])
 })
 
 test('no change name, or a name that cannot sit in a command, prints no command that takes one', () => {
   for (const change of [undefined, '', 'has space', 'a`b', 'x<y>', 3]) {
     const text = textOf(checkpointCard({ ...FIELDS, change }))
-    assert.deepEqual(printedCommands(text), [EXPECTED[0], EXPECTED[1]], String(change))
+    assert.deepEqual(printedCommands(text), [EXPECTED[0]], String(change))
     assert.ok(!/[<>]/.test(text), String(change))
   }
   const unusable = textOf(checkpointCard({ ...FIELDS, findings: 'a path with spaces.json' }))
@@ -223,7 +224,7 @@ function argvOf(line) {
 
 test('each interlock line is accepted by the CLI\'s own verb and flag inventory', () => {
   const lines = printedCommands(textOf(checkpointCard(FIELDS))).filter(line => line.startsWith('interlock '))
-  assert.deepEqual(lines, [EXPECTED[1], EXPECTED[2]])
+  assert.deepEqual(lines, [EXPECTED[1]])
   for (const line of lines) {
     const { positional, flags } = argvOf(line)
     assert.ok(leafOf(positional), `${line}: the inventory knows no such verb`)
@@ -234,7 +235,7 @@ test('each interlock line is accepted by the CLI\'s own verb and flag inventory'
   assert.ok(firstUnknownFlag(['autonomy', 'record', 'spec'], { 'no-such-flag': true }))
 })
 
-test('the send-back record line exits 0 against a scratch state home', () => {
+test('the override record line a person may type still exits 0 against a scratch state home', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'checkpoint-card-'))
   try {
     const { positional, flags } = argvOf('interlock autonomy record spec --human-override')

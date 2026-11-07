@@ -31,9 +31,9 @@ See `proposal.md` for why. The owner asked for the epic's release requirements i
 
 ## Decisions
 
-Ids are the ledger's (`decisions.md`). D3 and D6 are the owner's and are written here as proposals.
+Ids are the ledger's (`decisions.md`). D3 and D6 were the owner's; both were answered on 2026-11-07 (D3 kept as proposed, D6 not taken).
 
-### The floor rises to 2.1.295, with one gate in the module (D3 proposed, D20)
+### The floor rises to 2.1.295, with one gate in the module (D3, D20)
 
 On 2.1.287 a module that hooks `prompt.autocomplete` fails strict validate ("is not an event"), and a kit test that stubs a newer call fails to load (F6). On 2.1.295 a scratch plugin with exactly this change's set passed both: `prompt.autocomplete`, `$.ui.notify`, `$.ui.copy`, `$.prompt.read`, `$.prompt.fill`, a label-only `Button` and an `Svg`. So the proposal is `MODS_MIN_HOST_VERSION = '2.1.295'`.
 
@@ -75,11 +75,13 @@ D25: a control drafts the line as printed and adds no `!`. An `interlock …` li
 
 Outcome commands: `/interlock:ship <change>`; for each send-back `/interlock:spec` and the record line; `interlock validate <change>`; `/interlock:review-artifacts <change> --since <findings file>` only when a findings file is known.
 
-### The send-back record line (D6 proposed)
+### The send-back record line (D6: no)
 
-Proposed: each send-back outcome prints `interlock autonomy record spec --human-override`. In `lib/autonomy.mjs:105-144` that counts one override for `spec`, zeroes its clean count and moves it from `L3` to `L2`; it touches no other skill. That is a behaviour change for every adopter who presses it, so it is the owner's call. If the answer is no, the two outcomes print `/interlock:spec` alone and the `spec/autonomy-record` requirement still stands, because the flag exists and its CLI glue has no test.
+Proposed, and answered no by the owner on 2026-11-07: each send-back outcome prints `interlock autonomy record spec --human-override`. In `lib/autonomy.mjs:105-144` that counts one override for `spec`, zeroes its clean count and moves it from `L3` to `L2`; it touches no other skill. That is a behaviour change for every adopter who presses it, so it is the owner's call. If the answer is no, the two outcomes print `/interlock:spec` alone and the `spec/autonomy-record` requirement still stands, because the flag exists and its CLI glue has no test.
 
-### The wave diagram: above the board, from the board's rows (D9, D10, D13, D23)
+### The wave diagram: above the board, from the board's rows (D9, D10, D13, D23, D29)
+
+- D29: of the renderer's reasons, the meter pane draws a line only for the over-bound one. Rows with no lane row draw nothing, because the board's own spoken line already says why.
 
 - D9: on a surface other than `terminal` the meter pane draws one `Svg` above the board. The board stays on both surfaces: a living scenario requires it and the lane notes live there. The pane draws a line in the diagram's place only for the over-bound reason; for rows with no lane row (a board below its minimum width) it draws nothing, because the board's own spoken line already says why there is no plan.
 - D10: `drawPlanSvg(rows)` in `lib/draw-plan-svg.mjs` takes the rows of `drawPlanBoardRows` (`lib/draw-plan.mjs:409`) and returns `{ source, width, height, alt }` or `{ reason, alt }`. Wave rows give the groups; a lane row's `parts` give the box (label, model, state word) and its `after` ids give the edges, joined to the lanes that hold those task ids. A lane row's task ids are read by one rule, because `laneCells` (`lib/draw-plan.mjs:145-155`) fills the parts three ways: `tasks[].id` when `tasks` is present (a state overlay was passed); else `ids` split on `, ` (a multi-task lane with no overlay); else `label`, which for a one-task lane is the task id (`lib/lane.mjs:29-31`). No new export from a pinned module. `alt` is the rows' texts. The document sets its own background and ink, because an `Svg` was not shown to read the surface's theme, and shows state by word and stroke pattern.
@@ -107,7 +109,9 @@ The module's one `tell($, kind)` helper is the only place `$.ui.notify(` is spel
 - D18: the hook awaits `next(e)` and puts its rows ahead of the engine's. The probe answered rows without calling `next` (F5), so the shape of the engine's own answer, `{ suggestions: [...] }`, is pinned by the kit test, and rows are added only to that shape. An answer of any other shape is returned unchanged, with one debug-log line the first time in a session: replacing it would be a substitute result, which observe-only forbids. The held report is read at a human prompt, so a session's first draft holds none: the hook then reads the preflight file one time for the session. No report after that read, or a `null` list, turns the rows off with one debug-log line the first time in a session, naming which, because a degraded path is spoken.
 - D16: the report gains `openChanges` and `recentRuns`, each `{ names, omitted }` or `null`, under the unchanged `interlock.preflight/1` stamp (`buildPreflightReport` already normalises an absent field, `lib/preflight-file.mjs:94-108`). `hooks/preflight.mjs` builds them from directory listings: no file opened, no process. Dot-names are left out (`openspec/changes/.claude/` exists in this repository). The lists are cut at a third new cap, `preflightListNames` (40, the figure `resume card list rows (per list)` already uses), kept apart from the row cap so a prefix can still find a name beyond the first eight.
 
-### `interlock run-log follow`: halt and complete, nothing else (D8, D15, D19)
+### `interlock run-log follow`: halt and complete, nothing else (D8, D15, D19, D28)
+
+- D28: with no `--run`, the run followed is resolved one time, at start. A run that begins later never replaces it, which is what `--run` already implies; the help says so.
 
 `lib/run-follow.mjs` is a pure step: `followStep(records, { skipped, lastWriteMs, nowMs, maxAgeMs })` returns `{ done, exit, line }`. `lib/run-follow-cli.mjs` resolves the trajectory one time at start (the newest file by modification time, or `--run`), so a run that begins later never replaces the one being followed, then re-reads it every `LIMITS.meterTickMs`, and takes its clock and its wait as arguments so tests run without a real wait.
 
@@ -121,6 +125,9 @@ The module's one `tell($, kind)` helper is the only place `$.ui.notify(` is spel
 Three living requirements would be false after this change, so they are MODIFIED with every scenario title kept: `hooks/ship-meter` observe-only and halt-card, and `hooks/session-preflight` mods row. A fourth was not in the brief: `hooks/spec-meter`'s observe-only requirement pins `ALLOWED_CALLS` "unchanged" and "no method on `calls:`" (`openspec/specs/hooks/spec-meter/spec.md:212-232`), and the checkpoint card puts controls in the spec pane. It now points at the lists `hooks/ship-meter` records. Everything else is ADDED.
 
 ### Pins
+
+- D27: the no-version-number pin reads the module's non-comment lines only, the way the pin at `test/spine/mod-pins.test.mjs:250-254` drops `//` lines, so the probe notes that name engine versions stay.
+- D30: the module task is section 2's 2.5. It reads nothing the other section-2 tasks write, so it needs no verify boundary after them; documentation is section 3 and runs the whole suite.
 
 - `ALLOWED_CALLS` gains `$.ui.notify`, `$.ui.copy`, `$.prompt.read`, `$.prompt.fill`. Not `$.ui.view`, which nothing calls.
 - `FORBIDDEN_TOKENS` swaps `$.prompt` for `$.prompt.submit` and gains `$.command.run` and `$.tool.call`. `$.process`, `$.fs.write`, `$.store` and `$.model` stay.

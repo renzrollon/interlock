@@ -31,15 +31,15 @@ Defines the card a person reads at the spec checkpoint: the change's artifacts w
 - **THEN** the ledger line and the gate line each read `not observed`
 - **AND** an artifact passed with a path and no status reads its path and `not observed`
 
-### Requirement: Each outcome SHALL print the command it runs, and a send-back SHALL print the line that records it
+### Requirement: Each outcome SHALL print the command it runs, and a send-back SHALL print no record line
 
-The card SHALL print `/interlock:ship <change>` under the outcome that it looks right; `/interlock:spec` and `interlock autonomy record spec --human-override` under each send-back outcome; `interlock validate <change>` under small gaps; and, under reported blockers, `/interlock:review-artifacts <change> --since <findings file>` only when a findings file was passed. A command that takes a change SHALL carry its name; none SHALL hold a placeholder; each SHALL be one the plugin ships.
+The card SHALL print `/interlock:ship <change>` under the outcome that it looks right; `/interlock:spec` alone under each send-back outcome (no record line: D6); `interlock validate <change>` under small gaps; and, under reported blockers, `/interlock:review-artifacts <change> --since <findings file>` only when a findings file was passed. A command that takes a change SHALL carry its name; none SHALL hold a placeholder; each SHALL be one the plugin ships.
 
 #### Scenario: Happy path — five outcomes, each with its command
 
 - **GIVEN** the fields of change `add-the-thing` with the findings path `.claude/metrics/review-artifacts-add-the-thing-20261106-101500.json`
 - **WHEN** the card is rendered
-- **THEN** it prints `/interlock:ship add-the-thing`, `/interlock:spec` and `interlock autonomy record spec --human-override` under each send-back outcome, `interlock validate add-the-thing`, and `/interlock:review-artifacts add-the-thing --since .claude/metrics/review-artifacts-add-the-thing-20261106-101500.json`
+- **THEN** it prints `/interlock:ship add-the-thing`, `/interlock:spec` under each send-back outcome with no `interlock autonomy record` line, `interlock validate add-the-thing`, and `/interlock:review-artifacts add-the-thing --since .claude/metrics/review-artifacts-add-the-thing-20261106-101500.json`
 - **AND** `printedCommands` over the card's text returns exactly those lines, each one time, in the order printed
 
 #### Scenario: Failure — no findings file, no re-gate command
@@ -53,7 +53,7 @@ The card SHALL print `/interlock:ship <change>` under the outcome that it looks 
 
 - **GIVEN** the card rendered for a fixture change
 - **WHEN** the checkpoint-card tests read its printed commands
-- **THEN** each `interlock` line is accepted by the CLI's own verb and flag inventory, and `interlock autonomy record spec --human-override` run against a scratch state home exits 0
+- **THEN** each `interlock` line is accepted by the CLI's own verb and flag inventory
 - **AND** each `/interlock:` line names a skill directory the plugin ships, and no line holds `<` or `>`
 
 ### Requirement: `interlock checkpoint <change>` SHALL print the card in any session, from the change's own files, and SHALL only read

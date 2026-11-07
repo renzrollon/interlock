@@ -166,7 +166,6 @@ test('every line the real cards print is still offered: the resume card, the che
     'interlock run-log query --run run-20260918-abc --halted',
     'interlock run-log query --run run-20260918-abc --type agent-result',
     'interlock validate add-foo',
-    'interlock autonomy record spec --human-override',
     '/interlock:spec',
     '/interlock:ship add-foo',
     '/interlock:review-artifacts add-foo --since .claude/reviews/add-foo/findings.json',
@@ -187,6 +186,7 @@ test('a line in a plugin shape that no card prints is never offered: prose for t
     '/interlock:ship add-foo --strict',
     'interlock tasks tick add-foo --ids 1.1,1.2,1.3,2.1,2.2',
     'interlock run close --halt "unit failures after 2 fix attempts"',
+    'interlock autonomy record spec --human-override',
     'interlock validate add-foo --strict',
     'interlock run-log show r-1 --format json',
     '/interlock:review-artifacts add-foo --since -rf',
@@ -216,7 +216,6 @@ test('the real checkpoint card offers every command it prints, and a hostile led
   const offered = [...new Set(cardLines.flatMap(line => offeredActions(line.text).map(o => o.line)))]
   assert.deepEqual(offered, [
     '/interlock:spec',
-    'interlock autonomy record spec --human-override',
     'interlock validate add-the-thing',
     '/interlock:review-artifacts add-the-thing --since .claude/metrics/review-artifacts-add-the-thing-20261106-101500.json',
     '/interlock:ship add-the-thing'

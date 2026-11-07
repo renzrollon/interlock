@@ -119,7 +119,6 @@ test('a change at its checkpoint prints its card and changes nothing', () => {
   for (const outcome of OUTCOMES) assert.ok(r.stdout.includes(outcome.title), `outcome: ${outcome.title}`)
   assert.deepEqual(printedCommands(r.stdout), [
     '/interlock:spec',
-    'interlock autonomy record spec --human-override',
     `interlock validate ${name}`,
     `/interlock:review-artifacts ${name} --since .claude/metrics/review-artifacts-${name}-20261106-101500.json`,
     `/interlock:ship ${name}`

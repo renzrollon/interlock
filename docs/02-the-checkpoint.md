@@ -91,21 +91,7 @@ interlock validate <change-name>    # all three artifacts present, non-empty, re
 /interlock:spec add a --json flag to the report command — output shape only, no changes to the report query or its caching
 ```
 
-Record the send-back with:
-
-```bash
-interlock autonomy record spec --human-override
-```
-
-
 **Right idea, wrong approach.** Say what you want instead and re-spec. The explore brief from the first run is reused, so the second pass is much faster than the first.
-
-Record the send-back with:
-
-```bash
-interlock autonomy record spec --human-override
-```
-
 
 **Right idea, small gaps.** Edit `design.md` or `tasks.md` yourself. They are plain markdown and `ship` reads whatever is on disk. Adding a missing consumer task or pinning a version by hand is faster than a full re-spec. Re-run `interlock validate <change-name>` afterwards.
 
