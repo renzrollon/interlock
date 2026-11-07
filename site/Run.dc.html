@@ -121,7 +121,7 @@
           <tr><td class="m">guard-tasks.mjs</td><td>before Edit or Write</td><td>Denies an edit that flips a checkbox in the active change's <code>tasks.md</code>. The tick is the CLI's job, keyed off recorded outcomes.</td></tr>
           <tr><td class="m">guard-commit.mjs</td><td>before Bash</td><td>Denies a <code>git commit</code> unless the stage is <code>commit</code>.</td></tr>
           <tr><td class="m">guard-relaunch.mjs</td><td>before and after Workflow; each human prompt</td><td>Denies a second ship launch in one session when no human prompt has arrived since the last one. A parent chat once relaunched over leftover checkboxes and spent another twenty agents; this is the guard for that.</td></tr>
-          <tr><td class="m">mod.mjs, a hooks module (Claude Code 2.1.287+)</td><td>engine events</td><td>The ship meter. It observes a run and draws it. Apart from the launch guard's one refusal it returns no deny.</td></tr>
+          <tr><td class="m">mod.mjs, a hooks module (Claude Code 2.1.295+)</td><td>engine events</td><td>The ship meter. It observes a run and draws it. Apart from the launch guard's one refusal it returns no deny.</td></tr>
         </tbody>
       </table>
     </div>
@@ -156,7 +156,7 @@
 
   <section class="sec" aria-labelledby="run-watch">
     <div class="sec-head"><span class="sec-no">04</span><h3 class="h-sub" id="run-watch">You can watch it</h3></div>
-    <p class="body" style="margin-bottom: 24px;">On Claude Code 2.1.287 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.</p>
+    <p class="body" style="margin-bottom: 24px;">On Claude Code 2.1.295 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.</p>
     <figure style="margin: 0;">
       <p class="term-cap">/interlock-meter · the wave board, a frame from the recorded run</p>
       <div style="border-radius: 4px; overflow: hidden; background: var(--term-ground); max-width: 900px;">

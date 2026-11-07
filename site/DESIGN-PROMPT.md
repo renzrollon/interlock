@@ -539,7 +539,7 @@ Subhead: **The guards**. Pull quote: **Six hook scripts. Four can deny. All fail
 | `guard-tasks.mjs` | before Edit or Write | Denies an edit that flips a checkbox in the active change's `tasks.md`. The tick is the CLI's job, keyed off recorded outcomes. |
 | `guard-commit.mjs` | before Bash | Denies a `git commit` unless the stage is `commit`. |
 | `guard-relaunch.mjs` | before and after Workflow; each human prompt | Denies a second ship launch in one session when no human prompt has arrived since the last one. A parent chat once relaunched over leftover checkboxes and spent another twenty agents; this is the guard for that. |
-| `mod.mjs`, a hooks module (Claude Code 2.1.287+) | engine events | The ship meter (B.8). It observes a run and draws it. Apart from the launch guard's one refusal it returns no deny. |
+| `mod.mjs`, a hooks module (Claude Code 2.1.295+) | engine events | The ship meter (B.8). It observes a run and draws it. Apart from the launch guard's one refusal it returns no deny. |
 
 The three stage guards read a stage marker at `.claude/ship/<change>/stage.json` carrying the stage, the change, a monotonic index and the writing process's pid. The agent performing each step publishes it; the run program clears it on every terminal path. The launch guard cannot use the marker, because the mistake it bounds happens after the close has cleared it, so it keeps its own small record per session.
 
@@ -584,7 +584,7 @@ Two plugin agent types, and only the drivers spawn them. `interlock:worker` may 
 
 Subhead: **You can watch it**
 
-Intro, verbatim from the README: On Claude Code 2.1.287 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.
+Intro, verbatim from the README: On Claude Code 2.1.295 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.
 
 The still, directly under the intro: `assets/ship-meter.webp` (1400×1050, alt text in A.0). Mono caption above it: `/interlock-meter · the wave board, a frame from the recorded run`. Under it, the provenance line from A.0.
 
@@ -1121,7 +1121,7 @@ PREFLIGHT OK — 11 passed
   [ok  ] state-dirs: every run-state directory is writable or creatable
   [skip] prompt-cache: a prompt-cache lifetime is unset, so its bucket runs on the host default …
   [ok  ] claude-env: Claude Code 2.1.296; CLAUDE_CODE_SUBAGENT_MODEL=unset …
-  [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.287+): /interlock-meter draws a ship run live …
+  [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …
 ```
 
 **min 5–20 · Onboard the repo, once**
@@ -1615,7 +1615,7 @@ Subhead: **Stated limits**
 - Claude Code only. Cursor and Copilot are not supported. The supported path requires v2.1.154 or newer with dynamic workflows enabled.
 - Adversarial review, handoff artifacts and conformance are opt-in (`--strict`), not the default.
 - Structural graph indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. C# type references and test links are inferred by identifier, not resolved by a compiler. Go, Rust, Java and Ruby get everything except import and symbol edges.
-- The ship meter needs Claude Code 2.1.287 or newer. On an older host the run is the same, without the pane.
+- The ship meter needs Claude Code 2.1.295 or newer. On an older host the run is the same, without the pane.
 - The experimental runner over `claude -p` is a metered billing path; the interactive Workflow runtime is not.
 - On Codex and Qwen hosts the guard hooks do not exist; only the shrink check stands between a repair and a weakened test.
 - E2E failures are reported and never repaired; the commit proceeds with a banner.
@@ -1724,7 +1724,7 @@ Table caption, mono: `counted at v1.5.0 on 2026-10-11`. Render the three columns
 | Requirement | Why |
 |---|---|
 | Claude Code v2.1.154 or newer | `/interlock:ship` launches a dynamic workflow. The run in A.0 was recorded on 2.1.295. |
-| Claude Code v2.1.287 or newer, optional | The ship meter loads only there. On an older host the run is the same, without the pane. |
+| Claude Code v2.1.295 or newer, optional | The ship meter loads only there. On an older host the run is the same, without the pane. |
 | Dynamic workflows enabled | Off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` means no ship. On Pro, enable it in `/config`. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` unset | If set, it overrides every per-tier model, and ship banners it. |
 | The `openspec` CLI | Interlock drives it; it does not replace it. |
