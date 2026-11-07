@@ -455,3 +455,32 @@ test('every run found argv literal the run program spells resolves: known, accep
     'the smoke runs run found'
   )
 })
+
+test('checkpoint and run-log follow are known subcommands, accept their flags, and are in the smoke INVENTORY', async () => {
+  // make-the-run-surfaces-interactive 2.1: the two verbs the panes and the spec skill name.
+  const flags = await load('../../lib/cli-flags.mjs')
+  const smoke = await load('../../scripts/postinstall-smoke.mjs')
+  assert.ok(!flags.error && !smoke.error, 'the flag table and the smoke inventory must load')
+  const table = {
+    globalFlags: flags.mod.GLOBAL_FLAGS,
+    subcommandFlags: flags.mod.SUBCOMMAND_FLAGS,
+    inventory: smoke.mod.INVENTORY
+  }
+  assert.deepEqual(
+    checkSegments(
+      [seg('checkpoint <change-name>'), seg('checkpoint add-the-thing --json'), seg('run-log follow'), seg('run-log follow --run r-7 --state-home .')],
+      table
+    ),
+    []
+  )
+  assert.match(checkSegments([seg('checkpoint --bogus')], table)[0], /--bogus is not accepted for "checkpoint"/)
+  assert.match(checkSegments([seg('run-log follow --bogus')], table)[0], /--bogus is not accepted for "run-log follow"/)
+  assert.deepEqual(flags.mod.SUBCOMMAND_FLAGS['run-log follow'], ['format', 'run'])
+  assert.deepEqual(flags.mod.SUBCOMMAND_FLAGS.checkpoint, [])
+  for (const argv of [['checkpoint'], ['run-log', 'follow']]) {
+    assert.ok(
+      smoke.mod.INVENTORY.some(entry => entry.bin === 'interlock' && argv.every((word, i) => entry.argv[i] === word)),
+      `the smoke runs interlock ${argv.join(' ')}`
+    )
+  }
+})

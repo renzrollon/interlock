@@ -273,6 +273,7 @@ export const INVENTORY = [
   { bin: I, argv: ['autonomy', 'clean', 'review-artifacts', 'explore', 'spec', '--json'], codes: [0], check: r => (Array.isArray(stepOf(r)) ? '' : 'not an array') },
   { bin: I, argv: ['note', 'match', CHANGE, '--json'], codes: [0], keys: ['rows'] },
   { bin: I, argv: ['note', 'derive', '--findings', '{in}/blocker.json', '--change', CHANGE, '--json'], codes: [0] },
+  { bin: I, argv: ['checkpoint', CHANGE, '--json'], codes: [0], keys: ['change', 'artifacts', 'ledger', 'validate', 'gate', 'findings'], check: r => (stepOf(r).artifacts.length === 4 ? '' : 'not four artifacts') },
   { bin: I, argv: ['notify', 'checkpoint', CHANGE], codes: [0], check: r => (/^checkpoint: .* nothing is sent$/m.test(r.stdout) ? '' : 'no local checkpoint line') },
 
   // The merge flow.
@@ -365,6 +366,8 @@ export const INVENTORY = [
   { bin: I, argv: ['run-log', 'show', '{runId}', '--state-home', '{state}', '--format', 'board'], codes: [0] },
   { bin: I, argv: ['run-log', 'check', '--run-id', '{runId}', '--state-home', '{state}', '--json'], codes: [0], keys: ['ok'] },
   { bin: I, argv: ['run-log', 'query', '--run', '{runId}', '--halted', '--state-home', '{state}', '--json'], codes: [0] },
+  // The committed run ended in a halt, so the follower prints its line at once and never waits.
+  { bin: I, argv: ['run-log', 'follow', '--run', '{runId}', '--state-home', '{state}'], codes: [0], check: r => (/halted: .*asks for no relaunch\.$/m.test(r.stdout) ? '' : 'no halt line for the committed halted run') },
 
   // The recovery line the halt card prints: the change is a positional.
   { bin: I, argv: ['tasks', 'tick', CHANGE, '--ids', '1.1', '--json'], codes: [0], keys: ['ticked'] },

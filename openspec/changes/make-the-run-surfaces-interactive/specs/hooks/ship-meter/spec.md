@@ -10,7 +10,7 @@ Every hook in the module SHALL resolve to the engine's own behaviour: `next(e)`,
 
 - **GIVEN** the module as shipped
 - **WHEN** `claude plugin validate . --strict` runs on an engine at or above the mods floor
-- **THEN** its `calls:` line names only `$.ui.status`, `$.ui.toast`, `$.ui.log`, `$.ui.open`, `$.ui.invalidate`, `$.ui.resolve`, `$.ui.notify`, `$.ui.copy`, `$.prompt.read`, `$.prompt.fill`, `$.command.register`, `$.session.usage`, `$.session.version`, `$.clock.now`, `$.clock.every`, `$.fs.read` and the state read and write calls, and nothing the spec meter or the settle meter added
+- **THEN** its `calls:` line names only `$.ui.status`, `$.ui.toast`, `$.ui.log`, `$.ui.open`, `$.ui.invalidate`, `$.ui.resolve`, `$.ui.scroll`, `$.ui.notify`, `$.ui.copy`, `$.prompt.read`, `$.prompt.fill`, `$.command.register`, `$.session.usage`, `$.session.version`, `$.clock.now`, `$.clock.every`, `$.fs.read` and the state read and write calls, and nothing the spec meter or the settle meter added
 - **AND** its `hooks:` line adds `prompt.submit`, `session.receive`, `classic.SessionStart` and `tool.call` on `Edit` and `Write` to the meter's events, and lists the `AbovePrompt` band, the `interlock-preflight` and `interlock-handoff` panes and their two commands beside the meter's, then `tool.call` on `Skill` and on `Read`, the `interlock-spec` pane and its command, then the `interlock-settle` pane and its command, then `prompt.autocomplete`
 
 #### Scenario: Failure — a forbidden token fails the pin
@@ -112,6 +112,7 @@ On a surface other than `terminal`, whenever the meter pane draws a plan board i
 - **WHEN** the meter pane is drawn on `terminal`
 - **THEN** no `Svg` element is drawn and the board is the first thing in the wave section
 - **AND** on `desktop`, a run whose plan has not been relayed draws no `Svg` and no line about one
+- **AND** on `desktop`, a board below its minimum width draws its one spoken line, no `Svg` and no second line about the diagram
 
 ### Requirement: The module SHALL tell a halt, a close, a quiet run and a checkpoint one time each, and SHALL toast the same words when no notification was sent
 
@@ -141,7 +142,7 @@ In an interactive session the module SHALL ask the engine for one notification w
 
 ### Requirement: The module SHALL suggest open change names and recent run ids for the plugin's own commands, and SHALL leave every other draft to the engine
 
-On `prompt.autocomplete` in an interactive session the module SHALL add rows only when `lib/prompt-rows.mjs` reads the draft as a plugin command whose next argument is a change name or a run id, and the token under the cursor is that argument. The rows SHALL be the held preflight report's names that begin with the token, at most the published row cap, ahead of the engine's own. Otherwise it SHALL return `next(e)` unchanged. With no report held it SHALL read the preflight file once per session.
+On `prompt.autocomplete` in an interactive session the module SHALL add rows only when `lib/prompt-rows.mjs` reads the token under the cursor as the change-name or run-id argument of a plugin command. The rows SHALL be the held report's names that begin with the token, at most the published row cap, ahead of the engine's rows when its answer has the pinned shape; otherwise it SHALL return `next(e)` unchanged. With no report held it SHALL read the preflight file once per session.
 
 #### Scenario: Happy path — a ship command is offered the open changes that match
 
@@ -155,7 +156,8 @@ On `prompt.autocomplete` in an interactive session the module SHALL add rows onl
 - **GIVEN** an interactive session whose preflight report holds `null` for its open changes, or a session with no report whose one file read gave none
 - **WHEN** the engine asks for suggestions on the draft `/interlock:ship add-`
 - **THEN** the answer is the engine's own, unchanged, and no further file read is made for a later request in that session
-- **AND** when the engine's own answer is not a list of rows, the module's rows stand alone and one debug-log line says so
+- **AND** the first such request in the session writes one debug-log line naming which input was missing, `no preflight report` or the list that is `null`, and a later request writes none
+- **AND** when the engine's own answer is not a list of rows, the answer is the engine's own, unchanged, with no row of the module's added, and one debug-log line says so
 
 #### Scenario: Edge case — another command, another argument, and more names than the cap
 
@@ -167,7 +169,7 @@ On `prompt.autocomplete` in an interactive session the module SHALL add rows onl
 
 ### Requirement: Below the mods floor a loaded module SHALL draw, tell and suggest nothing, SHALL say so one time, and SHALL keep the launch guard
 
-At `session.start`, when the engine reports a version below `MODS_MIN_HOST_VERSION`, the module SHALL treat the session as not interactive for every pane, band, status line, notification and suggestion, and SHALL toast one line naming that version and the floor if the engine reported the session interactive. The launch guard SHALL work as before. A version that cannot be read SHALL leave the module on. The floor SHALL be read from `lib/host/claude-env.mjs`, never spelled in the module.
+At `session.start`, when the engine reports a version below `MODS_MIN_HOST_VERSION`, the module SHALL treat the session as not interactive for every pane, band, status line, notification and suggestion, and SHALL toast one line naming that version and the floor if the engine reported the session interactive. The launch guard SHALL work as before. An unreadable version SHALL leave the module on. The floor SHALL be read from `lib/host/claude-env.mjs`, never spelled in the module's code.
 
 #### Scenario: Happy path — an engine at the floor draws everything
 
@@ -188,4 +190,4 @@ At `session.start`, when the engine reports a version below `MODS_MIN_HOST_VERSI
 - **GIVEN** an engine whose version call rejects, or answers a text that is not a version
 - **WHEN** the session starts
 - **THEN** the module treats the session as the engine reported it, and one debug-log line says the version could not be read
-- **AND** a test fails when the module spells a version number of its own
+- **AND** a test fails when a non-comment line of the module spells a version number, and a version named in a `//` comment does not fail it

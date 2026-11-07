@@ -1543,10 +1543,11 @@ function modsRow(dir, version, env = {}) {
 test('the mods row is ok at the floor, naming the version and the binary it probed', () => {
   const dir = tmp()
   try {
-    const { row, report } = modsRow(dir, '2.1.289 (Claude Code)', { INTERLOCK_CLAUDE_COMMAND: '/opt/bin/claude-wrapper' })
+    const floor = claudeEnv.MODS_MIN_HOST_VERSION
+    const { row, report } = modsRow(dir, `${floor} (Claude Code)`, { INTERLOCK_CLAUDE_COMMAND: '/opt/bin/claude-wrapper' })
     assert.ok(row, 'doctor carries no mods row')
     assert.equal(row.status, 'ok')
-    assert.match(row.detail, /2\.1\.289/)
+    assert.match(row.detail, new RegExp(floor.replace(/\./g, '\\.')))
     assert.match(row.detail, /\/opt\/bin\/claude-wrapper/)
     assert.ok(!report.failures.includes('mods'))
   } finally {
@@ -1563,6 +1564,20 @@ test('the mods row is skip below the floor, naming the version, the floor, and t
     assert.match(row.detail, new RegExp(String(claudeEnv.MODS_MIN_HOST_VERSION).replace(/\./g, '\\.')))
     assert.match(row.detail, /draws nothing here/)
     assert.match(row.detail, /every banner/)
+    assert.ok(!report.failures.includes('mods'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a host that loaded the module before the floor rose is skip: 2.1.289 is below it, advice only', () => {
+  const dir = tmp()
+  try {
+    const { row, report } = modsRow(dir, '2.1.289 (Claude Code)')
+    assert.equal(row.status, 'skip')
+    assert.match(row.detail, /2\.1\.289/)
+    assert.match(row.detail, new RegExp(String(claudeEnv.MODS_MIN_HOST_VERSION).replace(/\./g, '\\.')))
+    assert.match(row.detail, /draws nothing here/)
     assert.ok(!report.failures.includes('mods'))
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -1606,7 +1621,7 @@ test('the mods row is never fail, whatever the env holds', () => {
 test('the mods row rides doctor --json', () => {
   const dir = tmp()
   try {
-    const { report } = modsRow(dir, '2.1.289 (Claude Code)')
+    const { report } = modsRow(dir, `${claudeEnv.MODS_MIN_HOST_VERSION} (Claude Code)`)
     assert.ok(JSON.parse(JSON.stringify(report)).checks.some(c => c.id === 'mods'))
   } finally {
     rmSync(dir, { recursive: true, force: true })

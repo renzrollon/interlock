@@ -13,6 +13,7 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { MODS_MIN_HOST_VERSION } from '../../lib/host/claude-env.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import { PALETTE } from '../../lib/meter-palette.mjs'
 import * as F from '../fixtures/mod/steps.mjs'
@@ -96,7 +97,8 @@ function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('classic.SessionStart', () => ({}))
   on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
-  on('session.version', () => ({ value: { version: '2.1.291', base: '2.1.291', builtAt: '2026-10-06T19:21:39Z' } }))
+  // The engine at the mods floor, so the module draws (make-the-run-surfaces-interactive design D20).
+  on('session.version', () => ({ value: { version: MODS_MIN_HOST_VERSION, base: MODS_MIN_HOST_VERSION, builtAt: '2026-10-06T19:21:39Z' } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } }))
   on('command.register', (_$: any, e: any) => {
     w.commands.push(e.name)
@@ -655,14 +657,22 @@ test('a run at its checkpoint draws an accent header card, then a dim titled car
   await bash($, CHECKPOINT)
   for (const surface of SURFACES) {
     const d = await drawing($, surface)
-    expect(d.cards).toHaveLength(1 + SECTION_TITLES.length)
+    // At the checkpoint one more card follows the meter's own: the checkpoint card (make-the-run-surfaces-interactive,
+    // spec hooks/spec-meter "At the checkpoint the spec pane SHALL draw the checkpoint card…").
+    expect(d.cards).toHaveLength(1 + SECTION_TITLES.length + 1)
     for (const c of d.cards) {
       expect(c.props.borderStyle).toBe('single')
       // A card is never a keyed line, and a title is never one either.
       expect(c.props.key).toBeUndefined()
       expect(c.props.width).toBe(100)
     }
-    const [header, ...sections] = d.cards
+    const [header, ...rest] = d.cards
+    const sections = rest.slice(0, SECTION_TITLES.length)
+    const checkpoint = rest[SECTION_TITLES.length]
+    expect(textOf(checkpoint.first)).toBe('checkpoint')
+    expect(checkpoint.props.borderDimColor).toBe(true)
+    expect(checkpoint.keys.length).toBeGreaterThan(0)
+    expect(checkpoint.keys.every(key => key.startsWith('checkpoint-'))).toBe(true)
     expect(header.keys).toEqual(['spec-header'])
     expect(header.props.borderColor).toBe(PALETTE.accent)
     sections.forEach((c, i) => {

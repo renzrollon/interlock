@@ -112,7 +112,7 @@ After a ship, `/interlock:settle --create --review` pushes the branch, opens the
 
 **Any time, on their own.** `/interlock:explore` (reconnaissance with parallel investigators), `/interlock:review-code` (the adversarial review, standalone), `/interlock:fix-tests` (repair a red suite by root cause, without weakening a test), `/interlock:graph` (build and query the code graph), `/interlock:report` (indicators over the run corpora, gating nothing), `/interlock:manual-test-plan`, `/interlock:explain-code`, `/interlock:evals`, `/interlock:docs-digest`, `/interlock:dispatch`, `/interlock:commit`.
 
-**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt.
+**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt. The checkpoint card (`interlock checkpoint <change>`, also drawn in `/interlock-spec`) lists the questions to ask of a spec, and the panes offer each command they print as a drafted action you submit yourself.
 
 **In the terminal.** `interlock doctor`, `interlock limits`, `interlock drift`, `interlock merge-confidence`. Every subcommand: [07](docs/07-cli-and-configuration.md).
 </details>
@@ -138,7 +138,7 @@ Every term, defined from the ground up: [09 — From prompt to workflow](docs/09
 </p>
 <p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
 
-On Claude Code 2.1.287 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
+On Claude Code 2.1.295 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
 
 ## Turn the gates up
 

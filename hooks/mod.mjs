@@ -101,8 +101,10 @@
 // names are the module's one file read, `$.fs.read`, and nothing else: never a
 // run's trajectory, its manifest or its wave state, and no listing or
 // existence check (the hook lists, in Node). It reads at each prompt a person
-// submits, the one event that reaches a module after the preflight wrote, and
-// when one of the two commands is run. It never reads at the classic
+// submits, the one event that reaches a module after the preflight wrote,
+// when one of the two commands is run, and at the first suggestion request of
+// a session that holds no report (make-the-run-surfaces-interactive design
+// D18). It never reads at the classic
 // session-start event: the settings hook that writes the file runs inside that
 // event's chain, and the module's hook there resets the meter and returns the
 // chain's call as it is, so after a boundary the module holds no report until
@@ -143,8 +145,28 @@
 // position, else a live spec run, else a live settle run, else a spec run at
 // its checkpoint, else a finished settle run (D5). Every rule and word is
 // `lib/settle-meter.mjs`'s.
+//
+// THE INTERACTIVE SURFACES (make-the-run-surfaces-interactive design D4-D25).
+// The module still decides nothing: it draws, drafts and tells, and the
+// person's Enter is the act. A pane control drafts a line the pane printed
+// (`lib/run-actions.mjs` finds them), through one helper that reads the prompt
+// box, fills it only when it is empty, and otherwise copies the line and says
+// so; it never submits. At its checkpoint the spec pane draws
+// `lib/checkpoint-card.mjs`'s card from the fields the spec meter holds. Where
+// the surface draws SVG the waves section draws `lib/draw-plan-svg.mjs`'s
+// diagram above the unchanged board. A halt, a close, a quiet stretch and a
+// checkpoint are told once each through one helper, in `lib/run-tell.mjs`'s
+// words, with a toast in the same words when the engine sent none. While a
+// person types one of the plugin's commands that takes a change name or a run
+// id, `lib/prompt-rows.mjs` answers rows from the preflight report. Below the
+// mods floor (`MODS_MIN_HOST_VERSION`, read from `lib/host/claude-env.mjs`) the
+// session is treated as not interactive, which turns every surface off and
+// leaves the launch guard as it was.
 
+import { checkpointCard } from '../lib/checkpoint-card.mjs'
 import { drawPlanBoardRows } from '../lib/draw-plan.mjs'
+import { drawPlanSvg } from '../lib/draw-plan-svg.mjs'
+import { MODS_MIN_HOST_VERSION, compareVersions } from '../lib/host/claude-env.mjs'
 import { decideLaunch, emptyRecord, isAcceptedLaunch, isShipLaunch, withLaunch, withPrompt } from '../lib/launch-rule.mjs'
 import { LIMITS } from '../lib/limits.mjs'
 import { PALETTE, stateProps, toneProps, turnProps } from '../lib/meter-palette.mjs'
@@ -165,6 +187,9 @@ import {
   preflightPaneLines,
   readPreflightReport
 } from '../lib/preflight-file.mjs'
+import { argumentOf, promptRows } from '../lib/prompt-rows.mjs'
+import { COPY_LABEL_PREFIX, DRAFT_LABEL_PREFIX, offeredActions } from '../lib/run-actions.mjs'
+import { TELL_TITLE, tellOf } from '../lib/run-tell.mjs'
 import {
   SPEC_REPLACED_LINE,
   SPEC_TITLE,
@@ -222,6 +247,13 @@ const SPEC_PANE = 'interlock-spec'
 // The settle meter's pane and command (observe-the-settle-run-live design D13),
 // spelled here so the validator records it; pinned equal to lib/settle-meter.mjs's.
 const SETTLE_PANE = 'interlock-settle'
+// Why a control copied its line instead of drafting it (make-the-run-surfaces-interactive design D4).
+const COPY_RESUME = 'it is a shell line for another terminal'
+const COPY_HELD = 'the prompt box holds a draft'
+const COPY_UNREAD = 'the prompt box could not be read'
+const COPY_UNFILLED = 'the prompt box did not take it'
+// The checkpoint card's title in the spec pane (design D5).
+const CHECKPOINT_TITLE = 'checkpoint'
 
 // The launch guard's record in the session's state: the one key the plugin's
 // type contract declares (types/index.d.ts; guard-ship-relaunch-in-process D2).
@@ -278,6 +310,18 @@ let spec = freshSpec()
 // The settle run, as module state (observe-the-settle-run-live design D6, D12):
 // reset on a reload and at the session boundary, like the ship and spec runs.
 let settle = freshSettle()
+// What was told (make-the-run-surfaces-interactive design D17): each told key
+// and the kind it was told for, in module memory. It is cleared with the run
+// records it tells of: all of it at the session start and the session
+// boundary, and a checkpoint's when a new spec run starts.
+let told = new Map()
+// The suggestions' once-per-session facts (design D18): whether the preflight
+// file was read for a request, and whether each degraded path was named.
+let suggest = freshSuggest()
+
+function freshSuggest() {
+  return { read: false, missingNamed: false, shapeNamed: false }
+}
 
 function freshRun() {
   return {
@@ -309,6 +353,8 @@ function freshRun() {
     steps: [],
     batchAt: new Map(),
     quietWord: null,
+    // How many quiet stretches this run has had: a stretch begins where the word first appears (design D17).
+    quietStretch: 0,
     tick: null,
     generation: 0,
     clockFailed: false,
@@ -486,12 +532,19 @@ function startTick($) {
       try {
         const now = await clockNow($)
         if (!isMine(tick)) return
-        const changed = setWord(quietWord(quietMs(run.lastActivityAt, now)))
+        const word = quietWord(quietMs(run.lastActivityAt, now))
+        // The word's first appearance in a stretch is told once (make-the-run-surfaces-interactive design D17).
+        const appeared = word !== null && run.quietWord === null
+        const changed = setWord(word)
         const pulsed = inFlight()
         if (pulsed) run.pulse++
         if (!isMine(tick)) return
         if (changed) redrawWord($)
         else if (pulsed) $.ui.invalidate('ui.render')
+        if (appeared) {
+          run.quietStretch++
+          await tell($, { kind: 'quiet', runId: run.runId, change: run.change, statusText: statusText(), stretch: run.quietStretch })
+        }
         await followBottom($)
       } catch (err) {
         $.ui.log(`interlock meter: a quiet-figure period failed: ${messageOf(err)}`, { to: 'debug' })
@@ -532,6 +585,110 @@ function stopTick() {
   if (run.tick) run.tick.cancel()
   run.tick = null
   run.quietWord = null
+}
+
+/** Raises one toast inside a try, so a refused toast is named on the debug log and never thrown. */
+function toastSafe($, text, what) {
+  try {
+    $.ui.toast(text)
+  } catch (err) {
+    $.ui.log(`interlock meter: ${what} toast was refused: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/**
+ * Tells one change of state (make-the-run-surfaces-interactive design D17): the
+ * words and the key are `lib/run-tell.mjs`'s, built from fields the module
+ * holds. A key already told is not told again. The engine's notification is
+ * asked for once; when it answers that none was sent, or the call rejects, the
+ * same words are toasted. Only an interactive session is told anything, so
+ * below the mods floor nothing is. The module's one notification call. Never
+ * throws.
+ */
+async function tell($, fields) {
+  if (!session.interactive) return
+  let said = null
+  try {
+    said = tellOf(fields)
+  } catch (err) {
+    $.ui.log(`interlock meter: a notification was not built: ${messageOf(err)}`, { to: 'debug' })
+    return
+  }
+  if (!said || told.has(said.key)) return
+  told.set(said.key, fields.kind)
+  let sent = false
+  try {
+    const answer = await $.ui.notify(said.text, { title: TELL_TITLE })
+    sent = Boolean(answer) && answer.isSent === true
+    if (!sent) {
+      const reason = answer && typeof answer.reason === 'string' ? answer.reason : 'no reason given'
+      $.ui.log(`interlock meter: no notification was sent (${reason}); toasted instead`, { to: 'debug' })
+    }
+  } catch (err) {
+    $.ui.log(`interlock meter: the notification call was refused (${messageOf(err)}); toasted instead`, { to: 'debug' })
+  }
+  if (!sent) toastSafe($, said.text, 'a notification')
+}
+
+/**
+ * The one drafting helper (make-the-run-surfaces-interactive design D4, D22,
+ * D25): the only place the prompt box is read or filled and the only copy. A
+ * `draft` line goes into the prompt box as printed, and only when the box reads
+ * empty; a box that holds a draft, a read that rejects or answers no draft
+ * text, and a fill the engine did not take, copy the line instead and toast
+ * why. A `copy` line (a `claude --resume` line, a shell line for another
+ * terminal) is always copied. A copy that is refused toasts the line itself.
+ * Nothing is submitted. Never throws.
+ */
+async function draftLine($, line, act, surface) {
+  let why = act === 'copy' ? COPY_RESUME : null
+  if (why === null) {
+    let stage = 'read'
+    try {
+      const box = await $.prompt.read()
+      if (!box || typeof box.text !== 'string') why = COPY_UNREAD
+      else if (box.text !== '') why = COPY_HELD
+      else {
+        stage = 'fill'
+        const filled = await $.prompt.fill({ text: line })
+        if (filled && filled.isFilled === true) return
+        why = COPY_UNFILLED
+      }
+    } catch (err) {
+      why = stage === 'read' ? COPY_UNREAD : COPY_UNFILLED
+      $.ui.log(`interlock meter: the prompt box ${stage} was refused: ${messageOf(err)}`, { to: 'debug' })
+    }
+  }
+  let copied = false
+  try {
+    const answer = await $.ui.copy(typeof surface === 'string' && surface ? { text: line, surface } : { text: line })
+    copied = Boolean(answer) && answer.isCopied === true
+  } catch (err) {
+    $.ui.log(`interlock meter: the copy was refused: ${messageOf(err)}`, { to: 'debug' })
+  }
+  toastSafe(
+    $,
+    copied
+      ? `copied to the clipboard, because ${why}: ${line}`
+      : `could not be copied (${why}, and the clipboard did not take it); the line is: ${line}`,
+    'a drafting'
+  )
+}
+
+/**
+ * One label-only control per offered line, keyed under `prefix` in the order
+ * the lines were printed: `Draft: <line>` or `Copy: <line>` (design D22). A
+ * press runs the drafting helper and nothing else.
+ */
+function actionButtons($, e, prefix, actions) {
+  const { Button } = $.ui.resolve(e)
+  return actions.map(({ line, act }, n) =>
+    h(Button, {
+      key: `${prefix}-action-${n}`,
+      label: `${act === 'copy' ? COPY_LABEL_PREFIX : DRAFT_LABEL_PREFIX}${line}`,
+      onPress: press => draftLine($, line, act, press && typeof press.surface === 'string' ? press.surface : null)
+    })
+  )
 }
 
 /**
@@ -801,6 +958,8 @@ async function fileSettleEnd($, e) {
 async function startSpec($) {
   if (spec.phase !== 'idle') $.ui.log(SPEC_REPLACED_LINE, { to: 'debug' })
   spec = freshSpec()
+  // A new spec run's checkpoint is a new change of state: what was told of the last run's goes with its record (design D17).
+  for (const [key, kind] of told) if (kind === 'checkpoint') told.delete(key)
   const started = spec
   spec.phase = 'live'
   spec.startedAt = await specStamp($)
@@ -880,6 +1039,8 @@ async function applySpecLines($, held, lines, r) {
     }
     if (now !== null) spec.lastActivityAt = now
     redrawSpec($)
+    // The run was live when its lines were read, so a checkpoint now is the one it just reached (design D17).
+    if (spec.phase === 'checkpoint') await tell($, { kind: 'checkpoint', change: spec.current, statusText: specStatusText(spec) })
   } catch (err) {
     $.ui.log(`interlock spec: a keyed line was not read: ${messageOf(err)}`, { to: 'debug' })
   }
@@ -1128,6 +1289,9 @@ function endRunAtBoundary($, input) {
     spec = freshSpec({ afterBoundary: true })
     // Only a session that held a settle run names a late settle line; any other is not parsed for one (M3).
     settle = freshSettle({ afterBoundary: settle.phase !== 'idle' })
+    // What was told goes with the run records, and the next request may read the report again (design D17, D18).
+    told = new Map()
+    suggest = freshSuggest()
     setStatus($)
     $.ui.invalidate('ui.render')
     const what = ended.phase === 'idle' ? 'no run was held' : `run ${ended.runId || '(no id)'} is no longer drawn`
@@ -1234,7 +1398,10 @@ function paneCard(Box, borderColor, props, ...kids) {
  * floor, the header in an accent-bordered card, then one dim card per section
  * in the order its lines arrive, titled by the section's name; the writes card
  * is titled by its own keyed `writes` line. Below the floor, flat. With no
- * run, the one no-run Text.
+ * run, the one no-run Text. While the run is stopped at its checkpoint, the
+ * checkpoint card follows the meter's own cards (make-the-run-surfaces-
+ * interactive design D5): in a dim card of its own at or above the floor, flat
+ * beneath the lines below it.
  */
 function drawSpecPane($, e) {
   const { Box, Text } = $.ui.resolve(e)
@@ -1246,7 +1413,8 @@ function drawSpecPane($, e) {
     const l = lines[0]
     return root(h(Box, { key: l.key, flexShrink: 0 }, h(Text, l.dim ? { dimColor: true } : null, l.text)))
   }
-  if (!drawsCards(columns)) return root(...lines.map(l => row(l)))
+  const checkpoint = drawCheckpoint($, e, lines)
+  if (!drawsCards(columns)) return root(...lines.map(l => row(l)), ...checkpoint)
   const header = []
   const sections = new Map()
   const loose = []
@@ -1266,7 +1434,62 @@ function drawSpecPane($, e) {
     const title = section.titled ? [] : [h(Text, HEADING_PROPS, name)]
     cards.push(paneCard(Box, null, { width: columns }, ...title, ...section.kids))
   }
-  return root(...cards, ...loose)
+  const card = checkpoint.length ? [paneCard(Box, null, { width: columns }, h(Text, HEADING_PROPS, CHECKPOINT_TITLE), ...checkpoint)] : []
+  return root(...cards, ...loose, ...card)
+}
+
+/**
+ * What the checkpoint card is drawn from (design D5): the fields the spec meter
+ * holds for the change it draws, and nothing read from disk. Each artifact's
+ * path and status come from the status line; the ledger, validate and gate
+ * lines are the spec pane's own lines for them, passed only when that line
+ * crossed and was read, so a line that never crossed reads `not observed`; the
+ * findings file is the one this run was seen writing. The gate's `metrics`
+ * path is the review metrics file, not the findings file, so it is not used.
+ */
+function checkpointFields(lines) {
+  const name = spec.current
+  const change = name ? spec.changes.get(name) || {} : {}
+  const status = change.status
+  const artifacts =
+    status && Array.isArray(status.artifacts)
+      ? status.artifacts.map(a => ({ id: a.id, status: a.status, ...(str(a.outputPath) ? { path: a.outputPath } : {}) }))
+      : []
+  const said = new Map(lines.map(l => [l.key, l.text]))
+  const observed = kind => {
+    const entry = change[kind]
+    return entry && typeof entry.unparsed !== 'string' && !str(entry.error) ? said.get(`spec-${kind}`) : undefined
+  }
+  return {
+    change: name || undefined,
+    artifacts,
+    ledger: observed('ledger'),
+    validate: observed('validate'),
+    gate: observed('gate'),
+    findings: (name && str(spec.findings.get(name))) || undefined
+  }
+}
+
+/**
+ * The checkpoint card's rows (design D5): `lib/checkpoint-card.mjs`'s keyed
+ * lines, each followed by one control per line it offers, while the spec run is
+ * stopped at its checkpoint; nothing before it, after a hand-over, or with no
+ * run. A card that cannot be built is named on the debug log and not drawn.
+ */
+function drawCheckpoint($, e, lines) {
+  if (spec.phase !== 'checkpoint') return []
+  try {
+    const { Box, Text } = $.ui.resolve(e)
+    const out = []
+    for (const l of checkpointCard(checkpointFields(lines))) {
+      out.push(h(Box, { key: l.key, flexShrink: 0 }, h(Text, { wrap: 'wrap' }, l.text)))
+      out.push(...actionButtons($, e, l.key, offeredActions(l.text)))
+    }
+    return out
+  } catch (err) {
+    $.ui.log(`interlock spec: the checkpoint card was not drawn: ${messageOf(err)}`, { to: 'debug' })
+    return []
+  }
 }
 
 /** A settle line's indent, as layout: a role row at the gutter, an agent row one step further in per depth beyond the first. */
@@ -1630,6 +1853,11 @@ async function applyRecord($, record, relayId) {
   setStatus($)
   $.ui.invalidate('ui.render')
   await followBottom($)
+  // A halt is told when it crosses, and a run that did not halt at its close
+  // record; the close of a halted run tells nothing more (design D17).
+  if (held !== run) return
+  if (record.action === 'halt') await tell($, { kind: 'halt', runId: run.runId, change: run.change, reason: run.halt && run.halt.reason })
+  else if (isClose && !run.halt) await tell($, { kind: 'close', runId: run.runId, change: run.change, exitCode: record.exitCode })
 }
 
 async function openPane($, id = PANE, title = TITLE) {
@@ -1709,7 +1937,10 @@ function drawPreflightPane($, e) {
  * `/interlock-handoff` (design D6): each card the report lists, newest first,
  * read from its path now and rendered verbatim through `Markdown`, cut to the
  * published cap. A card that cannot be read is named with the reason, and the
- * next is drawn as before. Nothing here acts on a card.
+ * next is drawn as before. Beneath each card it read, one control per command
+ * line the card printed, found in the card's whole text before the cut
+ * (make-the-run-surfaces-interactive design D22); a card it could not read
+ * carries none. Nothing here acts on a card: a press drafts or copies a line.
  */
 async function drawHandoffPane($, e) {
   const { Box, Text, Markdown } = $.ui.resolve(e)
@@ -1722,11 +1953,17 @@ async function drawHandoffPane($, e) {
   const out = []
   for (const [n, card] of cards.entries()) {
     out.push(h(Box, { key: `card-${n}` }, h(Text, null, cardLine(card))))
+    let whole = null
     try {
       const text = await $.fs.read(card.path)
       out.push(h(Box, { key: `card-${n}-body` }, h(Markdown, { text: clampCard(text, card.path).text })))
+      whole = text
     } catch (err) {
       out.push(h(Box, { key: `card-${n}-unread` }, h(Text, null, `${card.path}: cannot be read: ${messageOf(err)}`)))
+    }
+    const actions = whole === null ? [] : offeredActions(whole)
+    if (actions.length) {
+      out.push(h(Box, { key: `card-${n}-actions`, flexDirection: 'column', flexShrink: 0 }, ...actionButtons($, e, `card-${n}`, actions)))
     }
   }
   return column(out)
@@ -2180,7 +2417,37 @@ function drawWaves($, e) {
   const drawn = board.length > 0 && board[board.length - 1].key === 'tail'
   const planned = new Set(drawn ? board.filter(row => row.key.startsWith('lane:')).map(row => row.key.slice('lane:'.length)) : [])
   const body = drawn ? drawBoardCards($, e, board, width) : board.map(row => line(boardKey(row.key), row.text))
-  return [...body, ...rows.filter(r => !planned.has(r.label)).map(r => flatRow($, e, r))]
+  const diagram = drawn ? drawDiagram($, e, board) : []
+  return [...diagram, ...body, ...rows.filter(r => !planned.has(r.label)).map(r => flatRow($, e, r))]
+}
+
+/**
+ * The plan as a diagram above the board (make-the-run-surfaces-interactive
+ * design D9, D10): one `Svg` from `lib/draw-plan-svg.mjs`, built from the very
+ * rows the board is drawn from, its `alt` their text. Only where the surface is
+ * not the terminal and its element table holds `Svg`. Rows that hold no lane
+ * draw nothing, because the board already speaks for itself; a document over
+ * the published bound draws the renderer's one line in its place. A renderer
+ * that throws is named on the debug log and draws nothing. The board is
+ * unchanged either way.
+ */
+function drawDiagram($, e, board) {
+  if (e.surface === 'terminal') return []
+  try {
+    const { Box, Text, Svg } = $.ui.resolve(e)
+    if (!Svg || !board.some(row => row.key.startsWith('lane:'))) return []
+    const svg = drawPlanSvg(board)
+    if (svg && typeof svg.source === 'string') {
+      return [h(Box, { key: 'plan-diagram', flexShrink: 0 }, h(Svg, { source: svg.source, alt: svg.alt }))]
+    }
+    if (svg && typeof svg.reason === 'string') {
+      return [h(Box, { key: 'plan-diagram-left-out', flexShrink: 0 }, h(Text, { dimColor: true, wrap: 'wrap' }, svg.reason))]
+    }
+    return []
+  } catch (err) {
+    $.ui.log(`interlock meter: the plan diagram could not be drawn: ${messageOf(err)}`, { to: 'debug' })
+    return []
+  }
 }
 
 async function drawPane($, e) {
@@ -2265,6 +2532,76 @@ async function drawPane($, e) {
   return h(Box, { key: 'meter-root', flexDirection: 'column', flexShrink: 0 }, ...out)
 }
 
+/**
+ * The floor gate (make-the-run-surfaces-interactive design D20): an engine
+ * below `MODS_MIN_HOST_VERSION` is treated as not interactive, which every
+ * pane, band, status line, notification and suggestion already branches on,
+ * and one toast names both versions when the engine had reported the session
+ * interactive. The launch guard's refusal does not branch on it and is kept.
+ * A version that cannot be read, or is no version, leaves the session as the
+ * engine reported it, with one debug line, because a guard fails open. Never
+ * throws.
+ */
+function belowFloor($, version, unread) {
+  try {
+    const order = compareVersions(version, MODS_MIN_HOST_VERSION)
+    if (order === null) {
+      $.ui.log(
+        `interlock meter: the engine's version could not be read (${unread || `it answered ${String(version)}`}); the session is drawn as the engine reported it`,
+        { to: 'debug' }
+      )
+      return
+    }
+    if (order >= 0) return
+    const wasInteractive = session.interactive
+    session.interactive = false
+    if (wasInteractive) {
+      toastSafe(
+        $,
+        `interlock: Claude Code ${version} is below ${MODS_MIN_HOST_VERSION}, the floor of the Interlock panes; the panes, notifications and suggestions are off on this engine, and the launch guard still works`,
+        'the floor'
+      )
+    }
+  } catch (err) {
+    $.ui.log(`interlock meter: the engine's version was not compared with the floor: ${messageOf(err)}`, { to: 'debug' })
+  }
+}
+
+/**
+ * The suggestion rows for one `prompt.autocomplete` request (design D11, D18):
+ * `lib/prompt-rows.mjs`'s rows from the held preflight report, or `null` when
+ * the draft asks for no name, there is no report, the list it asks of is
+ * `null`, or no name matches. A session that holds no report reads the
+ * preflight file once, at the first request that asks; the first request that
+ * then finds no report, or a `null` list, names which on the debug log, once a
+ * session. Never throws.
+ */
+async function suggestionRows($, e) {
+  try {
+    const list = argumentOf(e)
+    if (list === null) return null
+    if (!start.report && !suggest.read) {
+      suggest.read = true
+      await readPreflight($, session.cwd)
+    }
+    let missing = null
+    if (!start.report) missing = 'no preflight report'
+    else if (start.report[list] === null || start.report[list] === undefined) missing = `the preflight report's ${list} is null`
+    if (missing) {
+      if (!suggest.missingNamed) {
+        suggest.missingNamed = true
+        $.ui.log(`interlock meter: no suggestion rows: ${missing}`, { to: 'debug' })
+      }
+      return null
+    }
+    const rows = promptRows(e, start.report)
+    return Array.isArray(rows) && rows.length ? rows : null
+  } catch (err) {
+    $.ui.log(`interlock meter: the suggestion rows were not built: ${messageOf(err)}`, { to: 'debug' })
+    return null
+  }
+}
+
 export function register(on) {
   on('session.start', async ($, e, next) => {
     session = { interactive: e.isInteractive === true, surface: e.surface || null, cwd: str(e.cwd) }
@@ -2273,6 +2610,8 @@ export function register(on) {
     start = freshStart()
     spec = freshSpec()
     settle = freshSettle()
+    told = new Map()
+    suggest = freshSuggest()
     try {
       await $.command.register({
         name: PANE,
@@ -2319,11 +2658,14 @@ export function register(on) {
       $.ui.log(`interlock meter: /${SETTLE_PANE} not registered: ${messageOf(err)}`, { to: 'debug' })
     }
     let version = 'unknown'
+    let unread = null
     try {
       version = (await $.session.version()).version || 'unknown'
-    } catch {
+    } catch (err) {
       version = 'unknown'
+      unread = messageOf(err)
     }
+    belowFloor($, version, unread)
     if (session.interactive) {
       $.ui.log(`interlock meter: engine ${version}, drawing on ${session.surface || 'an unnamed surface'}`, { to: 'transcript' })
     } else {
@@ -2608,5 +2950,28 @@ export function register(on) {
   on('command.run', { command: SETTLE_PANE }, async settleCmdHost => {
     await openPane(settleCmdHost, SETTLE_PANE, SETTLE_TITLE)
     return {}
+  })
+
+  // The prompt's suggestions (make-the-run-surfaces-interactive design D11,
+  // D18): rows for the plugin's own commands that take a change name or a run
+  // id, ahead of what the chain beneath answered, and only when that answer is
+  // the `{ suggestions: [...] }` shape the kit test pins. Any other draft, and
+  // any other answer, is the engine's own, unchanged: replacing it would be a
+  // substitute result.
+  on('prompt.autocomplete', async ($, e, next) => {
+    if (!session.interactive) return next(e)
+    const rows = await suggestionRows($, e)
+    if (!rows) return next(e)
+    const beneath = await next(e)
+    if (!beneath || typeof beneath !== 'object' || !Array.isArray(beneath.suggestions)) {
+      if (!suggest.shapeNamed) {
+        suggest.shapeNamed = true
+        $.ui.log("interlock meter: the engine's suggestions are not a list of rows; its answer is left as it came, with no row added", {
+          to: 'debug'
+        })
+      }
+      return beneath
+    }
+    return { ...beneath, suggestions: [...rows, ...beneath.suggestions] }
   })
 }

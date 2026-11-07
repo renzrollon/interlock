@@ -33,7 +33,7 @@ Defines the card a person reads at the spec checkpoint: the change's artifacts w
 
 ### Requirement: Each outcome SHALL print the command it runs, and a send-back SHALL print the line that records it
 
-The card SHALL print `/interlock:ship <change>` under the outcome that it looks right; `/interlock:spec` and `interlock autonomy record spec --human-override` under each of the two send-back outcomes; `interlock validate <change>` under small gaps; and, under reported blockers, `/interlock:review-artifacts <change> --since <findings file>` only when a findings file was passed. Every printed command SHALL carry the change's own name, hold no placeholder, and be one the plugin ships.
+The card SHALL print `/interlock:ship <change>` under the outcome that it looks right; `/interlock:spec` and `interlock autonomy record spec --human-override` under each send-back outcome; `interlock validate <change>` under small gaps; and, under reported blockers, `/interlock:review-artifacts <change> --since <findings file>` only when a findings file was passed. A command that takes a change SHALL carry its name; none SHALL hold a placeholder; each SHALL be one the plugin ships.
 
 #### Scenario: Happy path — five outcomes, each with its command
 

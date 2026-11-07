@@ -437,3 +437,24 @@ test('tasks coverage <change> --classified reads the named change', () => {
   assert.equal(out.ok, true)
   assert.doesNotMatch(r.stdout + r.stderr, /change "coverage"/)
 })
+
+test('run-log follow and checkpoint are documented in the usage block, accept their flags, and refuse the rest by name', async () => {
+  const { leaves } = await loadFlagTable()
+  const forms = documentedForms(cli(['--help']).stdout)
+  for (const leaf of [['run-log', 'follow'], ['checkpoint']]) {
+    assert.ok(forms.some(f => f.leaf.join(' ') === leaf.join(' ')), `the usage block documents interlock ${leaf.join(' ')}`)
+  }
+  assert.deepEqual([...leaves.get('run-log follow')].sort(), ['format', 'run'])
+  assert.ok(documentedForms(cli(['--help']).stdout).find(f => f.leaf.join(' ') === 'run-log follow').flags.has('run'))
+  for (const argv of [['run-log', 'follow', '--bogus'], ['checkpoint', '--bogus']]) {
+    const r = cli(argv)
+    assert.equal(r.code, 2, `${argv.join(' ')}: ${r.stderr}`)
+    assert.match(r.stderr, /unknown flag --bogus/)
+  }
+  // The other run-log verbs still refuse --format with their own message, follow included.
+  const format = cli(['run-log', 'follow', '--format', 'board'])
+  assert.equal(format.code, 1)
+  assert.match(format.stderr, /--format is read by run-log show only/)
+  // The help for the group names the new verb.
+  assert.match(cli(['run-log', '--help']).stdout, /interlock run-log follow \[--run <id>\]/)
+})

@@ -13,6 +13,7 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { MODS_MIN_HOST_VERSION } from '../../lib/host/claude-env.mjs'
 import { denyReason } from '../../lib/launch-rule.mjs'
 import { drawPlanBoard, drawPlanBoardRows } from '../../lib/draw-plan.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
@@ -120,7 +121,8 @@ function world(on: any, { placed = true, clock = true }: { placed?: boolean; clo
     const { Text } = $.ui.resolve(e)
     return h(Text, null, `${e.props.word}${e.props.suffix}`)
   })
-  on('session.version', () => ({ value: { version: '2.1.289', base: '2.1.289', builtAt: '2026-10-03T19:21:39Z' } }))
+  // The engine at the mods floor, so the module draws (make-the-run-surfaces-interactive design D20).
+  on('session.version', () => ({ value: { version: MODS_MIN_HOST_VERSION, base: MODS_MIN_HOST_VERSION, builtAt: '2026-10-03T19:21:39Z' } }))
   // A `{ deny }` rejects the plugin's read, as the clock's does (design D7, probe 3).
   on('session.usage', (_$: any, e: any) => {
     w.usageArgs.push(e)
@@ -280,7 +282,7 @@ test('session.start registers /interlock-meter beside the preflight\'s two, the 
   const w = world(on)
   await start($)
   expect(w.commands).toEqual([PANE, 'interlock-preflight', 'interlock-handoff', 'interlock-spec', 'interlock-settle'])
-  expect(w.logs.some(l => /2\.1\.289/.test(l.text) && /terminal/.test(l.text) && l.to === 'transcript')).toBe(true)
+  expect(w.logs.some(l => l.text.includes(MODS_MIN_HOST_VERSION) && /terminal/.test(l.text) && l.to === 'transcript')).toBe(true)
 })
 
 test('a non-interactive session registers the command and draws nothing for its life', async ($: any, on: any) => {

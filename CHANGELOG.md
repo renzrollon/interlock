@@ -7,10 +7,22 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **The run surfaces are interactive.** `/interlock-handoff` and `/interlock-spec` offer each command their card prints as a **Draft:** control (a **Copy:** control for a `claude --resume` line) that fills an empty prompt box, copies when the box holds text, and never submits. The `/interlock-meter` pane draws the wave plan as a diagram above the board outside a plain terminal. A change name or run id typed after the plugin's own commands is suggested from the preflight report. A halt, a close, a first quiet word and a spec checkpoint are told with a notification, with a toast when the host has no channel. Three new rows in `interlock limits` bound the diagram, the suggestions and the preflight lists.
+- **`interlock checkpoint [change] [--json]`** prints the spec checkpoint card: each artifact with the question asked of it, the ledger, validate and gate results as the CLI printed them, and the five outcomes with the command each runs. The spec skill prints it before the checkpoint mark; a non-zero exit is reported in one line and does not stop the hand-off. `docs/02-the-checkpoint.md` names it as the way to print the card again and prints `interlock autonomy record spec --human-override` under the two send-back outcomes.
+- **`interlock run-log follow [--run <id>]`** waits on one run's trajectory and prints one line when it halts or completes, exit 0; it gives up with exit 1 after the `launch ledger max age (ms)` bound. It prints no quiet line and only reads.
+
 ### Changed
+
+- **The hooks module's allow-list gains four engine calls**, `$.ui.notify`, `$.ui.copy`, `$.prompt.read` and `$.prompt.fill`, each with one call site pinned in `test/spine/mod-pins.test.mjs`. The module still decides nothing and submits nothing. The preflight report gains `openChanges` and `recentRuns` lists under the unchanged `interlock.preflight/1` stamp.
 
 - **The CLI smoke is started by hand.** The packed-tarball smoke stalled runners and turned a pull request's status red without catching what the unit suite and the `upgrade-install` job do not. It moved out of `ci.yml` into `.github/workflows/cli-smoke.yml`, which `workflow_dispatch` alone starts, and the bare `cli-smoke` gate job is gone; the `main` ruleset no longer requires it. The post-install smoke script and the canary are unchanged. It replaces the advisory-in-CI form of the same job: nothing waits on a macOS runner queue any more.
 - **The strict ship review fans out.** The review step is one spawn per selected dimension, each blind to the others and writing its own ledger; the new `interlock run found` folds the ledgers and emits a `skeptics` step with two skeptics per blocker and warning, which `run reviewed` folds and adjudicates. The skeptics step is bounded by a new `skeptic spawns (per skeptics step)` cap in `interlock limits`; past it the remaining findings share one pair and the step prints `SKEPTIC CAP REACHED`. Reviewers and skeptics are routed from the published `review-dimension` and `review-skeptic` rows, printed as `REVIEW WAVE`. A dimension is recorded as run only when its own answer file is usable (`REVIEW INCOMPLETE`, which also carries the reviewer's own `detail` when it gave one, and `REVIEW ANSWER MISMATCHED`, which prints the value it read on one bounded line), and a silent skeptic sets aside its pair (`SKEPTIC VERDICTS MISSING`). A reviewer can no longer add a dimension. No host chunks either step, so a step wider than the `--max-parallel` you set prints `REVIEW WIDER THAN MAX PARALLEL`: on `interlock-run` all of its agents start at once. The single-worker review briefing is retired. Remediation rounds are unchanged.
+
+### Upgrading
+
+- Update Claude Code to 2.1.295 or later to keep the panes. The run is unchanged below it.
 
 ### Removed
 

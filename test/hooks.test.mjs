@@ -1359,6 +1359,111 @@ test('preflight: a root with no openspec/ writes nothing and its output is exact
   }
 })
 
+// The report's two lists (spec: hooks/session-preflight, design D16): names and
+// modification times from directory listings, nothing opened.
+
+/** Plant `names` under `dir` as files or directories, each stamped `base + index` seconds so the last is newest. */
+function plantListing(dir, names, { directories = false, suffix = '', base = 1_700_000_000 } = {}) {
+  mkdirSync(dir, { recursive: true })
+  names.forEach((name, i) => {
+    const path = join(dir, name + suffix)
+    if (directories) mkdirSync(path)
+    else writeFileSync(path, '{"not":"read"}\n')
+    utimesSync(path, base + i, base + i)
+  })
+}
+
+test('preflight: the report lists open changes and recent runs newest first, and the advisory output is unchanged', () => {
+  const root = openspecRoot()
+  const home = join(root, 'state-home')
+  try {
+    plantListing(join(root, 'openspec', 'changes'), ['add-foo', 'archive', '.claude', 'fix-baz'], { directories: true })
+    // A file among the change directories is not a change.
+    writeFileSync(join(root, 'openspec', 'changes', 'README.md'), 'not a change\n')
+    plantListing(join(home, '.claude', 'ship', 'runs'), ['r-1', 'r-2', 'r-3'], { suffix: '.jsonl' })
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: warnDoctor(root, { stateHome: home }) })
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(r.context, 'interlock preflight OK (1 warning).', 'the lists do not reach the advisory output')
+    assert.equal(r.stderr, '')
+    const report = reportOf(root)
+    assert.deepEqual(report.openChanges, { names: ['fix-baz', 'add-foo'], omitted: 0 })
+    assert.deepEqual(report.recentRuns, { names: ['r-3', 'r-2', 'r-1'], omitted: 0 })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: a runs directory that cannot be listed is null, an absent one is empty, and the hook exits 0', () => {
+  const root = openspecRoot()
+  const home = join(root, 'state-home')
+  try {
+    plantListing(join(root, 'openspec', 'changes'), ['add-foo'], { directories: true })
+    // `.claude/ship/runs` as a file: it exists and cannot be listed.
+    mkdirSync(join(home, '.claude', 'ship'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'ship', 'runs'), 'not a directory')
+    const broken = runPreflight({ cwd: root, hook: detachedHook(root), path: warnDoctor(root, { stateHome: home }) })
+    assert.equal(broken.code, 0, broken.stderr)
+    assert.equal(broken.context, 'interlock preflight OK (1 warning).')
+    assert.equal(reportOf(root).recentRuns, null, 'an unlistable directory is not an empty one')
+    assert.deepEqual(reportOf(root).openChanges, { names: ['add-foo'], omitted: 0 })
+
+    const absent = runPreflight({ cwd: root, hook: detachedHook(root), path: warnDoctor(root, { stateHome: join(root, 'no-such-home') }) })
+    assert.equal(absent.code, 0, absent.stderr)
+    assert.deepEqual(reportOf(root).recentRuns, { names: [], omitted: 0 })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: an unlistable changes directory is null and an absent one is empty', () => {
+  const root = openspecRoot()
+  try {
+    // No `openspec/changes/` at all.
+    const absent = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(absent.code, 0, absent.stderr)
+    assert.deepEqual(reportOf(root).openChanges, { names: [], omitted: 0 })
+    // `openspec/changes` as a file.
+    writeFileSync(join(root, 'openspec', 'changes'), 'not a directory')
+    const broken = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(broken.code, 0, broken.stderr)
+    assert.equal(reportOf(root).openChanges, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: more runs than the cap keep the newest names and count the rest; no state home reads the working root', () => {
+  const root = openspecRoot()
+  try {
+    const cap = LIMITS.preflightListNames
+    const ids = Array.from({ length: cap + 3 }, (_, i) => `r-${String(i).padStart(3, '0')}`)
+    // The doctor names no state home, so the runs are looked for under the working root.
+    plantListing(join(root, '.claude', 'ship', 'runs'), ids, { suffix: '.jsonl' })
+    // A stray non-trajectory file is not a run.
+    writeFileSync(join(root, '.claude', 'ship', 'runs', 'notes.txt'), 'x')
+    const r = runPreflight({ cwd: root, hook: detachedHook(root), path: cleanDoctor(root) })
+    assert.equal(r.code, 0, r.stderr)
+    const { recentRuns } = reportOf(root)
+    assert.equal(recentRuns.names.length, cap)
+    assert.equal(recentRuns.omitted, 3)
+    assert.equal(recentRuns.names[0], ids[ids.length - 1], 'newest first')
+    assert.equal(recentRuns.names[cap - 1], ids[3])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('preflight: the listings open no file and start no process', () => {
+  const source = readFileSync(join(HOOKS, 'preflight.mjs'), 'utf8')
+  const start = source.indexOf('function listDirectory')
+  const end = source.indexOf('async function writeReport')
+  assert.ok(start > 0 && end > start, 'the listing helpers are where the test looks')
+  const listing = source.slice(start, end)
+  for (const token of ['readFileSync', 'openSync', 'createReadStream', 'execFileSync', 'spawnSync', 'execInterlock']) {
+    assert.ok(!listing.includes(token), `the listing helpers contain ${token}`)
+  }
+})
+
 test('preflight: a doctor that could not run is still reported in the file', () => {
   const root = openspecRoot()
   try {

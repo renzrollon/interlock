@@ -24,6 +24,7 @@ import {
   cardLine,
   clampCard,
   freshStart,
+  listedNames,
   noCardText,
   noReportText,
   orderCards,
@@ -90,7 +91,9 @@ test('buildPreflightReport fills every absence with null or [] and never omits a
     message: null,
     doctor: { ran: false, parsed: false, ok: null, counts: null, checks: [] },
     notes: { spoken: [], unreadable: [] },
-    cards: { listed: [], archived: 0, unreadable: [], lookedIn: [] }
+    cards: { listed: [], archived: 0, unreadable: [], lookedIn: [] },
+    openChanges: null,
+    recentRuns: null
   })
   assert.deepEqual(buildPreflightReport(undefined), r)
 })
@@ -137,6 +140,8 @@ test('buildPreflightReport keeps every given field, copies each check\'s evidenc
   ])
   assert.deepEqual(r.notes, input.notes)
   assert.deepEqual(r.cards, input.cards)
+  assert.equal(r.openChanges, null, 'a report built without the lists reads null for both')
+  assert.equal(r.recentRuns, null)
   assert.equal(buildPreflightReport({ source: 'reboot' }).source, null)
   assert.equal(buildPreflightReport({ doctor: { checks: [{ id: 'x', status: 'ok', detail: 'y' }] } }).doctor.checks[0].fix, null)
 })
@@ -396,4 +401,87 @@ test('the file round-trips the cli-version evidence through readPreflightReport'
   assert.deepEqual(read.report.doctor.checks[0].evidence, ['/p/cli/interlock', '1.7.0', '1.8.0'])
   // A fail row still draws the band; the evidence changes what the file keeps, not what is drawn.
   assert.equal(shouldDraw(read.report), true)
+})
+
+// --- the open-change and recent-run lists (make-the-run-surfaces-interactive D16) ---------
+//
+// spec hooks/session-preflight "The SessionStart preflight SHALL list open change
+// names and recent run ids in its report, from directory listings alone": newest
+// first, `archive` and dot-names left out, cut at the published cap with the
+// number left out, `null` for a directory that could not be listed.
+
+const entry = (name, mtimeMs) => ({ name, mtimeMs })
+
+test('listedNames orders newest first, drops archive and dot-names, and counts none left out', () => {
+  const listed = listedNames([entry('add-foo', 100), entry('archive', 900), entry('fix-baz', 300), entry('.claude', 500), entry('', 1)])
+  assert.deepEqual(listed, { names: ['fix-baz', 'add-foo'], omitted: 0 })
+  assert.deepEqual(listedNames([entry('r-1', 1), entry('r-3', 3), entry('r-2', 2)]), { names: ['r-3', 'r-2', 'r-1'], omitted: 0 })
+})
+
+test('listedNames gives equal and unknown times a fixed order, whatever order the listing came in', () => {
+  const a = [entry('b', 5), entry('a', 5), entry('c', undefined), entry('d', Number.NaN)]
+  const b = [...a].reverse()
+  assert.deepEqual(listedNames(a), { names: ['a', 'b', 'c', 'd'], omitted: 0 })
+  assert.deepEqual(listedNames(b), listedNames(a))
+})
+
+test('listedNames cuts at the published cap and says how many it left out', () => {
+  const many = Array.from({ length: LIMITS.preflightListNames + 7 }, (_, i) => entry(`add-${i}`, i))
+  const listed = listedNames(many)
+  assert.equal(listed.names.length, LIMITS.preflightListNames)
+  assert.equal(listed.omitted, 7)
+  assert.equal(listed.names[0], `add-${many.length - 1}`, 'the newest are kept')
+  assert.deepEqual(listedNames(many, 2), { names: [`add-${many.length - 1}`, `add-${many.length - 2}`], omitted: many.length - 2 })
+  assert.deepEqual(listedNames(many, 0).names, [])
+  assert.equal(listedNames(many, -1).names.length, LIMITS.preflightListNames, 'a cap that is not a count falls back to the published one')
+})
+
+test('listedNames answers null for a directory that could not be listed, and an empty list for an empty one', () => {
+  for (const bad of [null, undefined, 'x', 3, {}]) assert.equal(listedNames(bad), null)
+  assert.deepEqual(listedNames([]), { names: [], omitted: 0 })
+  assert.deepEqual(listedNames([entry('archive', 1), entry('.x', 2), null, 7]), { names: [], omitted: 0 })
+})
+
+test('the report carries both lists as given, and the empty list is not null', () => {
+  const r = buildPreflightReport({
+    openChanges: { names: ['add-foo', 'fix-baz'], omitted: 0 },
+    recentRuns: { names: [], omitted: 0 }
+  })
+  assert.deepEqual(r.openChanges, { names: ['add-foo', 'fix-baz'], omitted: 0 })
+  assert.deepEqual(r.recentRuns, { names: [], omitted: 0 })
+  const half = buildPreflightReport({ openChanges: { names: ['add-foo'], omitted: 2 }, recentRuns: null })
+  assert.deepEqual(half.openChanges, { names: ['add-foo'], omitted: 2 })
+  assert.equal(half.recentRuns, null)
+  for (const bad of [undefined, 'x', 3, [], { names: 'x' }, { omitted: 1 }]) {
+    assert.equal(buildPreflightReport({ openChanges: bad }).openChanges, null, JSON.stringify(bad))
+  }
+  const dirty = buildPreflightReport({ openChanges: { names: ['ok', 3, '', null, 'also'], omitted: -4 } })
+  assert.deepEqual(dirty.openChanges, { names: ['ok', 'also'], omitted: 0 })
+})
+
+test('a report never holds more names than the cap, whatever the caller passed', () => {
+  const names = Array.from({ length: LIMITS.preflightListNames + 3 }, (_, i) => `n-${i}`)
+  const r = buildPreflightReport({ recentRuns: { names, omitted: 5 } })
+  assert.equal(r.recentRuns.names.length, LIMITS.preflightListNames)
+  assert.deepEqual(r.recentRuns.names, names.slice(0, LIMITS.preflightListNames))
+  assert.equal(r.recentRuns.omitted, 8)
+})
+
+test('a report file written before the lists existed reads null for both, under the same stamp', () => {
+  const { openChanges, recentRuns, ...older } = allOk()
+  const read = readPreflightReport(JSON.stringify(older))
+  assert.equal(read.problem, undefined)
+  assert.equal(read.report.schema, PREFLIGHT_SCHEMA)
+  assert.equal(read.report.openChanges, null)
+  assert.equal(read.report.recentRuns, null)
+  const withLists = allOk({ openChanges: { names: ['add-foo'], omitted: 0 }, recentRuns: { names: ['r-1'], omitted: 0 } })
+  assert.deepEqual(readPreflightReport(JSON.stringify(withLists)).report, withLists)
+})
+
+test('the module spells the list cap and the hooks module restates neither the key nor the figure', () => {
+  const source = readFileSync(join(ROOT, 'lib', 'preflight-file.mjs'), 'utf8')
+  assert.ok(source.includes('LIMITS.preflightListNames'))
+  assert.ok(!/\b40\b/.test(source.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')), 'the figure is not restated')
+  const mod = readFileSync(join(ROOT, 'hooks', 'mod.mjs'), 'utf8')
+  assert.ok(!mod.includes('preflightListNames'), 'hooks/mod.mjs spells the key')
 })

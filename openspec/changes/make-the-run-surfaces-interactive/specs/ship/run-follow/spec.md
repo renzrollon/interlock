@@ -8,7 +8,7 @@ Defines `interlock run-log follow`, a reader that waits on one ship run's trajec
 
 ### Requirement: `interlock run-log follow` SHALL print one line when the followed run halts or completes, and SHALL then exit 0
 
-`interlock run-log follow` SHALL follow the trajectory most recently written under the state home's runs directory, or the one `--run <id>` names. When that trajectory holds a `run-halt` event it SHALL print one line naming the run, the change and the recorded reason; when it holds a `run-complete` event, one line naming the run and the change as complete. It SHALL exit 0 after either line. A run that already holds one of the two events when the verb starts SHALL get its line at once.
+`interlock run-log follow` SHALL follow the trajectory most recently written under the state home's runs directory, resolved one time at start, or the one `--run <id>` names. When that trajectory holds a `run-halt` event it SHALL print one line naming the run, the change and the recorded reason; when it holds a `run-complete` event, one line naming the run and the change as complete. It SHALL exit 0 after either line, at once for a run that already holds one.
 
 #### Scenario: Happy path — a halt appended while following is printed and ends the verb
 
@@ -29,11 +29,11 @@ Defines `interlock run-log follow`, a reader that waits on one ship run's trajec
 - **GIVEN** a state home whose newest trajectory `r-9` holds no terminal event and whose older trajectory `r-8` of change `fix-baz` holds a `run-complete` event
 - **WHEN** `interlock run-log follow --run r-8` runs
 - **THEN** it prints one line naming `r-8`, `fix-baz` and the word `complete`, and exits 0 without waiting
-- **AND** the same verb with no `--run` follows `r-9`
+- **AND** the same verb with no `--run` follows `r-9`, and keeps following `r-9` when a newer trajectory `r-10` is written while it waits
 
 ### Requirement: The follower SHALL poll at the published meter tick, give up at the published launch-ledger age, and print no quiet line
 
-Between reads the verb SHALL wait the period `interlock limits` prints as `meter tick (ms)`. When the followed trajectory was last written longer ago than `launch ledger max age (ms)` and holds neither terminal event, it SHALL print one line saying it stopped following a run with no recorded end, and exit 1. It SHALL print no line for a quiet run: the trajectory records the CLI's steps, so silence between two is a lane at work, and the verb's help SHALL say so.
+Between reads the verb SHALL wait the period `interlock limits` prints as `meter tick (ms)`. When the followed trajectory was last written longer ago than `launch ledger max age (ms)` and holds neither terminal event, it SHALL print one line saying it stopped following a run with no recorded end, and exit 1. It SHALL print no line for a quiet run, because the trajectory records only the CLI's steps. Its help SHALL say so and name the give-up bound by its limits label.
 
 #### Scenario: Happy path — a run at work prints nothing until it ends
 
@@ -52,8 +52,8 @@ Between reads the verb SHALL wait the period `interlock limits` prints as `meter
 #### Scenario: Edge case — the bounds are the limits module's
 
 - **GIVEN** the follow module and its CLI glue as text
-- **WHEN** the limits tests run
-- **THEN** both bounds are read from the limits module and no number of milliseconds is spelled in either file
+- **WHEN** the follower's tests run
+- **THEN** both bounds are read from the limits module and no number of milliseconds is spelled in either file, and the help names the launch-ledger age by its limits label
 - **AND** the pure reader, called with a clock and a wait passed in, makes each decision above without a real wait
 
 ### Requirement: The follower SHALL only read, SHALL say when there is nothing to follow, and its halt line SHALL be a record, never a request

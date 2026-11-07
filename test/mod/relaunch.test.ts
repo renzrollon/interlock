@@ -11,6 +11,7 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { MODS_MIN_HOST_VERSION } from '../../lib/host/claude-env.mjs'
 import { denyReason } from '../../lib/launch-rule.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import { COMPOSER, TASK_NOTIFICATION } from '../fixtures/mod/prompts.mjs'
@@ -37,7 +38,8 @@ type World = {
 function world(on: any): World {
   const w: World = { clock: mock.clock(on, { now: T0 }), classic: 0, engine: [], answers: [], launches: 0, logs: [], writes: [], toasts: [] }
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
-  on('session.version', () => ({ value: { version: '2.1.289', base: '2.1.289', builtAt: '2026-10-03T19:21:39Z' } }))
+  // The engine at the mods floor, so the module draws (make-the-run-surfaces-interactive design D20).
+  on('session.version', () => ({ value: { version: MODS_MIN_HOST_VERSION, base: MODS_MIN_HOST_VERSION, builtAt: '2026-10-03T19:21:39Z' } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } }))
   on('command.register', (_$: any, e: any) => ({ value: { command: e.name } }))
   const done = { value: undefined }

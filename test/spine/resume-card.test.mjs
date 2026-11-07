@@ -25,6 +25,7 @@ import {
   resumeCardPath,
   writeResumeCard
 } from '../../lib/resume-card.mjs'
+import { printedCommands } from '../../lib/run-actions.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -541,23 +542,6 @@ test('a halted run with a rejected handoff report names the task ids, and a run 
 
 const CLI = join(ROOT, 'cli', 'interlock')
 
-/** Every `interlock …` command line a card prints: fenced lines and inline code spans. */
-function printedCommands(card) {
-  const found = []
-  let fenced = false
-  for (const line of card.split('\n')) {
-    if (/^```/.test(line)) {
-      fenced = !fenced
-      continue
-    }
-    if (fenced && /^interlock\s/.test(line.trim())) found.push(line.trim())
-    else if (!fenced) {
-      for (const m of line.matchAll(/`(interlock\s[^`]+)`/g)) found.push(m[1].trim())
-    }
-  }
-  return found
-}
-
 /** Substitute the card's own values for its placeholders. */
 function fill(command, { change, id }) {
   return command.replace(/<([^>]*)>/g, (whole, inner) => {
@@ -585,7 +569,9 @@ test('every interlock command line the card prints runs as printed, and the tick
   assert.equal(written.written, true, written.reason)
   const card = readFileSync(join(tmp, written.path), 'utf8')
 
-  const commands = printedCommands(card)
+  // The shared reader also returns `/interlock:` and `claude --resume` lines;
+  // this test runs the CLI's own lines.
+  const commands = printedCommands(card).filter(c => c.startsWith('interlock '))
   assert.ok(commands.length >= 3, `expected the card to print its interlock commands, found ${commands.length}: ${commands.join(' | ')}`)
   assert.ok(commands.some(c => /^interlock run-log show /.test(c)))
   assert.ok(commands.some(c => /^interlock run-log query /.test(c)))

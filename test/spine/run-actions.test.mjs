@@ -1,0 +1,119 @@
+// The command lines a pane printed and the controls it may offer for them.
+//
+// hooks/ship-meter "A pane control SHALL draft a line the pane printed, and
+// SHALL never submit it or replace a typed draft" (make-the-run-surfaces-
+// interactive design D22). These are the scenarios that need no engine: what
+// `printedCommands` returns, what `offeredActions` leaves out, and that a real
+// resume card yields the lines a person would run. The press itself (read, fill,
+// copy, toast) is the hooks module's, tested with the engine's kit.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  printedCommands,
+  offeredActions,
+  DRAFT_LABEL_PREFIX,
+  COPY_LABEL_PREFIX
+} from '../../lib/run-actions.mjs'
+import { formatResumeCard } from '../../lib/resume-card.mjs'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+const TICK = 'interlock tasks tick add-foo --ids <the ids above you verified are done>'
+
+test('a fenced line and a code span of each prefix are returned, in print order', () => {
+  const text = [
+    'Intro with `/interlock:ship add-foo` in a span.',
+    '```',
+    'interlock run-log show r-1',
+    'not a command',
+    '```',
+    'Then `claude --resume s-9 --fork-session` for another terminal.',
+    'And `ls -la`, which is no plugin line.'
+  ].join('\n')
+  assert.deepEqual(printedCommands(text), [
+    '/interlock:ship add-foo',
+    'interlock run-log show r-1',
+    'claude --resume s-9 --fork-session'
+  ])
+})
+
+test('a placeholder line is returned whole by printedCommands and absent from offeredActions', () => {
+  const text = ['```', 'interlock run-log show r-1', TICK, '```'].join('\n')
+  assert.deepEqual(printedCommands(text), ['interlock run-log show r-1', TICK])
+  assert.deepEqual(offeredActions(text), [{ line: 'interlock run-log show r-1', act: 'draft' }])
+})
+
+test('a line printed twice is offered one time', () => {
+  const text = [
+    'Run `interlock run-log show r-1` first.',
+    '```',
+    'interlock run-log show r-1',
+    '```'
+  ].join('\n')
+  assert.deepEqual(printedCommands(text), ['interlock run-log show r-1'])
+  assert.deepEqual(offeredActions(text), [{ line: 'interlock run-log show r-1', act: 'draft' }])
+})
+
+test('a claude --resume line is a copy and every other offered line is a draft', () => {
+  const text = 'Use `claude --resume s-9 --fork-session` or `/interlock:spec` or `interlock validate x`.'
+  assert.deepEqual(offeredActions(text), [
+    { line: 'claude --resume s-9 --fork-session', act: 'copy' },
+    { line: '/interlock:spec', act: 'draft' },
+    { line: 'interlock validate x', act: 'draft' }
+  ])
+})
+
+test('text that prints nothing, and a value that is no text, offer nothing', () => {
+  for (const nothing of ['', 'plain prose', '```\n```', '`interlock`', null, undefined, 7, {}]) {
+    assert.deepEqual(printedCommands(nothing), [])
+    assert.deepEqual(offeredActions(nothing), [])
+  }
+})
+
+test('the two label prefixes are exported and read as a label then the line', () => {
+  assert.equal(DRAFT_LABEL_PREFIX, 'Draft: ')
+  assert.equal(COPY_LABEL_PREFIX, 'Copy: ')
+})
+
+test('a real resume card yields its run-log lines, its fork lines as copy and its ship line as a draft', () => {
+  const sessions = [
+    { label: '1.1', sessionId: '11111111-1111-4111-8111-111111111111', outcome: 'failed' },
+    { label: '1.2', sessionId: '22222222-2222-4222-8222-222222222222', outcome: 'failed' }
+  ]
+  const card = formatResumeCard({
+    change: 'add-widget',
+    runId: 'run-20260918-abc',
+    halted: 'unresolved blockers after two remediation rounds',
+    leftoverTaskIds: ['1.2', '1.4'],
+    laneSessions: sessions
+  })
+  const offered = offeredActions(card)
+  const lines = offered.map(o => o.line)
+
+  for (const line of ['interlock run-log show run-20260918-abc', 'interlock run-log query --run run-20260918-abc --halted']) {
+    assert.ok(lines.includes(line), `the card's ${line} line is offered`)
+    assert.equal(offered.find(o => o.line === line).act, 'draft')
+  }
+  for (const s of sessions) {
+    const fork = `claude --resume ${s.sessionId} --fork-session`
+    assert.equal(offered.find(o => o.line === fork)?.act, 'copy', `${fork} is a copy`)
+  }
+  assert.equal(offered.find(o => o.line === '/interlock:ship add-widget')?.act, 'draft')
+
+  // The card prints the tick line with a placeholder: printed, never offered.
+  assert.ok(printedCommands(card).some(l => /^interlock tasks tick /.test(l) && /<[^>]*>/.test(l)))
+  assert.ok(!lines.some(l => /^interlock tasks tick /.test(l)))
+  assert.ok(lines.every(l => !/<[^>]*>/.test(l)), 'no offered line holds a placeholder')
+  assert.equal(new Set(lines).size, lines.length, 'each line is offered one time')
+})
+
+test('the module imports nothing, so the hooks module can load it with no Node', () => {
+  const source = readFileSync(join(ROOT, 'lib', 'run-actions.mjs'), 'utf8')
+  assert.ok(!/^\s*import\b/m.test(source), 'lib/run-actions.mjs has an import')
+  assert.ok(!/\brequire\(|\bimport\(/.test(source), 'lib/run-actions.mjs loads a module dynamically')
+  assert.ok(!source.includes('node:'), 'lib/run-actions.mjs names a node: module')
+})

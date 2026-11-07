@@ -191,6 +191,8 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { checkpointCommand } from '../lib/checkpoint-cli.mjs'
+import { runLogFollow } from '../lib/run-follow-cli.mjs'
 import { openspecCommand } from '../lib/openspec-cli.mjs'
 import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
 import { domainContextCommand, reviewCommand } from '../lib/review-cli.mjs'
@@ -429,6 +431,15 @@ Usage:
   interlock run-log check --state <file>    Reconstructability gate: exit 1 on
                                             a gap, a missing start, or a
                                             missing run-halt/run-complete
+  interlock run-log follow [--run <id>]     Wait on one run; print one line when
+                                            it halts or completes, exit 0. No
+                                            quiet line: the trajectory records
+                                            only the CLI's steps. A run with no
+                                            recorded end is given up on after
+                                            "launch ledger max age (ms)" of
+                                            interlock limits, exit 1
+  interlock checkpoint [change] [--json]    Print the spec checkpoint card; reads
+                                            only, exit 0 when the change resolves
   interlock tasks tick [change] --ids <ids> Tick succeeded task checkboxes by id
   interlock tasks coverage [change]         Halt if classified.json omits an unchecked task
                   --classified <f>
@@ -1021,6 +1032,16 @@ run-log:
                          halt — the run-halt line, plus any verify-judgement
                          that itself halted — combine with --type to narrow
                          further.
+  follow [--run <id>]    Wait on one run (the newest trajectory, fixed at start,
+                         or the one named) and print one line when it halts or
+                         completes; exit 0 after either, at once for a run that
+                         already ended. Prints no quiet line: the trajectory
+                         records the CLI's steps, not every tool call, so a run
+                         at work is silent. A run with no recorded end is given
+                         up on, aloud and exit 1, once its trajectory is older
+                         than "launch ledger max age (ms)" of interlock limits.
+                         No trajectory or an unknown --run exits 1. Reads only;
+                         the halt line is a record and asks for no relaunch.
   Session-query (list/show/query) is read-only and never-throws, like
   "outcomes list": a missing run, a torn final line, or an unreadable log is
   reported, never an exception. Always exits 0 — reading the trajectory is
@@ -3931,6 +3952,10 @@ async function main() {
       noteCommand(cliIo, root, positional, flags, json)
       break
 
+    case 'checkpoint':
+      checkpointCommand(cliIo, root, positional, flags, json)
+      break
+
     case 'settle':
       settleCommand(cliIo, root, positional, flags, json)
       break
@@ -4085,6 +4110,8 @@ async function main() {
           halted: flags.halted === true
         })
         emit(json, result, formatRunLog(result))
+      } else if (sub === 'follow') {
+        await runLogFollow(cliIo, logHome, flags, json)
       } else if (sub === 'check') {
         const runId = runIdFromFlags(flags)
         if (!runId) die('run-log check requires --state <file> (with a runId) or --run-id <id>')
@@ -4092,7 +4119,7 @@ async function main() {
         emit(json, result, formatRunLogCheck(result))
         if (!result.ok) process.exit(1)
       } else {
-        die(`unknown run-log subcommand: ${sub || '(none)'} — expected append|list|show|query|check`)
+        die(`unknown run-log subcommand: ${sub || '(none)'} — expected append|list|show|query|check|follow`)
       }
       break
     }
