@@ -675,11 +675,9 @@ function closeArgs() {
   return [
     ...(banners.length ? ['--host-banners', `${WORK}/host-banners.json`] : []),
     '--host-observed',
-    `${WORK}/host-observed.json`,
-    // Unconditional: this driver knows nothing about topics, servers or
-    // notification text. It requests the push; the CLI decides whether one is
-    // configured and what it says (design D1).
-    '--notify'
+    `${WORK}/host-observed.json`
+    // No `--notify`: the push was removed (remove-the-push-notification), and
+    // the parity test fails on a driver that passes it again.
   ]
 }
 

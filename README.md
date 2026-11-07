@@ -112,7 +112,7 @@ After a ship, `/interlock:settle --create --review` pushes the branch, opens the
 
 **Any time, on their own.** `/interlock:explore` (reconnaissance with parallel investigators), `/interlock:review-code` (the adversarial review, standalone), `/interlock:fix-tests` (repair a red suite by root cause, without weakening a test), `/interlock:graph` (build and query the code graph), `/interlock:report` (indicators over the run corpora, gating nothing), `/interlock:manual-test-plan`, `/interlock:explain-code`, `/interlock:evals`, `/interlock:docs-digest`, `/interlock:dispatch`, `/interlock:commit`.
 
-**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt.
+**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt. The checkpoint card (`interlock checkpoint <change>`, also drawn in `/interlock-spec`) lists the questions to ask of a spec, and the panes offer each command they print as a drafted action you submit yourself.
 
 **In the terminal.** `interlock doctor`, `interlock limits`, `interlock drift`, `interlock merge-confidence`. Every subcommand: [07](docs/07-cli-and-configuration.md).
 </details>
@@ -138,7 +138,7 @@ Every term, defined from the ground up: [09 — From prompt to workflow](docs/09
 </p>
 <p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
 
-On Claude Code 2.1.287 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
+On Claude Code 2.1.295 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
 
 ## Turn the gates up
 
@@ -146,7 +146,7 @@ Default `ship` trusts your test suite: a green suite, one commit, nothing else. 
 
 | Add | What it does | Cost |
 |---|---|---|
-| `ship --review` | The review dimensions in parallel (`language`, `architecture`, `qa`, `technical-lead`, `regression`, and `devops`, `security` or `domain` when the diff calls for them), each proving what it covered, then two skeptics who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
+| `ship --review` | The review dimensions in parallel, one agent each (`language`, `architecture`, `qa`, `technical-lead`, `regression`, and `devops`, `security` or `domain` when the diff calls for them), each proving what it covered, then two skeptics per finding, each their own agent, who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
 | `ship --strict` | The review, plus remediation, a manual test plan when UI changed, a walkthrough of the commit, and a conformance check of the diff against the spec's scenarios | The previous default. [01](docs/01-first-hour.md#step-4--ship-it) |
 | `/interlock:settle` | Opens or updates the PR with a `MERGE`, `HUMAN` or `BLOCK` verdict in its labels and description, and what would lift it. Never merges, never approves | Needs `gh` or `glab` signed in. [15](docs/15-merge-confidence.md) |
 | `interlock merge-confidence --require-merge` in CI | The same verdict as a required check. It re-reads the evidence a run left and runs no review of its own. Exits 1 unless `MERGE` | Some setup. [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |
@@ -160,7 +160,7 @@ Most of the category competes on how much structure you write before coding: Spe
 - **An agent cannot make the suite smaller to make it green.** During remediation a hook denies test edits, task ticks and commits outside the commit stage. They are `PreToolUse` hooks, inert outside a run. [13](docs/13-the-guards.md)
 - **A dismissal needs evidence.** A reviewer who says "not real" must cite a `file:line` in the diff, or it dismisses nothing. [06](docs/06-why-it-works.md)
 - **Specs do not quietly rot.** `interlock drift` reports unarchived changes, specs citing missing files and code no spec describes, each at its own confidence, and never blocks. [03](docs/03-openspec-vs-interlock.md)
-- **Degradation is spoken, never silent.** A missing graph, an overridden model, a failed push: each is a named banner in the summary. [04](docs/04-when-it-stops.md)
+- **Degradation is spoken, never silent.** A missing graph, an overridden model, a skipped verification: each is a named banner in the summary. [04](docs/04-when-it-stops.md)
 - **Built with itself.** Every feature here started as a spec and went through the same checkpoint and ship. [The archive](openspec/changes/archive) is the record, one folder per change.
 
 | | Competes on | Where the rules live |
@@ -178,15 +178,11 @@ It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `ope
 
 **Other hosts (experimental).** `interlock-run` drives the same loop over the Claude Code CLI, any [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code. You start it yourself; no slash command does, and `/interlock:ship` never falls back to it. Two caveats, both bannered by the runner. `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit, while the Workflow runtime behind `/interlock:ship` is the exempted path. And Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`; an unmapped tier is bannered, never silently run on your default. The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor. Code Mode is out of scope. Host table, banners and configuration: [07](docs/07-cli-and-configuration.md#interlock-run--the-experimental-runner).
 
-**The network.** Everything runs without a model and without the network, with one opt-in exception: `interlock notify` pushes one message, so a run or a checkpoint reached while nobody was watching can still reach you.
+**The network.** Interlock makes no network request of its own and reads no credential; the plugin declares no option to ask you for one.
 
-- **What is sent.** `run close --notify` sends the close summary's first line, the change name and the run id. The spec checkpoint sends the change name. An `interlock notify` you type sends the title and body you give it.
-- **Where it goes.** To the [ntfy](https://ntfy.sh) server named by the plugin's `ntfy server` option or by `INTERLOCK_NTFY_URL` (the public `https://ntfy.sh` by default), under the topic in the plugin's `ntfy topic` option or `INTERLOCK_NTFY_TOPIC`. With no topic set, no request is ever made.
-- **What identifies you.** No account, key or token goes with the request. The topic is the only thing in it that identifies you, so treat it as a secret.
-- **How an option reaches the CLI.** A plugin option reaches hooks only, so one session-start hook reads the saved options from its environment and writes the matching variables into the session's environment, unless you already set them.
-- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; those requests are those tools'. `interlock doctor` reads no credential: it names no key or token variable and opens no credential file. The vendor CLIs a run spawns inherit the environment as any child process does; what they send is theirs.
-
-Interlock makes no other request.
+- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; `interlock openspec provision` runs `npm` to install the pinned OpenSpec from the npm registry when none is on your PATH; the vendor CLIs a run spawns inherit the environment as any child process does. What each of those sends is its own.
+- **What it reads and runs on your machine.** `interlock doctor`, the session-start check and `interlock run start` read Claude Code's settings files: managed, user (`~/.claude/settings.json`), project and local. They use only `permissions`, `promptCacheTtl`, `subagentPromptCacheTtl` and `advisorModel`, so they can say whether a run would stop on a prompt. No other key or value is used, printed or sent. `interlock verify exec` runs the command it is passed, which the loop takes from the commands in `.claude/testing/profile.json`, and the coverage baseline runs that profile's coverage command. Both run through a shell (`/bin/sh` on macOS and Linux) and in your environment, as you would run them yourself. Whatever those commands send is theirs, not Interlock's.
+- **Being reached while away.** Interlock makes no network call and sends no push of its own; on a Claude Code that supports mods, the meter asks the engine for a local notification on a halt, a close, a first quiet stretch and a checkpoint. Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) can push to your phone when a long task finishes or a session needs you, with nothing configured in Interlock.
 
 **The CLIs on their own.** `interlock` (the policy engine), `interlock-graph` (a local, deterministic code graph; no vector store, no network) and `interlock-run` (the runner above) are three zero-dependency Node binaries. The plugin puts them on Claude Code's `PATH`; `npm install -g @renzrollon/interlock` puts them on yours. Every gating subcommand exits 1 when it blocks. Reference and every environment variable: [07](docs/07-cli-and-configuration.md).
 </details>

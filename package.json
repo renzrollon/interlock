@@ -1,6 +1,6 @@
 {
   "name": "@renzrollon/interlock",
-  "version": "1.14.0",
+  "version": "1.15.1",
   "description": "Spec-driven development for Claude Code, layered on OpenSpec. You read one spec; parallel agents ship it to a tested commit.",
   "type": "module",
   "engines": {
@@ -24,15 +24,15 @@
     ".claude-plugin/plugin.json",
     "assets",
     "README.md",
-    "LICENSE",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "test": "node --test $(find test -name '*.test.mjs' | sort)",
-    "validate": "claude plugin validate . --strict"
+    "validate": "claude plugin validate . --strict",
+    "scan-pack": "node scripts/plugin-scan-pack.mjs"
   },
   "license": "MIT",
   "repository": {

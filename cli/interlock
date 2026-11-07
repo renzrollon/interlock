@@ -65,6 +65,7 @@ import {
   runClassified,
   runClose,
   runCommit,
+  runFound,
   runJudge,
   runNext,
   runRecordBatch,
@@ -77,19 +78,13 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { RETIRED_PUSH_TEXT } from '../lib/receipt.mjs'
 import { cliVersion } from '../lib/version.mjs'
 import { drawPlanBoard, drawPlanMermaid } from '../lib/draw-plan.mjs'
 import { drawRunBoard, drawRunMermaid } from '../lib/draw-run.mjs'
 import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
 import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
 import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
-import {
-  composeCheckpointMessage,
-  postNtfy,
-  readNotifyConfig,
-  NOTIFY_TOPIC_ENV,
-  DEFAULT_NTFY_URL
-} from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import {
   applyToleranceBand,
@@ -196,6 +191,8 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { checkpointCommand } from '../lib/checkpoint-cli.mjs'
+import { runLogFollow } from '../lib/run-follow-cli.mjs'
 import { openspecCommand } from '../lib/openspec-cli.mjs'
 import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
 import { domainContextCommand, reviewCommand } from '../lib/review-cli.mjs'
@@ -286,18 +283,13 @@ Usage:
   interlock routing [<role>]                Print the model and effort a prose
                   [--depth lean|strict]     skill passes when it spawns a role,
                                             and the review depth's shape
-  interlock notify --title <t> [--body <b>]  Push one message so a run or a
-                 [--priority high|default]   checkpoint reached while nobody was
-  interlock notify checkpoint <change>       watching still reaches someone. The
-                                             only outbound request this CLI makes.
-                                             Topic from the plugin option or
-                                             INTERLOCK_NTFY_TOPIC, server from
-                                             the plugin option or
-                                             INTERLOCK_NTFY_URL
-                                             (default ${DEFAULT_NTFY_URL}). Unset
-                                             topic prints "not configured" and
-                                             exits 0; a failed push exits 1.
-                                             --json emits { sent, reason }
+  interlock notify checkpoint <change>       Mark the spec checkpoint for the
+                                             spec meter. Local: prints one
+                                             "checkpoint:" line, sends nothing and
+                                             exits 0. --json emits
+                                             { sent: false, reason }. The
+                                             --title form is accepted until
+                                             1.16.0 and says the push was removed
   interlock run start --change <name>        The ship loop, as a program. Each
                       [--tdd|--no-tdd]       (--tdd/--no-tdd override the task
                                              shape read from tasks.md)
@@ -305,6 +297,7 @@ Usage:
   interlock run record-batch --results <f>   (interlock.run-step/1): the agents
   interlock run judge --context <ctx> --results <f>
   interlock run verify-final                 to spawn — label, model, effort,
+  interlock run found --results <f>
   interlock run reviewed --results <f>       agent type, tools, result schema and
   interlock run remediated --round <n> --results <f>
   interlock run commit --results <f>         a briefing file with its sha256 —
@@ -313,7 +306,7 @@ Usage:
   interlock run close [--halt <reason>]      names, writes the results, calls
                       [--host-banners <f>]
                       [--host-observed <f>]
-  (record-batch, judge, reviewed, remediated, commit, replan and close also
+  (record-batch, judge, found, reviewed, remediated, commit, replan and close also
   take --host-records <f>: the runner's per-spawn host observations, beside
   --results and never inside them)
                                             \`then.argv\`, and repeats until
@@ -324,16 +317,20 @@ Usage:
                                             is taken here from the run manifest
                                             (.claude/ship/run.json) and the wave
                                             state. The strict tail is part of
-                                            the program too: \`reviewed\`
-                                            adjudicates the findings and verdicts
-                                            the review step wrote and plans round
-                                            one, \`remediated --round <n>\`
+                                            the program too: \`found\` folds
+                                            the answer file each reviewer wrote
+                                            and emits one skeptic per prompt,
+                                            bounded by the published cap,
+                                            \`reviewed\` folds each skeptic's
+                                            verdict file, adjudicates and plans
+                                            round one, \`remediated --round <n>\`
                                             re-adjudicates and asks for the next
                                             round, the verdict or the halt, and
                                             \`commit\` records what the handoff
                                             wrote. No host carries the round
-                                            budget, and none may refuse a tail
-                                            flag. \`run close\` is the only one
+                                            budget or the skeptic cap, and none
+                                            may refuse a tail flag. \`run
+                                            close\` is the only one
                                             that exits non-zero — on a halt, or
                                             on a run whose trajectory cannot be
                                             reconstructed
@@ -434,6 +431,15 @@ Usage:
   interlock run-log check --state <file>    Reconstructability gate: exit 1 on
                                             a gap, a missing start, or a
                                             missing run-halt/run-complete
+  interlock run-log follow [--run <id>]     Wait on one run; print one line when
+                                            it halts or completes, exit 0. No
+                                            quiet line: the trajectory records
+                                            only the CLI's steps. A run with no
+                                            recorded end is given up on after
+                                            "launch ledger max age (ms)" of
+                                            interlock limits, exit 1
+  interlock checkpoint [change] [--json]    Print the spec checkpoint card; reads
+                                            only, exit 0 when the change resolves
   interlock tasks tick [change] --ids <ids> Tick succeeded task checkboxes by id
   interlock tasks coverage [change]         Halt if classified.json omits an unchecked task
                   --classified <f>
@@ -1026,6 +1032,25 @@ run-log:
                          halt — the run-halt line, plus any verify-judgement
                          that itself halted — combine with --type to narrow
                          further.
+  follow [--run <id>]    Wait on one run (the newest trajectory, fixed at start,
+                         or the one named) and print one line when it halts or
+                         completes; exit 0 after either, at once for a run that
+                         already ended. Prints no quiet line: the trajectory
+                         records the CLI's steps, not every tool call, so a run
+                         at work is silent. A run with no recorded end is given
+                         up on, aloud and exit 1, once its trajectory is older
+                         than "launch ledger max age (ms)" of interlock limits.
+                         No trajectory or an unknown --run exits 1. Reads only;
+                         the halt line is a record and asks for no relaunch.
+                         Without --run the newest trajectory is resolved once,
+                         at start: started before a new run writes its first
+                         event, follow follows the previous run (and prints its
+                         end at once if it already ended). The printed line
+                         names the run id; pass --run <id> to pin one run.
+                         The end that counts is the last run-halt/run-complete
+                         after the last run-start. Unparseable and
+                         foreign-schema lines are set aside, and the line says
+                         how many.
   Session-query (list/show/query) is read-only and never-throws, like
   "outcomes list": a missing run, a torn final line, or an unreadable log is
   reported, never an exception. Always exits 0 — reading the trajectory is
@@ -1299,8 +1324,9 @@ const BOOLEAN_FLAGS = new Set([
   // section number, and making the name boolean would swallow that value.
   'tdd',
   'no-tdd',
-  // `run close --notify`: both drivers pass it unconditionally, and the CLI —
-  // not the driver — decides whether a topic is configured (design D1).
+  // `run close --notify`: retired with the push, accepted until 1.16.0 so an
+  // older driver on PATH still closes its run; an unknown flag exits 2
+  // (remove-the-push-notification D3).
   'notify',
   // `merge-confidence --require-merge`: exit 1 unless the verdict is MERGE.
   'require-merge',
@@ -3664,43 +3690,23 @@ async function main() {
     }
 
     case 'notify': {
-      // The CLI's ONE outbound request, and the only place a topic is ever
-      // read (design D1, D2). Unconfigured is not a failure: a skill or a
-      // driver calls this unconditionally, and an operator who never set a
-      // topic gets a line saying so and exit 0, never a halted loop.
-      const config = readNotifyConfig(process.env)
-      // Order matters: a malformed topic yields `{invalid}` with no `topic`
-      // key at all, and reporting that as "not configured" would tell an
-      // operator who DID configure it that they had not.
-      if (!config.invalid && !config.topic) {
-        const notConfigured = { sent: false, reason: `not configured — set ${NOTIFY_TOPIC_ENV}` }
-        emit(json, notConfigured, `push: not configured — set ${NOTIFY_TOPIC_ENV}\n`)
-        break
-      }
-
-      let message
+      // Local since remove-the-push-notification: nothing here reads a
+      // variable or opens a connection, and the CLI sends no notification.
+      // `checkpoint` is the spec skill's marker, which the spec meter keys on
+      // by its argv alone (D2). Every other form is a retired push, accepted
+      // until 1.16.0 so a script that calls it is told and keeps its exit 0,
+      // the exit an unconfigured push always had (D4).
       if (positional[1] === 'checkpoint') {
         const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
         if (!change) die('interlock notify checkpoint <change> — the change name is required')
-        message = composeCheckpointMessage(change)
-      } else {
-        const title = typeof flags.title === 'string' ? flags.title.trim() : ''
-        if (!title) die('--title <text> is required (or use: interlock notify checkpoint <change>)')
-        const priority = flags.priority === 'high' ? 'high' : 'default'
-        message = { title, body: typeof flags.body === 'string' ? flags.body : '', priority }
+        emit(
+          json,
+          { sent: false, reason: 'nothing is sent: interlock sends no notifications' },
+          `checkpoint: ${change} — waiting for review; nothing is sent\n`
+        )
+        break
       }
-
-      if (config.invalid) {
-        const bad = { sent: false, reason: `invalid configuration: ${config.invalid}` }
-        emit(json, bad, `push: failed — ${bad.reason}\n`)
-        process.exit(1)
-      }
-
-      const result = await postNtfy({ url: config.url, topic: config.topic, ...message })
-      emit(json, result, result.sent ? 'push: sent (ntfy)\n' : `push: failed — ${result.reason}\n`)
-      // A push nobody asked about is advisory; a push someone invoked directly
-      // is a command, and a command that did not do its job exits non-zero.
-      if (!result.sent) process.exit(1)
+      emit(json, { sent: false, reason: RETIRED_PUSH_TEXT }, `${RETIRED_PUSH_TEXT}\n`)
       break
     }
 
@@ -3955,6 +3961,10 @@ async function main() {
       noteCommand(cliIo, root, positional, flags, json)
       break
 
+    case 'checkpoint':
+      checkpointCommand(cliIo, root, positional, flags, json)
+      break
+
     case 'settle':
       settleCommand(cliIo, root, positional, flags, json)
       break
@@ -4109,6 +4119,8 @@ async function main() {
           halted: flags.halted === true
         })
         emit(json, result, formatRunLog(result))
+      } else if (sub === 'follow') {
+        await runLogFollow(cliIo, logHome, flags, json)
       } else if (sub === 'check') {
         const runId = runIdFromFlags(flags)
         if (!runId) die('run-log check requires --state <file> (with a runId) or --run-id <id>')
@@ -4116,7 +4128,7 @@ async function main() {
         emit(json, result, formatRunLogCheck(result))
         if (!result.ok) process.exit(1)
       } else {
-        die(`unknown run-log subcommand: ${sub || '(none)'} — expected append|list|show|query|check`)
+        die(`unknown run-log subcommand: ${sub || '(none)'} — expected append|list|show|query|check|follow`)
       }
       break
     }
@@ -4695,6 +4707,8 @@ async function main() {
         step = runJudge(ctx, { context, results: resultList, hostRecords })
       } else if (sub === 'verify-final') {
         step = runVerifyFinal(ctx)
+      } else if (sub === 'found') {
+        step = runFound(ctx, { results: resultList, hostRecords })
       } else if (sub === 'reviewed') {
         step = runReviewed(ctx, { results: resultList, hostRecords })
       } else if (sub === 'remediated') {
@@ -4720,6 +4734,8 @@ async function main() {
           hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
           hostObserved,
           hostRecords,
+          // Retired with the push; until 1.16.0 it only adds the summary's
+          // removed-push row (remove-the-push-notification D3).
           notify: flags.notify === true
         })
         // NOT copied to LAST_STEP_PATH: a halted run closes through here, and
@@ -4731,7 +4747,7 @@ async function main() {
       } else {
         die(
           `unknown run subcommand: ${sub || '(none)'} — expected ` +
-            'start|classified|record-batch|judge|verify-final|reviewed|remediated|commit|replan|next|close'
+            'start|classified|record-batch|judge|verify-final|found|reviewed|remediated|commit|replan|next|close'
         )
       }
 
@@ -4871,10 +4887,11 @@ function verifyJudgeOpts(flags) {
   return opts
 }
 
-// `main()` is async only because `run close` awaits one bounded `fetch`
-// (design D14). Every other case stays synchronous and returns before the
-// first await, so a rejection here reaches exactly the handler a throw used
-// to — same body, same `die()`, same exit code.
+// `main()` is async only because it awaits `runClose`, which returns a
+// promise (it awaited the push until remove-the-push-notification removed it).
+// Every other case stays synchronous and returns before the first await, so a
+// rejection here reaches exactly the handler a throw used to — same body,
+// same `die()`, same exit code.
 main().catch(err => {
   if (err && err.userFacing) die(err.message)
   process.stderr.write(`interlock: ${err && err.message ? err.message : err}\n`)

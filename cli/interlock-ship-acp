@@ -8,7 +8,7 @@
 // be parsing — and runs `interlock-run --host acp` with the same arguments and
 // the same environment.
 //
-// Removed in the next minor version. `CHANGELOG.md` names the release.
+// Removed in the next minor version. The release notes name the release.
 
 import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
