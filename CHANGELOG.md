@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-11-07
+
 ### Fixed
 
 - **`npm run scan-pack` reads npm 12's `npm pack --json` output**, an object keyed by package name rather than an array. The v1.15.0 release job runs npm 12, and its `npm test` failed on the two scan-pack tests, so 1.15.0 was never published.
