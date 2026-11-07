@@ -634,12 +634,10 @@ async function stop(reason) {
 function closeArgs() {
   // Routing is resolved here rather than pushed as it happened, because the
   // question it answers — did EVERY spawn get its model, and its effort — is
-  // only answerable once the last spawn has returned.
-  //
-  // `--notify` is unconditional: this driver knows nothing about topics,
-  // servers or notification text. It requests the push; the CLI decides
-  // whether one is configured and what it says (design D1).
-  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners(), ...effortBanners()]), '--notify']
+  // only answerable once the last spawn has returned. No `--notify`: the push
+  // was removed (remove-the-push-notification), and the parity test fails on
+  // a driver that passes it again.
+  return ['--host-banners', write(`${WORK}/host-banners.json`, [...banners, ...routingBanners(), ...effortBanners()])]
 }
 
 /** Print the close's summary and exit on its status. */

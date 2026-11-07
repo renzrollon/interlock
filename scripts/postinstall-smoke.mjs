@@ -22,8 +22,10 @@
 // so the doctor's `cli-version` row resolves to the copy under test and not to
 // whatever the machine installed globally.
 //
-// No model and no network. The ntfy topic is emptied for every child, so a
-// notify entry prints "not configured" and sends nothing.
+// No model and no network. The CLI sends no notification since
+// remove-the-push-notification; `notify checkpoint` prints one local line. The
+// retired push variables are still emptied for every child, because a CLI
+// released before that change pushes when one is set.
 //
 // INVENTORY is the contract (design D21, D22): test/spine/cli-inventory.test.mjs
 // fails when a shipped surface spells a command leaf this list does not run.
@@ -271,7 +273,7 @@ export const INVENTORY = [
   { bin: I, argv: ['autonomy', 'clean', 'review-artifacts', 'explore', 'spec', '--json'], codes: [0], check: r => (Array.isArray(stepOf(r)) ? '' : 'not an array') },
   { bin: I, argv: ['note', 'match', CHANGE, '--json'], codes: [0], keys: ['rows'] },
   { bin: I, argv: ['note', 'derive', '--findings', '{in}/blocker.json', '--change', CHANGE, '--json'], codes: [0] },
-  { bin: I, argv: ['notify', 'checkpoint', CHANGE], codes: [0], env: { INTERLOCK_NTFY_TOPIC: '' }, check: r => (/not configured/.test(r.stdout) ? '' : 'no not-configured line') },
+  { bin: I, argv: ['notify', 'checkpoint', CHANGE], codes: [0], check: r => (/^checkpoint: .* nothing is sent$/m.test(r.stdout) ? '' : 'no local checkpoint line') },
 
   // The merge flow.
   { bin: I, argv: ['pipeline', '--github', '-', '--required', 'x', '--out', '{in}/pipe.json'], codes: [0], input: ctx => readFileSync(join(ctx.fixtures, 'pipeline', 'github-passing.json'), 'utf8') },
@@ -402,7 +404,7 @@ export const INVENTORY = [
 
   // Run B, strict: the review step reads every dimension's rubric from the install
   // (lib/run.mjs REVIEW_DIMENSIONS_DIR), which `--help` cannot prove. A review that finds a
-  // blocker is handed to a fixing round, and the run ends halted, notifying nobody.
+  // blocker is handed to a fixing round, and the run ends halted.
   {
     bin: I,
     argv: ['run', 'start', '--change', CHANGE, '--host', 'workflow', '--strict', '--json'],
@@ -449,7 +451,7 @@ export const INVENTORY = [
     codes: [1],
     check: r => (/out of sequence/.test(r.stderr) ? '' : 'the sequence guard did not refuse a replan nobody asked for')
   },
-  { bin: I, argv: ['run', 'close', '--halt', 'post-install smoke', '--notify', '--json'], codes: [1], keys: ['action', 'exitCode', 'summary'] },
+  { bin: I, argv: ['run', 'close', '--halt', 'post-install smoke', '--json'], codes: [1], keys: ['action', 'exitCode', 'summary'] },
   { bin: I, argv: ['run-log', 'list', '--json'], codes: [0], check: r => ((stepOf(r)?.runs?.length ?? 0) >= 2 ? '' : 'fewer than two runs recorded') },
 
   // Verification.

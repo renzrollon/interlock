@@ -112,6 +112,15 @@ The 1.7.0 checkpoint advisor and the opt-in review advisor are gone, so these co
 
 What replaces them is Claude Code's own advisor tool, which only you can turn on. `interlock doctor` has an `advisor` row that says whether it is configured, a ship run says so at start, and the Workflow close counts consults ([07](./07-cli-and-configuration.md#claude-codes-advisor-tool)). `interlock limits` no longer prints the advisor caps, and the note-match cap `maxAdvisorNoteRows` is now `maxNoteMatchRows` with the same value.
 
+## The push notification is removed
+
+From 1.15.0 Interlock sends no notification and the plugin declares no option ([07](./07-cli-and-configuration.md#no-network-call-the-push-was-removed)). Nothing tells you at run time that pushes stopped: no doctor row reads the variable, because reading it is the credential read the change removes. So check by hand once:
+
+- A saved `ntfy topic` in the plugin's settings is no longer read. Remove it.
+- An `INTERLOCK_NTFY_TOPIC` or `INTERLOCK_NTFY_URL` still exported in your shell is ignored by the 1.15.0 CLI. Unset it. While it stays set, a global npm copy older than 1.15.0 that your shell finds first still pushes through it. The preflight's `cli-version` row reports that copy as `CLI VERSION SKEW`, and the fix is the one [above](#bring-the-cli-to-the-plugins-version).
+- `interlock run close --notify` and `interlock notify --title` are still accepted, send nothing and print `push: removed — interlock sends no notifications`. The close keeps its exit code, and `notify --title` exits 0, where a failed push used to exit 1. Both forms are refused as unknown from 1.16.0, so remove them from your scripts.
+- Stop using the topic: anyone who knows it can still read what was sent to it.
+
 ## Evals no longer run on a schedule
 
 The model-eval workflows no longer have a `schedule:` trigger, because the credential they need is not provisioned and a weekly green skip reads as a passing eval. They run on `workflow_dispatch`, and the pull-request smoke still skips quietly in a fork. [14](./14-evals.md) has the posture.

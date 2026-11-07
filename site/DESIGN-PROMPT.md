@@ -357,7 +357,7 @@ Eight rows, each a mono label (the pain, in the reader's words), a paragraph (th
    *Cost:* the guard binds only on Claude Code. On the experimental Codex and Qwen hosts you get the shrink check alone and a `HOOKS NOT IN FORCE` banner.
 
 8. **"The run degraded and the summary looked identical to a clean one."**
-   Every degradation is a named banner: `GRAPH UNAVAILABLE`, `NO TEST PROFILE`, `MODEL ROUTING OVERRIDDEN`, `VERIFICATION SKIPPED`, `LEAN SHIP`, `PUSH FAILED`, `CACHE ACCOUNTING NOT REPORTED`, `HOOKS NOT IN FORCE`. A clean run prints the banner block too, saying nothing degraded, because silence and cleanliness must not look alike. The banner strings are asserted verbatim in the test suite: a reworded banner is a banner nobody greps for.
+   Every degradation is a named banner: `GRAPH UNAVAILABLE`, `NO TEST PROFILE`, `MODEL ROUTING OVERRIDDEN`, `VERIFICATION SKIPPED`, `LEAN SHIP`, `CACHE ACCOUNTING NOT REPORTED`, `HOOKS NOT IN FORCE`. A clean run prints the banner block too, saying nothing degraded, because silence and cleanliness must not look alike. The banner strings are asserted verbatim in the test suite: a reworded banner is a banner nobody greps for.
    *Cost:* summaries are longer.
 
 ## A.6 The five bets (Why tab, second section)
@@ -440,7 +440,7 @@ The layers, top to bottom: **host · guards · prose · drivers · policy · cli
 | `lib` | the pure decision modules | policy | code | One concern each: waves, verify, findings, remediate, risk, ready, ledger, drift, receipt | I/O beyond what the module's name implies | `lib/*.mjs` |
 | `prompts` | `lib/prompts/` | policy | code | Every briefing an agent receives | Being unregistered; the suite fails | `lib/prompts/` |
 | `limits` | `lib/limits.mjs` | policy | code | Every cap, once | A cap with no reader | `lib/limits.mjs` |
-| `cli` | `cli/interlock` | cli | code | Twenty-eight subcommands; exit codes are the contract | A model or the network, except `notify` and `openspec provision` | `cli/interlock` |
+| `cli` | `cli/interlock` | cli | code | Twenty-eight subcommands; exit codes are the contract | A model or the network, except `openspec provision` (npm) | `cli/interlock` |
 | `graph-cli` | `interlock-graph` | cli | code | A deterministic import, symbol and spec graph with token-budgeted retrieval | Embeddings, a vector store, the network | `cli/interlock-graph`, `lib/graph/` |
 | `report` | `interlock report` | cli | code | Indicators over the corpora, each with its denominator | Any verdict; any write | `lib/report.mjs` |
 | `hostport` | `lib/host.mjs` | port | code | Three operations: `spawn`, `mapPipeline`, `runCli` | A fourth operation | `lib/host.mjs` |
@@ -747,7 +747,7 @@ Columns: state · agents spawned · CLI called after · branch.
 | `verify-final` (marker `fix-tests`) | one verify agent. The marker is `fix-tests` because the final step repairs a red suite by root cause, and that repair is exactly when weakening a test is the hazard, so the guard is in deny for test files. | `interlock run judge --context final` | unit red, weakened, or unrun → halt. Typecheck red → `TYPECHECK FAILED (non-blocking at the final gate)`. E2E red → `E2E FAILED (non-blocking by policy)` and the commit happens anyway. Green → handoff or commit. |
 | `handoff` (strict) | one handoff worker. The CLI decides whether the diff needs a manual test plan and builds the conformance checklist; the agent writes `manual-test-plan.md`, `code-explanation.md`, `conformance.md` and memory entries. | `interlock run commit` | — |
 | `commit` (marker `commit`) | one commit agent. One feature-level commit, a verb-phrase message from the artifacts, only the files this run touched. Never `git add -A`, never amend, never push. A hook denies `git commit` in any other stage. | `interlock run close` | `--no-commit` skips the agent and records it. |
-| `run close` | none | reads the host's own token counter, the leftover task ids, builds the receipt, clears the stage marker, appends the outcome record, writes the terminal trajectory event, checks the trajectory can be replayed, pushes a notification if configured, runs the archive check | exit 0 on completion. Exit 1 on any halt, and on a clean run whose trajectory cannot be reconstructed. |
+| `run close` | none | reads the host's own token counter, the leftover task ids, builds the receipt, clears the stage marker, appends the outcome record, writes the terminal trajectory event, checks the trajectory can be replayed, runs the archive check | exit 0 on completion. Exit 1 on any halt, and on a clean run whose trajectory cannot be reconstructed. |
 
 ## C.5 How the plan is built (reference)
 
@@ -828,7 +828,6 @@ Soft continues, the degradation banners. Not rendered: the page prints one muted
 | `TDD SHAPE REFUSED` / `INFERRED` / `UNAVAILABLE` | A shape the operator asked for and did not get is a banner, not a line in a plan file. |
 | `TOKEN USAGE NOT REPORTED` | Recorded as unknown, never zero. A wave that ran agents did not spend nothing. |
 | `CACHE ACCOUNTING NOT REPORTED` | The host exposes no cache decomposition. The Workflow runtime is such a host. Recorded as unknown rather than a measured zero. |
-| `PUSH FAILED: <reason>` | The notification did not go out. Never echoes the topic. Never moves the exit code. |
 | Runner only: `RUNNER HOST: <id> (experimental)` · `SUBSCRIPTION PATH: programmatic` · `CHATGPT PLAN PATH` · `HOOKS NOT IN FORCE (<host>)` · `MODEL ROUTING UNAVAILABLE (<host>)` | The billing path, the missing guards, and unrouted spawns, each named. A model is never guessed, because a wrong model that ran is invisible in a summary and a banner is not. |
 
 Three conditions that are not halts at all: the preflight (`interlock doctor`, advisory, also a session-start hook); the mid-run permission prompt (the one interruption the runtime cannot prevent, since it is your setting being honoured); and Claude Code's `Large workflow` warning (advisory; a strict run crosses it easily, lean ship usually stays under).
@@ -1120,7 +1119,6 @@ PREFLIGHT OK — 11 passed
   [ok  ] permissions: all 9 required commands are allowed
   [ok  ] state-home: state home is the root itself, /Users/you/src/yourrepo, surface main
   [ok  ] state-dirs: every run-state directory is writable or creatable
-  [skip] notify: INTERLOCK_NTFY_TOPIC is not set — optional; an unattended run that stops will not reach you
   [skip] prompt-cache: a prompt-cache lifetime is unset, so its bucket runs on the host default …
   [ok  ] claude-env: Claude Code 2.1.296; CLAUDE_CODE_SUBAGENT_MODEL=unset …
   [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.287+): /interlock-meter draws a ship run live …
@@ -1413,7 +1411,6 @@ Intro: Every value below lives in one file and is printed by one command. A thre
 | verify preview budget | 4096 chars | The head-and-tail preview of a spilled log, and the ceiling every verify result field must stay under; a field over budget is rejected as a leak. |
 | wave handoff budget, per task | 2000 chars | Over budget fails the task rather than truncating: a next wave reading half a sentence is worse off than one told the report was rejected. |
 | review policy scan cap | 65536 bytes | Bounds the `REVIEW.md` read, so a committed build log with that name cannot make the reader do unbounded work. |
-| push timeout | 5000 ms | A hanging notification must not stall the close. |
 | resume card list rows, per list | 40 | Bounds each list on the card a halted run leaves. |
 | launch ledger max age | 86400000 ms | Past this a session's launch record reads as empty, which only ever turns a deny into an allow. |
 | meter quiet after · meter tick | 300000 ms · 15000 ms | When the ship meter adds `quiet <n> min`, and how often it recomputes it. |
@@ -1649,7 +1646,6 @@ Subhead: **The caps**. Render this block as the searchable table with the fixed 
   verify preview budget (chars)                       4096
   wave handoff budget (chars, per task)               2000
   review policy scan cap (bytes)                      65536
-  push timeout (ms)                                   5000
   resume card list rows (per list)                    40
   launch ledger max age (ms)                          86400000
   meter quiet after (ms)                              300000

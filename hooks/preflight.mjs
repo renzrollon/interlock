@@ -52,9 +52,8 @@
 // directory the host gave this plugin. Neither line is printed: stdout is
 // context. A failure is one stderr line, and the session starts as before.
 //
-// It reads and writes nothing for the push. A plugin option reaches the
-// session's commands through a hook of its own, `hooks/notify-option.mjs`,
-// which reads the option from the environment the host gives hooks.
+// It reads no plugin option and no credential: the plugin declares no option
+// (remove-the-push-notification).
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'

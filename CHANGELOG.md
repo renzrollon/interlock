@@ -12,6 +12,35 @@ this project adheres to Semantic Versioning 2.0.0.
 - **The CLI smoke is started by hand.** The packed-tarball smoke stalled runners and turned a pull request's status red without catching what the unit suite and the `upgrade-install` job do not. It moved out of `ci.yml` into `.github/workflows/cli-smoke.yml`, which `workflow_dispatch` alone starts, and the bare `cli-smoke` gate job is gone; the `main` ruleset no longer requires it. The post-install smoke script and the canary are unchanged. It replaces the advisory-in-CI form of the same job: nothing waits on a macOS runner queue any more.
 - **The strict ship review fans out.** The review step is one spawn per selected dimension, each blind to the others and writing its own ledger; the new `interlock run found` folds the ledgers and emits a `skeptics` step with two skeptics per blocker and warning, which `run reviewed` folds and adjudicates. The skeptics step is bounded by a new `skeptic spawns (per skeptics step)` cap in `interlock limits`; past it the remaining findings share one pair and the step prints `SKEPTIC CAP REACHED`. Reviewers and skeptics are routed from the published `review-dimension` and `review-skeptic` rows, printed as `REVIEW WAVE`. A dimension is recorded as run only when its own answer file is usable (`REVIEW INCOMPLETE`, which also carries the reviewer's own `detail` when it gave one, and `REVIEW ANSWER MISMATCHED`, which prints the value it read on one bounded line), and a silent skeptic sets aside its pair (`SKEPTIC VERDICTS MISSING`). A reviewer can no longer add a dimension. No host chunks either step, so a step wider than the `--max-parallel` you set prints `REVIEW WIDER THAN MAX PARALLEL`: on `interlock-run` all of its agents start at once. The single-worker review briefing is retired. Remediation rounds are unchanged.
 
+### Removed
+
+- **BREAKING: Interlock sends no push, and the plugin reads no credential.** The plugin directory holds every version up to 1.14.0 on "Uses a credential from the user's machine": its rule is not to read a credential already set in the environment and send it to a server, "even in a README example". The ntfy topic was that credential. The manifest marked it sensitive, the CLI read it from the environment and posted to `<server>/<topic>`, and the only shape that rule accepts, a `${user_config.…}` value, is one the directory's hook-command rule refuses. Gone:
+  - both plugin options and `hooks/notify-option.mjs`;
+  - `lib/notify.mjs`;
+  - the push from `run close`;
+  - the doctor's `notify` row;
+  - the `push timeout (ms)` row of `interlock limits`.
+
+  `interlock notify checkpoint <change>` stays as the spec skill's checkpoint marker, which the spec meter keys on: it prints one `checkpoint:` line and sends nothing. Until 1.16.0, `run close --notify` from an older driver on PATH and `interlock notify --title` are accepted, do nothing, and print `push: removed — interlock sends no notifications`. Neither driver passes `--notify`. Claude Code's Remote Control push reaches a phone when a session needs you.
+- **`CHANGELOG.md` no longer ships** in the npm package or the plugin bundle. The directory reads shipped prose as evidence, and the changelog names what earlier versions read. It stays in the repository and on GitHub.
+
+### Added
+
+- **Package pins for what the directory holds a plugin for:**
+  - no shipped code opens a network connection;
+  - no shipped file names a credential variable or file, or the host's option variables, with no changelog exception;
+  - a sensitive option may reach only an MCP or LSP server's `env` or `headers`;
+  - no shipped file carries the removed push.
+
+  Each is a named check with a self-test.
+- **`npm run scan-pack`** builds the bundle onto a local `temp/plugin-scan` branch for the directory's Validate, and prints the push and Validate steps. It never pushes.
+
+### Upgrading
+
+- If you saved an `ntfy topic`, remove it from the plugin's settings. Unset any `INTERLOCK_NTFY_*` variable in your shell; nothing reads them. Stop using the topic too: anyone who knows it can still read what was sent to it.
+- A script that calls `interlock notify --title` keeps exit 0 until 1.16.0, then gets the usage error any unknown form gets.
+- The release carrying this is a minor version.
+
 ## [1.14.0] - 2026-11-04
 
 ### Changed

@@ -794,19 +794,23 @@ test('spec checkpoint prints GOAL MET and does not use /goal to skip it', () => 
   assert.match(text, /Do not (call|invoke|run) \/goal|\/goal must not skip the checkpoint|does not skip the checkpoint/i)
 })
 
-test('the spec checkpoint pushes before it prints GOAL MET, so a waiting human is told', () => {
-  // A prose instruction nobody asserts silently stops running. The ORDER is
-  // half the instruction: a push after the goal line is a push the session may
-  // never reach, and the checkpoint's whole point is that it waits.
+test('the spec checkpoint marks itself before it prints GOAL MET, and sends nothing', () => {
+  // A prose instruction nobody asserts silently stops running. The spec meter
+  // keys the checkpoint on this line's argv, so the ORDER is half the
+  // instruction: a mark after the goal line is one the session may never
+  // reach. The push is gone (remove-the-push-notification), so the line is
+  // local, and the skill must not describe a topic or a push it no longer has.
   const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
-  const push = text.indexOf('interlock notify checkpoint')
+  const mark = text.indexOf('interlock notify checkpoint')
   const goal = text.indexOf('GOAL MET: interlock spec stopped at the checkpoint')
-  assert.ok(push !== -1, 'the spec skill no longer tells a waiting human that it is waiting')
+  assert.ok(mark !== -1, 'the spec skill no longer marks the checkpoint for the spec meter')
   assert.ok(goal !== -1)
-  assert.ok(push < goal, 'the push must come before the goal line, not after the session may have stopped')
-  // And it is unconditional: the CLI, not the skill, decides whether a topic
-  // is configured, so the skill must not be told to check first.
-  assert.match(text, /no-op|exits 0|unconditionally/i)
+  assert.ok(mark < goal, 'the mark must come before the goal line, not after the session may have stopped')
+  const step = text.slice(mark, goal)
+  for (const token of ['sends nothing', '`checkpoint:`', 'exits 0', 'unconditionally']) {
+    assert.ok(step.includes(token), `the checkpoint step no longer says ${token}`)
+  }
+  assert.doesNotMatch(step, /not configured|topic|push/i, 'the checkpoint step describes the removed push')
 })
 
 test("the spec flow's gate lines ask for JSON and say which field is the verdict", () => {

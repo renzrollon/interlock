@@ -101,11 +101,11 @@ A dimension's answer SHALL carry `coverage` beside `findings`: `checked`, a list
 
 ### Requirement: The run's review step SHALL record the same proof
 
-A ship run's review step SHALL ask each dimension for the same ledger, and the review record it writes SHALL carry `proof` computed by the same rules as `interlock review`, so the merge verdict reads a run's review and a settle review alike. The run's review briefing and its fix round's re-review briefing SHALL carry the proof rules, the measure line and the ledger shape `interlock review brief` prints, and SHALL ask a re-review that finds nothing for one ledger per re-reviewed dimension, `{ dimension, findings: [], coverage }`, never a bare `[]`. A fix round's re-review SHALL carry the ledger of every dimension it did not re-run from the record before, under the same stale-file rule as a settle carry, and an entry that went stale in one round SHALL stay stale in every later round. A round that re-reviews no dimension and changes no file, as the verdict round does, SHALL keep the record's coverage and proof as they were. The run SHALL run no proof re-run: an unproven run review is the banner and the amber signal.
+A ship run's review step SHALL ask each dimension's reviewer for the same ledger, `{ dimension, findings, coverage }`, as its whole answer, and the review record it writes SHALL carry `proof` computed by the same rules as `interlock review` over the ledgers `run found` folded, so the merge verdict reads a run's review and a settle review alike. Each reviewer's briefing and the fix round's re-review briefing SHALL carry the proof rules, the measure line and the ledger shape `interlock review brief` prints, and SHALL ask a reviewer or a re-review that finds nothing for one ledger per dimension, `{ dimension, findings: [], coverage }`, never a bare `[]`. A fix round's re-review SHALL carry the ledger of every dimension it did not re-run from the record before, under the same stale-file rule as a settle carry, and an entry that went stale in one round SHALL stay stale in every later round. A round that re-reviews no dimension and changes no file, as the verdict round does, SHALL keep the record's coverage and proof as they were. The run SHALL run no proof re-run: an unproven run review is the banner and the amber signal.
 
 #### Scenario: Happy path — a run's review record carries proof
 
-- **GIVEN** a strict run whose review worker returns ledgers for every dimension
+- **GIVEN** a strict run whose reviewers each wrote a ledger for their dimension
 - **WHEN** the run writes its review record
 - **THEN** the record carries `proof` with the same fields as a record `interlock review` writes for the same answers
 
@@ -135,9 +135,10 @@ A ship run's review step SHALL ask each dimension for the same ledger, and the r
 
 #### Scenario: Failure — a run's worker that returns no ledger
 
-- **GIVEN** a run whose review worker returns findings and no ledgers
+- **GIVEN** a run whose `qa` reviewer wrote findings and no `coverage`, and whose other reviewers wrote whole ledgers
 - **WHEN** the run writes its review record
-- **THEN** every ran dimension is unproven with the reason that its coverage was not recorded, `proof.proven` is false, and the close carries one `REVIEW NOT PROVEN` banner
+- **THEN** `qa` is unproven with the reason that its coverage was not recorded, `proof.proven` is false, and the close carries one `REVIEW NOT PROVEN` banner
+- **AND** the other dimensions are proven by their own ledgers
 
 ### Requirement: `interlock review proof` SHALL name the dimensions to re-run under a published cap
 

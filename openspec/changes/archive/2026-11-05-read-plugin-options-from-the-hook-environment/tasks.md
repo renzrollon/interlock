@@ -8,5 +8,5 @@
 ## 2. Verify
 
 - [x] 2.1 `npm test` and `npm run validate` green.
-- [ ] 2.2 A host probe: a session with a saved `ntfy_topic` gets `INTERLOCK_NTFY_TOPIC` in a Bash command. Not runnable by an agent: the host reads saved options from user settings only, which a probe must not write; the owner checks it in a real session.
-- [ ] 2.3 Owner: a portal Validate of a `temp/plugin-scan` pack of this change.
+- [x] 2.2 A host probe: a session with a saved `ntfy_topic` gets `INTERLOCK_NTFY_TOPIC` in a Bash command. Not runnable by an agent: the host reads saved options from user settings only, which a probe must not write; the owner checks it in a real session. **Superseded, not run:** change `remove-the-push-notification` removes the options and the hook.
+- [x] 2.3 Owner: a portal Validate of a `temp/plugin-scan` pack of this change. **Answered by the directory's scan of 1.14.0, which carries this change:** `MCP_FORWARDS_CREDENTIAL_ENV` is still held, and "Command path can't be followed" is not reported. The hold is taken up by `remove-the-push-notification`.

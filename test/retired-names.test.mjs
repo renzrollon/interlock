@@ -13,7 +13,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -260,4 +260,27 @@ test('matcher: only the [Unreleased] slice of CHANGELOG.md is scanned, minus the
 
 test('matcher: a file with a NUL byte is skipped', () => {
   assert.deepEqual(scan('lib/x.mjs', `a ${SHORT}\0b`), [])
+})
+
+// The landing site is regenerated from site/DESIGN-PROMPT.md and deployed on
+// every release (.github/workflows/pages.yml), so a page that still advertises
+// the removed ntfy push would publish a false claim. Pinned by the three
+// strings the pages carried. `lib/notify.mjs` and `notifyTimeoutMs` are not
+// listed: they sit in the recorded halted run (brief C.9) and stay.
+const PUSH_RESIDUE = [['INTERLOCK', 'NTFY'].join('_'), ['PUSH', 'FAILED'].join(' '), ['push', 'timeout (ms)'].join(' ')]
+
+function pushResidue(path, text) {
+  return text.split('\n').flatMap((t, i) => PUSH_RESIDUE.some(s => t.includes(s)) ? [`${path}:${i + 1}: ${t.trim().slice(0, 120)}`] : [])
+}
+
+test('retired names: the landing site and its brief carry no claim of the removed push notification', () => {
+  const dir = join(ROOT, 'site')
+  const files = ['DESIGN-PROMPT.md', ...readdirSync(dir).filter(f => f.endsWith('.html'))]
+  assert.ok(files.length > 3, `the site scan found only ${files.length} files`)
+  // The scan has to see a planted claim, or an empty result proves nothing.
+  const planted = PUSH_RESIDUE.map(s => `  [skip] x: ${s} …`).join('\n')
+  assert.equal(pushResidue('planted', planted).length, PUSH_RESIDUE.length)
+  assert.deepEqual(pushResidue('planted', '<code>GRAPH UNAVAILABLE</code> lib/notify.mjs notifyTimeoutMs'), [])
+  const hits = files.flatMap(f => pushResidue(`site/${f}`, readFileSync(join(dir, f), 'utf8')))
+  assert.deepEqual(hits, [], `the removed push notification is advertised on the site:\n${hits.join('\n')}`)
 })

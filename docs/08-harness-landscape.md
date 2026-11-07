@@ -105,7 +105,7 @@ Every row that is weaker than the default is printed in the run summary. [Degrad
 ## Not in the harness, on purpose
 
 - **A memory the agent writes and later trusts.** What survives a session is durable and cited: explore briefs, the decision ledger, OpenSpec specs, the trajectory. A ledger row an agent resolved needs evidence a person can follow, and a review dismissal needs a `file:line` span. [`session-retro`](https://github.com/renzrollon/shippable-skills) proposes a change to a skill and a person applies it.
-- **A channel into a running ship.** The run takes no input, so a message sent to it could not be answered. The need behind the idea is a notification, and that exists: with a topic set, `run close --notify` [pushes one message](./07-cli-and-configuration.md#the-one-network-call-push-notifications) per terminal outcome.
+- **A channel into a running ship.** The run takes no input, so a message sent to it could not be answered. The need behind the idea is a notification. Interlock sends none since 1.15.0 ([07](./07-cli-and-configuration.md#no-network-call-the-push-was-removed)); Claude Code's Remote Control push reaches a phone when a session needs you.
 - **Pluggable policy.** Transports are pluggable; rules are not. A cap you can mount a plugin over is not a cap. `interlock limits` prints every one of them.
 - **An agent loop of its own.** Owning the transcript, compaction and tool dispatch would rebuild what the hosts already do, and none of the guarantees above need it.
 

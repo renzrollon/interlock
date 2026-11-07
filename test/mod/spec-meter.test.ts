@@ -84,7 +84,7 @@ function world(on: any, { placed = true }: { placed?: boolean } = {}): World {
       [LEDGER, captured(R.BASH_LEDGER_BLOCKING)],
       [VALIDATE, json({ change: C, ready: true, problems: [] })],
       [GATE, captured(R.BASH_GATE_BLOCKED)],
-      [CHECKPOINT, ok('push: not configured — set INTERLOCK_NTFY_TOPIC')],
+      [CHECKPOINT, ok(`checkpoint: ${C} — waiting for review; nothing is sent`)],
       [READY, json({ ready: true, change: C, blockers: [] })],
       [R.BASH_LEDGER_TEXT.command, captured(R.BASH_LEDGER_TEXT)]
     ]),
@@ -510,7 +510,7 @@ test('a compound line: the change and its ladder, then autonomy and the checkpoi
   const both = `${NEW_CHANGE} && ${STATUS}`
   w.bash.set(both, ok(`- Creating change '${C}'...\n${R.BASH_STATUS.text}`))
   const end = `interlock autonomy clean review-artifacts explore spec; ${CHECKPOINT}`
-  w.bash.set(end, ok(`review-artifacts: L2 (1/3 clean)\npush: not configured — set INTERLOCK_NTFY_TOPIC`))
+  w.bash.set(end, ok(`review-artifacts: L2 (1/3 clean)\ncheckpoint: ${C} — waiting for review; nothing is sent`))
   await start($)
   await loadSpec($)
   await bash($, both)

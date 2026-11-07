@@ -22,7 +22,8 @@
 //      replaced by the token ${ROOT}. The test substitutes the token back.
 //
 // No model and no network. The old CLI runs from the scratch directory with
-// the ntfy topic emptied, so it notifies nobody, and with INTERLOCK_STATE_HOME
+// the push topic emptied, because a CLI released before
+// remove-the-push-notification still pushes when one is set, and with INTERLOCK_STATE_HOME
 // unset, so its corpora land in the scratch repository and nowhere else.
 //
 // The script refuses to write a fixture that still holds a machine path: it

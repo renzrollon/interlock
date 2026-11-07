@@ -19,20 +19,6 @@
     "knowledge-graph"
   ],
   "icon": "./assets/icon.png",
-  "userConfig": {
-    "ntfy_topic": {
-      "type": "string",
-      "title": "ntfy topic",
-      "description": "Optional. A topic for one push when a ship run stops or finishes. Leave empty to send nothing. Anyone who knows the topic can read the messages.",
-      "sensitive": true
-    },
-    "ntfy_url": {
-      "type": "string",
-      "title": "ntfy server",
-      "description": "Optional. Server to post to. Leave empty to use the public server.",
-      "sensitive": false
-    }
-  },
   "workflows": "./workflows",
   "types": "./types/index.d.ts",
   "hooks": {
@@ -42,10 +28,6 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/preflight.mjs\""
-          },
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/notify-option.mjs\""
           }
         ]
       }

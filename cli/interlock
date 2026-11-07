@@ -78,19 +78,13 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
+import { RETIRED_PUSH_TEXT } from '../lib/receipt.mjs'
 import { cliVersion } from '../lib/version.mjs'
 import { drawPlanBoard, drawPlanMermaid } from '../lib/draw-plan.mjs'
 import { drawRunBoard, drawRunMermaid } from '../lib/draw-run.mjs'
 import { explicitStateHome, resolveStateHome } from '../lib/state-home.mjs'
 import { probeClaudeEffort, probeClaudeVersion } from '../lib/host/claude-cli.mjs'
 import { observeClaudeEnv, runtimeSlotsOf } from '../lib/host/claude-env.mjs'
-import {
-  composeCheckpointMessage,
-  postNtfy,
-  readNotifyConfig,
-  NOTIFY_TOPIC_ENV,
-  DEFAULT_NTFY_URL
-} from '../lib/notify.mjs'
 import { classifySurface } from '../lib/surface.mjs'
 import {
   applyToleranceBand,
@@ -287,18 +281,13 @@ Usage:
   interlock routing [<role>]                Print the model and effort a prose
                   [--depth lean|strict]     skill passes when it spawns a role,
                                             and the review depth's shape
-  interlock notify --title <t> [--body <b>]  Push one message so a run or a
-                 [--priority high|default]   checkpoint reached while nobody was
-  interlock notify checkpoint <change>       watching still reaches someone. The
-                                             only outbound request this CLI makes.
-                                             Topic from the plugin option or
-                                             INTERLOCK_NTFY_TOPIC, server from
-                                             the plugin option or
-                                             INTERLOCK_NTFY_URL
-                                             (default ${DEFAULT_NTFY_URL}). Unset
-                                             topic prints "not configured" and
-                                             exits 0; a failed push exits 1.
-                                             --json emits { sent, reason }
+  interlock notify checkpoint <change>       Mark the spec checkpoint for the
+                                             spec meter. Local: prints one
+                                             "checkpoint:" line, sends nothing and
+                                             exits 0. --json emits
+                                             { sent: false, reason }. The
+                                             --title form is accepted until
+                                             1.16.0 and says the push was removed
   interlock run start --change <name>        The ship loop, as a program. Each
                       [--tdd|--no-tdd]       (--tdd/--no-tdd override the task
                                              shape read from tasks.md)
@@ -1305,8 +1294,9 @@ const BOOLEAN_FLAGS = new Set([
   // section number, and making the name boolean would swallow that value.
   'tdd',
   'no-tdd',
-  // `run close --notify`: both drivers pass it unconditionally, and the CLI —
-  // not the driver — decides whether a topic is configured (design D1).
+  // `run close --notify`: retired with the push, accepted until 1.16.0 so an
+  // older driver on PATH still closes its run; an unknown flag exits 2
+  // (remove-the-push-notification D3).
   'notify',
   // `merge-confidence --require-merge`: exit 1 unless the verdict is MERGE.
   'require-merge',
@@ -3670,43 +3660,23 @@ async function main() {
     }
 
     case 'notify': {
-      // The CLI's ONE outbound request, and the only place a topic is ever
-      // read (design D1, D2). Unconfigured is not a failure: a skill or a
-      // driver calls this unconditionally, and an operator who never set a
-      // topic gets a line saying so and exit 0, never a halted loop.
-      const config = readNotifyConfig(process.env)
-      // Order matters: a malformed topic yields `{invalid}` with no `topic`
-      // key at all, and reporting that as "not configured" would tell an
-      // operator who DID configure it that they had not.
-      if (!config.invalid && !config.topic) {
-        const notConfigured = { sent: false, reason: `not configured — set ${NOTIFY_TOPIC_ENV}` }
-        emit(json, notConfigured, `push: not configured — set ${NOTIFY_TOPIC_ENV}\n`)
-        break
-      }
-
-      let message
+      // Local since remove-the-push-notification: nothing here reads a
+      // variable or opens a connection, and the CLI sends no notification.
+      // `checkpoint` is the spec skill's marker, which the spec meter keys on
+      // by its argv alone (D2). Every other form is a retired push, accepted
+      // until 1.16.0 so a script that calls it is told and keeps its exit 0,
+      // the exit an unconfigured push always had (D4).
       if (positional[1] === 'checkpoint') {
         const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
         if (!change) die('interlock notify checkpoint <change> — the change name is required')
-        message = composeCheckpointMessage(change)
-      } else {
-        const title = typeof flags.title === 'string' ? flags.title.trim() : ''
-        if (!title) die('--title <text> is required (or use: interlock notify checkpoint <change>)')
-        const priority = flags.priority === 'high' ? 'high' : 'default'
-        message = { title, body: typeof flags.body === 'string' ? flags.body : '', priority }
+        emit(
+          json,
+          { sent: false, reason: 'nothing is sent: interlock sends no notifications' },
+          `checkpoint: ${change} — waiting for review; nothing is sent\n`
+        )
+        break
       }
-
-      if (config.invalid) {
-        const bad = { sent: false, reason: `invalid configuration: ${config.invalid}` }
-        emit(json, bad, `push: failed — ${bad.reason}\n`)
-        process.exit(1)
-      }
-
-      const result = await postNtfy({ url: config.url, topic: config.topic, ...message })
-      emit(json, result, result.sent ? 'push: sent (ntfy)\n' : `push: failed — ${result.reason}\n`)
-      // A push nobody asked about is advisory; a push someone invoked directly
-      // is a command, and a command that did not do its job exits non-zero.
-      if (!result.sent) process.exit(1)
+      emit(json, { sent: false, reason: RETIRED_PUSH_TEXT }, `${RETIRED_PUSH_TEXT}\n`)
       break
     }
 
@@ -4728,6 +4698,8 @@ async function main() {
           hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
           hostObserved,
           hostRecords,
+          // Retired with the push; until 1.16.0 it only adds the summary's
+          // removed-push row (remove-the-push-notification D3).
           notify: flags.notify === true
         })
         // NOT copied to LAST_STEP_PATH: a halted run closes through here, and
@@ -4879,10 +4851,11 @@ function verifyJudgeOpts(flags) {
   return opts
 }
 
-// `main()` is async only because `run close` awaits one bounded `fetch`
-// (design D14). Every other case stays synchronous and returns before the
-// first await, so a rejection here reaches exactly the handler a throw used
-// to — same body, same `die()`, same exit code.
+// `main()` is async only because it awaits `runClose`, which returns a
+// promise (it awaited the push until remove-the-push-notification removed it).
+// Every other case stays synchronous and returns before the first await, so a
+// rejection here reaches exactly the handler a throw used to — same body,
+// same `die()`, same exit code.
 main().catch(err => {
   if (err && err.userFacing) die(err.message)
   process.stderr.write(`interlock: ${err && err.message ? err.message : err}\n`)
