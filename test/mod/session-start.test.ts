@@ -13,6 +13,7 @@
 
 import { expect, mock, test } from 'claude-code/testing'
 
+import { MODS_MIN_HOST_VERSION } from '../../lib/host/claude-env.mjs'
 import { LIMITS } from '../../lib/limits.mjs'
 import * as P from '../fixtures/mod/preflight.mjs'
 
@@ -41,7 +42,8 @@ function world(on: any, { files = new Map<string, string>() }: { files?: Map<str
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('classic.SessionStart', () => CLASSIC_BENEATH)
   on('prompt.submit', (_$: any, e: any) => ({ text: e.text }))
-  on('session.version', () => ({ value: { version: '2.1.291', base: '2.1.291', builtAt: '2026-10-06T19:21:39Z' } }))
+  // The engine at the mods floor, so the module draws (make-the-run-surfaces-interactive design D20).
+  on('session.version', () => ({ value: { version: MODS_MIN_HOST_VERSION, base: MODS_MIN_HOST_VERSION, builtAt: '2026-10-06T19:21:39Z' } }))
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: [] } }))
   on('command.register', (_$: any, e: any) => {
     w.commands.push(e.name)

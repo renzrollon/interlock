@@ -813,6 +813,23 @@ test('the spec checkpoint marks itself before it prints GOAL MET, and sends noth
   assert.doesNotMatch(step, /not configured|topic|push/i, 'the checkpoint step describes the removed push')
 })
 
+test('the spec hand-off prints the checkpoint card and a failure does not stop it', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  const card = text.search(/^interlock checkpoint "/m)
+  const mark = text.indexOf('interlock notify checkpoint')
+  assert.ok(card !== -1 && card < mark, 'the card line must come before the checkpoint mark')
+  const step = text.slice(card, mark)
+  for (const token of ['prints the card', 'non-zero', 'one line', 'does not stop']) {
+    assert.ok(step.includes(token), `the card step no longer says ${token}`)
+  }
+  // Version skew: an older CLI on PATH answers the verb with `Unknown command`; the
+  // doctor's cli-version row is where that is named, and the line stays a plain one.
+  for (const token of ['Unknown command', 'interlock doctor', 'cli-version']) {
+    assert.ok(step.includes(token), `the card step no longer points version skew at the doctor: ${token}`)
+  }
+  assert.match(text, /^interlock checkpoint "<change-name>"$/m, 'the card line is a plain command, no redirect or compound')
+})
+
 test("the spec flow's gate lines ask for JSON and say which field is the verdict", () => {
   // The `--metrics` precedent again: a flag on a skill line that nothing
   // asserts is a flag the first reword drops, and nothing fails when it goes.
@@ -890,6 +907,7 @@ test('the lines an observer of the spec flow keys on are pinned, in the flow\'s 
     ['/interlock:review-artifacts', /\/interlock:review-artifacts/],
     ['interlock autonomy record review-artifacts --blockers', /^interlock autonomy record review-artifacts --blockers/m],
     ['interlock autonomy clean review-artifacts explore spec', /^interlock autonomy clean review-artifacts explore spec$/m],
+    ['interlock checkpoint', /^interlock checkpoint "/m],
     ['interlock notify checkpoint', /^interlock notify checkpoint /m],
     ['GOAL MET', /GOAL MET: interlock spec stopped at the checkpoint/]
   ]

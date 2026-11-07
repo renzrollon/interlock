@@ -4,6 +4,8 @@ This page is a ten-minute reading procedure for the artifacts `/interlock:spec` 
 
 `/interlock:spec` stops after writing specs. `/interlock:ship` starts from them and asks you nothing. Everything you are going to influence about this change, you influence here. That is the trade: one deliberate read, in exchange for an uninterrupted implementation run.
 
+To print the card again, run `interlock checkpoint <change-name>`.
+
 ## What you are looking at
 
 ```

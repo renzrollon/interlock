@@ -2,9 +2,12 @@
 //
 // The module runs inside the engine, with no Node and `$` as its only way out,
 // and it is written to observe: no substitute result, no catch handler, no
-// model, prompt, message, process, network, file write or permission check.
-// Nothing at run time would notice a hook that started deciding, so the
-// guarantee is read off the source here, before any session loads it.
+// model, prompt submission, command run, tool call, message, process, network,
+// file write or permission check. It may read the prompt box, fill an empty
+// one, copy a line and ask for a notification, each from one call site
+// (make-the-run-surfaces-interactive design D4, D17). Nothing at run time would
+// notice a hook that started deciding, so the guarantee is read off the source
+// here, before any session loads it.
 //
 // One exception, and only one (guard-ship-relaunch-in-process design D3): the
 // launch guard's branch of the Workflow hook may refuse a ship launch, with the
@@ -22,7 +25,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { specifiers, walkModule } from '../helpers/module-walk.mjs'
 import { GUARD_NAMES } from '../../lib/meter-refusals.mjs'
@@ -54,7 +57,15 @@ export const ALLOWED_CALLS = Object.freeze([
   '$.clock.every',
   // The one file read (show-preflight-and-interrupted-runs-at-session-start
   // design D5, D6): the preflight's report file and a card that file names.
-  '$.fs.read'
+  '$.fs.read',
+  // The interactive surfaces (make-the-run-surfaces-interactive design D4, D17):
+  // a notification of a change of state, and the drafting helper's read of the
+  // prompt box, its fill of an empty one and its copy. Each has one call site,
+  // pinned below; none of them submits anything.
+  '$.ui.notify',
+  '$.ui.copy',
+  '$.prompt.read',
+  '$.prompt.fill'
 ])
 
 /** What the launch guard added to the meter's allow-list, exactly. */
@@ -68,7 +79,8 @@ export const GUARD_REFUSAL = "if (launch && verdict.decision === 'deny') return 
  * (design D3), and the session boundary the meter resets on
  * (show-quiet-time-and-reset-the-meter-on-clear design D4). The spec meter
  * (observe-the-spec-run-live design D1) adds none: its two observers are
- * `prompt.submit` and a `tool.call` matcher.
+ * `prompt.submit` and a `tool.call` matcher. The prompt's suggestions
+ * (make-the-run-surfaces-interactive design D18) add `prompt.autocomplete`.
  */
 export const HOOKED_EVENTS = Object.freeze([
   'session.start',
@@ -80,7 +92,8 @@ export const HOOKED_EVENTS = Object.freeze([
   'command.run',
   'prompt.submit',
   'session.receive',
-  'classic.SessionStart'
+  'classic.SessionStart',
+  'prompt.autocomplete'
 ])
 
 /** Tokens whose presence anywhere in the module means it stopped only observing (design D8). */
@@ -88,7 +101,15 @@ export const FORBIDDEN_TOKENS = Object.freeze([
   '.catch(',
   'tool.check',
   '$.model',
-  '$.prompt',
+  // The prompt box may be read and filled by the drafting helper, never
+  // submitted (make-the-run-surfaces-interactive design D4): the blanket
+  // `$.prompt` entry narrowed to its submission. Every other `$.prompt.`
+  // spelling but the read and the fill is refused by `promptReachProblems`
+  // below. A command run and a tool call would act for the person, so neither
+  // may be spelled either.
+  '$.prompt.submit',
+  '$.command.run',
+  '$.tool.call',
   '$.process',
   '$.http',
   '$.session.send',
@@ -350,6 +371,185 @@ function functionSource(source, name) {
   return source.slice(at, end === -1 ? source.length : end + 2)
 }
 
+/**
+ * The interactive surfaces' four calls, each with its one call site and the
+ * helper that holds it (make-the-run-surfaces-interactive design D4, D17; spec
+ * hooks/ship-meter "The hooks module SHALL observe only…" and hooks/spec-meter
+ * "The spec meter SHALL observe only…"): the drafting helper reads, fills and
+ * copies, the telling helper notifies, and no control reaches the prompt box
+ * any other way.
+ */
+export const ONE_CALL_SITES = Object.freeze([
+  ['$.prompt.read(', 'draftLine'],
+  ['$.prompt.fill(', 'draftLine'],
+  ['$.ui.copy(', 'draftLine'],
+  ['$.ui.notify(', 'tell']
+])
+
+test('the prompt read, the fill, the copy and the notification are each spelled once, inside their one helper', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  for (const [call, helper] of ONE_CALL_SITES) {
+    assert.equal(occurrences(source, call).length, 1, `the module spells ${call} ${occurrences(source, call).length} times, not once`)
+    const body = functionSource(source, helper)
+    assert.ok(body, `the module has no ${helper} function`)
+    assert.ok(body.includes(call), `${call} is not inside ${helper}`)
+  }
+  // The drafting helper fills only after reading, and copies when it did not fill.
+  const draft = functionSource(source, 'draftLine')
+  assert.ok(draft.indexOf('$.prompt.read(') < draft.indexOf('$.prompt.fill('), 'the drafting helper fills before it reads the box')
+  assert.ok(draft.indexOf('$.prompt.fill(') < draft.indexOf('$.ui.copy('), 'the drafting helper copies before it tries the fill')
+})
+
+/** The two prompt-box methods the drafting helper may spell; any other is refused. */
+export const PROMPT_METHODS = Object.freeze(['read', 'fill'])
+
+/**
+ * Every reach for the engine's prompt surface in `source` that is not
+ * `$.prompt.read` or `$.prompt.fill`: a method outside `PROMPT_METHODS`
+ * (`$.prompt.submit`, `$.prompt.clear`, ...), the bare object (`$.prompt`,
+ * `$?.prompt`, a computed `$['prompt']`), or `prompt` destructured off `$`.
+ * The narrowed forbidden token names one spelling; this names them all
+ * (make-the-run-surfaces-interactive design D4, blast radius B7).
+ */
+export function promptReachProblems(source) {
+  const problems = []
+  for (const m of source.matchAll(/\$\s*(?:\?\.|\.)\s*prompt\b(\s*(?:\?\.|\.)\s*([A-Za-z_$][\w$]*))?/g)) {
+    if (!m[2] || !PROMPT_METHODS.includes(m[2]) || m[0] !== `$.prompt.${m[2]}`) problems.push(m[0])
+  }
+  for (const m of source.matchAll(/\$\s*(?:\?\.)?\s*\[\s*['"`]prompt['"`]\s*\]/g)) problems.push(m[0])
+  for (const m of source.matchAll(/\{[^{}]*\bprompt\b[^{}]*\}\s*=\s*\$(?![\w$])/g)) problems.push(m[0].replace(/\s+/g, ' '))
+  return problems
+}
+
+test('the prompt surface is spelled only as its read and its fill, each once, inside the drafting helper', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.deepEqual(promptReachProblems(source), [], 'a prompt-surface spelling other than $.prompt.read and $.prompt.fill')
+  const draft = functionSource(source, 'draftLine')
+  assert.ok(draft, 'the module has no draftLine function')
+  for (const method of PROMPT_METHODS) {
+    const spelling = `$.prompt.${method}`
+    assert.equal(occurrences(source, spelling).length, 1, `the module spells ${spelling} ${occurrences(source, spelling).length} times, not once`)
+    assert.equal(occurrences(draft, spelling).length, 1, `${spelling} is not inside draftLine`)
+  }
+})
+
+test('the prompt-surface pin names every other spelling and passes the read and the fill', () => {
+  assert.deepEqual(promptReachProblems('await $.prompt.read()\nawait $.prompt.fill({ text })\n'), [])
+  for (const bad of [
+    '$.prompt.submit({ text })',
+    '$.prompt.clear()',
+    '$.prompt.append({ text })',
+    '$.prompt .read()',
+    '$?.prompt.read()',
+    '$.prompt?.fill()',
+    'const box = $.prompt',
+    "$['prompt'].submit()",
+    '$?.["prompt"]',
+    'const { prompt } = $',
+    'const { ui, prompt: p } = $'
+  ]) {
+    assert.notDeepEqual(promptReachProblems(bad), [], `the pin let through: ${bad}`)
+  }
+})
+
+// A surface whose element table holds no Button (blast radius B9). Every kit
+// surface (terminal, desktop, vscode, mobile) resolves one, so the module is
+// loaded here under a stand-in engine instead: it imports nothing that reaches
+// Node, and `h` is the engine's global.
+test('a surface with no Button draws the handoff cards with no control, and says so once on the debug log', async () => {
+  const P = await import('../fixtures/mod/preflight.mjs')
+  const { MODS_MIN_HOST_VERSION } = await import('../../lib/host/claude-env.mjs')
+  const hooks = []
+  const { register } = await import(pathToFileURL(moduleEntry()).href)
+  register((event, ...rest) => hooks.push({ event, filter: rest.length > 1 ? rest[0] : null, fn: rest.at(-1) }))
+  const hook = (event, match) =>
+    hooks.find(x => x.event === event && Object.entries(match || {}).every(([k, v]) => x.filter && x.filter[k] === v)).fn
+  const files = new Map([
+    [P.PREFLIGHT_PATH, P.stdout(P.REPORT_WITH_CARD)],
+    [P.CARD_PATH, P.ACTIONS_CARD_TEXT],
+    [P.SECOND_CARD_PATH, P.PLACEHOLDER_CARD_TEXT]
+  ])
+  const logs = []
+  const $ = {
+    ui: {
+      log: (text, o) => logs.push({ text, to: o && o.to }),
+      invalidate() {},
+      toast() {},
+      status() {},
+      open: async () => ({ isPlaced: true }),
+      resolve: () => ({ Box: 'Box', Text: 'Text', Markdown: 'Markdown' })
+    },
+    command: { register: async () => ({}) },
+    session: { version: async () => ({ version: MODS_MIN_HOST_VERSION }) },
+    fs: {
+      read: async path => {
+        if (files.has(path)) return files.get(path)
+        throw new Error(`ENOENT: ${path}`)
+      }
+    },
+    clock: { now: async () => 0 }
+  }
+  const nodes = el => (el && typeof el === 'object' ? [el, ...(el.children || []).flatMap(nodes)] : [])
+  const hadH = 'h' in globalThis
+  const previous = globalThis.h
+  globalThis.h = (type, props, ...children) => ({ type, props: props || {}, children: children.flat() })
+  try {
+    await hook('session.start')($, { cwd: '/repo', surface: 'terminal', isInteractive: true }, async e => e)
+    await hook('command.run', { command: 'interlock-handoff' })($, { command: 'interlock-handoff', args: '' })
+    const render = hook('ui.render', { component: 'Pane', requestId: 'interlock-handoff' })
+    for (let n = 0; n < 2; n++) {
+      const drawn = nodes(await render($, { surface: 'terminal', component: 'Pane', requestId: 'interlock-handoff', props: {} }))
+      assert.deepEqual(drawn.filter(el => el.type === undefined || el.type === 'Button'), [], 'a control, or an element with no type, was drawn')
+      const keys = drawn.map(el => el.props.key).filter(Boolean)
+      assert.ok(keys.includes('card-0-body') && keys.includes('card-1-body'), `the cards were not drawn: ${keys.join(', ')}`)
+      assert.ok(!keys.some(k => k.endsWith('-actions')), 'an empty controls box was drawn')
+    }
+    const said = logs.filter(l => l.to === 'debug' && /draws no Button/.test(l.text))
+    assert.equal(said.length, 1, 'the missing Button was not said exactly once')
+  } finally {
+    if (hadH) globalThis.h = previous
+    else delete globalThis.h
+  }
+})
+
+/** Every non-comment line of `source` that spells a version number, as `line <n>: <text>`. */
+export function versionLines(source) {
+  const found = []
+  source.split('\n').forEach((line, i) => {
+    const text = line.trim()
+    if (text.startsWith('//') || text.startsWith('/*') || text.startsWith('*')) return
+    if (/\b\d+\.\d+\.\d+\b/.test(text)) found.push(`line ${i + 1}: ${text}`)
+  })
+  return found
+}
+
+test('the hooks module spells no version number in its code: the floor is read from lib/host/claude-env.mjs', () => {
+  // make-the-run-surfaces-interactive design D20, D27 (spec hooks/ship-meter
+  // "Below the mods floor a loaded module SHALL draw, tell and suggest
+  // nothing…"): the probe notes in its comments name engines and stay.
+  const source = readFileSync(moduleEntry(), 'utf8')
+  assert.deepEqual(versionLines(source), [], 'a version number in a non-comment line of hooks/mod.mjs')
+  assert.match(
+    source,
+    /import \{[^}]*\bMODS_MIN_HOST_VERSION\b[^}]*\bcompareVersions\b[^}]*\} from '\.\.\/lib\/host\/claude-env\.mjs'/,
+    'the module does not take the floor and its comparison from lib/host/claude-env.mjs'
+  )
+})
+
+test('the version pin names a version in code and leaves one in a comment', () => {
+  assert.deepEqual(versionLines("// probed on 2.1.295\n  /** 2.1.287 */\n   * and 2.1.291\nconst x = 1.5\n"), [])
+  assert.deepEqual(versionLines("// note\nif (v < '2.1.295') off()\n"), ["line 2: if (v < '2.1.295') off()"])
+})
+
+test('the suggestion hook adds rows only ahead of the engine\'s own answer, and builds no answer of its own', () => {
+  const source = readFileSync(moduleEntry(), 'utf8')
+  const body = hookAt(source, "on('prompt.autocomplete'")
+  assert.ok(body, 'the module has no prompt.autocomplete hook')
+  const built = [...body.matchAll(/return \{[^\n]*/g)].map(m => m[0])
+  assert.deepEqual(built, ['return { ...beneath, suggestions: [...rows, ...beneath.suggestions] }'], built.join('\n'))
+  assert.ok(!body.includes('text:'), 'the suggestion hook builds a text of its own')
+})
+
 test('the wave board is the renderer\'s rows, drawn from the steps and never from a file', () => {
   // draw-the-wave-board-in-the-meter-pane design D6, D7: the board is
   // `lib/draw-plan.mjs`'s, the plan is the relayed summary, and the section
@@ -530,11 +730,14 @@ function hookAt(source, head) {
 }
 
 test('neither the hooks module nor the spec or settle meter\'s rules spell `complete` or read OpenSpec\'s roll-up', () => {
-  // Two spellings are not the meter's words and are stripped first: the
-  // engine's event name, which the meter must keep hooking, and the wave
-  // board's overlay key, the field `lib/draw-plan.mjs` reads for the recorded
-  // ids (draw-the-wave-board-in-the-meter-pane design D6).
-  const strip = source => source.split('turn.complete').join('').split('completed: run.recorded.ok').join('')
+  // Three spellings are not the meter's words and are stripped first: the
+  // engine's two event names, which the module must keep hooking (`turn.complete`,
+  // and `prompt.autocomplete`, the suggestions' event, make-the-run-surfaces-
+  // interactive design D18, spec hooks/spec-meter "The spec meter SHALL observe
+  // only…"), and the wave board's overlay key, the field `lib/draw-plan.mjs`
+  // reads for the recorded ids (draw-the-wave-board-in-the-meter-pane design D6).
+  const strip = source =>
+    source.split('turn.complete').join('').split('prompt.autocomplete').join('').split('completed: run.recorded.ok').join('')
   // The settle meter's rules join the pin (observe-the-settle-run-live design D20, spec
   // requirement 6): its review record is read for counts and never for the roll-up
   // `dimensions.completed`, so the word is spelled nowhere in the pure module.

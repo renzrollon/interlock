@@ -674,6 +674,31 @@ test('the handoff pane\'s cap is published, read under lib/, and restated nowher
   }
 })
 
+test('the interactive surfaces\' three caps are published in prose and in --json', () => {
+  // make-the-run-surfaces-interactive design D13, D16: the Svg source bound, the
+  // suggestion rows and the preflight list length. This pins what is published;
+  // the reader half (each reader spells `LIMITS.<cap>`, `hooks/mod.mjs` restates
+  // neither the key nor the figure) is pinned in each reader's own test file,
+  // because the readers land in later tasks.
+  const rows = [
+    ['plan diagram svg chars', 'planSvgMaxChars', 131072],
+    ['prompt suggestion rows', 'promptSuggestRows', 8],
+    ['preflight list names \\(per list\\)', 'preflightListNames', 40]
+  ]
+  const text = formatLimits()
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, `interlock limits --json exited ${run.status}: ${run.stderr}`)
+  const published = JSON.parse(run.stdout).limits
+  for (const [label, key, value] of rows) {
+    assert.equal(LIMITS[key], value, `${key} is not ${value}`)
+    assert.match(text, new RegExp(`${label}\\s+${LIMITS[key]}\\b`), `no formatLimits row for ${key}`)
+    assert.equal(published[key], LIMITS[key], `limits --json does not carry ${key}`)
+  }
+})
+
 test('the inter-wave verify budget is published as a floor, in prose and in --json, and read by name', () => {
   assert.match(
     formatLimits(),

@@ -287,7 +287,15 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-Without `--continue`, the run ended here. The checkpoint waits for a human, so mark it for the spec meter:
+Without `--continue`, the run ended here. First print the checkpoint card:
+
+```bash
+interlock checkpoint "<change-name>"
+```
+
+It prints the card; a non-zero exit is reported in one line and does not stop the hand-off. An `Unknown command` answer means an older `interlock` is first on PATH: say so in that line and name `interlock doctor`, whose `cli-version` row shows which one.
+
+The checkpoint waits for a human, so mark it for the spec meter:
 
 ```bash
 interlock notify checkpoint "<change-name>"

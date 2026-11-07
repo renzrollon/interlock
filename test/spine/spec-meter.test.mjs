@@ -775,6 +775,7 @@ function fencedCommandLines(file) {
 const UNREAD_BY_NAME = [
   'openspec validate "<name>"',
   'openspec --version',
+  'interlock checkpoint "<change-name>"',
   'interlock routing artifact-reviewer --json',
   'interlock routing artifact-reviewer --depth strict --json'
 ]

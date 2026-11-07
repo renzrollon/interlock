@@ -302,7 +302,7 @@ test('a hand-edited docs/10 block fails naming the document and the line', () =>
 })
 
 test('the renderers and the lane module are pure and Node-free', () => {
-  const modules = ['draw-plan.mjs', 'draw-run.mjs', 'lane.mjs']
+  const modules = ['draw-plan.mjs', 'draw-plan-svg.mjs', 'draw-run.mjs', 'lane.mjs']
   const allowed = new Set([...modules, 'limits.mjs'].map(name => join(ROOT, 'lib', name)))
   for (const name of modules) {
     const entry = join(ROOT, 'lib', name)

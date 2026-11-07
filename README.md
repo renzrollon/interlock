@@ -112,7 +112,7 @@ After a ship, `/interlock:settle --create --review` pushes the branch, opens the
 
 **Any time, on their own.** `/interlock:explore` (reconnaissance with parallel investigators), `/interlock:review-code` (the adversarial review, standalone), `/interlock:fix-tests` (repair a red suite by root cause, without weakening a test), `/interlock:graph` (build and query the code graph), `/interlock:report` (indicators over the run corpora, gating nothing), `/interlock:manual-test-plan`, `/interlock:explain-code`, `/interlock:evals`, `/interlock:docs-digest`, `/interlock:dispatch`, `/interlock:commit`.
 
-**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt.
+**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt. The checkpoint card (`interlock checkpoint <change>`, also drawn in `/interlock-spec`) lists the questions to ask of a spec, and the panes offer each command they print as a drafted action you submit yourself.
 
 **In the terminal.** `interlock doctor`, `interlock limits`, `interlock drift`, `interlock merge-confidence`. Every subcommand: [07](docs/07-cli-and-configuration.md).
 </details>
@@ -138,7 +138,7 @@ Every term, defined from the ground up: [09 — From prompt to workflow](docs/09
 </p>
 <p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
 
-On Claude Code 2.1.287 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
+On Claude Code 2.1.295 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
 
 ## Turn the gates up
 
@@ -182,7 +182,7 @@ It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `ope
 
 - **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; `interlock openspec provision` runs `npm` to install the pinned OpenSpec from the npm registry when none is on your PATH; the vendor CLIs a run spawns inherit the environment as any child process does. What each of those sends is its own.
 - **What it reads and runs on your machine.** `interlock doctor`, the session-start check and `interlock run start` read Claude Code's settings files: managed, user (`~/.claude/settings.json`), project and local. They use only `permissions`, `promptCacheTtl`, `subagentPromptCacheTtl` and `advisorModel`, so they can say whether a run would stop on a prompt. No other key or value is used, printed or sent. `interlock verify exec` runs the command it is passed, which the loop takes from the commands in `.claude/testing/profile.json`, and the coverage baseline runs that profile's coverage command. Both run through a shell (`/bin/sh` on macOS and Linux) and in your environment, as you would run them yourself. Whatever those commands send is theirs, not Interlock's.
-- **Being reached while away.** Interlock sends no notification. Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) can push to your phone when a long task finishes or a session needs you, with nothing configured in Interlock.
+- **Being reached while away.** Interlock makes no network call and sends no push of its own; on a Claude Code that supports mods, the meter asks the engine for a local notification on a halt, a close, a first quiet stretch and a checkpoint. Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) can push to your phone when a long task finishes or a session needs you, with nothing configured in Interlock.
 
 **The CLIs on their own.** `interlock` (the policy engine), `interlock-graph` (a local, deterministic code graph; no vector store, no network) and `interlock-run` (the runner above) are three zero-dependency Node binaries. The plugin puts them on Claude Code's `PATH`; `npm install -g @renzrollon/interlock` puts them on yours. Every gating subcommand exits 1 when it blocks. Reference and every environment variable: [07](docs/07-cli-and-configuration.md).
 </details>

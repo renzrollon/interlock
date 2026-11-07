@@ -43,6 +43,10 @@ const base = over => ({
   },
   notes: { spoken: [], unreadable: [] },
   cards: { listed: [], archived: 0, unreadable: [], lookedIn: ['/repo/.claude/handoff'] },
+  // The lists the prompt's suggestions read (lib/preflight-file.mjs `listedNames`):
+  // `{ names, omitted }`, newest first, or `null` for a directory that could not be listed.
+  openChanges: { names: ['add-foo', 'add-bar', 'fix-baz'], omitted: 0 },
+  recentRuns: { names: ['r-3', 'r-2', 'r-1'], omitted: 0 },
   ...over
 })
 
@@ -83,6 +87,15 @@ export const REPORT_FAIL_WARN_NOTE = base({
 })
 
 export const REPORT_ALL_OK = base({})
+
+/** A report whose two lists could not be listed (`null`, never empty): the suggestions stay off. */
+export const REPORT_NULL_LISTS = base({ openChanges: null, recentRuns: null })
+
+/** A report written before the two fields existed: they read as `null` under the same stamp. */
+export const REPORT_WITHOUT_LISTS = (() => {
+  const { openChanges, recentRuns, ...older } = base({})
+  return older
+})()
 
 export const REPORT_WARN_ONLY = base({
   writtenAt: '2026-10-07T09:00:00.000Z',
@@ -136,3 +149,63 @@ export const CARD_TEXT = [
 export const LONG_CARD = CARD_TEXT + '\n' + '- a leftover row that goes on\n'.repeat(Math.ceil(LIMITS.handoffPaneChars / 25))
 
 export const stdout = report => JSON.stringify(report, null, 2) + '\n'
+
+// --- the halt card's controls (make-the-run-surfaces-interactive design D22) ---
+//
+// Cards that print the commands a person runs next, the way `formatResumeCard`
+// prints them: fenced lines and code spans. The pane offers a control for each
+// line `offeredActions` (lib/run-actions.mjs) finds, in print order, one time each.
+
+/** A card whose fenced block prints the receipt's two lines, printed again later, and whose last step prints the ship line. */
+export const ACTIONS_CARD_TEXT = [
+  '<!-- interlock.resume-card/1 change=add-foo run=r-1 -->',
+  '# Ship halted — add-foo',
+  '',
+  'unit failures after 2 fix attempts',
+  '',
+  `${RECORD_SENTENCE}. Nothing reads it back. **Do not start another ship run unless the user asks.**`,
+  '',
+  '## Where this run stopped',
+  '',
+  '```',
+  'interlock run-log show r-1',
+  'interlock run-log query --run r-1 --halted',
+  '```',
+  '',
+  '## Next',
+  '',
+  '1. Read the receipt again: `interlock run-log show r-1`.',
+  '2. In a new session, when a person asks for it: `/interlock:ship add-foo`.',
+  ''
+].join('\n')
+
+/** The controls `ACTIONS_CARD_TEXT` carries, in print order. */
+export const ACTIONS_CARD_LABELS = [
+  'Draft: interlock run-log show r-1',
+  'Draft: interlock run-log query --run r-1 --halted',
+  'Draft: /interlock:ship add-foo'
+]
+
+/** A card that prints a placeholder line in a fenced block and a lane's resume line in a code span. */
+export const PLACEHOLDER_CARD_TEXT = [
+  '<!-- interlock.resume-card/1 change=add-bar run=r-2 -->',
+  '# Ship halted — add-bar',
+  '',
+  '```',
+  'interlock tasks tick add-bar --ids <the ids above you verified are done>',
+  '```',
+  '',
+  '- `1.2` (failed): `claude --resume s-9 --fork-session`',
+  ''
+].join('\n')
+
+export const RESUME_LINE = 'claude --resume s-9 --fork-session'
+
+/** A card over the pane's cap whose one command line is printed after the cut. */
+export const LONG_ACTIONS_CARD =
+  CARD_TEXT + '\n' + '- a leftover row that goes on\n'.repeat(Math.ceil(LIMITS.handoffPaneChars / 25)) + '\n```\ninterlock run-log show r-1\n```\n'
+
+/** A report holding twenty open changes that begin `add-`, newest first, and no other. */
+export const REPORT_MANY_CHANGES = base({
+  openChanges: { names: Array.from({ length: 20 }, (_, n) => `add-${String(n + 1).padStart(2, '0')}`), omitted: 0 }
+})

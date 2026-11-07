@@ -56,7 +56,7 @@
 // (remove-the-push-notification).
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -318,6 +318,53 @@ function isOpenSpecProject(cwd) {
 }
 
 /**
+ * Names and modification times of a directory's entries, from the listing and
+ * a stat each and nothing more: no file is opened, no process started (design
+ * D16). `pick` maps an entry to the name the report carries, or `null` to leave
+ * it out. A directory that does not exist is an empty list; one that cannot be
+ * listed for any other reason is `null`, never empty. The names go to
+ * `listedNames`, which orders and cuts them.
+ */
+function listDirectory(dir, pick) {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch (err) {
+    return err && err.code === 'ENOENT' ? [] : null
+  }
+  const listed = []
+  for (const entry of entries) {
+    const name = pick(entry)
+    if (name === null) continue
+    let mtimeMs = Number.NaN
+    try {
+      mtimeMs = statSync(join(dir, entry.name)).mtimeMs
+    } catch {}
+    listed.push({ name, mtimeMs })
+  }
+  return listed
+}
+
+/**
+ * The open change names and the recent run ids for the report (design D16):
+ * `{ names, omitted }` each, or `null` for a directory that could not be
+ * listed. The runs are the trajectory files under the state home the doctor
+ * resolved, else the working directory. Never throws.
+ */
+async function listings(cwd, stateHome) {
+  try {
+    const lib = await import(new URL('../lib/preflight-file.mjs', import.meta.url).href)
+    const changes = listDirectory(join(cwd, 'openspec', 'changes'), entry => (entry.isDirectory() ? entry.name : null))
+    const runs = listDirectory(join(stateHome || cwd, '.claude', 'ship', 'runs'), entry =>
+      entry.isFile() && entry.name.endsWith('.jsonl') ? entry.name.slice(0, -'.jsonl'.length) : null
+    )
+    return { openChanges: lib.listedNames(changes), recentRuns: lib.listedNames(runs) }
+  } catch {
+    return { openChanges: null, recentRuns: null }
+  }
+}
+
+/**
  * Leave this session's report in `.claude/ship/preflight.json` (design D1,
  * D2): the previous file removed first, so a write that fails leaves no stale
  * report, then the new one written whole. A failure is one stderr line, and
@@ -325,13 +372,23 @@ function isOpenSpecProject(cwd) {
  */
 async function writeReport(cwd, input) {
   let path = join(cwd, '.claude', 'ship', 'preflight.json')
+  let tmp = null
   try {
     const lib = await import(new URL('../lib/preflight-file.mjs', import.meta.url).href)
     path = join(cwd, lib.PREFLIGHT_FILE)
-    rmSync(path, { force: true })
     mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, JSON.stringify(lib.buildPreflightReport(input), null, 2) + '\n')
+    // Written whole beside the target and renamed over it, so a reader sees the
+    // earlier report or this one and never a missing or half-written file.
+    // pid alone can collide across pid namespaces sharing one checkout (a devcontainer and its host).
+    tmp = `${path}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
+    writeFileSync(tmp, JSON.stringify(lib.buildPreflightReport(input), null, 2) + '\n')
+    renameSync(tmp, path)
   } catch (err) {
+    // A failed write leaves no earlier session's report standing as this one's.
+    for (const stale of [tmp, path]) {
+      if (!stale) continue
+      try { rmSync(stale, { force: true }) } catch { /* a directory there stays; nothing reads it as a report */ }
+    }
     process.stderr.write(`interlock preflight: report not written: ${path}: ${(err && err.message) || String(err)}\n`)
   }
 }
@@ -387,7 +444,8 @@ try {
       message,
       doctor,
       notes: { spoken: notes.spoken, unreadable: notes.unreadable },
-      cards: await resumeCards(cwd, stateHome)
+      cards: await resumeCards(cwd, stateHome),
+      ...(await listings(cwd, stateHome))
     })
   }
   if (lines.length) report(lines.join('\n'))

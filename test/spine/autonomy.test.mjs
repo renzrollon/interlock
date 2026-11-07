@@ -204,3 +204,63 @@ test('an absent record raises no unreadable-record warning', () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+// --- autonomy record --human-override, through the CLI line itself -----------------
+
+function stateOf(home) {
+  return JSON.parse(readFileSync(join(home, '.claude', 'autonomy.json'), 'utf8'))
+}
+
+test('--human-override takes an L3 skill to L2, counts a run and an override, prints its line', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-override-'))
+  try {
+    for (let i = 0; i < 3; i++) assert.equal(cli(home, ['record', 'spec', '--blockers', '0']).code, 0)
+    const before = stateOf(home).spec
+    assert.equal(before.current_level, 'L3')
+
+    const r = cli(home, ['record', 'spec', '--human-override'])
+    assert.equal(r.code, 0, r.stderr)
+    const after = stateOf(home).spec
+    assert.equal(after.current_level, 'L2')
+    assert.equal(after.consecutive_clean, 0)
+    assert.equal(after.runs, before.runs + 1)
+    assert.equal(after.human_overrides, (before.human_overrides || 0) + 1)
+    assert.match(r.stdout, /^spec: L2 \(0\/\d+ clean\)\n$/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('--human-override counts no blocker beside --blockers and leaves upstream skills untouched', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-override-upstream-'))
+  try {
+    assert.equal(cli(home, ['record', 'review-artifacts', '--blockers', '0']).code, 0)
+    assert.equal(cli(home, ['record', 'explore', '--blockers', '0']).code, 0)
+    const before = stateOf(home)
+    const exploreBytes = JSON.stringify(before.explore)
+
+    const r = cli(home, ['record', 'review-artifacts', '--human-override', '--blockers', '2'])
+    assert.equal(r.code, 0, r.stderr)
+    const after = stateOf(home)
+    assert.equal(after['review-artifacts'].human_overrides, (before['review-artifacts'].human_overrides || 0) + 1)
+    assert.equal(after['review-artifacts'].blockers_caught || 0, before['review-artifacts'].blockers_caught || 0)
+    assert.equal(JSON.stringify(after.explore), exploreBytes)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('--human-override on a skill with no entry creates it at L2 with one run and one override', () => {
+  const home = mkdtempSync(join(tmpdir(), 'interlock-autonomy-override-new-'))
+  try {
+    const r = cli(home, ['record', 'spec', '--human-override'])
+    assert.equal(r.code, 0, r.stderr)
+    const e = stateOf(home).spec
+    assert.equal(e.current_level, 'L2')
+    assert.equal(e.runs, 1)
+    assert.equal(e.human_overrides, 1)
+    assert.equal(e.consecutive_clean, 0)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
