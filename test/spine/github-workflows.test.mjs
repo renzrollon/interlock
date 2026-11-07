@@ -211,6 +211,24 @@ test('ci.yml runs the unit suite on Node 18, 20, 22 and 24', () => {
   for (const major of ['18', '20', '22']) assert.ok(matrix.includes(`'${major}'`), `the test matrix dropped Node ${major}`)
 })
 
+test('ci.yml runs the unit suite under the npm the release job installs, read from release.yml', () => {
+  // v1.15.0's release job failed on npm 12's `npm pack --json` shape, which no
+  // pull-request leg ran: the release upgrades npm before its `npm test`.
+  const release = jobNamed(workflowNamed('release.yml'), 'publish')
+  const pins = [...new Set([...release.matchAll(/npm install -g npm@(\d+\.\d+\.\d+)\b/g)].map(m => m[1]))]
+  assert.equal(pins.length, 1, `release.yml must install exactly one exact npm version before its tests; found ${pins.join(', ') || 'none'}`)
+  assert.ok(release.indexOf('npm install -g npm@') < release.indexOf('npm test'), 'release.yml must upgrade npm before it tests')
+
+  const ci = workflowNamed('ci.yml')
+  const leg = jobNamed(ci, 'test-release-npm')
+  assert.match(leg, /\.github\/workflows\/release\.yml/, 'the leg must read the npm pin from release.yml')
+  assert.ok(!leg.includes(pins[0]), `the leg must not spell the npm version (${pins[0]}); it reads it from release.yml`)
+  assert.match(leg, /npm install -g "npm@\$pin"/, 'the leg must install the pin it read')
+  assert.ok(leg.indexOf('npm install -g') < leg.indexOf('npm test'), 'the leg must install npm before it tests')
+  const node = /node-version:\s*'?(\d+)'?/
+  assert.equal(node.exec(leg)?.[1], node.exec(release)?.[1], 'the leg must run the Node major the release job runs')
+})
+
 test('the CLI smoke is manual only: never in ci.yml, never on a push or a pull request', () => {
   // It stalled runners and failed the pull request's status; it is started by hand.
   const ci = workflowNamed('ci.yml')

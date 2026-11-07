@@ -122,3 +122,35 @@ test('scan pack: the script runs no push and opens no network connection', () =>
   assert.doesNotMatch(source, /['"](?:curl|wget)['"]/, 'a download tool is spawned')
   assert.match(source, /'pack', '--json', '--offline', '--no-update-notifier'/, 'npm pack may reach the registry')
 })
+
+test('scan pack: reads the npm 12 `npm pack --json` shape, an object keyed by package name', t => {
+  // npm <= 11 prints an array of entries; npm 12, which the release job runs,
+  // prints `{ "<name>": { filename, entryCount, ... } }`. v1.15.0's release job
+  // failed on exactly this. A shim npm rewraps the real output into that shape.
+  const dir = fixture()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const realNpm = execFileSync('sh', ['-c', 'command -v npm'], { env: ENV, encoding: 'utf8' }).trim()
+  const shimDir = join(dir, '.shim')
+  mkdirSync(shimDir)
+  writeFileSync(
+    join(shimDir, 'npm'),
+    `#!${process.execPath}\n` +
+      "const { spawnSync } = require('node:child_process')\n" +
+      `const ran = spawnSync(${JSON.stringify(realNpm)}, process.argv.slice(2), { encoding: 'utf8' })\n` +
+      'let out = ran.stdout\n' +
+      "if (process.argv.includes('--json')) { const r = JSON.parse(out); if (Array.isArray(r)) out = JSON.stringify(Object.fromEntries(r.map(e => [e.name, e]))) }\n" +
+      'process.stdout.write(out); process.stderr.write(ran.stderr); process.exit(ran.status ?? 1)\n',
+    { mode: 0o755 }
+  )
+  writeFileSync(join(shimDir, 'package.json'), '{"type":"commonjs"}\n')
+
+  const ran = spawnSync(process.execPath, [join(dir, 'scripts', 'plugin-scan-pack.mjs')], {
+    cwd: dir,
+    env: { ...ENV, PATH: `${shimDir}:${ENV.PATH}` },
+    encoding: 'utf8'
+  })
+  assert.equal(ran.status, 0, ran.stderr)
+  assert.match(ran.stdout, /\(3 files, plugin 0\.0\.1/)
+  const files = git(dir, ['ls-tree', '-r', '--name-only', 'temp/plugin-scan']).split('\n').sort()
+  assert.deepEqual(files, ['.claude-plugin/plugin.json', 'lib/a.mjs', 'package.json'])
+})

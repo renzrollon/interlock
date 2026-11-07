@@ -25,6 +25,34 @@ jobs:
       - name: Test
         run: npm test
 
+  # The release job upgrades npm before its own `npm test` (release.yml,
+  # "Upgrade npm for trusted publishing"), so a tag could fail on an npm no pull
+  # request ever ran. v1.15.0 did: npm 12 prints `npm pack --json` as an object,
+  # not an array, and the scan-pack tests only met it at tag time. This leg runs
+  # the suite under that same npm, READ from release.yml and spelled nowhere in
+  # this file, so moving the release pin moves this leg with no edit here.
+  # Advisory until the main ruleset requires it.
+  test-release-npm:
+    name: test (release npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install the npm the release job installs
+        run: |
+          pin=$(grep -oE 'npm install -g npm@[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/release.yml | sed 's/.*npm@//' | sort -u)
+          if [ -z "$pin" ] || [ "$(printf '%s\n' "$pin" | wc -l)" -ne 1 ]; then
+            echo "::error::release.yml must install exactly one exact npm version; found: ${pin:-none}"
+            exit 1
+          fi
+          npm install -g "npm@$pin"
+          echo "npm $(npm --version), the release job's pin"
+      # No dependencies to install — the whole toolchain is stdlib Node.
+      - name: Test
+        run: npm test
+
   # The plugin is validated under the newest engine and under the oldest one the
   # CLI declares support for. The floor is READ from MODS_MIN_HOST_VERSION in
   # lib/host/claude-env.mjs and spelled nowhere in this file, so raising the

@@ -52,6 +52,21 @@ function run(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim()
 }
 
+/**
+ * The one package entry in `npm pack --json` output. npm <= 11 prints an array
+ * of entries; npm 12 prints an object keyed by package name. The release job
+ * runs npm 12, so both shapes are read.
+ */
+function packEntry(report) {
+  if (Array.isArray(report)) return report[0]
+  if (report && typeof report === 'object') {
+    if (typeof report.filename === 'string') return report
+    const entries = Object.values(report).filter(v => v && typeof v === 'object' && typeof v.filename === 'string')
+    return entries.length === 1 ? entries[0] : undefined
+  }
+  return undefined
+}
+
 /** The commit a fast-forwarding push would build on, or null for a root commit. */
 function parentOf(branch) {
   for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
@@ -76,9 +91,10 @@ function main() {
 
   const work = mkdtempSync(join(tmpdir(), 'interlock-scan-pack-'))
   try {
-    const packed = JSON.parse(run('npm', ['pack', '--json', '--offline', '--no-update-notifier', '--pack-destination', work]))
-    const file = packed[0] && packed[0].filename
-    if (!file) throw new Error('npm pack reported no tarball')
+    const report = JSON.parse(run('npm', ['pack', '--json', '--offline', '--no-update-notifier', '--pack-destination', work]))
+    const entry = packEntry(report)
+    const file = entry && entry.filename
+    if (!file) throw new Error(`npm pack reported no tarball (npm ${run('npm', ['--version'])}, --json gave ${JSON.stringify(report).slice(0, 200)})`)
     const unpacked = join(work, 'unpacked')
     mkdirSync(unpacked)
     run('tar', ['-xzf', join(work, file), '-C', unpacked])
@@ -101,13 +117,13 @@ function main() {
     const message =
       'temp: unpublished plugin bundle for a directory scan\n\n' +
       `npm pack of ${head} on ${current}${dirty ? ' with uncommitted changes' : ''}, plugin version ${version}, ` +
-      `${packed[0].entryCount} files. Built by scripts/plugin-scan-pack.mjs; never released.\n`
+      `${entry.entryCount} files. Built by scripts/plugin-scan-pack.mjs; never released.\n`
     const parent = parentOf(branch)
     const commit = run('git', ['commit-tree', tree, ...(parent ? ['-p', parent] : []), '-F', '-'], { input: message, stdio: ['pipe', 'pipe', 'pipe'] })
     run('git', ['update-ref', `refs/heads/${branch}`, commit])
 
     process.stdout.write(
-      `scan pack: ${branch} at ${commit.slice(0, 7)} (${packed[0].entryCount} files, plugin ${version}, from ${head}${dirty ? ' + uncommitted changes' : ''})\n` +
+      `scan pack: ${branch} at ${commit.slice(0, 7)} (${entry.entryCount} files, plugin ${version}, from ${head}${dirty ? ' + uncommitted changes' : ''})\n` +
         'next, by the owner:\n' +
         `  1. git push origin ${branch}${parent ? '' : '   (a root commit: add --force if the remote branch exists)'}\n` +
         `  2. claude.ai/directory/manage → the submission → Source → Validate against ${branch}\n` +

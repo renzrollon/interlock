@@ -7,6 +7,11 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npm run scan-pack` reads npm 12's `npm pack --json` output**, an object keyed by package name rather than an array. The v1.15.0 release job runs npm 12, and its `npm test` failed on the two scan-pack tests, so 1.15.0 was never published.
+- **CI runs the unit suite under the npm the release job installs** (`test (release npm)`, read from `release.yml`), so an npm-only failure shows on the pull request rather than at tag time. Advisory until the main ruleset requires it.
+
 ## [1.15.0] - 2026-11-07
 
 ### Added
