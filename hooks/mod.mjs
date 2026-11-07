@@ -633,12 +633,20 @@ function tell($, fields) {
   try {
     said = tellOf(fields)
   } catch (err) {
-    $.ui.log(`interlock meter: a notification was not built: ${messageOf(err)}`, { to: 'debug' })
+    try {
+      $.ui.log(`interlock meter: a notification was not built: ${messageOf(err)}`, { to: 'debug' })
+    } catch {
+      // The debug log refused too; nothing is told.
+    }
     return
   }
   if (!said) return
   if (told.has(said.key)) {
-    $.ui.log(`interlock meter: ${said.key} was already told; not told again`, { to: 'debug' })
+    try {
+      $.ui.log(`interlock meter: ${said.key} was already told; not told again`, { to: 'debug' })
+    } catch {
+      // The debug log refused; the skip itself still holds.
+    }
     return
   }
   told.set(said.key, fields.kind)

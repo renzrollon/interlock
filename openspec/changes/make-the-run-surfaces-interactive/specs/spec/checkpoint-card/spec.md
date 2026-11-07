@@ -83,7 +83,7 @@ The card SHALL print `/interlock:ship <change>` under the outcome that it looks 
 
 ### Requirement: The spec skill SHALL print the card where it stops, and the line SHALL be pinned by token and left unread by the spec meter
 
-`skills/spec/SKILL.md` SHALL carry, in its hand-off section before `interlock notify checkpoint`, a fenced line beginning `interlock checkpoint "<change-name>"`, pinned in `test/skills.test.mjs` by its tokens and order and passed through unread by the spec meter. It SHALL keep its stderr in a file under `TMPDIR`, or `/tmp` when unset, with no command substitution. A non-zero exit SHALL be reported in one line, its code and the first stderr line, and SHALL NOT stop the hand-off.
+`skills/spec/SKILL.md` SHALL carry, in its hand-off section before `interlock notify checkpoint`, the fenced line `interlock checkpoint "<change-name>"`, pinned in `test/skills.test.mjs` by its tokens and order and passed through unread by the spec meter. The line SHALL be the plain command, with no redirect or compound. A non-zero exit SHALL be reported in one line and SHALL NOT stop the hand-off; an `Unknown command` answer SHALL be named as version skew.
 
 #### Scenario: Happy path — the card is printed before the checkpoint line
 
@@ -103,6 +103,6 @@ The card SHALL print `/interlock:ship <change>` under the outcome that it looks 
 
 - **GIVEN** a spec run whose `interlock checkpoint` line exits 1
 - **WHEN** the skill reaches its hand-off
-- **THEN** the line prints one line, the exit code and the first line of its stderr, and the skill goes on to the notify line
-- **AND** an older `interlock` that answers with its whole usage text puts only that first line into the turn
+- **THEN** the skill's text says to report it in one line and go on to the notify line
+- **AND** an older `interlock` that answers `Unknown command` is reported as version skew, naming `interlock doctor`
 - **AND** the checkpoint document names `interlock checkpoint <change-name>` as the way to print the card again in a later session

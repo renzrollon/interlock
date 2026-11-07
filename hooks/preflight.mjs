@@ -379,7 +379,8 @@ async function writeReport(cwd, input) {
     mkdirSync(dirname(path), { recursive: true })
     // Written whole beside the target and renamed over it, so a reader sees the
     // earlier report or this one and never a missing or half-written file.
-    tmp = `${path}.${process.pid}.tmp`
+    // pid alone can collide across pid namespaces sharing one checkout (a devcontainer and its host).
+    tmp = `${path}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.tmp`
     writeFileSync(tmp, JSON.stringify(lib.buildPreflightReport(input), null, 2) + '\n')
     renameSync(tmp, path)
   } catch (err) {
