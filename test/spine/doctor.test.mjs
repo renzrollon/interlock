@@ -2057,7 +2057,8 @@ test('an npm copy one release behind the plugin fails with the skew line and the
     const { report, row } = cliVersionRow(dir, pluginRoot, [copy.binDir])
     assert.equal(row.status, 'fail', formatDoctor(report))
     assert.match(row.detail, /^CLI VERSION SKEW: interlock on PATH is 1\.7\.0 \(.+\), plugin is 1\.8\.0$/)
-    assert.match(row.fix, /npm i -g @renzrollon\/interlock@1\.8\.0/)
+    // Pins distribution/npm-package: every package-manager command a shipped text spells is the long form (`--location=global`), not `-g`.
+    assert.match(row.fix, /npm install --location=global @renzrollon\/interlock@1\.8\.0/)
     const evidence = row.evidence.join('\n')
     assert.ok(evidence.includes(copy.real), `evidence names the resolved path ${copy.real}: ${evidence}`)
     assert.match(evidence, /1\.7\.0/)
@@ -2265,7 +2266,8 @@ test('a skew failure is reported as a failure by formatDoctor, with its fix', ()
     const { report } = cliVersionRow(dir, pluginRoot, [copy.binDir])
     const text = formatDoctor(report)
     assert.match(text, /CLI VERSION SKEW/)
-    assert.match(text, /npm i -g @renzrollon\/interlock@1\.8\.0/)
+    // Pins distribution/npm-package: every package-manager command a shipped text spells is the long form (`--location=global`), not `-g`.
+    assert.match(text, /npm install --location=global @renzrollon\/interlock@1\.8\.0/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

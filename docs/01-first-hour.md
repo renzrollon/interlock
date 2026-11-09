@@ -21,7 +21,7 @@ Interlock drives the `openspec` CLI. If one is on your PATH it is used. If not, 
 The npm route is the alternative: install it yourself and initialize it in the repo ([OpenSpec quick start](https://github.com/Fission-AI/OpenSpec#quick-start)):
 
 ```bash
-npm install -g @fission-ai/openspec@latest
+npm install --location=global @fission-ai/openspec@1.15.0
 cd your-project && openspec init
 ```
 

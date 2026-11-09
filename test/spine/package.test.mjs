@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os'
 import { join, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { OPENSPEC_INSTALL } from '../../lib/openspec-cli.mjs'
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 const PKG_PATH = join(ROOT, 'package.json')
@@ -531,6 +533,752 @@ function networkProblems(entries) {
     .filter(isScript)
     .flatMap(({ path, text }) => [...new Set(NETWORK_CONSTRUCTS.filter(([, re]) => re.test(text)).map(([what]) => what))].map(what => `${path}: ${what}`))
 }
+
+// ---------------------------------------------------------------------------
+// Package-manager commands (clear-the-directory-validation-findings design D6,
+// D7, D8, D13, D16). The plugin directory's `LAUNCHER_REGISTRY_REDIRECT` is a
+// parser that could not read a package-manager command: a short verb, a short
+// option, a floating tag or an unversioned launcher in shipped text. Nothing
+// shipped sets a registry; the rule here is stricter than the finding so the
+// next shipped string cannot trip it. It reads only where a text spells code,
+// so prose ("npm users") needs no exception list.
+// ---------------------------------------------------------------------------
+
+/** Dynamic pins a shipped module may spell, exactly: the template, not a version. */
+const ALLOWED_DYNAMIC_PINS = Object.freeze(['${OPENSPEC_PIN.package}@${OPENSPEC_PIN.version}', '${CLI_PACKAGE}@${version}'])
+
+/** Options that take a value, which must be joined to it with `=`. */
+const VALUE_OPTIONS = Object.freeze(['--location', '--tag', '--package', '--prefix', '--workspace', '--omit', '--include', '--python', '--with', '--spec'])
+
+/** Options whose value names a package to fetch. */
+const PACKAGE_OPTIONS = Object.freeze(['--package', '--with', '--spec'])
+
+/** Launchers: the first argument is the package they fetch and run. */
+const LAUNCHER_WORDS = Object.freeze(['npx', 'bunx', 'uvx'])
+
+/**
+ * Each manager's commands (`verbs`, aliases included), the short `aliases` among
+ * them, the verbs that install what they are given, and the verbs that fetch
+ * and run a package. A word after the manager that is none of its verbs is prose.
+ */
+const MANAGERS = Object.freeze({
+  npm: {
+    verbs: 'install ci test run run-script exec start stop restart pack publish view config init link uninstall update ls list outdated audit cache login logout whoami version prune dedupe doctor explain rebuild root search pkg ping query help set get'.split(' '),
+    aliases: ['i', 'in', 'ins', 'it', 'add', 'x', 't', 'un', 'up', 'rm'],
+    install: ['install', 'i', 'in', 'ins', 'it', 'add'],
+    launch: ['exec', 'x']
+  },
+  pnpm: {
+    verbs: 'install add remove update run exec dlx test start create init list outdated audit publish pack link unlink store why prune rebuild dedupe fetch import patch deploy env setup config licenses'.split(' '),
+    aliases: ['i', 'rm', 'un', 'up', 't', 'ln'],
+    install: ['install', 'add', 'i'],
+    launch: ['dlx']
+  },
+  yarn: {
+    verbs: 'install add remove upgrade up run dlx test init link unlink list why publish pack config cache global workspace workspaces set'.split(' '),
+    aliases: [],
+    install: ['add'],
+    launch: ['dlx']
+  },
+  bun: {
+    verbs: 'install add remove update run x test init create build link pm upgrade'.split(' '),
+    aliases: ['i', 'a', 'rm', 'x'],
+    install: ['install', 'add', 'i', 'a'],
+    launch: ['x']
+  },
+  uv: {
+    verbs: 'pip tool run add remove sync lock init venv python build publish cache self export tree version'.split(' '),
+    aliases: [],
+    install: ['add', 'pip install', 'tool install'],
+    launch: ['tool run']
+  },
+  pipx: {
+    verbs: 'install run uninstall upgrade inject list ensurepath runpip reinstall environment'.split(' '),
+    aliases: [],
+    install: ['install'],
+    launch: ['run']
+  },
+  corepack: {
+    verbs: 'enable disable prepare use install pack hydrate up cache init'.split(' '),
+    aliases: [],
+    install: ['prepare', 'use'],
+    launch: []
+  }
+})
+
+const COMMAND_WORD = new RegExp(String.raw`(?<![\w@./$-])(${[...Object.keys(MANAGERS), ...LAUNCHER_WORDS].join('|')})(?![\w-])`, 'g')
+
+/** An exact version pin: `name@1.2.3`, `@scope/name@1.2.3` or `name==1.2.3`, or an allow-listed template. */
+function isExactPin(token) {
+  return (
+    ALLOWED_DYNAMIC_PINS.includes(token) ||
+    /^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(token) ||
+    /^[A-Za-z0-9._-]+(?:\[[\w,-]+\])?==\d+(?:\.\d+)*$/.test(token)
+  )
+}
+
+/** Why `words` (a manager or launcher word and what follows it) is not a readable, pinned command; `[]` when it is, or is not a command. */
+function commandReasons(words) {
+  const first = words[0]
+  const rest = words.slice(1)
+  let kind = 'other'
+  let verb = null
+  let args = rest
+  if (LAUNCHER_WORDS.includes(first)) {
+    kind = 'launch'
+  } else {
+    const manager = MANAGERS[first]
+    verb = rest[0]
+    if (!verb || ![...manager.verbs, ...manager.aliases].includes(verb)) return []
+    args = rest.slice(1)
+    let full = verb
+    if (first === 'uv' && (verb === 'pip' || verb === 'tool') && args[0]) full = `${verb} ${args[0]}`
+    if (manager.install.includes(full)) kind = 'install'
+    else if (manager.launch.includes(full)) kind = 'launch'
+    if (full !== verb && kind !== 'other') args = args.slice(1)
+  }
+  const reasons = []
+  if (verb && MANAGERS[first].aliases.includes(verb)) reasons.push(`the verb \`${verb}\` is not spelled in full`)
+  const positional = []
+  const named = []
+  for (let k = 0; k < args.length; k++) {
+    const token = args[k]
+    if (token === '--') break
+    if (/^-[A-Za-z]/.test(token)) {
+      reasons.push(`the option \`${token}\` is a short option`)
+    } else if (token.startsWith('--')) {
+      const [name, value] = token.split(/=(.*)/s)
+      if (VALUE_OPTIONS.includes(name) && value === undefined) {
+        reasons.push(`the option \`${name}\` is not joined to its value with \`=\``)
+        k++
+      } else if (value !== undefined && PACKAGE_OPTIONS.includes(name)) {
+        named.push(value)
+      }
+    } else if (/^[@\w$.{][^\s]*$/.test(token) && !/^\.{1,2}$/.test(token) && !/^\.{0,2}\//.test(token)) {
+      positional.push(token)
+    }
+  }
+  if (kind === 'launch' && positional.length === 0 && named.length === 0) return []
+  const toPin = kind === 'launch' ? (named.length ? [] : positional.slice(0, 1)) : kind === 'install' ? positional : []
+  for (const token of [...named, ...toPin]) {
+    if (!isExactPin(token)) reasons.push(`\`${token}\` is not pinned to an exact version`)
+  }
+  return reasons
+}
+
+/** `{ line, text }` for each place a text spells code: a fenced line or a backtick span in Markdown. */
+function markdownRegions(text) {
+  const regions = []
+  let fenced = false
+  text.split('\n').forEach((line, i) => {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced
+    } else if (fenced) {
+      regions.push({ line: i + 1, text: line })
+    } else {
+      for (const m of line.matchAll(/`([^`\n]+)`/g)) regions.push({ line: i + 1, text: m[1] })
+    }
+  })
+  return regions
+}
+
+/** `{ line, text }` for each string or template literal in a script, and each backtick span in its comments. */
+function scriptRegions(text) {
+  const n = text.length
+  const found = []
+  const lineAt = at => text.slice(0, at).split('\n').length
+  const quoteEnd = at => {
+    let j = at + 1
+    while (j < n && text[j] !== text[at] && text[j] !== '\n') j += text[j] === '\\' ? 2 : 1
+    return j
+  }
+  const templateEnd = from => {
+    let j = from
+    while (j < n && text[j] !== '`') {
+      if (text[j] === '\\') j += 2
+      else if (text[j] === '$' && text[j + 1] === '{') j = placeholderEnd(j + 2)
+      else j++
+    }
+    return j
+  }
+  const placeholderEnd = from => {
+    let depth = 1
+    let j = from
+    while (j < n && depth > 0) {
+      if (text[j] === "'" || text[j] === '"') j = quoteEnd(j) + 1
+      else if (text[j] === '`') j = templateEnd(j + 1) + 1
+      else {
+        if (text[j] === '{') depth++
+        else if (text[j] === '}') depth--
+        j++
+      }
+    }
+    return j
+  }
+  const add = (from, to, kind) => {
+    text
+      .slice(from, to)
+      .split('\n')
+      .reduce((at, piece) => {
+        if (kind === 'comment') for (const m of piece.matchAll(/`([^`\n]+)`/g)) found.push({ line: lineAt(at), text: m[1] })
+        else found.push({ line: lineAt(at), text: piece })
+        return at + piece.length + 1
+      }, from)
+  }
+  let last = ''
+  for (let i = 0; i < n; ) {
+    const c = text[i]
+    if (c === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i)
+      add(i, end === -1 ? n : end, 'comment')
+      i = end === -1 ? n : end
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2)
+      add(i, end === -1 ? n : end, 'comment')
+      i = end === -1 ? n : end + 2
+    } else if (c === "'" || c === '"') {
+      const end = quoteEnd(i)
+      add(i + 1, end, 'literal')
+      i = end + 1
+      last = '"'
+    } else if (c === '`') {
+      const end = templateEnd(i + 1)
+      add(i + 1, end, 'literal')
+      i = end + 1
+      last = '"'
+    } else if (c === '/' && (last === '' || '(,=:[!&|?{};'.includes(last) || last === 'return')) {
+      let j = i + 1
+      let inClass = false
+      while (j < n && text[j] !== '\n' && (text[j] !== '/' || inClass)) {
+        if (text[j] === '\\') j++
+        else if (text[j] === '[') inClass = true
+        else if (text[j] === ']') inClass = false
+        j++
+      }
+      if (text[j] === '/') {
+        i = j + 1
+        last = '"'
+      } else {
+        i++
+        last = '/'
+      }
+    } else if (/\s/.test(c)) {
+      i++
+    } else if (/[\w$]/.test(c)) {
+      let j = i
+      while (j < n && /[\w$]/.test(text[j])) j++
+      last = text.slice(i, j)
+      i = j
+    } else {
+      last = c
+      i++
+    }
+  }
+  return found
+}
+
+/** Every package-manager or launcher command a text spells as code, as `{ line, words }`. */
+function commandsOf({ path, text }) {
+  const regions = /\.md$/i.test(path) ? markdownRegions(text) : scriptRegions(text)
+  const commands = []
+  for (const { line, text: fragment } of regions) {
+    for (const m of fragment.matchAll(COMMAND_WORD)) {
+      // `npm,` and `npm's` are prose: a command word is followed by a space, or ends the span.
+      if (/^\S/.test(fragment.slice(m.index + m[1].length))) continue
+      const spelled = fragment.slice(m.index).split(/[);|`]|&&|\s#\s/)[0]
+      const words = spelled
+        .split(/\s+/)
+        .map(w => w.replace(/^["'`,]+/, '').replace(/["'`,.:;]+$/, '') || w)
+        .filter(Boolean)
+      commands.push({ line, words })
+    }
+  }
+  return commands
+}
+
+/** Package sources a shipped text must not set, wherever it says so (design D6). */
+const PACKAGE_SOURCES = Object.freeze([
+  ['--registry', /--registry\b/],
+  ['--index-url', /--index-url\b/],
+  ['--extra-index-url', /--extra-index-url\b/],
+  ['--proxy', /--proxy\b/],
+  ['registry=', /\bregistry=/],
+  ['npm_config_', /npm_config_/],
+  ['npm config set', /npm\s+config\s+set\b/],
+  // `publishConfig` is the package.json block that lets a scoped package publish publicly (`access`);
+  // it is a package source only where it carries a `registry`, which the loop below reads.
+  ['publishConfig', /publishConfig/],
+  ['.npmrc', /\.npmrc\b/],
+  ['bunfig.toml', /bunfig\.toml/],
+  ['uv.toml', /uv\.toml/],
+  ['pip.conf', /pip\.conf/],
+  ['.yarnrc', /\.yarnrc/]
+])
+
+/** The one shipped file that may name the default registry: the pin's lockfile. */
+const REGISTRY_HOST_HOME = 'lib/openspec-pin.mjs'
+
+/**
+ * `path:line: reason` for each shipped text that spells a package-manager command
+ * badly, and each that sets a package source (spec distribution/npm-package
+ * "Every package-manager command a shipped text spells SHALL be readable and
+ * exactly pinned").
+ */
+function packageCommandProblems(entries) {
+  const problems = []
+  for (const entry of entries) {
+    for (const { line, words } of commandsOf(entry)) {
+      for (const reason of commandReasons(words)) problems.push(`${entry.path}:${line}: ${reason} (${words.join(' ').slice(0, 80)})`)
+    }
+    let manifest = null
+    if (entry.path === 'package.json') {
+      try {
+        manifest = JSON.parse(entry.text)
+      } catch {
+        // Not JSON: the line scan below reads it as text.
+      }
+      if (manifest?.publishConfig && typeof manifest.publishConfig === 'object' && 'registry' in manifest.publishConfig) {
+        problems.push('package.json:1: publishConfig.registry is a package source')
+      }
+    }
+    entry.text.split('\n').forEach((text, i) => {
+      for (const [name, re] of PACKAGE_SOURCES) {
+        if (name === 'publishConfig' && manifest) continue
+        if (re.test(text)) problems.push(`${entry.path}:${i + 1}: ${name} is a package source`)
+      }
+      if (entry.path !== REGISTRY_HOST_HOME && /registry\.npmjs\.org/.test(text)) {
+        problems.push(`${entry.path}:${i + 1}: registry.npmjs.org is a package source`)
+      }
+    })
+  }
+  return problems
+}
+
+test('no shipped text spells a package-manager command the directory cannot read, or sets a package source', () => {
+  const problems = packageCommandProblems(shippedTexts())
+  assert.deepEqual(problems, [], `these shipped texts spell a package command badly:\n  ${problems.join('\n  ')}`)
+})
+
+test('the command check names a short verb, a short option, a floating tag, an unversioned launcher and a loose value option', () => {
+  const md = text => [{ path: 'docs/x.md', text }]
+  const named = (text, ...tokens) => {
+    const problems = packageCommandProblems(md(text))
+    for (const token of tokens) assert.ok(problems.some(p => p.includes(token)), `${token} is not named in: ${problems.join(' | ')}`)
+    return problems
+  }
+  assert.match(named('Run `npm i -g x@1.0.0` first.', 'x.md:1', '`i`', '`-g`')[0], /^docs\/x\.md:1: /)
+  named('`npm install -g @fission-ai/openspec@latest`', '@latest')
+  named('`npx tsc --noEmit`', '`tsc` is not pinned')
+  named('`npm install --tag latest x@1.0.0`', '`--tag`')
+  named('`npm install --location=global x@^1.0.0`', '`x@^1.0.0`')
+  named('`npm install --location=global x`', '`x` is not pinned')
+  named('`uvx ruff check`', '`ruff` is not pinned')
+  named('`pnpm dlx create-thing@next`', '`create-thing@next`')
+  named('`yarn add left-pad`', '`left-pad`')
+  for (const alias of ['i', 'in', 'ins', 'it', 'add', 'x', 't', 'un', 'up', 'rm']) named(`\`npm ${alias} y@1.0.0\``, `\`${alias}\``)
+})
+
+test('the command check reads a command to the end of its span, and inside a module\'s literal', () => {
+  const module = [{ path: 'lib/m.mjs', text: 'const msg = `install the matching CLI (npm i -g @scope/cli@${v}) or expect`\n' }]
+  const problems = packageCommandProblems(module)
+  assert.equal(problems.length, 3, problems.join(' | '))
+  assert.ok(problems.some(p => p.includes('`i`')) && problems.some(p => p.includes('`-g`')) && problems.some(p => p.includes('@scope/cli@${v}')))
+  assert.ok(problems.every(p => p.startsWith('lib/m.mjs:1: ')), problems.join(' | '))
+  const tool = packageCommandProblems([{ path: 'README.md', text: 'Use `npx tool --flag` here.\n' }])
+  assert.equal(tool.length, 1)
+  assert.match(tool[0], /`tool` is not pinned/)
+})
+
+test('the command check passes long-form pinned commands and plain prose', () => {
+  const texts = [
+    'Install: `npm install --location=global @fission-ai/openspec@1.15.0`',
+    '```bash\nnpm ci --ignore-scripts --no-audit --no-fund\nnpm test\nnpm run typecheck\nnpm install --package-lock-only\n```',
+    'Prose: npm users should read `npm test`, and the npm release notes, `npm release` and `npm = whichSync(`.',
+    'Pinned: `npx tsc@5.4.2 --noEmit`, `uvx ruff@0.5.0`, `uv tool install ruff==0.5.0`, `npm exec --package=typescript@5.4.2 -- tsc`',
+    'After the dashes: `npm test -- -t name`',
+    'Prose with a comma or a possessive: (npm, install scripts) and `npm\'s lockfile-exact ci`.'
+  ]
+  for (const text of texts) assert.deepEqual(packageCommandProblems([{ path: 'docs/ok.md', text }]), [], text)
+})
+
+test('the command check leaves a bare launcher, a regex over npm\'s output, a tool pattern and prose outside code alone', () => {
+  assert.deepEqual(
+    packageCommandProblems([
+      // The devops rubric's rule text, skills/review-code/dimensions/devops.md:11.
+      { path: 'skills/review-code/dimensions/devops.md', text: 'installs nothing at a version chosen at run time: no `@latest`, no unversioned global install, no `npx`, no `curl | sh`.' },
+      // lib/openspec-cli.mjs:223, :17; lib/host/registry.mjs:227; lib/host/acp.mjs:123; lib/doctor.mjs:8, :865.
+      { path: 'lib/openspec-cli.mjs', text: "const real = l => !/complete log of this run|log file|^npm (ERR!|error)\\s*$/i.test(l)\n// a compiled build or `npx`.\n" },
+      { path: 'lib/host/registry.mjs', text: ' * not by an argument of `npx`.\n' },
+      { path: 'lib/host/acp.mjs', text: ' * A launcher whose own name is `npx` is not in this set: the command name does\n' },
+      { path: 'lib/doctor.mjs', text: "// installed, or because `Bash(npm test:*)` is missing from the allowlist and an\n  // Provisioning leads. It needs Node and npm; the npm install stays as the user's own route.\n" }
+    ]),
+    []
+  )
+})
+
+test('the command check passes an allow-listed dynamic pin and names one that is not', () => {
+  const ok = 'export const A = `npm install --location=global ${OPENSPEC_PIN.package}@${OPENSPEC_PIN.version}`\nexport const B = `npm install --location=global ${CLI_PACKAGE}@${version}`\n'
+  assert.deepEqual(packageCommandProblems([{ path: 'lib/ok.mjs', text: ok }]), [])
+  const other = packageCommandProblems([{ path: 'lib/no.mjs', text: 'export const C = `npm install --location=global ${NAME}@${v}`\n' }])
+  assert.equal(other.length, 1)
+  assert.match(other[0], /`\$\{NAME\}@\$\{v\}` is not pinned/)
+  assert.deepEqual([...ALLOWED_DYNAMIC_PINS], ['${OPENSPEC_PIN.package}@${OPENSPEC_PIN.version}', '${CLI_PACKAGE}@${version}'])
+})
+
+test('the command check names a package source wherever it is spelled', () => {
+  const sources = [
+    'npm config set registry https://x',
+    'see .npmrc for it',
+    'plain prose with --registry=https://x in it',
+    'export npm_config_prefix=/x',
+    'registry=https://x',
+    'a publishConfig block',
+    'pip install --index-url https://x y==1.0.0',
+    'set a --proxy',
+    'bunfig.toml, uv.toml, pip.conf and .yarnrc'
+  ]
+  for (const text of sources) {
+    assert.ok(packageCommandProblems([{ path: 'README.md', text }]).some(p => p.endsWith('is a package source')), `not named: ${text}`)
+  }
+  // package.json's `publishConfig` is a source only where it carries a registry.
+  assert.deepEqual(packageCommandProblems([{ path: 'package.json', text: '{ "publishConfig": { "access": "public" } }' }]), [])
+  assert.deepEqual(packageCommandProblems([{ path: 'package.json', text: '{ "publishConfig": { "registry": "https://x" } }' }]), [
+    'package.json:1: publishConfig.registry is a package source'
+  ])
+  assert.deepEqual(packageCommandProblems([{ path: 'lib/openspec-pin.mjs', text: '"resolved": "https://registry.npmjs.org/x/-/x-1.0.0.tgz"' }]), [])
+  assert.equal(packageCommandProblems([{ path: 'lib/other.mjs', text: '"resolved": "https://registry.npmjs.org/x/-/x-1.0.0.tgz"' }]).length, 1)
+})
+
+// The install lines the README and the first-hour guide quote must equal what the
+// CLI prints, and the README's CLI install line must name this package's version
+// (design D8, D12). A bump or an OpenSpec pin regeneration that forgets one of
+// them is named here instead of shipping a stale command.
+
+/** Every fenced line and backtick span in a Markdown text that names the OpenSpec package. */
+function openspecInstallQuotes(text) {
+  return markdownRegions(text)
+    .map(r => r.text.trim())
+    .filter(t => t.includes('@fission-ai/openspec'))
+}
+
+test('the OpenSpec install line in the README and the first-hour guide equals the constant the CLI prints', () => {
+  for (const file of ['README.md', 'docs/01-first-hour.md']) {
+    const quotes = openspecInstallQuotes(readFileSync(join(ROOT, file), 'utf8'))
+    assert.ok(quotes.length >= 1, `${file} quotes no OpenSpec install line`)
+    for (const quote of quotes) assert.equal(quote, OPENSPEC_INSTALL, `${file} quotes an OpenSpec install line that is not OPENSPEC_INSTALL`)
+  }
+})
+
+test('the README\'s CLI install line is the long form with this package\'s name and version', () => {
+  const line = `npm install --location=global ${pkg.name}@${pkg.version}`
+  const spans = markdownRegions(readFileSync(join(ROOT, 'README.md'), 'utf8')).map(r => r.text.trim())
+  assert.ok(spans.includes(line), `README.md has no backtick span or fenced line \`${line}\`: a version bump also edits it`)
+})
+
+test('the install-line pin names a stale quote and passes an equal one', () => {
+  assert.deepEqual(openspecInstallQuotes('```bash\nnpm install -g @fission-ai/openspec@latest\n```\nand `npm install --location=global @fission-ai/openspec@1.15.0`'), [
+    'npm install -g @fission-ai/openspec@latest',
+    'npm install --location=global @fission-ai/openspec@1.15.0'
+  ])
+  assert.deepEqual(openspecInstallQuotes('no package named here, only `interlock openspec provision`'), [])
+})
+
+// ---------------------------------------------------------------------------
+// The plugin directory's six local-code policy codes (design D10, D14). They
+// refuse a bundle that carries hooks, a hooks module, workflow scripts, tool
+// grants beyond reading, or files outside text and image types, and only a
+// Verified organization clears them. This is a detector over the file set that
+// ships, held against a declared inventory: it asserts today's state and names
+// drift with its code and path, so a later prose-only edition changes numbers,
+// not code.
+// ---------------------------------------------------------------------------
+
+const POLICY_TEXT = /\.(?:md|txt|json|ya?ml)$/i
+const POLICY_IMAGE = /\.(?:png|jpe?g|gif|webp|ico)$/i
+/** Extension-less files the policy reads as plain text. */
+const POLICY_PLAIN_NAMES = Object.freeze(['LICENSE', 'LICENCE', 'README', '.gitignore'])
+/** Package-manager configuration files, a file type of their own in the policy. */
+const POLICY_MANAGER_CONFIGS = Object.freeze([
+  'pnpm-workspace.yaml',
+  '.pnpmfile.cjs',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  'bunfig.toml',
+  'uv.toml',
+  'pip.conf',
+  'pip.ini'
+])
+const PLAIN_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'LS'])
+
+/**
+ * What the shipped bundle holds, per policy code, as of this version. Frozen: a
+ * count that moves, a place or a grant path that appears or empties is named by
+ * `directoryPolicyProblems`, and updating it is the owner's reading of the change.
+ */
+const DIRECTORY_INVENTORY = Object.freeze({
+  // LOCAL_CODE_HOOK_COMMAND, LOCAL_CODE_MOD, LOCAL_CODE_NOT_READ, LOCAL_CODE_WORKFLOW.
+  counts: Object.freeze({ hooks: 13, hooksModules: 1, hooksFilesNamingModule: 1, workflowScripts: 1, workflowsKey: 1 }),
+  // LOCAL_CODE_FILE_TYPE: where files outside the allowed types ship. `LICENSE` is plain text and is no place.
+  fileTypePlaces: Object.freeze(['cli/', 'hooks/', 'lib/', 'workflows/', 'skills/spec/scripts/', 'types/']),
+  // LOCAL_CODE_TOOL_GRANT: every skill and agent that grants beyond Read, Grep, Glob and LS. Only skills/ship/SKILL.md does not.
+  toolGrantPaths: Object.freeze([
+    'agents/ping.md',
+    'agents/settle-fixer.md',
+    'agents/worker.md',
+    'skills/bootstrap/SKILL.md',
+    'skills/commit/SKILL.md',
+    'skills/dispatch/SKILL.md',
+    'skills/docs-digest/SKILL.md',
+    'skills/evals/SKILL.md',
+    'skills/explain-code/SKILL.md',
+    'skills/explore/SKILL.md',
+    'skills/fix-tests/SKILL.md',
+    'skills/graph/SKILL.md',
+    'skills/manual-test-plan/SKILL.md',
+    'skills/report/SKILL.md',
+    'skills/review-artifacts/SKILL.md',
+    'skills/review-code/SKILL.md',
+    'skills/settle/SKILL.md',
+    'skills/spec/SKILL.md'
+  ])
+})
+
+/** The `allowed-tools`, `allowedTools` or `tools` entries of a file's frontmatter, split on spaces and commas outside parentheses. */
+function frontmatterGrants(text) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
+  if (!m) return []
+  const lines = m[1].split(/\r?\n/)
+  const grants = []
+  for (let i = 0; i < lines.length; i++) {
+    const key = /^(?:allowed-tools|allowedTools|tools):\s*(.*)$/.exec(lines[i])
+    if (!key) continue
+    let value = key[1]
+    while (i + 1 < lines.length && /^\s+(?:-\s*)?\S/.test(lines[i + 1])) value += ` ${lines[++i].replace(/^\s*-\s*/, '')}`
+    value = value.replace(/^\[|\]$/g, '')
+    let depth = 0
+    let token = ''
+    for (const ch of value) {
+      if (ch === '(') depth++
+      if (ch === ')') depth--
+      if (depth === 0 && /[\s,]/.test(ch)) {
+        if (token) grants.push(token)
+        token = ''
+      } else {
+        token += ch
+      }
+    }
+    if (token) grants.push(token)
+  }
+  return grants.map(g => g.replace(/^["']|["']$/g, ''))
+}
+
+/** Whether a tool grant reaches beyond plain Read, Grep, Glob and LS. */
+function grantsBeyondPlain(grant) {
+  const m = /^(Read|Grep|Glob|LS)(?:\(([\s\S]*)\))?$/.exec(grant)
+  if (!m) return true
+  const path = m[2]
+  return path !== undefined && (/\$\{/.test(path) || /^(?:\/\/|\\\\)/.test(path) || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(path))
+}
+
+/** The hook entries a manifest or a hooks file declares, of every type. */
+function hookEntries(hooks) {
+  if (!hooks || typeof hooks !== 'object') return []
+  return Object.values(hooks).flatMap(groups =>
+    (Array.isArray(groups) ? groups : []).flatMap(group => (Array.isArray(group?.hooks) ? group.hooks : group && group.type ? [group] : []))
+  )
+}
+
+/** Whether `data` is a file the policy refuses by type, and why; `null` when it allows it. */
+function fileTypeReason(path, data) {
+  const base = path.split('/').pop()
+  if (POLICY_MANAGER_CONFIGS.includes(base)) return 'a package-manager configuration file'
+  if (POLICY_IMAGE.test(base)) return null
+  if (data.includes(0)) return 'a file holding a NUL byte'
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(data)
+  } catch {
+    return 'a file that is not UTF-8'
+  }
+  if (data.subarray(0, 2).toString('latin1') === '#!') return 'a file starting with #!'
+  if (!POLICY_TEXT.test(base) && !POLICY_PLAIN_NAMES.includes(base)) return 'a file outside the allowed types'
+  return null
+}
+
+/**
+ * The directory's six `LOCAL_CODE_*` refusals over `files` (`{ path, data }`)
+ * and the manifests (`{ plugin, hooksFiles: [{ path, json }] }`), held against
+ * `inventory`: every undeclared file or grant by code and path, every declared
+ * place or grant path that holds nothing as stale, every count that differs
+ * with expected and actual (spec distribution/npm-package "The bundle's
+ * local-code inventory SHALL be declared…").
+ */
+function directoryPolicyProblems(files, manifests, inventory) {
+  const problems = []
+  const hooksFiles = manifests.hooksFiles || []
+  const actual = {
+    hooks: hookEntries(manifests.plugin?.hooks).length + hooksFiles.reduce((n, f) => n + hookEntries(f.json?.hooks).length, 0),
+    hooksModules:
+      (Array.isArray(manifests.plugin?.modules) ? manifests.plugin.modules.length : 0) +
+      hooksFiles.reduce((n, f) => n + (Array.isArray(f.json?.modules) ? f.json.modules.length : 0), 0),
+    hooksFilesNamingModule: hooksFiles.filter(f => Array.isArray(f.json?.modules) && f.json.modules.length > 0).length,
+    workflowScripts: files.filter(f => /^workflows\/[^/]+\.js$/.test(f.path)).length,
+    workflowsKey: manifests.plugin && 'workflows' in manifests.plugin ? 1 : 0
+  }
+  const codes = {
+    hooks: 'LOCAL_CODE_HOOK_COMMAND',
+    hooksModules: 'LOCAL_CODE_MOD',
+    hooksFilesNamingModule: 'LOCAL_CODE_NOT_READ',
+    workflowScripts: 'LOCAL_CODE_WORKFLOW',
+    workflowsKey: 'LOCAL_CODE_WORKFLOW'
+  }
+  for (const [name, code] of Object.entries(codes)) {
+    if (actual[name] !== inventory.counts[name]) problems.push(`${code}: ${name} expected ${inventory.counts[name]}, actual ${actual[name]}`)
+  }
+
+  const held = new Set()
+  for (const { path, data } of files) {
+    const reason = fileTypeReason(path, data)
+    if (!reason) continue
+    const place = inventory.fileTypePlaces.find(p => path.startsWith(p))
+    if (place) held.add(place)
+    else problems.push(`LOCAL_CODE_FILE_TYPE: ${path} is ${reason}, in a place the inventory does not declare`)
+  }
+  for (const place of inventory.fileTypePlaces) {
+    if (!held.has(place)) problems.push(`LOCAL_CODE_FILE_TYPE: ${place} is declared but nothing outside the allowed types ships there (a stale declaration)`)
+  }
+
+  const granting = new Set()
+  for (const { path, data } of files) {
+    if (!/^skills\/[^/]+\/SKILL\.md$|^agents\/[^/]+\.md$|^commands\/[^/]+\.md$/.test(path)) continue
+    const beyond = frontmatterGrants(data.toString('utf8')).filter(grantsBeyondPlain)
+    if (beyond.length === 0) continue
+    granting.add(path)
+    if (!inventory.toolGrantPaths.includes(path)) {
+      problems.push(`LOCAL_CODE_TOOL_GRANT: ${path} grants ${beyond.join(' ')}, beyond Read, Grep, Glob and LS, and the inventory does not declare it`)
+    }
+  }
+  for (const path of inventory.toolGrantPaths) {
+    if (!granting.has(path)) problems.push(`LOCAL_CODE_TOOL_GRANT: ${path} is declared but grants nothing beyond Read, Grep, Glob and LS (a stale declaration)`)
+  }
+  return problems
+}
+
+/** The shipped file set with each file's bytes, and the manifests the policy reads. */
+function shippedBundle() {
+  const files = shippedFiles(ROOT, pkg.files).map(e => ({ path: e.path, data: readFileSync(join(ROOT, e.path)) }))
+  const hooksFiles = files.filter(f => /(?:^|\/)hooks\.json$/.test(f.path)).map(f => ({ path: f.path, json: JSON.parse(f.data.toString('utf8')) }))
+  return { files, manifests: { plugin: readJson(PLUGIN_PATH), hooksFiles } }
+}
+
+test('the bundle\'s local code is the declared inventory: counts, places and grant paths', () => {
+  const { files, manifests } = shippedBundle()
+  const problems = directoryPolicyProblems(files, manifests, DIRECTORY_INVENTORY)
+  assert.deepEqual(problems, [], `the shipped bundle differs from DIRECTORY_INVENTORY:\n  ${problems.join('\n  ')}`)
+})
+
+const buf = text => Buffer.from(text, 'utf8')
+const EMPTY_INVENTORY = Object.freeze({
+  counts: Object.freeze({ hooks: 0, hooksModules: 0, hooksFilesNamingModule: 0, workflowScripts: 0, workflowsKey: 0 }),
+  fileTypePlaces: Object.freeze([]),
+  toolGrantPaths: Object.freeze([])
+})
+const PROSE_ONLY = Object.freeze([
+  { path: 'README.md', data: buf('# x\n') },
+  { path: 'LICENSE', data: buf('MIT License\n') },
+  { path: '.gitignore', data: buf('node_modules\n') },
+  { path: 'assets/icon.png', data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0]) },
+  { path: 'skills/a/SKILL.md', data: buf('---\nname: a\nallowed-tools: Read Grep Glob LS\n---\nbody\n') },
+  { path: 'agents/b.md', data: buf('---\nname: b\ntools: Read, Grep, Glob, LS\n---\n') },
+  { path: 'package.json', data: buf('{}\n') }
+])
+const PROSE_MANIFESTS = Object.freeze({ plugin: { name: 'x' }, hooksFiles: [] })
+
+test('the directory detector passes a bundle with no local code against an empty inventory', () => {
+  assert.deepEqual(directoryPolicyProblems(PROSE_ONLY, PROSE_MANIFESTS, EMPTY_INVENTORY), [])
+})
+
+test('the directory detector names a new command hook, a hooks module, a workflow and a non-command hook by code', () => {
+  const plugin = { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'x' }, { type: 'http', url: 'https://x' }] }] }, workflows: './workflows' }
+  const hooksFiles = [{ path: 'hooks/hooks.json', json: { hooks: {}, modules: ['./mod.mjs'] } }]
+  const files = [...PROSE_ONLY, { path: 'workflows/ship.js', data: buf('export default 1\n') }]
+  const problems = directoryPolicyProblems(files, { plugin, hooksFiles }, EMPTY_INVENTORY)
+  for (const wanted of [
+    'LOCAL_CODE_HOOK_COMMAND: hooks expected 0, actual 2',
+    'LOCAL_CODE_MOD: hooksModules expected 0, actual 1',
+    'LOCAL_CODE_NOT_READ: hooksFilesNamingModule expected 0, actual 1',
+    'LOCAL_CODE_WORKFLOW: workflowScripts expected 0, actual 1',
+    'LOCAL_CODE_WORKFLOW: workflowsKey expected 0, actual 1'
+  ]) {
+    assert.ok(problems.includes(wanted), `${wanted} is not among:\n${problems.join('\n')}`)
+  }
+  assert.ok(problems.some(p => p.startsWith('LOCAL_CODE_FILE_TYPE: workflows/ship.js ')), problems.join('\n'))
+})
+
+test('the directory detector names a tool grant beyond the four plain tools, with the path that makes it', () => {
+  const skill = grant => ({ path: 'skills/foo/SKILL.md', data: buf(`---\nname: foo\nallowed-tools: ${grant}\n---\n`) })
+  const beyond = ['WebFetch', 'Read Bash(git *)', 'Read(//etc/**)', 'Read(\\\\host\\share)', 'Read(${HOME}/x)', 'Read(https://example.com/x)', 'Write']
+  for (const grant of beyond) {
+    const problems = directoryPolicyProblems([skill(grant)], PROSE_MANIFESTS, EMPTY_INVENTORY)
+    assert.ok(problems.some(p => p.startsWith('LOCAL_CODE_TOOL_GRANT: skills/foo/SKILL.md grants ')), `${grant}: ${problems.join(' | ')}`)
+  }
+  for (const grant of ['Read Grep Glob LS', 'Read(./docs/**) Grep', 'Read, Grep, Glob']) {
+    assert.deepEqual(directoryPolicyProblems([skill(grant)], PROSE_MANIFESTS, EMPTY_INVENTORY), [], grant)
+  }
+  // A YAML list and an agent's `tools` line count too.
+  const list = { path: 'agents/x.md', data: buf('---\nname: x\ntools:\n  - Read\n  - Bash\n---\n') }
+  assert.equal(directoryPolicyProblems([list], PROSE_MANIFESTS, EMPTY_INVENTORY).length, 1)
+  // Declared, it passes; declared and not granting, it is stale.
+  const declared = { ...EMPTY_INVENTORY, toolGrantPaths: ['skills/foo/SKILL.md'] }
+  assert.deepEqual(directoryPolicyProblems([skill('WebFetch')], PROSE_MANIFESTS, declared), [])
+  assert.deepEqual(directoryPolicyProblems([skill('Read')], PROSE_MANIFESTS, declared), [
+    'LOCAL_CODE_TOOL_GRANT: skills/foo/SKILL.md is declared but grants nothing beyond Read, Grep, Glob and LS (a stale declaration)'
+  ])
+})
+
+test('the directory detector names a file outside the allowed types in an undeclared place, and a declared place that is empty', () => {
+  const script = { path: 'skills/foo/run.mjs', data: buf('export {}\n') }
+  const problems = directoryPolicyProblems([...PROSE_ONLY, script], PROSE_MANIFESTS, EMPTY_INVENTORY)
+  assert.equal(problems.length, 1, problems.join('\n'))
+  assert.match(problems[0], /^LOCAL_CODE_FILE_TYPE: skills\/foo\/run\.mjs /)
+  const stale = directoryPolicyProblems(PROSE_ONLY, PROSE_MANIFESTS, { ...EMPTY_INVENTORY, fileTypePlaces: ['types/'] })
+  assert.deepEqual(stale, ['LOCAL_CODE_FILE_TYPE: types/ is declared but nothing outside the allowed types ships there (a stale declaration)'])
+})
+
+test('the directory detector counts a #! text in its declared place, and allows a plain-text license and a new module under a declared place', () => {
+  const inventory = { ...EMPTY_INVENTORY, fileTypePlaces: ['cli/', 'lib/'] }
+  const files = [
+    ...PROSE_ONLY,
+    { path: 'cli/interlock', data: buf('#!/usr/bin/env node\nconsole.log(1)\n') },
+    { path: 'lib/a.mjs', data: buf('export {}\n') },
+    { path: 'lib/new-module.mjs', data: buf('export {}\n') }
+  ]
+  assert.deepEqual(directoryPolicyProblems(files, PROSE_MANIFESTS, inventory), [])
+})
+
+test('the directory detector names a package-manager configuration file, a #! in a text type, a NUL byte and non-UTF-8 text', () => {
+  const named = file => directoryPolicyProblems([...PROSE_ONLY, file], PROSE_MANIFESTS, EMPTY_INVENTORY)
+  const cases = [
+    { path: 'pnpm-workspace.yaml', data: buf('packages: []\n') },
+    { path: 'notes.md', data: buf('#!/bin/sh\n') },
+    { path: 'data.json', data: Buffer.from([0x7b, 0x00, 0x7d]) },
+    { path: 'notes.txt', data: Buffer.from([0xff, 0xfe, 0x41]) },
+    { path: 'run.sh', data: buf('echo\n') },
+    { path: 'LICENSE.exe', data: buf('MZ\n') }
+  ]
+  for (const file of cases) {
+    const problems = named(file)
+    assert.equal(problems.length, 1, `${file.path}: ${problems.join(' | ')}`)
+    assert.ok(problems[0].startsWith(`LOCAL_CODE_FILE_TYPE: ${file.path} `), problems[0])
+  }
+  // A plain-text license with no #! and an image with any bytes are allowed.
+  assert.deepEqual(named({ path: 'docs/pic.webp', data: Buffer.from([0xff, 0, 1]) }), [])
+})
+
+test('the directory detector names a count that differs, with the expected and the actual', () => {
+  const problems = directoryPolicyProblems(PROSE_ONLY, PROSE_MANIFESTS, { ...EMPTY_INVENTORY, counts: { ...EMPTY_INVENTORY.counts, hooks: 3 } })
+  assert.deepEqual(problems, ['LOCAL_CODE_HOOK_COMMAND: hooks expected 3, actual 0'])
+})
 
 /**
  * Where each `userConfig` option is referenced in the manifest, and the shipped

@@ -7,6 +7,16 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **The hooks module's `tell` calls the engine's send inline**, where a closure carried it before; the directory's scan read the closure as a send. A package test now names any closure that holds a `$` token outside a frozen list.
+- **The install commands the doctor and `interlock openspec provision` print are long-form and pinned**, `npm install --location=global @renzrollon/interlock@<version>`, because the plugin directory refuses `-g` and unpinned packages. This is user-visible. The docs spell the same form with `@<version>`, the plugin's version.
+- **The events floor is declared.** `MOD_EVENT_FLOORS` names `prompt.autocomplete` as accepted from 2.1.292, a dated fixture pins it, and `docs/13-the-guards.md` says so.
+
+### Added
+
+- **Two package pins:** no shipped text spells an unpinned or short-form package command, and README's CLI install line names the current version. A version bump therefore also edits `README.md`'s CLI install line. A frozen `DIRECTORY_INVENTORY` holds the shipped local-code counts the six policy refusals read.
+
 ## [1.15.1] - 2026-11-07
 
 ### Fixed

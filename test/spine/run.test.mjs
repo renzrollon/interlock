@@ -9361,7 +9361,8 @@ test('--plugin-root naming a different version raises CLI VERSION SKEW with both
     assert.equal(
       banner,
       `CLI VERSION SKEW: this run's interlock is ${PKG_VERSION} (${realpathSync(BIN)}), the plugin is ` +
-        `0.0.1 (${manifest.plugin.root}) — install the matching CLI (npm i -g @renzrollon/interlock@0.0.1) ` +
+        // Pins distribution/npm-package: every package-manager command a shipped text spells is the long form (`--location=global`), not `-g`.
+        `0.0.1 (${manifest.plugin.root}) — install the matching CLI (npm install --location=global @renzrollon/interlock@0.0.1) ` +
         'or expect behaviour the plugin does not describe',
       'the skew banner is pinned in full, not only by its parts'
     )

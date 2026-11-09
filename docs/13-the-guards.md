@@ -57,6 +57,8 @@ Apart from the launch guard's one refusal, it returns no deny, no substitute res
 
 Where the engine reports a problem: a hook that throws or overruns its budget is **skipped** and the chain runs as if it were not there. While a session hot-reloads a plugin folder (a `--plugin-dir` session), the transcript shows one dim line naming the plugin, the event and the reason; in any other session that line goes to the debug log (`claude --debug`). A pane tree a surface cannot draw is **refused**: the engine draws its own and logs `ui.render (Pane) refused: <reason>` the same way. Neither ever fails the run: the meter is a view of records the CLI already keeps, and the close summary and the receipt are the record.
 
+The module hooks `prompt.autocomplete`, which loads from Claude Code 2.1.292; that is the version to give the plugin directory's maintainers, whose event list predates it.
+
 ## The launch ledger
 
 The launch guard cannot read the stage marker: the mistake it bounds happens *after* `run close` has cleared it. So it keeps its own record, one small file per session at `.claude/ship/launch-ledger/<session_id>.json`. The file holds the ship launches the runtime accepted (time, `taskId`, `runId`, workflow name, persisted script path) and the time of the last human prompt. `lib/launch-ledger.mjs` owns the file. The rule (what a ship launch is, what a human prompt is, the decision and its words) is `lib/launch-rule.mjs`, which imports nothing from Node; the ledger module re-exports it unchanged and the in-process form imports it directly, so one function decides in both forms. The hook is plumbing over them, the way the stage guards are plumbing over `lib/ship-stage.mjs`.

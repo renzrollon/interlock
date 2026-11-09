@@ -394,7 +394,7 @@ jobs:
         with:
           fetch-depth: 0
       - run: npm ci && npm run coverage
-      - run: npx -p @renzrollon/interlock interlock verify baseline --report coverage/lcov.info
+      - run: npx --package=@renzrollon/interlock@<the plugin's version> interlock verify baseline --report coverage/lcov.info
       - uses: actions/cache/save@v4
         with:
           path: .claude/testing/coverage-baseline.json
