@@ -9,8 +9,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ### Changed
 
-- **The hooks module's `tell` calls the engine's send inline**, where a closure carried it before; the directory's scan read the closure as a send. A package test now names any closure that holds a `$` token outside a frozen list.
-- **The install commands the doctor and `interlock openspec provision` print are long-form and pinned**, `npm install --location=global @renzrollon/interlock@<version>`, because the plugin directory refuses `-g` and unpinned packages. This is user-visible. The docs spell the same form with `@<version>`, the plugin's version.
+- **The hooks module's `tell` calls `$.ui.notify` itself**, as an async function, where a stored `send` closure carried the call before; the directory's scan reports `$` passed into a helper it cannot read. `test/spine/mod-pins.test.mjs` now names any closure that holds a `$` token outside a frozen list.
+- **The install commands Interlock prints are long-form and pinned**, because the plugin directory refuses `-g` and unpinned packages. The doctor's `cli-version` row and the run-start skew banner print `npm install --location=global @renzrollon/interlock@<version>`; the doctor's OpenSpec rows and `interlock openspec provision`'s fallback print `npm install --location=global @fission-ai/openspec@<pin>`. This is user-visible. The docs spell the same form with `@<version>`, the plugin's version.
 - **The events floor is declared.** `MOD_EVENT_FLOORS` names `prompt.autocomplete` as accepted from 2.1.292, a dated fixture pins it, and `docs/13-the-guards.md` says so.
 
 ### Added
