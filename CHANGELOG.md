@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-11-09
+
 ### Changed
 
 - **The hooks module's `tell` calls `$.ui.notify` itself**, as an async function, where a stored `send` closure carried the call before; the directory's scan reports `$` passed into a helper it cannot read. `test/spine/mod-pins.test.mjs` now names any closure that holds a `$` token outside a frozen list.
