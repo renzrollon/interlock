@@ -237,7 +237,7 @@ When provisioning cannot finish it SHALL exit non-zero and print one line naming
 
 - **GIVEN** a process on Node `v18.20.8` and a pin whose floor is `20.19.0`
 - **WHEN** `interlock openspec provision` runs
-- **THEN** it exits non-zero naming `18.20.8`, `20.19.0` and `npm install -g @fission-ai/openspec@latest`
+- **THEN** it exits non-zero naming `18.20.8`, `20.19.0` and the install route `npm install --location=global @fission-ai/openspec@<pin>`, where `<pin>` is the pinned version and never `latest`
 - **AND** it does not run npm
 
 #### Scenario: Failure — no npm makes no request
@@ -305,7 +305,7 @@ Provisioning SHALL write, beside the installed tree, an executable named `opensp
 - **GIVEN** an initialised OpenSpec project, no `openspec` on PATH and nothing provisioned
 - **WHEN** `interlock doctor --json` runs
 - **THEN** the `openspec` row is `warn`
-- **AND** its fix begins with `interlock openspec provision`, names `20.19.0` and npm, and contains `npm install -g @fission-ai/openspec@latest`
+- **AND** its fix begins with `interlock openspec provision`, names `20.19.0` and npm, and contains `npm install --location=global @fission-ai/openspec@<pin>`, where `<pin>` is the pinned version
 
 #### Scenario: Failure — nothing resolved and no project fails, then names init
 
