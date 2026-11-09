@@ -93,7 +93,11 @@ const NODE_OK = 'v22.11.0'
 
 test('the exported spellings and the timeout are what the doctor and the skills quote', () => {
   assert.equal(OPENSPEC_PROVISION, 'interlock openspec provision')
-  assert.equal(OPENSPEC_INSTALL, 'npm install -g @fission-ai/openspec@latest')
+  // openspec-cli: "Provisioning SHALL name every reason it could not finish" and
+  // "The doctor SHALL name the OpenSpec it resolved" both name the install route
+  // as the long form pinned to the pinned version, never `latest`.
+  assert.equal(OPENSPEC_INSTALL, `npm install --location=global @fission-ai/openspec@${OPENSPEC_PIN.version}`)
+  assert.ok(!OPENSPEC_INSTALL.includes('@latest'), OPENSPEC_INSTALL)
   assert.equal(LAUNCHER_MARKER, 'interlock:openspec-launcher')
   assert.ok(Number.isInteger(PROVISION_TIMEOUT_MS) && PROVISION_TIMEOUT_MS >= 30_000, `got ${PROVISION_TIMEOUT_MS}`)
 })
@@ -385,7 +389,11 @@ test('provision: a Node below the floor is refused, naming both versions and the
     const f = fakeSpawn()
     const r = await run(s, f.spawn, 'v18.20.8')
     assert.equal(r.ok, false)
-    for (const token of ['18.20.8', OPENSPEC_PIN.node, OPENSPEC_INSTALL]) assert.ok(r.message.includes(token), `${token} in ${r.message}`)
+    // openspec-cli: "Provisioning SHALL name every reason it could not finish" —
+    // the install route is pinned to the pinned version and never `latest`.
+    const route = `npm install --location=global @fission-ai/openspec@${OPENSPEC_PIN.version}`
+    for (const token of ['18.20.8', OPENSPEC_PIN.node, OPENSPEC_INSTALL, route]) assert.ok(r.message.includes(token), `${token} in ${r.message}`)
+    assert.ok(!r.message.includes('@latest'), `no floating tag in ${r.message}`)
     assert.deepEqual(f.calls, [])
     assert.deepEqual(leftovers(s), [])
   } finally {

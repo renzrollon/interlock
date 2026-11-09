@@ -30,6 +30,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { specifiers, walkModule } from '../helpers/module-walk.mjs'
 import { GUARD_NAMES } from '../../lib/meter-refusals.mjs'
 import { SPEC_PANE } from '../../lib/spec-meter.mjs'
+import * as ClaudeEnv from '../../lib/host/claude-env.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOOKS_JSON = join(ROOT, 'hooks', 'hooks.json')
@@ -228,6 +229,571 @@ test('the renamed-parameter pin names a read through the handle and a forward fe
   const pane = source.replace('await openPane(paneHost)', 'await openPane(paneHost[0])')
   assert.notEqual(pane, source, 'the pane command no longer passes paneHost on; update this probe')
   assert.deepEqual(renamedHookReach(pane), ['command.run: paneHost is read through (paneHost[)'])
+})
+
+// ---------------------------------------------------------------------------
+// The capability object's shapes, and the events the module hooks, pinned for
+// the plugin directory's validation (clear-the-directory-validation-findings
+// design D3, D4, D5, D17).
+//
+// This pins a SPELLING rule, not the directory's reader: that reader is not
+// inspectable, and the finding's own text (`MOD_CAPABILITY_USE_NOT_PLAIN`) is
+// the only rule we have. `$` as `$.noun.method(…)` with nothing around its
+// parts, or passed whole to a function declared at the top of the file, each
+// `on("event", hook)` on its own line. The portal's Validate stays the verdict.
+// ---------------------------------------------------------------------------
+
+/**
+ * Named closures that read `$` and that the directory has accepted in every
+ * scanned version since the one that introduced them (design D4). Frozen: an
+ * entry is stale, and fails, when no binding of that name exists or its body
+ * holds no `$`. The fallback if the portal flags one is to delete the entry and
+ * rewrite the closure, `flush` needing a state object for its five locals.
+ */
+export const ALLOWED_CLOSURES = Object.freeze([
+  Object.freeze({ name: 'hide', since: 'v1.3.0' }),
+  Object.freeze({ name: 'flush', since: 'v1.3.1' }),
+  Object.freeze({ name: 'guardLine', since: 'v1.4.0' })
+])
+
+/** The previous significant token after which a `/` opens a regex literal (design "Scanner shape"). */
+const REGEX_PRECEDERS = new Set(['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', 'return'])
+
+/**
+ * `source` with strings, template text, regex literals and comments blanked to
+ * spaces, offsets and newlines kept; the code inside `${…}` stays readable.
+ */
+export function maskSource(source) {
+  const n = source.length
+  const out = source.split('')
+  const blank = (from, to) => {
+    for (let i = from; i < Math.min(to, n); i++) if (out[i] !== '\n') out[i] = ' '
+  }
+  const startsLine = at => /^[ \t]*$/.test(source.slice(source.lastIndexOf('\n', at - 1) + 1, at))
+  const stack = []
+  let mode = 'code'
+  let last = ''
+  let i = 0
+  while (i < n) {
+    const c = source[i]
+    if (mode === 'tpl') {
+      if (c === '\\') {
+        blank(i, i + 2)
+        i += 2
+      } else if (c === '`') {
+        blank(i, i + 1)
+        i++
+        mode = 'code'
+        last = '"'
+      } else if (c === '$' && source[i + 1] === '{') {
+        blank(i, i + 2)
+        i += 2
+        stack.push('tpl')
+        mode = 'code'
+        last = '{'
+      } else {
+        blank(i, i + 1)
+        i++
+      }
+      continue
+    }
+    if (c === '/' && source[i + 1] === '/') {
+      const end = source.indexOf('\n', i)
+      blank(i, end === -1 ? n : end)
+      i = end === -1 ? n : end
+    } else if (c === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2)
+      blank(i, end === -1 ? n : end + 2)
+      i = end === -1 ? n : end + 2
+    } else if (c === "'" || c === '"') {
+      let j = i + 1
+      while (j < n && source[j] !== c && source[j] !== '\n') j += source[j] === '\\' ? 2 : 1
+      blank(i, j + 1)
+      i = j + 1
+      last = '"'
+    } else if (c === '`') {
+      blank(i, i + 1)
+      i++
+      mode = 'tpl'
+    } else if (c === '/') {
+      let end = -1
+      if (REGEX_PRECEDERS.has(last) || last === '' || startsLine(i)) {
+        let j = i + 1
+        let inClass = false
+        while (j < n && source[j] !== '\n') {
+          if (source[j] === '\\') j += 2
+          else if (source[j] === '[') (inClass = true), j++
+          else if (source[j] === ']') (inClass = false), j++
+          else if (source[j] === '/' && !inClass) break
+          else j++
+        }
+        if (source[j] === '/') {
+          end = j + 1
+          while (end < n && /[a-z]/.test(source[end])) end++
+        }
+      }
+      if (end === -1) {
+        last = '/'
+        i++
+      } else {
+        blank(i, end)
+        i = end
+        last = '"'
+      }
+    } else if (c === '{') {
+      stack.push('brace')
+      last = '{'
+      i++
+    } else if (c === '}') {
+      if (stack.pop() === 'tpl') {
+        blank(i, i + 1)
+        mode = 'tpl'
+      } else {
+        last = '}'
+      }
+      i++
+    } else if (/\s/.test(c)) {
+      i++
+    } else if (/[\w$]/.test(c)) {
+      let j = i
+      while (j < n && /[\w$]/.test(source[j])) j++
+      last = source.slice(i, j)
+      i = j
+    } else {
+      last = c
+      i++
+    }
+  }
+  return out.join('')
+}
+
+const IDENT = String.raw`[A-Za-z_$][\w$]*`
+
+/** The index of the bracket closing the one at `open`, or -1. */
+function closeOf(masked, open) {
+  let depth = 0
+  for (let k = open; k < masked.length; k++) {
+    if ('([{'.includes(masked[k])) depth++
+    else if (')]}'.includes(masked[k]) && --depth === 0) return k
+  }
+  return -1
+}
+
+/** The index of the unmatched opening bracket before `at`, or -1. */
+function openBefore(masked, at) {
+  let depth = 0
+  for (let k = at - 1; k >= 0; k--) {
+    if (')]}'.includes(masked[k])) depth++
+    else if ('([{'.includes(masked[k])) {
+      if (depth === 0) return k
+      depth--
+    }
+  }
+  return -1
+}
+
+/** The span of the body of a `function` or arrow that starts at `from` (just after `=`), or null. */
+function closureSpan(masked, from) {
+  const skip = k => {
+    while (k < masked.length && /\s/.test(masked[k])) k++
+    return k
+  }
+  let k = skip(from)
+  const async_ = new RegExp(String.raw`^async\s+(?=function\b|\(|${IDENT}\s*=>)`).exec(masked.slice(k))
+  if (async_) k = skip(k + async_[0].length)
+  if (/^function\b/.test(masked.slice(k))) {
+    k = skip(k + 8)
+    if (masked[k] === '*') k = skip(k + 1)
+    const name = new RegExp(`^${IDENT}`).exec(masked.slice(k))
+    if (name) k = skip(k + name[0].length)
+    if (masked[k] !== '(') return null
+    k = skip(closeOf(masked, k) + 1)
+    return masked[k] === '{' ? { start: k, end: closeOf(masked, k) } : null
+  }
+  if (masked[k] === '(') {
+    k = skip(closeOf(masked, k) + 1)
+  } else {
+    const name = new RegExp(`^${IDENT}`).exec(masked.slice(k))
+    if (!name) return null
+    k = skip(k + name[0].length)
+  }
+  if (masked.slice(k, k + 2) !== '=>') return null
+  k = skip(k + 2)
+  if (masked[k] === '{') return { start: k, end: closeOf(masked, k) }
+  let depth = 0
+  let end = k
+  for (; end < masked.length; end++) {
+    const ch = masked[end]
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) {
+      if (depth === 0) break
+      depth--
+    } else if (depth === 0 && (ch === ';' || ch === '\n')) break
+  }
+  return { start: k, end }
+}
+
+/**
+ * Every use of `$` in a hooks module that is not one of the plain shapes, and
+ * every spelling the directory's reader is said to refuse (design D4, D17; spec
+ * hooks/ship-meter "The hooks module SHALL use the capability object only in
+ * plain shapes…"). Allowed: a plain call `$.noun.method(` with nothing between
+ * its parts (parentheses around a WHOLE call, as in
+ * `(await $.session.version()).version`, wrap no part); `$` handed whole to a
+ * function declared at column zero; `$` declared as a parameter of such a
+ * function, or as the first parameter of the hook in an `on(` registration.
+ * Refused: every other `$`, any named closure binding that reads `$` and is not
+ * in `allowed`, a stale `allowed` entry, and an `on(` that is not the first code
+ * on its line. Each problem is one line naming the shape.
+ *
+ * @param {string} source
+ * @param {ReadonlyArray<{name: string, since: string}>} [allowed]
+ */
+export function plainCapabilityUse(source, allowed = ALLOWED_CLOSURES) {
+  const masked = maskSource(source)
+  const lineOf = at => masked.slice(0, at).split('\n').length
+  const textOf = at => source.split('\n')[lineOf(at) - 1].trim().slice(0, 100)
+  const problems = []
+
+  const decls = [...masked.matchAll(new RegExp(String.raw`^(?:export\s+)?(?:async\s+)?function\s*\*?\s*(${IDENT})\s*\(`, 'gm'))].map(m => ({
+    name: m[1],
+    at: m.index,
+    open: m.index + m[0].length - 1
+  }))
+  const topLevel = new Set(decls.map(d => d.name))
+  const declaredOpens = new Set(decls.map(d => d.open))
+  const within = at => decls.filter(d => d.at < at).at(-1)?.name || '(top level)'
+
+  for (const m of masked.matchAll(/(?<![\w$.])on\(/g)) {
+    if (masked.slice(masked.lastIndexOf('\n', m.index - 1) + 1, m.index).trim() !== '') {
+      problems.push(`line ${lineOf(m.index)}: on( is not the first code on its line (${textOf(m.index)})`)
+    }
+    let depth = 0
+    for (let k = m.index + 3; k < masked.length; k++) {
+      const ch = masked[k]
+      if (ch === '(' && depth === 0) {
+        declaredOpens.add(k)
+        break
+      }
+      if ('([{'.includes(ch)) depth++
+      else if (')]}'.includes(ch)) {
+        if (depth === 0) break
+        depth--
+      }
+    }
+  }
+
+  for (const m of masked.matchAll(/(?<![\w$])\$(?![\w$])/g)) {
+    const at = m.index
+    if (new RegExp(String.raw`^\.${IDENT}\.${IDENT}\(`).test(masked.slice(at + 1))) continue
+    const before = masked.slice(0, at).trimEnd().slice(-1)
+    const after = masked.slice(at + 1).trimStart()[0]
+    if ((before === '(' || before === ',') && (after === ',' || after === ')')) {
+      const open = openBefore(masked, at)
+      if (open !== -1 && declaredOpens.has(open) && masked[open] === '(') continue
+      const callee = new RegExp(String.raw`(?<![\w$])(${IDENT})\s*$`).exec(masked.slice(0, open))
+      // `x.draw($)` is a member call; `...draw($)` is a spread of a call and is not.
+      const member = /[\w$)\]]\s*\.\s*[\w$]+\s*$/.test(masked.slice(0, open))
+      if (open !== -1 && masked[open] === '(' && callee && !member && topLevel.has(callee[1])) continue
+    }
+    problems.push(`line ${lineOf(at)}: ${within(at)}: $ is neither a plain call, a whole argument to a top-level function nor a declared parameter (${textOf(at)})`)
+  }
+
+  const bound = []
+  for (const m of masked.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(${IDENT})\s*=\s*`, 'g'))) {
+    const span = closureSpan(masked, m.index + m[0].length)
+    if (!span) continue
+    const reads = /(?<![\w$])\$(?![\w$])/.test(masked.slice(span.start, span.end + 1))
+    bound.push({ name: m[1], at: m.index, reads })
+  }
+  const allowedNames = new Set(allowed.map(a => a.name))
+  for (const b of bound.filter(x => x.reads && !allowedNames.has(x.name))) {
+    problems.push(`line ${lineOf(b.at)}: ${within(b.at)}: ${b.name} is a stored closure that reads $`)
+  }
+  for (const a of allowed) {
+    if (!bound.some(b => b.name === a.name && b.reads)) {
+      problems.push(`allow-listed closure ${a.name} (since ${a.since}) is stale: no binding of that name reads $`)
+    }
+  }
+  return problems
+}
+
+const noAllowList = source => plainCapabilityUse(source, [])
+
+test('the hooks module uses $ only in plain shapes, and its allow-listed closures still read it', () => {
+  const problems = plainCapabilityUse(readFileSync(moduleEntry(), 'utf8'))
+  assert.deepEqual(problems, [], problems.join('\n'))
+})
+
+test('the $-shape scanner names a stored closure that reads $, and the function that holds it', () => {
+  const stored = [
+    'function tell($, fields) {',
+    '  const send = async () => {',
+    '    await $.ui.notify(text)',
+    '  }',
+    '  void send()',
+    '}',
+    ''
+  ].join('\n')
+  const problems = noAllowList(stored)
+  assert.equal(problems.length, 1, problems.join('\n'))
+  assert.match(problems[0], /tell: send is a stored closure that reads \$/)
+  // The same closure as a function expression, and with an expression body.
+  assert.equal(noAllowList('function a($) {\n  const f = function () { return $.ui.log(1) }\n}\n').length, 1)
+  assert.equal(noAllowList('function a($) {\n  let g = async x => $.ui.log(x)\n}\n').length, 1)
+})
+
+test('the $-shape scanner passes callbacks handed straight to a capability call', () => {
+  const source = [
+    'function tell($, fields) {}',
+    'function draftLine($, press) {}',
+    'function arm($, ms) {',
+    '  $.clock.every(ms, async () => {',
+    '    tell($, fields)',
+    '  })',
+    '  return { onPress: press => draftLine($, press) }',
+    '}',
+    ''
+  ].join('\n')
+  assert.deepEqual(noAllowList(source), [])
+})
+
+test('the $-shape scanner passes $ handed whole across several lines to a top-level function', () => {
+  const source = [
+    'function drawAll($, a, b) {}',
+    'function go($) {',
+    '  return drawAll(',
+    '    $,',
+    '    first,',
+    '    second',
+    '  )',
+    '}',
+    ''
+  ].join('\n')
+  assert.deepEqual(noAllowList(source), [])
+})
+
+test('the $-shape scanner passes a whole call in parentheses and every declared parameter', () => {
+  const source = [
+    'async function drawBand($, e, next) {',
+    '  return (await $.session.version()).version',
+    '}',
+    'export function register(on) {',
+    "  on('a', async ($, e, next) => next(e))",
+    "  on('b', ($, e, next) => next(e))",
+    "  on('c', async ($, e) => drawBand($, e))",
+    "  on('d', { tool: 'Bash' }, async function* ($, e, next) {",
+    '    yield* next(e)',
+    '  })',
+    "  on('e', { origin: { kind: 'x' } }, hostOnly => {})",
+    '}',
+    ''
+  ].join('\n')
+  assert.deepEqual(noAllowList(source), [])
+})
+
+test('the $-shape scanner reads code only: a template, a regex literal and a comment hold no use', () => {
+  const source = [
+    'function note($, parts, n) {',
+    '  const ids = `[${parts.ids}] costs $5 and $.fs.read`',
+    '  const nested = `a ${$.ui.log(`b ${n}`)} c`',
+    '  const ok = /^b\\d+$/.test(parts.name)',
+    "  const text = '$ and $.fs.read'",
+    '  // $.fs.read is only a comment',
+    '  /* and so is $?.ui.log(x) */',
+    '  return ids + nested + ok + text',
+    '}',
+    ''
+  ].join('\n')
+  assert.deepEqual(noAllowList(source), [])
+  // The code inside ${…} is code: a wrapped use there is named.
+  assert.equal(noAllowList('function a($) {\n  return `x ${$?.ui.log(1)} y`\n}\n').length, 1)
+})
+
+test('the $-shape scanner tells a division from a regex literal, with a $ use beside each', () => {
+  const source = [
+    'async function half($, total) {',
+    '  const half = total / 2',
+    '  const third = (await $.session.version()).n / 3 / 1',
+    '  const hit = /^b\\d+$/.test(total)',
+    '  const quoted = total.replace(/[/$]/g, "")',
+    '  return half / third + hit',
+    '}',
+    ''
+  ].join('\n')
+  assert.deepEqual(noAllowList(source), [])
+  // A division that is read as a regex would swallow the use after it: this one must not.
+  assert.equal(noAllowList('function a($, n) {\n  const x = n / 2 + (n / 4) + $?.ui.log(1)\n}\n').length, 1)
+})
+
+test('the $-shape scanner names every wrapped part and every foreign callee', () => {
+  const wrap = body => noAllowList(`function pass2($) {}\nfunction fn($) {}\nfunction run($, x) {\n  const local = n => n\n  ${body}\n}\n`)
+  for (const bad of [
+    '$?.ui.log(x)',
+    "$.ui['log'](x)",
+    '($.ui).log(x)',
+    '($).ui.log(x)',
+    '$.ui.log!(x)',
+    '$.ui.log (x)',
+    'local($)',
+    'fn(...$)',
+    'const api = $',
+    'pass2.go($)',
+    'const { ui } = $',
+    'void [$]',
+    'fn(1, ($))'
+  ]) {
+    assert.ok(wrap(bad).length >= 1, `the scanner let through: ${bad}`)
+  }
+  assert.deepEqual(wrap('$.ui.log(x)'), [])
+  assert.deepEqual(wrap('fn($)'), [])
+})
+
+test('the $-shape scanner requires each on( to be the first code on its line', () => {
+  const problems = noAllowList("export function register(on) {\n  let a = 1; on('x', async ($, e, next) => next(e))\n}\n")
+  assert.equal(problems.length, 1, problems.join('\n'))
+  assert.match(problems[0], /on\( is not the first code on its line/)
+  assert.deepEqual(noAllowList("export function register(on) {\n  on('x', async ($, e, next) => next(e))\n}\n"), [])
+  // An on( in a comment or a string is not a registration.
+  assert.deepEqual(noAllowList("export function register(on) {\n  // x; on('y')\n  const s = \"a; on('z')\"\n}\n"), [])
+})
+
+test('the $-shape allow-list passes a closure while it reads $ and fails once an entry is stale', () => {
+  const allowed = [{ name: 'hide', since: 'v1.3.0' }]
+  const reads = 'function band($) {\n  const hide = () => $.ui.invalidate()\n  hide()\n}\n'
+  assert.deepEqual(plainCapabilityUse(reads, allowed), [])
+  assert.equal(plainCapabilityUse(reads, []).length, 1, 'with the entry removed the closure is named')
+  const quiet = 'function band($) {\n  const hide = () => 1\n}\n'
+  assert.deepEqual(plainCapabilityUse(quiet, allowed), ['allow-listed closure hide (since v1.3.0) is stale: no binding of that name reads $'])
+  const gone = 'function band($) {\n  hide()\n}\n'
+  assert.deepEqual(plainCapabilityUse(gone, allowed), ['allow-listed closure hide (since v1.3.0) is stale: no binding of that name reads $'])
+  assert.deepEqual(
+    ALLOWED_CLOSURES.map(a => `${a.name} ${a.since}`),
+    ['hide v1.3.0', 'flush v1.3.1', 'guardLine v1.4.0']
+  )
+})
+
+test('the $-shape scanner, with the allow-list emptied, names the three older closures on the shipped module', () => {
+  // `send` (inside `tell`, until task 2.1 inlines it) is the main pin's to name; here it is set aside so the
+  // probe holds before and after that fix.
+  const problems = plainCapabilityUse(readFileSync(moduleEntry(), 'utf8'), [])
+  const named = problems.map(p => /: (\w+) is a stored closure that reads \$/.exec(p)?.[1]).filter(name => name !== 'send')
+  assert.deepEqual(named.sort(), ['flush', 'guardLine', 'hide'], problems.join('\n'))
+  assert.equal(problems.length, named.length + problems.filter(p => /: send is a stored closure/.test(p)).length, 'a problem other than a stored closure')
+})
+
+// ---------------------------------------------------------------------------
+// The events the module hooks (design D5): documented by the mods reference,
+// and, when the plugin directory has not accepted one, floored.
+// ---------------------------------------------------------------------------
+
+const EVENTS_FIXTURE = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'mod-events.json'), 'utf8'))
+const DOCS_GUARDS = join(ROOT, 'docs', '13-the-guards.md')
+
+/** Whether `list` holds `event`, `classic.<Event>` standing for every settings-hook event. */
+const listsEvent = (list, event) => list.includes(event) || (event.startsWith('classic.') && list.includes('classic.<Event>'))
+
+/**
+ * Every disagreement between the events a module hooks, the reference's list,
+ * the events the directory's last scan accepted, the engine floors and the
+ * docs. Each problem names the event.
+ */
+export function eventProblems({ hooked, reference, accepted, floors, loadMin, docs }) {
+  const problems = []
+  for (const event of hooked) {
+    if (!listsEvent(reference, event)) problems.push(`${event}: the mods reference does not document this event`)
+    if (!listsEvent(accepted, event) && !(event in floors)) {
+      problems.push(`${event}: the plugin directory has not accepted this event and MOD_EVENT_FLOORS records no floor for it`)
+    }
+  }
+  for (const [event, version] of Object.entries(floors)) {
+    if (!hooked.includes(event)) problems.push(`${event}: MOD_EVENT_FLOORS names an event the module does not hook (a stale entry)`)
+    const order = ClaudeEnv.compareVersions(version, loadMin)
+    if (order === null || order > 0) {
+      problems.push(`${event}: its floor ${version} is above the module load floor ${loadMin}, so the module would load where the hook is refused`)
+    }
+    if (!docs.split('\n').some(line => line.includes(event) && line.includes(version) && line.includes('plugin directory'))) {
+      problems.push(`${event}: no line of docs/13-the-guards.md names ${event}, ${version} and the plugin directory`)
+    }
+  }
+  return problems
+}
+
+/** The events a source registers with `on('…'`, as the hooked-events pin reads them. */
+const hookedEvents = source => [...new Set([...source.matchAll(/\bon\(\s*'([A-Za-z.]+)'/g)].map(m => m[1]))]
+
+test('every event the hooks module registers is documented, and one the directory has not accepted has a floor', () => {
+  const problems = eventProblems({
+    hooked: hookedEvents(readFileSync(moduleEntry(), 'utf8')),
+    reference: EVENTS_FIXTURE.reference.events,
+    accepted: EVENTS_FIXTURE.directoryAccepted.events,
+    floors: ClaudeEnv.MOD_EVENT_FLOORS ?? {},
+    loadMin: ClaudeEnv.MODS_LOAD_MIN_VERSION,
+    docs: readFileSync(DOCS_GUARDS, 'utf8')
+  })
+  assert.deepEqual(problems, [], problems.join('\n'))
+})
+
+test('the events fixture is dated, names its sources, and its accepted list is the reference minus what the scan refused', () => {
+  const { reference, directoryAccepted } = EVENTS_FIXTURE
+  assert.equal(reference.url, 'https://code.claude.com/docs/en/plugins/mods/reference')
+  assert.equal(reference.asOf, 'v2.1.290')
+  assert.equal(reference.read, '2026-11-09')
+  assert.equal(directoryAccepted.release, 'd63cef6')
+  assert.match(directoryAccepted.scan, /line 3065/)
+  assert.ok(reference.events.includes('classic.<Event>'), 'the reference lists the settings-hook family')
+  assert.equal(directoryAccepted.events.length, 10, 'the 1.15.1 scan accepted ten of the module\'s eleven hooked events')
+  assert.ok(!directoryAccepted.events.includes('prompt.autocomplete'), 'the directory has not accepted prompt.autocomplete')
+  assert.deepEqual(
+    directoryAccepted.events.filter(e => !reference.events.includes(e)),
+    [],
+    'an accepted event the reference does not document'
+  )
+})
+
+test('the events pin passes a documented, accepted event and a settings-hook event in the classic family', () => {
+  const base = {
+    reference: EVENTS_FIXTURE.reference.events,
+    accepted: EVENTS_FIXTURE.directoryAccepted.events,
+    floors: {},
+    loadMin: '2.1.292',
+    docs: ''
+  }
+  assert.deepEqual(eventProblems({ ...base, hooked: ['turn.complete'] }), [])
+  assert.deepEqual(eventProblems({ ...base, hooked: ['classic.SessionStart'] }), [])
+})
+
+test('the events pin passes prompt.autocomplete with its floor and its docs line, and names each gap', () => {
+  const base = {
+    hooked: ['prompt.autocomplete'],
+    reference: EVENTS_FIXTURE.reference.events,
+    accepted: EVENTS_FIXTURE.directoryAccepted.events,
+    floors: { 'prompt.autocomplete': '2.1.292' },
+    loadMin: '2.1.292',
+    docs: 'loads from Claude Code 2.1.292: prompt.autocomplete, the version to give the plugin directory'
+  }
+  assert.deepEqual(eventProblems(base), [])
+  // A documented event the directory has not accepted, with no floor.
+  const unfloored = eventProblems({ ...base, floors: {} })
+  assert.equal(unfloored.length, 1)
+  assert.match(unfloored[0], /^prompt\.autocomplete: .*no floor/)
+  // An event the reference does not document, even with a floor.
+  const sparkle = eventProblems({ ...base, hooked: ['prompt.sparkle'], floors: { 'prompt.sparkle': '2.1.292' }, docs: 'prompt.sparkle 2.1.292 plugin directory' })
+  assert.deepEqual(sparkle, ['prompt.sparkle: the mods reference does not document this event'])
+  // A floor for an event the module no longer hooks.
+  const stale = eventProblems({ ...base, hooked: [] })
+  assert.equal(stale.length, 1)
+  assert.match(stale[0], /^prompt\.autocomplete: .*stale entry/)
+  // A floor above the module load floor.
+  const high = eventProblems({ ...base, floors: { 'prompt.autocomplete': '2.1.300' }, docs: 'prompt.autocomplete 2.1.300 plugin directory' })
+  assert.equal(high.length, 1)
+  assert.match(high[0], /^prompt\.autocomplete: .*2\.1\.300 is above the module load floor 2\.1\.292/)
+  // A floored event the docs do not name, with its version, beside the plugin directory.
+  for (const docs of ['', 'prompt.autocomplete 2.1.292', 'prompt.autocomplete plugin directory', '2.1.292 plugin directory']) {
+    const unwritten = eventProblems({ ...base, docs })
+    assert.equal(unwritten.length, 1, docs)
+    assert.match(unwritten[0], /^prompt\.autocomplete: no line of docs\/13-the-guards\.md names/)
+  }
 })
 
 const SESSION_START = 'classic.SessionStart'

@@ -620,14 +620,15 @@ function toastSafe($, text, what) {
  * holds. A key already told is not told again, and the skip is named on the
  * debug log. The key is marked told before the engine is asked, so a second
  * crossing while the first is pending tells nothing. The engine's notification
- * is asked for once and never awaited by the caller: a tool result, a spec line
- * and an interval period each return whether or not the call ever settles.
+ * is asked for once, and the callers do not await this function: a tool result,
+ * a spec line and an interval period each return whether or not the call ever
+ * settles.
  * When it answers that none was sent, or the call rejects, the same words are
  * toasted. Only an interactive session is told anything, so below the mods
  * floor nothing is. The module's one notification call. Never throws, and the
- * call it starts never rejects.
+ * promise it returns never rejects.
  */
-function tell($, fields) {
+async function tell($, fields) {
   if (!session.interactive) return
   let said = null
   try {
@@ -650,26 +651,23 @@ function tell($, fields) {
     return
   }
   told.set(said.key, fields.kind)
-  // Its own rejection handling, inside: nothing that waits on the engine waits on this.
-  const send = async () => {
+  // Its own rejection handling, inside: the callers do not await it.
+  try {
+    let sent = false
     try {
-      let sent = false
-      try {
-        const answer = await $.ui.notify(said.text, { title: TELL_TITLE })
-        sent = Boolean(answer) && answer.isSent === true
-        if (!sent) {
-          const reason = answer && typeof answer.reason === 'string' ? answer.reason : 'no reason given'
-          $.ui.log(`interlock meter: no notification was sent (${reason}); toasted instead`, { to: 'debug' })
-        }
-      } catch (err) {
-        $.ui.log(`interlock meter: the notification call was refused (${messageOf(err)}); toasted instead`, { to: 'debug' })
+      const answer = await $.ui.notify(said.text, { title: TELL_TITLE })
+      sent = Boolean(answer) && answer.isSent === true
+      if (!sent) {
+        const reason = answer && typeof answer.reason === 'string' ? answer.reason : 'no reason given'
+        $.ui.log(`interlock meter: no notification was sent (${reason}); toasted instead`, { to: 'debug' })
       }
-      if (!sent) toastSafe($, said.text, 'a notification')
-    } catch {
-      // A log or toast refused after the call: the told key stands, and nothing is thrown at the caller.
+    } catch (err) {
+      $.ui.log(`interlock meter: the notification call was refused (${messageOf(err)}); toasted instead`, { to: 'debug' })
     }
+    if (!sent) toastSafe($, said.text, 'a notification')
+  } catch {
+    // A log or toast refused after the call: the told key stands, and nothing is thrown at the caller.
   }
-  void send()
 }
 
 /**

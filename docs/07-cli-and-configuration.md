@@ -11,13 +11,13 @@ This page is the reference. [06 — Why it works](./06-why-it-works.md) explains
 The CLIs are ordinary Node with zero dependencies, and each is useful on its own — `interlock` gates a CI job, `interlock-graph` indexes a repo for any agent, `interlock-run` drives the ship loop over a non-Claude host. They ship as an npm package as well as a plugin:
 
 ```bash
-npm install -g @renzrollon/interlock
+npm install --location=global @renzrollon/interlock@<the plugin's version>
 ```
 
-Or without installing anything, using the scope on the `-p` flag and the bare binary name after it:
+Or without installing anything, using the full package name, with the plugin's version, on the `--package=` flag and the bare binary name after it:
 
 ```bash
-npx -p @renzrollon/interlock interlock limits
+npx --package=@renzrollon/interlock@<the plugin's version> interlock limits
 ```
 
 | | |
@@ -426,6 +426,20 @@ Two forms stay accepted until 1.16.0, so nothing that still calls them breaks:
 - `interlock notify --title <t>` from a script: it prints that same line and exits 0, the exit an unconfigured push always had.
 
 `interlock notify checkpoint <change>` is not retired: it is the spec skill's checkpoint marker, which the spec meter keys on, and it prints one local line. To be reached while away from the terminal, use Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) push. If you saved an `ntfy topic` in an earlier version, remove it from the plugin's settings, unset any `INTERLOCK_NTFY_*` in your shell, and stop using the topic: anyone who knows it can still read what was sent to it.
+
+---
+
+## The plugin directory's scan
+
+The plugin directory runs a validation over the bundle before it lists a release. The 1.15.1 scan raised three findings, and one change (`clear-the-directory-validation-findings`) cleared what code can clear:
+
+- **`tell` in the hooks module** made its notification through a stored `send` closure, and the scan reports `$` passed into a helper it cannot read. `tell` is now an async function that calls `$.ui.notify` itself, and `test/spine/mod-pins.test.mjs` masks comments and strings, then names any closure that holds a `$` token outside a frozen allow-list (`hide`, `flush`, `guardLine`).
+- **The events floor.** The module hooks `prompt.autocomplete`, which engines before 2.1.292 do not accept. `MOD_EVENT_FLOORS` in `lib/host/claude-env.mjs` declares that floor, the dated fixture `test/fixtures/mod-events.json` pins it, and the line in [13](./13-the-guards.md) says it. The directory's own event list must hold `prompt.autocomplete` for the finding to clear; the change asks for that and cannot force it.
+- **The install-command spelling.** The directory refuses `-g`, bare `npx` and unpinned packages. `cliInstallCommand(version)` in `lib/doctor.mjs` prints `npm install --location=global @renzrollon/interlock@<version>` for the doctor and the run program; docs spell the same long form with `@<version>`, the plugin's version. A package test pins README's CLI install line, so a version bump also edits it.
+
+The loop after a change to shipped files: run `npm run scan-pack`, which builds the bundle onto a local `temp/plugin-scan` branch and never pushes; push that branch yourself; run Validate in the directory's portal; read what it names.
+
+Six findings are policy refusals, not defects: the directory accepts these kinds of local code only from a verified organisation. They are a hook command (`LOCAL_CODE_HOOK_COMMAND`), a hooks module (`LOCAL_CODE_MOD`), a workflow (`LOCAL_CODE_WORKFLOW`), a tool grant beyond Read, Grep, Glob and LS (`LOCAL_CODE_TOOL_GRANT`), a file outside the allowed types (`LOCAL_CODE_FILE_TYPE`), and a hooks file that names a module the scan does not read (`LOCAL_CODE_NOT_READ`). Code does not clear them, only a prose-only edition would, and that is declined for now. `DIRECTORY_INVENTORY` in `test/spine/package.test.mjs` declares the shipped local-code counts, so a later edition changes numbers, not code.
 
 ---
 

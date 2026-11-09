@@ -183,43 +183,6 @@ The number of `interlock run` calls a run may make MUST be a cap stated once in 
 - **WHEN** the cap-authority check runs
 - **THEN** it fails naming the driver and the cap it duplicates
 
-### Requirement: The closing step SHALL produce the summary and exit code both hosts print, from what the run observed
-
-`interlock run close` MUST build the run receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary text and the banner list. Both drivers MUST print that summary verbatim. Host-only banners MUST be accepted on the call so the summary's degradation block stays complete. The close MUST accept a `--notify` flag requesting the terminal push, and both drivers MUST pass it from the same place they pass their host-observed inputs, so the push is one implementation the CLI owns and two hosts request rather than two implementations; the driver-parity test MUST fail when one driver passes it and the other does not.
-
-#### Scenario: Happy path — a clean lean run closes with the shared summary
-
-- **GIVEN** a run whose commit spawn reported a sha
-- **WHEN** the driver calls `run close` with the commit result
-- **THEN** the returned step has exit code `0` and a summary naming the commit, the waves and the "No degradation banners" line
-- **AND** the Workflow script and the ACP driver print the same summary text for the same run state
-
-#### Scenario: Failure — a halt closes with the reason and exit code 1
-
-- **GIVEN** a run halted by the failure budget
-- **WHEN** the driver calls `run close --halt <reason>`
-- **THEN** the trajectory gains a `run-halt` event carrying the reason, the outcome corpus gains one line, and the returned exit code is `1`
-
-#### Scenario: Edge case — a host banner is carried into the summary
-
-- **GIVEN** the ACP driver hands `run close` a host banner about model routing
-- **WHEN** the summary is built
-- **THEN** the banner appears in the degradation block
-- **AND** the "No degradation banners" line is not printed
-
-#### Scenario: Happy path — both drivers request the push through the close
-
-- **GIVEN** the Workflow script and the runner after this change
-- **WHEN** each assembles the arguments for `run close`
-- **THEN** both include `--notify`
-- **AND** neither contains a network call, a topic, or any notification text of its own
-
-#### Scenario: Failure — one driver stops requesting the push
-
-- **GIVEN** a driver from which `--notify` has been removed
-- **WHEN** the driver-parity test runs
-- **THEN** it fails naming that driver and the missing flag
-
 ### Requirement: The run program SHALL emit the review, remediation and handoff steps with criteria and policy inlined
 
 When the run manifest carries a review flag, the waves' completion MUST be followed by a `review` step carrying one spawn per selected dimension, labelled `review-<dimension>`, whose briefing is that dimension's own: its written criteria, the repository's review policy prose, the run's changed files with their changed line ranges, the run's stage line and its unvalidated-reports block, and the one answer file it writes. The step MUST continue to `interlock run found`, which emits a `skeptics` step when there is something to judge, then one `remediate` step per fixing round and one for the verdict, each inlining the round's plan and the same criteria for every dimension to be re-reviewed. When the manifest carries a handoff or conformance flag, final verification MUST be followed by a `handoff` step whose briefing states whether a manual test plan is needed and lists the conformance scenarios to answer. A dimension whose criteria cannot be read MUST still be dispatched, its briefing saying it works from the dimension name alone, and MUST place `REVIEW RUBRIC UNAVAILABLE: <dimension>` on the step. Without any tail flag the emitted program MUST be identical to the lean program.
@@ -910,3 +873,47 @@ Every review record a run writes MUST carry a dimension record holding the dimen
 - **GIVEN** a run whose first adjudication wrote the dimension record, followed by one fixing round
 - **WHEN** the round is adjudicated and the review record is rewritten
 - **THEN** the rewritten record carries the same selected, run, unavailable and skipped dimensions
+
+### Requirement: The closing step SHALL produce the summary and exit code both hosts print, from what the run observed, and SHALL accept a retired push request without acting on it
+
+`interlock run close` MUST build the receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary and the banner list, which both drivers print verbatim. It MUST accept host-only banners. Neither driver MAY pass `--notify`. Until 1.16.0 the close MUST accept `--notify` and do nothing but add one summary row saying the push was removed.
+
+#### Scenario: Happy path — a clean lean run closes with the shared summary
+
+- **GIVEN** a run whose commit spawn reported a sha
+- **WHEN** the driver calls `run close` with the commit result
+- **THEN** the returned step has exit code `0` and a summary naming the commit, the waves and the "No degradation banners" line
+- **AND** the Workflow script and the ACP driver print the same summary text for the same run state
+
+#### Scenario: Failure — a halt closes with the reason and exit code 1
+
+- **GIVEN** a run halted by the failure budget
+- **WHEN** the driver calls `run close --halt <reason>`
+- **THEN** the trajectory gains a `run-halt` event carrying the reason, the outcome corpus gains one line, and the returned exit code is `1`
+
+#### Scenario: Edge case — a host banner is carried into the summary
+
+- **GIVEN** the ACP driver hands `run close` a host banner about model routing
+- **WHEN** the summary is built
+- **THEN** the banner appears in the degradation block
+- **AND** the "No degradation banners" line is not printed
+
+#### Scenario: Happy path — neither driver requests a push
+
+- **GIVEN** the Workflow script and the runner
+- **WHEN** each assembles the arguments for `run close`
+- **THEN** neither includes `--notify`
+- **AND** neither contains a network call, a topic, or any notification text of its own
+
+#### Scenario: Edge case — an older driver's push request closes the run and is spoken
+
+- **GIVEN** a run ready to close, and a call to `run close --notify`
+- **WHEN** the close returns
+- **THEN** the exit code and banner list are those of the same close without `--notify`, and "No degradation banners" is still printed for a clean run
+- **AND** the summary carries one row saying the push was removed, and no request is made
+
+#### Scenario: Failure — a driver passes the retired flag again
+
+- **GIVEN** a driver that passes `--notify` to `run close`
+- **WHEN** the driver-parity test runs
+- **THEN** it fails naming that driver and the flag
