@@ -1282,7 +1282,7 @@ Examples:
   interlock review --findings raised.json --verdicts verdicts.json --metrics add-auth
   interlock risk add-auth --paths src/auth/session.ts,src/api/login.ts --json
   interlock ledger add-auth || echo "a human still owes a decision"
-  interlock verify plan --profile .claude/testing/profile.json --typecheck-command "npx tsc --noEmit" --json > vplan.json
+  interlock verify plan --profile .claude/testing/profile.json --typecheck-command "tsc --noEmit" --json > vplan.json
   interlock verify judge --plan vplan.json --results results.json --context inter-wave || echo "halt"
   interlock verify baseline --report coverage/lcov.info
   interlock verify coverage --base origin/main --json > coverage-input.json
