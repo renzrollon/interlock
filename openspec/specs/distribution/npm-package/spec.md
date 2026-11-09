@@ -198,21 +198,92 @@ The file set the package ships MUST hold no path under a top-level `bin/`, and e
 - **THEN** it fails naming `binaries` or `package-lock.json`
 - **AND** a lockfile carried as data inside a shipped `.mjs` module is not reported
 
-### Requirement: No shipped file but the changelog SHALL name a credential variable or file
+### Requirement: No shipped file SHALL name a credential variable, a credential file or the host's option variables, and the changelog SHALL NOT ship
 
-No file in the published bundle other than `CHANGELOG.md` SHALL spell `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `apiKeyHelper`, `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN` or `.credentials.json`, because the plugin directory holds a plugin that reads a credential and can send data off the machine. `CHANGELOG.md` is history and is excepted.
+No file in the published bundle SHALL spell a credential variable or file name from the package test's list, the host's option-variable prefix `CLAUDE_PLUGIN_OPTION_`, or the retired push variables `INTERLOCK_NTFY_`. No file is excepted, and `CHANGELOG.md` SHALL NOT be listed in `files` or ship. No shipped file SHALL carry the removed push's residue.
 
 #### Scenario: Failure — a shipped file names a credential variable
 
-- **GIVEN** a shipped file other than `CHANGELOG.md` spells one of the names
+- **GIVEN** a shipped file spells `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `.credentials.json`, `CLAUDE_PLUGIN_OPTION_` or `INTERLOCK_NTFY_`, the changelog included were it shipped
 - **WHEN** `npm test` runs
 - **THEN** the package test fails naming the file and the name
 
-#### Scenario: Happy path — the changelog may keep its history
+#### Scenario: Failure — the changelog is shipped again
 
-- **GIVEN** `CHANGELOG.md` spells a name in an entry about an earlier version
+- **GIVEN** a `files` whitelist that lists `CHANGELOG.md`
 - **WHEN** `npm test` runs
-- **THEN** the package test does not fail on it
+- **THEN** the package test fails naming `CHANGELOG.md`
+
+#### Scenario: Failure — the removed push leaves residue
+
+- **GIVEN** a shipped file that still mentions `ntfy` in any case, `notify-option`, `notifyTimeoutMs`, `postNtfy` or `push timeout`
+- **WHEN** `npm test` runs
+- **THEN** the package test fails naming the file and the word
+
+### Requirement: No shipped code SHALL open a network connection
+
+No shipped JavaScript file SHALL call `fetch`, import a Node network module or `undici`, or construct a `WebSocket`, an `EventSource` or an `XMLHttpRequest`. Requests made by the tools a run spawns are their own, and the README SHALL name those tools. The check SHALL be a named function with a self-test over synthetic files.
+
+#### Scenario: Happy path — the bundle as shipped opens no connection
+
+- **GIVEN** the working tree's `files` whitelist
+- **WHEN** the package test runs
+- **THEN** it passes
+
+#### Scenario: Failure — a module reaches for the network
+
+- **GIVEN** a synthetic shipped file that calls `fetch(`, imports `node:https`, `node:net` or `undici` by `import`, `import()` or `require`, or constructs a `WebSocket`
+- **WHEN** the check reads it
+- **THEN** it returns one problem naming the file and the construct
+- **AND** a file that only spells the word in a string that is not a call, such as `'fetch'` in an argv list, is not reported
+
+### Requirement: Every hook command SHALL be a plain path from the plugin root, and a sensitive option SHALL reach only a server's env or headers
+
+Every hook the manifest registers SHALL be `node "${CLAUDE_PLUGIN_ROOT}/hooks/<file>.mjs"` with no arguments. A `sensitive` `userConfig` option SHALL appear as `${user_config.<key>}` only in an `mcpServers` or `lspServers` entry's `env` or `headers`, no shipped file but the manifest SHALL spell `${user_config.`, and no declared option SHALL go unused. Each check SHALL be a named function with a self-test.
+
+#### Scenario: Happy path — the shipped manifest passes
+
+- **GIVEN** the manifest as shipped, which declares no option
+- **WHEN** the package test runs
+- **THEN** both the hook-command check and the option check pass
+
+#### Scenario: Failure — a sensitive option is handed to a hook
+
+- **GIVEN** a synthetic manifest whose sensitive `token` option appears as `${user_config.token}` in a hook's `args`, or is declared and never referenced
+- **WHEN** the option check reads it
+- **THEN** it returns a problem naming the option and where it appeared, or that nothing consumes it
+- **AND** the same option referenced only in an MCP server's `env` returns none
+
+#### Scenario: Failure — a hook command names a variable the directory cannot follow
+
+- **GIVEN** a manifest whose hook carries `${user_config.token}` in its arguments, a `$(…)`, a `*`, or a `${CLAUDE_PROJECT_DIR}`
+- **WHEN** the registration pin reads it
+- **THEN** it fails naming the event and the hook
+
+### Requirement: The scan pack SHALL build the bundle onto a local branch and SHALL NOT push
+
+`npm run scan-pack` (`scripts/plugin-scan-pack.mjs`) SHALL commit the unpacked `npm pack` of the working tree onto `temp/plugin-scan`, or the branch `--branch` names, through a temporary index, on top of that branch's tip, else `origin/<branch>`'s, else as a root commit. It SHALL leave the working tree, the real index and the checked-out branch as they were, and SHALL NOT push or open a network connection, and SHALL run `npm pack` offline with npm's update check off.
+
+#### Scenario: Happy path — the bundle lands on a local branch
+
+- **GIVEN** a clean checkout
+- **WHEN** `npm run scan-pack` runs
+- **THEN** the tree of the `temp/plugin-scan` tip holds exactly the files of the unpacked tarball
+- **AND** `git status` and the checked-out branch are what they were before the run
+- **AND** the output names `git push origin temp/plugin-scan` and the Validate as next steps, and nothing was pushed
+
+#### Scenario: Edge — an untracked file under a shipped path marks the pack
+
+- **GIVEN** an untracked file under a path that `files` lists
+- **WHEN** the scan pack runs again
+- **THEN** the new commit's parent is the previous tip
+- **AND** its message says `with uncommitted changes`
+
+#### Scenario: Failure — the target branch is checked out
+
+- **GIVEN** `--branch` names the branch that is checked out
+- **WHEN** the scan pack runs
+- **THEN** it exits 1 naming the branch and writes no ref
 
 ### Requirement: Every package-manager command a shipped text spells SHALL be readable and exactly pinned
 
