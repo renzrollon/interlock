@@ -105,6 +105,8 @@ interlock validate <change-name>    # all three artifacts present, non-empty, re
 
 From here on it does not ask you anything until it is done or it halts.
 
+The card `interlock checkpoint` prints ends with one more line: the session model and effort suggested for the run, in the words `interlock suggest ship` prints. The run asks nothing once it starts, so if you mean to switch, switch before you start it.
+
 ## There is an opt-out
 
 `/interlock:spec --continue` runs a machine gate after the artifact review and, if it passes, invokes `ship` without stopping here. It is opt-in, fail-closed, and refuses to continue on anything above a narrow blast radius or with any decision still marked as needing a person.

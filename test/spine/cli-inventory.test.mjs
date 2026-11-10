@@ -436,6 +436,28 @@ test('routing is a known subcommand, accepts --depth, and is in the smoke INVENT
   assert.ok(routed.length >= 2, 'the smoke runs routing for the table and for an unknown role')
 })
 
+test('suggest is a known subcommand with no flag of its own, and the smoke runs the table and a name with no row', async () => {
+  const flags = await load('../../lib/cli-flags.mjs')
+  const smoke = await load('../../scripts/postinstall-smoke.mjs')
+  assert.ok(!flags.error && !smoke.error, 'the flag table and the smoke inventory must load')
+  const table = {
+    globalFlags: flags.mod.GLOBAL_FLAGS,
+    subcommandFlags: flags.mod.SUBCOMMAND_FLAGS,
+    inventory: smoke.mod.INVENTORY
+  }
+  assert.deepEqual(checkSegments([seg('suggest spec --json'), seg('suggest'), seg('suggest --json')], table), [])
+  assert.match(String(checkSegments([seg('suggest --depth')], table)[0]), /--depth is not accepted for "suggest"/)
+  const smoked = smoke.mod.INVENTORY.filter(entry => entry.argv[0] === 'suggest')
+  assert.ok(
+    smoked.some(entry => entry.argv.length === 2 && entry.argv[1] === '--json' && entry.codes.includes(0)),
+    'the smoke runs suggest for the whole table'
+  )
+  assert.ok(
+    smoked.some(entry => entry.codes.includes(1) && !entry.codes.includes(0)),
+    'the smoke runs suggest for a name with no row, which exits 1'
+  )
+})
+
 test('every run found argv literal the run program spells resolves: known, accepted and smoked', async () => {
   // fan-out-the-strict-ship-review D4: the review step's continuation is `interlock run found`.
   const flags = await load('../../lib/cli-flags.mjs')

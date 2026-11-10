@@ -24,6 +24,9 @@ import {
   clampParallel,
   formatLimits
 } from '../../lib/limits.mjs'
+// A namespace import, so a missing session-advice export is reported by the
+// session pins by name instead of failing the whole file at link time.
+import * as limitsModule from '../../lib/limits.mjs'
 import { DEFAULT_MODEL } from '../../evals/ship/agent/model.mjs'
 import { priceUsage } from '../../evals/ship/arms.mjs'
 
@@ -934,6 +937,53 @@ test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward i
   for (const rel of outside) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.ok(!/\bSPAWN_ROUTING\b|\bREVIEW_DEPTH\b/.test(text), `${rel} names a routing table instead of asking the CLI`)
+  }
+})
+
+// --- the session suggestion table (spec: session-advice) -------------------------
+//
+// `SESSION_ADVICE` is a table of strings, so it stays out of LIMITS and the
+// positive-integer invariant the way `SPAWN_ROUTING` does, and joins the same
+// discipline by hand: printed by `formatLimits`, read by name by one module
+// under lib/ (`lib/session-advice.mjs`), with the bare forward in `cli/interlock`
+// (`sessionAdvice: SESSION_ADVICE`) never counted as a reader.
+
+const SESSION_KEYS = ['explore', 'spec', 'review-artifacts', 'bootstrap', 'ship', 'settle', 'review-code', 'fix-tests']
+
+test('formatLimits prints one session row per advised skill and the session suggestion basis row', () => {
+  const table = limitsModule.SESSION_ADVICE
+  assert.ok(table && typeof table === 'object', 'lib/limits.mjs exports SESSION_ADVICE')
+  assert.equal(typeof limitsModule.SESSION_ADVICE_BASIS, 'string', 'lib/limits.mjs exports SESSION_ADVICE_BASIS')
+  assert.deepEqual(Object.keys(table), SESSION_KEYS)
+  const text = formatLimits()
+  const rows = text.split('\n').filter(line => /^ *session: /.test(line))
+  assert.equal(rows.length, SESSION_KEYS.length, `expected one session row per skill, got:\n${rows.join('\n')}`)
+  for (const skill of SESSION_KEYS) {
+    const row = table[skill]
+    assert.match(
+      text,
+      new RegExp(`^ *session: ${skill}\\s+model ${row.model} \u00b7 effort ${row.effort}`, 'm'),
+      `no session row for ${skill}`
+    )
+    if (row.upTo) assert.match(text, new RegExp(`^ *session: ${skill}\\s+[^\\n]*up to ${row.upTo}`, 'm'))
+    if (row.best) {
+      assert.match(text, new RegExp(`^ *session: ${skill}\\s+[^\\n]*best results: model ${row.best.model} \u00b7 effort ${row.best.effort}`, 'm'))
+    }
+  }
+  assert.match(text, new RegExp(`^ *session suggestion basis\\s+${limitsModule.SESSION_ADVICE_BASIS}$`, 'm'))
+})
+
+test('SESSION_ADVICE is read under lib/ by lib/session-advice.mjs alone, and the bare forward in cli/ is not a reader', () => {
+  const sources = libSources()
+  const readers = pattern => sources.filter(({ text }) => pattern.test(text)).map(({ rel }) => rel)
+  assert.deepEqual(readers(/\bSESSION_ADVICE\[|Object\.\w+\(SESSION_ADVICE\)/), ['lib/session-advice.mjs'])
+  assert.deepEqual(readers(/\bSESSION_ADVICE\b/), ['lib/session-advice.mjs'])
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
+  assert.match(cli, /sessionAdvice: SESSION_ADVICE\b/)
+  assert.match(cli, /sessionAdviceBasis: SESSION_ADVICE_BASIS\b/)
+  for (const rel of ['hooks/mod.mjs', 'workflows/ship.js', 'cli/interlock-run']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(!/\bSESSION_ADVICE\b/.test(text), `${rel} names the session table instead of asking the CLI`)
   }
 })
 

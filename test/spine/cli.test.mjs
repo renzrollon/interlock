@@ -18,6 +18,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
 import { resolveRouting } from '../../lib/routing.mjs'
+// A namespace import, so a missing session-advice export is reported by the
+// suggest pins by name instead of failing the whole file at link time.
+import * as limitsModule from '../../lib/limits.mjs'
 import { changedRanges } from '../../lib/review-scope.mjs'
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
@@ -4947,6 +4950,8 @@ test('limits carries the note-match cap by name and no advisor cap, in text and 
 
 // --- routing: the model and effort a prose skill passes (spec: spawn-routing) ---
 
+/** The advised skills, in table order (spec: session-advice). */
+const SUGGEST_SKILLS = ['explore', 'spec', 'review-artifacts', 'bootstrap', 'ship', 'settle', 'review-code', 'fix-tests']
 const ROUTING_ROLES = ['explore-investigator', 'review-dimension', 'review-skeptic', 'settle-fixer', 'settle-conformance', 'artifact-reviewer']
 /** Neither override variable set, so a developer's own export cannot change a result. */
 const NO_OVERRIDES = { CLAUDE_CODE_EFFORT_LEVEL: undefined, CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined }
@@ -5085,6 +5090,147 @@ test('limits --json carries the routing table and the review depth table', () =>
   assert.deepEqual(out.reviewDepth, JSON.parse(JSON.stringify(REVIEW_DEPTH)))
   assert.equal(out.reviewDepth.default, 'lean')
   assert.equal(out.limits.routing, undefined, 'the table is its own group, not a cap')
+  // session-advice: the session suggestion table is its own group too.
+  assert.deepEqual(out.sessionAdvice, JSON.parse(JSON.stringify(limitsModule.SESSION_ADVICE)))
+  assert.deepEqual(Object.keys(out.sessionAdvice || {}), SUGGEST_SKILLS)
+  assert.equal(out.sessionAdviceBasis, limitsModule.SESSION_ADVICE_BASIS)
+  assert.equal(typeof out.sessionAdviceBasis, 'string')
+})
+
+// --- suggest: the session model and effort for a skill (spec: session-advice) ---
+
+/** Neither the observed effort nor the override set, so a developer's own session cannot change a result. */
+const NO_SESSION = { CLAUDE_EFFORT: undefined, CLAUDE_CODE_EFFORT_LEVEL: undefined }
+
+function suggest(args, env = {}) {
+  return run(['suggest', ...args], { env: { ...NO_SESSION, ...env } })
+}
+
+function suggestJson(args, env = {}) {
+  const r = suggest([...args, '--json'], env)
+  assert.equal(r.code, 0, `suggest ${args.join(' ')}: ${r.stderr}`)
+  return JSON.parse(r.stdout)
+}
+
+test('suggest ship exits 0 and its first line names the skill, the model and the effort', () => {
+  const r = suggest(['ship'])
+  assert.equal(r.code, 0, r.stderr)
+  const row = limitsModule.SESSION_ADVICE.ship
+  const first = r.stdout.split('\n')[0]
+  assert.equal(first, `session suggestion for ship: model ${row.model} · effort ${row.effort}`)
+})
+
+test('suggest spec --json carries the ten keys, the ceiling and pair on its first line, and a null observed model', () => {
+  const out = suggestJson(['spec'], { CLAUDE_EFFORT: 'low' })
+  assert.deepEqual(Object.keys(out), ['skill', 'model', 'effort', 'upTo', 'best', 'basis', 'observed', 'fit', 'banners', 'lines'])
+  const row = limitsModule.SESSION_ADVICE.spec
+  assert.ok(out.lines[0].indexOf(`up to ${row.upTo}`) > out.lines[0].indexOf(`effort ${row.effort}`), out.lines[0])
+  assert.ok(out.lines[0].indexOf(`best results: model ${row.best.model}`) > out.lines[0].indexOf(`up to ${row.upTo}`), out.lines[0])
+  assert.equal(out.observed.model, null)
+  assert.equal(out.fit, 'below')
+})
+
+test('suggest ship --json has null upTo and best and a null observed model', () => {
+  const out = suggestJson(['ship'])
+  assert.equal(out.upTo, null)
+  assert.equal(out.best, null)
+  assert.equal(out.observed.model, null)
+  assert.equal(out.fit, 'unobserved')
+})
+
+test('suggest with no skill prints eight lines, each the first line of the single-skill call, and no comparison', () => {
+  const r = suggest([])
+  assert.equal(r.code, 0, r.stderr)
+  const lines = r.stdout.replace(/\n$/, '').split('\n')
+  assert.equal(lines.length, SUGGEST_SKILLS.length, r.stdout)
+  assert.ok(!lines.some(line => line.startsWith('this session')), r.stdout)
+  assert.ok(!lines.some(line => line.includes('/effort')), r.stdout)
+  SUGGEST_SKILLS.forEach((skill, i) => {
+    const one = suggest([skill])
+    assert.equal(one.code, 0, one.stderr)
+    assert.equal(lines[i], one.stdout.split('\n')[0], skill)
+  })
+})
+
+test('suggest --json with no skill emits the table and the observation, and no fit', () => {
+  const out = suggestJson([], { CLAUDE_EFFORT: 'low' })
+  assert.deepEqual(Object.keys(out), ['basis', 'skills', 'observed', 'banners', 'lines'])
+  assert.equal(out.fit, undefined)
+  assert.deepEqual(Object.keys(out.skills), SUGGEST_SKILLS)
+  for (const skill of SUGGEST_SKILLS) {
+    const row = limitsModule.SESSION_ADVICE[skill]
+    assert.deepEqual(Object.keys(out.skills[skill]), ['model', 'effort', 'upTo', 'best'], skill)
+    assert.equal(out.skills[skill].upTo, row.upTo ?? null, skill)
+    assert.deepEqual(out.skills[skill].best, row.best ? { ...row.best } : null, skill)
+  }
+  assert.equal(out.lines.length, SUGGEST_SKILLS.length)
+  assert.equal(out.observed.effort, 'low')
+  assert.equal(out.observed.model, null)
+  assert.deepEqual(out.banners, [])
+})
+
+test('suggest with no skill and CLAUDE_CODE_EFFORT_LEVEL set prints the banner after the eight lines', () => {
+  const r = suggest([], { CLAUDE_CODE_EFFORT_LEVEL: 'max' })
+  assert.equal(r.code, 0, r.stderr)
+  const lines = r.stdout.replace(/\n$/, '').split('\n')
+  assert.equal(lines.length, SUGGEST_SKILLS.length + 1, r.stdout)
+  assert.ok(lines.slice(0, -1).every(line => line.startsWith('session suggestion for ')), r.stdout)
+  // The eight lines name no switch command; the banner after them does, by design.
+  assert.ok(!lines.slice(0, -1).some(line => line.startsWith('this session') || line.includes('/effort')), r.stdout)
+  assert.match(lines.at(-1), /^EFFORT SUGGESTION OVERRIDDEN: CLAUDE_CODE_EFFORT_LEVEL=max/)
+})
+
+test('suggest ship with CLAUDE_CODE_EFFORT_LEVEL set banners it in the JSON and the text', () => {
+  const out = suggestJson(['ship'], { CLAUDE_CODE_EFFORT_LEVEL: 'max' })
+  assert.equal(out.banners.length, 1)
+  assert.match(out.banners[0], /CLAUDE_CODE_EFFORT_LEVEL=max/)
+  assert.match(out.banners[0], /\/effort does not change/)
+  const text = suggest(['ship'], { CLAUDE_CODE_EFFORT_LEVEL: 'max' })
+  assert.equal(text.code, 0, text.stderr)
+  assert.ok(text.stdout.includes(out.banners[0]), text.stdout)
+  assert.deepEqual(suggestJson(['ship'], { CLAUDE_CODE_EFFORT_LEVEL: '' }).banners, [])
+})
+
+test('suggest refuses a name with no row: exit 1, nothing on stdout, the eight names on stderr', () => {
+  for (const name of ['graph', 'not-a-skill']) {
+    for (const extra of [[], ['--json']]) {
+      const r = suggest([name, ...extra])
+      assert.equal(r.code, 1, `${name}: ${r.stdout}${r.stderr}`)
+      assert.equal(r.stdout, '', name)
+      for (const skill of SUGGEST_SKILLS) assert.ok(r.stderr.includes(skill), `${name}: stderr does not name ${skill}: ${r.stderr}`)
+    }
+  }
+})
+
+test('suggest ship far above its row still exits 0, names the follow commands, and writes nothing', () => {
+  const repo = gitRepo('suggest-writes-nothing', { 'README.md': 'x\n' })
+  const r = run(['suggest', 'ship'], { cwd: repo.root, env: { ...NO_SESSION, CLAUDE_EFFORT: 'xhigh' } })
+  assert.equal(r.code, 0, r.stderr)
+  const lines = r.stdout.replace(/\n$/, '').split('\n')
+  assert.match(lines[1], /effort xhigh, above the suggestion/)
+  const row = limitsModule.SESSION_ADVICE.ship
+  assert.ok(lines.at(-1).includes(`/effort ${row.effort}`) && lines.at(-1).includes(`/model ${row.model}`), lines.at(-1))
+  assert.match(lines.at(-1), /at a break in the work/)
+  const status = spawnSync('git', ['status', '--porcelain'], { cwd: repo.root, encoding: 'utf8' })
+  assert.equal(status.status, 0, status.stderr)
+  assert.equal(status.stdout, '', 'suggest wrote into the repository')
+})
+
+test('suggest ship inside the row prints no follow line', () => {
+  const r = suggest(['ship'], { CLAUDE_EFFORT: 'medium' })
+  assert.equal(r.code, 0, r.stderr)
+  const lines = r.stdout.replace(/\n$/, '').split('\n')
+  assert.equal(lines.length, 2, r.stdout)
+  assert.match(lines[1], /effort medium, within the suggestion · model not observed/)
+  assert.ok(!r.stdout.includes('/effort'), r.stdout)
+})
+
+test('limits prints eight session rows and the session suggestion basis row', () => {
+  const r = run(['limits'])
+  assert.equal(r.code, 0, r.stderr)
+  const rows = r.stdout.split('\n').filter(line => /^ *session: /.test(line))
+  assert.equal(rows.length, SUGGEST_SKILLS.length, r.stdout)
+  assert.ok(r.stdout.split('\n').some(line => /^ *session suggestion basis\s+\S/.test(line)), r.stdout)
 })
 
 // --- the proof of coverage through the binary (spec: review/review-proof, review/review-briefs) ---

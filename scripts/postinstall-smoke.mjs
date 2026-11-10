@@ -224,6 +224,16 @@ export const INVENTORY = [
     check: r => (r.stdout === '' && /roles:/.test(r.stderr) ? '' : 'an unknown role printed on stdout, or did not name the roles')
   },
 
+  // The session suggestion table resolves, and a name with no row is an error with nothing on stdout.
+  { bin: I, argv: ['suggest', '--json'], codes: [0], keys: ['basis', 'skills', 'observed', 'banners', 'lines'] },
+  {
+    bin: I,
+    argv: ['suggest', 'not-a-skill', '--json'],
+    codes: [1],
+    check: r =>
+      r.stdout === '' && /advised skills:/.test(r.stderr) ? '' : 'a name with no row printed on stdout, or did not name the advised skills'
+  },
+
   // The OpenSpec resolution: `which` reads and prints. `provision` installs from a registry, so
   // the smoke only proves it is a known leaf that refuses a flag it does not read, and runs nothing.
   { bin: I, argv: ['openspec', 'which', '--json'], codes: [0], keys: ['source', 'dataDir', 'dataDirSource', 'pin'] },

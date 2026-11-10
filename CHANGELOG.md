@@ -7,6 +7,10 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`interlock suggest [<skill>]` says which session model and effort suits a skill**, from one table in `lib/limits.mjs` that `interlock limits` prints as `session:` rows and `--json` emits as `sessionAdvice`. With a skill it compares the suggestion with the session's effort, read from `CLAUDE_EFFORT` (`below`, `within`, `above` or `unobserved`), says the model was not observed, and names the `/effort` and `/model` to type when the fit is not `within`. A set `CLAUDE_CODE_EFFORT_LEVEL` is bannered. It advises and never selects, and exits 0 at any fit; a name with no row exits 1. `explore`, `spec`, `review-artifacts`, `bootstrap`, `settle`, `review-code` and `fix-tests` print their suggestion when a person starts them, `dispatch` prints the routed skill's line, and the checkpoint card ends with the line for the ship run.
+
 ## [1.15.2] - 2026-11-09
 
 ### Changed

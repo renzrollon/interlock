@@ -116,9 +116,12 @@ import {
   MERGE_BANDS,
   SPAWN_ROUTING,
   REVIEW_DEPTH,
+  SESSION_ADVICE,
+  SESSION_ADVICE_BASIS,
   formatLimits
 } from '../lib/limits.mjs'
 import { resolveRouting, listRouting, formatRouting, RoutingError } from '../lib/routing.mjs'
+import { resolveAdvice, listAdvice, formatAdvice, AdviceError } from '../lib/session-advice.mjs'
 import { planRemediation, formatRemediationPlan } from '../lib/remediate.mjs'
 import {
   REVIEW_POLICY_FILE,
@@ -283,6 +286,9 @@ Usage:
   interlock routing [<role>]                Print the model and effort a prose
                   [--depth lean|strict]     skill passes when it spawns a role,
                                             and the review depth's shape
+  interlock suggest [<skill>]               Print the session model and effort a
+                                            skill suits, and how this session's
+                                            effort compares. Advice; exits 0
   interlock notify checkpoint <change>       Mark the spec checkpoint for the
                                              spec meter. Local: prints one
                                              "checkpoint:" line, sends nothing and
@@ -3668,7 +3674,9 @@ async function main() {
           // The prose spawn roles and the review depths, their own groups: tables
           // of null-able strings, never entries of the iteration-count limits.
           routing: SPAWN_ROUTING,
-          reviewDepth: REVIEW_DEPTH
+          reviewDepth: REVIEW_DEPTH,
+          sessionAdvice: SESSION_ADVICE,
+          sessionAdviceBasis: SESSION_ADVICE_BASIS
         },
         formatLimits({ runtimeObserved })
       )
@@ -3686,6 +3694,19 @@ async function main() {
         process.exit(1)
       }
       emit(json, out, formatRouting(out))
+      break
+    }
+
+    case 'suggest': {
+      let out
+      try {
+        out = positional[1] === undefined ? listAdvice(process.env) : resolveAdvice(positional[1], process.env)
+      } catch (err) {
+        if (!(err instanceof AdviceError)) throw err
+        process.stderr.write(`${err.message}\n`)
+        process.exit(1)
+      }
+      emit(json, out, formatAdvice(out))
       break
     }
 

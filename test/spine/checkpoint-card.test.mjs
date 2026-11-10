@@ -16,6 +16,14 @@ import { firstUnknownFlag, leafOf } from '../../lib/cli-flags.mjs'
 import { printedCommands } from '../../lib/run-actions.mjs'
 import { walkModule } from '../helpers/module-walk.mjs'
 
+// Imported dynamically, so a missing session-advice module fails the cases that
+// read it by name instead of failing the file before any case runs.
+const advice = await import('../../lib/session-advice.mjs').then(mod => ({ mod }), error => ({ error }))
+const adviceModule = () => {
+  assert.ok(!advice.error, `lib/session-advice.mjs does not load: ${advice.error && advice.error.message}`)
+  return advice.mod
+}
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DOC = readFileSync(join(ROOT, 'docs', '02-the-checkpoint.md'), 'utf8')
 
@@ -118,7 +126,10 @@ test('the same fields render the same keyed lines, artifacts first and the five 
     'checkpoint-outcome-2',
     'checkpoint-outcome-3',
     'checkpoint-outcome-4',
-    'checkpoint-outcome-5'
+    'checkpoint-outcome-5',
+    // session-advice: "The card SHALL print the published session suggestion
+    // for the run after the outcome that starts it".
+    'checkpoint-session'
   ])
   const byKey = new Map(card.map(line => [line.key, line.text]))
   QUESTIONS.forEach((q, i) => {
@@ -147,7 +158,10 @@ test('a field that was not passed reads not observed, never a zero or a pass', (
   assert.ok(byKey.get('checkpoint-artifact-design').includes(NOT_OBSERVED))
   for (const bad of [undefined, null, 3, 'x', [], {}]) {
     const lines = checkpointCard(bad)
-    assert.equal(lines.length, 4 + 1 + 1 + 1 + 1 + 5, `fields ${JSON.stringify(bad)} still draw a card`)
+    // The trailing one is the session suggestion line (session-advice: "The card
+    // SHALL print the published session suggestion for the run after the outcome
+    // that starts it"), which takes no field and so is drawn for any fields.
+    assert.equal(lines.length, 4 + 1 + 1 + 1 + 1 + 5 + 1, `fields ${JSON.stringify(bad)} still draw a card`)
     assert.equal(new Map(lines.map(l => [l.key, l.text])).get('checkpoint-validate').includes(NOT_OBSERVED), true)
   }
 })
@@ -247,13 +261,44 @@ test('the override record line a person may type still exits 0 against a scratch
   }
 })
 
-test('the module is pure: no node: module, no bare specifier, nothing but itself in its import walk', () => {
+test('the module is pure: no node: module, no bare specifier, nothing but itself and the session table\'s reader in its import walk', () => {
+  // session-advice (spec/checkpoint-card, "One line is neither a passed field
+  // nor a title of the document"): the card imports the session table's one
+  // reader, and the walk widens by that reader and the two modules it imports.
   const entry = join(ROOT, 'lib', 'checkpoint-card.mjs')
   const { files, problems } = walkModule(entry, ROOT)
   assert.deepEqual(problems, [], problems.join('\n'))
-  assert.deepEqual(files, [entry])
+  assert.equal(files[0], entry)
+  assert.deepEqual(
+    files.map(f => f.slice(ROOT.length + 1)).sort(),
+    ['lib/checkpoint-card.mjs', 'lib/host/effort.mjs', 'lib/limits.mjs', 'lib/session-advice.mjs']
+  )
   const source = readFileSync(entry, 'utf8')
   for (const token of ['process.', 'Date', 'readFileSync', 'import(', 'globalThis']) {
     assert.ok(!source.includes(token), `lib/checkpoint-card.mjs contains ${token}`)
   }
+})
+
+// --- the session suggestion line (session-advice) ---------------------------------
+
+test('the card ends with the session suggestion line, after the fifth outcome, in the words suggest ship prints', () => {
+  const { adviceLine, resolveAdvice, formatAdvice } = adviceModule()
+  for (const fields of [FIELDS, {}, undefined]) {
+    const card = checkpointCard(fields)
+    const last = card.at(-1)
+    assert.equal(last.key, 'checkpoint-session')
+    assert.equal(card.at(-2).key, 'checkpoint-outcome-5')
+    assert.equal(last.text, adviceLine('ship'))
+    assert.equal(last.text, formatAdvice(resolveAdvice('ship', {})).split('\n')[0])
+  }
+})
+
+test('the session suggestion line offers no command and observes nothing', () => {
+  const card = checkpointCard(FIELDS)
+  const last = card.at(-1)
+  assert.equal(last.key, 'checkpoint-session')
+  assert.deepEqual(printedCommands(last.text), [])
+  assert.deepEqual(printedCommands(textOf(card)), EXPECTED, 'the line adds nothing to the printed commands')
+  assert.ok(!last.text.includes('this session'), last.text)
+  assert.ok(!last.text.includes(NOT_OBSERVED), last.text)
 })

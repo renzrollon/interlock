@@ -21,11 +21,14 @@ git branch --show-current; git status --short; git log --oneline -5
 openspec --version
 openspec list --json 2>/dev/null
 interlock changes 2>/dev/null
+interlock suggest 2>/dev/null
 ls -t .claude/handoff/explore-*.md 2>/dev/null | head -3
 ls .claude/graph/GRAPH_REPORT.md .claude/graph/DOCS_DIGEST.md 2>/dev/null
 ```
 
 That is Rules 2 and 3 of `${CLAUDE_PLUGIN_ROOT}/shared/TOOL-ECONOMY.md`: read state, do not re-derive it. Do not traverse the tree to reconstruct what these already tell you.
+
+The `interlock suggest` line prints one session suggestion per advised skill. When you answer with a route, print the routed skill's line from that answer beside the route, verbatim; print none for a route that has no line there; and print `SESSION SUGGESTION UNAVAILABLE` beside the route when that batch line printed nothing. It is advice: the routing never waits on it.
 
 ---
 

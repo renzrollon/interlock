@@ -273,6 +273,21 @@ test('routing accepts --depth and --json, refuses any other flag by name with ex
   assert.match(own.stdout, /--depth lean\|strict/)
 })
 
+test('suggest is a known subcommand with no flag of its own, refuses an unknown flag by name with exit 2, and is documented', async () => {
+  // session-advice: `--json` is the only flag it reads, and it is a global one.
+  const { global, leaves } = await loadFlagTable()
+  const suggest = leaves.get('suggest')
+  assert.ok(suggest, 'SUBCOMMAND_FLAGS needs a "suggest" entry')
+  assert.deepEqual([...suggest], [], 'suggest takes no flag of its own')
+  assert.ok(global.has('json'), 'suggest reads --json from the global flags')
+  const refused = cli(['suggest', 'ship', '--bogus-flag'])
+  assert.equal(refused.code, 2, `stdout: ${refused.stdout}\nstderr: ${refused.stderr}`)
+  assert.match(refused.stderr, /--bogus-flag/)
+  assert.equal(refused.stdout, '')
+  const help = cli(['--help'])
+  assert.ok(documentedForms(help.stdout).some(f => f.leaf[0] === 'suggest'), 'the usage block must document suggest')
+})
+
 // --- documented forms -----------------------------------------------------------
 
 /**
