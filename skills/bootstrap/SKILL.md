@@ -4,7 +4,7 @@ description: Onboard a brownfield project into OpenSpec — analyze the existing
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock-graph CLI.
 argument-hint: "[--quick] [--scope <path>]"
-allowed-tools: Bash(openspec *) Bash(interlock-graph *) Bash(git check-ignore *) Agent Read Write Glob Grep
+allowed-tools: Bash(openspec *) Bash(interlock-graph *) Bash(interlock suggest *) Bash(git check-ignore *) Agent Read Write Glob Grep
 metadata:
   type: discovery
   outputs:
@@ -72,6 +72,8 @@ When the build did produce a graph, **read `.claude/graph/GRAPH_REPORT.md` befor
 Then check whether `openspec/specs/` already has content. If it does:
 
 > "This project already has N specs. Bootstrap will ADD specs for undocumented features but will never overwrite an existing one. Continue?"
+
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest bootstrap` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
 
 ---
 

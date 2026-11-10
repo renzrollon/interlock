@@ -47,6 +47,8 @@ If it does not print a version, **stop here**: before asking for intent, before 
 
 Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, except by running `interlock openspec provision`, and do not scaffold `openspec/changes/<name>/` by hand — the CLI owns those formats. `--no-explore` and `--brief` do not skip this step.
 
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest spec` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
+
 ---
 
 ## 1. Establish intent

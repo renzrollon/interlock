@@ -30,6 +30,8 @@ Think deeply. Fan out when breadth is needed. Synthesize into understanding.
 4. **Write the explore brief.** Required exit criterion. Follow `${CLAUDE_PLUGIN_ROOT}/shared/EXPLORE-BRIEF.md`. Path: `.claude/handoff/explore-<slug>-<YYYYMMDD-HHMMSS>.md`.
 5. **Close short.** Brief path plus a 3–5 line summary. Do not re-dump findings into chat — they are in the brief.
 
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest explore` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
+
 ---
 
 ## Graph-first reconnaissance, before any fan-out

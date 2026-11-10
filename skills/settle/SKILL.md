@@ -30,6 +30,8 @@ The merge-confidence verdict in the description, and the labels beside it, are *
 | `--strict` | Pass `--strict` to every `review-code` pass of the loop, so each review runs the full review instead of the CLI's published default (§5). Do not add it because the diff looks large |
 | `--gate-check <name>` | Leave the check of that exact name out of the pipeline input. Repeatable. For the check whose own result waits on the verdict; see §6 |
 
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest settle` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
+
 ---
 
 ## 1. Detect the platform

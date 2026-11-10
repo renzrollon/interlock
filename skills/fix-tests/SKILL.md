@@ -4,7 +4,7 @@ description: Discover and persist how a project's tests run, then run the suite 
 license: MIT
 compatibility: Requires the project's own test tooling. Node.js >= 18 for the bundled interlock CLI.
 argument-hint: "[--e2e] [--dry-run] [--baseline <ref>] [--from-log <path>] [--reconfigure]"
-allowed-tools: Read Write Edit Glob Grep
+allowed-tools: Bash(interlock suggest *) Read Write Edit Glob Grep
 metadata:
   type: execution
   outputs:
@@ -23,6 +23,8 @@ The failure mode this skill exists to prevent is the one where a suite goes gree
 | `--baseline <ref>` | Treat failures already present at `<ref>` as pre-existing |
 | `--from-log <path>` | Parse a pasted CI log instead of running the suite first |
 | `--reconfigure` | Re-run test discovery from scratch |
+
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest fix-tests` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
 
 ---
 
