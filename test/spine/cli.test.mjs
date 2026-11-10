@@ -2799,8 +2799,8 @@ test('the new commands are in the usage text, with capture\'s refusal exit', () 
 // --- interlock notify: local since remove-the-push-notification ------------
 //
 // The push was removed. `notify checkpoint` is the spec skill's marker, read by
-// the spec meter from its argv, and every other form is a retired push that is
-// told so until 1.16.0. A topic left in the environment changes nothing: the
+// the spec meter from its argv, and it is the only form: every other one is
+// refused from 1.16.0. A topic left in the environment changes nothing: the
 // CLI reads no push variable at all, which the package pins check by source.
 
 test('notify checkpoint prints one local line, exits 0 and sends nothing, with a topic still set', () => {
@@ -2817,15 +2817,21 @@ test('notify checkpoint prints one local line, exits 0 and sends nothing, with a
   assert.ok(!(r.stdout + j.stdout).includes('secret-topic-abc'), 'the old topic reached the output')
 })
 
-test('notify --title says the push was removed and exits 0, as an unconfigured push always did', () => {
-  for (const argv of [['notify', '--title', 'a title', '--body', 'a body', '--priority', 'high'], ['notify']]) {
-    const r = run(argv, { env: { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc' } })
-    assert.equal(r.code, 0, `${argv.join(' ')}: ${r.stderr}`)
-    assert.equal(r.stdout, 'push: removed — interlock sends no notifications\n')
+test('the retired notify forms are refused: --title and friends exit 2 by name, a bare notify exits 1 with the one form', () => {
+  const env = { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc' }
+  for (const flag of ['--title', '--body', '--priority']) {
+    const r = run(['notify', flag, 'x'], { env })
+    assert.equal(r.code, 2, `${flag}: ${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`unknown flag ${flag} for interlock notify`))
+    assert.equal(r.stdout, '')
   }
-  const j = run(['notify', '--title', 'a title', '--json'])
-  assert.equal(j.code, 0, j.stderr)
-  assert.deepEqual(JSON.parse(j.stdout), { sent: false, reason: 'push: removed — interlock sends no notifications' })
+  for (const argv of [['notify'], ['notify', 'send', 'hello']]) {
+    const r = run(argv, { env })
+    assert.equal(r.code, 1, `${argv.join(' ')}: ${r.stdout}`)
+    assert.match(r.stderr, /notify checkpoint <change> is the only notify form/)
+    assert.equal(r.stdout, '')
+    assert.ok(!r.stderr.includes('secret-topic-abc'))
+  }
 })
 
 test('notify checkpoint without a change name is refused', () => {

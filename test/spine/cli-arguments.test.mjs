@@ -215,27 +215,18 @@ test('run close accepts every flag the ship drivers pass it', async () => {
   }
 })
 
-test('run close and notify keep accepting the retired push flags until 1.16.0', async () => {
-  // remove-the-push-notification D3, D4: an older driver on PATH still passes
-  // `run close --notify`, and an unknown flag exits 2, which would fail the
-  // close and leave no receipt. A script's `notify --title` is told, not refused.
+test('the retired push flags and form are gone from 1.16.0 on', async () => {
+  // remove-the-push-notification D3, D4 promised the removal at 1.16.0 in prose
+  // (CHANGELOG, D3, the source comments). This keeps it pinned: a flag put back
+  // would turn a clean refusal into a close that does nothing on a driver's say.
   const { leaves } = await loadFlagTable()
-  assert.ok(leaves.get('run close').has('notify'), 'run close no longer accepts the retired --notify')
+  assert.ok(!leaves.get('run close').has('notify'), 'run close accepts the retired --notify')
+  assert.ok(leaves.has('notify'), 'notify keeps its (empty) leaf so a retired flag is refused by name')
   for (const flag of ['title', 'body', 'priority']) {
-    assert.ok(leaves.get('notify').has(flag), `notify no longer accepts the retired --${flag}`)
+    assert.ok(!leaves.get('notify').has(flag), `notify accepts the retired --${flag}`)
   }
-})
-
-test('the retired push flags and form are gone once the version reaches 1.16.0', async () => {
-  // The removal is promised in prose (CHANGELOG, D3, the source comments). This
-  // turns the promise into a red test at the bump that owes it, instead of a
-  // compatibility shim nobody remembers to delete.
-  const [major, minor] = VERSION.split('.').map(Number)
-  if (major === 1 && minor < 16) return
-  const { leaves } = await loadFlagTable()
-  assert.ok(!leaves.get('run close').has('notify'), 'run close still accepts the retired --notify at 1.16.0 or later')
-  assert.ok(!leaves.has('notify') || !['title', 'body', 'priority'].some(f => leaves.get('notify').has(f)), 'notify still accepts --title/--body/--priority at 1.16.0 or later')
-  assert.doesNotMatch(readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8'), /RETIRED_PUSH_/, 'lib/receipt.mjs still carries the retired push row at 1.16.0 or later')
+  assert.doesNotMatch(readFileSync(join(ROOT, 'lib', 'receipt.mjs'), 'utf8'), /RETIRED_PUSH_/, 'lib/receipt.mjs carries the retired push row')
+  assert.doesNotMatch(readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8'), /RETIRED_PUSH_/, 'cli/interlock carries the retired push text')
 })
 
 test('run found accepts the flags run reviewed does, and the usage documents it with --results', async () => {

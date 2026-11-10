@@ -355,7 +355,7 @@ test('extractor: markdown reads fenced blocks and leading inline spans, not pros
 
 test('extractor: JS reads escaped inline code and argv literals, not comments or log text', () => {
   const text = [
-    "// `interlock conformance` used to be a command, and `interlock run close --notify` still is",
+    "// `interlock conformance` used to be a command, and `interlock run close --halt` still is",
     'const a = `The tick is written by \\`interlock tasks tick\\` from the record`',
     "const b = `interlock preflight could not run: ${err}`",
     "const then = { argv: ['run', 'remediated', '--round', String(plan.round)] }",

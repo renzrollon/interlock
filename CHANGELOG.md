@@ -15,6 +15,17 @@ this project adheres to Semantic Versioning 2.0.0.
 
 - **A ship run spends effort by the published table, not by the session it was started in.** Tier 3 lanes now run at `medium` and tier 4 lanes at `high` where both inherited the session's effort; tier 5 lanes, both verify checks, the ship review skeptics, the remediation fixer, and, through `interlock routing`, the `/interlock:review-code` skeptics and the `/interlock:settle` fixer drop from `xhigh` to `high`. An inter-wave fix attempt, which follows a red check, runs one step up at the new `effort: verify retry (inter-wave fix attempt)`, `xhigh`, printed by `interlock limits` and carried as `effort.verifyRetry` by `--json`. Every `agent-spawn` row in the run trajectory now records the `effort` the spawn was given, or `inherit` when it carried none. The fingerprint now covers the tier→effort table, so a plan stored before this release is planned again one time, and the reuse reason names `effortByTier`.
 
+### Removed
+
+- **BREAKING: the retired push forms are refused.** 1.15.0 removed the push and announced that two forms would stay accepted until 1.16.0, which is the removal this release makes. `interlock run close --notify` is an unknown flag and exits 2 before the close runs, and its message says the driver that passed it is older than the CLI. A close from such a driver (plugin 1.14.x or earlier) therefore records nothing: no receipt, no outcome record, the run stays open and its stage marker stays, so `git commit` stays blocked in that session. `interlock notify --title`, `--body` and `--priority` exit 2 the same way, and `interlock notify` with no `checkpoint` word exits 1 (it exited 0) and names the one form that remains, `interlock notify checkpoint <change>`, which is unchanged. Neither current driver passes `--notify`.
+
+### Upgrading
+
+- Keep the plugin and the CLI on your `PATH` at one version: plugin 1.14.x or earlier cannot close a run against a 1.16.0 CLI. Check with `interlock --version` and `npm install --location=global @renzrollon/interlock@1.16.0`. `interlock doctor` fails a CLI older than the plugin as `CLI VERSION SKEW`, and only warns when the CLI is newer, which is the direction this release breaks; a plugin that old cannot say more.
+- If a run was closed by such a driver, run `interlock run close` (or `interlock run close --halt "<reason>"` if it did not commit) without `--notify` to record it and clear the stage marker.
+- Remove `--notify` from any script that calls `interlock run close`, and `--title`, `--body` and `--priority` from any that calls `interlock notify`.
+- The release carrying this is a minor version, as 1.15.0 announced.
+
 ## [1.15.2] - 2026-11-09
 
 ### Changed

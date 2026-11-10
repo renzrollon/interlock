@@ -79,7 +79,6 @@ import {
   writeManifest
 } from '../lib/run.mjs'
 import { haltStep } from '../lib/run.mjs'
-import { RETIRED_PUSH_TEXT } from '../lib/receipt.mjs'
 import { cliVersion } from '../lib/version.mjs'
 import { drawPlanBoard, drawPlanMermaid } from '../lib/draw-plan.mjs'
 import { drawRunBoard, drawRunMermaid } from '../lib/draw-run.mjs'
@@ -295,9 +294,8 @@ Usage:
                                              spec meter. Local: prints one
                                              "checkpoint:" line, sends nothing and
                                              exits 0. --json emits
-                                             { sent: false, reason }. The
-                                             --title form is accepted until
-                                             1.16.0 and says the push was removed
+                                             { sent: false, reason }. It is
+                                             the only notify form
   interlock run start --change <name>        The ship loop, as a program. Each
                       [--tdd|--no-tdd]       (--tdd/--no-tdd override the task
                                              shape read from tasks.md)
@@ -1332,10 +1330,6 @@ const BOOLEAN_FLAGS = new Set([
   // section number, and making the name boolean would swallow that value.
   'tdd',
   'no-tdd',
-  // `run close --notify`: retired with the push, accepted until 1.16.0 so an
-  // older driver on PATH still closes its run; an unknown flag exits 2
-  // (remove-the-push-notification D3).
-  'notify',
   // `merge-confidence --require-merge`: exit 1 unless the verdict is MERGE.
   'require-merge',
   // `verify coverage --compute-base`: measure the merge base in a temporary worktree
@@ -3244,7 +3238,17 @@ async function main() {
   const unknown = firstUnknownFlag(positional, flags)
   if (unknown) {
     const version = cliVersion() ?? 'unknown'
-    const message = `unknown flag ${unknown.flag} for interlock ${unknown.leaf} (CLI ${version})`
+    // The one refusal a person did not type: a driver older than this CLI still
+    // passes the retired push flags (removed in 1.16.0). Name the cause, so the
+    // relay copy and the runner's refusal say what to do, not only what failed.
+    const retired =
+      (unknown.leaf === 'run close' && unknown.flag === '--notify') ||
+      (unknown.leaf === 'notify' && ['--title', '--body', '--priority'].includes(unknown.flag))
+    const message =
+      `unknown flag ${unknown.flag} for interlock ${unknown.leaf} (CLI ${version})` +
+      (retired
+        ? ` — ${unknown.flag} was the retired push request, removed in 1.16.0; the driver that passed it is older than this CLI, so update the plugin to ${version}, or run it without the flag`
+        : '')
     process.stderr.write(`interlock: ${message}\n\n${helpFor(USAGE, cmd)}`)
     if (json) {
       process.stdout.write(
@@ -3718,20 +3722,18 @@ async function main() {
       // Local since remove-the-push-notification: nothing here reads a
       // variable or opens a connection, and the CLI sends no notification.
       // `checkpoint` is the spec skill's marker, which the spec meter keys on
-      // by its argv alone (D2). Every other form is a retired push, accepted
-      // until 1.16.0 so a script that calls it is told and keeps its exit 0,
-      // the exit an unconfigured push always had (D4).
-      if (positional[1] === 'checkpoint') {
-        const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
-        if (!change) die('interlock notify checkpoint <change> — the change name is required')
-        emit(
-          json,
-          { sent: false, reason: 'nothing is sent: interlock sends no notifications' },
-          `checkpoint: ${change} — waiting for review; nothing is sent\n`
-        )
-        break
+      // by its argv alone (D2). It is the only form: the retired push forms
+      // were accepted through 1.15.x and are refused from 1.16.0 (D3, D4).
+      if (positional[1] !== 'checkpoint') {
+        die('interlock notify checkpoint <change> is the only notify form — the push was removed in 1.15.0 and interlock sends no notifications')
       }
-      emit(json, { sent: false, reason: RETIRED_PUSH_TEXT }, `${RETIRED_PUSH_TEXT}\n`)
+      const change = typeof positional[2] === 'string' ? positional[2].trim() : ''
+      if (!change) die('interlock notify checkpoint <change> — the change name is required')
+      emit(
+        json,
+        { sent: false, reason: 'nothing is sent: interlock sends no notifications' },
+        `checkpoint: ${change} — waiting for review; nothing is sent\n`
+      )
       break
     }
 
@@ -4758,10 +4760,7 @@ async function main() {
           halt: typeof flags.halt === 'string' ? flags.halt : null,
           hostBanners: Array.isArray(hostBanners) ? hostBanners : [],
           hostObserved,
-          hostRecords,
-          // Retired with the push; until 1.16.0 it only adds the summary's
-          // removed-push row (remove-the-push-notification D3).
-          notify: flags.notify === true
+          hostRecords
         })
         // NOT copied to LAST_STEP_PATH: a halted run closes through here, and
         // overwriting the file would replace the very step the halt reason

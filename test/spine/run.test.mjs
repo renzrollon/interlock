@@ -2468,16 +2468,14 @@ test('a host reporting cache fields for some spawns and not others degrades, nev
   }
 })
 
-// --- the close's identity rows, archive reminder, and the retired push ------
+// --- the close's identity rows, archive reminder, and the removed push -----
 //
 // Everything below drives the REAL close through the CLI. The push was removed
-// (remove-the-push-notification); an older driver on PATH may still pass
-// `--notify`, so until 1.16.0 the close accepts it, sends nothing, and adds one
-// summary row. A topic left in the environment is set below on purpose: the
+// (remove-the-push-notification) and `--notify` with it: from 1.16.0 the flag is
+// an unknown one. A topic left in the environment is set below on purpose: the
 // CLI must read it nowhere, and the network pins in test/spine/package.test.mjs
 // hold that no shipped module can open a connection at all.
 
-const RETIRED_ROW = '  push: removed — interlock sends no notifications'
 const OLD_PUSH_ENV = { INTERLOCK_NTFY_TOPIC: 'secret-topic-abc', INTERLOCK_NTFY_URL: 'http://127.0.0.1:9/' }
 
 /** A sibling change in the same tree, with every box ticked or none. */
@@ -2568,55 +2566,39 @@ test('a close without --notify prints no push row, even with a topic left in the
   }
 })
 
-test('an older driver\'s --notify closes as before and says the push was removed', () => {
-  const plain = repo()
-  const retired = repo()
-  try {
-    const without = toCleanClose(plain.root, plain.change)
-    const withFlag = toCleanClose(retired.root, retired.change, ['--notify'], { env: OLD_PUSH_ENV })
-    assert.equal(withFlag.exitCode, without.exitCode, 'the retired flag changed the exit code')
-    assert.deepEqual(withFlag.banners, without.banners, 'the retired flag raised a banner')
-    assert.equal(withFlag.summary.split('\n').filter(line => line === RETIRED_ROW).length, 1, withFlag.summary)
-    assert.equal(
-      /No degradation banners/.test(withFlag.summary),
-      /No degradation banners/.test(without.summary),
-      'the row is a row, never a banner: it must not change the clean-run line'
-    )
-    const manifest = JSON.parse(readFileSync(join(retired.root, '.claude/ship/run.json'), 'utf8'))
-    const trajectory = readFileSync(join(retired.root, '.claude/ship/runs', `${manifest.runId}.jsonl`), 'utf8')
-    assert.doesNotMatch(trajectory, /PUSH|secret-topic-abc/, 'the retired request reached the trajectory')
-  } finally {
-    cleanup(plain.root)
-    cleanup(retired.root)
-  }
-})
-
-test('a halted close and a close before any run both accept the retired --notify and print the row', () => {
+test('the retired --notify is refused by name before the close runs, with its cause, and the run is left open and closable', () => {
+  // Removed in 1.16.0 (remove-the-push-notification D3). A driver older than the
+  // CLI on PATH still passes it: the refusal must say why, must write nothing
+  // (the run stays open, its stage marker stays), and the same close without the
+  // flag must still work, which is the recovery the upgrade notes give.
   const { root, change } = repo()
   try {
-    const early = run(root, ['run', 'close', '--halt', 'stopped before start', '--notify'], { expectExit: 1, env: OLD_PUSH_ENV }).step
-    assert.match(early.summary, /^ {2}run: none — the run halted before a plan was adopted$/m)
-    assert.ok(early.summary.split('\n').includes(RETIRED_ROW), early.summary)
-    toTail(root, change, [])
-    const halted = run(root, ['run', 'close', '--halt', 'stopped for the test', '--notify'], { expectExit: 1, env: OLD_PUSH_ENV }).step
-    assert.ok(halted.summary.split('\n').includes(RETIRED_ROW), halted.summary)
-    assert.ok(!halted.banners.some(b => /PUSH/.test(b)), `a banner names the push: ${halted.banners.join(' | ')}`)
-  } finally {
-    cleanup(root)
-  }
-})
-
-test('closing a foreign run with the retired --notify prints the row and still records nothing', () => {
-  const { root, change } = repo()
-  try {
-    toFirstBatch(root, change)
-    editManifest(root, m => {
-      m.schema = 'interlock.run/2'
-    })
-    const manifestBefore = readFileSync(join(root, MANIFEST_REL), 'utf8')
-    const closed = runAny(root, ['run', 'close', '--halt', 'x', '--notify'])
-    assert.ok(closed.step && closed.step.summary.split('\n').includes(RETIRED_ROW), JSON.stringify(closed.step))
-    assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the foreign manifest was rewritten')
+    const verified = toTail(root, change, [])
+    const commit = run(root, [...verified.then.argv]).step
+    assert.equal(commit.action, 'commit')
+    // The marker a run's own commit step publishes, with a live pid, as the
+    // close test below does: a refused close must leave it exactly as it was.
+    writeStage(change, 'commit', { root, pid: process.pid })
+    assert.ok(existsSync(stagePath(change, root)), 'the marker must exist for "left as it was" to mean anything')
+    const before = shipSnapshot(root)
+    for (const argv of [['run', 'close', '--notify'], ['run', 'close', '--halt', 'stopped', '--notify']]) {
+      const refused = spawnSync(process.execPath, [BIN, ...argv, '--json'], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, ...OLD_PUSH_ENV }
+      })
+      assert.equal(refused.status, 2, `${argv.join(' ')}: ${refused.stderr}`)
+      assert.match(refused.stderr, /unknown flag --notify for interlock run close/)
+      assert.match(refused.stderr, /retired push request, removed in 1\.16\.0.*update the plugin/)
+      const out = JSON.parse(refused.stdout)
+      assert.equal(out.unknownFlag, '--notify', 'the relay copy carries the refusal, which is all an older driver reads')
+      assert.match(out.error, /removed in 1\.16\.0/)
+      assert.ok(!(refused.stdout + refused.stderr).includes('secret-topic-abc'))
+      assert.deepEqual(shipSnapshot(root), before, `${argv.join(' ')} wrote to .claude/ship`)
+    }
+    const closed = run(root, ['run', 'close'], { results: [{ ok: true, sha: 'abc1234' }] }).step
+    assert.equal(closed.exitCode, 0, 'the close without the flag still closes the run it was refused for')
+    assert.ok(!existsSync(stagePath(change, root)), 'and clears the marker the refused close left')
   } finally {
     cleanup(root)
   }

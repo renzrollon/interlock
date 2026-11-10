@@ -874,9 +874,9 @@ Every review record a run writes MUST carry a dimension record holding the dimen
 - **WHEN** the round is adjudicated and the review record is rewritten
 - **THEN** the rewritten record carries the same selected, run, unavailable and skipped dimensions
 
-### Requirement: The closing step SHALL produce the summary and exit code both hosts print, from what the run observed, and SHALL accept a retired push request without acting on it
+### Requirement: The closing step SHALL produce the summary and exit code both hosts print, from what the run observed, and SHALL refuse a retired push request
 
-`interlock run close` MUST build the receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary and the banner list, which both drivers print verbatim. It MUST accept host-only banners. Neither driver MAY pass `--notify`. Until 1.16.0 the close MUST accept `--notify` and do nothing but add one summary row saying the push was removed.
+`interlock run close` MUST build the receipt from the run state, the results file and the manifest, append the outcome record, record the closing trajectory event, run the reconstructability check, and return the exit code, the summary and the banner list, which both drivers print verbatim. It MUST accept host-only banners. Neither driver MAY pass `--notify`. From 1.16.0 the close MUST refuse `--notify` as an unknown flag, exit 2, before it reads or writes anything.
 
 #### Scenario: Happy path — a clean lean run closes with the shared summary
 
@@ -905,12 +905,12 @@ Every review record a run writes MUST carry a dimension record holding the dimen
 - **THEN** neither includes `--notify`
 - **AND** neither contains a network call, a topic, or any notification text of its own
 
-#### Scenario: Edge case — an older driver's push request closes the run and is spoken
+#### Scenario: Failure — an older driver's push request is refused and writes nothing
 
-- **GIVEN** a run ready to close, and a call to `run close --notify`
-- **WHEN** the close returns
-- **THEN** the exit code and banner list are those of the same close without `--notify`, and "No degradation banners" is still printed for a clean run
-- **AND** the summary carries one row saying the push was removed, and no request is made
+- **GIVEN** a run at its commit stage, and a call to `run close --notify` from a driver older than the CLI
+- **WHEN** the CLI answers
+- **THEN** it exits `2` naming `--notify` and saying the driver that passed it is older than the CLI, and prints nothing else on stdout but the `--json` refusal
+- **AND** the manifest, the trajectory and the stage marker are as they were, and `run close` without the flag then closes the run
 
 #### Scenario: Failure — a driver passes the retired flag again
 

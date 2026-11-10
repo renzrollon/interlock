@@ -1731,9 +1731,7 @@ test('a run with leftovers does not print a clean complete', () => {
   for (const line of [
     'ARCHIVE PENDING — ',
     'also unarchived: ',
-    'run: none — the run halted before a plan was adopted',
-    // The retired push's row (remove-the-push-notification D3).
-    'push: removed — interlock sends no notifications'
+    'run: none — the run halted before a plan was adopted'
   ]) {
     assert.ok(receipt.includes(line), `the receipt no longer prints "${line}"`)
     assert.ok(!ship.includes(line), `ship.js restates the receipt's "${line}"`)
@@ -2148,9 +2146,9 @@ function invokedSubcommands(text) {
 }
 
 test('neither driver requests a push from the close', () => {
-  // The push was removed (remove-the-push-notification). `run close` still
-  // accepts `--notify` until 1.16.0 for an older driver on PATH; a driver of
-  // this version that passed it again would be the two drifting apart.
+  // The push was removed (remove-the-push-notification), and `run close` refuses
+  // `--notify` as an unknown flag from 1.16.0; a driver that passed it again
+  // would fail every close.
   for (const rel of ['workflows/ship.js', 'cli/interlock-run']) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     const start = text.indexOf('function closeArgs()')
@@ -3544,8 +3542,8 @@ test('the block is always printed: either the degradations, or that there were n
   )
 })
 
-test('identity rows, the retired push row and the archive reminder (design D7, D8, D9)', async () => {
-  const { formatRunSummary, RETIRED_PUSH_ROW } = await import('../lib/receipt.mjs')
+test('identity rows and the archive reminder (design D7, D8, D9)', async () => {
+  const { formatRunSummary } = await import('../lib/receipt.mjs')
   const base = { change: 'demo-change', summary: { plan: null }, flags: {}, degradations: [] }
 
   const defaults = formatRunSummary(base)
@@ -3582,18 +3580,10 @@ test('identity rows, the retired push row and the archive reminder (design D7, D
   assert.doesNotMatch(leftovers, /ARCHIVE PENDING/, 'leftovers are not a complete change either')
   assert.doesNotMatch(leftovers, /also unarchived/)
 
-  // An older driver's `--notify` (remove-the-push-notification D3): one row,
-  // and the degradation block exactly as it is without it.
-  const retiredPush = formatRunSummary({ ...base, pushRetired: true })
-  assert.equal(retiredPush.split('\n').filter(line => line === RETIRED_PUSH_ROW).length, 1, retiredPush)
-  assert.equal(retiredPush.replace(`${RETIRED_PUSH_ROW}\n`, ''), defaults, 'the retired row changed more than its own line')
-  // A truthy non-boolean is not the flag.
-  assert.doesNotMatch(formatRunSummary({ ...base, pushRetired: 'yes' }), /^ {2}push: /m)
-
-  for (const output of [defaults, clean, halted, leftovers, retiredPush]) {
+  for (const output of [defaults, clean, halted, leftovers]) {
     const newLines = output
       .split('\n')
-      .filter(line => /^ {2}(run|project|cwd|push|also unarchived): |^ARCHIVE PENDING —/.test(line))
+      .filter(line => /^ {2}(run|project|cwd|also unarchived): |^ARCHIVE PENDING —/.test(line))
     assert.ok(newLines.length > 0, 'each summary carries at least one new row to check')
     for (const line of newLines) {
       assert.doesNotMatch(line, /LEAN SHIP/, 'a new row must never fold in the lean-ship line')

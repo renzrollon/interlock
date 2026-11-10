@@ -331,7 +331,7 @@ The query's stdout and exit code are what they would be without it. It is the sa
 
 No longer raised. Interlock has sent no push of its own since 1.15.0 (change `remove-the-push-notification`; the meter's local notification request to the engine is separate), so a current close never carries this banner or a `push:` row about delivery. The section stays for a reader of an older trajectory: before 1.15.0, a close called with `--notify` and a configured topic posted one message to an ntfy server, and a failed post was a `PUSH FAILED: <reason>` banner that never moved the exit code.
 
-A close from a driver older than the CLI on PATH may still pass `--notify`. Until 1.16.0 the close accepts it, sends nothing, keeps its exit code and banners as they would be without it, and prints one summary row, `push: removed — interlock sends no notifications`. To be reached while away from the terminal, use Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) push.
+A close from a driver older than the CLI on PATH may still pass `--notify`. Through 1.15.x the close accepted it and printed one summary row, `push: removed — interlock sends no notifications`; from 1.16.0 it is an unknown flag and exits 2 before the close runs, so that run stays open and its stage marker stays until the close is run without it. To be reached while away from the terminal, use Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) push.
 
 ### `TRAJECTORY APPEND FAILED`
 
