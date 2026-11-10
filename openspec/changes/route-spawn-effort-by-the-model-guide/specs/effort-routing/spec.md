@@ -85,6 +85,13 @@ Rationale: "a cap written down twice is a cap that drifts" — the same reason t
 - **THEN** its emitted effort is `high`
 - **AND** no edit to the routing functions was required to effect the change
 
+#### Scenario: Edge case — a plan stored under another effort table is rebuilt, naming the table
+
+- **GIVEN** a stored plan and fingerprint built under one tier→effort table, or before the table was part of the fingerprint
+- **WHEN** the table in `lib/limits.mjs` differs from the one the plan was built under and the next run checks plan reuse
+- **THEN** the plan is rebuilt, not reused, so its lane report cannot name an effort the spawn does not carry
+- **AND** the reuse reason names `effortByTier` and does not say the artifacts were edited
+
 ## REMOVED Requirements
 
 ### Requirement: Dispatch applies the lane's effort, and the verify and skeptic steps run at their published effort

@@ -49,6 +49,12 @@ Red until section 2: the table values, the `EFFORT.verifyRetry` key, the `format
 
 - [x] 3.1 With section 2 complete, run `npm test` (send its output to a file under `$TMPDIR`, never under the repository) and `npm run validate`. Then read three real answers and confirm they match `design.md`: the `effort:` rows of `node cli/interlock limits`, `node cli/interlock routing settle-fixer`, and `node cli/interlock limits --json` for `effort.verifyRetry`. Verify: both commands exit 0 and the three answers hold the values in `design.md` D10.
 
+## 4. Review round 0 (PR #39)
+
+- [x] 4.1 `lib/plan-fingerprint.mjs`: add `effortByTier` to `capsOf`, the reuse reason, the canonical text and `formatFingerprint`, so the re-plan the proposal states is true; pin it in `test/spine/plan-fingerprint.test.mjs` (hash moves with the table, a moved table rebuilds naming it, a pre-cap fingerprint rebuilds once).
+- [x] 4.2 `site/Run.dc.html` and `site/DESIGN-PROMPT.md`: board rows `T3 inherit` / `T4 inherit` read `T3 medium` / `T4 high`, as the fixture board does; the strict `review` row and its narration name the per-dimension reviewers at the session's effort and the skeptics at `high`.
+- [x] 4.3 `CHANGELOG.md` names the `/interlock:review-code` skeptics beside the settle fixer; `lib/checkpoint-card.mjs` header rewrapped.
+
 ## Workflow follow-up
 
 - Ship this after Brief 1, `suggest-a-session-model-per-skill`: both edit `lib/limits.mjs`, `cli/interlock` and `CHANGELOG.md`.

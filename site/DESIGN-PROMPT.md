@@ -741,7 +741,7 @@ Columns: state · agents spawned · CLI called after · branch.
 | `run record-batch` | none | records outcomes against the run's own `git status`, not the agent's claim; folds worktrees under `--isolate-waves`; ticks the recorded-ok tasks | another batch → next batch. Wave done and another follows → inter-wave verify unless skipped (docs-only wave, red wave, or the per-run cap). No wave follows → done. Failures over the cap → halt. A real collision → halt naming the path and both lanes. |
 | `verify` (inter-wave) | one verify agent, or none when the plan has no steps. Runs the commands the test profile names, verbatim, and reports exit codes and counts. It is never asked whether the run may continue. | `interlock run judge --context inter-wave` | green → next wave. Red → a retry briefed as a repair, up to 2 attempts per wave. Budget spent and blocking → halt. Budget spent and not blocking → warn, advance, and print `UNRESOLVED ERRORS CARRIED PAST A WAVE` at close. |
 | `replan` | one haiku ping | `interlock run replan` | a declined or empty revision → carry on. A revision that touches an already-executed group → halt. Two per run. |
-| `review` (strict) | one review worker at `xhigh` effort. Inside its own context it fans out one reviewer per dimension, then two skeptics per finding. The CLI selects the dimensions from the observed changed paths and inlines each rubric and the repo's `REVIEW.md` into the briefing. | `interlock run reviewed` | nothing survived → straight to final verify, no round spent. Otherwise → remediation round 1. |
+| `review` (strict) | one reviewer per dimension, at the session's model and effort, then two skeptics per finding at `high`. The CLI selects the dimensions from the observed changed paths and inlines each rubric and the repo's `REVIEW.md` into the briefing. | `interlock run reviewed` | nothing survived → straight to final verify, no round spent. Otherwise → remediation round 1. |
 | `remediate` (strict) | one fixer worker per round at `high`; its plan is one fixer per file group, unscoped findings last, re-reviewing only the dimensions that raised something | `interlock run remediated --round n` | every blocker cleared → jump to the verdict. Otherwise the next round, up to 2. |
 | `verdict` (strict) | one worker that fixes nothing and re-reviews nothing | — | blockers remain → halt, and no commit step is ever emitted. Clean → final verify. |
 | `verify-final` (marker `fix-tests`) | one verify agent. The marker is `fix-tests` because the final step repairs a red suite by root cause, and that repair is exactly when weakening a test is the hazard, so the guard is in deny for test files. | `interlock run judge --context final` | unit red, weakened, or unrun → halt. Typecheck red → `TYPECHECK FAILED (non-blocking at the final gate)`. E2E red → `E2E FAILED (non-blocking by policy)` and the commit happens anyway. Green → handoff or commit. |
@@ -1000,7 +1000,7 @@ Exit 1. No commit. No question. The resume card is the one file a halted run lea
 - **Step** advances one step and highlights that step's node; earlier nodes stay in a visited state (ink at 60%).
 - **Play** runs the steps at 1.2 seconds each; **Reset** clears the terminal and the highlights.
 - The `--strict` toggle, when on, inserts three steps between step 11 and step 12, each of them narration and one command:
-  - `review`: `# one review worker fans out one reviewer per dimension, then two skeptics per finding` · `# four dimensions always run; devops and security are added by a rule over the changed paths`
+  - `review`: `# one reviewer per dimension, then two skeptics per finding at high` · `# four dimensions always run; devops and security are added by a rule over the changed paths`
   - `reviewed`: `$ interlock run reviewed --results <file>` · `# findings that survived two skeptics go to remediation round 1`
   - `remediation`: `$ interlock run remediated --round 1 --results <file>` · `# every blocker cleared: straight to the verdict, then final verification`
 
@@ -1053,24 +1053,24 @@ An output panel, full width, scrolling inside its own container. Mono caption ab
 ```
 plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted
 ┌─ wave 1 · idx 0 · group 1 · impl · 1 batch ───────────────────────────────────────────────────────
-│ b0 1.7 sonnet T4 inherit ok           · Docs (design D2, D4, D5, D7
-│ b0 1.4 sonnet T3 inherit ok           · In lib/receipt.mjs (design D4, D5, D7
+│ b0 1.7 sonnet T4 high    ok           · Docs (design D2, D4, D5, D7
+│ b0 1.4 sonnet T3 medium  ok           · In lib/receipt.mjs (design D4, D5, D7
 │ b0 1.2 sonnet T2 low     ok           · Create lib/project-slug.mjs exporting pro…
 │ b0 1.3 sonnet T2 low     ok           · In lib/limits.mjs add notifyTimeoutMs: 50…
 │ b0 1.6 haiku  T1 low     not recorded · Verify — do not edit
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   verify after idx 0 · 1 skip for group 1 · state does not say idx 0 or idx 1 · no-detectable-comma…
 ┌─ wave 2 · idx 1 · group 1 · impl · 5 batches ─────────────────────────────────────────────────────
-│ b0 1.5 sonnet T4 inherit failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append
-│ b0 1.1 sonnet T3 inherit failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4
-│ b1 2.1 sonnet T4 inherit current      · In lib/run.mjs (design D1, D5, D7
-│ b2 2.2 sonnet T3 inherit not reached  ←2.1 · In bin/interlock (design D1, D14): add
+│ b0 1.5 sonnet T4 high    failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append
+│ b0 1.1 sonnet T3 medium  failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4
+│ b1 2.1 sonnet T4 high    current      · In lib/run.mjs (design D1, D5, D7
+│ b2 2.2 sonnet T3 medium  not reached  ←2.1 · In bin/interlock (design D1, D14): add
 │ b3 2.3 sonnet T2 low     not reached  ←2.2 · In workflows/ship.js and bin/interlock-ru…
 │ b4 3.2 sonnet T2 low     not reached  · In skills/spec/SKILL.md §6 (design D6
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   verify after idx 1 · not reached · group 1 skips: see idx 0
 ┌─ test wave · idx 2 · test · 1 batch ──────────────────────────────────────────────────────────────
-│ b0 3.1 sonnet T3 inherit not reached  · In test/workflows.test.mjs (design D1, D5…
+│ b0 3.1 sonnet T3 medium  not reached  · In test/workflows.test.mjs (design D1, D5…
 │ b0 3.3 sonnet T2 low     not reached  · Run 'openspec validate harden-unattended-…
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   unplaced: task-1.6-verify-settings · wave 1 impl · no error recorded
@@ -1330,7 +1330,7 @@ Intro: An unverified review reports everything it notices, so you learn to skim 
 
 Four dimensions always run: `language`, `architecture`, `qa`, `technical-lead`. Two are added by a deterministic rule over the run's observed changed paths, never by a reviewer's judgement: `devops` when a path suggests deploy, CI, config or infrastructure impact; `security` when a path matches the authentication, permissions or tenancy signal. The rule is the same classifier the rest of the loop uses, so the two places the question is answered cannot drift apart. A dimension name that resolves to no rubric file is an error that names the six, never a silent partial review.
 
-In a ship run, one review worker at the highest reasoning effort fans out one reviewer per dimension, then two skeptics per finding, inside its own context, and returns counts only. The rubric for each dimension is read from the plugin, not the target repo, and inlined into the briefing. A rubric that could not be read still gets a heading and a `REVIEW RUBRIC UNAVAILABLE` banner; that reviewer works from the name alone.
+In a ship run, the CLI spawns one reviewer per dimension at the session's model and effort, then two skeptics per finding at `high`. The rubric for each dimension is read from the plugin, not the target repo, and inlined into the briefing. A rubric that could not be read still gets a heading and a `REVIEW RUBRIC UNAVAILABLE` banner; that reviewer works from the name alone.
 
 ### E.1.2 Two skeptics per finding
 

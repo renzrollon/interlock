@@ -15,7 +15,7 @@ This is Brief 2 of an epic. Brief 1, `suggest-a-session-model-per-skill`, tells 
 - **Every `agent-spawn` row records the effort the spawn was given**, or `inherit` when the live path gave it none. A source that holds no non-empty string is recorded as `effort: null`, the key present. A string still longer than 40 characters after trim and whitespace collapse is stored as 40 characters ending in an ellipsis, not dropped. A row written before this change has no such field.
 - Models do not change: the tier-to-model rule, the lane packing, the spawn model vocabulary and the price table are untouched. The planner, handoff, commit and replan spawns still inherit.
 
-A plan stored before this change is re-planned one time, because a plan's fingerprint covers each lane's effort.
+A plan stored before this change is re-planned one time, because a plan's fingerprint covers the tier→effort table (`effortByTier`).
 
 ## Capabilities
 
