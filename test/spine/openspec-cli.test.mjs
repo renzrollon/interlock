@@ -743,6 +743,11 @@ else if (cmd === 'archive') {
 }
 else { console.error('unknown command: ' + a.join(' ')); process.exit(2) }
 `
+  // The stub is extensionless CommonJS, so Node takes its module type from the nearest
+  // package.json up the tree. Pin it here: a stray `"type": "module"` above TMPDIR (seen
+  // 2026-11-10 at /private/tmp/claude-501/package.json) otherwise loads it as ESM and
+  // every `require` throws before `--version` can answer.
+  put(join(dir, 'package.json'), '{"type":"commonjs"}\n')
   return put(join(dir, 'stub-openspec'), body, 0o755)
 }
 

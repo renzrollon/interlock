@@ -892,6 +892,7 @@ const HOST_FIXTURES = join(ROOT, 'test', 'fixtures', 'hosts')
 function runnerRepo({
   paths = [['docs/a.md'], ['docs/b.md']],
   tiers = [4, 4],
+  groups = null,
   profile = null
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'interlock-runner-'))
@@ -917,7 +918,7 @@ function runnerRepo({
   put(FIXTURE_CLASSIFIED_PATH, {
     tasks: ids.map((id, i) => ({
       id,
-      group: 1,
+      group: groups ? groups[i] : 1,
       description: `Write ${names[i]}`,
       tier: tiers[i],
       model: tiers[i] >= 5 ? 'opus' : 'sonnet',
@@ -1475,10 +1476,47 @@ test('a known ACP wrapper prints the subscription and override banners; a launch
   }
 })
 
+test('--host claude forwards a fix-attempt verify step its published retry effort', () => {
+  assert.ok(EFFORT.verifyRetry, 'the verify retry effort must be published for this test to mean anything')
+  // Two groups of two path-disjoint tier-4 lanes, so neither wave fuses into a
+  // chain and an inter-wave check runs between them; the fixture answers that
+  // check red once, so the run emits a fix attempt.
+  const { root, change } = runnerRepo({
+    paths: [['src/lane-1.1.mjs'], ['src/lane-1.2.mjs'], ['src/lane-1.3.mjs'], ['src/lane-1.4.mjs']],
+    tiers: [4, 4, 4, 4],
+    groups: [1, 1, 2, 2],
+    profile: UNIT_PROFILE
+  })
+  const marker = join(root, '..', `${root.split('/').pop()}-red-once`)
+  try {
+    const { stdout, stderr } = runRunnerCaptured('claude', {
+      fixture: CLAUDE_FIXTURE,
+      fixtureFlags: ['--fixture-ship', '--fixture-per-lane-dir=src'],
+      flags: ['--verbose'],
+      env: { INTERLOCK_FIXTURE_RED_VERIFY_ONCE: marker },
+      root,
+      change
+    })
+    const verifyLines = stderr.split('\n').filter(line => /effort routing [^\n]*verify/.test(line))
+    assert.ok(verifyLines.length >= 2, `the first attempt and the fix attempt each reach the host:\n${stdout}\n${stderr}`)
+    assert.match(verifyLines[0], new RegExp(`: ${EFFORT.verify} → `), verifyLines[0])
+    assert.ok(
+      verifyLines.slice(1).some(line => new RegExp(`: ${EFFORT.verifyRetry} → `).test(line)),
+      `the fix attempt's retry effort must reach the host unchanged:\n${verifyLines.join('\n')}`
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(marker, { force: true })
+  }
+})
+
 test('a run whose spawns all carry a null effort prints neither effort line', () => {
-  // The tier-4 pair: no published effort, so nothing was requested and nothing
+  // Untiered lanes (rewritten from the tier-4 pair, which now carries a
+  // published level): no tier to route by, so nothing was requested and nothing
   // can be unavailable. Silence here is correct; a banner would be a false alarm.
-  const { root, change } = runnerRepo()
+  // `interlock waves` refuses an untiered task, so the run halts at planning and
+  // its one spawn is the planner, which carries no effort by design.
+  const { root, change } = runnerRepo({ tiers: [null, null] })
   try {
     const { stdout, stderr } = runRunnerCaptured('claude', {
       fixture: CLAUDE_FIXTURE,
@@ -1487,6 +1525,7 @@ test('a run whose spawns all carry a null effort prints neither effort line', ()
       root,
       change
     })
+    assert.match(stdout, /tier must be an integer 1-5/, stdout)
     assert.doesNotMatch(stdout, /effort routing: applied on/, stdout)
     assert.doesNotMatch(stdout, /EFFORT ROUTING UNAVAILABLE/, stdout)
     assert.doesNotMatch(stderr, /effort routing/, stderr)
@@ -1963,8 +2002,11 @@ test('the CLI dispatches every published effort — lanes, verify and the skepti
   // The lane spawn carries its lane's derived effort, beside the model.
   assert.match(run, /model: laneModel\(lane\),\n\s*effort: laneEffort\(lane\)/)
   // The verify step reads its published effort, for both the inter-wave check
-  // and the final one: a table row nobody reads is a row that stops governing.
-  assert.match(run, /effort: EFFORT\.verify/)
+  // and the final one, and the published retry effort on an inter-wave fix
+  // attempt: a table row nobody reads is a row that stops governing. (Rewritten
+  // pin, route-spawn-effort-by-the-model-guide D22: it pins "A verify spawn SHALL
+  // carry the verify effort on a first attempt and the retry effort on a fix attempt".)
+  assert.match(run, /effort: interWave && carried\.fixAttempt > 0 \? EFFORT\.verifyRetry : EFFORT\.verify\b/)
   // And a host passes it through rather than choosing one — both hosts, with
   // the same truthy-only spread, so a null effort never reaches a host as a key.
   const spread = /\.\.\.\(s\.effort \? \{ effort: s\.effort \} : \{\}\)/

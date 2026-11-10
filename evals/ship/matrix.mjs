@@ -51,7 +51,8 @@ export const GRID_MODELS = Object.freeze(['claude-opus-5-5', 'claude-sonnet-5-5'
 
 /**
  * The efforts a cell may run at. `xhigh` is in, because the edit these rows would
- * inform compares a tier at `high` with today's `xhigh`; `max` is out (design D2).
+ * inform compares a tier at `high` with the `xhigh` tier 5 ran at before
+ * `high` became its published effort; `max` is out (design D2).
  */
 export const GRID_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh'])
 

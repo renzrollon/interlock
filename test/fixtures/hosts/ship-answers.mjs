@@ -21,7 +21,7 @@
 // exists before the planner has run, so a repository seeded with the real file
 // would start every run with no classification at all.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** Write a file relative to the agent's own working directory (its lane worktree). */
@@ -135,7 +135,9 @@ export function reviewFiles() {
  * @param {object} [opts]
  * @param {string} [opts.writePath] the file an implementer lane writes; a test
  *   that needs two lanes to collide points them at the same one.
- * @param {boolean} [opts.perLane] derive the path from the lane's own task ids
+ * @param {boolean|string} [opts.perLane] derive the path from the lane's own task ids
+ *   (`docs/lane-<id>.md`); a string names a source directory instead
+ *   (`<dir>/lane-<id>.mjs`), for a test whose wave must not read as docs-only.
  *   instead, so a batch of disjoint lanes really is disjoint on the filesystem.
  * @param {object} [opts.schema] the result schema this spawn was given. The ACP
  *   adapter appends it to the prompt (there is no schema channel on that wire),
@@ -163,6 +165,14 @@ export function shipAnswer(text, { writePath = 'README.md', perLane = false, sch
   if (/^Commit change /m.test(text)) return { ok: true, sha: 'fixture' }
   if (/classified\.json/.test(text)) return plannerAnswer()
   if (requires('results')) {
+    // A test that needs a fix attempt names a marker file: the first verify
+    // answer that finds it absent creates it and reports a red unit suite, so
+    // the run emits a fix attempt; every later answer is green.
+    const redOnce = process.env.INTERLOCK_FIXTURE_RED_VERIFY_ONCE
+    if (redOnce && !existsSync(redOnce)) {
+      writeFileSync(redOnce, 'red\n')
+      return { results: [{ kind: 'unit', exitCode: 1, total: 1, passed: 0, failed: 1, failures: ['fixture red'] }] }
+    }
     return { results: [{ kind: 'unit', exitCode: 0, total: 1, passed: 1, failed: 0 }] }
   }
   if (requires('revised')) return { revised: false }
@@ -176,7 +186,10 @@ export function shipAnswer(text, { writePath = 'README.md', perLane = false, sch
   // looked exactly like a real collision.
   const ids = [...text.matchAll(/^TASK (?:\d+\/\d+ — )?([^:\n]+):/gm)].map(m => m[1].trim())
   const one = requires('handoff') && requires('id')
-  if (perLane) writePath = `docs/lane-${(ids[0] || 'lane').replace(/[^\w.-]+/g, '-')}.md`
+  if (perLane) {
+    const lane = (ids[0] || 'lane').replace(/[^\w.-]+/g, '-')
+    writePath = typeof perLane === 'string' ? `${perLane}/lane-${lane}.mjs` : `docs/lane-${lane}.md`
+  }
   const handoff = id => ({
     schema: 'interlock.wave-handoff/1',
     taskId: id,

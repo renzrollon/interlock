@@ -214,7 +214,7 @@ class Component extends DCLogic {
       '  serialized 1.3: same lane in wave 1 (lib/report.mjs held by 1.1)',
       '  lane 1.1 → 1.3: 2 tasks in wave 1 on one sonnet/T3 agent',
       '  cohesion 3.1 → 3.2: 2 path-disjoint tasks in the test wave on one sonnet/T2 agent (cap 8)',
-      '  effort 1.1 → 1.3: inherited (by policy) (tier 3)',
+      '  effort 1.1 → 1.3: medium (tier 3)',
       '  effort 3.1 → 3.2: low (tier 2)',
       'projected agents: 10 (5 implementers + 3 record + 2 verify)'
     ];
@@ -232,7 +232,7 @@ class Component extends DCLogic {
       '    - [opus/T2] 3.2 unit tests for the flag parsing',
       '  clamped 1.3: opus → sonnet (tier 3)',
       '  solo 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: 7 tasks, the whole change on one opus/T4 agent',
-      '  effort 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: inherited (by policy) (tier 4)',
+      '  effort 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: high (tier 4)',
       'projected agents: 2 (1 implementers + 1 record + 0 verify)'
     ];
     var summaryTop = [
@@ -285,7 +285,7 @@ class Component extends DCLogic {
       out.push({ node: 'batch', visit: ['record_batch', 'done'], lines: withIso(['# the test wave: tasks 3.1+1, one agent, 3.1 then 3.2', '$ interlock run record-batch --results <file>', '# no wave follows; a lean ship goes straight to final verification'], 2) });
     }
     if (strict) {
-      out.push({ node: 'review', lines: ['# one review worker fans out one reviewer per dimension, then two skeptics per finding', '# four dimensions always run; devops and security are added by a rule over the changed paths'] });
+      out.push({ node: 'review', lines: ['# one reviewer per dimension, then two skeptics per finding at high', '# four dimensions always run; devops and security are added by a rule over the changed paths'] });
       out.push({ node: 'reviewed', lines: ['$ interlock run reviewed --results <file>', '# findings that survived two skeptics go to remediation round 1'] });
       out.push({ node: 'remediation', visit: ['verdict_gate'], lines: ['$ interlock run remediated --round 1 --results <file>', '# every blocker cleared: straight to the verdict, then final verification'] });
     }
@@ -498,24 +498,24 @@ class Component extends DCLogic {
     var board = [
       'plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted',
       '┌─ wave 1 · idx 0 · group 1 · impl · 1 batch ───────────────────────────────────────────────────────',
-      '│ b0 1.7 sonnet T4 inherit ok           · Docs (design D2, D4, D5, D7',
-      '│ b0 1.4 sonnet T3 inherit ok           · In lib/receipt.mjs (design D4, D5, D7',
+      '│ b0 1.7 sonnet T4 high    ok           · Docs (design D2, D4, D5, D7',
+      '│ b0 1.4 sonnet T3 medium  ok           · In lib/receipt.mjs (design D4, D5, D7',
       '│ b0 1.2 sonnet T2 low     ok           · Create lib/project-slug.mjs exporting pro…',
       '│ b0 1.3 sonnet T2 low     ok           · In lib/limits.mjs add notifyTimeoutMs: 50…',
       '│ b0 1.6 haiku  T1 low     not recorded · Verify — do not edit',
       '└───────────────────────────────────────────────────────────────────────────────────────────────────',
       '  verify after idx 0 · 1 skip for group 1 · state does not say idx 0 or idx 1 · no-detectable-comma…',
       '┌─ wave 2 · idx 1 · group 1 · impl · 5 batches ─────────────────────────────────────────────────────',
-      '│ b0 1.5 sonnet T4 inherit failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append',
-      '│ b0 1.1 sonnet T3 inherit failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4',
-      '│ b1 2.1 sonnet T4 inherit current      · In lib/run.mjs (design D1, D5, D7',
-      '│ b2 2.2 sonnet T3 inherit not reached  ←2.1 · In bin/interlock (design D1, D14): add',
+      '│ b0 1.5 sonnet T4 high    failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append',
+      '│ b0 1.1 sonnet T3 medium  failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4',
+      '│ b1 2.1 sonnet T4 high    current      · In lib/run.mjs (design D1, D5, D7',
+      '│ b2 2.2 sonnet T3 medium  not reached  ←2.1 · In bin/interlock (design D1, D14): add',
       '│ b3 2.3 sonnet T2 low     not reached  ←2.2 · In workflows/ship.js and bin/interlock-ru…',
       '│ b4 3.2 sonnet T2 low     not reached  · In skills/spec/SKILL.md §6 (design D6',
       '└───────────────────────────────────────────────────────────────────────────────────────────────────',
       '  verify after idx 1 · not reached · group 1 skips: see idx 0',
       '┌─ test wave · idx 2 · test · 1 batch ──────────────────────────────────────────────────────────────',
-      '│ b0 3.1 sonnet T3 inherit not reached  · In test/workflows.test.mjs (design D1, D5…',
+      '│ b0 3.1 sonnet T3 medium  not reached  · In test/workflows.test.mjs (design D1, D5…',
       '│ b0 3.3 sonnet T2 low     not reached  · Run \'openspec validate harden-unattended-…',
       '└───────────────────────────────────────────────────────────────────────────────────────────────────',
       '  unplaced: task-1.6-verify-settings · wave 1 impl · no error recorded',

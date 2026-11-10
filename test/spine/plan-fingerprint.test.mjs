@@ -40,7 +40,7 @@ import {
   formatPlanReuse,
   formatFingerprint
 } from '../../lib/plan-fingerprint.mjs'
-import { SOLO, LANE_CAPS } from '../../lib/limits.mjs'
+import { EFFORT, SOLO, LANE_CAPS } from '../../lib/limits.mjs'
 import { planWaves, laneEffort, laneModel } from '../../lib/waves.mjs'
 
 const CHANGE = 'add-widget'
@@ -780,6 +780,68 @@ test('a moved cap and an edited artifact are both named', () => {
   assert.equal(result.status, REUSE_MISMATCH)
   assert.match(result.reason, /opusMinTier/)
   assert.match(result.reason, /edited since the plan was built/)
+  clean(root)
+})
+
+// ---------------------------------------------------------------------------
+// The effort table.
+//
+// A lane's effort is derived live from `EFFORT.byTier`, and the plan's lane
+// report records it, as it does the model. A stored plan built under another
+// table — including every plan stored before the table was a cap — must be
+// rebuilt, or `PLAN REUSED` would print an effort the spawn does not ask for.
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with tier 3's effort at `level`, restoring it whatever happens. */
+function withTier3Effort(level, fn) {
+  const was = EFFORT.byTier[3]
+  EFFORT.byTier[3] = level
+  try {
+    return fn()
+  } finally {
+    EFFORT.byTier[3] = was
+  }
+}
+
+const otherLevel = level => (level === 'low' ? 'high' : 'low')
+
+test('the effort table is part of the fingerprint and printed with the other caps', () => {
+  const { root } = makeRepo()
+  const fp = computeFingerprint(root, CHANGE)
+  assert.deepEqual(fp.effortByTier, { ...EFFORT.byTier })
+  assert.match(formatFingerprint(fp), new RegExp(`effort-by-tier [^\\n]*\\b3:${EFFORT.byTier[3]}\\b`))
+  const moved = withTier3Effort(otherLevel(EFFORT.byTier[3]), () => computeFingerprint(root, CHANGE))
+  assert.notEqual(moved.hash, fp.hash, 'a plan built under another effort table is a different plan')
+  clean(root)
+})
+
+test('a stored plan built under another effort table is rebuilt, and the reason names the table', () => {
+  const { root } = shipped()
+  const was = EFFORT.byTier[3]
+  const result = withTier3Effort(otherLevel(was), () => checkPlanReuse(root, CHANGE))
+  assert.equal(result.reuse, false)
+  assert.equal(result.status, REUSE_MISMATCH)
+  assert.match(result.reason, new RegExp(`effortByTier [^;]*3:${was}[^;]* → [^;]*3:${otherLevel(was)}`))
+  assert.doesNotMatch(result.reason, /edited since the plan was built/, 'no artifact was edited')
+  clean(root)
+})
+
+test('a fingerprint stored before the effort table was a cap is rebuilt once, naming the table', () => {
+  // What every consumer repo holds across the upgrade: the same format, no
+  // `effortByTier` key, and a hash taken over text with no effort line.
+  const { root } = shipped()
+  const fpPath = join(root, ...FINGERPRINT_PATH.split('/'))
+  const { effortByTier, ...stored } = JSON.parse(readFileSync(fpPath, 'utf8'))
+  assert.ok(effortByTier, 'a fresh fingerprint carries the table')
+  writeFileSync(fpPath, JSON.stringify({ ...stored, hash: `pre-${stored.hash}` }))
+  const result = checkPlanReuse(root, CHANGE)
+  assert.equal(result.reuse, false)
+  assert.equal(result.status, REUSE_MISMATCH)
+  assert.match(result.reason, /effortByTier null → 1:/)
+  assert.doesNotMatch(result.reason, /edited since the plan was built/)
+  // The rebuilt fingerprint carries the table, so the next run reuses.
+  writeFingerprint(root, computeFingerprint(root, CHANGE))
+  assert.equal(checkPlanReuse(root, CHANGE).reuse, true)
   clean(root)
 })
 

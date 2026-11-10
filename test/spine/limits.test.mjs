@@ -24,6 +24,9 @@ import {
   clampParallel,
   formatLimits
 } from '../../lib/limits.mjs'
+// A namespace import, so a missing session-advice export is reported by the
+// session pins by name instead of failing the whole file at link time.
+import * as limitsModule from '../../lib/limits.mjs'
 import { DEFAULT_MODEL } from '../../evals/ship/agent/model.mjs'
 import { priceUsage } from '../../evals/ship/arms.mjs'
 
@@ -523,22 +526,35 @@ test('the cost-per-task sweep is the ceiling’s reader, through the CLI, with n
 // tier→string table — so `interlock limits` is where an operator reads it.
 
 test('the effort defaults are the ones the design pinned', () => {
-  // D2 of add-lane-effort-routing. Changing one of these re-routes reasoning
-  // effort across the fleet — a product decision, updated here deliberately.
-  assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: null, 4: null, 5: 'xhigh' })
-  assert.equal(EFFORT.verify, 'xhigh')
-  assert.equal(EFFORT.skeptic, 'xhigh')
+  // D10 of route-spawn-effort-by-the-model-guide (rewritten pin; it pins
+  // "The effort-by-tier defaults are published, not restated"). Changing one of
+  // these re-routes reasoning effort across the fleet — a product decision,
+  // updated here deliberately.
+  assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: 'medium', 4: 'high', 5: 'high' })
+  assert.equal(EFFORT.verify, 'high')
+  assert.equal(EFFORT.verifyRetry, 'xhigh')
+  assert.equal(EFFORT.skeptic, 'high')
+})
+
+test('no tier inherits the session default in the default effort table', () => {
+  for (const tier of [1, 2, 3, 4, 5]) {
+    assert.equal(typeof EFFORT.byTier[tier], 'string', `tier ${tier} must carry a published level`)
+  }
 })
 
 test('interlock limits surfaces the tier→effort mapping and the fixed step effort', () => {
+  // Rewritten pin (D10): every tier now carries a level, so no tier row reads
+  // "inherit"; the verify retry effort prints in its own row.
   const text = formatLimits()
-  assert.match(text, /effort: tier 1 lane\s+low/)
-  assert.match(text, /effort: tier 5 lane\s+xhigh/)
-  // Tiers 3 and 4 emit no override; the surface says "inherit", never a number
-  // that would read as a forced effort.
-  assert.match(text, /effort: tier 3 lane\s+inherit/)
-  assert.match(text, /effort: verify step \(inter-wave and final\)\s+xhigh/)
-  assert.match(text, /effort: review skeptic step\s+xhigh/)
+  assert.match(text, /^ *effort: tier 1 lane\s+low$/m)
+  assert.match(text, /^ *effort: tier 2 lane\s+low$/m)
+  assert.match(text, /^ *effort: tier 3 lane\s+medium$/m)
+  assert.match(text, /^ *effort: tier 4 lane\s+high$/m)
+  assert.match(text, /^ *effort: tier 5 lane\s+high$/m)
+  assert.doesNotMatch(text, /effort: tier \d lane\s+inherit/)
+  assert.match(text, /^ *effort: verify step \(inter-wave and final\)\s+high$/m)
+  assert.match(text, /^ *effort: verify retry \(inter-wave fix attempt\)\s+xhigh$/m)
+  assert.match(text, /^ *effort: review skeptic step\s+high$/m)
 })
 
 // No effort level is written beside an `effort` key in the run program, the
@@ -899,7 +915,9 @@ test('formatLimits prints a routing row per role, the strict override row, and i
   assert.equal(text.match(/routing: \S+ \(strict\)/g).length, overrides.length)
   // `null` prints as `inherit`, never as the word null or an empty cell.
   assert.equal(SPAWN_ROUTING['review-skeptic'].model, null)
-  assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort xhigh/m)
+  // Rewritten pin (D10, D11): the skeptic rows print the published skeptic level.
+  assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort high$/m)
+  assert.match(text, /^ *routing: settle-fixer\s+model inherit[^\n]* \u00b7 effort high$/m)
   assert.equal(SPAWN_ROUTING['settle-conformance'].effort, null)
   assert.match(text, /^ *routing: settle-conformance\s+model sonnet \u00b7 effort inherit/m)
   assert.equal(SPAWN_ROUTING['artifact-reviewer'].model, null)
@@ -934,6 +952,53 @@ test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward i
   for (const rel of outside) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.ok(!/\bSPAWN_ROUTING\b|\bREVIEW_DEPTH\b/.test(text), `${rel} names a routing table instead of asking the CLI`)
+  }
+})
+
+// --- the session suggestion table (spec: session-advice) -------------------------
+//
+// `SESSION_ADVICE` is a table of strings, so it stays out of LIMITS and the
+// positive-integer invariant the way `SPAWN_ROUTING` does, and joins the same
+// discipline by hand: printed by `formatLimits`, read by name by one module
+// under lib/ (`lib/session-advice.mjs`), with the bare forward in `cli/interlock`
+// (`sessionAdvice: SESSION_ADVICE`) never counted as a reader.
+
+const SESSION_KEYS = ['explore', 'spec', 'review-artifacts', 'bootstrap', 'ship', 'settle', 'review-code', 'fix-tests']
+
+test('formatLimits prints one session row per advised skill and the session suggestion basis row', () => {
+  const table = limitsModule.SESSION_ADVICE
+  assert.ok(table && typeof table === 'object', 'lib/limits.mjs exports SESSION_ADVICE')
+  assert.equal(typeof limitsModule.SESSION_ADVICE_BASIS, 'string', 'lib/limits.mjs exports SESSION_ADVICE_BASIS')
+  assert.deepEqual(Object.keys(table), SESSION_KEYS)
+  const text = formatLimits()
+  const rows = text.split('\n').filter(line => /^ *session: /.test(line))
+  assert.equal(rows.length, SESSION_KEYS.length, `expected one session row per skill, got:\n${rows.join('\n')}`)
+  for (const skill of SESSION_KEYS) {
+    const row = table[skill]
+    assert.match(
+      text,
+      new RegExp(`^ *session: ${skill}\\s+model ${row.model} \u00b7 effort ${row.effort}`, 'm'),
+      `no session row for ${skill}`
+    )
+    if (row.upTo) assert.match(text, new RegExp(`^ *session: ${skill}\\s+[^\\n]*up to ${row.upTo}`, 'm'))
+    if (row.best) {
+      assert.match(text, new RegExp(`^ *session: ${skill}\\s+[^\\n]*best results: model ${row.best.model} \u00b7 effort ${row.best.effort}`, 'm'))
+    }
+  }
+  assert.match(text, new RegExp(`^ *session suggestion basis\\s+${limitsModule.SESSION_ADVICE_BASIS}$`, 'm'))
+})
+
+test('SESSION_ADVICE is read under lib/ by lib/session-advice.mjs alone, and the bare forward in cli/ is not a reader', () => {
+  const sources = libSources()
+  const readers = pattern => sources.filter(({ text }) => pattern.test(text)).map(({ rel }) => rel)
+  assert.deepEqual(readers(/\bSESSION_ADVICE\[|Object\.\w+\(SESSION_ADVICE\)/), ['lib/session-advice.mjs'])
+  assert.deepEqual(readers(/\bSESSION_ADVICE\b/), ['lib/session-advice.mjs'])
+  const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
+  assert.match(cli, /sessionAdvice: SESSION_ADVICE\b/)
+  assert.match(cli, /sessionAdviceBasis: SESSION_ADVICE_BASIS\b/)
+  for (const rel of ['hooks/mod.mjs', 'workflows/ship.js', 'cli/interlock-run']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    assert.ok(!/\bSESSION_ADVICE\b/.test(text), `${rel} names the session table instead of asking the CLI`)
   }
 })
 

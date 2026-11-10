@@ -7,6 +7,14 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **`interlock suggest [<skill>]` says which session model and effort suits a skill**, from one table in `lib/limits.mjs` that `interlock limits` prints as `session:` rows and `--json` emits as `sessionAdvice`. With a skill it compares the suggestion with the session's effort, read from `CLAUDE_EFFORT` (`below`, `within`, `above` or `unobserved`), says the model was not observed, and names the `/effort` and `/model` to type when the fit is not `within`. A set `CLAUDE_CODE_EFFORT_LEVEL` is bannered. It advises and never selects, and exits 0 at any fit; a name with no row exits 1. `explore`, `spec`, `review-artifacts`, `bootstrap`, `settle`, `review-code` and `fix-tests` print their suggestion when a person starts them, `dispatch` prints the routed skill's line, and the checkpoint card ends with the line for the ship run.
+
+### Changed
+
+- **A ship run spends effort by the published table, not by the session it was started in.** Tier 3 lanes now run at `medium` and tier 4 lanes at `high` where both inherited the session's effort; tier 5 lanes, both verify checks, the ship review skeptics, the remediation fixer, and, through `interlock routing`, the `/interlock:review-code` skeptics and the `/interlock:settle` fixer drop from `xhigh` to `high`. An inter-wave fix attempt, which follows a red check, runs one step up at the new `effort: verify retry (inter-wave fix attempt)`, `xhigh`, printed by `interlock limits` and carried as `effort.verifyRetry` by `--json`. Every `agent-spawn` row in the run trajectory now records the `effort` the spawn was given, or `inherit` when it carried none. The fingerprint now covers the tier→effort table, so a plan stored before this release is planned again one time, and the reuse reason names `effortByTier`.
+
 ## [1.15.2] - 2026-11-09
 
 ### Changed

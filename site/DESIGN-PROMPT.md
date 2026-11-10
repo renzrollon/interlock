@@ -741,8 +741,8 @@ Columns: state · agents spawned · CLI called after · branch.
 | `run record-batch` | none | records outcomes against the run's own `git status`, not the agent's claim; folds worktrees under `--isolate-waves`; ticks the recorded-ok tasks | another batch → next batch. Wave done and another follows → inter-wave verify unless skipped (docs-only wave, red wave, or the per-run cap). No wave follows → done. Failures over the cap → halt. A real collision → halt naming the path and both lanes. |
 | `verify` (inter-wave) | one verify agent, or none when the plan has no steps. Runs the commands the test profile names, verbatim, and reports exit codes and counts. It is never asked whether the run may continue. | `interlock run judge --context inter-wave` | green → next wave. Red → a retry briefed as a repair, up to 2 attempts per wave. Budget spent and blocking → halt. Budget spent and not blocking → warn, advance, and print `UNRESOLVED ERRORS CARRIED PAST A WAVE` at close. |
 | `replan` | one haiku ping | `interlock run replan` | a declined or empty revision → carry on. A revision that touches an already-executed group → halt. Two per run. |
-| `review` (strict) | one review worker at `xhigh` effort. Inside its own context it fans out one reviewer per dimension, then two skeptics per finding. The CLI selects the dimensions from the observed changed paths and inlines each rubric and the repo's `REVIEW.md` into the briefing. | `interlock run reviewed` | nothing survived → straight to final verify, no round spent. Otherwise → remediation round 1. |
-| `remediate` (strict) | one fixer worker per round at `xhigh`; its plan is one fixer per file group, unscoped findings last, re-reviewing only the dimensions that raised something | `interlock run remediated --round n` | every blocker cleared → jump to the verdict. Otherwise the next round, up to 2. |
+| `review` (strict) | one reviewer per dimension, at the session's model and effort, then two skeptics per finding at `high`. The CLI selects the dimensions from the observed changed paths and inlines each rubric and the repo's `REVIEW.md` into the briefing. | `interlock run reviewed` | nothing survived → straight to final verify, no round spent. Otherwise → remediation round 1. |
+| `remediate` (strict) | one fixer worker per round at `high`; its plan is one fixer per file group, unscoped findings last, re-reviewing only the dimensions that raised something | `interlock run remediated --round n` | every blocker cleared → jump to the verdict. Otherwise the next round, up to 2. |
 | `verdict` (strict) | one worker that fixes nothing and re-reviews nothing | — | blockers remain → halt, and no commit step is ever emitted. Clean → final verify. |
 | `verify-final` (marker `fix-tests`) | one verify agent. The marker is `fix-tests` because the final step repairs a red suite by root cause, and that repair is exactly when weakening a test is the hazard, so the guard is in deny for test files. | `interlock run judge --context final` | unit red, weakened, or unrun → halt. Typecheck red → `TYPECHECK FAILED (non-blocking at the final gate)`. E2E red → `E2E FAILED (non-blocking by policy)` and the commit happens anyway. Green → handoff or commit. |
 | `handoff` (strict) | one handoff worker. The CLI decides whether the diff needs a manual test plan and builds the conformance checklist; the agent writes `manual-test-plan.md`, `code-explanation.md`, `conformance.md` and memory entries. | `interlock run commit` | — |
@@ -886,7 +886,7 @@ mode: waves (default)
   serialized 1.3: same lane in wave 1 (lib/report.mjs held by 1.1)
   lane 1.1 → 1.3: 2 tasks in wave 1 on one sonnet/T3 agent
   cohesion 3.1 → 3.2: 2 path-disjoint tasks in the test wave on one sonnet/T2 agent (cap 8)
-  effort 1.1 → 1.3: inherited (by policy) (tier 3)
+  effort 1.1 → 1.3: medium (tier 3)
   effort 3.1 → 3.2: low (tier 2)
 projected agents: 10 (5 implementers + 3 record + 2 verify)
 ```
@@ -1000,7 +1000,7 @@ Exit 1. No commit. No question. The resume card is the one file a halted run lea
 - **Step** advances one step and highlights that step's node; earlier nodes stay in a visited state (ink at 60%).
 - **Play** runs the steps at 1.2 seconds each; **Reset** clears the terminal and the highlights.
 - The `--strict` toggle, when on, inserts three steps between step 11 and step 12, each of them narration and one command:
-  - `review`: `# one review worker fans out one reviewer per dimension, then two skeptics per finding` · `# four dimensions always run; devops and security are added by a rule over the changed paths`
+  - `review`: `# one reviewer per dimension, then two skeptics per finding at high` · `# four dimensions always run; devops and security are added by a rule over the changed paths`
   - `reviewed`: `$ interlock run reviewed --results <file>` · `# findings that survived two skeptics go to remediation round 1`
   - `remediation`: `$ interlock run remediated --round 1 --results <file>` · `# every blocker cleared: straight to the verdict, then final verification`
 
@@ -1042,7 +1042,7 @@ mode: solo (flag)
     - [opus/T2] 3.2 unit tests for the flag parsing
   clamped 1.3: opus → sonnet (tier 3)
   solo 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: 7 tasks, the whole change on one opus/T4 agent
-  effort 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: inherited (by policy) (tier 4)
+  effort 1.1 → 1.2 → 1.3 → 2.1 → 2.2 → 3.1 → 3.2: high (tier 4)
 projected agents: 2 (1 implementers + 1 record + 0 verify)
 ```
 
@@ -1053,24 +1053,24 @@ An output panel, full width, scrolling inside its own container. Mono caption ab
 ```
 plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted
 ┌─ wave 1 · idx 0 · group 1 · impl · 1 batch ───────────────────────────────────────────────────────
-│ b0 1.7 sonnet T4 inherit ok           · Docs (design D2, D4, D5, D7
-│ b0 1.4 sonnet T3 inherit ok           · In lib/receipt.mjs (design D4, D5, D7
+│ b0 1.7 sonnet T4 high    ok           · Docs (design D2, D4, D5, D7
+│ b0 1.4 sonnet T3 medium  ok           · In lib/receipt.mjs (design D4, D5, D7
 │ b0 1.2 sonnet T2 low     ok           · Create lib/project-slug.mjs exporting pro…
 │ b0 1.3 sonnet T2 low     ok           · In lib/limits.mjs add notifyTimeoutMs: 50…
 │ b0 1.6 haiku  T1 low     not recorded · Verify — do not edit
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   verify after idx 0 · 1 skip for group 1 · state does not say idx 0 or idx 1 · no-detectable-comma…
 ┌─ wave 2 · idx 1 · group 1 · impl · 5 batches ─────────────────────────────────────────────────────
-│ b0 1.5 sonnet T4 inherit failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append
-│ b0 1.1 sonnet T3 inherit failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4
-│ b1 2.1 sonnet T4 inherit current      · In lib/run.mjs (design D1, D5, D7
-│ b2 2.2 sonnet T3 inherit not reached  ←2.1 · In bin/interlock (design D1, D14): add
+│ b0 1.5 sonnet T4 high    failed       ←1.6 · In lib/doctor.mjs (design D5, D12): append
+│ b0 1.1 sonnet T3 medium  failed       ←1.3 · Create lib/notify.mjs (design D1, D2, D4
+│ b1 2.1 sonnet T4 high    current      · In lib/run.mjs (design D1, D5, D7
+│ b2 2.2 sonnet T3 medium  not reached  ←2.1 · In bin/interlock (design D1, D14): add
 │ b3 2.3 sonnet T2 low     not reached  ←2.2 · In workflows/ship.js and bin/interlock-ru…
 │ b4 3.2 sonnet T2 low     not reached  · In skills/spec/SKILL.md §6 (design D6
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   verify after idx 1 · not reached · group 1 skips: see idx 0
 ┌─ test wave · idx 2 · test · 1 batch ──────────────────────────────────────────────────────────────
-│ b0 3.1 sonnet T3 inherit not reached  · In test/workflows.test.mjs (design D1, D5…
+│ b0 3.1 sonnet T3 medium  not reached  · In test/workflows.test.mjs (design D1, D5…
 │ b0 3.3 sonnet T2 low     not reached  · Run 'openspec validate harden-unattended-…
 └───────────────────────────────────────────────────────────────────────────────────────────────────
   unplaced: task-1.6-verify-settings · wave 1 impl · no error recorded
@@ -1330,7 +1330,7 @@ Intro: An unverified review reports everything it notices, so you learn to skim 
 
 Four dimensions always run: `language`, `architecture`, `qa`, `technical-lead`. Two are added by a deterministic rule over the run's observed changed paths, never by a reviewer's judgement: `devops` when a path suggests deploy, CI, config or infrastructure impact; `security` when a path matches the authentication, permissions or tenancy signal. The rule is the same classifier the rest of the loop uses, so the two places the question is answered cannot drift apart. A dimension name that resolves to no rubric file is an error that names the six, never a silent partial review.
 
-In a ship run, one review worker at the highest reasoning effort fans out one reviewer per dimension, then two skeptics per finding, inside its own context, and returns counts only. The rubric for each dimension is read from the plugin, not the target repo, and inlined into the briefing. A rubric that could not be read still gets a heading and a `REVIEW RUBRIC UNAVAILABLE` banner; that reviewer works from the name alone.
+In a ship run, the CLI spawns one reviewer per dimension at the session's model and effort, then two skeptics per finding at `high`. The rubric for each dimension is read from the plugin, not the target repo, and inlined into the briefing. A rubric that could not be read still gets a heading and a `REVIEW RUBRIC UNAVAILABLE` banner; that reviewer works from the name alone.
 
 ### E.1.2 Two skeptics per finding
 
@@ -1420,7 +1420,7 @@ Intro: Every value below lives in one file and is printed by one command. A thre
 | cohesion tier ceiling | 3 | Path-disjoint siblings pack into one lane only at or below this tier. |
 | multi-task opus floor | 4 | A lane of two or more tasks runs on opus when its hardest tier is at or above this. |
 | solo envelope | 20 tasks | The classifier supplies the shape judgement; this supplies the ceiling. The planner prompt is forbidden from naming it. |
-| reasoning effort | T1 low · T2 low · T3 inherit · T4 inherit · T5 xhigh · verify steps xhigh · review skeptics xhigh | The two steps whose whole job is catching what an implementer missed get the most reasoning. |
+| reasoning effort | T1 low · T2 low · T3 medium · T4 high · T5 high · verify steps high, a fix attempt xhigh · review skeptics high | Spec-driven work starts at medium and steps to high for harder tasks; a red check earns the one step up. |
 | runtime ceilings | 16 concurrent, 1000 agents per run | The host's, not policy. The planner clamps below them rather than discovering them the hard way. |
 
 ## E.3 Verify: what red means (reference; the page links 06 · Why it works)
@@ -1493,9 +1493,9 @@ Context rot is the reason; cost is the side effect. Chroma measured accuracy deg
 |---|---|---|---|
 | 1 | trivial one-file edit | haiku | low |
 | 2 | single-concern change | sonnet | low |
-| 3 | new logic in one domain | sonnet | inherit |
-| 4 | cross-file work following existing patterns; breadth is not depth | sonnet | inherit |
-| 5 | genuinely novel architecture; the only tier at which a single task may be opus | opus | xhigh |
+| 3 | new logic in one domain | sonnet | medium |
+| 4 | cross-file work following existing patterns; breadth is not depth | sonnet | high |
+| 5 | genuinely novel architecture; the only tier at which a single task may be opus | opus | high |
 
 **Prefix lifetime**, the axis the four above never touch. Writing a prefix to cache costs more than not caching (1.25x base input for the five-minute tier, 2x for the one-hour tier); reading one back costs 0.05x to 0.1x, by model. A prefix that survives to be read is a large saving; one that expires before the next wave is a surcharge on work you would have paid for anyway. Wave boundaries measured in this repository's own trajectory ran to 363 and 1017 seconds, both past the short default lifetime. Interlock cannot set either lifetime, because a plugin has no settings component, and says so. What it does: `interlock doctor` reports the two settings keys and which scopes configure them, advisory and never failing; a run records cache reads and cache creation per wave, creation split by lifetime tier and never summed; and cache accounting is a declared host capability, bannered where absent. The Workflow runtime exposes one cumulative scalar, so a ship run prints `CACHE ACCOUNTING NOT REPORTED` and records unknown, never zero. The price table carries an id, and a revised price is a new id rather than an edit, so old rows keep meaning what they meant. The multipliers have no reader yet; the change records the data so a dollar figure becomes computable, and stops there.
 
@@ -1686,11 +1686,12 @@ Subhead: **The caps**. Render this block as the searchable table with the fixed 
 
   effort: tier 1 lane                                 low
   effort: tier 2 lane                                 low
-  effort: tier 3 lane                                 inherit (session default)
-  effort: tier 4 lane                                 inherit (session default)
-  effort: tier 5 lane                                 xhigh
-  effort: verify step (inter-wave and final)          xhigh
-  effort: review skeptic step                         xhigh
+  effort: tier 3 lane                                 medium
+  effort: tier 4 lane                                 high
+  effort: tier 5 lane                                 high
+  effort: verify step (inter-wave and final)          high
+  effort: verify retry (inter-wave fix attempt)       xhigh
+  effort: review skeptic step                         high
 
 runtime ceilings: 16 concurrent, 1000 agents per run
 ```

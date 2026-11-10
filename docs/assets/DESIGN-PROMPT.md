@@ -87,7 +87,7 @@ mode: waves (default)                                                        [ac
   lane 1.1 → 1.2: 2 tasks in wave 1 on one sonnet/T2 agent
   cohesion 2.1 → 2.2: 2 path-disjoint tasks in wave 2 on one sonnet/T3 agent (cap 6)
   effort 1.1 → 1.2: low (tier 2)
-  effort 2.1 → 2.2: inherited (by policy) (tier 3)
+  effort 2.1 → 2.2: medium (tier 3)
 projected agents: 9 (4 implementers + 3 record + 2 verify)
   warning: effectively serial: 2 waves for 3 implementation lane(s)          [dim]
   warning: tasks 1.1, 1.2 share a file in wave 1; folded into one lane run by a single tier-2 agent in that order   [dim]

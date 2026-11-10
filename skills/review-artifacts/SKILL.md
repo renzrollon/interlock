@@ -25,6 +25,8 @@ Read all of `proposal.md`, `specs/**/*.md`, `design.md`, `tasks.md`, and `decisi
 
 Detect the stack from the artifacts and the dependency manifest, and skip framework-specific checks that do not apply. Do not ask a Go service about accessibility requirements.
 
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest review-artifacts` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
+
 ## Depth
 
 `--strict` asks for an independent read: one reviewer, who has not seen how the artifacts were written, reads them in place of the session. Without it the session reviews the artifacts itself and spawns nothing. This skill never names the default depth or a model or an effort level; the CLI publishes them. Do not add `--strict` because the change looks large.

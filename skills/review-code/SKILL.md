@@ -13,6 +13,8 @@ Review a diff from several expert angles at once, then **attack your own finding
 
 The second half is the point. An unverified review reports everything it notices, so the reader learns to skim it. A review where every blocker survived two skeptics is a review worth reading line by line.
 
+**Session suggestion.** Unless another Interlock skill invoked this one, run `interlock suggest review-code` once, now, and print every line it returns verbatim. If it exits non-zero, print `SESSION SUGGESTION UNAVAILABLE: <first line of its output>` and continue. It is advice and never a gate: do not change the model or the effort yourself, and do not wait for the person to.
+
 ---
 
 ## 1. Scope the diff

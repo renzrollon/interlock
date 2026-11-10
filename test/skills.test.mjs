@@ -1068,9 +1068,87 @@ test('the evals skill still names llm and baseline as the two grader types that 
   assert.match(text, /call a judge[\s\S]{0,20}`llm`,?\s+`baseline`/, 'skills/evals/SKILL.md must name `llm` and `baseline` as the judge-calling types')
 })
 
-test('no skill prose names a model', () => {
-  const offenders = filesUnder(SKILLS_DIR, '').filter(f => readFileSync(f, 'utf8').includes('opus'))
-  assert.deepEqual(offenders.map(f => f.slice(ROOT.length + 1)), [], 'files under skills/ name `opus`')
+test('no skill prose names a model, or begins a line with /model or /effort', () => {
+  // session-advice, "The per-skill session suggestion SHALL be published in one
+  // table, not restated": widened from `opus` alone to the table's three models
+  // and to a line that begins with a switch command. A guard that passes today:
+  // it pins nothing new until a skill breaks it. The model list is the spec's
+  // own words; `test/spine/session-advice.test.mjs` holds SESSION_MODELS to it.
+  const MODELS = ['sonnet', 'opus', 'fable']
+  const files = filesUnder(SKILLS_DIR, '')
+  const named = files.flatMap(f => {
+    const text = readFileSync(f, 'utf8')
+    return MODELS.filter(model => text.includes(model)).map(model => `${f.slice(ROOT.length + 1)}: ${model}`)
+  })
+  assert.deepEqual(named, [], 'files under skills/ name a model')
+  const switches = files.filter(f => /^\s*\/(?:model|effort)\b/m.test(readFileSync(f, 'utf8')))
+  assert.deepEqual(switches.map(f => f.slice(ROOT.length + 1)), [], 'files under skills/ begin a line with /model or /effort')
+})
+
+// --- the session suggestion (spec: session-advice) ------------------------------
+//
+// Each advised skill but ship prints `interlock suggest <its name>` when it
+// starts; dispatch reads the whole table in its pre-flight batch. The advised
+// set is read from `lib/session-advice.mjs`, never from a list here.
+
+const advice = await import('../lib/session-advice.mjs').then(mod => ({ mod }), error => ({ error }))
+
+/** The advised skills but ship: the seven that print their own suggestion. */
+function suggestingSkills() {
+  assert.ok(!advice.error, `lib/session-advice.mjs does not load: ${advice.error && advice.error.message}`)
+  assert.ok(Array.isArray(advice.mod.ADVISED_SKILLS), 'lib/session-advice.mjs exports ADVISED_SKILLS')
+  return advice.mod.ADVISED_SKILLS.filter(name => name !== 'ship')
+}
+
+const UNAVAILABLE = 'SESSION SUGGESTION UNAVAILABLE'
+
+test('each advised skill but ship holds its own suggest command and the unavailable line', () => {
+  for (const name of suggestingSkills()) {
+    const text = readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8')
+    assert.ok(text.includes(`\`interlock suggest ${name}\``), `skills/${name}/SKILL.md is missing \`interlock suggest ${name}\``)
+    assert.ok(text.includes(`${UNAVAILABLE}:`), `skills/${name}/SKILL.md is missing ${UNAVAILABLE}`)
+  }
+})
+
+test('the ship skill stays a launcher: it runs no interlock suggest', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'ship', 'SKILL.md'), 'utf8')
+  assert.ok(!text.includes('interlock suggest'), 'skills/ship/SKILL.md runs interlock suggest; its row reaches the person on the card and in dispatch')
+})
+
+test('the skills that hold the suggest instruction are exactly the advised skills but ship, each for its own name', () => {
+  const holders = []
+  for (const dir of readdirSync(SKILLS_DIR).sort()) {
+    const file = join(SKILLS_DIR, dir, 'SKILL.md')
+    if (!existsSync(file)) continue
+    const names = [...readFileSync(file, 'utf8').matchAll(/`interlock suggest ([a-z][a-z0-9-]*)`/g)].map(m => m[1])
+    if (names.length === 0) continue
+    holders.push(dir)
+    for (const name of names) assert.equal(name, dir, `skills/${dir}/SKILL.md prints the suggestion for ${name}`)
+  }
+  assert.deepEqual(holders, [...suggestingSkills()].sort())
+})
+
+test('dispatch reads the table in its pre-flight batch and says when it could not', () => {
+  const file = join(SKILLS_DIR, 'dispatch', 'SKILL.md')
+  const text = readFileSync(file, 'utf8')
+  const step0 = text.slice(text.indexOf('## Step 0'), text.indexOf('\n---', text.indexOf('## Step 0')))
+  assert.ok(step0.includes('interlock suggest 2>/dev/null'), 'dispatch\'s pre-flight batch must run `interlock suggest 2>/dev/null`')
+  assert.ok(fencedLines(file).includes('interlock suggest 2>/dev/null'), 'the batch line sits in the fenced batch')
+  assert.ok(text.includes(UNAVAILABLE), `dispatch must print ${UNAVAILABLE} when the batch line printed nothing`)
+})
+
+test('the suggest instruction is never on a fenced line in the seven skills', () => {
+  for (const name of suggestingSkills()) {
+    const offenders = fencedLines(join(SKILLS_DIR, name, 'SKILL.md')).filter(line => line.includes('interlock suggest'))
+    assert.deepEqual(offenders, [], `skills/${name}/SKILL.md fences the suggest command; the meters classify fenced interlock lines`)
+  }
+})
+
+test('bootstrap and fix-tests admit the suggest command', () => {
+  for (const name of ['bootstrap', 'fix-tests']) {
+    const fm = parseFrontmatter(readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8'))
+    assert.ok((fm.values['allowed-tools'] || '').includes('Bash(interlock suggest *)'), `skills/${name}/SKILL.md must admit Bash(interlock suggest *)`)
+  }
 })
 
 test('ship trampoline forbids a second Workflow call after the first returns', () => {

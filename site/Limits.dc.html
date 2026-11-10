@@ -277,7 +277,7 @@ class Component extends DCLogic {
       [['eval smoke cost ceiling (per PR)', '$2'], ['eval full-run cost ceiling (scheduled)', '$15'], ['eval outcome-run cost ceiling (scheduled)', '$20'], ['eval cost-per-task sweep ceiling (by hand)', '$40'], ['eval runs per case', '3'], ['eval promotion: consecutive qualifying runs', '3'], ['eval promotion: trials per qualifying run', '3'], ['eval promotion: judge agreement floor', '80%']],
       [['price table id', 'anthropic-list-2026-10'], ['price: claude-haiku-4-5 ($/Mtok)', 'in 1, out 5'], ['price: claude-opus-5-5 ($/Mtok)', 'in 4, out 20'], ['price: claude-sonnet-5-5 ($/Mtok)', 'in 2, out 10'], ['cache read multiplier: claude-haiku-4-5 (x input)', '0.1'], ['cache read multiplier: claude-opus-5-5 (x input)', '0.05'], ['cache read multiplier: claude-sonnet-5-5 (x input)', '0.1'], ['cache write multiplier: ephemeral_1h (x input)', '2'], ['cache write multiplier: ephemeral_5m (x input)', '1.25']],
       [['report trajectory scan cap', '2000']],
-      [['effort: tier 1 lane', 'low'], ['effort: tier 2 lane', 'low'], ['effort: tier 3 lane', 'inherit (session default)'], ['effort: tier 4 lane', 'inherit (session default)'], ['effort: tier 5 lane', 'xhigh'], ['effort: verify step (inter-wave and final)', 'xhigh'], ['effort: review skeptic step', 'xhigh']],
+      [['effort: tier 1 lane', 'low'], ['effort: tier 2 lane', 'low'], ['effort: tier 3 lane', 'medium'], ['effort: tier 4 lane', 'high'], ['effort: tier 5 lane', 'high'], ['effort: verify step (inter-wave and final)', 'high'], ['effort: verify retry (inter-wave fix attempt)', 'xhigh'], ['effort: review skeptic step', 'high']],
       [['runtime ceilings', '16 concurrent, 1000 agents per run']]
     ];
     var total = 0, shown = 0, caps = [];
