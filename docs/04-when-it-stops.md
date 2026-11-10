@@ -612,7 +612,7 @@ The tier ladder is most of the cost story, so the banner is worth acting on: on 
 
 ### `EFFORT ROUTING UNAVAILABLE (<host>)`
 
-The effort twin of the banner above. On the runner, each spawn the run program emits carries the effort `interlock limits` publishes for it — a lane its tier's effort, both verify checks the verify effort, the skeptics and remediation steps the skeptic effort, a strict run's reviewers the `review-dimension` row (`inherit` at the strict depth) — or no effort at all, in which case the host's default stands and nothing is reported. The runner forwards that effort to the adapter, and the adapter reports for each spawn whether it applied it. When every spawn that named an effort had it applied, the summary says so:
+The effort twin of the banner above. On the runner, each spawn the run program emits carries the effort `interlock limits` publishes for it — a lane its tier's effort, both verify checks the verify effort on a first attempt and each inter-wave fix attempt the verify retry effort, the skeptics and remediation steps the skeptic effort, a strict run's reviewers the `review-dimension` row (`inherit` at the strict depth) — or no effort at all, in which case the host's default stands and nothing is reported. The runner forwards that effort to the adapter, and the adapter reports for each spawn whether it applied it. When every spawn that named an effort had it applied, the summary says so:
 
 ```
 effort routing: applied on 7/7 spawns

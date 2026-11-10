@@ -38,6 +38,7 @@ import {
   formatPlan,
   laneLabel,
   laneModel,
+  laneEffort,
   createRunState,
   nextStep,
   recordBatchResult,
@@ -207,6 +208,7 @@ import { readTouchedPaths, readPredictedPaths, formatPathSet } from '../lib/run-
 import { appendOutcome, observedFromReceipt, readOutcomes, formatOutcomes } from '../lib/outcomes.mjs'
 import {
   appendRunLogEvent,
+  EFFORT_INHERITED,
   readRunLog,
   listRunLogs,
   queryRunLog,
@@ -1730,6 +1732,8 @@ function logAgentSpawns(root, { state, change, step, source, lanes }) {
       type: 'agent-spawn',
       label: laneLabel(lane),
       model: laneModel(lane),
+      // The derivation dispatch uses, so the row and the spawn cannot disagree.
+      effort: laneEffort(lane) ?? EFFORT_INHERITED,
       kind: 'implementer',
       // The lane's anchor task. A multi-task lane's later ids are recoverable
       // from the plan and from its per-task record-batch results; what this line

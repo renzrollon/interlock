@@ -383,7 +383,9 @@ test('a note that overflows is cut with its row, the fixed cells and state word 
   const row = boardRows(PLAN, { columns, state: STATE, notes: { '1.5': long } }).find(r => r.key === 'lane:1.5').text
   assert.ok(row.endsWith('…'), row)
   assert.equal([...row].length, columns)
-  for (const cell of [' sonnet ', ' T4 ', ' inherit ', ' failed ']) assert.ok(row.includes(cell), `${row} lost ${cell}`)
+  // Lane 1.5 is tier 4, whose published effort is `high` (route-spawn-effort-by-the-model-guide
+  // D10; pins "A lane's effort is the effort of its hardest task's tier").
+  for (const cell of [' sonnet ', ' T4 ', ' high ', ' failed ']) assert.ok(row.includes(cell), `${row} lost ${cell}`)
   assert.ok(!row.includes('In lib/doctor.mjs'), 'the title gives way first')
 })
 

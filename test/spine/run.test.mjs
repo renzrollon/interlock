@@ -4595,18 +4595,132 @@ test('an inter-wave verify spawn carries the published verify effort', () => {
   }
 })
 
-test('an inter-wave retry after a red judge carries the same verify effort', () => {
+const RED_UNIT = [{ results: [{ kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['boom'] }] }]
+
+test('an inter-wave fix attempt after a red judge carries the published verify retry effort', () => {
+  // Rewritten pin (route-spawn-effort-by-the-model-guide D22): it pins "A verify
+  // spawn SHALL carry the verify effort on a first attempt and the retry effort
+  // on a fix attempt". Fix attempts 1 and 2 both read EFFORT.verifyRetry.
+  assert.ok(EFFORT.verifyRetry, 'the retry effort must be published for this test to mean anything')
+  assert.notEqual(EFFORT.verifyRetry, EFFORT.verify, 'the retry is one published step above the first attempt')
   const { root, batch } = verifiableRepo()
   try {
     const verify = completeBatch(root, batch)
     assert.equal(verify.action, 'verify')
-    const retry = run(root, [...verify.then.argv], {
-      results: [{ results: [{ kind: 'unit', exitCode: 1, total: 3, passed: 2, failed: 1, failures: ['boom'] }] }]
-    }).step
+    assert.equal(verifySpawnOf(verify).effort, EFFORT.verify, 'the initial attempt carries EFFORT.verify')
+    const retry = run(root, [...verify.then.argv], { results: RED_UNIT }).step
     assert.equal(retry.action, 'verify')
     assert.equal(retry.fixAttempt, 1)
     const s = verifySpawnOf(retry)
-    assert.equal(s.effort, EFFORT.verify, `${s.label} (fix attempt 1) must carry EFFORT.verify`)
+    assert.equal(s.effort, EFFORT.verifyRetry, `${s.label} (fix attempt 1) must carry EFFORT.verifyRetry`)
+
+    const second = run(root, [...retry.then.argv], { results: RED_UNIT }).step
+    assert.equal(second.action, 'verify')
+    assert.equal(second.fixAttempt, 2)
+    const s2 = verifySpawnOf(second)
+    assert.equal(s2.effort, EFFORT.verifyRetry, `${s2.label} (fix attempt 2) must carry EFFORT.verifyRetry`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('a fix attempt resumed after a halt routes at the retry effort, derived from the step', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    const retry = run(root, [...verify.then.argv], { results: RED_UNIT }).step
+    assert.equal(retry.fixAttempt, 1)
+    // A fresh process re-reads the owed step from the state with `run next`,
+    // which the sequence guard admits once the manifest names no continuation.
+    const manifestPath = join(root, '.claude/ship/run.json')
+    writeFileSync(manifestPath, JSON.stringify({ ...manifestOf(root), lastThen: null }, null, 2) + '\n')
+    const again = run(root, ['run', 'next']).step
+    assert.equal(again.action, 'verify')
+    assert.equal(again.fixAttempt, 1)
+    assert.equal(verifySpawnOf(again).effort, EFFORT.verifyRetry)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the agent-spawn rows logSpawns appends carry the step effort, or inherit', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    const retry = run(root, [...verify.then.argv], { results: RED_UNIT }).step
+    const rows = readFileSync(join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .filter(e => e.type === 'agent-spawn')
+    const verifyRows = rows.filter(e => e.kind === 'verify')
+    assert.equal(verifyRows.length, 2, 'the initial attempt and the fix attempt')
+    assert.equal(verifyRows[0].effort, verifySpawnOf(verify).effort)
+    assert.equal(verifyRows[0].effort, EFFORT.verify)
+    assert.equal(verifyRows[1].effort, verifySpawnOf(retry).effort)
+    assert.equal(verifyRows[1].effort, EFFORT.verifyRetry)
+    for (const e of rows) assert.ok(Object.hasOwn(e, 'effort'), `${e.label} carries the key`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the replan ping, which carries no effort, is recorded as inherit', () => {
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    const statePath = join(root, '.claude/ship/state.json')
+    file(root, '.claude/ship/state.json', { ...JSON.parse(readFileSync(statePath, 'utf8')), replanPending: true })
+    const offer = run(root, [...verify.then.argv], {
+      results: [{ results: [{ kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0 }] }]
+    }).step
+    assert.equal(offer.action, 'replan')
+    const pings = readFileSync(join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .filter(e => e.type === 'agent-spawn' && e.kind === 'ping')
+    assert.equal(pings.length, 1)
+    assert.equal(pings[0].effort, 'inherit')
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the handoff and commit spawn rows record inherit; skeptic and remediation rows their effort', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--strict'])
+    writeFanout(root, { blockers: 1 })
+    const found = run(root, [...review.then.argv], { results: review.spawns.map(() => ({ ok: true })) }).step
+    const round1 = run(root, [...found.then.argv], { results: found.spawns.map(() => ({ ok: true })) }).step
+    writeReview(root, {})
+    const verdict = run(root, [...round1.then.argv], { results: [{ ok: true }] }).step
+    const verified = run(root, [...verdict.then.argv], { results: [{ ok: true }] }).step
+    const handoff = run(root, [...verified.then.argv]).step
+    assert.equal(handoff.action, 'handoff')
+    const commit = run(root, [...handoff.then.argv], {
+      results: [{ ok: true, manualTestPlan: false, skipReason: 'backend only', scenariosChecked: 0 }]
+    }).step
+    assert.equal(commit.action, 'commit')
+
+    const rows = readFileSync(join(root, '.claude/ship/runs', `${manifestOf(root).runId}.jsonl`), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line))
+      .filter(e => e.type === 'agent-spawn')
+    const byKind = kind => rows.filter(e => e.kind === kind)
+    for (const kind of ['handoff', 'commit']) {
+      assert.ok(byKind(kind).length > 0, `a ${kind} row was logged`)
+      for (const e of byKind(kind)) assert.equal(e.effort, 'inherit', `${e.label} (${kind})`)
+    }
+    // The planner spawn runs before the run has an id, so `logSpawns` owes it no
+    // row; any planner row that is written still records `inherit`.
+    for (const e of byKind('planner')) assert.equal(e.effort, 'inherit', e.label)
+    for (const kind of ['skeptic', 'remediate']) {
+      assert.ok(byKind(kind).length > 0, `a ${kind} row was logged`)
+      for (const e of byKind(kind)) assert.equal(e.effort, EFFORT.skeptic, `${e.label} (${kind})`)
+    }
   } finally {
     cleanup(root)
   }

@@ -16,7 +16,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmod
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
+import { LIMITS, MERGE_BANDS, SPAWN_ROUTING, REVIEW_DEPTH, EFFORT } from '../../lib/limits.mjs'
 import { resolveRouting } from '../../lib/routing.mjs'
 // A namespace import, so a missing session-advice export is reported by the
 // suggest pins by name instead of failing the whole file at link time.
@@ -1660,6 +1660,62 @@ test('spawns are counted per lane, not per task', () => {
     ['opus', 'haiku'],
     'a multi-task lane at the opus floor and its single-task neighbour record the model dispatch uses'
   )
+})
+
+// --- the lane writer records each lane's effort (spec: ship-run, agent-spawn effort) --
+
+test('a lane row carries its hardest task\'s effort, not its first task\'s', () => {
+  // The lane's first task is tier 1 and its hardest is tier 4: the row and the
+  // dispatched spawn share one derivation, so the row reads the tier-4 effort.
+  const classified = file('classified-effort-lane.json', {
+    tasks: [
+      { id: '1.1', group: 1, description: 'auth a', tier: 1, model: 'haiku', isTestTask: false, paths: ['src/auth.ts'] },
+      { id: '1.2', group: 1, description: 'auth b', tier: 4, model: 'sonnet', isTestTask: false, paths: ['src/auth.ts'] }
+    ]
+  })
+  const plan = runJson(['waves', '--classified', classified])
+  assert.deepEqual(plan.waves[0].batches.map(b => b.map(l => l.map(t => t.id))), [[['1.1', '1.2']]])
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-effort-lane.json', plan), '--change', 'add-widget', '--root', dir])
+  runJson(['wave-state', 'next', '--state', file('effort-lane-run0.json', state0), '--change', 'add-widget', '--root', dir])
+
+  const spawns = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+    .filter(e => e.type === 'agent-spawn')
+  assert.equal(spawns.length, 1)
+  assert.equal(spawns[0].effort, EFFORT.byTier[4])
+  assert.equal(spawns[0].effort, 'high')
+  assert.notEqual(spawns[0].effort, EFFORT.byTier[1])
+})
+
+test('a lane row for an untiered lane records inherit', () => {
+  // `interlock waves` refuses a task with no tier, so the untiered lane is a
+  // stored plan whose tiers were stripped — the shape a hand-edited or older
+  // plan reaches the writer in. Its lane inherits by fallback, and the row says
+  // so as `inherit`, never an absent key.
+  const plan = runJson(['waves', '--classified', paths.classified])
+  const stripped = JSON.parse(JSON.stringify(plan))
+  for (const wave of stripped.waves) {
+    for (const batch of wave.batches) for (const lane of batch) for (const t of lane) delete t.tier
+  }
+  const state0 = runJson(['wave-state', 'create', '--plan', file('plan-effort-untiered.json', stripped), '--change', 'add-widget', '--root', dir])
+  runJson(['wave-state', 'next', '--state', file('effort-untiered-run0.json', state0), '--change', 'add-widget', '--root', dir])
+
+  const spawns = readFileSync(join(dir, '.claude', 'ship', 'runs', `${state0.runId}.jsonl`), 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l))
+    .filter(e => e.type === 'agent-spawn')
+  assert.ok(spawns.length >= 1, 'the untiered lane was spawned')
+  for (const e of spawns) {
+    assert.ok(Object.hasOwn(e, 'effort'), 'the row carries the key')
+    assert.equal(e.effort, 'inherit')
+  }
+})
+
+test('limits --json carries the verify retry effort beside the verify effort', () => {
+  const out = runJson(['limits'])
+  assert.equal(out.effort.verify, EFFORT.verify)
+  assert.equal(out.effort.verifyRetry, EFFORT.verifyRetry)
+  assert.equal(out.effort.verifyRetry, 'xhigh')
+  assert.equal(out.effort.verify, 'high')
 })
 
 test('interlock waves prints a chain line for serial single-lane batches', () => {

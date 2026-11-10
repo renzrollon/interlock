@@ -32,6 +32,7 @@
 //                         writes nothing
 //   --fixture-write=PATH  the file an implementer lane writes (lane collisions)
 //   --fixture-per-lane    write a file named after the lane's own task ids instead
+//   --fixture-per-lane-dir=DIR  the same, as `DIR/lane-<id>.mjs`, so a wave is not docs-only
 //   --fixture-no-effort-flag  a CLI that predates `--effort`: its help omits the
 //                         flag and an invocation passing it is rejected
 //   --fixture-effort-in-prose  a CLI whose help names `--effort` only in another
@@ -363,7 +364,7 @@ process.stdin.on('end', () => {
       : has('--fixture-ship')
         ? shipAnswer(prompt, {
             writePath: valueOf('--fixture-write') || 'README.md',
-            perLane: has('--fixture-per-lane'),
+            perLane: valueOf('--fixture-per-lane-dir') || has('--fixture-per-lane'),
             schema: parseSchema(valueOf('--json-schema'))
           })
         : { ok: true, pid: process.pid }

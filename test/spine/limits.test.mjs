@@ -526,22 +526,35 @@ test('the cost-per-task sweep is the ceiling’s reader, through the CLI, with n
 // tier→string table — so `interlock limits` is where an operator reads it.
 
 test('the effort defaults are the ones the design pinned', () => {
-  // D2 of add-lane-effort-routing. Changing one of these re-routes reasoning
-  // effort across the fleet — a product decision, updated here deliberately.
-  assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: null, 4: null, 5: 'xhigh' })
-  assert.equal(EFFORT.verify, 'xhigh')
-  assert.equal(EFFORT.skeptic, 'xhigh')
+  // D10 of route-spawn-effort-by-the-model-guide (rewritten pin; it pins
+  // "The effort-by-tier defaults are published, not restated"). Changing one of
+  // these re-routes reasoning effort across the fleet — a product decision,
+  // updated here deliberately.
+  assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: 'medium', 4: 'high', 5: 'high' })
+  assert.equal(EFFORT.verify, 'high')
+  assert.equal(EFFORT.verifyRetry, 'xhigh')
+  assert.equal(EFFORT.skeptic, 'high')
+})
+
+test('no tier inherits the session default in the default effort table', () => {
+  for (const tier of [1, 2, 3, 4, 5]) {
+    assert.equal(typeof EFFORT.byTier[tier], 'string', `tier ${tier} must carry a published level`)
+  }
 })
 
 test('interlock limits surfaces the tier→effort mapping and the fixed step effort', () => {
+  // Rewritten pin (D10): every tier now carries a level, so no tier row reads
+  // "inherit"; the verify retry effort prints in its own row.
   const text = formatLimits()
-  assert.match(text, /effort: tier 1 lane\s+low/)
-  assert.match(text, /effort: tier 5 lane\s+xhigh/)
-  // Tiers 3 and 4 emit no override; the surface says "inherit", never a number
-  // that would read as a forced effort.
-  assert.match(text, /effort: tier 3 lane\s+inherit/)
-  assert.match(text, /effort: verify step \(inter-wave and final\)\s+xhigh/)
-  assert.match(text, /effort: review skeptic step\s+xhigh/)
+  assert.match(text, /^ *effort: tier 1 lane\s+low$/m)
+  assert.match(text, /^ *effort: tier 2 lane\s+low$/m)
+  assert.match(text, /^ *effort: tier 3 lane\s+medium$/m)
+  assert.match(text, /^ *effort: tier 4 lane\s+high$/m)
+  assert.match(text, /^ *effort: tier 5 lane\s+high$/m)
+  assert.doesNotMatch(text, /effort: tier \d lane\s+inherit/)
+  assert.match(text, /^ *effort: verify step \(inter-wave and final\)\s+high$/m)
+  assert.match(text, /^ *effort: verify retry \(inter-wave fix attempt\)\s+xhigh$/m)
+  assert.match(text, /^ *effort: review skeptic step\s+high$/m)
 })
 
 // No effort level is written beside an `effort` key in the run program, the
@@ -902,7 +915,9 @@ test('formatLimits prints a routing row per role, the strict override row, and i
   assert.equal(text.match(/routing: \S+ \(strict\)/g).length, overrides.length)
   // `null` prints as `inherit`, never as the word null or an empty cell.
   assert.equal(SPAWN_ROUTING['review-skeptic'].model, null)
-  assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort xhigh/m)
+  // Rewritten pin (D10, D11): the skeptic rows print the published skeptic level.
+  assert.match(text, /^ *routing: review-skeptic\s+model inherit[^\n]* \u00b7 effort high$/m)
+  assert.match(text, /^ *routing: settle-fixer\s+model inherit[^\n]* \u00b7 effort high$/m)
   assert.equal(SPAWN_ROUTING['settle-conformance'].effort, null)
   assert.match(text, /^ *routing: settle-conformance\s+model sonnet \u00b7 effort inherit/m)
   assert.equal(SPAWN_ROUTING['artifact-reviewer'].model, null)

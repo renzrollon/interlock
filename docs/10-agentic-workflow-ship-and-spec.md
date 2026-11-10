@@ -176,22 +176,22 @@ The block below is generated from the fixture plan of a real halted run, whose t
 flowchart LR
   %% source: test/fixtures/ship/halted-run-6e9d0b02/plan.json · plan only
   subgraph W0["wave 1 · idx 0 · group 1 · impl · 1 batch"]
-    L1_7["task 1.7 · Docs (design D2, D4, D5, D7 · sonnet T4 inherit"]
-    L1_4["task 1.4 · In lib/receipt.mjs (design D4, D5, D7 · sonnet T3 inherit"]
+    L1_7["task 1.7 · Docs (design D2, D4, D5, D7 · sonnet T4 high"]
+    L1_4["task 1.4 · In lib/receipt.mjs (design D4, D5, D7 · sonnet T3 medium"]
     L1_2["task 1.2 · Create lib/project-slug.mjs exporting pro… · sonnet T2 low"]
     L1_3["task 1.3 · In lib/limits.mjs add notifyTimeoutMs: 50… · sonnet T2 low"]
     L1_6["task 1.6 · Verify — do not edit · haiku T1 low"]
   end
   subgraph W1["wave 2 · idx 1 · group 1 · impl · 5 batches"]
     subgraph W1B0["b0"]
-      L1_5["task 1.5 · In lib/doctor.mjs (design D5, D12): append · sonnet T4 inherit"]
-      L1_1["task 1.1 · Create lib/notify.mjs (design D1, D2, D4 · sonnet T3 inherit"]
+      L1_5["task 1.5 · In lib/doctor.mjs (design D5, D12): append · sonnet T4 high"]
+      L1_1["task 1.1 · Create lib/notify.mjs (design D1, D2, D4 · sonnet T3 medium"]
     end
     subgraph W1B1["b1"]
-      L2_1["task 2.1 · In lib/run.mjs (design D1, D5, D7 · sonnet T4 inherit"]
+      L2_1["task 2.1 · In lib/run.mjs (design D1, D5, D7 · sonnet T4 high"]
     end
     subgraph W1B2["b2"]
-      L2_2["task 2.2 · In bin/interlock (design D1, D14): add · sonnet T3 inherit"]
+      L2_2["task 2.2 · In bin/interlock (design D1, D14): add · sonnet T3 medium"]
     end
     subgraph W1B3["b3"]
       L2_3["task 2.3 · In workflows/ship.js and bin/interlock-ru… · sonnet T2 low"]
@@ -202,7 +202,7 @@ flowchart LR
     W1B0 --> W1B1 --> W1B2 --> W1B3 --> W1B4
   end
   subgraph W2["test wave · idx 2 · test · 1 batch"]
-    L3_1["task 3.1 · In test/workflows.test.mjs (design D1, D5… · sonnet T3 inherit"]
+    L3_1["task 3.1 · In test/workflows.test.mjs (design D1, D5… · sonnet T3 medium"]
     L3_3["task 3.3 · Run 'openspec validate harden-unattended-… · sonnet T2 low"]
   end
   W0 --> V0{{"verify after idx 0"}} --> W1 --> V1{{"verify after idx 1"}} --> W2 --> VF[["verify-final"]] --> C[["commit"]] --> X[["close"]]

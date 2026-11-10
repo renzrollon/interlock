@@ -24,6 +24,11 @@ import {
   SHIP_DIR
 } from '../../lib/run-log.mjs'
 import { appendOutcome, outcomesPath, readOutcomes } from '../../lib/outcomes.mjs'
+// A namespace import, so a missing EFFORT_INHERITED export is reported by the
+// effort pins by name instead of failing the whole file at link time.
+import * as runLogModule from '../../lib/run-log.mjs'
+
+const EFFORT_INHERITED = runLogModule.EFFORT_INHERITED
 
 let tmp
 
@@ -174,7 +179,7 @@ test('every declared field for every type is exercised', () => {
     { type: 'run-start', extra: { mode: 'continue', strict: true } },
     { type: 'wave-action', extra: { action: 'verify', wave: '3', waveIndex: 2, batchIndex: 0, phase: 'verify', source: 'record-verify' } },
     { type: 'cli-exit', extra: { command: 'verify judge', exitCode: 1, durationMs: 42 } },
-    { type: 'agent-spawn', extra: { label: '1.1', model: 'sonnet', kind: 'implementer', taskId: '1.1' } },
+    { type: 'agent-spawn', extra: { label: '1.1', model: 'sonnet', kind: 'implementer', taskId: '1.1', effort: 'high' } },
     { type: 'verify-judgement', extra: { context: 'final', halt: true, reason: 'unit suite is red', unitStatus: 'red', spill: ['.claude/ship/spill/x/1-unit.log'] } },
     { type: 'run-halt', extra: { reason: 'more than two task failures' } },
     { type: 'run-complete', extra: { leftoverTaskIds: ['2.1'] } }
@@ -186,7 +191,48 @@ test('every declared field for every type is exercised', () => {
   const records = lines(runLogPath(tmp, RUN_ID)).map(l => JSON.parse(l))
   assert.deepEqual(records.map(r => r.type), cases.map(c => c.type))
   assert.equal(records[3].kind, 'implementer')
+  assert.equal(records[3].effort, 'high')
   assert.deepEqual(records[4].spill, ['.claude/ship/spill/x/1-unit.log'])
+})
+
+// --- the effort an agent-spawn was given (spec: ship-run, agent-spawn effort) --
+
+test('the inherited-effort token is published as inherit', () => {
+  assert.equal(EFFORT_INHERITED, 'inherit')
+})
+
+test('an agent-spawn row keeps a level and keeps inherit', () => {
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: 'verify', kind: 'verify', effort: 'xhigh' })
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: 'commit', kind: 'commit', effort: EFFORT_INHERITED })
+  const [level, inherited] = lines(runLogPath(tmp, RUN_ID)).map(l => JSON.parse(l))
+  assert.equal(level.effort, 'xhigh')
+  assert.equal(inherited.effort, 'inherit')
+  assert.equal(level.schema, RUN_LOG_SCHEMA, 'the schema tag is unchanged')
+  assert.equal(RUN_LOG_SCHEMA, 'interlock.ship-run/1')
+})
+
+test('an over-long effort is truncated to the bound with an ellipsis, not dropped', () => {
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: '1.1', kind: 'implementer', effort: `  ${'x'.repeat(41)}  ` })
+  const [row] = lines(runLogPath(tmp, RUN_ID)).map(l => JSON.parse(l))
+  assert.ok(Object.hasOwn(row, 'effort'))
+  assert.notEqual(row.effort, null)
+  assert.equal(row.effort, `${'x'.repeat(39)}…`)
+  assert.equal(row.effort.length, 40)
+})
+
+test('an effort that is not a string or trims to empty is recorded as null, the key present', () => {
+  for (const effort of [42, {}, ['high'], true, '', '   ', '\n\t']) {
+    appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: '1.1', kind: 'implementer', effort })
+    const row = JSON.parse(lines(runLogPath(tmp, RUN_ID)).pop())
+    assert.ok(Object.hasOwn(row, 'effort'), `effort=${JSON.stringify(effort)}: the key is written`)
+    assert.equal(row.effort, null, `effort=${JSON.stringify(effort)}`)
+    assert.notEqual(row.effort, 'inherit')
+  }
+  // An event appended with the field missing is that null too.
+  appendRunLogEvent(tmp, { runId: RUN_ID, type: 'agent-spawn', label: '1.2', kind: 'implementer' })
+  const missing = JSON.parse(lines(runLogPath(tmp, RUN_ID)).pop())
+  assert.ok(Object.hasOwn(missing, 'effort'))
+  assert.equal(missing.effort, null)
 })
 
 test('the strict review\'s skeptic kind is declared, so a skeptic never reads back as other', () => {
@@ -1505,6 +1551,17 @@ test('a trajectory written before agent-result and the surface fields lists, che
   assert.equal(formatRunLog(readRunLog(tmp, 'run-pre')), PRE_CHANGE_RENDERED)
   // The old receipt's boolean cache-accounting value reads exactly as it was.
   assert.equal(readRunLog(tmp, 'run-pre').records[6].host.cacheAccounting, false)
+})
+
+test('an agent-spawn row written before the effort field reads as not recorded', () => {
+  // The pre-change rows have no `effort` key. The check's verdict is unchanged,
+  // and a query returns them with no `effort` key — never `inherit`, never null.
+  plantPreChange(tmp)
+  assert.deepEqual(checkRunLog(tmp, 'run-pre'), { ok: true, runId: 'run-pre', problems: [], events: 8 })
+  const spawns = queryRunLog(tmp, 'run-pre', { type: 'agent-spawn' }).records
+  assert.equal(spawns.length, 1)
+  assert.equal(Object.hasOwn(spawns[0], 'effort'), false)
+  assert.doesNotMatch(formatRunLog(readRunLog(tmp, 'run-pre')), /effort=/)
 })
 
 test('agent-result events raise no reconstructability problem and do not pad a wave', () => {

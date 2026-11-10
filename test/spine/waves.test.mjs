@@ -34,7 +34,7 @@ import {
   OUTCOME_NOT_ATTEMPTED
 } from '../../lib/waves.mjs'
 import { narrowPlan } from '../../lib/plan-fingerprint.mjs'
-import { LIMITS, RUNTIME, LANE_CAPS, SOLO } from '../../lib/limits.mjs'
+import { LIMITS, RUNTIME, LANE_CAPS, SOLO, EFFORT } from '../../lib/limits.mjs'
 
 const task = (over = {}) => ({
   id: '1.1',
@@ -1109,7 +1109,9 @@ test('a multi-task lane at the opus floor still keeps the hardest tier effort', 
   })
   const lane = plan.waves[0].batches[0][0]
   assert.equal(laneModel(lane), 'opus')
-  assert.equal(laneEffort(lane), null, 'tier 4 inherits the session default')
+  // Rewritten pin (D10): tier 4 now carries the published `high`, not the session's.
+  assert.equal(laneEffort(lane), 'high', 'tier 4 carries its published level')
+  assert.equal(laneEffort(lane), EFFORT.byTier[4])
 })
 
 test('a chain is reported on the plan, in the warning, and in the preview', () => {
@@ -1301,7 +1303,7 @@ test('solo promotes every task to opus after the clamp and reports each promotio
   ])
   assert.equal(plan.lanes[0].model, 'opus')
   assert.equal(plan.lanes[0].tier, 3, 'the recorded tier is still the hardest task’s')
-  assert.equal(plan.lanes[0].effort, null, 'so its effort is the published tier-3 effort')
+  assert.equal(plan.lanes[0].effort, 'medium', 'so its effort is the published tier-3 effort')
   assert.match(formatPlan(plan), /promoted 2\.1: haiku → opus \(tier 1, solo lane\)/)
 })
 
@@ -1316,7 +1318,7 @@ test('a task already on opus is not double-reported as promoted', () => {
     { mode: 'solo' }
   )
   assert.deepEqual(plan.promoted, [{ id: '1.2', from: 'sonnet', to: 'opus', tier: 2 }])
-  assert.equal(plan.lanes[0].effort, 'xhigh', 'the lane runs at the published tier-5 effort')
+  assert.equal(plan.lanes[0].effort, 'high', 'the lane runs at the published tier-5 effort')
 })
 
 test('the clamp is not bypassed in waves mode and emits no promotion report', () => {
@@ -1425,40 +1427,85 @@ test('laneEffort maps a mechanical lane to low effort', () => {
 
 test('laneEffort takes the hardest task effort, not the first task', () => {
   // The lane's first task is tier 1; its last is tier 5. Effort follows the
-  // hardest task, so a tier-1-first lane still runs at xhigh — never low.
+  // hardest task, so a tier-1-first lane still runs at the tier-5 `high` — never low.
   const lane = [task({ id: '1.1', tier: 1 }), task({ id: '1.2', tier: 5 })]
-  assert.equal(laneEffort(lane), 'xhigh')
+  assert.equal(laneEffort(lane), 'high')
   assert.notEqual(laneEffort(lane), 'low')
 })
 
-test('laneEffort inherits (null) for a tier 3–4 lane by policy', () => {
-  assert.equal(laneEffort([task({ tier: 3 })]), null)
-  assert.equal(laneEffort([task({ tier: 4 })]), null)
+test('laneEffort routes a tier-3 lane at medium and a tier-4 lane at high', () => {
+  // Rewritten pin (D10): tiers 3 and 4 no longer inherit the session default.
+  assert.equal(laneEffort([task({ tier: 3 })]), 'medium')
+  assert.equal(laneEffort([task({ tier: 4 })]), 'high')
+})
+
+test('the session effort does not move a tiered lane, and no tiered lane is left null', () => {
+  const tasks = () => [
+    task({ id: '1.1', group: 1, tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
+    task({ id: '1.2', group: 1, tier: 3, model: 'sonnet', paths: ['src/b.ts'] }),
+    task({ id: '1.3', group: 1, tier: 4, model: 'sonnet', paths: ['src/c.ts'] }),
+    task({ id: '1.4', group: 1, tier: 5, model: 'opus', paths: ['src/d.ts'] })
+  ]
+  const saved = process.env.CLAUDE_EFFORT
+  const planAt = level => {
+    process.env.CLAUDE_EFFORT = level
+    try {
+      return planWaves({ tasks: tasks() })
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_EFFORT
+      else process.env.CLAUDE_EFFORT = saved
+    }
+  }
+  const low = planAt('low')
+  const max = planAt('max')
+  assert.deepEqual(low.effort, max.effort)
+  assert.ok(low.effort.length > 0)
+  for (const e of low.effort) {
+    assert.equal(typeof e.effort, 'string', `lane ${e.ids.join('+')} (tier ${e.tier}) must carry a level`)
+    assert.equal(e.inherited, null)
+  }
 })
 
 test('laneEffort inherits (null) for an untiered lane by fallback', () => {
   assert.equal(laneEffort([task({ tier: undefined }), task({ id: '1.2', tier: null })]), null)
 })
 
-test('the plan reports one effort entry per listed lane, forced vs inherited-by-policy', () => {
-  // A folded tier-5 lane routes xhigh; a folded tier-3 lane inherits the session
-  // default by policy — reported as inherited, never silently upgraded. (The
-  // tier-unreadable fallback branch cannot arise through planWaves: validate()
-  // rejects a non-integer tier before planning, so it is exercised on laneEffort
-  // directly above.)
+test('the plan reports one effort entry per listed lane, a tier-3 and a tier-4 lane not inherited', () => {
+  // Rewritten pin (D10): a folded tier-5 lane routes `high`; a folded tier-3
+  // lane routes `medium` and a folded tier-4 lane `high` — neither reported as
+  // inherited. (The tier-unreadable fallback branch cannot arise through
+  // planWaves: validate() rejects a non-integer tier before planning, so it is
+  // exercised on laneEffort directly above and on a stored plan below.)
   const plan = planWaves({
     tasks: [
       task({ id: '1.1', tier: 5, model: 'opus', paths: ['src/a.ts'] }),
       task({ id: '1.2', tier: 1, model: 'haiku', paths: ['src/a.ts'] }),
       task({ id: '2.1', group: 2, tier: 3, model: 'sonnet', paths: ['src/b.ts'] }),
-      task({ id: '2.2', group: 2, tier: 3, model: 'sonnet', paths: ['src/b.ts'] })
+      task({ id: '2.2', group: 2, tier: 3, model: 'sonnet', paths: ['src/b.ts'] }),
+      task({ id: '3.1', group: 3, tier: 4, model: 'sonnet', paths: ['src/c.ts'] }),
+      task({ id: '3.2', group: 3, tier: 4, model: 'sonnet', paths: ['src/c.ts'] })
     ]
   })
   const byIds = Object.fromEntries(plan.effort.map(e => [e.ids.join('+'), e]))
-  assert.deepEqual(byIds['1.1+1.2'], { ids: ['1.1', '1.2'], tier: 5, effort: 'xhigh', inherited: null })
-  assert.deepEqual(byIds['2.1+2.2'], { ids: ['2.1', '2.2'], tier: 3, effort: null, inherited: 'policy' })
-  assert.match(formatPlan(plan), /effort 1\.1 → 1\.2: xhigh \(tier 5\)/)
-  assert.match(formatPlan(plan), /effort 2\.1 → 2\.2: inherited \(by policy\) \(tier 3\)/)
+  assert.deepEqual(byIds['1.1+1.2'], { ids: ['1.1', '1.2'], tier: 5, effort: 'high', inherited: null })
+  assert.deepEqual(byIds['2.1+2.2'], { ids: ['2.1', '2.2'], tier: 3, effort: 'medium', inherited: null })
+  assert.deepEqual(byIds['3.1+3.2'], { ids: ['3.1', '3.2'], tier: 4, effort: 'high', inherited: null })
+  const text = formatPlan(plan)
+  assert.match(text, /effort 1\.1 → 1\.2: high \(tier 5\)/)
+  assert.match(text, /effort 2\.1 → 2\.2: medium \(tier 3\)/)
+  assert.match(text, /effort 3\.1 → 3\.2: high \(tier 4\)/)
+  assert.doesNotMatch(text, /inherited \(by policy\)/)
+})
+
+test('an untiered lane still plans at null and is reported as a fallback', () => {
+  // The report branch for a lane whose tier could not be read (tier 0), shown
+  // through formatPlan the way a stored plan would reach it.
+  assert.equal(laneEffort([task({ tier: undefined })]), null)
+  const text = formatPlan({
+    ...planWaves({ tasks: [task({ id: '1.1', tier: 2 })] }),
+    effort: [{ ids: ['1.1'], tier: 0, effort: null, inherited: 'fallback' }]
+  })
+  assert.match(text, /effort 1\.1: inherited \(tier unreadable\) \(tier 0\)/)
 })
 
 test('a task cannot escalate its own effort — the tier-derived value wins', () => {
@@ -1483,7 +1530,7 @@ test('a mixed-tier lane takes the maximum tier and its model', () => {
       tier: 5,
       cap: LANE_CAPS.byTier[5],
       model: 'opus',
-      effort: 'xhigh'
+      effort: 'high'
     }
   ])
   assert.match(
@@ -3813,7 +3860,7 @@ test('an edge-free plan is planned exactly as it was before edges existed', () =
         tier: 5,
         cap: LANE_CAPS.byTier[5],
         model: 'opus',
-        effort: 'xhigh'
+        effort: 'high'
       }
     ],
     serialized: [{ id: '1.2', group: 1, path: './lib/a.mjs', conflictsWith: '1.1' }]
