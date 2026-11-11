@@ -164,7 +164,7 @@ interlock review proof --review <draft>
 While it exits 1, its first line reads `re-run: <dimensions>`. Print that line before you spawn anything. Then get each named dimension's re-run prompt from the draft:
 
 ```bash
-interlock review brief --dimension <name> --base <base> --changed <the changed files> --rerun-of <draft> --json
+interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files> --rerun-of <draft>
 ```
 
 and re-run that dimension with it. Put the re-run answers alone through the skeptics with
@@ -191,7 +191,7 @@ When `--out <file>` was given, the same line also carries `--head <sha> --out <f
 interlock review --rerun-of <last draft> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --head <sha> --out <file> [--carry <file>] --json
 ```
 
-`[--carry <file>]` is a placeholder: write `--carry <file>` there, with the file this skill was given, when it was given `--carry`, and write nothing otherwise. A `LEDGER REJECTED:` line on standard error names a dimension whose ledger was malformed; it is recorded unproven, and the proof line names it for a re-run.
+`[--carry <file>]` is a placeholder: write `--carry <file>` there, with the file this skill was given, when it was given `--carry`, and write nothing otherwise. A `LEDGER REJECTED:` line on standard error names a dimension whose ledger was malformed. `recorded unproven` means the proof line names it for a re-run. `the first ledger was kept` means a re-run appended onto a dimension that was not unproven: the first ledger stays, and the proof line names that dimension only for a gap that remains.
 
 `--metrics <change>` is not optional either. It writes the four counts this review produced to `.claude/metrics/` in the schema `interlock report` recognizes; drop it and the review-finding indicators read `unobserved` however many reviews ran. It is bookkeeping only and cannot change the verdict or the exit status.
 

@@ -5553,6 +5553,47 @@ test('review proof on an unread-only draft exits 0 with PROOF LEFT UNREAD first,
   assert.ok(!lines.some(l => l.trim().startsWith('re-run:')), proof.stdout)
 })
 
+test('an unread-only review stops: PROOF LEFT UNREAD, no re-run to spawn, and the settle comment starts REVIEW NOT PROVEN', () => {
+  const repo = proofRepo('proof-uat-unread')
+  const dims = file('uat-dims.json', { selected: ['security'], ran: ['security'], unavailable: [], skipped: [] })
+  const first = file('uat-first.json', [
+    { dimension: 'security', findings: [], coverage: { checked: [{ what: 'the log call', at: 'lib/a.mjs:2-3' }], unread: [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }] } }
+  ])
+  const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
+  const draft = join(dir, 'uat', 'review.json.draft.json')
+  const written = run(['review', '--findings', first, '--verdicts', file('uat-v.json', []), ...base, '--draft', '--out', draft, '--json'])
+  assert.equal(written.code, 0, written.stderr)
+  const draftRecord = JSON.parse(written.stdout)
+  assert.equal(draftRecord.proof.proven, false)
+  assert.equal(draftRecord.proof.unread[0].dimension, 'security')
+  assert.deepEqual(draftRecord.proof.uncited, [])
+
+  const proof = run(['review', 'proof', '--review', draft])
+  assert.equal(proof.code, 0, proof.stderr)
+  assert.equal(proof.stdout.split('\n')[0], 'PROOF LEFT UNREAD: security')
+  assert.ok(!proof.stdout.split('\n').some(l => l.trim().startsWith('re-run:')), proof.stdout)
+
+  // Exit 0 is the skill's stop. Asking for this dimension's re-run prompt is refused, so there is nothing to spawn.
+  const brief = run(['review', 'brief', '--dimension', 'security', '--base', repo.base, '--root', repo.root, '--change', 'stop-proof-re-runs-for-unread-inputs', '--changed', 'lib/a.mjs', '--rerun-of', draft])
+  assert.deepEqual([brief.code, brief.stdout], [1, ''])
+  assert.match(brief.stderr, /names no re-run for security/)
+
+  const final = join(dir, 'uat', 'review.json')
+  const promoted = run(['review', '--rerun-of', draft, ...base, '--head', repo.head, '--out', final, '--json'])
+  assert.equal(promoted.code, 0, promoted.stderr)
+  const record = JSON.parse(readFileSync(final, 'utf8'))
+  assert.equal(record.proof.proven, false)
+  assert.equal(record.proof.unread[0].dimension, 'security')
+  assert.equal(record.proof.reruns, 0, 'promoting the first draft counts no re-run')
+  assert.deepEqual(record.surviving, [], 'the record holds the first pass, which raised nothing')
+
+  const comment = run(['settle', 'comment', '--review', final, '--head', repo.head, '--round', '0'])
+  assert.equal(comment.code, 0, comment.stderr)
+  assert.ok(comment.stdout.startsWith('REVIEW NOT PROVEN'), comment.stdout)
+  assert.ok(comment.stdout.includes('REVIEW_CONTEXT'), comment.stdout)
+  assert.ok(comment.stdout.includes('security'), comment.stdout)
+})
+
 test('interlock settle comment over a promoted unread-only record says REVIEW NOT PROVEN and names the unread input', () => {
   const repo = proofRepo('proof-unread-comment')
   const dims = file('uc-dims.json', { selected: ['security'], ran: ['security'], unavailable: [], skipped: [] })
@@ -5665,6 +5706,35 @@ test('review brief --dimension --rerun-of: uncited files that are in neither git
   assert.match(r.stdout, /^ {2}- hooks\/mod\.mjs: 2-3$/m)
   assert.doesNotMatch(r.stdout, /lib\/a\.mjs|lib\/b\.mjs/)
   assert.equal(r.stdout.split('\n').filter(l => l.startsWith('RE-RUN FOR UNCITED FILES:')).length, 1)
+})
+
+test('review --rerun-of on the append path prints LEDGER REJECTED and keeps the first ledger when the re-run ledger is malformed', () => {
+  const repo = rerunRepo('rerun-malformed')
+  const name = 'rerun-malformed-d'
+  const { draft, proof } = writeDraft(repo, name, ['regression'], [
+    { dimension: 'regression', findings: [], coverage: { checked: [{ what: 'a', at: 'lib/a.mjs:2-3' }], unread: [{ input: 'REVIEW_CONTEXT', reason: 'absent' }] } }
+  ])
+  assert.ok(proof.uncited.includes('lib/b.mjs'), JSON.stringify(proof.uncited))
+  assert.deepEqual(proof.unproven, [])
+  const next = join(dir, name, 'next.draft.json')
+  const merged = run([
+    'review', '--rerun-of', draft,
+    '--findings', file(`${name}-bad.json`, [{ dimension: 'regression', findings: [], coverage: { checked: 'x' } }]),
+    '--verdicts', file(`${name}-v2.json`, []),
+    '--dimensions', join(dir, `${name}-dims.json`),
+    '--base', repo.base, '--root', repo.root,
+    '--draft', '--out', next, '--json'
+  ])
+  assert.equal(merged.code, 0, merged.stderr)
+  assert.match(merged.stderr, /^LEDGER REJECTED: regression: coverage\."checked" must be a list; the first ledger was kept$/m)
+  const record = JSON.parse(merged.stdout)
+  assert.deepEqual(record.coverage.regression, {
+    checked: [{ what: 'a', at: 'lib/a.mjs:2-3' }],
+    unread: [{ input: 'REVIEW_CONTEXT', reason: 'absent' }]
+  })
+  assert.deepEqual(record.proof.unproven, [])
+  assert.ok(record.proof.uncited.includes('lib/b.mjs'))
+  assert.deepEqual(record.proof.unread.map(u => u.dimension), ['regression'])
 })
 
 test('review brief names a deleted file under its old path, and a deleted line that reads "-- x" is not a file header', () => {

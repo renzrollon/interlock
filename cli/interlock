@@ -419,8 +419,10 @@ Usage:
                                            file that is not a review record
   interlock review brief --dimension <name> --base <ref> [--change <c>] [--rerun-of <draft>]
                                            Print one dimension's whole prompt;
-                                           --rerun-of narrows it to the draft's
-                                           uncited files, exit 1 if no re-run
+                                           --rerun-of: the whole prompt for an
+                                           unproven dimension, the uncited
+                                           files only for the uncited target;
+                                           exit 1 if the draft names no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:

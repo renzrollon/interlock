@@ -88,7 +88,7 @@
 
 ### Requirement: `interlock review --rerun-of` SHALL merge a re-run into the draft in the CLI
 
-A draft (`--draft`) SHALL carry `inputs: { answers, verdicts }`, the per-dimension answers and the verdicts it was written from, and the final record SHALL NOT. `interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts>` SHALL merge into the draft's inputs and resolve the whole again: a dimension the draft's proof named unproven SHALL have its ledger replaced and the findings whose ids are new appended, no first-pass finding dropped; every other dimension the write names SHALL keep its first ledger and have the re-run's checked and unread entries and the findings whose ids are new appended, nothing of its first answer dropped; the draft's verdicts SHALL be kept for every finding id they cover and the new verdicts appended; a dimension the write does not name SHALL be untouched, carried or ran. A `--rerun-of` write with no `--findings` SHALL promote the draft unchanged. A `--draft` or `--rerun-of` write whose findings input holds an entry that is not a per-dimension answer SHALL exit 1 and write nothing. `interlock review brief --skeptics … --rerun-of <draft>` SHALL print prompts only for the findings the draft holds no verdict for. No skill SHALL compose a merged findings or verdicts file.
+A draft (`--draft`) SHALL carry `inputs: { answers, verdicts }`, the per-dimension answers and the verdicts it was written from, and the final record SHALL NOT. `interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts>` SHALL merge into the draft's inputs and resolve the whole again: a dimension the draft's proof named unproven SHALL have its ledger replaced and the findings whose ids are new appended, no first-pass finding dropped; every other dimension the write names SHALL keep its first ledger and have the re-run's checked and unread entries and the findings whose ids are new appended, nothing of its first answer dropped, keeping the first `unread` entry per `input` and the first `checked` entry per `what` and `at`; a re-run ledger of the wrong shape on that path SHALL leave the first ledger in place and standard error SHALL carry `LEDGER REJECTED: <dimension>: <fault>; the first ledger was kept`, and that fault SHALL NOT record the dimension unproven; the draft's verdicts SHALL be kept for every finding id they cover and the new verdicts appended; a dimension the write does not name SHALL be untouched, carried or ran. A `--rerun-of` write with no `--findings` SHALL promote the draft unchanged. A `--draft` or `--rerun-of` write whose findings input holds an entry that is not a per-dimension answer SHALL exit 1 and write nothing. `interlock review brief --skeptics … --rerun-of <draft>` SHALL print prompts only for the findings the draft holds no verdict for. No skill SHALL compose a merged findings or verdicts file.
 
 #### Scenario: Happy path — an unproven dimension's re-run replaces its ledger
 
@@ -126,6 +126,19 @@ A draft (`--draft`) SHALL carry `inputs: { answers, verdicts }`, the per-dimensi
 - **GIVEN** a draft holding verdicts for finding `F-1` and a re-run answer that raises `F-1` again and `F-2`
 - **WHEN** `interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --json` runs
 - **THEN** every prompt's `findingIds` is `["F-2"]`
+
+#### Scenario: Edge case — a repeated unread input is recorded once
+
+- **GIVEN** a draft whose `regression` recorded the `unread` input `REVIEW_CONTEXT` and is the uncited target, and a re-run that records `REVIEW_CONTEXT` again and adds one new checked entry
+- **WHEN** the next draft is written with `--rerun-of`
+- **THEN** `regression`'s `unread` lists `REVIEW_CONTEXT` once, with the first pass's reason, and its `checked` list holds the first pass's entry and the new one
+
+#### Scenario: Failure — a malformed re-run ledger on the append path is spoken and does not replace the first
+
+- **GIVEN** a draft whose `regression` cited `lib/a.mjs`, recorded one `unread` input, and left `lib/b.mjs` uncited, and a re-run whose `coverage.checked` is not a list
+- **WHEN** the next draft is written with `--rerun-of`
+- **THEN** standard error carries `LEDGER REJECTED: regression:` and `the first ledger was kept`
+- **AND** the first `unread` entry is still recorded, `regression` is not unproven, and `lib/b.mjs` is still uncited
 
 #### Scenario: Edge case — a re-run scoped to uncited files keeps the first pass's ledger
 

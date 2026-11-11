@@ -2823,8 +2823,9 @@ test('review-code asks each re-run for its prompt with --rerun-of <draft>, print
   const at = pattern => lines.findIndex(l => pattern.test(l))
   const proof = at(/^interlock review proof --review <draft>$/)
   const promote = at(/^interlock review --rerun-of <last draft>[^\n]*--metrics <change>/)
-  const rerunBrief = at(/^interlock review brief --dimension\b[^\n]*--rerun-of <draft>/)
-  assert.ok(rerunBrief !== -1, `${where} has no fenced interlock review brief --dimension line that carries --rerun-of <draft>`)
+  const rerunBrief = at(/^interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files> --rerun-of <draft>$/)
+  assert.ok(rerunBrief !== -1, `${where} has no fenced re-run brief line carrying --change <change> and --rerun-of <draft>`)
+  assert.ok(!lines[rerunBrief].includes('--json'), `${where}: briefDimension has no --json form, so the re-run brief line must not pass --json`)
   assert.ok(proof < rerunBrief && rerunBrief < promote, `${where}: the re-run brief line sits after the proof line and before the promote line`)
 
   const paragraphs = skill.split(/\n\s*\n/)
@@ -2836,6 +2837,18 @@ test('review-code asks each re-run for its prompt with --rerun-of <draft>, print
   const refused = paragraphs.find(p => p.includes('RE-RUN REFUSED'))
   assert.match(refused, /proof line again/i, `${where}: the RE-RUN REFUSED paragraph must say the proof line is not run again`)
   assert.match(refused, /promote the last draft/i, `${where}: the RE-RUN REFUSED paragraph must say the last draft is promoted`)
+
+  // A second wave is the exit-1 loop. PROOF LEFT UNREAD is an exit-0 answer, and that clause promotes.
+  const spawnLoop = paragraphs.find(p => p.includes('While it exits 1'))
+  assert.match(spawnLoop, /spawn/)
+  assert.doesNotMatch(spawnLoop, /PROOF LEFT UNREAD/, `${where}: PROOF LEFT UNREAD is not a reason to spawn`)
+  const exit0Para = paragraphs.find(p => p.includes('When the proof line exits 0') && p.includes('PROOF LEFT UNREAD'))
+  assert.ok(exit0Para, `${where} must name PROOF LEFT UNREAD as an exit-0 answer`)
+  const exit0 = exit0Para.slice(exit0Para.indexOf('When the proof line exits 0'), exit0Para.indexOf('When it exits 2'))
+  assert.match(exit0, /PROOF LEFT UNREAD/)
+  assert.match(exit0, /promote the last draft/i)
+  assert.doesNotMatch(exit0, /spawn/, `${where}: an exit-0 PROOF LEFT UNREAD promotes and does not spawn a second wave`)
+  assert.ok(skill.includes('the first ledger was kept'), `${where} must say a malformed appended ledger keeps the first`)
 })
 
 test('the settle skill\'s sentence on a record left unproven names unread', () => {

@@ -24,6 +24,7 @@ import {
   notProvenBanner,
   proofAnswer,
   proofCounts,
+  keptLedgerLines,
   rejectedLines,
   rerunTargets,
   runProofRecord,
@@ -373,6 +374,74 @@ test('the merge: a re-run of a dimension that had only unread entries keeps the 
   const after = computeProof({ ran: ['security', 'language'], answers: merged.answers, changedPaths: ['lib/a.mjs'] })
   assert.equal(after.proven, false)
   assert.deepEqual(after.unread.map(u => u.dimension), ['security'])
+})
+
+test('the merge: appending keeps the first unread entry per input and the first checked entry per what and at', () => {
+  const draftAnswers = [
+    {
+      dimension: 'regression',
+      findings: [],
+      coverage: ledger([at('a', 'lib/a.mjs:3')], [{ input: 'REVIEW_CONTEXT', reason: 'absent' }])
+    }
+  ]
+  const changedPaths = ['lib/a.mjs', 'hooks/mod.mjs']
+  const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths })
+  assert.deepEqual(draftProof.uncited, ['hooks/mod.mjs'])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    {
+      answers: [{
+        dimension: 'regression',
+        findings: [],
+        coverage: ledger(
+          [at('a', 'lib/a.mjs:3'), at('the reader', 'hooks/mod.mjs:636')],
+          [{ input: 'REVIEW_CONTEXT', reason: 'still absent' }, { input: 'delta specs', reason: 'not opened' }]
+        )
+      }]
+    }
+  )
+  const regression = merged.answers.find(a => a.dimension === 'regression')
+  assert.deepEqual(regression.coverage.checked, [
+    { what: 'a', at: 'lib/a.mjs:3' },
+    { what: 'the reader', at: 'hooks/mod.mjs:636' }
+  ], 'the repeated checked entry is kept once, and the new one is appended')
+  assert.deepEqual(regression.coverage.unread, [
+    { input: 'REVIEW_CONTEXT', reason: 'absent' },
+    { input: 'delta specs', reason: 'not opened' }
+  ], 'the repeated unread input keeps the first reason, and a new input is appended')
+  const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths })
+  assert.equal(notProvenBanner(after), 'REVIEW NOT PROVEN: unread regression (REVIEW_CONTEXT, delta specs)')
+  assert.doesNotMatch(notProvenBanner(after), /REVIEW_CONTEXT, REVIEW_CONTEXT/)
+})
+
+test('the merge: a malformed re-run ledger on the append path is not stored, and the first ledger is kept for LEDGER REJECTED', () => {
+  const draftAnswers = [
+    {
+      dimension: 'regression',
+      findings: [],
+      coverage: ledger([at('a', 'lib/a.mjs:3')], [{ input: 'REVIEW_CONTEXT', reason: 'absent' }])
+    }
+  ]
+  const changedPaths = ['lib/a.mjs', 'lib/b.mjs']
+  const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths })
+  assert.deepEqual(draftProof.uncited, ['lib/b.mjs'])
+  assert.deepEqual(draftProof.unproven, [])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    { answers: [{ dimension: 'regression', findings: [], coverage: { checked: 'x' } }] }
+  )
+  const regression = merged.answers.find(a => a.dimension === 'regression')
+  assert.deepEqual(regression.coverage.checked, [{ what: 'a', at: 'lib/a.mjs:3' }])
+  assert.deepEqual(regression.coverage.unread, [{ input: 'REVIEW_CONTEXT', reason: 'absent' }], 'the declared gap survives the bad re-run')
+  assert.deepEqual(merged.ledgerKept, [{ dimension: 'regression', problem: 'coverage."checked" must be a list' }])
+  assert.deepEqual(keptLedgerLines(merged.ledgerKept), [
+    'LEDGER REJECTED: regression: coverage."checked" must be a list; the first ledger was kept'
+  ])
+  const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths })
+  assert.deepEqual(after.unproven, [], 'the bad re-run does not record the dimension unproven')
+  assert.deepEqual(after.rejected, [])
+  assert.deepEqual(after.uncited, ['lib/b.mjs'], 'the file stays uncited, and the rejection line is what says why')
+  assert.deepEqual(after.unread.map(u => u.dimension), ['regression'])
 })
 
 test('the merge: a re-run of the uncited target with one checked entry on the uncited file leaves both files cited and the first pass\'s unread entry recorded', () => {

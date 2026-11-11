@@ -111,6 +111,8 @@ Two consequences:
 
 - A re-run narrowed to the uncited files cannot drop the first pass's `checked` entries for the rest of the diff.
 - A hand-run re-run of a dimension that only had `unread` entries does not clear them. The CLI cannot match a re-run's ledger to the entry it would close, and a clean re-run erasing a declared gap is the outcome D2 rules out.
+- Appended entries keep the first `unread` entry per `input` and the first `checked` entry per `what` and `at`, so a re-run that declares the same gap again does not list it twice.
+- A re-run ledger of the wrong shape on the append path is not stored. Standard error says `LEDGER REJECTED: … the first ledger was kept`. Recording that dimension unproven would hand the next re-run the replace path, which can clear the gap this decision keeps.
 
 The `--rerun-of` write stays ungated: it merges whatever answers it is given, as today (`lib/review-cli.mjs:172`).
 
