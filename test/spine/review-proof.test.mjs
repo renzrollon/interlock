@@ -24,6 +24,7 @@ import {
   notProvenBanner,
   proofAnswer,
   proofCounts,
+  keptLedgerLines,
   rejectedLines,
   rerunTargets,
   runProofRecord,
@@ -178,7 +179,7 @@ test('the re-run answer: re-run, proven, the cap, and a broken record', () => {
   })
   const rerun = proofAnswer(recordOf(unproven))
   assert.equal(rerun.exit, 1)
-  assert.equal(rerun.first, 're-run: language, technical-lead')
+  assert.equal(rerun.first, 're-run: language', 'technical-lead has an unread entry and nothing else: it is not on the list')
   assert.ok(rerun.reasons.some(r => r.startsWith('language: unproven')))
   assert.ok(rerun.reasons.some(r => r.startsWith('technical-lead: unread delta specs')))
 
@@ -188,7 +189,7 @@ test('the re-run answer: re-run, proven, the cap, and a broken record', () => {
 
   const capped = proofAnswer(recordOf({ ...unproven, reruns: LIMITS.maxProofReruns }))
   assert.equal(capped.exit, 0)
-  assert.equal(capped.first, 'PROOF CAP REACHED: language, technical-lead')
+  assert.equal(capped.first, 'PROOF CAP REACHED: language')
 
   // Proven wins at the cap.
   const proven = proofAnswer(recordOf({ ...unproven, proven: true, reruns: LIMITS.maxProofReruns }))
@@ -198,6 +199,112 @@ test('the re-run answer: re-run, proven, the cap, and a broken record', () => {
   assert.equal(proofAnswer({ findings: [] }).exit, 2)
   assert.equal(proofAnswer(null).exit, 2)
   assert.equal(proofAnswer({ surviving: [] }).exit, 2)
+})
+
+// --- stop-proof-re-runs-for-unread-inputs: an unread input names no re-run ----------
+
+const UNREAD_FIVE = ['language', 'technical-lead', 'regression', 'security', 'domain']
+
+/** A ran dimension whose ledger cites `lib/a.mjs` and declares one unread input. */
+const unreadAnswer = (dimension, input = 'delta specs') => ({
+  dimension,
+  findings: [],
+  coverage: ledger([at('scope', 'lib/a.mjs:1')], [{ input, reason: 'not opened' }])
+})
+/** A ran dimension whose ledger cites `lib/a.mjs` with nothing unread. */
+const cleanAnswer = dimension => ({ dimension, findings: [], coverage: ledger([at('scope', 'lib/a.mjs:1')]) })
+
+test('the repro: five ran dimensions with only unread entries answer PROOF LEFT UNREAD, exit 0, and no line begins re-run:', () => {
+  const proof = computeProof({
+    ran: UNREAD_FIVE,
+    answers: UNREAD_FIVE.map(d => unreadAnswer(d, `${d} input`)),
+    changedPaths: ['lib/a.mjs']
+  })
+  assert.equal(proof.proven, false)
+  assert.deepEqual(proof.unproven, [])
+  assert.deepEqual(proof.uncited, [])
+  assert.deepEqual(proof.unread.map(u => u.dimension), UNREAD_FIVE)
+  const answer = proofAnswer(recordOf(proof))
+  assert.equal(answer.exit, 0)
+  assert.equal(answer.first, 'PROOF LEFT UNREAD: language, technical-lead, regression, security, domain')
+  assert.ok(![answer.first, ...answer.reasons].some(l => l.startsWith('re-run:')), 'no line asks for a re-run')
+  assert.equal(answer.reasons.length, 5, 'each unread entry follows on a reason line')
+  for (const d of UNREAD_FIVE) assert.ok(answer.reasons.some(r => r.startsWith(`${d}: unread ${d} input`)), d)
+  assert.equal(proof.proven, false, 'the proof still does not hold: D2')
+})
+
+test('two dimensions with unread entries are named in ran order, each entry on a reason line, at any rerun count', () => {
+  const proof = computeProof({
+    ran: ['language', 'technical-lead', 'security'],
+    answers: [cleanAnswer('language'), unreadAnswer('technical-lead'), unreadAnswer('security', 'REVIEW_CONTEXT')],
+    changedPaths: ['lib/a.mjs']
+  })
+  for (const reruns of [undefined, 0, LIMITS.maxProofReruns]) {
+    const answer = proofAnswer(recordOf(reruns === undefined ? proof : { ...proof, reruns }))
+    assert.deepEqual([answer.exit, answer.first], [0, 'PROOF LEFT UNREAD: technical-lead, security'], `reruns ${reruns}`)
+    assert.ok(answer.reasons.some(r => r.startsWith('technical-lead: unread delta specs')))
+    assert.ok(answer.reasons.some(r => r.startsWith('security: unread REVIEW_CONTEXT')))
+  }
+})
+
+test('an unproven dimension beside an unread one: re-run names the unproven alone, and the cap line does too, each with the unread reason line', () => {
+  const proof = computeProof({
+    ran: ['language', 'technical-lead'],
+    answers: [{ dimension: 'language', findings: [] }, unreadAnswer('technical-lead')],
+    changedPaths: ['lib/a.mjs']
+  })
+  const under = proofAnswer(recordOf(proof))
+  assert.deepEqual([under.exit, under.first], [1, 're-run: language'])
+  assert.ok(under.reasons.some(r => r.startsWith('technical-lead: unread delta specs')), 'the unread entry is still listed')
+  const capped = proofAnswer(recordOf({ ...proof, reruns: LIMITS.maxProofReruns }))
+  assert.deepEqual([capped.exit, capped.first], [0, 'PROOF CAP REACHED: language'])
+  assert.ok(capped.reasons.some(r => r.startsWith('technical-lead: unread delta specs')))
+})
+
+test('unread inputs left after a re-run at the cap are not the cap\'s: PROOF LEFT UNREAD, never PROOF CAP REACHED', () => {
+  const proof = computeProof({
+    ran: ['language', 'technical-lead'],
+    answers: [cleanAnswer('language'), unreadAnswer('technical-lead')],
+    changedPaths: ['lib/a.mjs']
+  })
+  const answer = proofAnswer(recordOf({ ...proof, reruns: LIMITS.maxProofReruns }))
+  assert.deepEqual([answer.exit, answer.first], [0, 'PROOF LEFT UNREAD: technical-lead'])
+})
+
+test('a record with no diff still exits 2 when a dimension also recorded an unread input, and so does a record that ran nothing', () => {
+  for (const changedPaths of [null, []]) {
+    const proof = computeProof({ ran: ['language'], answers: [unreadAnswer('language')], changedPaths })
+    assert.equal(proof.reason, NO_DIFF)
+    assert.deepEqual(proof.unread.map(u => u.dimension), ['language'])
+    const answer = proofAnswer(recordOf(proof))
+    assert.equal(answer.exit, 2, JSON.stringify(changedPaths))
+    assert.equal(answer.first, undefined, 'nothing on standard output')
+    assert.ok(answer.error)
+  }
+  const none = computeProof({ ran: [], answers: [], changedPaths: ['lib/a.mjs'] })
+  assert.equal(proofAnswer(recordOf({ ...none, unread: [{ dimension: 'language', entries: [{ input: 'x', reason: 'y' }] }] })).exit, 2, 'no dimension ran')
+})
+
+test('a proof that carries no reason, as an older or hand-made record may, answers PROOF LEFT UNREAD for its unread entries', () => {
+  const proof = computeProof({ ran: ['language'], answers: [unreadAnswer('language')], changedPaths: ['lib/a.mjs'] })
+  const { reason: _reason, ...bare } = proof
+  const answer = proofAnswer(recordOf(bare))
+  assert.deepEqual([answer.exit, answer.first], [0, 'PROOF LEFT UNREAD: language'])
+})
+
+test('rerunTargets is [] for an unread-only proof, and names the unproven dimensions and the uncited target alone', () => {
+  const unreadOnly = computeProof({
+    ran: ['language', 'regression'],
+    answers: [unreadAnswer('language'), unreadAnswer('regression')],
+    changedPaths: ['lib/a.mjs']
+  })
+  assert.deepEqual(rerunTargets(unreadOnly), [])
+  const mixed = computeProof({
+    ran: ['language', 'technical-lead', 'regression'],
+    answers: [{ dimension: 'language', findings: [] }, unreadAnswer('technical-lead'), unreadAnswer('regression')],
+    changedPaths: ['lib/a.mjs', 'hooks/mod.mjs']
+  })
+  assert.deepEqual(rerunTargets(mixed), ['language', 'regression'], 'unproven, then the uncited target; technical-lead is only unread')
 })
 
 test('uncited files alone re-run regression when it ran, else the first ran dimension of a scoped review', () => {
@@ -251,6 +358,110 @@ test('the merge: a replaced answer, an append for uncited files, the draft verdi
   // The promote write carries no answer and leaves the count where it was.
   assert.equal(mergeRerun({ ...draft, proof: { ...draftProof, reruns: 1 } }, {}).reruns, 1)
   assert.equal(mergeRerun(draft, {}).reruns, 0)
+})
+
+test('the merge: a re-run of a dimension that had only unread entries keeps the first ledger and appends, so the unread entry stays', () => {
+  const draftAnswers = [unreadAnswer('security', 'REVIEW_CONTEXT'), cleanAnswer('language')]
+  const draftProof = computeProof({ ran: ['security', 'language'], answers: draftAnswers, changedPaths: ['lib/a.mjs'] })
+  assert.deepEqual(draftProof.unread.map(u => u.dimension), ['security'])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    { answers: [{ dimension: 'security', findings: [], coverage: ledger([at('the log call', 'lib/a.mjs:2-3')]) }] }
+  )
+  const security = merged.answers.find(a => a.dimension === 'security')
+  assert.deepEqual(security.coverage.checked.map(c => c.at), ['lib/a.mjs:1', 'lib/a.mjs:2-3'], 'the first pass\'s checked entry and the re-run\'s')
+  assert.deepEqual(security.coverage.unread, [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }], 'a clean re-run does not erase a declared gap')
+  const after = computeProof({ ran: ['security', 'language'], answers: merged.answers, changedPaths: ['lib/a.mjs'] })
+  assert.equal(after.proven, false)
+  assert.deepEqual(after.unread.map(u => u.dimension), ['security'])
+})
+
+test('the merge: appending keeps the first unread entry per input and the first checked entry per what and at', () => {
+  const draftAnswers = [
+    {
+      dimension: 'regression',
+      findings: [],
+      coverage: ledger([at('a', 'lib/a.mjs:3')], [{ input: 'REVIEW_CONTEXT', reason: 'absent' }])
+    }
+  ]
+  const changedPaths = ['lib/a.mjs', 'hooks/mod.mjs']
+  const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths })
+  assert.deepEqual(draftProof.uncited, ['hooks/mod.mjs'])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    {
+      answers: [{
+        dimension: 'regression',
+        findings: [],
+        coverage: ledger(
+          [at('a', 'lib/a.mjs:3'), at('the reader', 'hooks/mod.mjs:636')],
+          [{ input: 'REVIEW_CONTEXT', reason: 'still absent' }, { input: 'delta specs', reason: 'not opened' }]
+        )
+      }]
+    }
+  )
+  const regression = merged.answers.find(a => a.dimension === 'regression')
+  assert.deepEqual(regression.coverage.checked, [
+    { what: 'a', at: 'lib/a.mjs:3' },
+    { what: 'the reader', at: 'hooks/mod.mjs:636' }
+  ], 'the repeated checked entry is kept once, and the new one is appended')
+  assert.deepEqual(regression.coverage.unread, [
+    { input: 'REVIEW_CONTEXT', reason: 'absent' },
+    { input: 'delta specs', reason: 'not opened' }
+  ], 'the repeated unread input keeps the first reason, and a new input is appended')
+  const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths })
+  assert.equal(notProvenBanner(after), 'REVIEW NOT PROVEN: unread regression (REVIEW_CONTEXT, delta specs)')
+  assert.doesNotMatch(notProvenBanner(after), /REVIEW_CONTEXT, REVIEW_CONTEXT/)
+})
+
+test('the merge: a malformed re-run ledger on the append path is not stored, and the first ledger is kept for LEDGER REJECTED', () => {
+  const draftAnswers = [
+    {
+      dimension: 'regression',
+      findings: [],
+      coverage: ledger([at('a', 'lib/a.mjs:3')], [{ input: 'REVIEW_CONTEXT', reason: 'absent' }])
+    }
+  ]
+  const changedPaths = ['lib/a.mjs', 'lib/b.mjs']
+  const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths })
+  assert.deepEqual(draftProof.uncited, ['lib/b.mjs'])
+  assert.deepEqual(draftProof.unproven, [])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    { answers: [{ dimension: 'regression', findings: [], coverage: { checked: 'x' } }] }
+  )
+  const regression = merged.answers.find(a => a.dimension === 'regression')
+  assert.deepEqual(regression.coverage.checked, [{ what: 'a', at: 'lib/a.mjs:3' }])
+  assert.deepEqual(regression.coverage.unread, [{ input: 'REVIEW_CONTEXT', reason: 'absent' }], 'the declared gap survives the bad re-run')
+  assert.deepEqual(merged.ledgerKept, [{ dimension: 'regression', problem: 'coverage."checked" must be a list' }])
+  assert.deepEqual(keptLedgerLines(merged.ledgerKept), [
+    'LEDGER REJECTED: regression: coverage."checked" must be a list; the first ledger was kept'
+  ])
+  const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths })
+  assert.deepEqual(after.unproven, [], 'the bad re-run does not record the dimension unproven')
+  assert.deepEqual(after.rejected, [])
+  assert.deepEqual(after.uncited, ['lib/b.mjs'], 'the file stays uncited, and the rejection line is what says why')
+  assert.deepEqual(after.unread.map(u => u.dimension), ['regression'])
+})
+
+test('the merge: a re-run of the uncited target with one checked entry on the uncited file leaves both files cited and the first pass\'s unread entry recorded', () => {
+  const draftAnswers = [
+    { dimension: 'regression', findings: [], coverage: ledger([at('a', 'lib/a.mjs:3')], [{ input: 'REVIEW_CONTEXT', reason: 'absent' }]) }
+  ]
+  const changedPaths = ['lib/a.mjs', 'hooks/mod.mjs']
+  const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths })
+  assert.deepEqual(draftProof.uncited, ['hooks/mod.mjs'])
+  const merged = mergeRerun(
+    { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+    { answers: [{ dimension: 'regression', findings: [], coverage: ledger([at('the reader', 'hooks/mod.mjs:636')]) }] }
+  )
+  const regression = merged.answers.find(a => a.dimension === 'regression')
+  assert.deepEqual(regression.coverage.checked.map(c => c.at), ['lib/a.mjs:3', 'hooks/mod.mjs:636'])
+  assert.deepEqual(regression.coverage.unread, [{ input: 'REVIEW_CONTEXT', reason: 'absent' }])
+  const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths })
+  assert.deepEqual(after.uncited, [])
+  assert.equal(after.cited, 2)
+  assert.deepEqual(after.unread.map(u => u.dimension), ['regression'], 'the unread entry is still on the record')
 })
 
 test('the skeptics are not asked twice: the draft verdicts name the ids they adjudicate', () => {

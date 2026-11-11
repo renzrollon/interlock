@@ -2808,10 +2808,54 @@ test('review-code relays the CLI\'s dimension and skeptic prompts, runs the proo
   assert.ok(skill.includes('as its whole prompt'), `${where} must relay the printed prompt as the whole prompt`)
   assert.ok(!/^> /m.test(skill), `${where} still carries a blockquoted brief`)
   assert.ok(skill.includes('interlock-graph covers --changed - --update'), `${where} §1 must run interlock-graph covers --update`)
-  for (const token of ['GRAPH STALE:', 'BLAST RADIUS SKIPPED', 'PROOF CAP REACHED', 'LEDGER REJECTED:', '`degraded`']) {
+  for (const token of ['GRAPH STALE:', 'BLAST RADIUS SKIPPED', 'PROOF CAP REACHED', 'PROOF LEFT UNREAD', 'LEDGER REJECTED:', '`degraded`']) {
     assert.ok(skill.includes(token), `${where} must carry ${token}`)
   }
   assert.doesNotMatch(skill, /do not run (npm )?tests?/i, `${where} tells a reviewer not to run tests`)
+})
+
+// stop-proof-re-runs-for-unread-inputs: the re-run is asked for its prompt from the draft, a refusal is
+// printed and spawns nothing, and the `re-run:` line is printed before anything spawns. Tokens, not sentences.
+test('review-code asks each re-run for its prompt with --rerun-of <draft>, prints the re-run line first, and names RE-RUN REFUSED', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const skill = skillText('review-code')
+  const lines = fencedLines(join(SKILLS_DIR, 'review-code', 'SKILL.md'))
+  const at = pattern => lines.findIndex(l => pattern.test(l))
+  const proof = at(/^interlock review proof --review <draft>$/)
+  const promote = at(/^interlock review --rerun-of <last draft>[^\n]*--metrics <change>/)
+  const rerunBrief = at(/^interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files> --rerun-of <draft>$/)
+  assert.ok(rerunBrief !== -1, `${where} has no fenced re-run brief line carrying --change <change> and --rerun-of <draft>`)
+  assert.ok(!lines[rerunBrief].includes('--json'), `${where}: briefDimension has no --json form, so the re-run brief line must not pass --json`)
+  assert.ok(proof < rerunBrief && rerunBrief < promote, `${where}: the re-run brief line sits after the proof line and before the promote line`)
+
+  const paragraphs = skill.split(/\n\s*\n/)
+  const rerunLine = paragraphs.find(p => p.includes('re-run: <dimensions>'))
+  assert.ok(rerunLine, `${where} has no paragraph that holds the re-run: answer`)
+  assert.match(rerunLine, /\bprint\b/i, `${where}: the paragraph that holds the re-run: answer must tell the session to print that line`)
+
+  assert.ok(skill.includes('RE-RUN REFUSED'), `${where} must carry RE-RUN REFUSED`)
+  const refused = paragraphs.find(p => p.includes('RE-RUN REFUSED'))
+  assert.match(refused, /proof line again/i, `${where}: the RE-RUN REFUSED paragraph must say the proof line is not run again`)
+  assert.match(refused, /promote the last draft/i, `${where}: the RE-RUN REFUSED paragraph must say the last draft is promoted`)
+
+  // A second wave is the exit-1 loop. PROOF LEFT UNREAD is an exit-0 answer, and that clause promotes.
+  const spawnLoop = paragraphs.find(p => p.includes('While it exits 1'))
+  assert.match(spawnLoop, /spawn/)
+  assert.doesNotMatch(spawnLoop, /PROOF LEFT UNREAD/, `${where}: PROOF LEFT UNREAD is not a reason to spawn`)
+  const exit0Para = paragraphs.find(p => p.includes('When the proof line exits 0') && p.includes('PROOF LEFT UNREAD'))
+  assert.ok(exit0Para, `${where} must name PROOF LEFT UNREAD as an exit-0 answer`)
+  const exit0 = exit0Para.slice(exit0Para.indexOf('When the proof line exits 0'), exit0Para.indexOf('When it exits 2'))
+  assert.match(exit0, /PROOF LEFT UNREAD/)
+  assert.match(exit0, /promote the last draft/i)
+  assert.doesNotMatch(exit0, /spawn/, `${where}: an exit-0 PROOF LEFT UNREAD promotes and does not spawn a second wave`)
+  assert.ok(skill.includes('the first ledger was kept'), `${where} must say a malformed appended ledger keeps the first`)
+})
+
+test('the settle skill\'s sentence on a record left unproven names unread', () => {
+  const where = 'skills/settle/SKILL.md'
+  const sentence = skillText('settle').split('\n').flatMap(l => l.split(/(?<=\.)\s+/)).find(t => /left unproven/.test(t))
+  assert.ok(sentence, `${where} has no sentence on a record left unproven`)
+  assert.ok(sentence.includes('unread'), `${where}: ${sentence}`)
 })
 
 test('the settle skill runs no proof line, and resolves an archived change through the CLI', () => {

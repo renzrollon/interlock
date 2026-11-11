@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- **A declared `unread` input no longer names a proof re-run.** `interlock review proof` names only unproven dimensions and the uncited target for a re-run; a record whose only gap is `unread` inputs answers `PROOF LEFT UNREAD: <dimensions>` and exits 0 (a record with no diff now exits 2, even when it carries unread entries). `interlock review brief --dimension <name> --rerun-of <draft>` prints the whole prompt for an unproven dimension, a prompt narrowed to the uncited files for the uncited target, and exits 1 with the reason for any other dimension. `interlock review --rerun-of` replaces only an unproven dimension's ledger. `proof.proven`, the `review.ran` band and `maxProofReruns` are unchanged.
+
 ## [1.16.0] - 2026-11-11
 
 ### Added

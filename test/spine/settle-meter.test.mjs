@@ -2286,6 +2286,37 @@ test('not proven: an unproven record\'s review row reads not proven with its cou
   assert.ok(proof && proof.endsWith('proof re-run: language · exit 1'), groupRows(s, 'review').join('\n'))
 })
 
+test('unread left: a PROOF LEFT UNREAD proof call with exit 0 is its own row, and the review row still reads not proven', () => {
+  const s = live()
+  const record = {
+    counts: { raised: 0, dismissed: 0, surviving: 0 },
+    head: 'e177e7de66d7db4ca8b0441ce9f2c41248751803',
+    dimensions: { ran: ['language', 'technical-lead'], skipped: [] },
+    proof: {
+      proven: false,
+      unproven: [],
+      unread: [{ dimension: 'technical-lead', entries: [{ input: 'delta specs', reason: 'not opened' }] }],
+      uncited: []
+    }
+  }
+  run(s, 'interlock review --findings f --verdicts v --head e177e7d --out .claude/ship/settle/review-r0.json --json', JSON.stringify(record), 100)
+  cross(s, okBash('interlock review proof --review .claude/ship/settle/review-r0.json', 'PROOF LEFT UNREAD: technical-lead\n  technical-lead: unread delta specs (not opened)'), 110)
+  const rows = groupRows(s, 'review')
+  const proof = rows.find(t => t.includes('proof PROOF LEFT UNREAD'))
+  assert.ok(proof && proof.endsWith('proof PROOF LEFT UNREAD: technical-lead · exit 0'), rows.join('\n'))
+  const review = rows.find(t => t.includes('0 raised'))
+  assert.ok(review && review.includes('not proven · 0 unproven · 1 unread · 0 uncited'), rows.join('\n'))
+})
+
+test('a spawn whose prompt is the narrowed regression re-run prompt is attributed to regression, as the whole prompt is', () => {
+  const whole = '# Dimension: regression\n\nYou are a regression reviewer.\n\nSCOPE (computed by the CLI; use it, do not derive your own).\n  - hooks/mod.mjs: 2-3\n'
+  const narrowed = whole.replace('  - hooks/mod.mjs: 2-3\n', '  - hooks/mod.mjs: 2-3\nRE-RUN FOR UNCITED FILES: hooks/mod.mjs\n')
+  assert.notEqual(narrowed, whole)
+  assert.deepEqual(roleOf(narrowed), roleOf(whole))
+  assert.equal(roleOf(narrowed).role, 'dimension')
+  assert.equal(roleOf(narrowed).label, 'regression')
+})
+
 test('draft: a --draft line is a draft row, not the round\'s record', () => {
   const s = live()
   const record = { counts: { raised: 1, dismissed: 0, surviving: 1 }, dimensions: { ran: ['language'] }, proof: { proven: true } }

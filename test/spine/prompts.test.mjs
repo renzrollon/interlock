@@ -362,6 +362,33 @@ test('a dimension given none of the three ship options is briefed byte-identical
   assert.equal(base.trimEnd().endsWith('Both coverage lists are present, and either may be empty.'), true)
 })
 
+// A re-run for uncited files alone (stop-proof-re-runs-for-unread-inputs, D4, D9): the
+// caller filters `changed` and `changedSources` to the uncited paths and passes
+// `rerunUncited`, which adds one line to the scope block and changes nothing else.
+test('the re-run input renders one RE-RUN FOR UNCITED FILES: line inside the scope block, after the rubric, and nothing else changes', () => {
+  const given = dimensionInput({ policyProse: 'Cite evidence for every blocker.' })
+  const plain = assembleDimensionPrompt(given)
+  const prompt = assembleDimensionPrompt({ ...given, rerunUncited: true })
+  const lines = prompt.split('\n')
+  const marked = lines.filter(l => l.startsWith('RE-RUN FOR UNCITED FILES:'))
+  assert.equal(marked.length, 1, 'exactly one such line')
+  const at = prompt.indexOf('RE-RUN FOR UNCITED FILES:')
+  assert.ok(at > prompt.indexOf(DIMENSION_RUBRIC) + DIMENSION_RUBRIC.length, 'after the rubric')
+  assert.ok(at > prompt.indexOf('SCOPE'), 'inside the scope block')
+  assert.ok(at < prompt.indexOf('REPOSITORY REVIEW POLICY'), 'before the policy block that follows the scope')
+  assert.ok(!prompt.slice(prompt.indexOf('SCOPE'), at).includes('\n\n'), 'no blank line between the scope heading and it')
+  assert.ok(prompt.startsWith(DIMENSION_RUBRIC), 'the first line is still the rubric\'s')
+  assert.equal(lines.filter(l => !l.startsWith('RE-RUN FOR UNCITED FILES:')).join('\n'), plain, 'removing that line gives the prompt without the input')
+})
+
+test('without the re-run input the prompt is what it is today, and a false or absent input renders no line', () => {
+  const given = dimensionInput()
+  const plain = assembleDimensionPrompt(given)
+  assert.doesNotMatch(plain, /RE-RUN FOR UNCITED FILES/)
+  assert.equal(assembleDimensionPrompt({ ...given, rerunUncited: false }), plain)
+  assert.equal(assembleDimensionPrompt({ ...given, rerunUncited: undefined }), plain)
+})
+
 test('no tail briefing shells out to the CLI subcommand that used to adjudicate it', () => {
   const reviewPrompt = assembleDimensionPrompt(
     dimensionInput({ policyProse: 'policy prose', answerPath: ANSWER_AT, stageLine: publishStageLine('review', 'add-widget', 4) })
