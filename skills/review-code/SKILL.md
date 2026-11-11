@@ -161,7 +161,13 @@ Then ask the CLI whether the draft proves what it covered:
 interlock review proof --review <draft>
 ```
 
-While it exits 1, its first line reads `re-run: <dimensions>`: re-run each named dimension with its `interlock review brief --dimension` prompt, put the re-run answers alone through the skeptics with
+While it exits 1, its first line reads `re-run: <dimensions>`. Print that line before you spawn anything. Then get each named dimension's re-run prompt from the draft:
+
+```bash
+interlock review brief --dimension <name> --base <base> --changed <the changed files> --rerun-of <draft> --json
+```
+
+and re-run that dimension with it. Put the re-run answers alone through the skeptics with
 
 ```bash
 interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> [--depth strict] --json
@@ -173,7 +179,7 @@ and write the next draft from the last one:
 interlock review --rerun-of <draft> --findings <re-run answers> --verdicts <re-run verdicts> --changed <the changed files> --base <base> --dimensions <dimension record> --head <sha> [--carry <file>] --draft --out <next draft> --json
 ```
 
-then run the proof line on the next draft. The CLI merges the re-run into the draft and keeps every first-pass finding, verdict, skip and degraded entry; compose no findings or verdicts file yourself, and count nothing: the cap is the CLI's. When the proof line exits 0 — its first line is `proven`, or `PROOF CAP REACHED: <dimensions>`, which you print — promote the last draft. When it exits 2, the CLI cannot answer for the draft: it is not an adjudicated review, it carries no proof, or its proof does not hold and names no dimension to re-run (a `no diff given` draft, for one). Print `PROOF UNANSWERED: <its standard-error line>` aloud, re-run nothing and do not run the proof line again: there is nothing to loop on. Promote the last draft all the same, so the record carries the proof as the CLI computed it and every reader of a proof that does not hold prints `REVIEW NOT PROVEN`; never report the review as proven or clean after an exit 2. When the promote line refuses the draft as well, print its error and stop: the review recorded nothing. The promote line is the review line, and the only one that carries `--metrics`:
+then run the proof line on the next draft. When a brief line exits 1, print `RE-RUN REFUSED: <its standard-error line>` and spawn nothing for that dimension. When no dimension the `re-run:` line named got a prompt, there is no re-run answer to write, so the proof line would print the same `re-run:` line again: do not run the proof line again, and promote the last draft. The CLI merges the re-run into the draft and keeps every first-pass finding, verdict, skip and degraded entry; compose no findings or verdicts file yourself, and count nothing: the cap is the CLI's. When the proof line exits 0 — its first line is `proven`, `PROOF CAP REACHED: <dimensions>` or `PROOF LEFT UNREAD: <dimensions>`, the last two of which you print — promote the last draft. When it exits 2, the CLI cannot answer for the draft: it is not an adjudicated review, it carries no proof, or its proof does not hold and names no dimension to re-run (a `no diff given` draft, for one). Print `PROOF UNANSWERED: <its standard-error line>` aloud, re-run nothing and do not run the proof line again: there is nothing to loop on. Promote the last draft all the same, so the record carries the proof as the CLI computed it and every reader of a proof that does not hold prints `REVIEW NOT PROVEN`; never report the review as proven or clean after an exit 2. When the promote line refuses the draft as well, print its error and stop: the review recorded nothing. The promote line is the review line, and the only one that carries `--metrics`:
 
 ```bash
 interlock review --rerun-of <last draft> --changed <the changed files> --base <base> --metrics <change> --dimensions <dimension record> --json

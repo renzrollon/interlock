@@ -413,11 +413,14 @@ Usage:
                                            --base reads those paths from the ref
   interlock review proof --review <file>   Whether a review record proves what it
                                            covered: first line "re-run: <dims>"
-                                           (exit 1), "proven" or "PROOF CAP
-                                           REACHED: <dims>" (exit 0); exit 2 on a
+                                           (exit 1), "proven", "PROOF CAP
+                                           REACHED: <dims>" or "PROOF LEFT
+                                           UNREAD: <dims>" (exit 0); exit 2 on a
                                            file that is not a review record
-  interlock review brief --dimension <name> --base <ref> [--change <c>]
-                                           Print one dimension's whole prompt
+  interlock review brief --dimension <name> --base <ref> [--change <c>] [--rerun-of <draft>]
+                                           Print one dimension's whole prompt;
+                                           --rerun-of narrows it to the draft's
+                                           uncited files, exit 1 if no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:

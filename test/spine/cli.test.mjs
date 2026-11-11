@@ -5502,8 +5502,13 @@ test('a blocker raised beside an unread input survives a clean re-run of its dim
   const draft = join(dir, 'keep', 'review.json.draft.json')
   const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
   assert.equal(run(['review', '--findings', first, '--verdicts', file('keep-v.json', upheld), ...base, '--draft', '--out', draft, '--json']).code, 0)
-  assert.equal(run(['review', 'proof', '--review', draft]).stdout.split('\n')[0], 're-run: security')
+  // The unread entry alone names no re-run: PROOF LEFT UNREAD, exit 0, the entry on a later line.
+  const asked = run(['review', 'proof', '--review', draft])
+  assert.equal(asked.code, 0, asked.stderr)
+  assert.equal(asked.stdout.split('\n')[0], 'PROOF LEFT UNREAD: security')
+  assert.match(asked.stdout, /^ +security: unread REVIEW_CONTEXT \(not opened\)$/m)
 
+  // A hand-run re-run of that dimension still merges: it appends, and never clears the declared gap.
   const clean = file('keep-rerun.json', [{ dimension: 'security', findings: [], coverage: ledgerOf('lib/a.mjs:2-3') }])
   const next = join(dir, 'keep', 'review.json.draft-2.json')
   assert.equal(run(['review', '--rerun-of', draft, '--findings', clean, '--verdicts', file('keep-v2.json', []), ...base, '--draft', '--out', next, '--json']).code, 0)
@@ -5513,8 +5518,153 @@ test('a blocker raised beside an unread input survives a clean re-run of its dim
   const record = JSON.parse(readFileSync(final, 'utf8'))
   assert.deepEqual(record.surviving.map(f => f.title), ['token logged'], 'the first-pass blocker is not dropped')
   assert.equal(record.surviving[0].severity, 'blocker')
-  assert.deepEqual(record.coverage.security, ledgerOf('lib/a.mjs:2-3'), 'the ledger is the re-run\'s')
-  assert.equal(record.proof.proven, true)
+  assert.deepEqual(
+    record.coverage.security,
+    {
+      checked: [{ what: 'the log call', at: 'lib/a.mjs:2' }, { what: 'the change', at: 'lib/a.mjs:2-3' }],
+      unread: [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }]
+    },
+    'the ledger holds the first pass\'s checked entries, the re-run\'s, and the first pass\'s unread entry'
+  )
+  assert.equal(record.proof.proven, false, 'a declared unread input still fails the proof')
+  assert.deepEqual(record.proof.unread.map(u => u.dimension), ['security'])
+})
+
+// --- stop-proof-re-runs-for-unread-inputs: the proof line and the re-run brief ----------
+
+test('review proof on an unread-only draft exits 0 with PROOF LEFT UNREAD first, the entry after it, and no re-run: line', () => {
+  const repo = proofRepo('proof-unread-only')
+  const dims = file('uo-dims.json', { selected: ['security'], ran: ['security'], unavailable: [], skipped: [] })
+  const first = file('uo-first.json', [
+    { dimension: 'security', findings: [], coverage: { checked: [{ what: 'the log call', at: 'lib/a.mjs:2-3' }], unread: [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }] } }
+  ])
+  const draft = join(dir, 'uo', 'review.json.draft.json')
+  const written = run(['review', '--findings', first, '--verdicts', file('uo-v.json', []), '--dimensions', dims, '--base', repo.base, '--root', repo.root, '--draft', '--out', draft, '--json'])
+  assert.equal(written.code, 0, written.stderr)
+  const record = JSON.parse(written.stdout)
+  assert.equal(record.proof.proven, false)
+  assert.deepEqual([record.proof.unproven, record.proof.uncited], [[], []], 'unread is the only gap')
+
+  const proof = run(['review', 'proof', '--review', draft])
+  assert.equal(proof.code, 0, proof.stderr)
+  const lines = proof.stdout.split('\n').filter(Boolean)
+  assert.equal(lines[0], 'PROOF LEFT UNREAD: security')
+  assert.match(lines[1], /security: unread REVIEW_CONTEXT \(not opened\)/)
+  assert.ok(!lines.some(l => l.trim().startsWith('re-run:')), proof.stdout)
+})
+
+test('interlock settle comment over a promoted unread-only record says REVIEW NOT PROVEN and names the unread input', () => {
+  const repo = proofRepo('proof-unread-comment')
+  const dims = file('uc-dims.json', { selected: ['security'], ran: ['security'], unavailable: [], skipped: [] })
+  const first = file('uc-first.json', [
+    { dimension: 'security', findings: [], coverage: { checked: [{ what: 'the log call', at: 'lib/a.mjs:2-3' }], unread: [{ input: 'REVIEW_CONTEXT', reason: 'not opened' }] } }
+  ])
+  const base = ['--dimensions', dims, '--base', repo.base, '--root', repo.root]
+  const draft = join(dir, 'uc', 'review.json.draft.json')
+  assert.equal(run(['review', '--findings', first, '--verdicts', file('uc-v.json', []), ...base, '--draft', '--out', draft, '--json']).code, 0)
+  const final = join(dir, 'uc', 'review.json')
+  const promoted = run(['review', '--rerun-of', draft, ...base, '--head', repo.head, '--out', final, '--json'])
+  assert.equal(promoted.code, 0, promoted.stderr)
+  const comment = run(['settle', 'comment', '--review', final, '--head', repo.head, '--round', '0'])
+  assert.equal(comment.code, 0, comment.stderr)
+  assert.ok(comment.stdout.startsWith('REVIEW NOT PROVEN'), comment.stdout)
+  assert.ok(comment.stdout.includes('security'), comment.stdout)
+  assert.ok(comment.stdout.includes('REVIEW_CONTEXT'), comment.stdout)
+})
+
+/** A repository whose second commit changes `lib/a.mjs`, `lib/b.mjs` and `hooks/mod.mjs`, each at lines 2-3. */
+function rerunRepo(sub) {
+  const repo = gitRepo(sub, { 'lib/a.mjs': 'a1\na2\n', 'lib/b.mjs': 'b1\nb2\n', 'hooks/mod.mjs': 'm1\nm2\n' })
+  for (const [rel, text] of [['lib/a.mjs', 'a1\nA2\na3\n'], ['lib/b.mjs', 'b1\nB2\nb3\n'], ['hooks/mod.mjs', 'm1\nM2\nm3\n']]) writeFileSync(join(repo.root, rel), text)
+  const git = args => spawnSync('git', args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@x.invalid', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@x.invalid' } })
+  git(['commit', '-qam', 'head'])
+  return { root: repo.root, base: repo.sha, head: git(['rev-parse', 'HEAD']).stdout.trim() }
+}
+
+/** Write a draft for `ran` dimensions, `answers` being their per-dimension answers; the draft's path. */
+function writeDraft(repo, name, ran, answers, extra = []) {
+  const dims = file(`${name}-dims.json`, { selected: ran, ran, unavailable: [], skipped: [] })
+  const draft = join(dir, name, 'review.json.draft.json')
+  const r = run(['review', '--findings', file(`${name}-answers.json`, answers), '--verdicts', file(`${name}-v.json`, []), '--dimensions', dims, '--base', repo.base, '--root', repo.root, '--draft', '--out', draft, '--json', ...extra])
+  assert.equal(r.code, 0, r.stderr)
+  return { draft, proof: JSON.parse(r.stdout).proof }
+}
+
+const ALL_THREE = 'lib/a.mjs,lib/b.mjs,hooks/mod.mjs'
+const briefOf = (repo, dimension, ...more) => run(['review', 'brief', '--dimension', dimension, '--base', repo.base, '--root', repo.root, ...more])
+
+test('review brief --dimension --rerun-of: an unproven dimension gets the whole prompt, byte for byte what it prints without the flag', () => {
+  const repo = rerunRepo('rerun-whole')
+  const { draft, proof } = writeDraft(repo, 'rerun-whole-d', ['language', 'regression'], [
+    { dimension: 'language', findings: [] },
+    { dimension: 'regression', findings: [], coverage: ledgerOf('lib/a.mjs:2-3', 'lib/b.mjs:2-3', 'hooks/mod.mjs:2-3') }
+  ])
+  assert.deepEqual(proof.unproven.map(u => u.dimension), ['language'])
+  assert.deepEqual(proof.uncited, [])
+  const plain = briefOf(repo, 'language', '--changed', ALL_THREE)
+  assert.equal(plain.code, 0, plain.stderr)
+  const again = briefOf(repo, 'language', '--changed', ALL_THREE, '--rerun-of', draft)
+  assert.equal(again.code, 0, again.stderr)
+  assert.equal(again.stdout, plain.stdout)
+  assert.match(again.stdout, /lib\/a\.mjs: 2-3/)
+  assert.doesNotMatch(again.stdout, /RE-RUN FOR UNCITED FILES:/)
+})
+
+test('review brief --dimension --rerun-of: the uncited target is scoped to the uncited files alone, with one RE-RUN FOR UNCITED FILES: line and the same first line', () => {
+  const repo = rerunRepo('rerun-uncited')
+  const { draft, proof } = writeDraft(repo, 'rerun-uncited-d', ['language', 'regression'], [
+    { dimension: 'language', findings: [], coverage: { checked: [{ what: 'a', at: 'lib/a.mjs:2-3' }], unread: [{ input: 'delta specs', reason: 'not opened' }] } },
+    { dimension: 'regression', findings: [], coverage: ledgerOf('lib/b.mjs:2-3') }
+  ])
+  assert.deepEqual([proof.unproven, proof.uncited], [[], ['hooks/mod.mjs']])
+  const plain = briefOf(repo, 'regression', '--changed', ALL_THREE)
+  const r = briefOf(repo, 'regression', '--changed', ALL_THREE, '--rerun-of', draft)
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^ {2}- hooks\/mod\.mjs: 2-3$/m, 'the scope names the uncited file with its changed ranges')
+  assert.match(r.stdout, /^ {2}- hooks\/mod\.mjs$/m, 'the must-cite list holds it')
+  assert.doesNotMatch(r.stdout, /lib\/a\.mjs|lib\/b\.mjs/, 'neither other file is named')
+  assert.equal(r.stdout.split('\n').filter(l => l.startsWith('RE-RUN FOR UNCITED FILES:')).length, 1)
+  assert.equal(r.stdout.split('\n')[0], plain.stdout.split('\n')[0])
+  assert.notEqual(r.stdout, plain.stdout)
+
+  // A dimension with only an unread entry has no re-run: exit 1, nothing printed, its name said.
+  const language = briefOf(repo, 'language', '--changed', ALL_THREE, '--rerun-of', draft)
+  assert.deepEqual([language.code, language.stdout], [1, ''])
+  assert.match(language.stderr, /language/)
+  assert.match(language.stderr, /no re-run/)
+})
+
+test('review brief --dimension --rerun-of: a file that does not parse and a record with no proof each exit 1 with nothing printed', () => {
+  const repo = rerunRepo('rerun-bad')
+  for (const [name, contents] of [['broken', '{'], ['noproof', { surviving: [], findings: [] }]]) {
+    const r = briefOf(repo, 'regression', '--changed', ALL_THREE, '--rerun-of', file(`rerun-bad-${name}.json`, contents))
+    assert.deepEqual([r.code, r.stdout], [1, ''], name)
+    assert.ok(r.stderr.length > 0, `${name} says why`)
+  }
+})
+
+test('review brief --dimension --rerun-of: uncited files that are in neither git\'s diff nor --changed exit 1; one git\'s diff names still scopes the prompt', () => {
+  const repo = rerunRepo('rerun-ghost')
+  // Written with a --changed path git does not list, so the union names it uncited.
+  const ghost = writeDraft(repo, 'rerun-ghost-d', ['regression'], [
+    { dimension: 'regression', findings: [], coverage: ledgerOf('lib/a.mjs:2-3', 'lib/b.mjs:2-3', 'hooks/mod.mjs:2-3') }
+  ], ['--changed', 'hooks/ghost.mjs'])
+  assert.deepEqual(ghost.proof.uncited, ['hooks/ghost.mjs'])
+  const none = briefOf(repo, 'regression', '--changed', 'lib/a.mjs', '--rerun-of', ghost.draft)
+  assert.deepEqual([none.code, none.stdout], [1, ''])
+  assert.match(none.stderr, /uncited/)
+  assert.match(none.stderr, /--changed/)
+
+  // The file git's diff does name stays in the list whatever --changed omits.
+  const named = writeDraft(repo, 'rerun-named-d', ['regression'], [
+    { dimension: 'regression', findings: [], coverage: ledgerOf('lib/a.mjs:2-3', 'lib/b.mjs:2-3') }
+  ])
+  assert.deepEqual(named.proof.uncited, ['hooks/mod.mjs'])
+  const r = briefOf(repo, 'regression', '--changed', 'lib/a.mjs,lib/b.mjs', '--rerun-of', named.draft)
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^ {2}- hooks\/mod\.mjs: 2-3$/m)
+  assert.doesNotMatch(r.stdout, /lib\/a\.mjs|lib\/b\.mjs/)
+  assert.equal(r.stdout.split('\n').filter(l => l.startsWith('RE-RUN FOR UNCITED FILES:')).length, 1)
 })
 
 test('review brief names a deleted file under its old path, and a deleted line that reads "-- x" is not a file header', () => {

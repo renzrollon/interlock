@@ -186,7 +186,7 @@ Below, `<sha>` is the head the step describes, `git rev-parse HEAD` at that step
 /interlock:review-code <change> --base origin/<target branch> --out .claude/ship/settle/review-r0.json [--strict]
 ```
 
-The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`; print that line once, as it reported it, and not again for the rounds. `review-code` proves its own coverage before it writes that record, re-running what it could not prove; post the comment from the record it wrote and add no proof step of your own. A record left unproven at the cap says so in its comment.
+The review record lands in that file, bound to the head it reviewed. `review-code` prints `REVIEW DEPTH: <depth> (<n> dimensions: <a> always-on + <t> triggered)`; print that line once, as it reported it, and not again for the rounds. `review-code` proves its own coverage before it writes that record, re-running what it could not prove; post the comment from the record it wrote and add no proof step of your own. A record left unproven, at the cap or with inputs the reviewers declared unread, says so in its comment.
 
 ### 5b. Post the findings
 
