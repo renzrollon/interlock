@@ -41,9 +41,9 @@ openspec --version
 
 If it does not print a version, **stop here**: before asking for intent, before explore, before `openspec new change`, before any Write — every later step calls the CLI.
 
-- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line, then run `interlock openspec provision`, which installs the pinned OpenSpec into the plugin's own data directory, and probe `openspec --version` again. If provisioning exits non-zero, quote its first line and stop; a sandbox-refused write means one run of the same command outside the sandbox. The user's own route stays `npm install --location=global @fission-ai/openspec@1.15.0`, or the project's own package manager if it pins openspec.
+- `command not found` (or the shell's equivalent): the CLI is missing. Say so in one line, then run `interlock openspec provision`, which installs the pinned OpenSpec into the plugin's own data directory, and probe `openspec --version` again. If provisioning exits non-zero, quote its first line and stop; a sandbox-refused write means one run of the same command outside the sandbox. The user's own route stays `npm install --location=global @fission-ai/openspec@2.0.0`, or the project's own package manager if it pins openspec.
 - A bare `interlock` or `interlock-graph` that answers `command not found` means this session predates the plugin. Until a new session, run `node "${CLAUDE_PLUGIN_ROOT}/cli/interlock"` (or `…/cli/interlock-graph`) instead; those calls match no allow rule, so each asks for approval.
-- Any other error: the CLI is installed but does not run. Do not call it missing and do not offer the install line. Quote its error; the usual cause is a Node.js older than OpenSpec's floor, 20.19.0.
+- Any other error: the CLI is installed but does not run. Do not call it missing and do not offer the install line. Quote its error; the usual cause is a Node.js older than OpenSpec's floor; `interlock doctor`'s node row names the floor and the Node it found.
 
 Either way, point at `interlock doctor` for the full preflight. Do not install or upgrade anything yourself, except by running `interlock openspec provision`, and do not scaffold `openspec/changes/<name>/` by hand — the CLI owns those formats. `--no-explore` and `--brief` do not skip this step.
 
