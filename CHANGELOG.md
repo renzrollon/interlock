@@ -18,6 +18,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 - If you provision OpenSpec through Interlock, run it on Node.js 22.12.0 or newer, or install `@fission-ai/openspec@2.0.0` yourself.
 - A copy provisioned for the old pin (`<data>/openspec/1.15.0/`) is no longer used, even on a Node it still runs on; nothing falls back to it. Delete it once 2.0.0 is provisioned.
+- `/interlock:bootstrap` runs `openspec init --tools claude`, which in 2.0.0 writes OpenSpec's skills to `.agents/skills/` and links them from `.claude/skills/`; it writes no `.claude/commands/opsx`. Commit or ignore `.agents/` in your project as you would `.claude/skills/`. Interlock reads neither.
+- On Node 22.12 to 22.22.1, 23.x, 24.0 to 24.14 or 25.x, provisioning prints npm `EBADENGINE` warnings for OpenSpec's `@inquirer/*` dependencies and still installs.
 
 ## [1.16.1] - 2026-11-11
 
