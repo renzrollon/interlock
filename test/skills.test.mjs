@@ -581,6 +581,18 @@ test('bootstrap declares the permission its corpus-persistence step needs, narro
   )
 })
 
+test('no skill names a three-part Node.js version, and the CLI-probing skills hold the does-not-run pointer', () => {
+  for (const dir of skillDirs) {
+    const text = readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8')
+    assert.doesNotMatch(text, /Node(?:\.js)?\s*(?:>=?\s*)?v?\d+\.\d+\.\d+/i, `${dir} names a three-part Node.js version`)
+  }
+  for (const dir of ['spec', 'bootstrap', 'dispatch']) {
+    const text = readFileSync(join(SKILLS_DIR, dir, 'SKILL.md'), 'utf8')
+    assert.ok(text.includes('does not run'), `${dir} must keep the does-not-run case`)
+    assert.ok(text.includes('interlock doctor'), `${dir} must name interlock doctor`)
+  }
+})
+
 test('spec, bootstrap and dispatch probe the openspec CLI before the first command that needs it', () => {
   // A person who skipped the install docs has no `openspec` on PATH. Without a
   // probe, spec asks for intent and explores before dying at `openspec new
@@ -607,7 +619,7 @@ test('spec, bootstrap and dispatch probe the openspec CLI before the first comma
     // quote is the openspec-cli requirement's pinned long-form install route.
     assert.ok(text.includes('does not run'), `${dir} must tell an installed-but-failing CLI apart from a missing one`)
     if (installGuard) {
-      assert.ok(text.includes('20.19.0'), `${dir} must name OpenSpec's Node floor`)
+      assert.ok(text.includes('interlock doctor'), `${dir} must point the does-not-run case at interlock doctor's node row`)
       assert.match(text, /(?:do not|never)[^.]{0,40}install/i, `${dir} must forbid installing the CLI itself`)
     }
     const fm = parseFrontmatter(text)

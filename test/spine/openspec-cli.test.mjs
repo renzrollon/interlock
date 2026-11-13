@@ -49,6 +49,7 @@ import {
   resolveOpenSpec,
   telemetryOff
 } from '../../lib/openspec-cli.mjs'
+import { TASK_LINE } from '../../lib/artifacts.mjs'
 import { OPENSPEC_PIN } from '../../lib/openspec-pin.mjs'
 import { pathEntries, whichSync } from '../../lib/which.mjs'
 
@@ -85,7 +86,8 @@ function execFile(dir, name, { marker = false, body = 'exit 0' } = {}) {
 /** PATH with the directory holding this Node in front, for a child that runs a `#!/usr/bin/env node` script. */
 const withNode = env => ({ ...env, PATH: `${dirname(process.execPath)}:${(env && env.PATH) || ''}:/usr/bin:/bin` })
 
-const NODE_OK = 'v22.11.0'
+// The Node every provisioning case runs under: the pin's floor, so a pin bump moves it with the pin.
+const NODE_OK = `v${OPENSPEC_PIN.node}`
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -671,9 +673,14 @@ test('nothing named openspec ships, the bin map has no openspec key, and the tes
 // ---------------------------------------------------------------------------
 
 /**
- * A stand-in OpenSpec that answers the six commands the contract script runs, and
+ * A stand-in OpenSpec that answers the commands the contract script runs, and
  * `--version`. `STUB_OMIT` names what to leave out: `status.applyRequires` drops that
- * field, `archive.sync` makes `archive` skip the copy into openspec/specs/.
+ * field, `archive.sync` makes `archive` skip the copy into openspec/specs/,
+ * `list.totalTasks` reports one task fewer than the reader counts, `validate.specs`
+ * makes `validate --specs` exit 1, `init.config` makes `init --tools claude` write no
+ * openspec/config.yaml, `init.commands` makes it also write .claude/commands/, and
+ * `init.copy` makes it copy the skills into .claude/skills/ instead of linking them.
+ * `STUB_TASKS_OUT` names a file `list` copies the scratch tasks.md to, for a test to read.
  */
 function stubCli(dir) {
   const body = `#!${process.execPath}
@@ -692,12 +699,27 @@ const copy = (from, to) => {
     if (e.isDirectory()) { fs.mkdirSync(dst, { recursive: true }); copy(src, dst) } else fs.copyFileSync(src, dst)
   }
 }
+const TASK_LINE = new RegExp(${JSON.stringify(TASK_LINE.source)}, 'd')
+const SKILLS = ['openspec-propose', 'openspec-apply-change', 'openspec-archive-change', 'openspec-explore', 'openspec-sync-specs']
 const [cmd, sub] = a
 if (cmd === '--version') { console.log('9.9.9') }
 else if (cmd === 'init') {
+  const claude = flag('--tools') === 'claude'
   fs.mkdirSync(path.join(cwd, 'openspec', 'specs'), { recursive: true })
   fs.mkdirSync(path.join(cwd, 'openspec', 'changes'), { recursive: true })
-  fs.writeFileSync(path.join(cwd, 'openspec', 'config.yaml'), 'schema: spec-driven\\n')
+  if (!(claude && omit.includes('init.config'))) fs.writeFileSync(path.join(cwd, 'openspec', 'config.yaml'), 'schema: spec-driven\\n')
+  if (claude) {
+    for (const name of SKILLS) {
+      const real = path.join(cwd, '.agents', 'skills', name)
+      fs.mkdirSync(real, { recursive: true })
+      fs.writeFileSync(path.join(real, 'SKILL.md'), '# ' + name + '\\n')
+      fs.mkdirSync(path.join(cwd, '.claude', 'skills'), { recursive: true })
+      const link = path.join(cwd, '.claude', 'skills', name)
+      if (omit.includes('init.copy')) { fs.mkdirSync(link, { recursive: true }); fs.copyFileSync(path.join(real, 'SKILL.md'), path.join(link, 'SKILL.md')) }
+      else fs.symlinkSync(path.join('..', '..', '.agents', 'skills', name), link, 'dir')
+    }
+    if (omit.includes('init.commands')) fs.mkdirSync(path.join(cwd, '.claude', 'commands', 'opsx'), { recursive: true })
+  }
 }
 else if (cmd === 'new' && sub === 'change') {
   fs.mkdirSync(changeDir(a[2]), { recursive: true })
@@ -725,6 +747,22 @@ else if (cmd === 'status') {
 else if (cmd === 'instructions') {
   const name = flag('--change')
   json({ changeName: name, artifactId: sub, instruction: 'Write the ' + sub + '.', template: '## Why\\n', resolvedOutputPath: path.join(changeDir(name), sub + '.md') })
+}
+else if (cmd === 'list') {
+  const root = path.join(cwd, 'openspec', 'changes')
+  const changes = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && e.name !== 'archive').map(e => {
+    const file = path.join(root, e.name, 'tasks.md')
+    const tasks = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+    if (process.env.STUB_TASKS_OUT && fs.existsSync(file)) fs.writeFileSync(process.env.STUB_TASKS_OUT, tasks)
+    const found = tasks.split('\\n').map(l => TASK_LINE.exec(l)).filter(Boolean)
+    const total = found.length - (omit.includes('list.totalTasks') ? 1 : 0)
+    return { name: e.name, completedTasks: found.filter(m => m[2] === 'x' || m[2] === 'X').length, totalTasks: total, lastModified: '2026-01-01T00:00:00.000Z', status: 'in-progress' }
+  })
+  json({ changes })
+}
+else if (cmd === 'validate' && sub === '--specs') {
+  if (omit.includes('validate.specs')) { console.error('Spec "cap" has issues'); process.exit(1) }
+  console.log('All specs are valid')
 }
 else if (cmd === 'validate') {
   const dir = changeDir(sub)
@@ -778,6 +816,8 @@ test('contract script: a conforming stub passes, and one line names the CLI, its
     assert.ok(lines[0].includes('9.9.9'), lines[0])
     assert.match(lines[0], /\d+/)
     assert.match(lines[0], /pass/i)
+    // 29 checks before the list, validate --specs and init --tools claude checks were added.
+    assert.ok(Number(/passed (\d+) checks/.exec(lines[0])?.[1]) > 29, lines[0])
   } finally {
     t.cleanup()
   }
@@ -800,6 +840,89 @@ test('contract script: an archive that does not sync the nested delta into the l
     const r = contract(stubCli(t.root), { STUB_OMIT: 'archive.sync' })
     assert.notEqual(r.status, 0, r.out)
     assert.match(r.out, /archive/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+// The scratch change's tasks.md must hold every shape Interlock's reader counts, so a
+// candidate CLI's counter is measured on the shapes that could differ.
+test('contract script: the scratch tasks.md carries every task shape the reader counts', () => {
+  const t = scratch()
+  try {
+    const out = join(t.root, 'tasks-seen.md')
+    const r = contract(stubCli(t.root), { STUB_TASKS_OUT: out })
+    assert.equal(r.status, 0, r.out)
+    const text = readFileSync(out, 'utf8')
+    const lines = text.split('\n')
+    const task = marker => lines.some(l => new RegExp(`^${marker}\\s*\\[ \\]\\s*\\S`).test(l))
+    assert.ok(task('-'), 'a dash task')
+    assert.ok(task('\\*'), 'a star task')
+    assert.ok(task('\\+'), 'a plus task')
+    assert.ok(task('1\\.'), 'a "1." task')
+    assert.ok(task('2\\)'), 'a "1)" task')
+    assert.ok(lines.some(l => /^\s+[-*+]\s*\[ \]\s*\S/.test(l)), 'a nested sub-task')
+    assert.ok(lines.some(l => /^[-*+]\s*\[x\]\s*\S/.test(l)), 'a done task')
+    assert.ok(lines.some(l => /^[-*+]\s*\[[^x\] ]\]\s*\S/.test(l)), 'a box holding a character other than x')
+    assert.ok(lines.some(l => /^[-*+]\s*\[ \]\s*$/.test(l)), 'a task with no description')
+    assert.ok(lines.some(l => /^[-*+]\s*\[[^\]]*\]\(/.test(l)), 'a link bullet')
+    const wrapped = lines.findIndex(l => /^[-*+]\s*\[ \]\s*\S.*\S$/.test(l) && /^\s+\S/.test(lines[lines.indexOf(l) + 1] || '') && !/^\s*[-*+\d]/.test(lines[lines.indexOf(l) + 1]))
+    assert.ok(wrapped >= 0, 'a task whose text wraps onto a second line')
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('contract script: a stub that lists one task fewer than the reader counts fails naming list.totalTasks', () => {
+  const t = scratch()
+  try {
+    const r = contract(stubCli(t.root), { STUB_OMIT: 'list.totalTasks' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /list\.totalTasks/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('contract script: a validate --specs that exits 1 fails naming validate --specs', () => {
+  const t = scratch()
+  try {
+    const r = contract(stubCli(t.root), { STUB_OMIT: 'validate.specs' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /validate --specs/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('contract script: an init that writes no project config fails naming init --tools claude', () => {
+  const t = scratch()
+  try {
+    const r = contract(stubCli(t.root), { STUB_OMIT: 'init.config' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /init --tools claude/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('contract script: an init that writes command files again fails naming init.commands', () => {
+  const t = scratch()
+  try {
+    const r = contract(stubCli(t.root), { STUB_OMIT: 'init.commands' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /init\.commands/)
+  } finally {
+    t.cleanup()
+  }
+})
+
+test('contract script: an init that copies the skills into .claude/skills instead of linking them fails naming init.claudeSkills', () => {
+  const t = scratch()
+  try {
+    const r = contract(stubCli(t.root), { STUB_OMIT: 'init.copy' })
+    assert.notEqual(r.status, 0, r.out)
+    assert.match(r.out, /init\.claudeSkills/)
   } finally {
     t.cleanup()
   }

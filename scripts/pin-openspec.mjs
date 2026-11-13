@@ -37,6 +37,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { compareVersions } from '../lib/host/claude-env.mjs'
+import { nodeFloorOf } from '../lib/openspec-node-floor.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const PIN_FILE = join(HERE, '..', 'lib', 'openspec-pin.mjs')
@@ -52,16 +53,6 @@ export const REGISTRY = 'https://registry.npmjs.org/'
 const DEFAULT_FLOOR = await import('../lib/doctor.mjs').then(m => m.OPENSPEC_MIN_VERSION, () => null)
 
 const SEMVER = /^\d+\.\d+\.\d+$/
-
-/**
- * The Node floor an `engines.node` value states, when it is exactly one
- * `>=x.y.z`; null for anything else (a range, a caret, a bare major).
- */
-export function nodeFloorOf(range) {
-  if (typeof range !== 'string') return null
-  const m = /^\s*>=\s*(\d+\.\d+\.\d+)\s*$/.exec(range)
-  return m ? m[1] : null
-}
 
 /**
  * Every rule `pin` breaks, one line each, naming the entry or both versions.
@@ -203,7 +194,7 @@ function lastLine(text) {
 function main(argv) {
   const version = argv[0]
   if (!version || !SEMVER.test(version)) {
-    process.stderr.write('usage: node scripts/pin-openspec.mjs <version>   (e.g. 1.15.0)\n')
+    process.stderr.write('usage: node scripts/pin-openspec.mjs <version>   (e.g. 2.0.0)\n')
     return 2
   }
   if (!DEFAULT_FLOOR) process.stderr.write('pin-openspec: the doctor floor could not be read; the pin is checked without a floor\n')

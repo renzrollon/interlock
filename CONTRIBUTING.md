@@ -46,7 +46,7 @@ Interlock provisions one pinned OpenSpec release (`lib/openspec-pin.mjs`, genera
 node scripts/pin-openspec.mjs X.Y.Z && node cli/interlock openspec provision && node scripts/openspec-contract.mjs
 ```
 
-The first command regenerates the pin from a lockfile it resolves (it needs npm and the registry, and refuses an entry that is not sha512, not from the npm registry, or has an install script). The second installs it. The third runs every OpenSpec command the skills rely on against that copy in a scratch project, and prints one line naming the CLI, its version and how many checks passed. Paste that line into the pull request. The contract script is opt-in and not part of `npm test` or CI, which install nothing; the unit suite runs it against a stub CLI only. Then update `OPENSPEC_MIN_VERSION` in `lib/doctor.mjs` if the floor moved.
+The first command regenerates the pin from a lockfile it resolves (it needs npm and the registry, and refuses an entry that is not sha512, not from the npm registry, or has an install script). The second installs it. The third runs every OpenSpec command the skills rely on against that copy in a scratch project, and prints one line naming the CLI, its version and how many checks passed. Paste that line into the pull request. The contract script is opt-in and not part of `npm test` or CI, which install nothing; the unit suite runs it against a stub CLI only. Then update `OPENSPEC_MIN_VERSION` in `lib/doctor.mjs` if the floor moved. The Node floor is not edited by hand: `pin-openspec.mjs` writes it into the pin, and `interlock doctor` and the skills read it from there. The contract script also checks the task counts, `list --json`, `validate --specs` and the `init --tools claude` skill layout.
 
 ## Model evals
 

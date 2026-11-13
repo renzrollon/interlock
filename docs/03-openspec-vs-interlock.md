@@ -15,7 +15,7 @@ Everything in `openspec/` is OpenSpec's. Interlock writes into it through the CL
 
 ## What the stock skills do
 
-`openspec init` installs its own Claude Code skills — `/openspec-propose`, `/openspec-explore`, `/openspec-apply-change`, and the archive and sync helpers. They are a complete, self-contained loop: describe a change, get proposal + design + tasks + delta specs, implement the tasks, archive when done.
+`openspec init` installs its own Claude Code skills — `/openspec-propose`, `/openspec-explore`, `/openspec-apply-change`, and the archive and sync helpers. They are a complete, self-contained loop: describe a change, get proposal + design + tasks + delta specs, implement the tasks, archive when done. OpenSpec 2.0.0 writes them to `.agents/skills/` and links them into `.claude/skills/`; a project set up by an older OpenSpec keeps its `/opsx:*` files until its owner runs `openspec update`, and `openspec update` rewrites the stock skills in `.agents/skills/`, so an edit made inside them is replaced and no copy is kept.
 
 They are namespaced separately from Interlock's, so both sets coexist. `/openspec-propose` and `/interlock:spec` are both available in the same session, on the same repo, over the same artifacts.
 

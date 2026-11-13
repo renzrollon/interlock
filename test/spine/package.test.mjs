@@ -16,6 +16,7 @@ import { join, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { OPENSPEC_INSTALL } from '../../lib/openspec-cli.mjs'
+import { OPENSPEC_PIN } from '../../lib/openspec-pin.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -981,6 +982,98 @@ test('the install-line pin names a stale quote and passes an equal one', () => {
     'npm install --location=global @fission-ai/openspec@1.15.0'
   ])
   assert.deepEqual(openspecInstallQuotes('no package named here, only `interlock openspec provision`'), [])
+})
+
+// The Node floor the setup docs and the two design prompts name for OpenSpec must
+// be the pin's own (design D8, D18). Provisioning refuses a Node below the pin's
+// floor, so a page that still says the old one sends a reader to an install that
+// then fails. A later pin regeneration that leaves one stale is named here.
+
+/** A version padded to three parts, so `22.12` and `22.12.0` compare equal. */
+const threePart = v => (v.split('.').concat(['0', '0']).slice(0, 3)).join('.')
+
+/**
+ * The docs rule: every two- or three-part version that follows the word Node
+ * (`Node.js 22.12+`, `Node.js **22.12.0+**`, `a Node below 22.12.0`) must be the
+ * floor. A one-part version (`Node.js >= 18`, the plugin's own floor) is not
+ * matched, and a file with no such version at all is named, so a reword that
+ * drops them fails instead of passing empty.
+ */
+const NODE_VERSION = /\bNode(?:\.js)?[\s*≥>=v]*(?:(?:below|at least|older than)[\s*≥>=v]*)?(\d+\.\d+(?:\.\d+)?)/g
+
+function docNodeFloorProblems(files, floor) {
+  const problems = []
+  for (const { path, text } of files) {
+    const found = [...text.matchAll(NODE_VERSION)].map(m => m[1])
+    if (found.length === 0) problems.push(`${path}: names no Node version for OpenSpec`)
+    for (const v of found) if (threePart(v) !== floor) problems.push(`${path}: names Node ${v}, not the pin's floor ${floor}`)
+  }
+  return problems
+}
+
+/**
+ * The design-prompt rule: their sample `node` row names the running Node beside
+ * the word, and they name many Claude Code versions as `X+`, so only a
+ * three-part version that follows `OpenSpec requires` or `OpenSpec CLI needs`
+ * is read. Each prompt must hold at least one.
+ */
+const PROMPT_NODE_VERSION = /OpenSpec (?:requires|CLI needs)\s+v?(\d+\.\d+\.\d+)/g
+
+function promptNodeFloorProblems(files, floor) {
+  const problems = []
+  for (const { path, text } of files) {
+    const found = [...text.matchAll(PROMPT_NODE_VERSION)].map(m => m[1])
+    if (found.length === 0) problems.push(`${path}: has no "OpenSpec requires" or "OpenSpec CLI needs" version`)
+    for (const v of found) if (v !== floor) problems.push(`${path}: says OpenSpec needs ${v}, not the pin's floor ${floor}`)
+  }
+  return problems
+}
+
+const readRepo = paths => paths.map(path => ({ path, text: readFileSync(join(ROOT, path), 'utf8') }))
+
+test('the setup docs name the pin\'s Node floor wherever they name one for OpenSpec', () => {
+  assert.deepEqual(docNodeFloorProblems(readRepo(['README.md', 'docs/01-first-hour.md', 'docs/07-cli-and-configuration.md']), OPENSPEC_PIN.node), [])
+})
+
+test('the design prompts name the pin\'s Node floor after "OpenSpec requires" and "OpenSpec CLI needs"', () => {
+  assert.deepEqual(promptNodeFloorProblems(readRepo(['site/DESIGN-PROMPT.md', 'docs/assets/DESIGN-PROMPT.md', 'site/FirstHour.dc.html', 'site/Limits.dc.html']), OPENSPEC_PIN.node), [])
+})
+
+test('the docs Node-floor check reads every form, skips the plugin\'s own floor, and names a stale or missing version', () => {
+  const floor = '22.12.0'
+  const ok = text => docNodeFloorProblems([{ path: 'd.md', text }], floor)
+  assert.deepEqual(ok('Node.js **22.12+** with npm'), [])
+  assert.deepEqual(ok('Needs Node.js 22.12+, npm and the registry'), [])
+  assert.deepEqual(ok('a Node below 22.12.0, no npm'), [])
+  assert.deepEqual(ok('requires **Node.js 22.12.0+** (higher than the plugin\'s Node.js ≥ 18)'), [])
+  assert.deepEqual(ok('Node.js ≥ 18 runs the CLIs. Provisioning OpenSpec needs Node.js 22.12+.'), [])
+  assert.deepEqual(ok('Node.js 22.12.0 or newer'), [])
+  // Stale floors, in each form the docs used.
+  assert.equal(ok('Node.js **20.19+** with npm').length, 1)
+  assert.equal(ok('Needs Node.js 20.19+, npm').length, 1)
+  assert.equal(ok('a Node below 20.19.0').length, 1)
+  assert.equal(ok('**Node.js 20.19.0+**').length, 1)
+  assert.equal(ok('Node.js 22.12+ here, Node.js 20.19+ there').length, 1)
+  assert.equal(ok('Node v26.8.1').length, 1)
+  // A text that names no Node version fails instead of passing empty.
+  assert.deepEqual(ok('Node.js ≥ 18 only'), ['d.md: names no Node version for OpenSpec'])
+  assert.match(ok('Node.js 20.19+')[0], /^d\.md: names Node 20\.19, not the pin's floor 22\.12\.0$/)
+})
+
+test('the design-prompt Node-floor check reads only the anchored phrases and demands one', () => {
+  const floor = '22.12.0'
+  const ok = text => promptNodeFloorProblems([{ path: 'p.md', text }], floor)
+  assert.deepEqual(ok('[ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 22.12.0+)'), [])
+  assert.deepEqual(ok('| Node floor | 18 or newer for Interlock; the OpenSpec CLI needs 22.12.0 or newer | engines |'), [])
+  // The running Node and Claude Code versions are not the floor and are not read.
+  assert.deepEqual(ok('Node v26.8.1 and Claude Code 2.1.154+ or 2.1.291 or newer; OpenSpec requires 22.12.0+'), [])
+  // Stale, in both anchored forms.
+  assert.equal(ok('OpenSpec requires 20.19.0+').length, 1)
+  assert.equal(ok('the OpenSpec CLI needs 20.19.0 or newer').length, 1)
+  assert.equal(ok('OpenSpec requires 22.12.0+ and the OpenSpec CLI needs 20.19.0 or newer').length, 1)
+  // A reword that drops the anchor fails instead of passing empty.
+  assert.deepEqual(ok('Node v26.8.1; needs 20.19.0'), ['p.md: has no "OpenSpec requires" or "OpenSpec CLI needs" version'])
+  assert.equal(ok('').length, 1)
 })
 
 // ---------------------------------------------------------------------------

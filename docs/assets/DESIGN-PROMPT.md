@@ -122,7 +122,7 @@ No degradation banners — graph, test profile, model routing, verification and 
 $ interlock doctor
 PREFLIGHT BLOCKED — 1 check(s) would stop a zero-touch run     [accent]
   root: /Users/you/projects/interlock
-  [ok  ] node: Node v24.19.0 (plugin requires >=18, OpenSpec requires 20.19.0+)
+  [ok  ] node: Node v24.19.0 (plugin requires >=18, OpenSpec requires 22.12.0+)
   [ok  ] plugin: plugin 1.2.1 complete: workflow, both agent types, both binaries
   [ok  ] binaries: interlock, interlock-graph run from the plugin's cli/ (/Users/you/projects/interlock/cli), which the session preflight appends to PATH
   [ok  ] openspec: openspec CLI available and this project is initialised

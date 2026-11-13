@@ -50,7 +50,7 @@ The keyed lines and the fields read from each:
 - `interlock review … --json` (with or without `--out <file>`), whose second word is not `brief` or `proof`: `counts.raised`, `counts.dismissed`, `counts.surviving`, `counts.carried`, `dimensionStats` by name, `head`, `dimensions.ran`, `dimensions.skipped` (the `name` of each `{ name, reason }`), `dimensions.unavailable`, `dimensions.degraded` (the `name` of each), `dimensions.depth`, `proof.proven` and the counts of `proof.unproven`, `proof.unread` and `proof.uncited`, the skipped, unavailable and degraded names drawn on the review row; never `dimensions.completed`
 - `interlock review brief --dimension <name>` and `interlock review brief --skeptics --json`: the dimension name or `skeptics`, the number of `prompts`, and the exit code; never the prompt text
 - `interlock review … --draft`: drawn as one `draft` row with the CLI's counts and `proof.proven`, never as the round's review record
-- `interlock review proof`: the first line of stdout (`proven`, `PROOF CAP REACHED: …`, or `re-run: …`) and the exit code
+- `interlock review proof`: the first line of stdout (`proven`, `PROOF CAP REACHED: …`, `PROOF LEFT UNREAD: …`, or `re-run: …`) and the exit code
 - `interlock settle staging-pathspecs`: the exit code
 - `interlock settle archived-change`: the change name it printed, or on exit 1 the stderr line, and the exit code
 - `interlock settle comment --round <n> --head <sha>`, `interlock settle replies --head <sha>`: the command words, the round and the exit code; the `gh pr comment <n>` / `glab mr note <iid>` stage beside them: its pull request number only
@@ -99,6 +99,7 @@ Reading rules: stages SHALL be applied in the command's order; a stage whose res
 - **WHEN** `interlock review … --head e177e7d… --out .claude/ship/settle/review-r0.json --json` resolves with `counts: { raised: 0, dismissed: 0, surviving: 0 }` and `proof: { proven: false }` naming four unproven dimensions and four uncited files, then `interlock review proof --review .claude/ship/settle/review-r0.json` exits 1 naming `language`
 - **THEN** the review row carries `not proven` with the counts 4 unproven and 4 uncited after the CLI's own counts, and no row reads it as a clean review
 - **AND** the proof line is a row of its own naming `language` and `exit 1`, and is not read as a review record
+- **AND** an `interlock review proof` call that exits 0 with the first line `PROOF LEFT UNREAD: technical-lead` is a row of its own carrying that line and `exit 0`, and no row reads it as a proven review
 - **AND** `git diff --name-status -M 251cebe...e177e7d | interlock settle archived-change --name-status - --json` is a row of its own naming `draw-the-settle-and-spec-panes-as-cards`, its `git diff` stage passed through unread
 
 ### Requirement: Each spawn of a live settle run SHALL be attributed from the prompt's first line against pinned sources, and its model and effort SHALL be shown by source and labelled

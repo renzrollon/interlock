@@ -1,6 +1,8 @@
 # Interlock
 
-**Spec-driven development for Claude Code. You read one spec; parallel agents ship it to a tested commit.**
+**Read one spec. Parallel agents ship it to a tested commit. One more command settles the pull request.**
+
+Spec-driven development for [Claude Code](https://claude.com/claude-code), on [OpenSpec](https://github.com/Fission-AI/OpenSpec).
 
 [![npm](https://img.shields.io/npm/v/%40renzrollon%2Finterlock?label=npm)](https://www.npmjs.com/package/@renzrollon/interlock)
 [![downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Frenzrollon.github.io%2Finterlock%2Fbadges%2Fdownloads.json)](https://www.npmjs.com/package/@renzrollon/interlock)
@@ -12,77 +14,90 @@
 <p align="center">
   <img src="docs/assets/spec-and-ship.gif" alt="One real run, 34 seconds: /interlock:spec asks one question, writes the change and stops at the checkpoint; /interlock:ship runs two waves of parallel agents, the suite passes 180 of 180, one commit." width="838">
 </p>
-<p align="center"><sub>One real run, cut to 34 s. <code>spec</code> asks one question, writes 11 specs and 12 tasks, then stops. <code>ship</code> runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.</sub></p>
+<p align="center"><sub>One real run, cut to 34 s: <code>spec</code> stops at the checkpoint, then <code>ship</code> runs two waves of parallel agents to one commit. <a href="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-full.mp4">Uncut, 2:34</a>.</sub></p>
 <p align="center"><code>12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</code></p>
-<p align="center"><sub>The whole run, uncut and captioned: <a href="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-full.mp4">2:34, mp4, 9 MB</a>.</sub></p>
 
 ```text
 /interlock:spec "<idea>"   # explores your repo, writes a reviewed spec, then stops
-                           # ← you read it. The only place a human is required.
-/interlock:ship            # parallel agents implement → your tests pass → commit. Nobody is asked.
+                           # ← you read it. The only required stop.
+/interlock:ship            # parallel agents → your tests pass → one commit. Asks nothing.
+
+/interlock:settle          # draft PR → review → fix → re-review → verdict
+                           # ← you press merge. Interlock never does.
 ```
 
-- **One human checkpoint.** A spec is the cheapest place to catch a wrong idea, so that is the one place you must look. Everything after it is automatic.
-- **Zero-touch by construction.** `ship` is a Claude Code workflow, and the workflow runtime has no channel for mid-run input. It cannot ask you anything, so it never does.
-- **Caps and gates are code, not prose.** Parallelism, retry budgets and review thresholds are CLI exit codes a model cannot argue with, and during remediation an agent cannot even edit a test. Re-run any decision yourself, with no model and no network.
+- **One human checkpoint.** A spec is the cheapest place to catch a wrong idea, so it is the one place you must look.
+- **Nobody is asked mid-run.** `ship` is a Claude Code workflow, and the runtime has no channel for a question.
+- **Rules are code, not prose.** Caps, gates and the merge verdict are CLI exit codes a model cannot argue with.
 
 ## Install
 
-Interlock is a [Claude Code](https://claude.com/claude-code) plugin layered on [OpenSpec](https://github.com/Fission-AI/OpenSpec), which owns the spec format. You need:
-
-| | |
-|---|---|
-| Claude Code **v2.1.154+** with dynamic workflows enabled | `/interlock:ship` runs as a [workflow](https://code.claude.com/docs/en/workflows). If workflows are turned off, by your settings, an org policy or a Pro plan that has not enabled them in `/config`, the command exists but the run cannot start |
-| Node.js **20.19+** with npm | What provisioning OpenSpec needs. The plugin itself, which ships readable scripts only, needs Node 18+ |
-| A git repository with code in it | Bootstrap describes what already exists |
-
-The full table, including two environment variables that must stay unset, is in [the first hour](docs/01-first-hour.md#before-you-start).
-
-**1. OpenSpec: usually nothing to do.** If you have `openspec` on your PATH, Interlock uses it. Otherwise the first `/interlock:spec` or `/interlock:bootstrap` provisions a pinned copy by running `interlock openspec provision`, which needs Node.js 20.19+ and npm. To install it yourself instead, in your terminal:
-
-```bash
-npm install --location=global @fission-ai/openspec@1.15.0
-openspec --version        # prints a version when it worked
-```
-
-What provisioning does, so nothing about it is a surprise:
-
-- It downloads from the npm registry, about 16 MB, and npm verifies every package against the lockfile pinned in the plugin; a package whose bytes differ is refused.
-- Install scripts are off, and OpenSpec's telemetry is off for the provisioned copy.
-- It writes into the plugin's data directory (`INTERLOCK_PLUGIN_DATA`, then `CLAUDE_PLUGIN_DATA`, else `~/.cache/interlock`) and nowhere else. `interlock openspec which` prints which OpenSpec resolves and where, so you can run a printed `openspec archive` outside Claude Code. A copy in `~/.cache/interlock` is not on the session's PATH; provisioning says so and prints its full path.
-- The plugin's `cli/` directory is put on the session's PATH by its SessionStart hook. PowerShell commands get none of those session variables.
-
-**2. Install the plugin.** In Claude Code, once per machine:
+In Claude Code, once per machine:
 
 ```text
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
 ```
 
-**3. Onboard your project.** Start a new session in the project from your terminal (`cd your-project && claude`), then in Claude Code, once per repo:
+Then, in a new session in your project, once per repo:
 
 ```text
 /interlock:bootstrap
 ```
 
-Bootstrap runs `openspec init` if the repo has never been initialized. It reads your code, asks you to confirm the list of features it found, then writes one spec per feature describing what the code does today, and builds the graph agents navigate by. It never changes source code.
+It writes one spec per existing feature and builds the graph agents navigate by. It never changes source code.
 
-**4. Read the first line of each session.** Every time a session starts in your project, the plugin checks that an unattended run could finish and prints either `interlock preflight OK` or a list of problems, each with its fix. The most common problem is a command your permission settings do not allow yet. During `ship` nobody is there to approve a prompt, so the run would stop at it. `/permissions` is the quickest way to add what the check names.
+**Nothing else to install.** OpenSpec is provisioned on first use: a pinned copy from npm, checked against a lockfile the plugin carries, install scripts and telemetry off.
 
-> **`interlock doctor` is optional.** The session-start check *is* `interlock doctor`, run for you. Run it yourself only for the full report, which includes a ready-to-paste settings snippet that allowlists every command a run needs:
->
-> ```text
-> ! interlock doctor
-> ```
->
-> The `!` runs it from the Claude Code prompt, because the plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. For your terminal too, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)), and keep that copy at the plugin's version: `doctor` says when it is not ([16](docs/16-upgrading.md)). It exits 1 when it finds something that would stop a zero-touch run.
+**You need** Claude Code **2.1.154+** with [dynamic workflows](https://code.claude.com/docs/en/workflows) on, Node.js **22.12+** with npm, and a git repository with code in it. Every session opens with `interlock preflight OK` or a list of fixes. Step by step: **[01 — The first hour](docs/01-first-hour.md)**.
 
-Your first shipped change, step by step: **[01 — The first hour](docs/01-first-hour.md)**.
+## Why Interlock
+
+**Prompts are suggestions. Exit codes are not.**
+
+Other spec tools compete on how much structure you write before coding. Interlock competes on **how many decisions the model is not allowed to make.**
+
+- **It cannot ask you anything.** `ship` is a workflow with no input channel. What a human decides is decided at the checkpoint. [06](docs/06-why-it-works.md#2-where-the-plan-lives-and-why-that-decides-everything)
+- **It cannot shrink the suite to go green.** A hook denies test edits while a run is fixing a failure, and a settle round with a red suite pushes nothing (1.14). [13](docs/13-the-guards.md)
+- **Agents cannot overwrite each other.** The planner separates tasks that touch the same file; with `--isolate-waves` each runs in its own worktree. [06](docs/06-why-it-works.md#5-the-wave-engine)
+- **A reviewer has to prove what it read.** Each review dimension hands in a coverage ledger. No proof, no `MERGE` (1.12). [15](docs/15-merge-confidence.md#the-proof-of-coverage)
+- **A dismissal needs a `file:line`.** Reviewers run blind, one per dimension; skeptics must cite the diff to dismiss a blocker or warning (1.15). [06](docs/06-why-it-works.md#7-review-making-dismissal-expensive)
+- **The merge verdict is computed, not opined.** `MERGE`, `HUMAN` or `BLOCK` comes from the CLI. The worst signal wins, and missing evidence counts against you. [15](docs/15-merge-confidence.md)
+- **Nothing is silent, nothing phones home.** `interlock limits` prints every cap, every degradation is a named banner, and Interlock makes no network request of its own (1.15). [04](docs/04-when-it-stops.md)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/guard-deny-dark.png">
+    <img src="docs/assets/guard-deny-light.png" alt="Example output of Interlock's guard-tests hook. While a run is fixing a failing check, an edit to test/pricing.test.mjs is denied, with the reason that a run making a failing check pass must fix the code under test, not weaken the check. An edit to src/pricing.mjs is allowed." width="800">
+  </picture>
+</p>
+<p align="center"><sub>The hook's own words, from running it against a throwaway directory. <a href="docs/13-the-guards.md">The guards →</a></sub></p>
+
+**Built with itself.** Every feature here started as a spec and shipped through the same checkpoint: [more than 80 changes](openspec/changes/archive), one folder each.
+
+## How it compares
+
+Already using something?
+
+- **Plan mode** plans for one session, then the same agent builds. Interlock keeps the spec in your repo, builds with fresh parallel agents and keeps gating after you approve.
+- **[OpenSpec](https://github.com/Fission-AI/OpenSpec)**: keep it. Interlock drives the same CLI and files, and adds the run: exploration, a spec review, parallel waves, verification, a commit and a pull request. [03](docs/03-openspec-vs-interlock.md)
+- **[Spec Kit](https://github.com/github/spec-kit)** runs five commands per feature, "reviewing each result before continuing". Interlock asks for one read. Spec Kit supports far more agents; that is the trade.
+- **[Superpowers](https://github.com/obra/superpowers)** teaches the agent a discipline through skills it reads. Interlock takes the parts with a right answer out of the prompt: a hook denies the edit, an exit code enforces the cap.
+
+| | You do | Builds it | Holds the rules | Ends at |
+|---|---|---|---|---|
+| Plan mode | approve a plan | the same session | your permission mode | edits in your working tree |
+| OpenSpec | propose, apply, archive | one assistant, task by task | skills, and a CLI that validates the artifacts | ticked tasks, archived specs |
+| Spec Kit | five commands, a review after each | your agent, in its chat | templates and a constitution | `Converged` |
+| Superpowers | sign off a design, then say go | a fresh subagent per task | skills the agent reads | your pick of merge, PR, keep or discard |
+| **Interlock** | **read one spec** | **parallel agents in waves** | **exit codes, hooks, a runtime that cannot ask** | **a tested commit, then a verdict on the PR** |
+
+<sub>From each project's own README, November 2026. Nobody has benchmarked these against each other, us included. Sources and the longer version: [08](docs/08-harness-landscape.md#beside-plan-mode-and-the-spec-tools).</sub>
 
 ## The flow
 
 <p align="center">
-  <a href="https://renzrollon.github.io/interlock/#flow">
+  <a href="https://renzrollon.github.io/interlock/">
     <picture>
       <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/assets/flow-narrow-dark.svg">
       <source media="(max-width: 600px)" srcset="docs/assets/flow-narrow-light.svg">
@@ -92,7 +107,7 @@ Your first shipped change, step by step: **[01 — The first hour](docs/01-first
   </a>
 </p>
 
-You type two commands for every change and read the spec between them. The rest is there when you want it.
+Two commands per change, and you read the spec between them. Settle and archive carry it from the commit to the merge.
 
 | When | Command | What you get |
 |---|---|---|
@@ -100,10 +115,13 @@ You type two commands for every change and read the spec between them. The rest 
 | **every change** | <kbd>/interlock:spec "idea"</kbd> | [A reviewed, implementation-ready change](docs/01-first-hour.md#step-2--spec-one-small-change "Explores the repo, writes proposal, design, tasks and delta specs, reviews them, then stops. Nothing but specs."). Then it stops |
 | **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
 | **every change** | <kbd>/interlock:ship</kbd> | [Parallel agents, your tests, one commit](docs/01-first-hour.md#step-4--ship-it "Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one."). Asks nothing |
-| when you want it | [`/interlock:settle`](docs/15-merge-confidence.md "Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The pull request, with the merge verdict on it |
+| after the commit | [`/interlock:settle`](docs/15-merge-confidence.md "Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") | The pull request, with the merge verdict on it |
 | after the merge | [`openspec archive <change>`](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") | The living specs catch up |
 
-After a ship, `/interlock:settle --create --review` pushes the branch, opens the pull request as a draft, reviews it (the lean default set of review dimensions, or the wider set with `--strict`, with the blast-radius dimension when the repository has a graph; it is skipped, and says so, without one), posts the findings as a comment, remediates what it can (the fixer is the plugin's `settle-fixer` agent, and each round runs the unit suite and typecheck before it commits, so a red round pushes nothing), posts a reply comment saying which findings are `fixed`, `open` or `new`, and marks it ready with the merge verdict and the head-bound evidence in its description. It never merges and never approves; a person still presses the button. The GitHub loop ran end to end on PR #25; the GitLab lines are not exercised. [Details](docs/15-merge-confidence.md).
+<p align="center">
+  <img src="docs/assets/ship-meter.png" alt="The ship meter pane during the recorded run: wave 1 with three lanes marked ok and the model that served each, the verify checkpoint between the waves, wave 2 with two lanes running and one pending, then verify-final, commit and close." width="760">
+</p>
+<p align="center"><sub>The same run, drawn live inside Claude Code (2.1.295+). The pane observes; the CLI decides. <a href="docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter">The ship meter →</a></sub></p>
 
 <details>
 <summary><b>Flags, and the commands you may never need</b></summary>
@@ -133,48 +151,54 @@ After a ship, `/interlock:settle --create --review` pushes the branch, opens the
 Every term, defined from the ground up: [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md).
 </details>
 
-<p align="center">
-  <img src="docs/assets/ship-meter.png" alt="The ship meter pane during the recorded run: wave 1 with three lanes marked ok and the model that served each, the verify checkpoint between the waves, wave 2 with two lanes running and one pending, then verify-final, commit and close." width="760">
-</p>
-<p align="center"><sub>The same run, drawn inside Claude Code while it ran: every wave, batch and lane as the CLI reported them.</sub></p>
+## Then settle the pull request
 
-On Claude Code 2.1.295 and later the plugin draws both runs live: a status line that stops at the checkpoint, a pane of every wave, lane and agent, and each degradation banner as a toast the moment it is raised. The pane observes; the CLI decides. On an older host the run is the same, without the pane. [The ship meter →](docs/07-cli-and-configuration.md#the-ship-meter-interlock-meter)
+```text
+/interlock:settle --create --review
+```
+
+1. **Opens a draft pull request**, described from the spec and the diff.
+2. **Reviews the diff** and posts the findings.
+3. **Fixes them in rounds.** Each round runs your suite before it commits, so a red round pushes nothing.
+4. **Answers every finding**: `fixed`, `open` or `new`.
+5. **Labels it `MERGE`, `HUMAN` or `BLOCK`**, with the evidence in the description.
+
+Its verdict on one of Interlock's own pull requests. It did not flatter us:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/settle-verdict-dark.png">
+    <img src="docs/assets/settle-verdict-light.png" alt="The merge-confidence block /interlock:settle wrote on Interlock's pull request 33: HUMAN, score 54, 6 of 17 gating signals clean. One signal needs a fix (two added source files no spec names), three need a person (risk class high, a diff over the size bands, two open decisions) and three need more evidence. Labels: interlock/human-review and interlock/score-54." width="800">
+  </picture>
+</p>
+
+<sub>Every line verbatim from the description of [#33](https://github.com/renzrollon/interlock/pull/33); the signal table and the commit line under it are left out.</sub>
+
+It never merges and never approves: a person presses the button. It needs `gh` or `glab` signed in. The GitHub loop has run end to end; the GitLab lines are not exercised. [15 — Merge confidence](docs/15-merge-confidence.md)
 
 ## Turn the gates up
 
-Default `ship` trusts your test suite: a green suite, one commit, nothing else. None of the rows below is needed for your first change. Add them one at a time as the loop earns it; each costs what its last column says.
+Default `ship` trusts your test suite: a green suite, one commit. Add the rest as the loop earns it.
 
 | Add | What it does | Cost |
 |---|---|---|
-| `ship --review` | The review dimensions in parallel, one agent each (`language`, `architecture`, `qa`, `technical-lead`, `regression`, and `devops`, `security` or `domain` when the diff calls for them), each proving what it covered, then two skeptics per finding, each their own agent, who must cite a `file:line` in the diff to dismiss anything. You see only what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
-| `ship --strict` | The review, plus remediation, a manual test plan when UI changed, a walkthrough of the commit, and a conformance check of the diff against the spec's scenarios | The previous default. [01](docs/01-first-hour.md#step-4--ship-it) |
-| `/interlock:settle` | Opens or updates the PR with a `MERGE`, `HUMAN` or `BLOCK` verdict in its labels and description, and what would lift it. Never merges, never approves | Needs `gh` or `glab` signed in. [15](docs/15-merge-confidence.md) |
-| `interlock merge-confidence --require-merge` in CI | The same verdict as a required check. It re-reads the evidence a run left and runs no review of its own. Exits 1 unless `MERGE` | Some setup. [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |
-| `REVIEW.md` | Your repo's own policy: paths out of review scope, paths that always need a human | One file. [12](docs/12-repository-review-policy.md) |
+| `ship --review` | Blind reviewers, one per dimension, then skeptics. You see what survived, and how many did not | The expensive part of a run. [06](docs/06-why-it-works.md) |
+| `ship --strict` | The review, plus remediation, a manual test plan for UI changes, a commit walkthrough and a conformance check against the spec | The previous default. [01](docs/01-first-hour.md#step-4--ship-it) |
+| `interlock merge-confidence --require-merge` | The settle verdict as a required CI check. Exits 1 unless `MERGE` | Some setup. [15](docs/15-merge-confidence.md#a-ci-job-that-reassesses) |
+| `REVIEW.md` | Your repo's policy: paths out of review scope, paths that always need a human | One file. [12](docs/12-repository-review-policy.md) |
 
-## Why Interlock
+## What it costs
 
-Most of the category competes on how much structure you write before coding: Spec Kit adds phases, BMAD adds roles, Kiro adds an IDE. Interlock competes on **how many decisions the model is not allowed to make.**
-
-- **Parallel agents cannot overwrite each other.** The planner separates tasks that would touch the same file. With `--isolate-waves`, every parallel task runs in its own git worktree and a collision is a named halt, never a lost write.
-- **An agent cannot make the suite smaller to make it green.** During remediation a hook denies test edits, task ticks and commits outside the commit stage. They are `PreToolUse` hooks, inert outside a run. [13](docs/13-the-guards.md)
-- **A dismissal needs evidence.** A reviewer who says "not real" must cite a `file:line` in the diff, or it dismisses nothing. [06](docs/06-why-it-works.md)
-- **Specs do not quietly rot.** `interlock drift` reports unarchived changes, specs citing missing files and code no spec describes, each at its own confidence, and never blocks. [03](docs/03-openspec-vs-interlock.md)
-- **Degradation is spoken, never silent.** A missing graph, an overridden model, a skipped verification: each is a named banner in the summary. [04](docs/04-when-it-stops.md)
-- **Built with itself.** Every feature here started as a spec and went through the same checkpoint and ship. [The archive](openspec/changes/archive) is the record, one folder per change.
-
-| | Competes on | Where the rules live |
-|---|---|---|
-| Spec Kit | phases you write before code | prompt templates, portable across thirty agents |
-| BMAD | roles you assign | prompt templates |
-| Kiro | an IDE with specs built in | the IDE |
-| OpenSpec | the artifact loop and its CLI | the CLI validates artifacts; skills run the loop |
-| **Interlock** | how many decisions the model may not make | a CLI with exit codes, and a runtime with no channel for a question |
-
-It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `openspec` CLI, and the stock OpenSpec skills stay available for the plain artifact loop. [03](docs/03-openspec-vs-interlock.md) says when each is the right call; [08](docs/08-harness-landscape.md) sets the harness beside OpenClaw, Hermes Agent and DeepSeek Harness. The trade is portability: Claude Code is the **default and supported host**, and Cursor and Copilot are not supported, because the guarantees come from Claude Code's workflow runtime.
+- **Claude Code only.** It is the **default and supported host**, because the guarantees come from its workflow runtime. Cursor and Copilot are not supported; a runner for other hosts is experimental.
+- **Review spends tokens.** `--review`, `--strict` and `settle --review` are the expensive part of a run, so default `ship` leaves them out.
+- **Guards fail open.** A hook that cannot tell a run is live allows the edit, [by design](docs/13-the-guards.md#the-fail-open-rule).
 
 <details>
-<summary><b>Fine print: other hosts, the network, and the CLIs on their own</b></summary>
+<summary><b>Fine print: your own OpenSpec, the doctor, other hosts, the network, and the CLIs on their own</b></summary>
+
+**Your own OpenSpec.** A copy already on your PATH is used as it is. Otherwise the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`: about 16 MB from the npm registry, into the plugin's data directory and nowhere else. `interlock openspec which` prints which copy resolves. To install it yourself instead: `npm install --location=global @fission-ai/openspec@2.0.0`. [01](docs/01-first-hour.md#install)
+
+**`interlock doctor`.** The session-start check is `interlock doctor`, run for you. Type `! interlock doctor` at the Claude Code prompt for the full report, with a ready-to-paste snippet that allowlists every command a run needs; it exits 1 when something would stop a zero-touch run. The plugin puts the CLI on the `PATH` of Claude Code's shell only. For your own terminal, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)) and keep it at the plugin's version ([16](docs/16-upgrading.md)).
 
 **Other hosts (experimental).** `interlock-run` drives the same loop over the Claude Code CLI, any [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code. You start it yourself; no slash command does, and `/interlock:ship` never falls back to it. Two caveats, both bannered by the runner. `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit, while the Workflow runtime behind `/interlock:ship` is the exempted path. And Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`; an unmapped tier is bannered, never silently run on your default. The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor. Code Mode is out of scope. Host table, banners and configuration: [07](docs/07-cli-and-configuration.md#interlock-run--the-experimental-runner).
 
@@ -189,7 +213,10 @@ It composes OpenSpec rather than replacing it: `/interlock:spec` drives the `ope
 
 ## Docs
 
-New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and keep [04 — When it stops](docs/04-when-it-stops.md) open during your first `ship`. Only ever prompted a coding agent? **[09](docs/09-from-prompt-to-workflow.md)** defines every term once, ending at why `ship` is a script and not a prompt.
+Start with **[01 — The first hour](docs/01-first-hour.md)**, and keep [04 — When it stops](docs/04-when-it-stops.md) open during your first `ship`. Then [02](docs/02-the-checkpoint.md) for reading a spec in ten minutes and [06](docs/06-why-it-works.md) for the mechanisms. Only ever prompted a coding agent? [09](docs/09-from-prompt-to-workflow.md) defines every term once.
+
+<details>
+<summary><b>Every doc</b></summary>
 
 | | |
 |---|---|
@@ -200,7 +227,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and kee
 | [05 — Continuity](docs/05-continuity.md) | When `--continue` may skip the human read |
 | [06 — Why it works](docs/06-why-it-works.md) | The mechanisms, low-level, with the costs stated |
 | [07 — CLI and configuration](docs/07-cli-and-configuration.md) | Every subcommand, environment variable and host |
-| [08 — The Interlock harness](docs/08-harness-landscape.md) | The parts of the harness, what holds on each host, and a short comparison with other harnesses |
+| [08 — The Interlock harness](docs/08-harness-landscape.md) | The parts of the harness, what holds on each host, and the comparison with other tools |
 | [09 — From prompt to workflow](docs/09-from-prompt-to-workflow.md) | New to agentic workflows? Every term defined, then why `ship` is a script |
 | [10 — Ship and spec for prompt-only engineers](docs/10-agentic-workflow-ship-and-spec.md) | Primer, review of spec+ship, token and quality tactics |
 | [11 — The indicators](docs/11-the-indicators.md) | What `interlock report` measures and why it gates nothing; whether to commit the run corpora |
@@ -209,6 +236,7 @@ New here? Start with **[01 — The first hour](docs/01-first-hour.md)**, and kee
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
 | [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a pull request or a CI job |
 | [16 — Upgrading](docs/16-upgrading.md) | What an upgrade keeps, what a resume across versions does, and how to keep the CLI at the plugin's version |
+</details>
 
 ## Development
 
