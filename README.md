@@ -126,13 +126,54 @@ Two commands per change, and you read the spec between them. Settle and archive 
 <details>
 <summary><b>Flags, and the commands you may never need</b></summary>
 
-**Shape and gates on `ship`.** `--review` runs the adversarial review before the commit. `--strict` adds remediation, handoff artifacts and a conformance check. `--solo` and `--waves` force the plan shape the classifier would otherwise choose. `--tdd` runs the change's failing-test section first. `spec --continue` skips the checkpoint when the readiness gate passes; [05](docs/05-continuity.md) says what that cannot catch.
+**Flags**
 
-**Any time, on their own.** `/interlock:explore` (reconnaissance with parallel investigators), `/interlock:review-code` (the adversarial review, standalone), `/interlock:fix-tests` (repair a red suite by root cause, without weakening a test), `/interlock:graph` (build and query the code graph), `/interlock:report` (indicators over the run corpora, gating nothing), `/interlock:manual-test-plan`, `/interlock:explain-code`, `/interlock:evals`, `/interlock:docs-digest`, `/interlock:dispatch`, `/interlock:commit`.
+| Flag | What it changes |
+|---|---|
+| `ship --review` | Runs the adversarial review before the commit |
+| `ship --strict` | Adds remediation, handoff artifacts and a conformance check |
+| `ship --solo` · `ship --waves` | Forces the plan shape the classifier would otherwise choose |
+| `ship --tdd` | Runs the change's failing-test section first |
+| `spec --continue` | Skips the checkpoint when the readiness gate passes. [05](docs/05-continuity.md) says what that cannot catch |
 
-**Watching.** `/interlock-meter` is the ship run as a pane; `/interlock-spec` the spec run; `/interlock-settle` every `/interlock:settle` pass on a pull request, with or without `--review`; `/interlock-preflight` the session's doctor report; `/interlock-handoff` the resume card after a halt. The checkpoint card (`interlock checkpoint <change>`, also drawn in `/interlock-spec`) lists the questions to ask of a spec, and the panes offer each command they print as a drafted action you submit yourself.
+**Commands you can run any time, on their own**
 
-**In the terminal.** `interlock doctor`, `interlock limits`, `interlock drift`, `interlock merge-confidence`. Every subcommand: [07](docs/07-cli-and-configuration.md).
+| Command | Use it to |
+|---|---|
+| `/interlock:explore` | Investigate the repo with parallel read-only investigators |
+| `/interlock:review-code` | Run the adversarial review on its own |
+| `/interlock:fix-tests` | Repair a red suite by root cause, without weakening a test |
+| `/interlock:graph` | Build and query the code graph |
+| `/interlock:report` | Read the indicators over the run corpora. It gates nothing |
+| `/interlock:manual-test-plan` | Write a manual UI test plan from a change and its commits |
+| `/interlock:explain-code` | Walk through a module, or explain the last commit |
+| `/interlock:evals` | Turn an observed model failure into an eval case |
+| `/interlock:docs-digest` | Compress the docs and specs into one primer for agents |
+| `/interlock:dispatch` | Find the right skill when you are not sure which applies |
+| `/interlock:commit` | Write one feature-level commit from the change |
+
+**Panes, for watching**
+
+| Pane | Draws |
+|---|---|
+| `/interlock-meter` | The ship run |
+| `/interlock-spec` | The spec run, with the checkpoint card |
+| `/interlock-settle` | Every `/interlock:settle` pass on a pull request, with or without `--review` |
+| `/interlock-preflight` | The session's doctor report |
+| `/interlock-handoff` | The resume card after a halt |
+
+The checkpoint card (`interlock checkpoint <change>`) lists the questions to ask of a spec. When a pane prints a command, it offers it as a drafted action; you submit it yourself.
+
+**In the terminal**
+
+| Command | Tells you |
+|---|---|
+| `interlock doctor` | Whether anything would stop a zero-touch run on this machine |
+| `interlock limits` | Every cap the loop obeys |
+| `interlock drift` | Changes never archived, specs that cite deleted files, changed files no spec describes |
+| `interlock merge-confidence` | The `MERGE` / `HUMAN` / `BLOCK` verdict |
+
+Every subcommand: [07](docs/07-cli-and-configuration.md).
 </details>
 
 <details>
@@ -194,21 +235,69 @@ Default `ship` trusts your test suite: a green suite, one commit. Add the rest a
 - **Guards fail open.** A hook that cannot tell a run is live allows the edit, [by design](docs/13-the-guards.md#the-fail-open-rule).
 
 <details>
-<summary><b>Fine print: your own OpenSpec, the doctor, other hosts, the network, and the CLIs on their own</b></summary>
+<summary><b>Fine print: OpenSpec, the doctor, other hosts, the network, the CLIs</b></summary>
 
-**Your own OpenSpec.** A copy already on your PATH is used as it is. Otherwise the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`: about 16 MB from the npm registry, into the plugin's data directory and nowhere else. `interlock openspec which` prints which copy resolves. To install it yourself instead: `npm install --location=global @fission-ai/openspec@2.0.0`. [01](docs/01-first-hour.md#install)
+| | In one line |
+|---|---|
+| **Your own OpenSpec** | Used as it is when it is on your PATH. Otherwise a pinned copy is installed on first use |
+| **The doctor** | Runs at every session start. `! interlock doctor` prints the full report |
+| **Other hosts** | `interlock-run` is experimental, and only you start it |
+| **The network** | Interlock makes no network request of its own and reads no credential |
+| **The CLIs** | Three zero-dependency Node binaries, also on npm |
 
-**`interlock doctor`.** The session-start check is `interlock doctor`, run for you. Type `! interlock doctor` at the Claude Code prompt for the full report, with a ready-to-paste snippet that allowlists every command a run needs; it exits 1 when something would stop a zero-touch run. The plugin puts the CLI on the `PATH` of Claude Code's shell only. For your own terminal, install the npm package ([07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)) and keep it at the plugin's version ([16](docs/16-upgrading.md)).
+**Your own OpenSpec** · [01](docs/01-first-hour.md#install)
 
-**Other hosts (experimental).** `interlock-run` drives the same loop over the Claude Code CLI, any [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code. You start it yourself; no slash command does, and `/interlock:ship` never falls back to it. Two caveats, both bannered by the runner. `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit, while the Workflow runtime behind `/interlock:ship` is the exempted path. And Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`; an unmapped tier is bannered, never silently run on your default. The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor. Code Mode is out of scope. Host table, banners and configuration: [07](docs/07-cli-and-configuration.md#interlock-run--the-experimental-runner).
+- A copy already on your PATH is used as it is. `interlock openspec which` prints which copy resolves.
+- Otherwise the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`: about 16 MB from the npm registry, into the plugin's data directory and nowhere else.
+- To install it yourself instead:
 
-**The network.** Interlock makes no network request of its own and reads no credential; the plugin declares no option to ask you for one.
+```bash
+npm install --location=global @fission-ai/openspec@2.0.0
+```
 
-- **Requests that belong to other tools.** `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in; `interlock openspec provision` runs `npm` to install the pinned OpenSpec from the npm registry when none is on your PATH; the vendor CLIs a run spawns inherit the environment as any child process does. What each of those sends is its own.
-- **What it reads and runs on your machine.** `interlock doctor`, the session-start check and `interlock run start` read Claude Code's settings files: managed, user (`~/.claude/settings.json`), project and local. They use only `permissions`, `promptCacheTtl`, `subagentPromptCacheTtl` and `advisorModel`, so they can say whether a run would stop on a prompt. No other key or value is used, printed or sent. `interlock verify exec` runs the command it is passed, which the loop takes from the commands in `.claude/testing/profile.json`, and the coverage baseline runs that profile's coverage command. Both run through a shell (`/bin/sh` on macOS and Linux) and in your environment, as you would run them yourself. Whatever those commands send is theirs, not Interlock's.
-- **Being reached while away.** Interlock makes no network call and sends no push of its own; on a Claude Code that supports mods, the meter asks the engine for a local notification on a halt, a close, a first quiet stretch and a checkpoint. Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) can push to your phone when a long task finishes or a session needs you, with nothing configured in Interlock.
+**The doctor** · [07](docs/07-cli-and-configuration.md#install-the-clis-without-the-plugin)
 
-**The CLIs on their own.** `interlock` (the policy engine), `interlock-graph` (a local, deterministic code graph; no vector store, no network) and `interlock-run` (the runner above) are three zero-dependency Node binaries. The plugin puts them on Claude Code's `PATH`; `npm install --location=global @renzrollon/interlock@1.16.1` puts them on yours. Every gating subcommand exits 1 when it blocks. Reference and every environment variable: [07](docs/07-cli-and-configuration.md).
+- The session-start check is `interlock doctor`, run for you.
+- Type `! interlock doctor` at the Claude Code prompt for the full report. It carries a ready-to-paste snippet that allowlists every command a run needs, and exits 1 when something would stop a zero-touch run.
+- The plugin puts the CLI on the `PATH` of Claude Code's shell only. For your own terminal, install the npm package and keep it at the plugin's version ([16](docs/16-upgrading.md)).
+
+**Other hosts (experimental)** · [07](docs/07-cli-and-configuration.md#interlock-run--the-experimental-runner)
+
+- `interlock-run` drives the same loop over the Claude Code CLI, any [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agent, OpenAI Codex or Qwen Code.
+- You start it yourself. No slash command does, and `/interlock:ship` never falls back to it.
+- Two caveats, both bannered by the runner:
+  - **Billing.** `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit. The Workflow runtime behind `/interlock:ship` is the exempted path.
+  - **Model tiers.** Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`. An unmapped tier is bannered, never silently run on your default.
+- The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor.
+- Code Mode is out of scope.
+
+**The network**
+
+Interlock makes no network request of its own and reads no credential. The plugin declares no option to ask you for one.
+
+- **Requests that belong to other tools.** What each of these sends is its own:
+  - `/interlock:settle` has the model run `gh`, `glab` and `git fetch` under your own sign-in.
+  - `interlock openspec provision` runs `npm` to install the pinned OpenSpec from the npm registry when none is on your PATH.
+  - The vendor CLIs a run spawns inherit the environment, as any child process does.
+- **What it reads on your machine.** `interlock doctor`, the session-start check and `interlock run start` read Claude Code's settings files: managed, user (`~/.claude/settings.json`), project and local. They use only `permissions`, `promptCacheTtl`, `subagentPromptCacheTtl` and `advisorModel`, so they can say whether a run would stop on a prompt. No other key or value is used, printed or sent.
+- **What it runs on your machine.** `interlock verify exec` runs the command it is passed, which the loop takes from the commands in `.claude/testing/profile.json`; the coverage baseline runs that profile's coverage command. Both run through a shell (`/bin/sh` on macOS and Linux) in your environment, as you would run them yourself. Whatever those commands send is theirs, not Interlock's.
+- **Being reached while away.** Interlock sends no push of its own. On a Claude Code that supports mods, the meter asks the engine for a local notification on a halt, a close, a first quiet stretch and a checkpoint. Claude Code's [Remote Control](https://code.claude.com/docs/en/remote-control) can push to your phone when a long task finishes or a session needs you, with nothing configured in Interlock.
+
+**The CLIs on their own** · [07](docs/07-cli-and-configuration.md)
+
+| Binary | What it is |
+|---|---|
+| `interlock` | The policy engine. Every gating subcommand exits 1 when it blocks |
+| `interlock-graph` | A local, deterministic code graph. No vector store, no network |
+| `interlock-run` | The experimental runner above |
+
+The plugin puts all three on Claude Code's `PATH`. To put them on yours:
+
+```bash
+npm install --location=global @renzrollon/interlock@1.16.1
+```
+
+The reference and every environment variable are in [07](docs/07-cli-and-configuration.md).
 </details>
 
 ## Docs
@@ -246,4 +335,11 @@ npm test                      # no dependencies to install first
 claude --plugin-dir .         # load it without installing
 ```
 
-More in [CONTRIBUTING.md](./CONTRIBUTING.md). Report vulnerabilities privately ([SECURITY.md](./SECURITY.md)); [ACCESSIBILITY.md](./ACCESSIBILITY.md) and the [code of conduct](./CODE_OF_CONDUCT.md) cover the rest. Built on [OpenSpec](https://github.com/Fission-AI/OpenSpec) by Fission AI, and on the wave-execution pattern for parallel task application. [MIT](./LICENSE).
+- **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Security:** report vulnerabilities privately, per [SECURITY.md](./SECURITY.md)
+- **Accessibility:** [ACCESSIBILITY.md](./ACCESSIBILITY.md)
+- **Conduct:** [the code of conduct](./CODE_OF_CONDUCT.md)
+
+---
+
+<p align="center"><sub>Built on <a href="https://github.com/Fission-AI/OpenSpec">OpenSpec</a> by Fission AI · <a href="./LICENSE">MIT</a></sub></p>
