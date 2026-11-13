@@ -322,7 +322,7 @@ before the receipt path has ever fired.
 
 Decision §4.15(a) is that the recorded corpora inform a later decision and drive
 no current one. `lib/outcomes.mjs` says it in its own header; `README.md` says it
-in the Experimental section; and this command is where the temptation to break it
+where it lists `/interlock:report`; and this command is where the temptation to break it
 is strongest, because every value here is one comparison away from a threshold.
 
 So the prohibition is a property, not a convention:

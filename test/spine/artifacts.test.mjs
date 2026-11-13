@@ -143,7 +143,7 @@ test('tickTasks flips matching unchecked boxes and leaves others', () => {
   rmSync(tmp, { recursive: true, force: true })
 })
 
-// --- task-line parity with OpenSpec 1.15.0 ---------------------------------
+// --- task-line parity with the pinned OpenSpec release ---------------------------------
 
 test('every list marker and box shape OpenSpec counts is a task, each open', () => {
   const md = [

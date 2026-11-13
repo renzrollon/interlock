@@ -7,18 +7,24 @@
 // pastes its one line into the PR. The unit suite drives it against a stub CLI
 // only (test/spine/openspec-cli.test.mjs).
 //
-// In a fresh `mkdtemp` project, with OpenSpec's telemetry off, it runs six
+// In a fresh `mkdtemp` project, with OpenSpec's telemetry off, it runs these
 // commands:
 //
 //   1. init --tools none
 //   2. new change probe
 //   3. status --change probe --json
 //   4. instructions proposal --change probe --json
-//   5. validate probe, after writing a minimal proposal, design, tasks and one
-//      nested delta specs/area/cap/spec.md
-//   6. archive probe --yes
+//   5. validate probe, after writing a minimal proposal, design, tasks (every
+//      task shape Interlock's reader counts) and one nested delta
+//      specs/area/cap/spec.md
+//   6. list --json, whose task counts must equal `parseTasks` over the same text
+//   7. archive probe --yes
+//   8. validate --specs
 //
-// and asserts the fields the skills and `compact-instructions.mjs` read. Each
+// then, in a second scratch directory, `init --tools claude` and the layout it
+// writes (five stock skills under .agents/skills/, each linked from
+// .claude/skills/, no .claude/commands/), and asserts the fields the skills and
+// `compact-instructions.mjs` read. Each
 // failure is named by its path (`status.applyRequires`); on any, the script
 // prints them to stderr and exits 1. On success it prints one line naming the
 // CLI it ran, its version and how many checks passed.
@@ -32,14 +38,17 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { parseTasks } from '../lib/artifacts.mjs'
 import { OPENSPEC_PROVISION, resolveOpenSpec, telemetryOff } from '../lib/openspec-cli.mjs'
 
 const CHANGE = 'probe'
 const REQUIREMENT = 'Probe behaviour'
 const ARTIFACT_IDS = ['proposal', 'design', 'specs', 'tasks']
+// The stock skills `openspec init --tools claude` writes at 2.0.0 (design D10).
+const STOCK_SKILLS = ['openspec-propose', 'openspec-apply-change', 'openspec-archive-change', 'openspec-explore', 'openspec-sync-specs']
 
 const PROPOSAL = `## Why
 
@@ -84,9 +93,23 @@ The change holds one requirement with one scenario.
 None.
 `
 
+// Every task shape the reader counts: each bullet marker, a nested sub-task, a done
+// task, a box holding a character other than x, a task with no description, a link
+// bullet (not a task), and a task whose text wraps onto a second line.
 const TASKS = `## 1. Probe
 
 - [ ] 1.1 Do nothing.
+* [ ] 1.2 A star bullet.
++ [ ] 1.3 A plus bullet.
+1. [ ] A numbered task.
+2) [ ] A parenthesised task.
+- [x] 1.4 A done task.
+  - [ ] 1.4.1 A nested sub-task.
+- [~] 1.5 A box holding another character.
+- [ ]
+- [x](https://example.com/probe) a link bullet, not a task.
+- [ ] 1.6 A task whose text wraps
+  onto a second line.
 `
 
 const DELTA = `## ADDED Requirements
@@ -216,7 +239,17 @@ function main() {
     put(join('specs', 'area', 'cap', 'spec.md'), DELTA)
     step('validate', ['validate', CHANGE])
 
-    // 6. archive, which must sync the nested delta into the living specs.
+    // 6. list --json, whose task counts must equal Interlock's reader over the same text.
+    const list = jsonOf('list', step('list', ['list', '--json']))
+    const listed = Array.isArray(list.changes) ? list.changes.find(c => c && c.name === CHANGE) : undefined
+    check('list.changes', !!listed, `expected an entry named "${CHANGE}" in changes, got ${JSON.stringify(list.changes)}`)
+    const counted = parseTasks(TASKS)
+    const expectTotal = counted.length
+    const expectDone = counted.filter(t => t.done).length
+    check('list.totalTasks', !!listed && listed.totalTasks === expectTotal, `OpenSpec counts ${JSON.stringify(listed && listed.totalTasks)}, Interlock's reader counts ${expectTotal}`)
+    check('list.completedTasks', !!listed && listed.completedTasks === expectDone, `OpenSpec counts ${JSON.stringify(listed && listed.completedTasks)}, Interlock's reader counts ${expectDone}`)
+
+    // 7. archive, which must sync the nested delta into the living specs.
     step('archive', ['archive', CHANGE, '--yes'])
     const living = join(project, 'openspec', 'specs', 'area', 'cap', 'spec.md')
     let text = ''
@@ -224,8 +257,32 @@ function main() {
       text = readFileSync(living, 'utf8')
     } catch {}
     check('archive.sync', text.includes(`Requirement: ${REQUIREMENT}`), `${join('openspec', 'specs', 'area', 'cap', 'spec.md')} does not hold the delta's requirement after archive`)
+
+    // 8. the living specs the archive wrote must validate.
+    step('validate --specs', ['validate', '--specs'])
   } finally {
     rmSync(project, { recursive: true, force: true })
+  }
+
+  // 9. bootstrap's `init --tools claude`, in a second scratch directory, and the layout it writes.
+  const claudeProject = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-openspec-contract-claude-')))
+  try {
+    const r = run(claudeProject, ['init', '--tools', 'claude'])
+    check('init --tools claude exit', r.status === 0, `\`openspec init --tools claude\` exited ${r.status === null ? 'without a status' : r.status}: ${tail(r)}`)
+    check('init --tools claude', existsSync(join(claudeProject, 'openspec', 'config.yaml')), `${join('openspec', 'config.yaml')} was not written`)
+    const skillsDir = join(claudeProject, '.agents', 'skills')
+    const missing = STOCK_SKILLS.filter(name => !existsSync(join(skillsDir, name, 'SKILL.md')))
+    check('init.agentsSkills', missing.length === 0, `no SKILL.md under ${join('.agents', 'skills')} for ${missing.join(', ')}`)
+    const agentsReal = existsSync(skillsDir) ? realpathSync(skillsDir) : null
+    const unlinked = STOCK_SKILLS.filter(name => {
+      const entry = join(claudeProject, '.claude', 'skills', name)
+      if (!existsSync(entry) || agentsReal === null) return true
+      return !realpathSync(entry).startsWith(agentsReal + sep)
+    })
+    check('init.claudeSkills', unlinked.length === 0, `${unlinked.join(', ')} not present under ${join('.claude', 'skills')} as a link into ${join('.agents', 'skills')}`)
+    check('init.commands', !existsSync(join(claudeProject, '.claude', 'commands')), `${join('.claude', 'commands')} was written`)
+  } finally {
+    rmSync(claudeProject, { recursive: true, force: true })
   }
 
   if (failures.length) {

@@ -1110,7 +1110,7 @@ Show this output as an example of a healthy repo. It is `interlock doctor` run o
 ```
 PREFLIGHT OK — 11 passed
   root: /Users/you/src/yourrepo
-  [ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 20.19.0+)
+  [ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 22.12.0+)
   [ok  ] plugin: plugin 1.5.0 complete: workflow, both agent types, both binaries
   [ok  ] binaries: interlock and interlock-graph resolve on PATH
   [ok  ] openspec: openspec CLI available and this project is initialised
@@ -1706,7 +1706,7 @@ Table caption, mono: `counted at v1.5.0 on 2026-10-11`. Render the three columns
 |---|---|---|
 | Version | 1.5.0 | `package.json`, `plugin.json` and `marketplace.json` |
 | Runtime dependencies | 0 | `package.json` has no `dependencies` key; CI installs nothing |
-| Node floor | 18 or newer for Interlock; the OpenSpec CLI needs 20.19.0 or newer | `package.json` engines; OpenSpec's own requirement |
+| Node floor | 18 or newer for Interlock; the OpenSpec CLI needs 22.12.0 or newer | `package.json` engines; OpenSpec's own requirement |
 | Test files | 87 | `find test -name '*.test.mjs' \| wc -l`. `npm test`, no model, no network, nothing to install |
 | Top-level `interlock` subcommands | 28 | `interlock --help`; the table in doc 07 |
 | `interlock-graph` subcommands | 11 | `build, update, report, query, consumers, path, explain, docs, context, docs-index, which` |

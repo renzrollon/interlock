@@ -7,9 +7,9 @@ Two loops exist in this checkout. Mixing them up is the most common first-week m
 | Loop | Commands | What it is | Host |
 |---|---|---|---|
 | **Interlock** | `/interlock:spec` then `/interlock:ship` | Gated OpenSpec + a scripted wave engine | Claude Code v2.1.154+ with dynamic workflows |
-| **Stock OpenSpec** | `/opsx:propose` then `/opsx:apply` | Artifact scaffold + sequential apply in the current chat | Any OpenSpec-aware agent (including Cursor) |
+| **Stock OpenSpec** | `/openspec-propose` then `/openspec-apply-change` | Artifact scaffold + sequential apply in the current chat | Any OpenSpec-aware agent (including Cursor) |
 
-Interlock is the product this repository *is*. Stock OpenSpec is what Interlock composes and what `openspec init` installs into `.claude/skills/` and `.claude/commands/opsx/`. Cursor copies live under `.cursor/`. Same artifact files, different execution contracts.
+Interlock is the product this repository *is*. Stock OpenSpec is what Interlock composes and what `openspec init` installs into `.agents/skills/` (linked from `.claude/skills/`). Any `.cursor/` copies are what an older OpenSpec generated; 2.0.0 writes one shared `.agents/skills/`. Same artifact files, different execution contracts.
 
 ---
 
@@ -30,7 +30,7 @@ Interlock is the product this repository *is*. Stock OpenSpec is what Interlock 
 
 - **This repo does not close its own spec loop.** Four changes under `openspec/changes/` have every task ticked (`add-ship-run-inspectability`, `add-wave-handoff-and-prompt-snapshots`, `add-interlock-acp-host`, `fix-wave-boundary-cost`) and none are archived. There is no living `openspec/specs/` for the product itself — only fixture specs under `test/graph/fixtures/`. `interlock drift` was built for exactly this failure, and it is happening here.
 - **Default `ship` no longer reviews code.** Lean is waves → unit verify → commit. `--strict` is the previous bill. That is the right cost default for a two-file change. It is a quality default only if `tasks.md` and the unit suite are good. They often are not on a first spec.
-- **Cursor cannot run Interlock ship.** README is explicit: 0.x is Claude Code. This checkout still installs stock `/opsx:*` skills for Cursor. A new engineer in Cursor will find a propose/apply loop that looks like spec/ship and is not.
+- **Cursor cannot run Interlock ship.** README is explicit: 0.x is Claude Code. This checkout still installs stock `/openspec-*` skills for Cursor. A new engineer in Cursor will find a propose/apply loop that looks like spec/ship and is not.
 - **No `AGENTS.md` or `CLAUDE.md`.** Industry practice in 2026 is a small always-on instruction file plus on-demand skills ([Claude Code best practices](https://code.claude.com/docs/en/best-practices), [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md), [Cursor rules](https://cursor.com/docs/rules)). This repo relies on plugin skills and `docs/`. Fine for Claude Code with the plugin loaded; thin for anyone else.
 - **`shared/CONTEXT-HYGIENE.md` is unused.** It specifies `[[VARIABLE_NAME]]` wrapping for downstream prompts and claims spec/explore/ship/settle do it. A repo-wide search finds those placeholders only inside that file. Explore's skill *says* to wrap; `assembleImplementerPrompt` in `workflows/ship.js` interpolates change name and task text directly.
 - ~~**[08 — The harness landscape](./08-harness-landscape.md) is stale in one important place.** It still tells you to implement spill and a run trajectory first. `lib/spill.mjs` and `lib/run-log.mjs` exist; `add-ship-run-inspectability/tasks.md` is fully checked.~~ **Fixed.** 08 is now a map of the harness, and it lists spill and the trajectory as parts that exist.
@@ -60,7 +60,7 @@ memory / artifacts     what survives /clear: specs, decision ledger, explore bri
                        ship run logs, test profile
         │
 harness / runtime      who owns the loop, tools, compaction, subagent spawn
-                       Claude Code (supported); ACP driver (experimental); Cursor (opsx only)
+                       Claude Code (supported); ACP driver (experimental); Cursor (stock OpenSpec skills only)
         │
 model                  judgement: classify, implement, review, synthesize
 ```
@@ -129,7 +129,7 @@ openspec/changes/<name>/
 └── specs/**         delta specs: ADDED / MODIFIED / REMOVED / RENAMED + Given/When/Then
 ```
 
-Stock `/opsx:propose` produces the same OpenSpec files (minus the ledger and the review gate) using `.claude/skills/openspec-propose/SKILL.md`. It also stops before code. Its closing prompt points at `/opsx:apply`, not `/interlock:ship`.
+Stock `/openspec-propose` produces the same OpenSpec files (minus the ledger and the review gate) using `.claude/skills/openspec-propose/SKILL.md`. It also stops before code. Its closing prompt points at `/openspec-apply-change`, not `/interlock:ship`.
 
 ### Who reviews, when you intervene
 
@@ -227,9 +227,9 @@ Since `emit-strict-tail-from-cli` the tail is part of the same program: `interlo
 
 ### Stock apply is not ship
 
-`/opsx:apply` (`.claude/skills/openspec-apply-change/SKILL.md`) implements tasks **sequentially in the current conversation**. It pauses and asks. It has no waves, no parallel isolation, no CLI caps, no adversarial review. It is the right tool when you want to stay in the loop. It is not a fallback that preserves Interlock's guarantees.
+`/openspec-apply-change` (`.claude/skills/openspec-apply-change/SKILL.md`) implements tasks **sequentially in the current conversation**. It pauses and asks. It has no waves, no parallel isolation, no CLI caps, no adversarial review. It is the right tool when you want to stay in the loop. It is not a fallback that preserves Interlock's guarantees.
 
-After merge, archive is stock OpenSpec: `openspec archive <name>` or `/opsx:archive` (syncs delta specs into living specs, then moves the change). Interlock never archives for you.
+After merge, archive is stock OpenSpec: `openspec archive <name>` or `/openspec-archive-change` (syncs delta specs into living specs, then moves the change). Interlock never archives for you.
 
 ### Handoffs between spec and ship
 
@@ -245,7 +245,7 @@ After merge, archive is stock OpenSpec: `openspec archive <name>` or `/opsx:arch
 
 Nothing writes a `ready/` directory under `.claude/`: continuity reads the artifact review's own findings file, never a hand-written review result.
 
-A change proposed by `/opsx:propose` can still be shipped by `/interlock:ship` if `interlock validate` passes. Ship does not care who wrote the markdown.
+A change proposed by `/openspec-propose` can still be shipped by `/interlock:ship` if `interlock validate` passes. Ship does not care who wrote the markdown.
 
 ---
 
@@ -289,8 +289,8 @@ Claude Code owns the agent loop: tools, permissions, compaction, subagent spawn,
 | `skills/review-artifacts/SKILL.md` | Pre-code gate |
 | `skills/review-code/SKILL.md` + `dimensions/` | Adversarial diff review |
 | `skills/{bootstrap,graph,docs-digest,fix-tests,commit,settle,...}` | Called by the loop or for recovery |
-| `.claude/skills/openspec-*` and `.claude/commands/opsx/` | Stock OpenSpec (propose/apply/explore/sync/archive) |
-| `.cursor/skills/` and `.cursor/commands/` | Same stock loop for Cursor |
+| `.agents/skills/openspec-*` (linked from `.claude/skills/`) | Stock OpenSpec (propose/apply/explore/sync/archive) |
+| `.cursor/skills/` and `.cursor/commands/` | What an older OpenSpec generated for Cursor; 2.0.0 writes one shared `.agents/skills/` |
 
 ### Memory and context packs
 
@@ -440,7 +440,7 @@ Anything you would have actually read: first change in an unfamiliar area, uncle
 
 ## 9. Playbook — first week
 
-Assume Claude Code with the plugin, dynamic workflows on, `openspec` installed. If you are in Cursor, stop at step 4 and use `/opsx:apply` instead of ship, or switch hosts.
+Assume Claude Code with the plugin and dynamic workflows on; OpenSpec is provisioned on first use. If you are in Cursor, stop at step 4 and use `/openspec-apply-change` instead of ship, or switch hosts.
 
 ### Day 1 — one small loop
 
@@ -465,14 +465,14 @@ Assume Claude Code with the plugin, dynamic workflows on, `openspec` installed. 
 | Smell | Likely cause | What to do |
 |---|---|---|
 | Spec wrote a config subsystem you did not ask for | Silent scope expansion | Re-spec with an explicit non-goal |
-| Ship unknown / trampoline halts | Workflows disabled or Cursor | [04](./04-when-it-stops.md); use opsx apply or enable workflows |
+| Ship unknown / trampoline halts | Workflows disabled or Cursor | [04](./04-when-it-stops.md); use `/openspec-apply-change` or enable workflows |
 | Mid-run permission prompt | Command not allowlisted | Approve, allowlist, expect that wave to be messy |
 | Three task failures halt | Underspecified `tasks.md` in that area | Re-spec that slice; do not third-round ship |
 | Unit still red after repair cap | Real bug or bad tests | `/interlock:fix-tests` or fix by hand; do not `--skip` unit |
 | `MODEL ROUTING OVERRIDDEN` | Env var set | `unset CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (or `CLAUDE_CODE_SUBAGENT_MODEL` on an older host) unless you meant it |
 | `EFFORT ROUTING OVERRIDDEN` | Env var set | `unset CLAUDE_CODE_EFFORT_LEVEL` unless you meant it |
 | Second `Workflow()` in one chat | Leftover boxes or `/goal` misfire | Report leftovers; only a new user message ships again |
-| `/opsx:apply` after `/interlock:spec` by habit | Two loops, same files | Legal, but you left the zero-touch / isolation contract |
+| `/openspec-apply-change` after `/interlock:spec` by habit | Two loops, same files | Legal, but you left the zero-touch / isolation contract |
 
 ### Days 2–5
 
@@ -499,7 +499,7 @@ Prioritized for *this* repository. "Do now" is cheap and closes a lie. "Consider
 
 ### Consider
 
-1. **Add a short root `AGENTS.md`** (symlink or stub `CLAUDE.md`): host split (Claude Code for ship, Cursor for opsx), pointer to this page, "do not implement Interlock ship inline," test command. Keep it small; put procedures in skills. This is the 2026 portable default.
+1. **Add a short root `AGENTS.md`** (symlink or stub `CLAUDE.md`): host split (Claude Code for ship, Cursor for the stock OpenSpec skills), pointer to this page, "do not implement Interlock ship inline," test command. Keep it small; put procedures in skills. This is the 2026 portable default.
 2. **Default-path quality without full `--strict`.** Options: run `/interlock:review-code` on PRs rather than inside ship; or auto-`--review` when `interlock risk` is `high`/`critical` while keeping lean for `low`. Inference: not in the code today.
 3. ~~**Make archive harder to skip** without taking the decision away from the merger: `interlock:settle` already surfaces drift; a blocking reminder on `SHIP COMPLETE` when tasks are all ticked would match how other gates speak.~~ **Shipped, and non-blocking by design.** A clean `SHIP COMPLETE` (no halt, no leftover tasks) now prints `ARCHIVE PENDING — <change>: after merge, run openspec archive <change>` — see [04](./04-when-it-stops.md#archive-pending). It stays a reminder, not a gate: the shipped change satisfies the unarchived predicate by construction at every clean close, so a non-zero exit on this line would halt every clean ship forever. Archiving after merge is still the merger's own decision.
 4. **Wire or drop context-pack.** If wave handoffs replaced it, say so in explore/spec docs so people do not run a personal `~/.claude` skill that ship ignores.
