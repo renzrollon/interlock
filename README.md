@@ -22,8 +22,8 @@ Spec-driven development for [Claude Code](https://claude.com/claude-code), on [O
                            # ← you read it. The only required stop.
 /interlock:ship            # parallel agents → your tests pass → one commit. Asks nothing.
 
-/interlock:settle --create --review   # draft PR → review → fix → re-review → verdict
-                                      # ← you press merge. Interlock never does.
+/interlock:settle          # draft PR → review → fix → re-review → verdict
+                           # ← you press merge. Interlock never does.
 ```
 
 - **One human checkpoint.** A spec is the cheapest place to catch a wrong idea, so it is the one place you must look.
@@ -64,6 +64,14 @@ Other spec tools compete on how much structure you write before coding. Interloc
 - **A dismissal needs a `file:line`.** Reviewers run blind, one per dimension; skeptics must cite the diff to dismiss a blocker or warning (1.15). [06](docs/06-why-it-works.md#7-review-making-dismissal-expensive)
 - **The merge verdict is computed, not opined.** `MERGE`, `HUMAN` or `BLOCK` comes from the CLI. The worst signal wins, and missing evidence counts against you. [15](docs/15-merge-confidence.md)
 - **Nothing is silent, nothing phones home.** `interlock limits` prints every cap, every degradation is a named banner, and Interlock makes no network request of its own (1.15). [04](docs/04-when-it-stops.md)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/guard-deny-dark.png">
+    <img src="docs/assets/guard-deny-light.png" alt="Example output of Interlock's guard-tests hook. While a run is fixing a failing check, an edit to test/pricing.test.mjs is denied, with the reason that a run making a failing check pass must fix the code under test, not weaken the check. An edit to src/pricing.mjs is allowed." width="800">
+  </picture>
+</p>
+<p align="center"><sub>The hook's own words, from running it against a throwaway directory. <a href="docs/13-the-guards.md">The guards →</a></sub></p>
 
 **Built with itself.** Every feature here started as a spec and shipped through the same checkpoint: [more than 80 changes](openspec/changes/archive), one folder each.
 
@@ -157,23 +165,14 @@ Every term, defined from the ground up: [09 — From prompt to workflow](docs/09
 
 Its verdict on one of Interlock's own pull requests. It did not flatter us:
 
-> **HUMAN** · score 54 (amber range 40–79; 6 of 17 gating signals clean)
->
-> **Needs a fix**
->
-> - `spec.coverage` (amber): `2 added source file(s) no spec names: lib/review-fanout.mjs, lib/review-scope.mjs`
->
-> **Needs a person**
->
-> - `risk.class` (amber): `class high is outside MERGE_ALLOWED_CLASSES (low, medium), so a person decides`
->
-> **Needs more evidence**
->
-> - `conformance.delta` (amber): `1 of 67 scenario(s) unconfirmed`
->
-> **Labels:** `interlock/human-review`, `interlock/score-54`
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/settle-verdict-dark.png">
+    <img src="docs/assets/settle-verdict-light.png" alt="The merge-confidence block /interlock:settle wrote on Interlock's pull request 33: HUMAN, score 54, 6 of 17 gating signals clean. One signal needs a fix (two added source files no spec names), three need a person (risk class high, a diff over the size bands, two open decisions) and three need more evidence. Labels: interlock/human-review and interlock/score-54." width="800">
+  </picture>
+</p>
 
-<sub>Lines quoted verbatim from the description of [#33](https://github.com/renzrollon/interlock/pull/33). The full block is longer.</sub>
+<sub>Every line verbatim from the description of [#33](https://github.com/renzrollon/interlock/pull/33); the signal table and the commit line under it are left out.</sub>
 
 It never merges and never approves: a person presses the button. It needs `gh` or `glab` signed in. The GitHub loop has run end to end; the GitLab lines are not exercised. [15 — Merge confidence](docs/15-merge-confidence.md)
 
