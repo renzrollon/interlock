@@ -277,7 +277,11 @@ function main() {
     const unlinked = STOCK_SKILLS.filter(name => {
       const entry = join(claudeProject, '.claude', 'skills', name)
       if (!existsSync(entry) || agentsReal === null) return true
-      return !realpathSync(entry).startsWith(agentsReal + sep)
+      try {
+        return !realpathSync(entry).startsWith(agentsReal + sep)
+      } catch {
+        return true
+      }
     })
     check('init.claudeSkills', unlinked.length === 0, `${unlinked.join(', ')} not present under ${join('.claude', 'skills')} as a link into ${join('.agents', 'skills')}`)
     check('init.commands', !existsSync(join(claudeProject, '.claude', 'commands')), `${join('.claude', 'commands')} was written`)

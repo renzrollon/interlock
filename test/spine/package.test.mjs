@@ -1036,7 +1036,7 @@ test('the setup docs name the pin\'s Node floor wherever they name one for OpenS
 })
 
 test('the design prompts name the pin\'s Node floor after "OpenSpec requires" and "OpenSpec CLI needs"', () => {
-  assert.deepEqual(promptNodeFloorProblems(readRepo(['site/DESIGN-PROMPT.md', 'docs/assets/DESIGN-PROMPT.md']), OPENSPEC_PIN.node), [])
+  assert.deepEqual(promptNodeFloorProblems(readRepo(['site/DESIGN-PROMPT.md', 'docs/assets/DESIGN-PROMPT.md', 'site/FirstHour.dc.html', 'site/Limits.dc.html']), OPENSPEC_PIN.node), [])
 })
 
 test('the docs Node-floor check reads every form, skips the plugin\'s own floor, and names a stale or missing version', () => {

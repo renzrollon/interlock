@@ -194,7 +194,7 @@ function lastLine(text) {
 function main(argv) {
   const version = argv[0]
   if (!version || !SEMVER.test(version)) {
-    process.stderr.write('usage: node scripts/pin-openspec.mjs <version>   (e.g. 1.15.0)\n')
+    process.stderr.write('usage: node scripts/pin-openspec.mjs <version>   (e.g. 2.0.0)\n')
     return 2
   }
   if (!DEFAULT_FLOOR) process.stderr.write('pin-openspec: the doctor floor could not be read; the pin is checked without a floor\n')

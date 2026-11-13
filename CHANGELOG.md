@@ -16,7 +16,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ### Upgrading
 
-- If you provision OpenSpec through Interlock, run it on Node.js 22.12.0 or newer, or install `openspec` yourself.
+- If you provision OpenSpec through Interlock, run it on Node.js 22.12.0 or newer, or install `@fission-ai/openspec@2.0.0` yourself.
+- A copy provisioned for the old pin (`<data>/openspec/1.15.0/`) is no longer used, even on a Node it still runs on; nothing falls back to it. Delete it once 2.0.0 is provisioned.
 
 ## [1.16.1] - 2026-11-11
 
