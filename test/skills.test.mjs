@@ -2968,3 +2968,118 @@ test('review-code\'s description names every bundled dimension and marks the con
   }
   assert.doesNotMatch(desc, /\b(\d+|two|three|four|five|six|seven|eight|nine)\s+(review\s+)?(dimensions|reviewers)\b/, `${where}'s description must not count the dimensions`)
 })
+
+// --- the changed lines have a reviewer (specs: review/language-dimension, technical-lead-dimension, regression-dimension, rubric-delivery) ---
+//
+// Tokens, never sentences. Each check is a function that returns its problems, so
+// the suite can show it failing over a doctored copy.
+
+const DIMENSIONS_DIR = join(SKILLS_DIR, 'review-code', 'dimensions')
+const briefText = name => readFileSync(join(DIMENSIONS_DIR, `${name}.md`), 'utf8')
+const bundledBriefNames = () => readdirSync(DIMENSIONS_DIR).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')).sort()
+
+function missingTokens(text, tokens, where) {
+  return tokens.filter(t => !text.includes(t)).map(t => `${where} carries no ${t}`)
+}
+
+function languageBriefProblems(brief) {
+  const problems = [
+    ...missingTokens(brief, ['You own', 'changed lines', 'function that encloses', 'makes this line wrong', 'off-by-one', 'await', 'swallowed'], 'language.md'),
+    ...missingTokens(brief, ['reaches it or relies on it', 'suggestion at most'], 'language.md'),
+    ...missingTokens(brief, ['Language pitfalls', 'Type safety', 'hot path', 'mutable default', 'float equality', 'not closed'], 'language.md')
+  ]
+  if (brief.split('\n')[0] !== '# Dimension: language & framework') problems.push('language.md line 1 changed')
+  for (const t of ['React', 'prop drilling', 're-render', 'Test quality']) {
+    if (brief.includes(t)) problems.push(`language.md still carries ${t}`)
+  }
+  return problems
+}
+
+function technicalLeadBriefProblems(brief) {
+  const problems = [
+    ...missingTokens(brief, ['Written rules', 'CLAUDE.md', 'AGENTS.md', 'quote the rule', 'raise nothing', 'add a finding', 'lower a severity', 'warning at most'], 'technical-lead.md'),
+    ...missingTokens(brief, ['Fix depth', 'cause', 'symptom', 'still reaches'], 'technical-lead.md'),
+    ...missingTokens(brief, ['GIVEN/WHEN/THEN', 'Happy-path gaps are blockers', 'still pass with the behaviour broken', 'specGap', 'Another reviewer owns'], 'technical-lead.md')
+  ]
+  const fix = brief.split('\n').find(l => l.includes('Fix depth'))
+  if (!fix) problems.push('no bullet carries Fix depth')
+  else if (!/Fix depth\W+\s*When the change fixes a defect/.test(fix)) problems.push('the Fix depth bullet does not open on When the change fixes a defect')
+  return problems
+}
+
+function qaBriefProblems(brief) {
+  const problems = missingTokens(brief, ['technical lead', 'Edge cases'], 'qa.md')
+  if (brief.includes('GIVEN/WHEN/THEN')) problems.push('qa.md repeats GIVEN/WHEN/THEN')
+  if (/happy-path/i.test(brief)) problems.push('qa.md carries happy-path')
+  return problems
+}
+
+function regressionRemovedLineProblems(brief) {
+  const problems = missingTokens(brief, ['deletes or replaces', 'invariant', 're-establish', 'git diff', 'the base the scope names'], 'regression.md')
+  if (brief.includes('...HEAD')) problems.push('regression.md carries ...HEAD')
+  return problems
+}
+
+function rubricDeliveryProblems(briefs) {
+  const problems = []
+  for (const [name, text] of Object.entries(briefs)) {
+    if (/\$\{[A-Z]/.test(text)) problems.push(`${name}.md holds an unexpanded variable`)
+    if (text.includes('Run this dimension when')) problems.push(`${name}.md tells the orchestrator when to run it`)
+    if (/interlock (review|remediate|surface|conformance)/.test(text)) problems.push(`${name}.md names an interlock command`)
+    if (text.includes('"findings"')) problems.push(`${name}.md copies the emit shape`)
+  }
+  if (briefs.devops && !briefs.devops.includes('github.event')) problems.push('devops.md lost github.event')
+  if (briefs['technical-lead']) {
+    problems.push(...missingTokens(briefs['technical-lead'], ['interlock-graph consumers', 'string-keyed'], 'technical-lead.md'))
+    if (briefs['technical-lead'].includes('INVARIANT-SWEEP')) problems.push('technical-lead.md carries INVARIANT-SWEEP')
+  }
+  return problems
+}
+
+test('the language brief owns the changed lines and bounds what it raises on an unchanged one', () => {
+  const brief = briefText('language')
+  assert.deepEqual(languageBriefProblems(brief), [])
+  const dropped = languageBriefProblems(brief.replace(/[^.\n]*suggestion at most[^.\n]*\./, ''))
+  assert.ok(dropped.some(p => p.includes('suggestion at most')), `a copy without the bound is not reported: ${dropped}`)
+})
+
+test('only the language brief says You own; the deferring briefs still defer', () => {
+  for (const name of bundledBriefNames()) {
+    assert.equal(briefText(name).includes('You own'), name === 'language', `${name}.md and You own`)
+  }
+  for (const name of ['regression', 'blast-radius', 'technical-lead']) {
+    assert.ok(briefText(name).includes('Another reviewer owns'), `${name}.md lost Another reviewer owns`)
+  }
+})
+
+test('the technical-lead brief carries the written-rules, fix-depth and scenario checks, and qa hands the scenario check over', () => {
+  assert.deepEqual(technicalLeadBriefProblems(briefText('technical-lead')), [])
+  assert.deepEqual(qaBriefProblems(briefText('qa')), [])
+  const lead = briefText('technical-lead')
+  assert.ok(technicalLeadBriefProblems(lead.replace('When the change fixes a defect', 'Judge')).length > 0)
+  assert.ok(qaBriefProblems(briefText('qa') + '\nHappy-path gaps are blockers.').length > 0)
+})
+
+test('the default review depth still asks whether a test would pass with the behaviour broken', async () => {
+  const { REVIEW_DEPTH } = await import('../lib/limits.mjs')
+  const set = REVIEW_DEPTH[REVIEW_DEPTH.default].dimensions
+  assert.ok(set.length > 0)
+  assert.ok(set.some(name => briefText(name).includes('still pass with the behaviour broken')), `none of ${set.join(', ')} asks it`)
+})
+
+test('the regression brief asks what each removed line protected, read from the diff against the scope base', () => {
+  const brief = briefText('regression')
+  assert.deepEqual(regressionRemovedLineProblems(brief), [])
+  assert.ok(regressionRemovedLineProblems(brief.replaceAll('re-establish', 'restore')).length > 0)
+  assert.ok(regressionRemovedLineProblems(brief + '\ngit diff main...HEAD').length > 0)
+})
+
+test('no bundled brief carries an unexpanded variable, an orchestrator instruction or its own emit shape', () => {
+  const briefs = Object.fromEntries(bundledBriefNames().map(n => [n, briefText(n)]))
+  assert.equal(Object.keys(briefs).length, 9)
+  assert.deepEqual(rubricDeliveryProblems(briefs), [])
+  assert.ok(briefs.regression.includes('"dimension": "regression"') && briefs.regression.includes('"coverage"'))
+  assert.ok(briefs['blast-radius'].includes('"dimension": "blast-radius"'))
+  const doctored = { ...briefs, qa: briefs.qa + '\nSee ${CLAUDE_PLUGIN_ROOT}/x. Run this dimension when asked. interlock surface\n{ "findings": [] }' }
+  assert.equal(rubricDeliveryProblems(doctored).filter(p => p.startsWith('qa.md')).length, 4)
+})
