@@ -14,5 +14,3 @@ You are a DevOps and infrastructure engineer. Review the changed files for:
   - A change that relies on a repository setting no diff shows — branch protection on a branch a job pushes to, fork approval — names that assumption in the finding instead of presuming it holds.
 
 Focus on deploy-readiness, not feature logic — another dimension owns that.
-
-Run this dimension when `interlock surface` reports `needsDevopsReview=true`. That flag is set by dependency manifests, lockfiles, CI configuration, container files, `.env` files, and any API-route change. Skip it for a purely UI change that touches none of those.

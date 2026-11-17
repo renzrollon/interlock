@@ -22,18 +22,7 @@ A symbol with no consumer outside the hunks raises nothing. Say so in your summa
 
 ## Findings
 
-Report in the schema every dimension uses, under `"dimension": "blast-radius"`, with the coverage ledger:
-
-    { "dimension": "blast-radius",
-      "findings": [
-        { "severity": "blocker|warning|suggestion",
-          "file": "path/of/the/observing/caller.mjs", "line": 42,
-          "title": "short claim",
-          "description": "what the caller sees before and after, and why",
-          "suggestion": "how to hold it" } ],
-      "coverage": {
-        "checked": [ { "what": "every reader of the changed state, 6 of them", "at": "path/of/a/reader.mjs:42" } ],
-        "unread": [] } }
+Report under `"dimension": "blast-radius"`, in the shape printed below this brief, with the coverage ledger. In `description`, say what the caller sees before and after, and why.
 
 - **`file` is the observing caller's file**, the one outside the changed hunks that sees the change, not the changed file. Name the changed symbol and the diff file in the description. Give the observing caller's real `line` too: the evidence gate reads a skeptic's refutation, not your description, and for a blast-radius finding it accepts a `path:line` citation of the finding's own `file` besides the diff, so a skeptic can dismiss this finding only by citing the caller you named or the diff.
 - **blocker** — a caller outside the changed hunks breaks or silently changes meaning, stored data becomes unreadable or misread, or the change cannot be rolled back alone and nothing says so. You must be able to name the caller and the line that breaks.
