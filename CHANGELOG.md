@@ -5,6 +5,20 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- The `language` review brief now owns whether the changed lines are correct: it reads every changed hunk and its enclosing function, bounds what it raises on unchanged lines, and no longer asks about test quality.
+- The `regression` brief asks what each removed line protected and where the new code re-establishes it; its emit-shape block is now one sentence, as is `blast-radius`'s.
+- The `technical-lead` brief defers changed-line correctness, inlines the invariant-sweep steps, asks about test quality, checks the diff against the repository's written rules (warning at most, never lowering a finding) and judges whether a fix removes the cause.
+- The `qa` brief hands the scenario-to-test check to the technical lead, and `devops` drops its orchestrator-only run line.
+- The shared proof rules print "Do not filter findings yourself and do not restate a threshold." with or without an answer file, and say the CLI adjudicates the findings; the remediation briefing gains both sentences.
+
+### Fixed
+
+- The `technical-lead` brief no longer carries an unexpanded `${CLAUDE_PLUGIN_ROOT}` pointer that the reviewer received as a literal string.
+
 ## [1.17.0] - 2026-11-13
 
 ### Changed

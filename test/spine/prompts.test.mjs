@@ -10,7 +10,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MARKER_FIELDS, STAGES, stagePath } from '../../lib/ship-stage.mjs'
@@ -981,4 +981,40 @@ test('verdictsWrittenTo appends the instruction when the line is absent', () => 
   const out = verdictsWrittenTo('judge this', 'v.json')
   assert.ok(out.startsWith('judge this\n'))
   assert.ok(out.includes('`v.json`'))
+})
+
+// --- the proof rules tell every reader not to filter its own findings (spec: review/rubric-delivery proof rules) ---
+
+const NO_SELF_FILTER = 'Do not filter findings yourself'
+const countOf = (text, needle) => text.split(needle).length - 1
+
+test('renderProofRules holds the no-self-filter instruction once, with and without an answer path', () => {
+  const withAnswer = renderProofRules({ changedSources: ['lib/db.mjs'], dimension: 'language', answerPath: ANSWER_AT })
+  const without = renderProofRules({ changedSources: ['lib/db.mjs'], dimension: 'language' })
+  assert.equal(countOf(withAnswer, NO_SELF_FILTER), 1, 'with an answer path')
+  assert.equal(countOf(without, NO_SELF_FILTER), 1, 'without an answer path')
+})
+
+test('every real dimension brief, assembled with no answer path, holds the no-self-filter instruction once', () => {
+  const dir = join(ROOT, 'skills', 'review-code', 'dimensions')
+  const names = readdirSync(dir).filter(f => f.endsWith('.md')).map(f => f.replace(/\.md$/, '')).sort()
+  assert.equal(names.length, 9)
+  for (const dimension of names) {
+    const prompt = assembleDimensionPrompt(dimensionInput({ dimension, rubric: readFileSync(join(dir, `${dimension}.md`), 'utf8') }))
+    assert.equal(countOf(prompt, NO_SELF_FILTER), 1, `the ${dimension} dimension prompt`)
+  }
+})
+
+test('the remediation briefing holds the no-self-filter instruction', () => {
+  const prompt = assembleRemediatePrompt({
+    change: 'add-widget',
+    round: 1,
+    plan: { fix: { byFile: [{ file: 'lib/db.mjs', findings: [] }], unscoped: [] }, reReviewDimensions: ['language'] },
+    dimensions: [{ name: 'language', rubric: 'criteria' }],
+    policyProse: '',
+    findingsPath: '.claude/ship/review/findings.json',
+    verdictsPath: '.claude/ship/review/verdicts.json',
+    stageLine: ''
+  })
+  assert.ok(prompt.includes(NO_SELF_FILTER), 'the remediation briefing lacks the no-self-filter instruction')
 })
