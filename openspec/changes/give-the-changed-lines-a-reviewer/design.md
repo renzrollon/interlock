@@ -48,11 +48,11 @@ The "Production risk" bullet at `technical-lead.md:9` asks for "missing error ha
 
 Alternative: leave the overlap as deliberate redundancy on the highest-value check. Rejected here because no requirement asks for it (unlike D2), and at the strict depth each duplicate costs its own skeptic pair. This decision was added after the artifact gate raised the overlap as a warning; the gate did not read it.
 
-### D10 — An unchanged line is always read, and raised within a bound (pending the owner)
+### D10 — An unchanged line is always read, and raised within a bound (the owner chose the bound)
 
 The reviewer reads the function that encloses each hunk, because a changed line cannot be judged without it. What it may raise on an unchanged line of that function is bounded: at its own severity only when a changed line reaches it or relies on it, with that changed line named; otherwise a suggestion at most.
 
-The built-in puts such lines in scope with no bound. The bound exists because of the settle loop: a blocker on code the change did not touch holds the merge and sends the fixer outside the diff. This is a policy choice about what a review may block on, so the ledger row is `needs_human`. The spec is written to the bound; if the owner chooses the built-in's rule, the requirement "The brief SHALL bound what it raises on an unchanged line" is dropped and one sentence of the brief changes.
+The built-in puts such lines in scope with no bound. The bound exists because of the settle loop: a blocker on code the change did not touch holds the merge and sends the fixer outside the diff. This is a policy choice about what a review may block on, so it went to the owner, who answered on 2026-11-17: keep the bound. The spec and the brief are written to it.
 
 No gate change is needed either way. A dismissal's citation is checked against the diff's paths, not its hunks (`lib/review-core.mjs:148`, `:174-178`), so a skeptic can refute a finding on an unchanged line of a changed file from that file.
 

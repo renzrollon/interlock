@@ -38,6 +38,6 @@ No doc page describes what the `language`, `qa` or `technical-lead` briefs ask (
 
 ## Workflow follow-up
 
-- D10 awaits the owner. If the answer is the built-in's rule (no bound), drop the requirement "The brief SHALL bound what it raises on an unchanged line" and change the one sentence of `language.md` that states it.
+- D10 answered by the owner on 2026-11-17: keep the bound. Nothing to change.
 - After this change ships, run `/interlock:spec --brief` for each sibling, in this order: `.claude/handoff/explore-put-a-failure-scenario-on-every-finding-20261117-153945.md`, `explore-judge-overlapping-findings-once-20261117-153945.md`, `explore-send-each-dimension-its-own-context-20261117-153945.md`.
 - The first real review after this ships should be read for two things: whether `language` raises changed-line defects, and whether `technical-lead` raises written-rule findings that quote their rule.
