@@ -1715,7 +1715,8 @@ test('limits --json carries the verify retry effort beside the verify effort', (
   assert.equal(out.effort.verify, EFFORT.verify)
   assert.equal(out.effort.verifyRetry, EFFORT.verifyRetry)
   assert.equal(out.effort.verifyRetry, 'xhigh')
-  assert.equal(out.effort.verify, 'high')
+  assert.equal(out.effort.verify, 'medium')
+  assert.equal(out.effort.verifyFinal, 'high')
 })
 
 test('interlock waves prints a chain line for serial single-lane batches', () => {

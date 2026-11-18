@@ -195,7 +195,7 @@ The four rules above are about grouping and hold under either shape. The shape d
 
 Two things follow from how ship treats that wave:
 
-- **The red wave's own inter-wave check is skipped, by design.** The suite is supposed to be failing there, so checking it would spend the run's fix attempts trying to repair tests that were just written on purpose. The **next** section's check is the gate: by then the implementation exists, and a still-red suite is a real failure. So the section that makes §1 green must be a section, not a later batch of §1 — which the numbered-section rule already gives you.
+- **The red wave's own inter-wave check is skipped, by design.** The suite is supposed to be failing there, so checking it would spend the run's fix attempts trying to repair tests that were just written on purpose. Later checks wait too, until implementation exists: the check after the last implementation wave is the gate, and a still-red suite there is a real failure. When no wave follows the implementation, the final verification is the gate. So the section that makes §1 green must be a section, not a later batch of §1 — which the numbered-section rule already gives you.
 - **A dependency from an implementation task onto the red wave is now legal**, where it used to fail the plan outright. Prefer to leave it out anyway: `## 1.` already runs before `## 2.`, so `(make §1 green)` as prose is enough, and an edge buys ordering the sections had already.
 
 One consequence worth stating at the checkpoint: because the red wave's check is skipped, a run cannot tell a genuinely failing suite from one that already passed. Tests that pass before the implementation exists are not pinning new behaviour — that is a review question, and §6 flags it as one.

@@ -30,6 +30,10 @@ import { cpus, tmpdir } from 'node:os'
 import { basename, join, dirname, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { EFFORT, LIMITS, REVIEW_DEPTH } from '../../lib/limits.mjs'
+// Namespace imports, so a missing export is reported by the test that reads it
+// instead of failing the whole file at link time.
+import * as limitsModule from '../../lib/limits.mjs'
+import * as wavesModule from '../../lib/waves.mjs'
 import { findingId } from '../../lib/findings.mjs'
 import { resolveRouting } from '../../lib/routing.mjs'
 import { RED_SECTION_MARKER } from '../../lib/artifacts.mjs'
@@ -4571,7 +4575,7 @@ test('an inter-wave verify spawn carries the published verify effort', () => {
     const s = verifySpawnOf(verify)
     assert.equal(s.kind, 'verify')
     assert.equal(s.effort, EFFORT.verify, `${s.label} must carry EFFORT.verify, not the host default`)
-    assert.equal(s.model, null, 'the verify spawn\'s model stays the session model')
+    assert.equal(s.model, limitsModule.VERIFY_MODEL, 'the first inter-wave check runs on the published verify model')
   } finally {
     cleanup(root)
   }
@@ -4716,7 +4720,164 @@ test('the final verify spawn carries the published verify effort', () => {
     assert.equal(final.context, 'final')
     const s = verifySpawnOf(final)
     assert.equal(s.kind, 'verify')
-    assert.equal(s.effort, EFFORT.verify, `${s.label} must carry EFFORT.verify, not the host default`)
+    assert.equal(s.effort, EFFORT.verifyFinal, `${s.label} must carry EFFORT.verifyFinal, not the host default`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- each verify check carries the model and effort published for it --------
+//
+// (spec: effort-routing, stop-retrying-expected-red-checks D5 to D8.) The first
+// inter-wave check runs on the published verify model, a fix attempt and the
+// final check run on the session model, each at its own published effort. Every
+// published value is asserted to be a non-empty string before it is compared, so
+// a missing export cannot equal a field the spawn also omits.
+
+test('the first inter-wave verify spawn carries the published verify model and effort', () => {
+  const model = limitsModule.VERIFY_MODEL
+  assert.equal(typeof model, 'string', 'VERIFY_MODEL must be published')
+  assert.ok(model.length > 0)
+  assert.equal(typeof EFFORT.verify, 'string')
+  assert.ok(EFFORT.verify.length > 0)
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    assert.equal(verify.action, 'verify')
+    assert.equal(verify.context, 'inter-wave')
+    assert.equal(verify.fixAttempt ?? 0, 0, 'the initial attempt')
+    const s = verifySpawnOf(verify)
+    assert.equal(s.kind, 'verify')
+    assert.equal(s.model, model, `${s.label} must carry the published verify model`)
+    assert.equal(s.effort, EFFORT.verify, `${s.label} must carry EFFORT.verify`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('the final verify spawn carries no model and the published final verify effort', () => {
+  assert.equal(typeof EFFORT.verifyFinal, 'string', 'EFFORT.verifyFinal must be published')
+  assert.ok(EFFORT.verifyFinal.length > 0)
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    const s = verifySpawnOf(final)
+    assert.equal(s.kind, 'verify')
+    assert.equal(s.model, null, `${s.label}: the commit gate stays on the session model`)
+    assert.equal(s.effort, EFFORT.verifyFinal, `${s.label} must carry EFFORT.verifyFinal`)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('guard: an inter-wave fix attempt carries no model and the published retry effort, resumed or not', () => {
+  assert.equal(typeof EFFORT.verifyRetry, 'string')
+  assert.ok(EFFORT.verifyRetry.length > 0)
+  const { root, batch } = verifiableRepo()
+  try {
+    const verify = completeBatch(root, batch)
+    const retry = run(root, [...verify.then.argv], { results: RED_UNIT }).step
+    assert.equal(retry.action, 'verify')
+    assert.equal(retry.fixAttempt, 1)
+    const s = verifySpawnOf(retry)
+    assert.equal(s.model, null, `${s.label} (fix attempt 1) runs on the session model`)
+    assert.equal(s.effort, EFFORT.verifyRetry)
+
+    const second = run(root, [...retry.then.argv], { results: RED_UNIT }).step
+    assert.equal(second.fixAttempt, 2)
+    const s2 = verifySpawnOf(second)
+    assert.equal(s2.model, null, `${s2.label} (fix attempt 2) runs on the session model`)
+    assert.equal(s2.effort, EFFORT.verifyRetry)
+
+    // Resumed: a fresh process re-reads the owed attempt from the state, so both
+    // fields must come from the step's own counter and not from anything the
+    // halted process remembered.
+    const manifestPath = join(root, '.claude/ship/run.json')
+    writeFileSync(manifestPath, JSON.stringify({ ...manifestOf(root), lastThen: null }, null, 2) + '\n')
+    const again = run(root, ['run', 'next']).step
+    assert.equal(again.action, 'verify')
+    assert.equal(again.fixAttempt, 2)
+    const resumed = verifySpawnOf(again)
+    assert.equal(resumed.model, null)
+    assert.equal(resumed.effort, EFFORT.verifyRetry)
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- a check waits for the implementation a failing-test wave is owed -------
+
+const RED_FIRST_TASKS =
+  '# Tasks\n\n' +
+  `## 1. ${RED_SECTION_MARKER}\n\n` +
+  '- [ ] 1.1 Edit src/mod11.ts\n\n' +
+  '## 2. First implementation\n\n' +
+  '- [ ] 2.1 Edit src/mod21.ts\n- [ ] 2.2 Edit src/mod22.ts\n\n' +
+  '## 3. Second implementation\n\n' +
+  '- [ ] 3.1 Edit src/mod31.ts\n- [ ] 3.2 Edit src/mod32.ts\n'
+
+const RED_FIRST_CLASSIFIED = {
+  tasks: [
+    {
+      id: '1.1',
+      group: 1,
+      description: 'Edit src/mod11.ts',
+      tier: 2,
+      model: 'sonnet',
+      isTestTask: true,
+      paths: ['src/mod11.ts']
+    },
+    ...[2, 3].flatMap(g =>
+      [1, 2].map(n => ({
+        id: `${g}.${n}`,
+        group: g,
+        description: `Edit src/mod${g}${n}.ts`,
+        tier: 2,
+        model: 'sonnet',
+        isTestTask: false,
+        paths: [`src/mod${g}${n}.ts`]
+      }))
+    )
+  ]
+}
+
+test('a waiting wave advances to the next batch, with the owed-implementation reason recorded', () => {
+  const { root, change } = repo('red-first', { tasks: RED_FIRST_TASKS })
+  try {
+    file(root, '.claude/testing/profile.json', {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' }
+    })
+    const started = run(root, ['run', 'start', '--change', change, '--mode', 'waves']).step
+    file(root, '.claude/ship/classified.json', RED_FIRST_CLASSIFIED)
+    const wave1 = run(root, [...started.then.argv]).step
+    assert.equal(wave1.action, 'run-batch')
+    assert.equal(wave1.wave, 1, 'the failing tests run first')
+
+    const wave2 = completeBatch(root, wave1)
+    assert.equal(wave2.action, 'run-batch', 'no verify step after the failing-test wave')
+    assert.equal(wave2.wave, 2)
+
+    // Wave 3 is still owed, so a suite red because it is unbuilt is not checked.
+    const wave3 = completeBatch(root, wave2)
+    assert.equal(wave3.action, 'run-batch', 'the check waits: the next step is the owed wave, not a verify')
+    assert.equal(wave3.wave, 3)
+
+    const owed = wavesModule.SKIP_VERIFY_RED_OWED
+    assert.equal(typeof owed, 'string', 'SKIP_VERIFY_RED_OWED must be exported')
+    assert.ok(owed.length > 0)
+    const state = JSON.parse(readFileSync(join(root, '.claude/ship/state.json'), 'utf8'))
+    assert.deepEqual(
+      state.skippedVerifications.map(s => [s.wave, s.reason]),
+      [[1, SKIP_VERIFY_RED], [2, owed]]
+    )
+    assert.equal(state.verificationsUsed || 0, 0, 'neither skip spent a checkpoint')
+    assert.deepEqual(state.unresolved, [])
+
+    // Wave 3 is the last wave, so the gate is the final verification.
+    const gate = completeBatch(root, wave3)
+    assert.equal(gate.action, 'verify-final')
   } finally {
     cleanup(root)
   }

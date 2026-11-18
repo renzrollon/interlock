@@ -430,7 +430,7 @@ test('the spec skill states how ship treats the red wave, including the check it
     text,
     // Emphasis-tolerant: the skill bolds "next", and a pin that died on a pair
     // of asterisks would be deleted by the first edit that improved the prose.
-    /next\W{0,4}section's check is the gate/i,
+    /check after the last implementation wave is the gate/i,
     'plus where the real gate moved to'
   )
   // The edge that used to abort the plan is now legal, and the skill has to

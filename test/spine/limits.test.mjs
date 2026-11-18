@@ -531,8 +531,9 @@ test('the effort defaults are the ones the design pinned', () => {
   // these re-routes reasoning effort across the fleet — a product decision,
   // updated here deliberately.
   assert.deepEqual(EFFORT.byTier, { 1: 'low', 2: 'low', 3: 'medium', 4: 'high', 5: 'high' })
-  assert.equal(EFFORT.verify, 'high')
+  assert.equal(EFFORT.verify, 'medium')
   assert.equal(EFFORT.verifyRetry, 'xhigh')
+  assert.equal(EFFORT.verifyFinal, 'high')
   assert.equal(EFFORT.skeptic, 'high')
 })
 
@@ -552,9 +553,70 @@ test('interlock limits surfaces the tier→effort mapping and the fixed step eff
   assert.match(text, /^ *effort: tier 4 lane\s+high$/m)
   assert.match(text, /^ *effort: tier 5 lane\s+high$/m)
   assert.doesNotMatch(text, /effort: tier \d lane\s+inherit/)
-  assert.match(text, /^ *effort: verify step \(inter-wave and final\)\s+high$/m)
+  assert.match(text, /^ *effort: verify step \(first inter-wave check\)\s+medium$/m)
+  assert.match(text, /^ *effort: verify step \(final check\)\s+high$/m)
   assert.match(text, /^ *effort: verify retry \(inter-wave fix attempt\)\s+xhigh$/m)
   assert.match(text, /^ *effort: review skeptic step\s+high$/m)
+})
+
+// --- the three verify checks (spec: effort-routing, stop-retrying-expected-red-checks) --
+//
+// The first inter-wave check, an inter-wave fix attempt and the final check no
+// longer share a model or an effort, so each has its own published value. The
+// values are read through the namespace import so a missing export is a failure
+// naming the export, and each is asserted to be a non-empty string before it is
+// compared: `undefined` must never equal an `undefined` read from a spawn.
+
+function publishedString(name, value) {
+  assert.equal(typeof value, 'string', `${name} must be published as a string`)
+  assert.ok(value.length > 0, `${name} must not be empty`)
+  return value
+}
+
+test('the verify model and the three verify efforts are the ones the design pinned', () => {
+  // D5 to D8 of stop-retrying-expected-red-checks. A first check mostly runs a
+  // command and reports, so it takes Sonnet at `medium`; a fix attempt and the
+  // final check keep the session model, at `xhigh` and `high`. Changing one is a
+  // product decision, updated here deliberately.
+  assert.equal(publishedString('VERIFY_MODEL', limitsModule.VERIFY_MODEL), 'sonnet')
+  assert.equal(publishedString('EFFORT.verify', EFFORT.verify), 'medium')
+  assert.equal(publishedString('EFFORT.verifyRetry', EFFORT.verifyRetry), 'xhigh')
+  assert.equal(publishedString('EFFORT.verifyFinal', EFFORT.verifyFinal), 'high')
+})
+
+test('interlock limits prints the effort of each verify check on its own row, and the verify model', () => {
+  const text = formatLimits()
+  const rows = text.split('\n')
+  const rowFor = (what, ...needles) => {
+    const hits = rows.filter(r => /effort/.test(r) && /verify/.test(r) && needles.every(n => n.test(r)))
+    assert.equal(hits.length, 1, `exactly one effort row governs ${what}: ${JSON.stringify(hits)}`)
+    return hits[0]
+  }
+  const first = rowFor('the first inter-wave check', /first/, /inter-wave/)
+  const retry = rowFor('an inter-wave fix attempt', /fix attempt/)
+  const final = rowFor('the final check', /final/)
+  assert.equal(new Set([first, retry, final]).size, 3, 'three checks, three rows')
+  assert.doesNotMatch(first, /final/, 'the first-check row no longer speaks for the final check')
+  assert.match(first, /\bmedium\s*$/)
+  assert.match(retry, /\bxhigh\s*$/)
+  assert.match(final, /\bhigh\s*$/)
+
+  const model = rows.filter(r => /model/.test(r) && /verify/.test(r) && /first/.test(r) && /inter-wave/.test(r))
+  assert.equal(model.length, 1, `one row names the verify model as governing the first inter-wave check: ${JSON.stringify(model)}`)
+  assert.match(model[0], /\bsonnet\s*$/)
+})
+
+test('interlock limits --json carries the verify model and all three verify efforts', () => {
+  const run = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'limits', '--json'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  })
+  assert.equal(run.status, 0, run.stderr)
+  const payload = JSON.parse(run.stdout)
+  assert.equal(payload.verifyModel, publishedString('VERIFY_MODEL', limitsModule.VERIFY_MODEL))
+  assert.equal(payload.effort.verify, publishedString('EFFORT.verify', EFFORT.verify))
+  assert.equal(payload.effort.verifyRetry, publishedString('EFFORT.verifyRetry', EFFORT.verifyRetry))
+  assert.equal(payload.effort.verifyFinal, publishedString('EFFORT.verifyFinal', EFFORT.verifyFinal))
 })
 
 // No effort level is written beside an `effort` key in the run program, the
