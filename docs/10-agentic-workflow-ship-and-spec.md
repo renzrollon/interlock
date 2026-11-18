@@ -314,7 +314,7 @@ Inference, not a measurement from this session:
 | Each implementer | Lane + tier slice + previous-wave packets | Isolation is the saving; N tasks ≠ N full spec dumps, and a lane of N is one spawn prefix rather than N. Multi-task lanes at or above the opus floor dispatch on opus; below it, sonnet |
 | A solo run | One opus agent, full artifacts, whole change | Fewest spawns and no re-reads; the cost is serial wall-clock |
 | Record/next pings | Haiku, structured JSON | Cheap unless a model override is in force (`MODEL ROUTING OVERRIDDEN`) or a Bedrock variable is set |
-| Verify (inter-wave and final) | Capped; spill above 8 KB | Runs at the published verify effort (`interlock limits`), so it costs more per call than a session-default agent. Fused into record-batch when possible |
+| Verify (inter-wave and final) | Capped; spill above 8 KB | Three routes, each with its own `interlock limits` row: the first inter-wave check on the published verify model and effort, an inter-wave fix attempt on the session model at the verify retry effort, the final check on the session model at the final check's effort. Fused into record-batch when possible |
 | Prose-skill spawns (explore investigators, review dimensions and skeptics, settle fixer and conformance) | One agent each | Run at the model and effort `interlock routing` prints for the role; reviews run at the depth it prints, lean by default and the wider set with `--strict`. `interlock limits` holds the values |
 | `--strict` review | 4–7 dimensions + 2 skeptics per finding + fixers | Easy to trip Claude Code's "Large workflow" warning (>25 agents / 1.5M tokens). Advisory, does not halt |
 | Lean commit | One call | |
