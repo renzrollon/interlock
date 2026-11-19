@@ -111,6 +111,7 @@ import {
   MODEL_PRICES,
   REPORT_CAPS,
   EFFORT,
+  VERIFY_MODEL,
   LANE_CAPS,
   SOLO,
   MERGE_BANDS,
@@ -3679,6 +3680,9 @@ async function main() {
           prices: MODEL_PRICES,
           report: REPORT_CAPS,
           effort: EFFORT,
+          // The first inter-wave check's model: its own key, because the effort
+          // table holds levels and the fix attempt and final check carry none.
+          verifyModel: VERIFY_MODEL,
           laneCaps: LANE_CAPS,
           solo: SOLO,
           // The merge verdict's thresholds: their own group, a ceiling table
