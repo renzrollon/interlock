@@ -3036,6 +3036,27 @@ test('size: a counts-as-source section that could not be read in full counts eve
 
   const fine = sizeOf(files, { sourcePaths: ['skills'], sourceProblems: [] })
   assert.equal(fine.band, 'green', said(fine))
+
+  // The section's problem is the size signal's alone: the human-paths signal reads policy.problems.
+  const humanOf = policy => signalOf(assessMergeConfidence(sizedInput(files, policy)), 'policy.humanPaths')
+  const withProblem = humanOf({ sourcePaths: [], sourceProblems: [problem] })
+  const without = humanOf({ sourcePaths: ['skills'], sourceProblems: [] })
+  assert.deepEqual(withProblem, without)
+  assert.ok(!said(withProblem).includes('skills/**'), said(withProblem))
+})
+
+test('size: the counts-as-source list moves the size signal and no other', () => {
+  const files = [row('skills/a/SKILL.md', LINE_CAP + 1), row('lib/a.mjs', 1)]
+  const listed = assessMergeConfidence(sizedInput(files, { sourcePaths: ['skills'] }))
+  const unlisted = assessMergeConfidence(sizedInput(files, { sourcePaths: [] }))
+  assert.notEqual(
+    signalOf(listed, 'diff.shape').band,
+    signalOf(unlisted, 'diff.shape').band,
+    'precondition: the list decides the size band of this diff'
+  )
+  const others = result => result.signals.filter(s => s.id !== 'diff.shape')
+  assert.ok(others(listed).length > 0)
+  assert.deepEqual(others(listed), others(unlisted))
 })
 
 test('size: another section’s problem, and an absent policy, leave the classes alone', () => {

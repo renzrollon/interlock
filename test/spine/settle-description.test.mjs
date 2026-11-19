@@ -164,6 +164,31 @@ for (const word of ['None', 'None.', 'none', 'N/A']) {
   }
 }
 
+for (const body of ['- None', '* N/A', '+ none.', '1. None', '**None**', '_N/A_', '`None`', '- **None.**', '- None\n- N/A', '\n- None\n']) {
+  for (const name of REASONED) {
+    test(`checkDescription: ${JSON.stringify(body)} under ## ${name} is a bare None once its list marker and emphasis are read past`, async () => {
+      const { checkDescription } = await mod()
+      const r = checkDescription(description({ bodies: { [name]: body } }))
+      assert.deepEqual(r.problems, [`bare None in ## ${name}`])
+      assert.equal(r.sections.find(s => s.heading === name).bareNone, true)
+    })
+  }
+}
+
+test('checkDescription: a marked-up None is still valid under the sections that may hold it', async () => {
+  const { checkDescription } = await mod()
+  const r = checkDescription(description({ bodies: { 'High Risk Changes': '- None', 'Prerequisites to Production': '**N/A**' } }))
+  assert.deepEqual(r.problems, [])
+})
+
+for (const body of ['- None: this pull request only adds a file nothing reads yet.', '- None\n- The config loader keeps its defaults.', 'Undo: None', '- Nonetheless the parser stays.']) {
+  test(`checkDescription: ${JSON.stringify(body)} under ## Must Not Change says more than None`, async () => {
+    const { checkDescription } = await mod()
+    const r = checkDescription(description({ bodies: { 'Must Not Change': body } }))
+    assert.deepEqual(r.problems, [])
+  })
+}
+
 test('checkDescription: None with a reason is not bare', async () => {
   const { checkDescription } = await mod()
   const r = checkDescription(description({ bodies: { 'Must Not Change': 'None: this pull request only adds a new file nothing reads yet.' } }))

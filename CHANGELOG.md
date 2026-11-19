@@ -11,7 +11,7 @@ this project adheres to Semantic Versioning 2.0.0.
 
 - A pull request description written by `/interlock:settle` names its OpenSpec change on the first line under `## Summary`, and gains `## Must Not Change` (what the change leaves alone and how that was checked) and `## How to Roll Back` (`Undo:`, `Not undone by a revert:`, `Order:`). `## Prerequisites to Production` names its two halves, `Before merging:` and `Before deploying:`, and `## High Risk Changes` no longer asks for a rollback note.
 - `interlock settle description-brief` prints the facts the description is written from: the `Change:` line, the requirements the change's delta specs touch, the living requirements in force that it does not modify, and where in the artifacts each section's source sits.
-- `interlock settle description-check` reads the description the platform holds and exits 1 with `DESCRIPTION INCOMPLETE:` naming each missing or empty section, a bare `None` in the two new sections, or a `Change:` line that is absent or names another change. The skill republishes an incomplete description a single time, reports `DESCRIPTION INCOMPLETE:` or `DESCRIPTION NOT CHECKED:` when it cannot settle it, and never stops on the check.
+- `interlock settle description-check` reads the description the platform holds and exits 1 with `DESCRIPTION INCOMPLETE:` naming each missing or empty section, a bare `None` in the two new sections (also as a bullet, in bold or in code ticks, as `- None` or `**N/A**`), or a `Change:` line that is absent or names another change. The skill republishes an incomplete description a single time, reports `DESCRIPTION INCOMPLETE:` or `DESCRIPTION NOT CHECKED:` when it cannot settle it, and never stops on the check.
 
 ### Changed
 

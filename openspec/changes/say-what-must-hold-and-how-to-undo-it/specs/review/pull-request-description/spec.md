@@ -271,7 +271,7 @@ The command SHALL read a description and report `missing section: ## <name>` for
 
 ### Requirement: The check SHALL refuse a bare `None` in the two new sections and a `Change:` line that is absent or names another change
 
-The command SHALL report `bare None in ## <name>` when the body of `## Must Not Change` or `## How to Roll Back` is only `None` or `N/A`, in any case, with or without a full stop; the other sections MAY hold it. It SHALL report a `## Summary` with no line beginning `Change:`, a `Change:` line that is neither `Change: none` nor one naming a change in backticks, and, with `--change <name>`, a line that names another change or says `none`.
+The command SHALL report `bare None in ## <name>` when the body of `## Must Not Change` or `## How to Roll Back` is only `None` or `N/A`, in any case, with or without a full stop, list markers and emphasis read past; the other sections MAY hold it. It SHALL report a `## Summary` with no line beginning `Change:`, a `Change:` line that is neither `Change: none` nor one naming a change in backticks, and, with `--change <name>`, a line that names another change or says `none`.
 
 #### Scenario: Happy path — `None` under the risk section passes
 
@@ -284,6 +284,13 @@ The command SHALL report `bare None in ## <name>` when the body of `## Must Not 
 - **GIVEN** a description whose `## How to Roll Back` body is `None.`
 - **WHEN** the command reads it
 - **THEN** it reports `bare None in ## How to Roll Back`
+
+#### Scenario: Failure — a bulleted `None` under `## Must Not Change`
+
+- **GIVEN** a description whose `## Must Not Change` body is `- None`, `**None**` or `` `N/A` ``, each line of it read past its list marker (`-`, `*`, `+`, `1.`) and its wrapping emphasis or code ticks
+- **WHEN** the command reads it
+- **THEN** it reports `bare None in ## Must Not Change`
+- **AND** a body of `Undo: None` is not refused, because a label is not read past
 
 #### Scenario: Edge case — `None` with a reason is not bare
 

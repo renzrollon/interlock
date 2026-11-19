@@ -2100,8 +2100,16 @@ function settleSkillProblems(text) {
   if (conformanceSection && !(conformanceSpawn && /^Spawn one worker as `interlock:reviewer`/m.test(conformanceSpawn))) {
     problems.push('the §5e spawn paragraph does not spawn the worker as `interlock:reviewer`')
   }
-  if (!paragraphs.some(p => p.includes('REVIEW FAILED:') && p.includes('stop the loop early'))) {
+  // The skip records nothing in the worker's place (review/reviewer-agent).
+  const conformanceSkip = conformanceSection.split(/\n\s*\n/).find(p => p.includes('CONFORMANCE SKIPPED:')) ?? ''
+  for (const token of ['spawn no other type', 'confirm nothing yourself', 'write no handoff']) {
+    if (conformanceSection && !conformanceSkip.includes(token)) problems.push(`the §5e CONFORMANCE SKIPPED paragraph carries no ${token}`)
+  }
+  const reviewFailed = paragraphs.find(p => p.includes('REVIEW FAILED:') && p.includes('stop the loop early'))
+  if (!reviewFailed) {
     problems.push('no paragraph stops the loop early on a review-code pass that printed REVIEW FAILED:')
+  } else if (!reviewFailed.includes('post no findings comment')) {
+    problems.push('the REVIEW FAILED: paragraph carries no post no findings comment')
   }
   const fixerResult = fencedAt(/^interlock settle fixer-result\b/)
   const headBefore = remediate === -1 ? -1 : fencedAt(/^git rev-parse HEAD$/, remediate)
@@ -2210,8 +2218,8 @@ const DESCRIPTION_LABELS = Object.freeze({
   '## How to Roll Back': ['Undo:', 'Not undone by a revert:', 'Order:'],
   '## Prerequisites to Production': ['Before merging:', 'Before deploying:']
 })
-const DESCRIPTION_CHECK_GH = /^gh pr view <id> --json body \| interlock settle description-check --file - --from-json body\b/
-const DESCRIPTION_CHECK_GL = /^glab mr view <id> --output json \| interlock settle description-check --file - --from-json description\b/
+const DESCRIPTION_CHECK_GH = /^gh pr view <id> --json body \| interlock settle description-check --file - --from-json body --change <change>$/
+const DESCRIPTION_CHECK_GL = /^glab mr view <id> --output json \| interlock settle description-check --file - --from-json description --change <change>$/
 
 /**
  * Every way the settle skill's description falls short (spec:
@@ -2262,6 +2270,8 @@ function descriptionProblems({ text, fence, blockOf, fencedAt }) {
   const briefs = fence.filter(f => /^interlock settle description-brief\b/.test(f.line))
   const placed = f => fetch !== -1 && summary && f.i > fetch && f.i < summary.i
   if (!briefs.length) problems.push('no fenced `interlock settle description-brief` line')
+  if (!briefs.some(f => /^interlock settle description-brief <change> /.test(f.line))) problems.push('no fenced `interlock settle description-brief <change>` line names the change')
+  if (!briefs.some(f => /^interlock settle description-brief --changed /.test(f.line))) problems.push('no fenced no-change form `interlock settle description-brief --changed` line')
   for (const f of briefs) {
     if (!/ --changed\b/.test(f.line) || !/ --base\b/.test(f.line) || !placed(f)) {
       problems.push(`the fenced \`interlock settle description-brief\` line does not carry --changed and --base after the \`git fetch origin\` line and before the template: ${f.line}`)
@@ -2272,8 +2282,8 @@ function descriptionProblems({ text, fence, blockOf, fencedAt }) {
   const publish = [fencedAt(/^gh pr edit <id> --body\b/), fencedAt(/^glab mr update <id> --description\b/)]
   const firstLabel = fencedAt(/--add-label/)
   if (publish.includes(-1)) problems.push('no fenced publish lines `gh pr edit <id> --body` and `glab mr update <id> --description`')
-  if (fencedAt(DESCRIPTION_CHECK_GH) === -1) problems.push('no fenced line pipes `gh pr view <id> --json body` into `interlock settle description-check --file - --from-json body`')
-  if (fencedAt(DESCRIPTION_CHECK_GL) === -1) problems.push('no fenced line pipes `glab mr view <id> --output json` into `interlock settle description-check --file - --from-json description`')
+  if (fencedAt(DESCRIPTION_CHECK_GH) === -1) problems.push('no fenced line pipes `gh pr view <id> --json body` into `interlock settle description-check --file - --from-json body --change <change>`')
+  if (fencedAt(DESCRIPTION_CHECK_GL) === -1) problems.push('no fenced line pipes `glab mr view <id> --output json` into `interlock settle description-check --file - --from-json description --change <change>`')
   for (const f of fence.filter(f => /\binterlock settle description-check\b/.test(f.line))) {
     if (!/^gh pr view <id> /.test(f.line) && !/^glab mr view <id> /.test(f.line)) {
       problems.push(`a description-check line does not name the pull request after view (the settle meter reads a numberless lookup as the branch's own): ${f.line}`)
@@ -2285,6 +2295,11 @@ function descriptionProblems({ text, fence, blockOf, fencedAt }) {
 
   for (const token of ['DESCRIPTION FACTS UNAVAILABLE', 'DESCRIPTION INCOMPLETE', 'DESCRIPTION NOT CHECKED']) {
     if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
+  // The incomplete verdict republishes once and never a third time (design D10).
+  const incomplete = text.split('\n').find(l => /^- \*\*`DESCRIPTION INCOMPLETE:`\*\*/.test(l)) ?? ''
+  for (const token of ['a single time', 'Never publish a third time']) {
+    if (!incomplete.includes(token)) problems.push(`the DESCRIPTION INCOMPLETE: bullet carries no ${token}`)
   }
   return problems
 }
@@ -2384,6 +2399,13 @@ test('the description pins fail on a doctored copy, naming what was dropped (spe
   )
   assert.ok(glCheck.includes('--from-json description'), glCheck)
   fails(problemsOf(t => t.replaceAll('DESCRIPTION INCOMPLETE', 'DESCRIPTION SHORT')), 'DESCRIPTION INCOMPLETE')
+  // The republish rule: a third publish allowed, or the single time dropped.
+  fails(problemsOf(t => t.replace('Never publish a third time.', 'Publish again until it passes.')), 'Never publish a third time')
+  fails(problemsOf(t => t.replace('publish the description again a single time', 'publish the description again')), 'a single time')
+  // --change dropped from either check line, and the no-change brief form deleted.
+  fails(problemsOf(t => t.replace(ghCheck, ghCheck.replace(' --change <change>', ''))), '--from-json body --change <change>')
+  fails(problemsOf(t => t.replace(glCheck, glCheck.replace(' --change <change>', ''))), '--from-json description --change <change>')
+  fails(problemsOf(t => t.replace(/^interlock settle description-brief --changed [^\n]*\n/m, '')), 'no-change form')
   fails(problemsOf(t => t.replaceAll('DESCRIPTION NOT CHECKED', 'DESCRIPTION SKIPPED')), 'DESCRIPTION NOT CHECKED')
 })
 
@@ -2462,6 +2484,14 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   fails(problemsOf(t => t.replaceAll('CONFORMANCE UNREAD', 'CONFORMANCE MISSING')), 'CONFORMANCE UNREAD')
   fails(problemsOf(t => t.replaceAll('CONFORMANCE SKIPPED: reviewer type unavailable', 'CONFORMANCE SKIPPED')), 'CONFORMANCE SKIPPED: reviewer type unavailable')
   fails(problemsOf(t => t.replaceAll('REVIEW FAILED:', 'REVIEW ERROR:')), 'REVIEW FAILED:')
+  fails(problemsOf(t => t.replace('post no findings comment for that pass', 'post the findings comment for that pass')), 'post no findings comment')
+  for (const token of ['spawn no other type', 'confirm nothing yourself', 'write no handoff']) {
+    const doctored = t => {
+      const p = t.split(/\n\s*\n/).find(x => x.includes('CONFORMANCE SKIPPED:'))
+      return t.replace(p, p.replaceAll(token, 'carry on'))
+    }
+    fails(problemsOf(doctored), `CONFORMANCE SKIPPED paragraph carries no ${token}`)
+  }
   fails(problemsOf(t => {
     const line = t.match(/^interlock settle fixer-result [^\n]*$/m)[0]
     return t.replace(`${line}\n`, '').replace(`${STAGE}\n`, `${STAGE}\n${line}\n`)
@@ -3110,7 +3140,7 @@ test('review-artifacts prints STRICT REVIEWER UNAVAILABLE beside STRICT REVIEW U
   const depth = sectionOfSkill(skillText('review-artifacts'), /^## Depth$/m)
   assert.ok(depth.includes('STRICT REVIEW UNREAD'), `${where} keeps STRICT REVIEW UNREAD`)
   const p = paragraphWith(depth, 'STRICT REVIEWER UNAVAILABLE:')
-  assertRoutingTokens(p, ['STRICT REVIEWER UNAVAILABLE: <the tool\'s message, or the refusal>', 'spawn no other type', 'inline read'], `${where} Depth`)
+  assertRoutingTokens(p, ['STRICT REVIEWER UNAVAILABLE: <the tool\'s message, or the refusal>', 'make no second Agent call', 'spawn no other type', 'inline read'], `${where} Depth`)
 })
 
 test('review-code spawns every dimension, skeptic and re-run as interlock:reviewer, and fails aloud when it cannot', () => {
@@ -3125,7 +3155,7 @@ test('review-code spawns every dimension, skeptic and re-run as interlock:review
   const rerun = paragraphWith(text, 'and re-run that dimension with it')
   assertRoutingTokens(rerun, ['`interlock:reviewer`', 'never the type'], `${where} re-run`)
   const failure = paragraphWith(text, 'REVIEW FAILED: reviewer type unavailable')
-  assertRoutingTokens(failure, ['REVIEW FAILED: reviewer type unavailable', 'Spawn no other type', 'new session', 'interlock doctor'], `${where} failure`)
+  assertRoutingTokens(failure, ['REVIEW FAILED: reviewer type unavailable', 'Spawn no other type', 'review nothing yourself', 'run no draft, proof or promote line', 'new session', 'interlock doctor'], `${where} failure`)
 })
 
 test('the three review-loop skills say routing chooses the model and the effort, never the type', () => {
