@@ -1935,7 +1935,9 @@ function settleSkillProblems(text) {
     [/^glab mr note\b/, 'glab mr note'],
     [/^glab ci get --merge-request\b(?![^\n]*\| interlock pipeline)/, 'glab ci get --merge-request wait'],
     [/^glab mr update\b[^\n]*--ready/, 'glab mr update --ready'],
-    [/^glab mr create\b/, 'glab mr create']
+    [/^glab mr create\b/, 'glab mr create'],
+    // The description read back (spec: review/pull-request-description, design D7).
+    [/^glab mr view <id> --output json \| interlock settle description-check\b/, 'glab mr view … | interlock settle description-check']
   ]) {
     const hits = fence.filter(f => pattern.test(f.line))
     if (!hits.length) problems.push(`no fenced ${what} line`)
@@ -2171,6 +2173,102 @@ function settleSkillProblems(text) {
   for (const banned of ['confidence level', 'interlock/merge', 'interlock/human-review', 'interlock/blocked', 'interlock/score-']) {
     if (text.includes(banned)) problems.push(`carries ${banned}`)
   }
+
+  problems.push(...descriptionProblems({ text, fence, blockOf, fencedAt }))
+  return problems
+}
+
+// The seven headings of the description template, in order (spec: review/pull-request-description).
+const DESCRIPTION_HEADINGS = Object.freeze([
+  '## Summary',
+  '## Changes',
+  '## Must Not Change',
+  '## High Risk Changes',
+  '## Prerequisites to Production',
+  '## How to Roll Back',
+  '## Testing'
+])
+// The labelled lines each new section holds, inside the template (design D17).
+const DESCRIPTION_LABELS = Object.freeze({
+  '## How to Roll Back': ['Undo:', 'Not undone by a revert:', 'Order:'],
+  '## Prerequisites to Production': ['Before merging:', 'Before deploying:']
+})
+const DESCRIPTION_CHECK_GH = /^gh pr view <id> --json body \| interlock settle description-check --file - --from-json body\b/
+const DESCRIPTION_CHECK_GL = /^glab mr view <id> --output json \| interlock settle description-check --file - --from-json description\b/
+
+/**
+ * Every way the settle skill's description falls short (spec:
+ * review/pull-request-description): the template's seven headings and five
+ * labels as fenced lines, the `Change:` instruction, no rollback note under the
+ * risk section, the brief line before the template, and the platform's copy
+ * checked after the publish and before the first label. Tokens and anchored
+ * lines, never sentences.
+ */
+function descriptionProblems({ text, fence, blockOf, fencedAt }) {
+  const problems = []
+
+  // The template: the fenced block whose line is `## Summary`.
+  const summary = fence.find(f => f.line === '## Summary')
+  const template = summary ? fence.filter(f => blockOf[f.i] === blockOf[summary.i]) : []
+  if (!summary) problems.push('the description template carries no ## Summary line')
+  let at = -1
+  for (const heading of DESCRIPTION_HEADINGS) {
+    const hit = template.find(f => f.i > at && f.line === heading)
+    if (!hit) problems.push(`the description template carries no ${heading} line, in order`)
+    else at = hit.i
+  }
+  /** The template lines under `heading`, up to the next `## ` line of the template. */
+  const under = heading => {
+    const start = template.findIndex(f => f.line === heading)
+    if (start === -1) return []
+    const rest = template.slice(start + 1)
+    const end = rest.findIndex(f => /^## /.test(f.line))
+    return end === -1 ? rest : rest.slice(0, end)
+  }
+  const firstUnderSummary = under('## Summary').find(f => f.line !== '')
+  if (!firstUnderSummary || !firstUnderSummary.line.startsWith('Change:')) {
+    problems.push('the template\'s first line under ## Summary is not the Change: line to copy')
+  }
+  for (const [heading, labels] of Object.entries(DESCRIPTION_LABELS)) {
+    const body = under(heading)
+    for (const label of labels) {
+      if (!body.some(f => f.line.startsWith(label))) problems.push(`the template's ${heading} carries no ${label} line`)
+    }
+  }
+  for (const f of under('## High Risk Changes')) {
+    const word = /roll ?back/i.exec(f.line)
+    if (word) problems.push(`the template's ## High Risk Changes asks for ${word[0]}: ${f.line}`)
+  }
+
+  // The brief line: after the fetch, before the template, every one with --changed and --base.
+  const fetch = fencedAt(/^git fetch origin\b/)
+  const briefs = fence.filter(f => /^interlock settle description-brief\b/.test(f.line))
+  const placed = f => fetch !== -1 && summary && f.i > fetch && f.i < summary.i
+  if (!briefs.length) problems.push('no fenced `interlock settle description-brief` line')
+  for (const f of briefs) {
+    if (!/ --changed\b/.test(f.line) || !/ --base\b/.test(f.line) || !placed(f)) {
+      problems.push(`the fenced \`interlock settle description-brief\` line does not carry --changed and --base after the \`git fetch origin\` line and before the template: ${f.line}`)
+    }
+  }
+
+  // The check lines: the platform's copy, by number, after both publish lines and before the first label.
+  const publish = [fencedAt(/^gh pr edit <id> --body\b/), fencedAt(/^glab mr update <id> --description\b/)]
+  const firstLabel = fencedAt(/--add-label/)
+  if (publish.includes(-1)) problems.push('no fenced publish lines `gh pr edit <id> --body` and `glab mr update <id> --description`')
+  if (fencedAt(DESCRIPTION_CHECK_GH) === -1) problems.push('no fenced line pipes `gh pr view <id> --json body` into `interlock settle description-check --file - --from-json body`')
+  if (fencedAt(DESCRIPTION_CHECK_GL) === -1) problems.push('no fenced line pipes `glab mr view <id> --output json` into `interlock settle description-check --file - --from-json description`')
+  for (const f of fence.filter(f => /\binterlock settle description-check\b/.test(f.line))) {
+    if (!/^gh pr view <id> /.test(f.line) && !/^glab mr view <id> /.test(f.line)) {
+      problems.push(`a description-check line does not name the pull request after view (the settle meter reads a numberless lookup as the branch's own): ${f.line}`)
+    }
+    if (publish.includes(-1) || f.i < Math.max(...publish) || firstLabel === -1 || f.i > firstLabel) {
+      problems.push(`the description check does not follow the publish lines and precede the first --add-label: ${f.line}`)
+    }
+  }
+
+  for (const token of ['DESCRIPTION FACTS UNAVAILABLE', 'DESCRIPTION INCOMPLETE', 'DESCRIPTION NOT CHECKED']) {
+    if (!text.includes(token)) problems.push(`missing ${token}`)
+  }
   return problems
 }
 
@@ -2218,6 +2316,58 @@ test('the delivery pins fail on a doctored copy, naming what was dropped', () =>
   // A prose mention of the pipeline command is not a command line.
   const proseOnly = problemsOf(t => t.replace(/^gh pr view [^\n]*\| interlock pipeline --github -[^\n]*$/m, 'Run gh pr view and interlock pipeline.'))
   assert.ok(proseOnly.some(p => p.includes('--github')), proseOnly.join(' | '))
+})
+
+test('the description pins fail on a doctored copy, naming what was dropped (spec: review/pull-request-description)', () => {
+  const shipped = settleSkill()
+  const problemsOf = edit => settleSkillProblems(edit(shipped))
+  const fails = (problems, token) => assert.ok(problems.some(p => p.includes(token)), `${token}: ${problems.join(' | ')}`)
+  const lineOf = pattern => {
+    const m = shipped.match(pattern)
+    assert.ok(m, `the shipped skill carries no line matching ${pattern}: the doctored cases edit lines it no longer has`)
+    return m[0]
+  }
+  const ghCheck = lineOf(/^gh pr view <id> --json body \| interlock settle description-check[^\n]*$/m)
+  const glCheck = lineOf(/^glab mr view <id> --output json \| interlock settle description-check[^\n]*$/m)
+  const undo = lineOf(/^Undo:[^\n]*$/m)
+
+  // A heading dropped from the template, and one present only in a sentence.
+  fails(problemsOf(t => t.replace(/^## How to Roll Back$/m, '')), '## How to Roll Back')
+  fails(problemsOf(t => `${t.replace(/^## Must Not Change$/m, '')}\nWrite a ## Must Not Change section.\n`), '## Must Not Change')
+  // The Change: instruction dropped from under ## Summary.
+  fails(problemsOf(t => t.replace(/^(## Summary)\nChange:[^\n]*$/m, '$1')), 'Change: line to copy')
+  // A label dropped, and a label moved under another section.
+  fails(problemsOf(t => t.replace(/^Before deploying:[^\n]*\n/m, '')), 'Before deploying:')
+  fails(problemsOf(t => t.replace(`${undo}\n`, '').replace(/^## Testing$/m, `## Testing\n${undo}`)), 'Undo:')
+  // A rollback note under the risk section.
+  fails(problemsOf(t => t.replace(/^## High Risk Changes$/m, '## High Risk Changes\nEach risk carries a rollback note.')), '## High Risk Changes asks for rollback')
+
+  // The brief line: --base dropped (the word left in prose), or moved above the fetch.
+  fails(
+    problemsOf(t => `${t.replace(/^(interlock settle description-brief [^\n]*?) --base \S+/gm, '$1')}\nPass --base to the brief.\n`),
+    'interlock settle description-brief'
+  )
+  fails(
+    problemsOf(t => {
+      const briefs = t.match(/^interlock settle description-brief [^\n]*$/gm)
+      let out = t
+      for (const b of briefs) out = out.replace(`${b}\n`, '')
+      return out.replace(/^(git diff --stat <base>\.\.\.HEAD)$/m, `$1\n${briefs.join('\n')}`)
+    }),
+    'after the `git fetch origin` line'
+  )
+  fails(problemsOf(t => t.replaceAll('DESCRIPTION FACTS UNAVAILABLE', 'FACTS MISSING')), 'DESCRIPTION FACTS UNAVAILABLE')
+
+  // The check lines: moved above the publish, numberless, or the GitLab one unmarked.
+  fails(problemsOf(t => t.replace(`${ghCheck}\n`, '').replace(/^(gh pr edit <id> --body [^\n]*)$/m, `${ghCheck}\n$1`)), 'does not follow the publish')
+  fails(problemsOf(t => t.replace(ghCheck, ghCheck.replace('gh pr view <id> --json body', 'gh pr view --json body'))), 'does not name the pull request after view')
+  fails(
+    problemsOf(t => t.replace(/^# GitLab — not exercised[^\n]*\n(glab mr view <id> --output json \| interlock settle description-check)/m, '# GitLab\n$1')),
+    'glab mr view … | interlock settle description-check'
+  )
+  assert.ok(glCheck.includes('--from-json description'), glCheck)
+  fails(problemsOf(t => t.replaceAll('DESCRIPTION INCOMPLETE', 'DESCRIPTION SHORT')), 'DESCRIPTION INCOMPLETE')
+  fails(problemsOf(t => t.replaceAll('DESCRIPTION NOT CHECKED', 'DESCRIPTION SKIPPED')), 'DESCRIPTION NOT CHECKED')
 })
 
 test('the loop pins fail on a doctored copy, naming what was dropped', () => {

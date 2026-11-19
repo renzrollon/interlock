@@ -47,7 +47,11 @@ const SUBCOMMANDS = [
   'test-paths',
   'tree-check',
   'staging-pathspecs',
-  'archived-change'
+  'archived-change',
+  // Both members of the family (spec: review/pull-request-description, "Both commands
+  // SHALL be members of the `settle` family"): help names them, and no flags exits 1.
+  'description-brief',
+  'description-check'
 ]
 
 let dir

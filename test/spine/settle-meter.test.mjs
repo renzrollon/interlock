@@ -1687,6 +1687,14 @@ const UNKEYED_PREFIXES = [
   'rm -f .claude/ship/settle/'
 ]
 
+// The settle verbs the meter is deliberately not taught (design D12 of
+// say-what-must-hold-and-how-to-undo-it; spec: review/pull-request-description).
+// The description brief and check open no section and end no run; the guard test
+// below pins that they draw nothing. Exact verbs only, so any other new verb
+// still fails the skill-lines pin.
+const UNKEYED_SETTLE_VERBS = ['description-brief', 'description-check']
+const isUnkeyedSettleVerb = stage => UNKEYED_SETTLE_VERBS.some(v => stage.startsWith(`interlock settle ${v} `))
+
 test('the skill-lines pin: every stage of every fenced line of the settle and review-code skills is keyed or written down', () => {
   const lines = [
     ...fencedLines('skills/settle/SKILL.md', ['interlock', 'gh', 'glab', 'git']),
@@ -1701,6 +1709,8 @@ test('the skill-lines pin: every stage of every fenced line of the settle and re
       const stage = String(segment).trim()
       if (/^interlock\s/.test(stage)) {
         // An interlock verb has a kind, never an allow-list entry, so a new verb cannot hide behind a git or gh stage.
+        // The one exception is the two description verbs D12 keeps unkeyed, which the guard test pins as drawing nothing.
+        if (isUnkeyedSettleVerb(stage)) continue
         if (kind === null || kind === undefined || settleLineKind(stage) === null) stray.push(`${file}:${n}: interlock stage with no kind: ${stage}`)
       } else if (kind === null || kind === undefined) {
         if (!UNKEYED_PREFIXES.some(p => stage.startsWith(p))) stray.push(`${file}:${n}: stage neither keyed nor written down: ${stage}`)
@@ -1719,6 +1729,30 @@ test('the skill-lines pin reads pipe stages: an interlock stage behind git statu
   const interlockStage = hidden.find(s => /^interlock\s/.test(String(s.segment).trim()))
   assert.ok(interlockStage, 'the interlock stage is a stage of its own')
   assert.ok(!interlockStage.kind, 'a verb nobody keyed has no kind')
+})
+
+test('the description lines open no section and end no run, with and without --create (design D12)', () => {
+  const lines = fencedLines('skills/settle/SKILL.md', ['interlock', 'gh', 'glab']).filter(l => /\binterlock settle description-(?:brief|check)\b/.test(l.line))
+  assert.ok(lines.some(l => l.line.startsWith('interlock settle description-brief ')), 'the shipped skill carries no fenced description-brief line')
+  assert.ok(lines.some(l => l.line.startsWith('gh pr view <id> --json body | interlock settle description-check ')), 'no fenced GitHub check line')
+  assert.ok(lines.some(l => l.line.startsWith('glab mr view <id> --output json | interlock settle description-check ')), 'no fenced GitLab check line')
+  for (const { line } of lines) {
+    for (const { kind, segment } of settleLines(line)) assert.equal(kind ?? null, null, `${segment} is keyed`)
+    for (const [what, make] of [
+      ['--review', () => live(0, true)],
+      ['no --review', () => live(0, false)],
+      ['--create', () => Object.assign(freshSettle({ review: false, create: true }), { phase: 'live', startedAt: at(0) })],
+      ['--create --review', () => Object.assign(freshSettle({ review: true, create: true }), { phase: 'live', startedAt: at(0) })]
+    ]) {
+      for (const result of [okBash(line, 'description complete: Change: none'), errBash(line, 1, 'interlock: DESCRIPTION INCOMPLETE: missing section: ## Testing')]) {
+        const s = make()
+        const was = JSON.stringify(s.groups)
+        cross(s, result, 2)
+        assert.equal(s.phase, 'live', `${what}: ${line} ended the run`)
+        assert.equal(JSON.stringify(s.groups), was, `${what}: ${line} drew a row or opened a section`)
+      }
+    }
+  }
 })
 
 // --- the purity pin ------------------------------------------------------------
