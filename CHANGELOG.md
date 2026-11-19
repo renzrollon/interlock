@@ -13,6 +13,13 @@ this project adheres to Semantic Versioning 2.0.0.
 - `interlock settle description-brief` prints the facts the description is written from: the `Change:` line, the requirements the change's delta specs touch, the living requirements in force that it does not modify, and where in the artifacts each section's source sits.
 - `interlock settle description-check` reads the description the platform holds and exits 1 with `DESCRIPTION INCOMPLETE:` naming each missing or empty section, a bare `None` in the two new sections, or a `Change:` line that is absent or names another change. The skill republishes an incomplete description a single time, reports `DESCRIPTION INCOMPLETE:` or `DESCRIPTION NOT CHECKED:` when it cannot settle it, and never stops on the check.
 
+### Changed
+
+- The merge verdict's size signal, `diff.shape`, places each changed file by its path in one class, source, test or prose (documentation and the whole `openspec/` tree), and applies the published line cap and file cap to the source class alone. Test lines and prose lines are no longer counted toward the caps; the evidence states the source, test, prose and total figures beside each other. This loosens a gate: a pull request of few source lines and many test and documentation lines can now read green on size.
+- `REVIEW.md` may declare a third path list, `## Counts as Source`, read from the base and by the size signal alone: a changed file under a listed path is counted as source whatever its name. `interlock review-policy` prints it as `source:`, and `--json` adds `sourcePaths`. This repository lists `skills/`, `agents/` and `shared/`.
+- When the classes cannot be established (a diff with no per-file counts, a review policy the base could not supply, or a `## Counts as Source` section that could not be read in full), the size signal counts every changed line and file, as before, and says why.
+- A signal's row in the `--markdown` block's collapsed table carries a bounded number of evidence lines, and a cut row ends with how many it left out and that `--json` carries them all.
+
 ## [1.19.0] - 2026-11-19
 
 ### Changed

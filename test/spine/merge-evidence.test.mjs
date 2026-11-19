@@ -856,3 +856,94 @@ test('a change only in the archive is read from its archived directory: scenario
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// --- counts-as-source paths (change judge-size-by-what-a-person-reads) ----------
+//
+// The gathered `reviewPolicy` carries the base's `sourcePaths` and the problems
+// that make that list unusable (`sourceProblems`). `problems` keeps what it held
+// for the two other sections: a problem under `## Counts as Source` does not
+// reach the human-paths signal.
+
+const reviewAt = text => ({
+  readAtRef: (_root, _ref, path) => {
+    if (path === 'REVIEW.md') return typeof text === 'string' ? { text } : text
+    return { absent: true }
+  }
+})
+
+test('counts as source: the gathered review policy carries the base’s sourcePaths and sourceProblems', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt('## Always Human Review\n- lib/release/\n\n## Counts as Source\n- skills/\n- ./agents\n'))
+  assert.deepEqual(input.reviewPolicy.sourcePaths, ['skills', 'agents'])
+  assert.deepEqual(input.reviewPolicy.sourceProblems, [])
+  assert.deepEqual(input.reviewPolicy.humanPaths, ['lib/release'])
+  assert.deepEqual(input.reviewPolicy.problems, [])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: the list is read from the base, never from the working copy', () => {
+  const root = repo()
+  put(root, 'REVIEW.md', '## Counts as Source\n- docs/\n')
+  const { input } = gather(root, {}, reviewAt('## Counts as Source\n- skills/\n'))
+  assert.deepEqual(input.reviewPolicy.sourcePaths, ['skills'])
+  assert.equal(input.reviewPolicy.differsFromBase, true)
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a pattern under Counts as Source lands in sourceProblems and not in problems', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt('## Always Human Review\n- lib/release/\n\n## Counts as Source\n- skills/**\n'))
+  assert.equal(input.reviewPolicy.sourceProblems.length, 1)
+  assert.ok(input.reviewPolicy.sourceProblems[0].includes('skills/**'), input.reviewPolicy.sourceProblems[0])
+  assert.deepEqual(input.reviewPolicy.problems, [])
+  assert.deepEqual(input.reviewPolicy.sourcePaths, [])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a problem under Always Human Review lands in problems and not in sourceProblems', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt('## Always Human Review\n- ../outside\n\n## Counts as Source\n- skills/\n'))
+  assert.equal(input.reviewPolicy.problems.length, 1)
+  assert.ok(input.reviewPolicy.problems[0].includes('../outside'), input.reviewPolicy.problems[0])
+  assert.deepEqual(input.reviewPolicy.sourceProblems, [])
+  assert.deepEqual(input.reviewPolicy.sourcePaths, ['skills'])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a Do Not Report problem reaches neither list', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt('## Do Not Report\n- dist/*\n\n## Counts as Source\n- skills/\n'))
+  assert.deepEqual(input.reviewPolicy.problems, [])
+  assert.deepEqual(input.reviewPolicy.sourceProblems, [])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a base copy over the scan cap lands in both problems and sourceProblems', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt({ tooLarge: true, size: 999999 }))
+  assert.equal(input.reviewPolicy.problems.length, 1)
+  assert.equal(input.reviewPolicy.sourceProblems.length, 1)
+  assert.match(input.reviewPolicy.sourceProblems[0], /scan/)
+  assert.deepEqual(input.reviewPolicy.sourcePaths, [])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a base with no REVIEW.md is the empty list with no problem', () => {
+  const root = repo()
+  const { input } = gather(root, {}, reviewAt({ absent: true }))
+  assert.deepEqual(input.reviewPolicy.sourcePaths, [])
+  assert.deepEqual(input.reviewPolicy.sourceProblems, [])
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('counts as source: a files list on the diffShape result reaches input.diff unchanged', () => {
+  const root = repo()
+  const files = [
+    { path: 'lib/new.mjs', lines: 30, binary: false },
+    { path: 'lib/legacy.mjs', lines: 6, binary: false },
+    { path: 'openspec/specs/gamma/spec.md', lines: 4, binary: false }
+  ]
+  const { input } = gather(root, {}, { diffShape: () => ({ ...structuredClone(SHAPE), files: structuredClone(files) }) })
+  assert.deepEqual(input.diff.files, files)
+  rmSync(root, { recursive: true, force: true })
+})

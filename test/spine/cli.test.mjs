@@ -5866,3 +5866,114 @@ test('domain-context --base lists the living capabilities at the base, not the w
   assert.equal(out.citedUnread, null)
   assert.match(out.text, /It SHALL live in `lib\/settle-meter\.mjs`/)
 })
+
+// --- counts-as-source paths and the size classes (change judge-size-by-what-a-person-reads) ---
+
+test('counts as source: review-policy --json lists sourcePaths from the working tree, and the text prints the source line', () => {
+  const repo = policyRepo('rp-source-working', null)
+  writeFileSync(join(repo.root, 'REVIEW.md'), '## Counts as Source\n- skills/\n- ./agents\n')
+  const out = JSON.parse(run(['review-policy', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(out.sourcePaths, ['skills', 'agents'])
+  assert.deepEqual(out.problems, [])
+  const text = run(['review-policy', '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /^ {2}source: skills, agents$/m)
+})
+
+test('counts as source: review-policy --base lists the reference’s sourcePaths, never one only the working tree holds', () => {
+  const based = policyRepo('rp-source-base', '## Counts as Source\n- skills/\n')
+  writeFileSync(join(based.root, 'REVIEW.md'), '## Counts as Source\n- docs/\n')
+  const fromRef = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', based.root, '--json']).stdout)
+  assert.deepEqual(fromRef.sourcePaths, ['skills'])
+  assert.equal(fromRef.differsFromBase, true)
+
+  const added = policyRepo('rp-source-added', '## Always Human Review\n- lib/release/\n')
+  writeFileSync(join(added.root, 'REVIEW.md'), '## Counts as Source\n- skills/\n')
+  const notApplied = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', added.root, '--json']).stdout)
+  assert.deepEqual(notApplied.sourcePaths, [])
+  assert.equal(notApplied.differsFromBase, true)
+
+  const none = policyRepo('rp-source-absent', null)
+  writeFileSync(join(none.root, 'REVIEW.md'), '## Counts as Source\n- skills/\n')
+  const absentAtRef = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', none.root, '--json']).stdout)
+  assert.deepEqual(absentAtRef.sourcePaths, [])
+  assert.deepEqual(absentAtRef.problems, [])
+})
+
+test('counts as source: the usage text names sourcePaths', () => {
+  const { stdout } = run(['--help'])
+  assert.ok(stdout.includes('sourcePaths'), 'the review-policy usage does not name sourcePaths')
+})
+
+/** The widget change plus `baseFiles` at the base; `edit` makes the head commit. */
+function sizeRepo(sub, baseFiles, edit) {
+  const repo = gitRepo(sub, { ...widgetChangeFiles(), ...baseFiles })
+  edit(repo.root)
+  gitAt(repo.root, 'add', '-A')
+  gitAt(repo.root, 'commit', '-q', '-m', 'head')
+  return { root: repo.root, base: repo.sha }
+}
+const linesOf = (n, word = 'line') => Array.from({ length: n }, (_, i) => `${word} ${i}\n`).join('')
+const appendTo = (root, rel, text) => {
+  const path = join(root, rel)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + text)
+}
+const sizeSignal = repo => {
+  const r = run(['merge-confidence', 'add-widget-catalogue', '--root', repo.root, '--base', repo.base, '--json'])
+  assert.equal(r.stdout.trim().startsWith('{'), true, r.stderr)
+  return signalIn(JSON.parse(r.stdout), 'diff.shape')
+}
+const classLine = (signal, cls) => (signal.evidence || []).find(line => line.startsWith(`${cls}:`))
+
+test('size: merge-confidence --base counts source, test and prose apart, a renamed file as source', () => {
+  const repo = sizeRepo(
+    'mc-size-classes',
+    {
+      'src/a.ts': 'export const a = 1\n',
+      'test/a.test.mjs': 'test\n',
+      'docs/guide.md': '# Guide\n',
+      'docs/draft.md': linesOf(10, 'draft')
+    },
+    root => {
+      appendTo(root, 'src/a.ts', linesOf(2, 'src'))
+      appendTo(root, 'test/a.test.mjs', linesOf(3, 'case'))
+      appendTo(root, 'docs/guide.md', linesOf(4, 'para'))
+      gitAt(root, 'mv', 'docs/draft.md', 'src/draft.ts')
+      appendTo(root, 'src/draft.ts', 'one more\n')
+    }
+  )
+  const signal = sizeSignal(repo)
+  assert.equal(signal.band, 'green', said(signal))
+  assert.ok(classLine(signal, 'source'), said(signal))
+  assert.ok(classLine(signal, 'source').includes('3 changed line(s)'), said(signal))
+  assert.ok(classLine(signal, 'source').includes('2 file(s)'), `the renamed file is source: ${said(signal)}`)
+  assert.ok(classLine(signal, 'test').includes('3 changed line(s)'), said(signal))
+  assert.ok(classLine(signal, 'test').includes('1 file(s)'), said(signal))
+  assert.ok(classLine(signal, 'prose').includes('4 changed line(s)'), said(signal))
+  assert.ok(classLine(signal, 'prose').includes('1 file(s)'), said(signal))
+  assert.ok(classLine(signal, 'total').includes('4 changed file(s)'), said(signal))
+})
+
+test('size: a file under a path listed at the base under Counts as Source is counted as source, naming the list', () => {
+  const repo = sizeRepo(
+    'mc-size-listed',
+    { 'REVIEW.md': '## Counts as Source\n- skills/\n', 'skills/settle/SKILL.md': '# Settle\n' },
+    root => appendTo(root, 'skills/settle/SKILL.md', linesOf(5, 'step'))
+  )
+  const signal = sizeSignal(repo)
+  assert.ok(classLine(signal, 'source').includes('5 changed line(s)'), said(signal))
+  assert.ok(classLine(signal, 'source').includes('1 file(s)'), said(signal))
+  const named = signal.evidence.find(line => line.includes('Counts as Source'))
+  assert.ok(named && named.includes('skills'), said(signal))
+  assert.ok(named.includes(repo.base) || named.includes(repo.base.slice(0, 7)), named)
+
+  const unlisted = sizeRepo(
+    'mc-size-unlisted',
+    { 'skills/settle/SKILL.md': '# Settle\n' },
+    root => appendTo(root, 'skills/settle/SKILL.md', linesOf(5, 'step'))
+  )
+  const prose = sizeSignal(unlisted)
+  assert.ok(classLine(prose, 'prose').includes('5 changed line(s)'), said(prose))
+  assert.ok(classLine(prose, 'source').includes('0 changed line(s)'), said(prose))
+})

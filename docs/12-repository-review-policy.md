@@ -15,13 +15,14 @@ it.
 
 ## The split: advice vs. enforced
 
-`REVIEW.md` has exactly three consumers, one per part of the file, and they sit at two trust levels.
+`REVIEW.md` has exactly four consumers, one per part of the file, and they sit at two trust levels.
 
 | Part of the file | Consumer | Trust | Effect | Read from |
 |---|---|---|---|---|
 | **Prose** — `## Owner` / front-matter `owner:`, `## What "Important" means`, `## Exclusions rationale` | the reviewer prompt | **advice** | reviewers read it as repository context; it can never lower survival | the working tree |
 | **`## Do Not Report` paths** | `interlock review` (the CLI) | **enforced** | findings whose file lies under a listed path are dropped before the band is applied | the base ref (`--base`), or the run's start commit; the working tree when neither exists |
 | **`## Always Human Review` paths** | `interlock merge-confidence` (the CLI), and no other consumer | **enforced** | a change that touches a listed path, or edits `REVIEW.md` itself, reads amber on the `policy.humanPaths` signal and needs a person | the base ref (`--base`); unobserved without one |
+| **`## Counts as Source` paths** | the `diff.shape` signal of `interlock merge-confidence` (the CLI), and no other consumer | **enforced** | a changed file under a listed path is counted as source toward the size caps, whatever its name, where it would otherwise be set aside as a test or as prose | the base ref (`--base`); a ship run's close reads it from the run's start commit |
 
 The line that keeps this on-thesis: **a model is never handed a path list as
 something to honor.** A path exclusion a model can choose to ignore is not an
@@ -30,19 +31,26 @@ reviewer follows. That is also why the always-human-review list is consumed by
 the merge verdict alone: no reviewer prompt carries it, no review drops or
 re-bands a finding because of it, and `interlock review` reads and ignores it. It
 cannot make a review stricter or looser. It can only make the verdict ask for a
-person.
+person. The counts-as-source list is scope of the same kind, read by one signal:
+`diff.shape` sets documentation and test paths aside when it applies its caps
+([15](15-merge-confidence.md#what-the-size-signal-counts)), and a path listed
+here keeps counting. The review, the gate, the risk signal and the human-paths
+signal never read it, and a problem in the section moves no signal but
+`diff.shape`, which then counts every changed line and file and says why.
 
 ### Where each part is read from, and why
 
-The two path lists are enforced, so a change must not be able to edit the copy
+The three path lists are enforced, so a change must not be able to edit the copy
 that is applied to it. A pull request that adds `src/legacy/` to `## Do Not
 Report` would otherwise quiet the review of exactly the paths it touches, and one
 that deleted a path from `## Always Human Review` would remove the person from the
-decision about its own change. So the lists are read from a **base**:
+decision about its own change. One that dropped its own prose from `## Counts as
+Source` would take its own lines out of the size count. So the lists are read
+from a **base**:
 
 - **`interlock review --base <ref>`** and **`interlock review-policy --base <ref>`**
-  read both lists from the commit at the ref. `merge-confidence --base` reads the
-  always-human-review list from the base **tip**, as GitHub reads `CODEOWNERS`
+  read all three lists from the commit at the ref. `merge-confidence --base` reads
+  the always-human-review and counts-as-source lists from the base **tip**, as GitHub reads `CODEOWNERS`
   from the base branch. A branch that predates a policy change reads amber on
   the signal until it is rebased, which is the safe direction: reading the merge
   base instead would let a stale branch apply a policy the base has since
@@ -107,7 +115,7 @@ BASE NOT PINNED`.
 
 ## Path matching
 
-Both path lists (`## Do Not Report` and `## Always Human Review`) use the same rules. They match on the **canonical path form** and are **case-sensitive**,
+All three path lists (`## Do Not Report`, `## Always Human Review` and `## Counts as Source`) use the same rules. They match on the **canonical path form** and are **case-sensitive**,
 mirroring the default filesystem:
 
 - `dist`, `./dist`, and `dist/` are the same rule and all exclude `dist/bundle.js`.
@@ -130,6 +138,8 @@ mirroring the default filesystem:
   problem in that section; the same item under `## Do Not Report` is reported
   wherever policy problems are and does not move that signal
   ([15](15-merge-confidence.md#always-human-review-paths-and-why-they-are-read-from-the-base)).
+  The same item under `## Counts as Source` does not move it either: it makes
+  `diff.shape` count every changed line and file, naming the item.
 
 ## The `blast-radius` dimension and its recorded skip
 
@@ -137,16 +147,18 @@ mirroring the default filesystem:
 
 It runs whenever `.claude/graph/graph.json` exists. Without a graph the skill prints `BLAST RADIUS SKIPPED: no graph at .claude/graph/graph.json — run /interlock:graph`, the other dimensions still run, and the skip is written into the dimension record under `skipped` with its reason. That record is handed to `interlock review --dimensions <file>`, which validates and stores it, so the skip does not live in a line only the person watching saw: the merge verdict reads it as the `blast-radius-skipped` flag on `review.ran`, beside `domain-skipped` ([15](15-merge-confidence.md#the-flags)). The flag lowers the score and moves no band, since the other dimensions ran with their rubrics, and a selected `blast-radius` (or `domain`) recorded as skipped counts as accounted for. A skip under any other name does not, so a skipped `security` still reads amber. Naming `blast-radius` in `--dimensions` with no graph is reported with the same skip line and not run silently. An unknown dimension name is refused with the list of the nine bundled dimensions.
 
-## This repository's own always-human list
+## This repository's own lists
 
 This repository's `REVIEW.md` names `.github/workflows/` under `## Always Human Review`. A workflow edit can grant a token or change a trigger that no diff reviewer sees, so a pull request that touches one reads `HUMAN` on `policy.humanPaths` whatever its score, with the path in the evidence. The list stays that narrow on purpose: this repository has no `CODEOWNERS`, and `.github/` outside `workflows/` holds issue templates, a pull request template and agent prompts, none of which gates a merge. The list is read from the base ref, so a pull request cannot add or remove its own entry ([above](#where-each-part-is-read-from-and-why)). `interlock review-policy --json` lists it under `humanPaths`.
+
+It names `skills/`, `agents/` and `shared/` under `## Counts as Source`. They are model-facing prose and a shipped surface, where a reworded instruction is a behaviour change, so their changed lines count toward the size caps although they are Markdown. `docs/` is not listed: it stays in review scope, because it is not under `## Do Not Report` and a wrong doc is a real defect, but its lines are set aside by `diff.shape`. `interlock review-policy --json` lists the three under `sourcePaths`.
 
 ## Try it
 
 ```bash
 interlock review-policy --json        # what the CLI parsed from your REVIEW.md
 interlock review-policy --base origin/main --json
-#   → both lists read from the ref, plus listsFrom and differsFromBase
+#   → all three lists read from the ref, plus listsFrom and differsFromBase
 interlock review --findings f.json --verdicts v.json --changed <files> --base origin/main --json
 #   → the JSON carries droppedByPolicy (with excluding paths) and policyProblems
 interlock merge-confidence --changed <files> --base origin/main --json

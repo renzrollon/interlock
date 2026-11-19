@@ -747,7 +747,7 @@ Run `/interlock:fix-tests --reconfigure`. After a green full unit run it records
 
 ### `POLICY DIFFERS FROM BASE` and `REVIEW BASE NOT PINNED`
 
-Both are about which copy of `REVIEW.md` the review's **enforced** lists were read from. `REVIEW.md` has an advice half (the prose) and an enforced half (the `## Do Not Report` and `## Always Human Review` path lists); [12](./12-repository-review-policy.md) draws that line. A change must not be able to edit the copy of an enforced list that is applied to it, so a ship run reads the lists from the commit the run started on and only the prose from the working tree.
+Both are about which copy of `REVIEW.md` the review's **enforced** lists were read from. `REVIEW.md` has an advice half (the prose) and an enforced half (the `## Do Not Report`, `## Always Human Review` and `## Counts as Source` path lists); [12](./12-repository-review-policy.md) draws that line. A change must not be able to edit the copy of an enforced list that is applied to it, so a ship run reads the lists from the commit the run started on and only the prose from the working tree.
 
 `POLICY DIFFERS FROM BASE` means the working tree's `REVIEW.md` is not the one the run started with, so the two copies disagree and the start commit's lists won:
 
