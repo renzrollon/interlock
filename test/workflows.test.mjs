@@ -1277,7 +1277,7 @@ test('--host claude forwards the lane effort, says so, and banners nothing', () 
 })
 
 test('--host claude forwards the verify step its published effort', () => {
-  assert.ok(EFFORT.verify, 'the verify step must publish an effort for this test to mean anything')
+  assert.ok(EFFORT.verifyFinal, 'the verify step must publish an effort for this test to mean anything')
   const { root, change } = runnerRepo({ ...ONE_LANE, profile: UNIT_PROFILE })
   try {
     const { stderr } = runRunnerCaptured('claude', {
@@ -1289,7 +1289,7 @@ test('--host claude forwards the verify step its published effort', () => {
     })
     assert.match(
       stderr,
-      new RegExp(`effort routing[^\\n]*\\bverify\\b[^\\n]*\\b${EFFORT.verify}\\b`),
+      new RegExp(`effort routing[^\\n]*\\bverify\\b[^\\n]*\\b${EFFORT.verifyFinal}\\b`),
       `the verify spawn's effort must reach the host:\n${stderr}`
     )
   } finally {
@@ -2004,7 +2004,10 @@ test('the CLI dispatches every published effort — lanes, verify and the skepti
   // attempt: a table row nobody reads is a row that stops governing. (Rewritten
   // pin, route-spawn-effort-by-the-model-guide D22: it pins "A verify spawn SHALL
   // carry the verify effort on a first attempt and the retry effort on a fix attempt".)
-  assert.match(run, /effort: interWave && carried\.fixAttempt > 0 \? EFFORT\.verifyRetry : EFFORT\.verify\b/)
+  assert.match(run, /\? EFFORT\.verifyFinal\b/)
+  assert.match(run, /\? EFFORT\.verifyRetry\b/)
+  assert.match(run, /: EFFORT\.verify\b/)
+  assert.match(run, /VERIFY_MODEL/)
   // And a host passes it through rather than choosing one — both hosts, with
   // the same truthy-only spread, so a null effort never reaches a host as a key.
   const spread = /\.\.\.\(s\.effort \? \{ effort: s\.effort \} : \{\}\)/
@@ -3392,11 +3395,11 @@ test('the Workflow host relays every field ship.js reads, and no briefing', asyn
 const effortOf = (prompts, label) => prompts.find(p => p.label === label)
 
 test('a verify agent is spawned with the published verify effort', async () => {
-  assert.ok(EFFORT.verify, 'the verify step must publish an effort for this test to mean anything')
+  assert.ok(EFFORT.verifyFinal, 'the verify step must publish an effort for this test to mean anything')
   const { prompts } = await runShip({ repo: { profile: { version: 1, unit: { command: 'npm test' } } } })
   const verify = effortOf(prompts, 'verify')
   assert.ok(verify, 'a repo with a test profile must reach a verify spawn')
-  assert.equal(verify.effort, EFFORT.verify)
+  assert.equal(verify.effort, EFFORT.verifyFinal)
 })
 
 test('a lane is spawned at its tier\'s published effort', async () => {

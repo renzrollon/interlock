@@ -33,6 +33,9 @@ import {
   OUTCOME_FAILED,
   OUTCOME_NOT_ATTEMPTED
 } from '../../lib/waves.mjs'
+// A namespace import, so a missing export is reported by the test that reads it
+// instead of failing the whole file at link time.
+import * as wavesModule from '../../lib/waves.mjs'
 import { narrowPlan } from '../../lib/plan-fingerprint.mjs'
 import { LIMITS, RUNTIME, LANE_CAPS, SOLO, EFFORT } from '../../lib/limits.mjs'
 
@@ -4278,4 +4281,315 @@ test('laneGist is cut where it always was, is empty without words, and is a fixe
   assert.equal(laneGist([{ id: '3.10', description: gist }]), gist)
   assert.equal(laneGist([{ id: '4.1', description: ' ' }]), '')
   assert.equal(laneGist([{ id: '4.2' }]), '')
+})
+
+// ---------------------------------------------------------------------------
+// A check waits for the implementation a failing-test wave is owed
+// (spec: waves — "An inter-wave check SHALL wait for the implementation a
+// failing-test wave is owed", "A run SHALL know it is test-first from its plan").
+//
+// Two kinds of test live here and the split matters. NEW BEHAVIOUR tests fail
+// against the code that existed when they were written: a test-first run used
+// to spend a verify agent, a checkpoint and every fix attempt on a suite that
+// was red only because planned implementation had not run. GUARDS pass against
+// that same code and pin what must not move when the wait lands.
+// ---------------------------------------------------------------------------
+
+/**
+ * A test-first change: a failing-test section 1, then two path-disjoint
+ * implementation tasks per listed group (two, so no wave folds onto the one
+ * before it), then a deferred test task that becomes the trailing test wave.
+ */
+function redFirstTasks(implGroups = [2, 3, 4], { trailing = true } = {}) {
+  return [
+    task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/red.test.ts'] }),
+    ...implGroups.flatMap(g => [
+      task({ id: `${g}.1`, group: g, paths: [`src/g${g}-a.ts`] }),
+      task({ id: `${g}.2`, group: g, paths: [`src/g${g}-b.ts`] })
+    ]),
+    ...(trailing
+      ? [task({ id: 't.1', group: 99, isTestTask: true, paths: ['test/later.test.ts'] })]
+      : [])
+  ]
+}
+
+const redFirstPlan = (implGroups, over) =>
+  planOf(redFirstTasks(implGroups, over), { redWave: 1 })
+
+const RED_VERDICT = { ok: false, errors: ['red: the suite still fails'], blocksNextWave: false }
+const verifiedWaves = trace => trace.filter(s => s.action === 'verify').map(s => s.wave)
+const skipsOf = state => state.skippedVerifications.map(s => [s.wave, s.reason])
+
+/** The owed-implementation reason, asserted to exist so a missing export cannot match a missing reason. */
+function owedReason() {
+  const reason = wavesModule.SKIP_VERIFY_RED_OWED
+  assert.equal(typeof reason, 'string', 'SKIP_VERIFY_RED_OWED must be exported as a string')
+  assert.ok(reason.length > 0, 'the reason must be non-empty')
+  return reason
+}
+
+test('the owed-implementation reason is its own, named by the design', () => {
+  const reason = owedReason()
+  assert.equal(reason, 'red-suite-implementation-owed')
+  for (const other of [SKIP_VERIFY_DOCS, SKIP_VERIFY_CAP, SKIP_VERIFY_RED]) {
+    assert.notEqual(reason, other, 'a wait must not read as another skip')
+  }
+})
+
+test('a test-first run checks nothing before its last implementation wave, and that check keeps its whole fix budget', () => {
+  const owed = owedReason()
+  const attempts = []
+  const { trace, state, actions } = drive(createRunState(redFirstPlan([2, 3, 4])), {
+    onVerify: step => {
+      attempts.push({ wave: step.wave, mode: step.mode, fixAttempt: step.fixAttempt })
+      return RED_VERDICT
+    }
+  })
+
+  assert.deepEqual(
+    attempts.map(a => a.wave),
+    Array.from({ length: 1 + LIMITS.interWaveFixAttempts }, () => 4),
+    'every verify step is the check after wave 4, the last implementation wave: one attempt and each fix attempt'
+  )
+  assert.equal(attempts[0].mode, 'initial')
+  assert.deepEqual(
+    attempts.slice(1).map(a => a.fixAttempt),
+    Array.from({ length: LIMITS.interWaveFixAttempts }, (_, i) => i + 1)
+  )
+  assert.deepEqual(
+    skipsOf(state),
+    [[1, SKIP_VERIFY_RED], [2, owed], [3, owed]],
+    'the failing-test wave and each waiting wave are skipped, each under its own reason'
+  )
+  assert.equal(state.verificationsUsed, 1, 'a wait spends no checkpoint; only the real check does')
+  assert.equal(actions.at(-1), 'done')
+  // The waves after a wait are briefed as they would be after a passing check.
+  const batches = trace.filter(s => s.action === 'run-batch')
+  assert.deepEqual(batches.map(b => b.wave), [1, 2, 3, 4])
+  for (const b of batches) {
+    assert.equal('unresolvedChecks' in b, false, `wave ${b.wave} follows a wait, not a failed check`)
+  }
+})
+
+test('a waiting wave leaves no unresolved entry, so the next implementer is not told its own target is not its to fix', () => {
+  const { state } = drive(createRunState(redFirstPlan([2, 3, 4])), { onVerify: () => RED_VERDICT })
+  assert.deepEqual(
+    state.unresolved.map(u => u.wave),
+    [4],
+    'only the check that actually ran can be unresolved'
+  )
+  assert.equal(state.unresolved[0].attempts, LIMITS.interWaveFixAttempts)
+  assert.ok(
+    !state.warnings.some(w => /wave [23]: \d+ unresolved/.test(w)),
+    'and no warning claims waves 2 or 3 spent a fix budget'
+  )
+})
+
+test('with more implementation waves than the checkpoint cap the last check still runs, and no skip carries the cap reason', () => {
+  const owed = owedReason()
+  const groups = Array.from({ length: LIMITS.interWaveVerifications + 1 }, (_, i) => i + 2)
+  const last = groups.at(-1)
+  const verifies = []
+  const { state } = drive(createRunState(redFirstPlan(groups)), {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [last], 'the one check is the one after the last implementation wave')
+  assert.ok(
+    !state.skippedVerifications.some(s => s.reason === SKIP_VERIFY_CAP),
+    JSON.stringify(skipsOf(state))
+  )
+  assert.deepEqual(
+    skipsOf(state),
+    [[1, SKIP_VERIFY_RED], ...groups.slice(0, -1).map(g => [g, owed])]
+  )
+  assert.equal(state.verificationsUsed, 1)
+})
+
+test('the run state records the failing-test section it was planned with, and only then', () => {
+  const state = createRunState(redFirstPlan([2, 3]))
+  assert.equal(state.redWave, 1, 'copied from plan.redWave')
+
+  const ordinary = createRunState(simplePlan([1, 2, 3], 1))
+  assert.equal('redWave' in ordinary, false, 'an ordinary change keeps exactly the keys it has today')
+
+  const refused = createRunState(planOf(tddTasks(), { redWave: 9 }))
+  assert.equal('redWave' in refused, false, 'a refused claim is not a test-first plan')
+})
+
+test('a re-run from a stored plan narrowed past its failing-test wave waits as the first run does', () => {
+  const owed = owedReason()
+  const plan = redFirstPlan([2, 3, 4])
+  // Sections 1 and 2 are ticked: the narrowed plan drops the finished failing
+  // test wave and the first implementation wave.
+  const { plan: narrowed } = narrowPlan(plan, id => id.startsWith('1.') || id.startsWith('2.'))
+  assert.equal(narrowed.redWave, 1, 'fixture: the plan still names its failing-test section')
+  const start = createRunState(narrowed)
+  assert.deepEqual(start.waves.map(w => w.group), [3, 4, null])
+  assert.ok(!start.waves.some(w => w.red === true), 'fixture: no wave in the state is marked red')
+  assert.equal(start.redWave, 1, 'so the state has to carry the section itself')
+
+  const verifies = []
+  const { state } = drive(start, {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [4], 'wave 3 waits for wave 4; the check after wave 4 runs')
+  assert.deepEqual(skipsOf(state), [[3, owed]])
+})
+
+test('a state with no recorded failing-test section that still holds its failing-test wave waits', () => {
+  const owed = owedReason()
+  // The shape of a state written before the section was recorded: the key is
+  // absent, but the wave marked red is still in the state.
+  const older = JSON.parse(JSON.stringify(createRunState(redFirstPlan([2, 3]))))
+  delete older.redWave
+  assert.equal(older.waves[0].red, true, 'fixture: the failing-test wave is still held')
+
+  const verifies = []
+  const { state } = drive(older, {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [3])
+  assert.deepEqual(skipsOf(state), [[1, SKIP_VERIFY_RED], [2, owed]])
+})
+
+test('an owed wave removed by a replan after the wait leaves the passed wave skipped and re-opens no check', () => {
+  const owed = owedReason()
+  const start = createRunState(redFirstPlan([2, 3]))
+  const afterRed = recordBatchResult(start, allOk(nextStep(start)))
+  const afterWave2 = recordBatchResult(afterRed, { ...allOk(nextStep(afterRed)), replanSuggested: true })
+
+  // The replan is offered at the start of the next wave: after the end-of-wave
+  // decision, which waited because wave 3 was still owed.
+  const offer = nextStep(afterWave2)
+  assert.equal(offer.action, 'replan', 'a wait offers the replan in place of a check')
+  assert.deepEqual(offer.revisableGroups, [3])
+
+  const replanned = applyReplan(afterWave2, [{ group: 3, tasks: [] }])
+  const verifies = []
+  const { state, actions } = drive(replanned, {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [], 'no verify step is issued for the passed wave')
+  assert.deepEqual(actions, ['test-wave', 'done'])
+  assert.deepEqual(skipsOf(state), [[1, SKIP_VERIFY_RED], [2, owed]], 'the skip stays recorded under its reason')
+})
+
+test('the plan preview and its projected verifies agree with the run, fresh and narrowed', () => {
+  const plan = redFirstPlan([2, 3, 4])
+  const cost = projectedWaveLoopAgents(plan)
+  assert.equal(cost.verifyPings, 1, 'only the check after wave 4: not the failing-test wave, not waves 2 and 3')
+  assert.equal(cost.total, cost.implementers + cost.recordPings + cost.verifyPings)
+
+  const text = formatPlan(plan)
+  assert.match(text, /Wave 1:[^\n]*RED: failing tests, check skipped/)
+  assert.match(text, /Wave 2:[^\n]*check waits/i)
+  assert.match(text, /Wave 3:[^\n]*check waits/i)
+  assert.doesNotMatch(text.match(/Wave 4:[^\n]*/)[0], /waits/i, 'the last implementation wave is checked')
+  assert.match(text, /\(\d+ implementers \+ \d+ record \+ 1 verify\)/)
+
+  const { plan: narrowed } = narrowPlan(plan, id => id.startsWith('1.') || id.startsWith('2.'))
+  assert.equal(projectedWaveLoopAgents(narrowed).verifyPings, 1, 'a narrowed plan agrees with its run')
+  const narrowedText = formatPlan(narrowed)
+  assert.match(narrowedText, /Wave 3:[^\n]*check waits/i)
+  assert.doesNotMatch(narrowedText.match(/Wave 4:[^\n]*/)[0], /waits/i)
+  assert.match(narrowedText, /\+ 1 verify\)/)
+})
+
+test('the planner warning names the check that is the gate, not the check that waits', () => {
+  const withTail = redFirstPlan([2, 3])
+  assert.ok(
+    withTail.warnings.some(w => /red wave/.test(w) && /last implementation wave/i.test(w)),
+    'a check follows the last implementation wave, so it is the gate: ' + withTail.warnings.join(' | ')
+  )
+  // No wave follows the implementation, so no check exists and the final
+  // verification is what gates. The old text named a next-wave check that does
+  // not exist here.
+  const noTail = planOf(tddTasks(), { redWave: 1 })
+  assert.ok(
+    noTail.warnings.some(w => /red wave/.test(w) && /final verification/i.test(w)),
+    noTail.warnings.join(' | ')
+  )
+})
+
+// --- guards: behaviour that already holds and must keep holding -------------
+
+test('guard: an owed wave a replan already dropped leaves an ordinary check after the wave before it', () => {
+  const start = createRunState(redFirstPlan([2, 3]))
+  const afterRed = recordBatchResult(start, allOk(nextStep(start)))
+  const dropped = applyReplan(afterRed, [{ group: 3, tasks: [] }])
+  assert.deepEqual(dropped.waves.map(w => w.group), [1, 2, null])
+
+  const afterWave2 = recordBatchResult(dropped, allOk(nextStep(dropped)))
+  assert.equal(nextStep(afterWave2).action, 'verify', 'nothing is owed, so wave 2 is checked before the test wave')
+  assert.equal(nextStep(afterWave2).wave, 2)
+})
+
+test('guard: an owed wave emptied by skipped dependents leaves an ordinary check after the wave before it', () => {
+  const tasks = [
+    task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/red.test.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
+    task({ id: '2.2', group: 2, paths: ['src/b.ts'] }),
+    task({ id: '3.1', group: 3, paths: ['src/c.ts'], dependsOn: ['2.1'] }),
+    task({ id: '3.2', group: 3, paths: ['src/d.ts'], dependsOn: ['2.1'] }),
+    task({ id: 't.1', group: 99, isTestTask: true, paths: ['test/later.test.ts'] })
+  ]
+  const start = createRunState(planOf(tasks, { redWave: 1, maxTasksPerAgent: 1 }))
+  assert.deepEqual(start.waves.map(w => w.group), [1, 2, 3, null], 'fixture: wave 3 exists until 2.1 fails')
+  const afterRed = recordBatchResult(start, allOk(nextStep(start)))
+
+  const afterWave2 = recordBatchResult(afterRed, failing(['2.1'])(nextStep(afterRed)))
+  assert.deepEqual(afterWave2.waves.map(w => w.group), [1, 2, null], 'wave 3 was emptied and removed')
+  const step = nextStep(afterWave2)
+  assert.equal(step.action, 'verify', 'the only wave left to build was lost, so wave 2 is the last one and is checked')
+  assert.equal(step.wave, 2)
+})
+
+test('guard: a documentation-only later wave is not implementation, so the wave before it is checked', () => {
+  const tasks = [
+    task({ id: '1.1', group: 1, isTestTask: true, paths: ['test/red.test.ts'] }),
+    task({ id: '2.1', group: 2, paths: ['src/a.ts'] }),
+    task({ id: '2.2', group: 2, paths: ['src/b.ts'] }),
+    task({ id: '3.1', group: 3, paths: ['docs/a.md'] }),
+    task({ id: '3.2', group: 3, paths: ['docs/b.md'] }),
+    task({ id: 't.1', group: 99, isTestTask: true, paths: ['test/later.test.ts'] })
+  ]
+  const verifies = []
+  const { state } = drive(createRunState(planOf(tasks, { redWave: 1 })), {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [2])
+  assert.deepEqual(skipsOf(state), [[1, SKIP_VERIFY_RED], [3, SKIP_VERIFY_DOCS]])
+})
+
+test('guard: a plan with no failing-test wave is checked after each wave as before, and its state records no section', () => {
+  const plan = simplePlan([1, 2, 3], 1)
+  assert.equal(plan.redWave, null)
+  const start = createRunState(plan)
+  assert.equal('redWave' in start, false)
+
+  const verifies = []
+  const { state } = drive(start, {
+    onVerify: step => {
+      verifies.push(step.wave)
+      return { ok: true }
+    }
+  })
+  assert.deepEqual(verifies, [1, 2, 3], 'every implementation wave with a following wave is checked')
+  assert.deepEqual(skipsOf(state), [])
+  assert.equal('redWave' in state, false)
 })
