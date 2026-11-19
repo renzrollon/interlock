@@ -2086,6 +2086,23 @@ function settleSkillProblems(text) {
       if (!p.includes(token)) problems.push(`the settle-fixer spawn paragraph carries no ${token}`)
     }
   }
+  // The confirmation worker runs as the read-only reviewer type and replies; the
+  // session writes its answer (review/reviewer-agent, review/settle-loop).
+  const conformanceHead = text.search(/^### 5e\. /m)
+  const conformanceEnd = conformanceHead === -1 ? -1 : text.slice(conformanceHead + 1).search(/^### /m)
+  const conformanceSection =
+    conformanceHead === -1 ? '' : text.slice(conformanceHead, conformanceEnd === -1 ? undefined : conformanceHead + 1 + conformanceEnd)
+  if (!conformanceSection) problems.push('no §5e section')
+  for (const token of ['as returned', 'CONFORMANCE UNREAD', 'CONFORMANCE SKIPPED: reviewer type unavailable', 'never the type']) {
+    if (conformanceSection && !conformanceSection.includes(token)) problems.push(`§5e carries no ${token}`)
+  }
+  const conformanceSpawn = conformanceSection.split(/\n\s*\n/).find(p => p.includes('Spawn one worker'))
+  if (conformanceSection && !(conformanceSpawn && /^Spawn one worker as `interlock:reviewer`/m.test(conformanceSpawn))) {
+    problems.push('the §5e spawn paragraph does not spawn the worker as `interlock:reviewer`')
+  }
+  if (!paragraphs.some(p => p.includes('REVIEW FAILED:') && p.includes('stop the loop early'))) {
+    problems.push('no paragraph stops the loop early on a review-code pass that printed REVIEW FAILED:')
+  }
   const fixerResult = fencedAt(/^interlock settle fixer-result\b/)
   const headBefore = remediate === -1 ? -1 : fencedAt(/^git rev-parse HEAD$/, remediate)
   const headAfter = spawn === -1 ? -1 : fencedAt(/^git rev-parse HEAD$/, spawn)
@@ -2438,6 +2455,13 @@ test('the loop precondition pins fail on a doctored copy, naming what was droppe
   fails(problemsOf(t => t.replace('as its whole prompt.**', 'as a prompt.**')), 'whole prompt')
   fails(problemsOf(t => t.replace('Do not fix anything yourself', 'Fix what it missed')), 'Do not fix anything yourself')
   fails(problemsOf(t => t.replaceAll('FIXER COMMITTED', 'FIXER MOVED HEAD')), 'FIXER COMMITTED')
+
+  // The confirmation worker: typed, replying, recorded as returned, and spoken when it cannot run.
+  fails(problemsOf(t => t.replace('Spawn one worker as `interlock:reviewer`', 'Spawn one worker')), 'interlock:reviewer')
+  fails(problemsOf(t => t.replace('as returned, repairing no value', 'repairing what is wrong')), 'as returned')
+  fails(problemsOf(t => t.replaceAll('CONFORMANCE UNREAD', 'CONFORMANCE MISSING')), 'CONFORMANCE UNREAD')
+  fails(problemsOf(t => t.replaceAll('CONFORMANCE SKIPPED: reviewer type unavailable', 'CONFORMANCE SKIPPED')), 'CONFORMANCE SKIPPED: reviewer type unavailable')
+  fails(problemsOf(t => t.replaceAll('REVIEW FAILED:', 'REVIEW ERROR:')), 'REVIEW FAILED:')
   fails(problemsOf(t => {
     const line = t.match(/^interlock settle fixer-result [^\n]*$/m)[0]
     return t.replace(`${line}\n`, '').replace(`${STAGE}\n`, `${STAGE}\n${line}\n`)
@@ -3052,14 +3076,92 @@ test('review-artifacts reads decisions.md, holding a needs_human row for the per
   assertRoutingTokens(read, ['`decisions.md` when it exists', '`needs_human`', 'not a finding', '`agent_resolved`', '`design.md`'], `${where} artifact read`)
 })
 
-test('review-artifacts states that the prompt, not its allowed-tools, bounds what the strict reviewer writes', () => {
-  // The reviewer is spawned with no subagent_type, so no agent definition narrows
-  // its tools; review-code states the same limit for its dimension agents.
+/** Problems with review-artifacts' Depth section's typed strict spawn (review/reviewer-agent). */
+function artifactReviewerTypeProblems(text) {
+  const problems = []
+  const head = /^## Depth$/m.exec(text)
+  if (!head) return ['no Depth section']
+  const rest = text.slice(head.index + head[0].length)
+  const end = rest.search(/^## /m)
+  const depth = end === -1 ? rest : rest.slice(0, end)
+  for (const token of ['interlock:reviewer', '`subagent_type`', '`allowed-tools`', 'do not reach an agent it spawns', 'writes-no-file', 'second bound', 'never the type']) {
+    if (!depth.includes(token)) problems.push(`the Depth section carries no ${token}`)
+  }
+  if (/names no `subagent_type`/.test(depth)) problems.push('the Depth section says the call names no `subagent_type`')
+  return problems
+}
+
+test('review-artifacts names interlock:reviewer as the strict call\'s subagent_type, and the prompt is the second bound', () => {
+  // review/reviewer-agent: Every read-only spawn of the review loop SHALL name `interlock:reviewer`.
+  const where = 'skills/review-artifacts/SKILL.md'
+  const shipped = skillText('review-artifacts')
+  assert.deepEqual(artifactReviewerTypeProblems(shipped), [], `${where} Depth`)
+  const depth = sectionOfSkill(shipped, /^## Depth$/m)
+  const call = paragraphWith(depth, 'exactly one Agent call')
+  assert.ok(call && call.includes('`interlock:reviewer`') && call.includes('`subagent_type`'), `${where}: the one Agent call names interlock:reviewer as its subagent_type`)
+  const doctored = shipped.replace('so the `subagent_type` is the first bound', 'and this Agent call names no `subagent_type`, so the prompt is the bound')
+  assert.notEqual(doctored, shipped, 'the doctored copy must differ')
+  assert.ok(artifactReviewerTypeProblems(doctored).some(p => p.includes('names no `subagent_type`')), 'a copy that names no subagent_type fails')
+  assert.ok(skillText('review-code').includes('do not reach an agent it spawns'), 'skills/review-code/SKILL.md must keep stating the same bound')
+})
+
+test('review-artifacts prints STRICT REVIEWER UNAVAILABLE beside STRICT REVIEW UNREAD and falls back to the inline read', () => {
   const where = 'skills/review-artifacts/SKILL.md'
   const depth = sectionOfSkill(skillText('review-artifacts'), /^## Depth$/m)
-  const bound = paragraphWith(depth, 'do not reach an agent it spawns')
-  assertRoutingTokens(bound, ['`allowed-tools`', 'do not reach an agent it spawns', '`subagent_type`', 'writes-no-file', 'is the bound'], `${where} Depth`)
-  assert.ok(skillText('review-code').includes('do not reach an agent it spawns'), 'skills/review-code/SKILL.md must keep stating the same bound')
+  assert.ok(depth.includes('STRICT REVIEW UNREAD'), `${where} keeps STRICT REVIEW UNREAD`)
+  const p = paragraphWith(depth, 'STRICT REVIEWER UNAVAILABLE:')
+  assertRoutingTokens(p, ['STRICT REVIEWER UNAVAILABLE: <the tool\'s message, or the refusal>', 'spawn no other type', 'inline read'], `${where} Depth`)
+})
+
+test('review-code spawns every dimension, skeptic and re-run as interlock:reviewer, and fails aloud when it cannot', () => {
+  // review/reviewer-agent: the type bounds the reviewers; a review that cannot spawn them records nothing.
+  const where = 'skills/review-code/SKILL.md'
+  const text = skillText('review-code')
+  const fanOut = sectionOfSkill(text, /^## 2\. Fan out the dimensions$/m)
+  const dimension = paragraphWith(fanOut, 'with the printed prompt as its whole prompt')
+  assertRoutingTokens(dimension, ['`interlock:reviewer`', 'with the printed prompt as its whole prompt', 'A skill\'s `allowed-tools` do not reach an agent it spawns', 'bounds its tools', 'never the type', 'second bound'], `${where} dimension spawn`)
+  const skeptic = paragraphWith(text, 'Spawn one skeptic agent per entry of `prompts`')
+  assertRoutingTokens(skeptic, ['`interlock:reviewer`', 'as its whole prompt', 'never the type'], `${where} skeptic spawn`)
+  const rerun = paragraphWith(text, 'and re-run that dimension with it')
+  assertRoutingTokens(rerun, ['`interlock:reviewer`', 'never the type'], `${where} re-run`)
+  const failure = paragraphWith(text, 'REVIEW FAILED: reviewer type unavailable')
+  assertRoutingTokens(failure, ['REVIEW FAILED: reviewer type unavailable', 'Spawn no other type', 'new session', 'interlock doctor'], `${where} failure`)
+})
+
+test('the three review-loop skills say routing chooses the model and the effort, never the type', () => {
+  for (const name of ['review-code', 'settle', 'review-artifacts']) {
+    assert.ok(skillText(name).includes('never the type'), `skills/${name}/SKILL.md must carry never the type`)
+  }
+})
+
+/**
+ * Every backticked `interlock:<name>` a skill spells that resolves to neither an
+ * agent definition nor a skill the plugin ships. The opening backtick sits
+ * directly before `interlock:`, so a slash command like `/interlock:settle` is
+ * not read as a type.
+ */
+function unresolvedInterlockNames(text, root = ROOT) {
+  const unresolved = []
+  for (const m of text.matchAll(/`interlock:([a-z0-9][a-z0-9-]*)`/g)) {
+    const name = m[1]
+    if (existsSync(join(root, 'agents', `${name}.md`)) || existsSync(join(root, 'skills', name, 'SKILL.md'))) continue
+    unresolved.push(`interlock:${name}`)
+  }
+  return unresolved
+}
+
+test('every backticked interlock:<name> a skill spells resolves to a shipped agent or skill', () => {
+  const found = new Set()
+  for (const dir of readdirSync(SKILLS_DIR)) {
+    const path = join(SKILLS_DIR, dir, 'SKILL.md')
+    if (!existsSync(path)) continue
+    const text = readFileSync(path, 'utf8')
+    assert.deepEqual(unresolvedInterlockNames(text), [], `skills/${dir}/SKILL.md names a type the plugin does not ship`)
+    for (const m of text.matchAll(/`interlock:([a-z0-9][a-z0-9-]*)`/g)) found.add(m[1])
+  }
+  for (const need of ['reviewer', 'settle-fixer', 'ship']) assert.ok(found.has(need), `no skill spells \`interlock:${need}\``)
+  const doctored = skillText('settle').replace('`interlock:reviewer`', '`interlock:reviewers`')
+  assert.deepEqual(unresolvedInterlockNames(doctored), ['interlock:reviewers'])
 })
 
 test('the settle skill pre-approves the empty-pathspec check it runs before staging', () => {

@@ -1027,6 +1027,23 @@ test('roleOf reads the five sources, each as its own role', () => {
   assert.equal(worker.role, 'conformance')
 })
 
+test('a spawn typed interlock:reviewer is filed by its prompt, and keeps the type only as a label', () => {
+  // review/reviewer-agent, design D13: the meter stays blind to the type. Passes
+  // before and after the skills name the type.
+  const s = live()
+  for (const [id, prompt, role] of [
+    ['typed-dim', brief('language'), 'dimension'],
+    ['typed-skeptic', SKEPTIC_REFUTE, 'skeptic'],
+    ['typed-conformance', WORKER_PROMPT, 'conformance']
+  ]) {
+    agent(s, { id, prompt, model: 'sonnet', resolved: 'claude-sonnet-5-5', subagentType: 'interlock:reviewer', spawnAt: 70 })
+    const rec = s.agents.get(id)
+    assert.ok(rec, `${id} was not filed`)
+    assert.equal(rec.role, role, `${id} is filed under the role its prompt names`)
+    assert.equal(rec.subagentType, 'interlock:reviewer', `${id} keeps its type as a label`)
+  }
+})
+
 test('roleOf keeps the words of a dimension heading as the brief wrote them', () => {
   for (const [heading, words] of [
     ['# Dimension: QA', 'QA'],

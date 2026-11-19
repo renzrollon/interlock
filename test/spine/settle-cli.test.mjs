@@ -785,7 +785,11 @@ test('conformance-brief: three scenarios and two graph-selected living requireme
   }
   assert.doesNotMatch(out, /\bL3\b/, 'the graph selects two requirements, no more')
   assert.ok(out.includes(repo.head), 'the briefing names the head')
-  assert.ok(out.includes('.claude/ship/settle/handoff.json'), 'the briefing names the default result file')
+  // settle-loop: `interlock settle conformance-brief` SHALL brief the confirmation … — the answer is the reply.
+  assert.ok(!out.includes('.claude/ship/settle/handoff.json'), 'the briefing names no result file')
+  assert.ok(out.includes('You write no file'), `the briefing tells the worker it writes no file:\n${out}`)
+  assert.ok(out.includes('reply with one JSON object'), `the briefing asks for the answer as the reply:\n${out}`)
+  assert.ok(!out.includes('write JSON to'), 'the briefing does not ask the worker to write a file')
   for (const key of [...CB_HANDOFF_KEYS, 'head']) assert.match(out, new RegExp(`\\b${key}\\b`), `the briefing asks for ${key}`)
 })
 
@@ -796,11 +800,21 @@ test('conformance-brief: the worker is told to read and not to run the suite', (
   assert.ok(r.stdout.includes('Do not run the test suite'), r.stdout)
 })
 
-test('conformance-brief: --result names the file the worker answers into', () => {
+test('conformance-brief: --result reaches the caller and not the worker', () => {
+  // settle-loop: `interlock settle conformance-brief` SHALL brief the confirmation … — `--result`
+  // names the file the caller writes the reply to.
   const repo = conformanceRepo('cb-result')
   const r = settle('conformance-brief', cbArgs(repo, { result: 'out/answer.json' }), { cwd: repo.root })
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
-  assert.ok(r.stdout.includes('out/answer.json'), `the briefing should name out/answer.json:\n${r.stdout}`)
+  assert.ok(!r.stdout.includes('out/answer.json'), `the briefing must not name out/answer.json:\n${r.stdout}`)
+  const j = settle('conformance-brief', [...cbArgs(repo, { result: 'out/answer.json' }), '--json'], { cwd: repo.root })
+  assert.equal(j.code, 0, `stderr: ${j.stderr}`)
+  const answer = JSON.parse(j.stdout)
+  assert.equal(answer.resultPath, 'out/answer.json')
+  assert.ok(!answer.briefing.includes('out/answer.json'), 'the --json briefing text does not hold the path either')
+  const d = settle('conformance-brief', [...cbArgs(repo), '--json'], { cwd: repo.root })
+  assert.equal(d.code, 0, `stderr: ${d.stderr}`)
+  assert.equal(JSON.parse(d.stdout).resultPath, '.claude/ship/settle/handoff.json')
 })
 
 test('conformance-brief: an unknown change exits 1 naming it, and prints nothing', () => {

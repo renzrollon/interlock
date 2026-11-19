@@ -22,6 +22,7 @@ const SHIP = join(ROOT, 'workflows', 'ship.js')
 const PING_MD = join(ROOT, 'agents', 'ping.md')
 const WORKER_MD = join(ROOT, 'agents', 'worker.md')
 const SETTLE_FIXER_MD = join(ROOT, 'agents', 'settle-fixer.md')
+const REVIEWER_MD = join(ROOT, 'agents', 'reviewer.md')
 
 function parseFrontmatter(text) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text)
@@ -86,12 +87,97 @@ test('plugin agent files exist with slim frontmatter', () => {
   for (const [label, fm] of [
     ['ping', ping],
     ['worker', worker],
-    ['settle-fixer', fixer]
+    ['settle-fixer', fixer],
+    ['reviewer', parseFrontmatter(readFileSync(REVIEWER_MD, 'utf8')) || {}]
   ]) {
     const denied = splitList(fm.disallowedTools)
     for (const need of ['Skill', 'Agent', 'mcp__*']) {
       assert.ok(denied.includes(need), `${label}: disallowedTools must include ${need}`)
     }
+  }
+})
+
+/** The reviewer's tools: the worker's list with the two edit tools taken out. */
+const REVIEWER_TOOLS = Object.freeze(WORKER_TOOLS.filter(t => t !== 'Write' && t !== 'Edit'))
+
+/**
+ * Problems with a reviewer agent file's tool list, each naming the tool at
+ * fault. The type is the bound on what a review-loop reader can do
+ * (review/reviewer-agent), so a tool that edits, spawns, invokes a skill or
+ * reaches an MCP server is a problem by name.
+ */
+function reviewerToolProblems(text) {
+  const fm = parseFrontmatter(text)
+  if (!fm) return ['agents/reviewer.md has no frontmatter']
+  const problems = []
+  const tools = splitList(fm.tools)
+  for (const t of tools) {
+    if (t === 'Write' || t === 'Edit' || t === 'Agent' || t === 'Skill' || t.startsWith('Agent(') || t.startsWith('Skill(')) {
+      problems.push(`tools grants ${t}`)
+    } else if (t.startsWith('mcp__')) {
+      problems.push(`tools grants ${t}`)
+    }
+  }
+  if (!problems.length && tools.join(', ') !== REVIEWER_TOOLS.join(', ')) {
+    problems.push(`tools is ${tools.join(', ') || '(empty)'}, not ${REVIEWER_TOOLS.join(', ')}`)
+  }
+  const denied = splitList(fm.disallowedTools)
+  for (const need of ['Write', 'Edit', 'Skill', 'Agent', 'mcp__*']) {
+    if (!denied.includes(need)) problems.push(`disallowedTools lacks ${need}`)
+  }
+  return problems
+}
+
+test('agents/reviewer.md is the worker\'s list without the edit tools, and reserves its type', () => {
+  assert.ok(existsSync(REVIEWER_MD), 'agents/reviewer.md is missing')
+  const text = readFileSync(REVIEWER_MD, 'utf8')
+  const fm = parseFrontmatter(text)
+  assert.ok(fm, 'agents/reviewer.md must have YAML frontmatter')
+  assert.equal(fm.name, 'reviewer')
+
+  const tools = splitList(fm.tools)
+  assert.deepEqual(tools, [...REVIEWER_TOOLS], 'the reviewer carries the worker\'s tools with Write and Edit taken out')
+  assert.deepEqual(tools, ['Read', 'Grep', 'Glob', 'Bash'])
+  assertSlim(tools, 'agents/reviewer.md')
+  assert.deepEqual(reviewerToolProblems(text), [])
+
+  const denied = splitList(fm.disallowedTools)
+  for (const need of ['Write', 'Edit', 'Skill', 'Agent', 'mcp__*']) {
+    assert.ok(denied.includes(need), `reviewer: disallowedTools must include ${need}`)
+  }
+  assert.ok(!('model' in fm), 'the reviewer names no model')
+  assert.ok(!('effort' in fm), 'the reviewer names no effort')
+
+  const description = String(fm.description || '')
+  for (const token of [
+    'Never invoke from a user conversation',
+    '/interlock:review-code',
+    '/interlock:settle',
+    '/interlock:review-artifacts',
+    'sanctioned use'
+  ]) {
+    assert.ok(description.includes(token), `the reviewer description must carry ${token}`)
+  }
+  const descLine = text.split('\n').find(l => l.startsWith('description:'))
+  assert.ok(descLine, 'the reviewer description is on one line')
+  assert.doesNotMatch(descLine.slice('description: '.length), /: /, 'the description holds no colon followed by a space')
+
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, '')
+  for (const token of ['Do not invoke skills', 'Do not spawn other agents', 'through the shell']) {
+    assert.ok(body.includes(token), `the reviewer body must carry ${token}`)
+  }
+})
+
+test('a reviewer tool list that gains a write, a spawn, a skill or an MCP name fails naming it', () => {
+  const text = readFileSync(REVIEWER_MD, 'utf8')
+  for (const added of ['Write', 'Edit', 'Agent', 'Skill', 'mcp__x__y']) {
+    const doctored = text.replace(/^tools: (.*)$/m, (_, list) => `tools: ${list}, ${added}`)
+    assert.notEqual(doctored, text, 'the doctored copy must differ')
+    const problems = reviewerToolProblems(doctored)
+    assert.ok(
+      problems.some(p => p.includes(added)),
+      `a tools line adding ${added} must fail naming it; got ${JSON.stringify(problems)}`
+    )
   }
 })
 

@@ -228,7 +228,7 @@ function fakePlugin(dir, { version = '9.9.9', omit = [], engines = '>=18', name 
   const root = join(dir, name)
   file(root, 'package.json', { name: 'interlock', engines: { node: engines } })
   file(root, '.claude-plugin/plugin.json', { name: 'interlock', version, workflows: './workflows' })
-  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'agents/settle-fixer.md', 'cli/interlock', 'cli/interlock-graph']) {
+  for (const rel of ['workflows/ship.js', 'agents/worker.md', 'agents/ping.md', 'agents/settle-fixer.md', 'agents/reviewer.md', 'cli/interlock', 'cli/interlock-graph']) {
     if (omit.includes(rel)) continue
     file(root, rel, '// stub\n')
   }
@@ -487,6 +487,31 @@ test('an incomplete plugin install fails and names the missing files', () => {
     const plugin = byId(report, 'plugin')
     assert.equal(plugin.status, 'fail')
     assert.match(plugin.evidence.join('\n'), /missing: agents\/worker\.md/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a plugin without agents/reviewer.md fails its plugin row naming the file', () => {
+  // review/reviewer-agent: `interlock doctor` SHALL count the reviewer agent
+  // among the plugin's required files.
+  const dir = tmp()
+  try {
+    const report = diagnose(dir, baseOpts(dir, { pluginRoot: fakePlugin(dir, { omit: ['agents/reviewer.md'] }) }))
+    const plugin = byId(report, 'plugin')
+    assert.equal(plugin.status, 'fail')
+    assert.match(plugin.evidence.join('\n'), /missing: agents\/reviewer\.md/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a complete plugin passes its plugin row and counts four agent types', () => {
+  const dir = tmp()
+  try {
+    const plugin = byId(diagnose(dir, baseOpts(dir, { pluginRoot: fakePlugin(dir) })), 'plugin')
+    assert.equal(plugin.status, 'ok')
+    assert.match(plugin.detail, /four agent types/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

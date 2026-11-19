@@ -47,7 +47,7 @@ Print every line of `banners` verbatim, then print `GATE DEPTH: <depth>` from th
 
 At a depth other than `strict`, perform the review below in the session (Reviewer 1, Reviewer 2 and the Invariant check) and go to **Emit structured findings**.
 
-At `strict`, make exactly one Agent call, passing the answer's `model` and `effort` (a `null` means omit that parameter), and do no review of your own beside the reviewer's. The prompt is, verbatim:
+At `strict`, make exactly one Agent call, naming `interlock:reviewer` as its `subagent_type` and passing the answer's `model` and `effort` (a `null` means omit that parameter), and do no review of your own beside the reviewer's. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The prompt is, verbatim:
 
 - the Reviewer 1, Reviewer 2 and Invariant check sections below, as this file carries them, and the scoped re-gate section too when `--since` was passed;
 - the artifact paths `interlock validate` resolved, and the stack note from your detection above;
@@ -58,7 +58,9 @@ Add no rubric of your own to that prompt: the two depths differ in who reads, no
 
 Read the reply for a JSON object holding a `findings` array. When it holds none, print `STRICT REVIEW UNREAD: <first line of the reply>` and perform the inline read in the session instead, so the gate still runs once. Otherwise the reviewer's findings are the gate's input.
 
-At both depths the session writes the findings file, from the findings as returned, and runs the gate line itself. Repair no finding and drop none: a malformed one is the gate's to report under `malformed`. The reviewer writes nothing. A skill's `allowed-tools` do not reach an agent it spawns, and this Agent call names no `subagent_type`, so the prompt's writes-no-file line is the bound.
+When the Agent tool reports `interlock:reviewer` as an unknown type, or the spawn is refused or declined, print `STRICT REVIEWER UNAVAILABLE: <the tool's message, or the refusal>`, make no second Agent call, spawn no other type, and perform the inline read in the session instead, so the gate still runs once.
+
+At both depths the session writes the findings file, from the findings as returned, and runs the gate line itself. Repair no finding and drop none: a malformed one is the gate's to report under `malformed`. The reviewer writes nothing. A skill's `allowed-tools` do not reach an agent it spawns, so the `subagent_type` is the first bound: the plugin's definition of `interlock:reviewer` bounds the reviewer's tools, and it holds no tool that edits a file, spawns an agent or invokes a skill. The shell can still write, so the prompt's writes-no-file line is the second bound.
 
 ---
 
