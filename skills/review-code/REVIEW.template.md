@@ -26,11 +26,16 @@ owner: <name or role, e.g. "Priya (platform)">
       path can never read as ready to merge without a person. It is not a review
       input; no reviewer is told about it.
 
-    - Both path lists are read from the BASE ref when `--base` is given, never
-      from the working copy being judged, so a change cannot edit the list it is
-      held to. The prose is read from the working copy.
+    - The `## Counts as Source` path list is read by the merge verdict's size
+      signal alone (`diff.shape`): a changed file under a listed path is counted
+      as source, whatever its name, where it would otherwise be set aside as a
+      test or as prose. It is not a review input and moves no other signal.
 
-    - The two path-list sections at the end are shipped EMPTY: their guidance
+    - All three path lists are read from the BASE ref when `--base` is given,
+      never from the working copy being judged, so a change cannot edit the list
+      it is held to. The prose is read from the working copy.
+
+    - The three path-list sections at the end are shipped EMPTY: their guidance
       and examples sit inside single-line HTML comments, which the parser
       skips, so a copied template parses with no problem. Add real entries as
       `- path` list items beneath the comments, one per line.
@@ -65,3 +70,10 @@ third-party and are reviewed upstream, not here."
 <!-- The merge verdict reads this list and marks any change under a listed path as needing a human. It never changes which findings survive review. -->
 <!-- Matching is on the canonical path, as for Do Not Report. Use it for what an unreviewed mistake costs most: migrations, auth, release workflows, this file. -->
 <!-- Example entries, one per line, as list items: migrations/ and .github/workflows/ -->
+
+## Counts as Source
+
+<!-- Repo-relative paths (files or directories) whose changed lines count toward the merge verdict's size caps, whatever their name. -->
+<!-- The size signal sets documentation and test paths aside; list prose that is behaviour here, such as model-facing prompts or skills. It never changes which findings survive review. -->
+<!-- Matching is on the canonical path, as for Do Not Report. Only the size signal reads this list. -->
+<!-- Example entries, one per line, as list items: skills/ and prompts/ -->

@@ -14,7 +14,7 @@ Most of it is about `ship`. `/interlock:spec` is a skill in your own session, be
 |---|---|---|
 | Model | The weights | The host's |
 | Agent loop | One conversation: prompt assembly, tool dispatch, transcript, compaction | The host's |
-| Tool surface | What an agent may touch | The host's tools, narrowed by Interlock's two agent types and its `PreToolUse` guards |
+| Tool surface | What an agent may touch | The host's tools, narrowed by Interlock's agent types and its `PreToolUse` guards |
 | Run program | Which agents run, in what order, with which briefing | Interlock — `lib/run.mjs` |
 | Policy | Caps, gates and verdicts | Interlock — `cli/interlock` |
 | Records | What a run leaves on disk | Interlock — trajectory, spill, receipt, corpora |

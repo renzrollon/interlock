@@ -50,7 +50,10 @@ const v = (over = {}) => ({
 
 test('an absent REVIEW.md is the empty policy with no problems', () => {
   const p = readReviewPolicy(tmp)
-  assert.deepEqual(p, { prose: '', excludePaths: [], humanPaths: [], owner: null, problems: [] })
+  // Updated by judge-size-by-what-a-person-reads task 2.1: the empty policy gains
+  // `sourcePaths`; this now also pins "Declared counts-as-source paths SHALL be
+  // parsed like the other path lists and SHALL be read only by the size signal".
+  assert.deepEqual(p, { prose: '', excludePaths: [], humanPaths: [], sourcePaths: [], owner: null, problems: [] })
 })
 
 test('a REVIEW.md in a subdirectory is not read as policy', () => {
@@ -477,19 +480,25 @@ test('formatReviewPolicy prints (none) when no always-human-review path is decla
 
 // --- the shipped template ----------------------------------------------------
 
-test('the shipped REVIEW.template.md parses with no problems and declares both path-list sections', () => {
+// Moved pin (judge-size-by-what-a-person-reads, design D20): the template now
+// declares the third list too, shipped empty. It pins "Declared counts-as-source
+// paths SHALL be parsed like the other path lists and SHALL be read only by the
+// size signal" beside the two lists it pinned before.
+test('the shipped REVIEW.template.md parses with no problems and declares all three path-list sections', () => {
   const template = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills', 'review-code', 'REVIEW.template.md'),
     'utf8'
   )
   assert.match(template, /^## Do Not Report\s*$/m, 'the template declares no Do Not Report section')
   assert.match(template, /^## Always Human Review\s*$/m, 'the template declares no Always Human Review section')
+  assert.match(template, /^## Counts as Source\s*$/m, 'the template declares no Counts as Source section')
   const policy = parseReviewPolicy(template)
   assert.deepEqual(policy.problems, [], 'a copied template must parse with no problem')
   // Shipped empty: the guidance sits inside HTML comments, so copying it
   // enforces nothing until a person adds an entry.
   assert.deepEqual(policy.excludePaths, [])
   assert.deepEqual(policy.humanPaths, [])
+  assert.deepEqual(policy.sourcePaths, [])
 })
 
 // --- a glob-shaped item in an enforced list (design D11 of label-and-harden-the-merge-verdict) ---
@@ -537,4 +546,127 @@ test('a pattern in Do Not Report drops no finding: the item is not a prefix of a
   const result = resolveReview([f({ file: 'src/a.ts' })], [], { excludePaths: policy.excludePaths })
   assert.equal(result.droppedByPolicy.length, 0)
   assert.equal(result.surviving.length, 1)
+})
+
+// --- counts-as-source paths (change judge-size-by-what-a-person-reads, spec review/policy-file) ---
+//
+// `## Counts as Source` is a third path list with the grammar, canonical form
+// and problem wording of the other two. It is scope read by the size signal
+// alone: it moves no finding.
+
+test('counts as source: a declared section parses into canonical sourcePaths, leaving the other lists and the prose alone', () => {
+  const head =
+    '---\nowner: Priya\n---\n\n## What "Important" means\nData loss only.\n\n' +
+    '## Do Not Report\n- dist/\n\n## Always Human Review\n- lib/release/\n'
+  const without = parseReviewPolicy(head)
+  const withSection = parseReviewPolicy(`${head}\n## Counts as Source\n- skills/\n- ./agents\n- skills\n`)
+  assert.deepEqual(withSection.sourcePaths, ['skills', 'agents'])
+  assert.deepEqual(withSection.problems, [])
+  assert.deepEqual(withSection.excludePaths, without.excludePaths)
+  assert.deepEqual(withSection.humanPaths, without.humanPaths)
+  assert.equal(withSection.prose, without.prose)
+  assert.equal(withSection.owner, without.owner)
+  assert.deepEqual(without.sourcePaths, [])
+  assert.deepEqual(parseReviewPolicy('').sourcePaths, [])
+  assert.deepEqual(readReviewPolicy(tmp).sourcePaths, [])
+})
+
+test('counts as source: an oversized REVIEW.md carries an empty sourcePaths beside its problem', () => {
+  writePolicy('## Counts as Source\n- skills/\n' + 'x'.repeat(LIMITS.maxReviewPolicyBytes + 1))
+  const policy = readReviewPolicy(tmp)
+  assert.deepEqual(policy.sourcePaths, [])
+  assert.equal(policy.problems.length, 1)
+})
+
+test('counts as source: each malformed shape is reported and declares nothing', () => {
+  const prose = parseReviewPolicy('## Counts as Source\nSkill prose is behaviour.\n')
+  assert.deepEqual(prose.sourcePaths, [])
+  assert.equal(prose.problems.length, 1)
+  assert.match(prose.problems[0], /Counts as Source/)
+  assert.match(prose.problems[0], /no path list items/)
+
+  const outside = parseReviewPolicy('## Counts as Source\n- ../outside\n')
+  assert.deepEqual(outside.sourcePaths, [])
+  assert.equal(outside.problems.length, 1)
+  assert.match(outside.problems[0], /\.\.\/outside/)
+  assert.match(outside.problems[0], /not a repo-relative path/)
+
+  const pattern = parseReviewPolicy('## Counts as Source\n- skills/**\n')
+  assert.deepEqual(pattern.sourcePaths, [])
+  assert.equal(pattern.problems.length, 1)
+  assert.ok(pattern.problems[0].includes('"Counts as Source" item "skills/**"'), pattern.problems[0])
+  assert.match(pattern.problems[0], /path or a directory prefix/)
+})
+
+test('counts as source: sectionOfProblem attributes every problem a section can report to its own section', () => {
+  assert.equal(typeof core.sectionOfProblem, 'function', 'lib/review-core.mjs exports no sectionOfProblem')
+  const shapes = [
+    '- ../outside\n',
+    '- src/**\n',
+    '- nitCap: 0\n',
+    'prose and no list item\n',
+    '- kept/\nand a line of prose\n',
+    '```\n- a/\n```\n'
+  ]
+  const sections = [
+    ['## Do Not Report', 'exclusions'],
+    ['## Always Human Review', 'human'],
+    ['## Counts as Source', 'source']
+  ]
+  for (const [heading, expected] of sections) {
+    for (const shape of shapes) {
+      const { problems } = parseReviewPolicy(`${heading}\n${shape}`)
+      assert.ok(problems.length > 0, `${heading} / ${JSON.stringify(shape)}: no problem to attribute`)
+      for (const problem of problems) {
+        // A threshold-shaped item is also reported as a body line, which names
+        // no section: that one is null.
+        const want = problem.startsWith('line "') ? null : expected
+        assert.equal(core.sectionOfProblem(problem), want, `${heading}: ${problem}`)
+        // As the gather sees it, labelled with the copy it came from.
+        assert.equal(core.sectionOfProblem(`${problem} (origin/main)`), want, `${heading} labelled: ${problem}`)
+      }
+      assert.ok(problems.some(problem => core.sectionOfProblem(problem) === expected), `${heading}: ${problems.join(' | ')}`)
+    }
+  }
+  const front = parseReviewPolicy('---\nnitCap: 3\n---\n').problems
+  assert.ok(front.length > 0)
+  for (const problem of front) assert.equal(core.sectionOfProblem(problem), null, problem)
+  const unknownKey = parseReviewPolicy('---\ncolour: blue\n---\n').problems
+  for (const problem of unknownKey) assert.equal(core.sectionOfProblem(problem), null, problem)
+})
+
+test('counts as source: composePolicy takes sourcePaths from the base copy', () => {
+  const working = '## Counts as Source\n- docs/\n'
+  const base = '## Counts as Source\n- skills/\n'
+  const composed = core.composePolicy({ working: copyOf(working), base: copyOf(base), ref: 'origin/main' })
+  assert.deepEqual(composed.sourcePaths, ['skills'])
+  const absentBase = core.composePolicy({ working: copyOf(working), base: null, ref: 'origin/main' })
+  assert.deepEqual(absentBase.sourcePaths, [])
+})
+
+test('counts as source: formatReviewPolicy prints the source line after the human-review line, and (none) when empty', () => {
+  const out = formatReviewPolicy(parseReviewPolicy('## Always Human Review\n- lib/release/\n\n## Counts as Source\n- skills/\n- agents/\n'))
+  assert.match(out, /^ {2}source: skills, agents$/m)
+  const lines = out.split('\n')
+  const human = lines.findIndex(line => line.startsWith('  human-review:'))
+  assert.ok(human > -1 && lines[human + 1].startsWith('  source:'), out)
+  assert.match(formatReviewPolicy(parseReviewPolicy('## Do Not Report\n- dist/\n')), /^ {2}source: \(none\)$/m)
+})
+
+test('counts as source: the list never moves a finding through resolveReview', () => {
+  const policy = parseReviewPolicy('## Counts as Source\n- skills/\n')
+  assert.deepEqual(policy.sourcePaths, ['skills'])
+  const findings = [f({ file: 'skills/settle/SKILL.md', title: 'wrong step' })]
+  const verdicts = [
+    v({ findingTitle: 'wrong step', file: 'skills/settle/SKILL.md' }),
+    v({ findingTitle: 'wrong step', file: 'skills/settle/SKILL.md' })
+  ]
+  const plain = resolveReview(findings, verdicts, { band: null })
+  const listed = resolveReview(findings, verdicts, {
+    excludePaths: policy.excludePaths,
+    sourcePaths: policy.sourcePaths,
+    band: null
+  })
+  assert.equal(listed.counts.surviving, 1)
+  assert.deepEqual(listed, plain)
 })

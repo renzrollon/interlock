@@ -358,6 +358,33 @@ export const INVENTORY = [
     codes: [0],
     check: r => (r.stdout === '' && /nothing to confirm/.test(r.stderr) ? '' : 'did not take the nothing-to-confirm exit')
   },
+  // The description the settle skill writes: the facts it is written from, and the
+  // check of the copy the platform holds, piped in as `gh pr view <id> --json body` prints it.
+  {
+    bin: I,
+    argv: ['settle', 'description-brief', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--json'],
+    codes: [0],
+    keys: ['change', 'changeLine', 'requirements', 'living.held', 'sources'],
+    check: r => (stepOf(r).changeLine === `Change: \`${CHANGE}\` (openspec/changes/${CHANGE}/proposal.md)` ? '' : 'the Change: line does not name the change')
+  },
+  {
+    bin: I,
+    argv: ['settle', 'description-check', '--file', '-', '--from-json', 'body', '--change', CHANGE, '--json'],
+    codes: [0],
+    keys: ['ok', 'problems', 'sections', 'changeLine'],
+    input: JSON.stringify({
+      body: [
+        `## Summary\nChange: \`${CHANGE}\` (openspec/changes/${CHANGE}/proposal.md)\n- why`,
+        '## Changes\n- x',
+        '## Must Not Change\n- y, checked by a test',
+        '## High Risk Changes\nNone',
+        '## Prerequisites to Production\nBefore merging: nothing.\nBefore deploying: nothing.',
+        '## How to Roll Back\nUndo: revert.\nNot undone by a revert: nothing.\nOrder: none.',
+        '## Testing\n- Unit: passing'
+      ].join('\n\n')
+    }),
+    check: r => (stepOf(r).ok === true ? '' : 'a complete description was not read as complete')
+  },
 
   // The corpora.
   { bin: I, argv: ['report', '--json'], codes: [0], keys: ['coverage', 'indicators'] },

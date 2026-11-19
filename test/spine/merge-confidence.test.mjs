@@ -2866,3 +2866,276 @@ test('verify judge --head records the head on the verdict, and without it the ve
   assert.equal(plain.code, 0, plain.stderr)
   assert.equal(Object.hasOwn(JSON.parse(plain.stdout), 'head'), false)
 })
+
+// --- the size signal reads what a person reads (change judge-size-by-what-a-person-reads) ---
+//
+// With per-file counts `diff.shape` places each changed file in one class by
+// its path (source, test or prose) and applies the published caps to the source
+// class alone. When the classes cannot be established it counts everything, as
+// before, and says why. Every cap is read from MERGE_BANDS.
+
+const LINE_CAP = MERGE_BANDS.maxChangedLinesForMerge
+const FILE_CAP = MERGE_BANDS.maxChangedFilesForMerge
+
+const row = (path, lines, binary = false) => ({ path, lines: binary ? 0 : lines, binary })
+const rowsOf = (prefix, count, lines, suffix = '.mjs') =>
+  Array.from({ length: count }, (_, i) => row(`${prefix}${i}${suffix}`, lines))
+
+/** The green input with `files` as its diff and `policy` over the green review policy. */
+function sizedInput(files, policy = {}) {
+  const input = fixture('all-observable-green')
+  input.diff = {
+    base: 'origin/main',
+    changedLines: files.reduce((sum, f) => sum + f.lines, 0),
+    changedFiles: files.length,
+    binaryFiles: files.filter(f => f.binary).length,
+    paths: files.map(f => f.path),
+    renamedFrom: [],
+    files
+  }
+  input.reviewPolicy =
+    policy === null ? null : { ...input.reviewPolicy, sourcePaths: [], sourceProblems: [], ...policy }
+  return input
+}
+const sizeOf = (files, policy) => signalOf(assessMergeConfidence(sizedInput(files, policy)), 'diff.shape')
+const lineOf = (entry, cls) => (entry.evidence || []).find(line => line.startsWith(`${cls}:`))
+const FELL_BACK = 'every changed line and file was counted'
+
+test('size: a change that is mostly tests and prose is green on its source, naming both caps with their values', () => {
+  const files = [
+    row('lib/a.mjs', 3),
+    row('test/spine/a.test.mjs', LINE_CAP + 1),
+    ...rowsOf('docs/note-', FILE_CAP + 1, 1, '.md')
+  ]
+  const entry = sizeOf(files)
+  assert.equal(entry.band, 'green', said(entry))
+  assert.match(entry.reason, /source/)
+  assert.ok(entry.reason.includes('3 '), entry.reason)
+  assert.ok(entry.reason.includes(`MERGE_BANDS.maxChangedLinesForMerge = ${LINE_CAP}`), entry.reason)
+  assert.ok(entry.reason.includes(`MERGE_BANDS.maxChangedFilesForMerge = ${FILE_CAP}`), entry.reason)
+  assert.doesNotMatch(said(entry), new RegExp(FELL_BACK))
+})
+
+test('size: source one past either cap is amber for a person, naming the cap it exceeded', () => {
+  const lines = sizeOf([row('lib/a.mjs', LINE_CAP + 1)])
+  assert.equal(lines.band, 'amber', said(lines))
+  assert.equal(lines.kind, 'person')
+  assert.ok(lines.reason.includes(`MERGE_BANDS.maxChangedLinesForMerge = ${LINE_CAP}`), lines.reason)
+  assert.ok(!lines.reason.includes('maxChangedFilesForMerge'), lines.reason)
+
+  const files = sizeOf(rowsOf('lib/f', FILE_CAP + 1, 1))
+  assert.equal(files.band, 'amber', said(files))
+  assert.equal(files.kind, 'person')
+  assert.ok(files.reason.includes(`MERGE_BANDS.maxChangedFilesForMerge = ${FILE_CAP}`), files.reason)
+  assert.ok(!files.reason.includes('maxChangedLinesForMerge'), files.reason)
+})
+
+test('size: source at both caps is green beside test and prose files', () => {
+  assert.ok(LINE_CAP >= FILE_CAP, 'precondition: the line cap fills the file cap with a line a file')
+  const source = [row('lib/first.mjs', LINE_CAP - (FILE_CAP - 1)), ...rowsOf('lib/f', FILE_CAP - 1, 1)]
+  const entry = sizeOf([...source, row('test/a.test.mjs', LINE_CAP), row('docs/a.md', LINE_CAP)])
+  assert.equal(entry.band, 'green', said(entry))
+})
+
+test('size: a green and an amber reading both carry the source, test, prose and total figures', () => {
+  const green = sizeOf([
+    row('lib/a.mjs', 3),
+    row('test/a.test.mjs', LINE_CAP),
+    row('test/b.test.mjs', 1),
+    row('docs/a.md', 2),
+    row('openspec/changes/c/design.md', 3)
+  ])
+  assert.equal(green.band, 'green', said(green))
+  assert.ok(lineOf(green, 'source').includes('3 changed line(s)'), said(green))
+  assert.ok(lineOf(green, 'source').includes('1 file(s)'), said(green))
+  assert.ok(lineOf(green, 'test').includes(`${LINE_CAP + 1} changed line(s)`), said(green))
+  assert.ok(lineOf(green, 'test').includes('2 file(s)'), said(green))
+  assert.ok(lineOf(green, 'prose').includes('5 changed line(s)'), said(green))
+  assert.ok(lineOf(green, 'prose').includes('2 file(s)'), said(green))
+  assert.ok(lineOf(green, 'total').includes(`${LINE_CAP + 9} changed line(s)`), said(green))
+  assert.ok(lineOf(green, 'total').includes('5 changed file(s)'), said(green))
+  for (const cls of ['test', 'prose']) assert.ok(lineOf(green, cls).includes('not counted toward the caps'), cls)
+  assert.ok(!lineOf(green, 'source').includes('not counted toward the caps'))
+
+  const amber = sizeOf([
+    row('lib/a.mjs', LINE_CAP + 1),
+    row('test/a.test.mjs', 1),
+    row('test/b.test.mjs', 1),
+    row('docs/a.md', 1),
+    row('docs/b.md', 1)
+  ])
+  assert.equal(amber.band, 'amber', said(amber))
+  for (const cls of ['source', 'test', 'prose', 'total']) assert.ok(lineOf(amber, cls), `${cls}: ${said(amber)}`)
+})
+
+test('size: a binary file is one source file and no lines', () => {
+  const entry = sizeOf([row('assets/logo.png', 0, true), row('lib/a.mjs', 2)])
+  assert.ok(lineOf(entry, 'source').includes('2 changed line(s)'), said(entry))
+  assert.ok(lineOf(entry, 'source').includes('2 file(s)'), said(entry))
+  assert.ok(entry.evidence.some(line => /binary/.test(line)), said(entry))
+})
+
+test('size: a listed path that placed files is named with its files, lines and reference, and an unused one is not', () => {
+  const entry = sizeOf(
+    [row('skills/settle/SKILL.md', 3), row('skills/spec/SKILL.md', 4), row('lib/a.mjs', 1)],
+    { ref: 'origin/main', sourcePaths: ['skills', 'agents'] }
+  )
+  assert.equal(entry.band, 'green', said(entry))
+  const named = entry.evidence.find(line => line.includes('Counts as Source'))
+  assert.ok(named, said(entry))
+  assert.ok(named.includes('skills'), named)
+  assert.ok(named.includes('2 file(s)'), named)
+  assert.ok(named.includes('7 line(s)'), named)
+  assert.ok(named.includes('origin/main'), named)
+  assert.ok(lineOf(entry, 'source').includes('8 changed line(s)'), said(entry))
+  assert.doesNotMatch(said(entry), /agents/)
+})
+
+test('size: a diff with totals and no usable per-file counts is judged on its totals, saying so', () => {
+  const at = fixture('all-observable-green')
+  at.diff = { changedLines: LINE_CAP + 1, changedFiles: 1 }
+  const none = signalOf(assessMergeConfidence(at), 'diff.shape')
+  assert.equal(none.band, 'amber', said(none))
+  assert.ok(none.reason.includes('MERGE_BANDS.maxChangedLinesForMerge'), none.reason)
+  assert.ok(said(none).includes(FELL_BACK), said(none))
+  assert.match(said(none), /no per-file counts/)
+
+  const under = fixture('all-observable-green')
+  under.diff = { changedLines: 1, changedFiles: 1 }
+  const small = signalOf(assessMergeConfidence(under), 'diff.shape')
+  assert.equal(small.band, 'green', said(small))
+  assert.ok(said(small).includes(FELL_BACK), said(small))
+
+  // A row that is not a usable count is the same case: the totals decide.
+  const bad = sizedInput([row('test/a.test.mjs', LINE_CAP + 1), row('lib/a.mjs', 1)])
+  bad.diff.files[1] = { path: 'lib/a.mjs', lines: -1 }
+  const broken = signalOf(assessMergeConfidence(bad), 'diff.shape')
+  assert.equal(broken.band, 'amber', said(broken))
+  assert.ok(said(broken).includes(FELL_BACK), said(broken))
+  assert.match(said(broken), /no per-file counts/)
+})
+
+test('size: a base policy that could not be read counts everything, naming the line cap', () => {
+  const files = [row('lib/a.mjs', 1), row('test/a.test.mjs', LINE_CAP + 1)]
+  assert.equal(sizeOf(files).band, 'green', 'precondition: with a policy the split is green')
+  const entry = sizeOf(files, null)
+  assert.equal(entry.band, 'amber', said(entry))
+  assert.equal(entry.kind, 'person')
+  assert.ok(entry.reason.includes('MERGE_BANDS.maxChangedLinesForMerge'), entry.reason)
+  assert.ok(said(entry).includes(FELL_BACK), said(entry))
+  assert.match(said(entry), /review policy at the base could not be read/)
+})
+
+test('size: a counts-as-source section that could not be read in full counts everything and names the problem', () => {
+  const files = [row('lib/a.mjs', 1), row('test/a.test.mjs', LINE_CAP + 1)]
+  const problem = '"Counts as Source" item "skills/**" is a pattern, and only a path or a directory prefix is read here'
+  const entry = sizeOf(files, { sourcePaths: [], sourceProblems: [problem] })
+  assert.equal(entry.band, 'amber', said(entry))
+  assert.ok(said(entry).includes(FELL_BACK), said(entry))
+  assert.ok(said(entry).includes('skills/**'), said(entry))
+
+  const fine = sizeOf(files, { sourcePaths: ['skills'], sourceProblems: [] })
+  assert.equal(fine.band, 'green', said(fine))
+
+  // The section's problem is the size signal's alone: the human-paths signal reads policy.problems.
+  const humanOf = policy => signalOf(assessMergeConfidence(sizedInput(files, policy)), 'policy.humanPaths')
+  const withProblem = humanOf({ sourcePaths: [], sourceProblems: [problem] })
+  const without = humanOf({ sourcePaths: ['skills'], sourceProblems: [] })
+  assert.deepEqual(withProblem, without)
+  assert.ok(!said(withProblem).includes('skills/**'), said(withProblem))
+})
+
+test('size: the counts-as-source list moves the size signal and no other', () => {
+  const files = [row('skills/a/SKILL.md', LINE_CAP + 1), row('lib/a.mjs', 1)]
+  const listed = assessMergeConfidence(sizedInput(files, { sourcePaths: ['skills'] }))
+  const unlisted = assessMergeConfidence(sizedInput(files, { sourcePaths: [] }))
+  assert.notEqual(
+    signalOf(listed, 'diff.shape').band,
+    signalOf(unlisted, 'diff.shape').band,
+    'precondition: the list decides the size band of this diff'
+  )
+  const others = result => result.signals.filter(s => s.id !== 'diff.shape')
+  assert.ok(others(listed).length > 0)
+  assert.deepEqual(others(listed), others(unlisted))
+})
+
+test('size: another section’s problem, and an absent policy, leave the classes alone', () => {
+  const files = [row('lib/a.mjs', 1), row('test/a.test.mjs', LINE_CAP + 1)]
+  const other = sizeOf(files, {
+    problems: ['"Always Human Review" block has content but no path list items (`- path`); no paths declared'],
+    sourceProblems: []
+  })
+  assert.equal(other.band, 'green', said(other))
+  assert.doesNotMatch(said(other), new RegExp(FELL_BACK))
+
+  // A base with no REVIEW.md: the empty list, no problem.
+  const absentFile = sizeOf(files, { humanPaths: [], problems: [], sourcePaths: [], sourceProblems: [] })
+  assert.equal(absentFile.band, 'green', said(absentFile))
+  assert.doesNotMatch(said(absentFile), new RegExp(FELL_BACK))
+
+  // A hand-built policy of the older shape, with neither key, is the empty list.
+  const input = sizedInput(files)
+  delete input.reviewPolicy.sourcePaths
+  delete input.reviewPolicy.sourceProblems
+  assert.equal(signalOf(assessMergeConfidence(input), 'diff.shape').band, 'green')
+})
+
+// --- the block's table rows (design D16, D17) ---------------------------------------
+
+const rowOf = (text, id) => text.split('\n').find(line => line.startsWith(`| \`${id}\` |`))
+const cellSpansOf = rowText => rowText.split(' | ').slice(-1)[0].replace(/ \|$/, '').split('<br>')
+
+test('block rows: a signal with many evidence lines keeps fewer, ending with how many it left out and --json', () => {
+  const result = assessMergeConfidence(fixture('all-observable-green'))
+  const target = result.signals.find(s => s.id === 'conformance.living')
+  const many = Array.from({ length: 200 }, (_, i) => `living line ${i}`)
+  target.evidence = [...many]
+
+  const text = blockOf(result)
+  const spans = cellSpansOf(rowOf(text, 'conformance.living'))
+  assert.ok(!/living line/.test(spans[0]), `the reason is kept first: ${spans[0]}`)
+  const kept = spans.filter(span => /living line \d+/.test(span))
+  const cut = spans[spans.length - 1]
+  assert.ok(cut.includes('left out') && cut.includes('--json'), cut)
+  assert.ok(kept.length < many.length, 'the row kept every line')
+  assert.ok(kept.length > 0, 'the row kept no evidence line')
+  const stated = Number(cut.match(/(\d+)/)[1])
+  assert.equal(kept.length + stated, many.length, cut)
+  // Kept in the signal's own order: the first lines.
+  kept.forEach((span, i) => assert.equal(span, `\`living line ${i}\``))
+
+  assert.equal(target.evidence.length, many.length, 'the assessment still holds every line')
+  assert.equal(count(text, '<details>'), 1)
+  assert.equal(count(text, '</details>'), 1)
+})
+
+test('block rows: a signal with two evidence lines is printed whole, with no left-out line', () => {
+  const result = assessMergeConfidence(fixture('all-observable-green'))
+  const target = result.signals.find(s => s.id === 'drift.stale')
+  target.evidence = ['first drift line', 'second drift line']
+  const spans = cellSpansOf(rowOf(blockOf(result), 'drift.stale'))
+  assert.ok(spans.some(span => span.includes('first drift line')))
+  assert.ok(spans.some(span => span.includes('second drift line')))
+  assert.ok(!spans.some(span => span.includes('left out')), spans.join(' / '))
+})
+
+// --- the docs say what the size signal reads ----------------------------------------
+
+const docAt = rel => readFileSync(join(ROOT, rel), 'utf8')
+
+test('size docs: docs/15 names the three classes in the diff.shape row and the Counts as Source list', () => {
+  const row15 = page().split('\n').find(line => line.startsWith('| `diff.shape`'))
+  assert.ok(row15, 'docs/15 has no diff.shape row')
+  for (const token of ['source', 'test', 'prose']) assert.ok(row15.includes(token), `the diff.shape row lacks "${token}"`)
+  assert.ok(page().includes('Counts as Source'), 'docs/15 does not name Counts as Source')
+})
+
+test('size docs: docs/12, docs/07 and docs/04 name the third list', () => {
+  const twelve = docAt('docs/12-repository-review-policy.md')
+  assert.ok(twelve.includes('## Counts as Source'), 'docs/12 does not name ## Counts as Source')
+  assert.ok(twelve.includes('diff.shape'), 'docs/12 does not name diff.shape')
+  const seven = docAt('docs/07-cli-and-configuration.md')
+  const policyRow = seven.split('\n').find(line => line.startsWith('| `interlock review-policy`'))
+  assert.ok(policyRow && policyRow.includes('Counts as Source'), 'the docs/07 review-policy row does not name Counts as Source')
+  assert.ok(docAt('docs/04-when-it-stops.md').includes('Counts as Source'), 'docs/04 does not name Counts as Source')
+})

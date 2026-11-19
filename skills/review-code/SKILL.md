@@ -71,7 +71,9 @@ Spawn one agent per dimension, in parallel. The always-on set is the depth's `re
 interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files>
 ```
 
-and spawn the agent with the printed prompt as its whole prompt. Add nothing to it and leave nothing out: it holds the bundled rubric, the scope with the changed line ranges, the repository's review policy and review context as quoted data, the domain text for `domain`, the run-and-measure and proof rules, and the shape to return. A skill's `allowed-tools` do not reach an agent it spawns; the printed prompt's write-nothing line is the bound.
+and spawn the agent as `interlock:reviewer`, with the printed prompt as its whole prompt. Add nothing to it and leave nothing out: it holds the bundled rubric, the scope with the changed line ranges, the repository's review policy and review context as quoted data, the domain text for `domain`, the run-and-measure and proof rules, and the shape to return. A skill's `allowed-tools` do not reach an agent it spawns, so the agent type is the first bound: the plugin's definition of `interlock:reviewer` bounds its tools, and it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The shell can still write, so the printed prompt's write-nothing line stays the second bound.
+
+**A reviewer that cannot be spawned fails the review.** When the Agent tool reports `interlock:reviewer` as an unknown type, or a dimension or skeptic spawn is refused or declined, print `REVIEW FAILED: reviewer type unavailable — <the tool's message, or the refusal>`. Spawn no other type in its place, review nothing yourself, and run no draft, proof or promote line: the review recorded nothing, and no finding is reported as verified. Name both remedies: a session started before the plugin was updated does not have the type, and a new session does; `interlock doctor` names an install whose `agents/` lacks the file.
 
 | Dimension | Brief | Run when |
 |---|---|---|
@@ -128,7 +130,7 @@ How the skeptics are spawned follows `review.skeptics` from the routing answer, 
 interlock review brief --skeptics --findings <f> [--depth strict] --json
 ```
 
-`[--depth strict]` is a placeholder: write `--depth strict` there under `--strict`, and nothing otherwise. Spawn one skeptic agent per entry of `prompts`, each with that entry's `prompt` as its whole prompt, and collect one verdict per id in its `findingIds` into the verdicts file. Add nothing to a prompt.
+`[--depth strict]` is a placeholder: write `--depth strict` there under `--strict`, and nothing otherwise. Spawn one skeptic agent per entry of `prompts`, each as `interlock:reviewer` with that entry's `prompt` as its whole prompt, and collect one verdict per id in its `findingIds` into the verdicts file. Add nothing to a prompt. The plugin's definition of that type bounds the skeptic's tools: it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. A skeptic that cannot be spawned prints the `REVIEW FAILED: reviewer type unavailable` line of §2 and ends the review the same way.
 
 When it is `per-review`, the CLI prints two prompts for the whole review: each skeptic is given every blocker and warning, grouped by file, returns one verdict per finding, and is told that overlapping findings are one issue, judged once. Every finding still carries two verdicts, one from each agent.
 
@@ -167,7 +169,7 @@ While it exits 1, its first line reads `re-run: <dimensions>`. Print that line b
 interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files> --rerun-of <draft>
 ```
 
-and re-run that dimension with it. Put the re-run answers alone through the skeptics with
+and re-run that dimension with it, spawning the agent as `interlock:reviewer` with that prompt as its whole prompt, as on the first pass: the plugin's definition of that type bounds its tools, so it holds no tool that edits a file, spawns an agent or invokes a skill, and routing chooses the model and the effort, never the type. A re-run that cannot be spawned prints the `REVIEW FAILED: reviewer type unavailable` line of §2 and ends the review the same way. Put the re-run answers alone through the skeptics with
 
 ```bash
 interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> [--depth strict] --json
