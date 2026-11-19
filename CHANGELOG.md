@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [1.19.0] - 2026-11-19
+
+### Changed
+
+- An inter-wave check is skipped, under its own recorded reason and without spending a verification slot, while a test-first run still owes implementation after the current wave. A re-run that reuses the stored plan keeps the skip once the failing-test wave is complete. The first check after the last implementation wave keeps the ordinary check and the full fix budget.
+- The projected agent bill, the plan preview and the planner's warning agree with the new skip.
+- The first inter-wave check runs on Sonnet at `medium`; an inter-wave fix attempt stays on the session model at `xhigh`; the final check stays on the session model at `high`.
+- `interlock limits` and `interlock limits --json` publish the verify model and all three verify efforts.
+
 ## [1.18.0] - 2026-11-17
 
 ### Changed
