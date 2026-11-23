@@ -5977,3 +5977,138 @@ test('size: a file under a path listed at the base under Counts as Source is cou
   assert.ok(classLine(prose, 'prose').includes('5 changed line(s)'), said(prose))
   assert.ok(classLine(prose, 'source').includes('0 changed line(s)'), said(prose))
 })
+
+// --- post-the-proof-beside-the-findings: the validation comment's bound, the exec record, the checked handoff ---
+
+test('validation bound: interlock limits names the validation comment bound, as a published integer', () => {
+  assert.ok(
+    Number.isInteger(LIMITS.maxValidationCommentChars) && LIMITS.maxValidationCommentChars > 0,
+    'LIMITS.maxValidationCommentChars must be a positive integer'
+  )
+  const out = runJson(['limits'])
+  assert.equal(out.limits.maxValidationCommentChars, LIMITS.maxValidationCommentChars)
+  const text = run(['limits'])
+  assert.equal(text.code, 0)
+  assert.match(text.stdout, /validation comment/i, 'the printed list names the bound')
+})
+
+/** A scratch root for one exec-record test. */
+function execRoot() {
+  return mkdtempSync(join(tmpdir(), 'interlock-exec-record-'))
+}
+
+test('exec record: --record appends one line with the five keys into a directory that did not exist', () => {
+  const root = execRoot()
+  try {
+    const record = join(root, 'new', 'dir', 'exec.jsonl')
+    const r = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(0)"', '--record', record], { cwd: root })
+    assert.equal(r.code, 0, r.stderr)
+    const lines = readFileSync(record, 'utf8').trim().split('\n')
+    assert.equal(lines.length, 1)
+    const entry = JSON.parse(lines[0])
+    assert.deepEqual(Object.keys(entry).sort(), ['at', 'command', 'durationMs', 'exitCode', 'kind'])
+    assert.equal(entry.kind, 'unit')
+    assert.equal(entry.command, 'node -e "process.exit(0)"')
+    assert.equal(entry.exitCode, 0)
+    assert.ok(Number.isInteger(entry.durationMs) && entry.durationMs >= 0, JSON.stringify(entry))
+    assert.ok(!Number.isNaN(Date.parse(entry.at)), entry.at)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('exec record: a command that exits 3 is recorded as 3 and returned as 3', () => {
+  const root = execRoot()
+  try {
+    const record = join(root, 'exec.jsonl')
+    const r = run(['verify', 'exec', '--kind', 'lint', '--command', 'node -e "process.exit(3)"', '--record', record], { cwd: root })
+    assert.equal(r.code, 3)
+    assert.equal(JSON.parse(readFileSync(record, 'utf8').trim()).exitCode, 3)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('exec record: a record path that cannot be written is said on stderr, keeps the exit code and still appends the timing', () => {
+  const root = execRoot()
+  try {
+    const blocker = join(root, 'blocker')
+    writeFileSync(blocker, 'a regular file')
+    const record = join(blocker, 'exec.jsonl')
+    const r = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(0)"', '--record', record], { cwd: root })
+    assert.equal(r.code, 0, r.stderr)
+    assert.ok(r.stderr.includes(record), `stderr names the path: ${r.stderr}`)
+    assert.match(r.stderr, /not written/i)
+    const timings = readFileSync(join(root, '.claude/ship/verify-timings.jsonl'), 'utf8').trim().split('\n')
+    assert.equal(timings.length, 1)
+    assert.equal(JSON.parse(timings[0]).kind, 'unit')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('exec record: without the flag no record file is written under .claude/ship/settle', () => {
+  const root = execRoot()
+  try {
+    const r = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(0)"'], { cwd: root })
+    assert.equal(r.code, 0, r.stderr)
+    assert.equal(existsSync(join(root, '.claude/ship/settle')), false)
+    assert.equal(readFileSync(join(root, '.claude/ship/verify-timings.jsonl'), 'utf8').trim().split('\n').length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('exec record: two runs append two lines in the order they ended, the first unchanged', () => {
+  const root = execRoot()
+  try {
+    const record = join(root, 'exec.jsonl')
+    const first = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(1)"', '--record', record], { cwd: root })
+    assert.equal(first.code, 1)
+    const afterFirst = readFileSync(record, 'utf8')
+    const second = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(0)"', '--record', record], { cwd: root })
+    assert.equal(second.code, 0)
+    const text = readFileSync(record, 'utf8')
+    assert.ok(text.startsWith(afterFirst), 'the first line is unchanged by the second run')
+    assert.deepEqual(text.trim().split('\n').map(l => JSON.parse(l).exitCode), [1, 0])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// A guard, not a red test: the verdict's reader already ignores the keys the
+// checked handoff adds, so this may pass before the change lands.
+test('handoff verdict: a checked handoff reads by its counts, and its extra keys change no signal', () => {
+  const repo = livingRepo('mc-checked-handoff')
+  const rows = Array.from({ length: SCENARIO_COUNT }, (_, i) => ({
+    id: `C${i + 1}`,
+    kind: 'scenario',
+    title: `case ${i + 1}`,
+    claimed: 'confirmed',
+    status: i === 0 ? 'unconfirmed' : 'confirmed',
+    cite: i === 0 ? null : 'src/widgets/catalogue.ts:1',
+    reason: i === 0 ? 'no citation' : null
+  }))
+  const counts = { scenariosChecked: SCENARIO_COUNT, scenariosUnconfirmed: 1, requirementsChecked: 0, requirementsUnconfirmed: 0 }
+  const checked = {
+    ok: true,
+    checked: true,
+    head: repo.sha,
+    detail: 'd',
+    ...counts,
+    claimed: { ...counts, scenariosUnconfirmed: 0 },
+    rows,
+    living: { skipped: null, partial: null, omitted: 0 },
+    unknownRows: []
+  }
+  const withKeys = runJson([...baseArgs(repo), '--handoff', file('mc-checked-with.json', checked)])
+  const delta = signalIn(withKeys, 'conformance.delta')
+  assert.ok(said(delta).includes(`${SCENARIO_COUNT} of ${SCENARIO_COUNT} scenario(s) checked`), said(delta))
+  assert.ok(said(delta).includes('1 unconfirmed'), said(delta))
+  assert.equal(delta.band, 'amber')
+
+  const stripped = { ...checked }
+  for (const key of ['checked', 'rows', 'claimed', 'unknownRows', 'living']) delete stripped[key]
+  const without = runJson([...baseArgs(repo), '--handoff', file('mc-checked-without.json', stripped)])
+  assert.deepEqual(withKeys.signals, without.signals)
+})

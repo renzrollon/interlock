@@ -3365,3 +3365,180 @@ test('no bundled brief carries an unexpanded variable, an orchestrator instructi
   const doctored = { ...briefs, qa: briefs.qa + '\nSee ${CLAUDE_PLUGIN_ROOT}/x. Run this dimension when asked. interlock surface\n{ "findings": [] }' }
   assert.equal(rubricDeliveryProblems(doctored).filter(p => p.startsWith('qa.md')).length, 4)
 })
+
+// --- the settle skill posts the proof beside the findings (spec: review/validation-comment,
+// review/settle-loop, review/pull-request-description, verify) ---
+//
+// Tokens and anchored command lines, never sentences. The check is a function so
+// the suite can show each pin failing on a doctored copy. The bound's number is
+// never stated in the skill, and never in a pin: the skill reads it from the CLI.
+
+/** Every way a copy of skills/settle/SKILL.md falls short of the validation-comment pins. */
+function validationSkillProblems(text) {
+  const problems = []
+  const lines = text.split('\n')
+  const fence = []
+  const blockOf = []
+  let open = -1
+  lines.forEach((line, i) => {
+    if (/^\s*```/.test(line)) {
+      open = open === -1 ? i : -1
+      return
+    }
+    if (open !== -1) {
+      fence.push({ i, line: line.trim() })
+      blockOf[i] = open
+    }
+  })
+  const fencedAt = (pattern, from = -1) => {
+    const hit = fence.find(f => f.i > from && pattern.test(f.line))
+    return hit ? hit.i : -1
+  }
+  const paragraphAt = i => {
+    let start = blockOf[i] !== undefined ? blockOf[i] - 1 : i
+    while (start > 0 && lines[start - 1].trim() !== '') start--
+    if (blockOf[i] !== undefined) {
+      while (start >= 0 && lines[start].trim() === '') start--
+      while (start > 0 && lines[start - 1].trim() !== '') start--
+    }
+    let end = i
+    while (end < lines.length - 1 && (blockOf[i] !== undefined ? !/^\s*```/.test(lines[end]) : lines[end + 1].trim() !== '')) end++
+    return lines.slice(Math.max(start, 0), end + 1).join('\n')
+  }
+  const sectionOf = (heading, level) => {
+    const start = lines.findIndex(l => heading.test(l))
+    if (start === -1) return null
+    let end = lines.length
+    for (let i = start + 1; i < lines.length; i++) {
+      if (new RegExp(`^#{2,${level}}\\s`).test(lines[i])) {
+        end = i
+        break
+      }
+    }
+    return { start, end, text: lines.slice(start, end).join('\n') }
+  }
+  const needFlags = (lineIndex, flags, what) => {
+    if (lineIndex === -1) return
+    for (const flag of flags) if (!lines[lineIndex].includes(flag)) problems.push(`${what} carries no ${flag}`)
+  }
+  const needTokens = (haystack, tokens, what) => {
+    for (const token of tokens) if (!haystack.includes(token)) problems.push(`${what} carries no ${token}`)
+  }
+
+  // §5e: the briefing keeps its record, the check follows, the verdict reads the checked file.
+  const brief = fencedAt(/^interlock settle conformance-brief\b/)
+  if (brief === -1) problems.push('no `interlock settle conformance-brief` line')
+  else needFlags(brief, ['--out .claude/ship/settle/conformance-brief.json'], 'the `conformance-brief` line')
+  const check = fencedAt(/^interlock settle handoff-check\b/)
+  if (check === -1) problems.push('no fenced `interlock settle handoff-check` line')
+  else {
+    needFlags(check, ['--brief', '--reply .claude/ship/settle/handoff-reply.json', '--out .claude/ship/settle/handoff.json'], 'the `handoff-check` line')
+    const finalPlan = fencedAt(/^interlock verify plan\b[^\n]*--context final/)
+    if (brief !== -1 && check < brief) problems.push('the `handoff-check` line comes before the `conformance-brief` line')
+    if (finalPlan === -1 || check > finalPlan) problems.push('the `handoff-check` line does not come before the final verification lines')
+  }
+  const s5e = sectionOf(/^###\s+5e\b/, 3)
+  if (!s5e) problems.push('no §5e section')
+  else needTokens(s5e.text, ['handoff-reply.json', 'CONFORMANCE UNCHECKED:', 'by no other means', 'CONFORMANCE UNREAD', 'as returned'], '§5e')
+
+  // The exec record: the final verification writes it, the round does not.
+  const s5f = sectionOf(/^###\s+5f\b/, 3)
+  const execLines = fence.filter(f => /^interlock verify exec\b/.test(f.line))
+  const finalExec = s5f ? execLines.filter(f => f.i > s5f.start && f.i < s5f.end) : []
+  if (!finalExec.length) problems.push('no `interlock verify exec` line in §5f')
+  for (const f of finalExec) if (!f.line.includes('--record .claude/ship/settle/exec.jsonl')) problems.push('the final verification `interlock verify exec` line carries no --record .claude/ship/settle/exec.jsonl')
+  for (const f of execLines.filter(f => !finalExec.includes(f))) if (f.line.includes('--record')) problems.push('a round `interlock verify exec` line carries --record')
+
+  // The posting line and the section that holds it.
+  const posting = fencedAt(/^interlock settle validation\b(?![^\n]*--summary)[^\n]*\|\s*gh pr comment\b[^\n]*--body-file -/)
+  const markdown = fencedAt(/^interlock merge-confidence\b[^\n]*--markdown/)
+  const summaryLine = fencedAt(/^interlock settle validation\b[^\n]*--summary/)
+  if (posting === -1) problems.push('no fenced `interlock settle validation … | gh pr comment … --body-file -` line')
+  else {
+    needFlags(posting, ['--head', '--plan', '--results', '--verify', '--exec .claude/ship/settle/exec.jsonl', '--changed'], 'the posting line')
+    if (markdown === -1 || posting < markdown) problems.push('the posting line does not come after the `interlock merge-confidence … --markdown` line')
+    if (summaryLine === -1 || posting > summaryLine) problems.push('the posting line does not come before the `--summary` line')
+    const section = sectionOf(/^###\s+6d\b/, 3)
+    if (!section) problems.push('no §6d section')
+    else {
+      if (!(section.start < posting && posting < section.end)) problems.push('the posting line is not in §6d')
+      const firstAt = lines.findIndex((l, i) => i > section.start && l.trim() !== '' && !/^#/.test(l))
+      const first = firstAt === -1 ? '' : paragraphAt(firstAt)
+      if (!first.includes('--review')) problems.push('the first paragraph of §6d does not name --review')
+      needTokens(section.text, ['VALIDATION NOT POSTED:', 'this pass wrote', 'did not start', 'stopped early', '§5e', 'latest', 'by hand'], '§6d')
+      if (/\b\d{1,3}(,\d{3})+\b|\b\d{5,}\b/.test(section.text)) problems.push('§6d states a number for the comment bound')
+      const gl = fence.find(f => f.i > section.start && f.i < section.end && /^interlock settle validation\b[^\n]*\|\s*glab mr note\b/.test(f.line))
+      if (!gl) problems.push('no fenced `interlock settle validation … | glab mr note` line in §6d')
+      else if (!paragraphAt(gl.i).includes('not exercised')) problems.push('the `glab mr note` posting line sits in no block marked not exercised')
+      const gh = fence.find(f => f.i === posting)
+      if (gh && paragraphAt(gh.i).includes('not exercised')) problems.push('the GitHub posting line is marked not exercised')
+    }
+  }
+
+  // §7: the summary line and the instruction beside it.
+  const s7 = sectionOf(/^##\s+7\./, 2)
+  if (!s7) problems.push('no §7 section')
+  else {
+    if (summaryLine === -1 || !(s7.start < summaryLine && summaryLine < s7.end)) problems.push('no fenced `interlock settle validation … --summary` line in §7')
+    else needFlags(summaryLine, ['--head', '--plan', '--results', '--verify', '--exec .claude/ship/settle/exec.jsonl'], 'the `--summary` line')
+    needTokens(
+      s7.text,
+      ['as printed', 'TESTING SUMMARY UNAVAILABLE:', '--unposted', 'no other line', 'Manual UI test plan: see PR comment.', 'Verified locally', 'Not covered'],
+      '§7'
+    )
+  }
+  return problems
+}
+
+test('validation skill: the shipped settle skill satisfies every validation pin', () => {
+  assert.deepEqual(validationSkillProblems(settleSkill()), [])
+})
+
+test('validation skill: each pin fails on a doctored copy, naming what was dropped', () => {
+  const shipped = settleSkill()
+  const problemsOf = edit => validationSkillProblems(edit(shipped))
+  const fails = (problems, token) => assert.ok(problems.some(p => p.includes(token)), `${token}: ${problems.join(' | ')}`)
+  // The shipped copy must carry what the doctored ones edit, or the mutations prove nothing.
+  assert.ok(shipped.includes('interlock settle validation'), 'the shipped skill carries no `interlock settle validation` line')
+
+  for (const token of [
+    'CONFORMANCE UNCHECKED:',
+    'by no other means',
+    'VALIDATION NOT POSTED:',
+    'this pass wrote',
+    'did not start',
+    'stopped early',
+    'TESTING SUMMARY UNAVAILABLE:',
+    '--unposted',
+    'no other line',
+    'Manual UI test plan: see PR comment.',
+    'Verified locally',
+    'Not covered',
+    'handoff-reply.json'
+  ]) {
+    fails(problemsOf(t => t.replaceAll(token, 'REMOVED')), token)
+  }
+  // Flags dropped from the commands.
+  fails(problemsOf(t => t.replace(' --out .claude/ship/settle/conformance-brief.json', '')), '--out .claude/ship/settle/conformance-brief.json')
+  fails(problemsOf(t => t.replace(' --reply .claude/ship/settle/handoff-reply.json', '')), '--reply')
+  fails(problemsOf(t => t.replace(/^(interlock settle handoff-check\b[^\n]*) --out \.claude\/ship\/settle\/handoff\.json/m, '$1')), '--out .claude/ship/settle/handoff.json')
+  fails(problemsOf(t => t.replace(/^(interlock settle validation\b(?![^\n]*--summary)[^\n]*) --changed /m, '$1 --nochanged ')), '--changed')
+  fails(problemsOf(t => t.replace(/^(interlock settle validation\b[^\n]*--summary[^\n]*) --exec \.claude\/ship\/settle\/exec\.jsonl/m, '$1')), '--exec')
+  fails(problemsOf(t => t.replace(/^(interlock settle validation\b(?![^\n]*--summary)[^\n]*) --exec \.claude\/ship\/settle\/exec\.jsonl/m, '$1')), '--exec')
+  fails(problemsOf(t => t.replace(/--body-file -/g, '--body-file x')), 'gh pr comment')
+  // The exec record.
+  fails(problemsOf(t => t.replace(/(interlock verify exec --kind [^\n]*) --record \.claude\/ship\/settle\/exec\.jsonl/, '$1')), '--record')
+  fails(problemsOf(t => t.replace(/^(interlock verify exec --kind <kind> --command "<command>")$/m, '$1 --record .claude/ship/settle/exec.jsonl') + '\n```bash\ninterlock verify exec --kind unit --command "x" --record y\n```\n'), 'round')
+  // Order: the posting line moved before the verdict block, the check moved after the final plan.
+  fails(
+    problemsOf(t => {
+      const post = /^interlock settle validation\b(?![^\n]*--summary)[^\n]*\n/m.exec(t)
+      return post ? `\`\`\`bash\n${post[0]}\`\`\`\n${t.replace(post[0], '')}` : t
+    }),
+    'does not come after'
+  )
+  // The GitLab line's marker.
+  fails(problemsOf(t => t.replace(/# GitLab — not exercised[^\n]*\n(interlock settle validation)/, '# GitLab\n$1').replaceAll('not exercised', 'untested')), 'not exercised')
+  // A number for the bound.
+  fails(problemsOf(t => `${t}`.replace(/^(### 6d\.[^\n]*\n)/m, '$1\nThe bound is 20,000 characters.\n')), 'number for the comment bound')
+})

@@ -358,6 +358,23 @@ export const INVENTORY = [
     codes: [0],
     check: r => (r.stdout === '' && /nothing to confirm/.test(r.stderr) ? '' : 'did not take the nothing-to-confirm exit')
   },
+  // The confirmation's check: the worker's cited row against the record the
+  // briefing kept, resolved in the scratch tree, written to the handoff the verdict reads.
+  {
+    bin: I,
+    argv: ['settle', 'handoff-check', '--brief', '{in}/settle-conformance-brief.json', '--reply', '{in}/settle-handoff-reply.json', '--out', '{in}/settle-handoff.json', '--json'],
+    codes: [0],
+    keys: ['checked', 'head', 'rows', 'claimed', 'living', 'unknownRows'],
+    check: r => (stepOf(r).scenariosChecked === 1 && stepOf(r).scenariosUnconfirmed === 0 ? '' : 'the cited row was not read confirmed')
+  },
+  // The comment the pass posts beside the findings, from its records, bound to the head.
+  {
+    bin: I,
+    argv: ['settle', 'validation', '--head', SETTLE_HEAD, '--plan', '{in}/settle-plan.json', '--results', '{in}/settle-results.json', '--verify', '{in}/settle-verify.json', '--exec', '{in}/settle-exec.jsonl', '--changed', 'src/a.mjs', '--json'],
+    codes: [0],
+    keys: ['head', 'commands', 'checks', 'adherence', 'gaps', 'visual', 'cut'],
+    check: r => (stepOf(r).commands.rows.length === 1 && stepOf(r).commands.rows[0].exit === 0 ? '' : 'the planned step was not shown with its observed exit')
+  },
   // The description the settle skill writes: the facts it is written from, and the
   // check of the copy the platform holds, piped in as `gh pr view <id> --json body` prints it.
   {
@@ -574,6 +591,29 @@ function prepare(scratch, repo) {
     surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', suggestion: 's' }],
     counts: { raised: 1, surviving: 1 }
   })
+  input('settle-conformance-brief.json', {
+    change: CHANGE,
+    dir: `openspec/changes/${CHANGE}`,
+    head: SETTLE_HEAD,
+    resultPath: '.claude/ship/settle/handoff-reply.json',
+    scenarios: [{ id: 'C1', artifact: 'specs/thing/spec.md', line: 1, title: 'a thing', body: '' }],
+    living: { skipped: null, partial: null, omitted: [], requirements: [] },
+    briefing: ''
+  })
+  input('settle-handoff-reply.json', {
+    ok: true,
+    scenariosChecked: 1,
+    scenariosUnconfirmed: 0,
+    requirementsChecked: 0,
+    requirementsUnconfirmed: 0,
+    detail: 'read src/a.mjs',
+    head: SETTLE_HEAD,
+    rows: [{ id: 'C1', status: 'confirmed', cite: 'src/a.mjs:2' }]
+  })
+  input('settle-plan.json', { steps: [{ kind: 'unit', command: 'npm test', cwd: '.' }], skipped: [{ kind: 'e2e', reason: 'e2e-not-requested' }], hasProfile: true, banners: [] })
+  input('settle-results.json', [{ kind: 'unit', command: 'npm test', exitCode: 0, total: 1, passed: 1, failed: 0, skipped: 0 }])
+  input('settle-verify.json', { head: SETTLE_HEAD, halt: false, reason: null, context: 'final', skipped: [{ kind: 'e2e', reason: 'e2e-not-requested' }], signals: [], banners: [] })
+  input('settle-exec.jsonl', JSON.stringify({ kind: 'unit', command: 'npm test', exitCode: 0, durationMs: 1200, at: '2026-11-23T08:00:00.000Z' }) + '\n')
   input('batch.json', batchResults())
   input('lcov.info', 'TN:\nSF:src/a.mjs\nDA:1,1\nDA:2,0\nLF:2\nLH:1\nend_of_record\n')
   input('big.txt', 'x'.repeat(20000))

@@ -14,7 +14,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,7 +51,11 @@ const SUBCOMMANDS = [
   // Both members of the family (spec: review/pull-request-description, "Both commands
   // SHALL be members of the `settle` family"): help names them, and no flags exits 1.
   'description-brief',
-  'description-check'
+  'description-check',
+  // The two commands of change post-the-proof-beside-the-findings (spec: review/validation-comment,
+  // "Both new commands SHALL be members of the `settle` family"): the family is thirteen.
+  'handoff-check',
+  'validation'
 ]
 
 let dir
@@ -136,7 +140,10 @@ test('settle --help prints every subcommand with its flags and exits 0', () => {
 })
 
 test('settle help prints the same usage lines as the exported help, and exits 0', () => {
+  // Moved pin (review/validation-comment: "Both new commands SHALL be members of the `settle`
+  // family"): the family is thirteen subcommands, `handoff-check` and `validation` among them.
   assert.deepEqual([...SETTLE_SUBCOMMANDS], SUBCOMMANDS)
+  assert.equal(SETTLE_SUBCOMMANDS.length, 13, 'the settle family is thirteen subcommands')
   const r = settle('help')
   assert.equal(r.code, 0, `stderr: ${r.stderr}`)
   assert.equal(r.stdout, SETTLE_HELP)
@@ -787,6 +794,8 @@ test('conformance-brief: three scenarios and two graph-selected living requireme
   assert.ok(out.includes(repo.head), 'the briefing names the head')
   // settle-loop: `interlock settle conformance-brief` SHALL brief the confirmation … — the answer is the reply.
   assert.ok(!out.includes('.claude/ship/settle/handoff.json'), 'the briefing names no result file')
+  // Moved with the reply path (settle-loop: `conformance-brief` SHALL brief the confirmation …): the reply's own default path is no more the worker's business.
+  assert.ok(!out.includes('.claude/ship/settle/handoff-reply.json'), 'the briefing names neither result file')
   assert.ok(out.includes('You write no file'), `the briefing tells the worker it writes no file:\n${out}`)
   assert.ok(out.includes('reply with one JSON object'), `the briefing asks for the answer as the reply:\n${out}`)
   assert.ok(!out.includes('write JSON to'), 'the briefing does not ask the worker to write a file')
@@ -814,7 +823,9 @@ test('conformance-brief: --result reaches the caller and not the worker', () => 
   assert.ok(!answer.briefing.includes('out/answer.json'), 'the --json briefing text does not hold the path either')
   const d = settle('conformance-brief', [...cbArgs(repo), '--json'], { cwd: repo.root })
   assert.equal(d.code, 0, `stderr: ${d.stderr}`)
-  assert.equal(JSON.parse(d.stdout).resultPath, '.claude/ship/settle/handoff.json')
+  // Moved pin (settle-loop: `interlock settle conformance-brief` SHALL brief the confirmation …): the
+  // default is the worker's reply file; `handoff.json` is now the checked handoff `handoff-check` writes.
+  assert.equal(JSON.parse(d.stdout).resultPath, '.claude/ship/settle/handoff-reply.json')
 })
 
 test('conformance-brief: an unknown change exits 1 naming it, and prints nothing', () => {
@@ -851,6 +862,468 @@ test('conformance-brief: no scenario and nothing the graph selects prints nothin
   assert.equal(r.code, 0, `expected exit 0, got ${r.code}; stderr: ${r.stderr}`)
   assert.equal(r.stdout, '', 'nothing to confirm prints no briefing')
   assert.match(r.stderr, /nothing to confirm/i, `stderr: ${r.stderr}`)
+})
+
+// ── post-the-proof-beside-the-findings: the family, the briefing's rows, the check, the comment ──
+//
+// spec: review/settle-loop (the confirmation's briefing and `handoff-check`) and
+// review/validation-comment (the comment's command). Prefixes are the ones tasks.md
+// section 2 runs by: `settle family:`, `conformance rows:`, `handoff check cli:`,
+// `validation cli:`. Tests pin headings, fixed prefixes and order, never the sentences
+// between them (design.md, "Shapes the tests and the implementation share").
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+test('settle family: help holds a usage line for handoff-check and one for validation', () => {
+  const r = run(['settle', '--help'])
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const lines = r.stdout.split('\n').map(l => l.trim())
+  for (const sub of ['handoff-check', 'validation']) {
+    assert.ok(
+      lines.some(l => l.startsWith(`interlock settle ${sub} `)),
+      `help lacks a usage line beginning "interlock settle ${sub} ":\n${r.stdout}`
+    )
+  }
+})
+
+test('settle family: a flag the table does not hold is refused, naming it', () => {
+  for (const sub of ['validation', 'handoff-check']) {
+    const r = settle(sub, ['--head', 'x', '--nonsense'])
+    assert.notEqual(r.code, 0, `${sub} accepted --nonsense`)
+    assert.ok(r.stderr.includes('--nonsense'), `${sub}: stderr should name --nonsense: ${r.stderr}`)
+    assert.equal(r.stdout, '', 'a refusal prints nothing on stdout')
+  }
+})
+
+test('settle family: the accepted-flag table holds the flags of each command', () => {
+  // Every flag the requirements name is accepted: the refusal, if any, is about something else.
+  const validation = settle('validation', [
+    '--head', 'x', '--plan', 'p', '--results', 'r', '--verify', 'v', '--exec', 'e', '--pipeline', 'pl',
+    '--handoff', 'h', '--review', 'rv', '--coverage', 'c', '--changed', 'a.mjs', '--summary', '--unposted'
+  ])
+  assert.ok(!/unknown flag/i.test(validation.stderr), `validation refused a documented flag: ${validation.stderr}`)
+  assert.ok(!/not accepted/i.test(validation.stderr), `validation refused a documented flag: ${validation.stderr}`)
+  const check = settle('handoff-check', ['--brief', 'b', '--reply', 'r', '--out', 'o'])
+  assert.ok(!/unknown flag/i.test(check.stderr), `handoff-check refused a documented flag: ${check.stderr}`)
+  assert.ok(!/not accepted/i.test(check.stderr), `handoff-check refused a documented flag: ${check.stderr}`)
+  // ... and a leaf of the family is not the unknown-subcommand refusal.
+  assert.ok(!/unknown settle subcommand/i.test(validation.stderr + check.stderr), 'both are subcommands of the family')
+})
+
+test('settle family: the CLI reference holds a table row for each command', () => {
+  const doc = readFileSync(join(REPO_ROOT, 'docs', '07-cli-and-configuration.md'), 'utf8')
+  for (const sub of ['handoff-check', 'validation']) {
+    assert.ok(
+      new RegExp(`^\\| \`interlock settle ${sub}(\\s|\`)`, 'm').test(doc),
+      `docs/07-cli-and-configuration.md holds no table row beginning "interlock settle ${sub}"`
+    )
+  }
+})
+
+test('settle family: the smoke inventory runs each leaf of the family', async () => {
+  const { INVENTORY } = await import('../../scripts/postinstall-smoke.mjs')
+  for (const sub of SUBCOMMANDS) {
+    assert.ok(
+      INVENTORY.some(e => Array.isArray(e.argv) && e.argv[0] === 'settle' && e.argv[1] === sub),
+      `scripts/postinstall-smoke.mjs INVENTORY has no entry for settle ${sub}`
+    )
+  }
+})
+
+// -- conformance rows: the briefing asks for one cited row per id, and --out keeps the record ----
+
+const CB_ASKED_FIRST_LINE = repo => `Confirm change "${CB_CHANGE}" against its diff at head ${repo.head}.`
+
+test('conformance rows: the briefing asks for a cited row per id and says a citation into the specs confirms nothing', () => {
+  const repo = conformanceRepo('cr-shape')
+  const r = settle('conformance-brief', cbArgs(repo), { cwd: repo.root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const out = r.stdout
+  for (const token of ['rows', 'id', 'status', 'cite', 'confirmed', 'unconfirmed']) {
+    assert.match(out, new RegExp(`\\b${token}\\b`), `the briefing's reply shape lacks ${token}:\n${out}`)
+  }
+  assert.match(out, /one row/i, `the briefing says there is one row for every id listed:\n${out}`)
+  assert.match(out, /confirms nothing/i, `the briefing says a citation into the specs or the change's own artifacts confirms nothing:\n${out}`)
+  assert.ok(out.includes('openspec/specs'), 'the briefing names the living specs as the place a citation confirms nothing')
+  // The worker is still attributed by the first line, which is unchanged.
+  assert.equal(out.split('\n')[0], CB_ASKED_FIRST_LINE(repo))
+})
+
+test('conformance rows: --out writes the object --json prints, into a directory that did not exist', () => {
+  const repo = conformanceRepo('cr-out')
+  const target = join(repo.root, 'kept', 'deeper', 'brief.json')
+  assert.equal(existsSync(join(repo.root, 'kept')), false)
+  const r = settle('conformance-brief', [...cbArgs(repo), '--out', target], { cwd: repo.root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.equal(r.stdout.split('\n')[0], CB_ASKED_FIRST_LINE(repo), 'standard output is still the briefing')
+  const kept = JSON.parse(readFileSync(target, 'utf8'))
+  const j = settle('conformance-brief', [...cbArgs(repo), '--json'], { cwd: repo.root })
+  assert.equal(j.code, 0, `stderr: ${j.stderr}`)
+  assert.deepEqual(kept, JSON.parse(j.stdout), 'the record equals what --json prints')
+  assert.equal(kept.change, CB_CHANGE)
+  assert.equal(kept.dir, `openspec/changes/${CB_CHANGE}`)
+  assert.equal(kept.head, repo.head)
+  assert.deepEqual(kept.scenarios.map(e => e.id), ['C1', 'C2', 'C3'])
+  for (const e of kept.scenarios) {
+    for (const key of ['id', 'title', 'artifact', 'line']) assert.ok(e[key] !== undefined, `scenario ${e.id} lacks ${key}`)
+  }
+  assert.deepEqual(kept.living.requirements.map(e => e.id), ['L1', 'L2'])
+  for (const e of kept.living.requirements) {
+    for (const key of ['id', 'title', 'artifact', 'line']) assert.ok(e[key] !== undefined, `requirement ${e.id} lacks ${key}`)
+  }
+  for (const key of ['skipped', 'partial', 'omitted']) {
+    assert.ok(Object.hasOwn(kept.living, key), `the living list carries ${key}`)
+  }
+})
+
+test('conformance rows: an --out that cannot be written exits 1 naming it, with no briefing', () => {
+  const repo = conformanceRepo('cr-out-bad')
+  // `src/widgets/catalogue.ts` is a regular file in the checkout: nothing can be created under it.
+  const bad = `${CB_SOURCE}/brief.json`
+  const r = settle('conformance-brief', [...cbArgs(repo), '--out', bad], { cwd: repo.root })
+  assert.equal(r.code, 1, `expected exit 1, got ${r.code}; stdout: ${r.stdout}`)
+  assert.equal(r.stdout, '', 'no briefing is printed')
+  assert.ok(r.stderr.includes(bad), `stderr should name the path: ${r.stderr}`)
+})
+
+test('conformance rows: with nothing to confirm nothing is written to --out', () => {
+  const repo = conformanceRepo('cr-nothing', { scenarios: 0, linked: false })
+  const target = join(repo.root, 'kept', 'brief.json')
+  const r = settle('conformance-brief', [...cbArgs(repo), '--out', target], { cwd: repo.root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /nothing to confirm/i)
+  assert.equal(existsSync(target), false, 'nothing exists at the --out path')
+})
+
+// -- handoff check cli: the worker's reply, checked against the working tree ----------------------
+
+const HC_CHANGE = 'demo-change'
+const HC_BRIEF_REL = '.claude/ship/settle/conformance-brief.json'
+const HC_REPLY_REL = '.claude/ship/settle/handoff-reply.json'
+const HC_DEFAULT_OUT_REL = '.claude/ship/settle/handoff.json'
+
+/** The record `conformance-brief --out` keeps (design.md, "Shapes the tests and the implementation share"). */
+function hcBrief(over = {}) {
+  return {
+    change: HC_CHANGE,
+    dir: `openspec/changes/${HC_CHANGE}`,
+    head: HEAD,
+    resultPath: HC_REPLY_REL,
+    scenarios: [
+      { id: 'C1', artifact: 'specs/widgets/spec.md', line: 12, title: 'Widgets render', body: '' },
+      { id: 'C2', artifact: 'specs/widgets/spec.md', line: 30, title: 'Widgets collapse', body: '' }
+    ],
+    living: {
+      skipped: null,
+      partial: null,
+      omitted: [],
+      requirements: [{ id: 'L1', capability: 'guards', artifact: 'openspec/specs/guards/spec.md', line: 40, title: 'A guard fails open' }]
+    },
+    briefing: 'Confirm change.',
+    ...over
+  }
+}
+
+/** The worker's reply as written, `rows` and all. */
+function hcReply(rows, over = {}) {
+  return {
+    ok: true,
+    scenariosChecked: 2,
+    scenariosUnconfirmed: 0,
+    requirementsChecked: 1,
+    requirementsUnconfirmed: 0,
+    detail: 'Read lib/a.mjs and the specs.',
+    head: HEAD,
+    rows,
+    ...over
+  }
+}
+
+/** A working tree with a ninety-line file to cite, and the brief and reply written under `.claude/ship/settle`. */
+function hcRepo(name, { brief = hcBrief(), reply = hcReply([]) } = {}) {
+  seq += 1
+  const root = join(dir, `${name}-${seq}`)
+  mkdirSync(join(root, 'lib'), { recursive: true })
+  writeFileSync(join(root, 'lib', 'a.mjs'), Array.from({ length: 90 }, (_, i) => `export const v${i + 1} = ${i + 1}`).join('\n') + '\n')
+  mkdirSync(join(root, '.claude', 'ship', 'settle'), { recursive: true })
+  if (brief !== null) writeFileSync(join(root, HC_BRIEF_REL), typeof brief === 'string' ? brief : JSON.stringify(brief))
+  if (reply !== null) writeFileSync(join(root, HC_REPLY_REL), typeof reply === 'string' ? reply : JSON.stringify(reply))
+  return root
+}
+
+const readJson = file => JSON.parse(readFileSync(file, 'utf8'))
+
+/** C1 confirmed and cited, C2 claimed confirmed with no citation, L1 reported unconfirmed by the worker. */
+const HC_MIXED_ROWS = [
+  { id: 'C1', status: 'confirmed', cite: 'lib/a.mjs:10-20' },
+  { id: 'C2', status: 'confirmed' },
+  { id: 'L1', status: 'unconfirmed', cite: 'lib/a.mjs:7' }
+]
+
+test('handoff check cli: it writes the checked handoff to --out, prints the counts, and exits 0 on a reply with refused rows', () => {
+  const root = hcRepo('hc-happy', { reply: hcReply(HC_MIXED_ROWS) })
+  const out = join(root, 'elsewhere', 'checked.json')
+  const replyBefore = readFileSync(join(root, HC_REPLY_REL), 'utf8')
+  const r = settle('handoff-check', ['--brief', HC_BRIEF_REL, '--reply', HC_REPLY_REL, '--out', out], { cwd: root })
+  assert.equal(r.code, 0, `a refused row is not a failure; stderr: ${r.stderr}`)
+  const written = readJson(out)
+  assert.equal(written.checked, true)
+  assert.equal(written.head, HEAD, "the reply's own head")
+  assert.equal(written.detail, 'Read lib/a.mjs and the specs.')
+  assert.equal(written.scenariosChecked, 2)
+  assert.equal(written.scenariosUnconfirmed, 1)
+  assert.equal(written.requirementsChecked, 1)
+  assert.equal(written.requirementsUnconfirmed, 1)
+  assert.equal(written.claimed.scenariosUnconfirmed, 0, "the worker's own count is kept under claimed")
+  assert.deepEqual(written.rows.map(x => [x.id, x.status]), [['C1', 'confirmed'], ['C2', 'unconfirmed'], ['L1', 'unconfirmed']])
+  assert.equal(written.rows[1].reason, 'no citation')
+  assert.equal(written.rows[0].reason, null)
+  const lines = r.stdout.split('\n').filter(Boolean)
+  assert.ok(lines.length >= 2, `a counts line and a refusal line:\n${r.stdout}`)
+  assert.ok(!lines[0].startsWith('CONFIRMATION NOT CITED:'), `the counts line comes first:\n${r.stdout}`)
+  const refusal = lines.find(l => l.startsWith('CONFIRMATION NOT CITED:'))
+  assert.ok(refusal, `no CONFIRMATION NOT CITED: line:\n${r.stdout}`)
+  assert.ok(refusal.includes('C2') && refusal.includes('no citation'), refusal)
+  assert.ok(!refusal.includes('L1'), 'a row the worker itself reported unconfirmed is not named')
+  assert.equal(readFileSync(join(root, HC_REPLY_REL), 'utf8'), replyBefore, 'the reply file is never changed')
+})
+
+test('handoff check cli: without --out the checked handoff goes to the default path', () => {
+  const root = hcRepo('hc-default', { reply: hcReply(HC_MIXED_ROWS) })
+  const explicit = join(root, 'explicit.json')
+  const a = settle('handoff-check', ['--brief', HC_BRIEF_REL, '--reply', HC_REPLY_REL, '--out', explicit], { cwd: root })
+  assert.equal(a.code, 0, `stderr: ${a.stderr}`)
+  const b = settle('handoff-check', ['--brief', HC_BRIEF_REL, '--reply', HC_REPLY_REL], { cwd: root })
+  assert.equal(b.code, 0, `stderr: ${b.stderr}`)
+  assert.deepEqual(readJson(join(root, HC_DEFAULT_OUT_REL)), readJson(explicit))
+})
+
+test('handoff check cli: a brief or a reply that cannot be read exits 1 with nothing on stdout and no file at --out', () => {
+  const cases = [
+    { label: 'a brief that does not exist', flag: '--brief', setup: { brief: null } },
+    { label: 'a brief with no list of ids', flag: '--brief', setup: { brief: JSON.stringify({ change: HC_CHANGE, head: HEAD }) } },
+    { label: 'a reply that is not JSON', flag: '--reply', setup: { reply: 'this is not json' } },
+    { label: 'a reply that is not an object', flag: '--reply', setup: { reply: JSON.stringify([1, 2]) } }
+  ]
+  for (const c of cases) {
+    const root = hcRepo('hc-bad', { reply: hcReply(HC_MIXED_ROWS), ...c.setup })
+    const out = join(root, 'earlier', 'checked.json')
+    mkdirSync(dirname(out), { recursive: true })
+    writeFileSync(out, '{"earlier":"a file from another pass"}')
+    const r = settle('handoff-check', ['--brief', HC_BRIEF_REL, '--reply', HC_REPLY_REL, '--out', out], { cwd: root })
+    assert.equal(r.code, 1, `${c.label}: expected exit 1, got ${r.code}; stdout: ${r.stdout}`)
+    assert.equal(r.stdout, '', `${c.label}: nothing on standard output`)
+    assert.ok(r.stderr.includes(c.flag), `${c.label}: stderr should name ${c.flag}: ${r.stderr}`)
+    assert.ok(!/unknown settle subcommand/i.test(r.stderr), `${c.label}: the refusal is the check's own`)
+    assert.equal(existsSync(out), false, `${c.label}: nothing is left at the --out path, the earlier file included`)
+  }
+})
+
+// -- validation cli: the comment, from the pass's records -------------------------------------------
+
+const VAL_UNIT = { kind: 'unit', command: 'npm test' }
+const VAL_PLAN = {
+  steps: [{ ...VAL_UNIT, cwd: '.' }],
+  skipped: [
+    { kind: 'typecheck', reason: 'no-detectable-command' },
+    { kind: 'e2e', reason: 'e2e-not-requested' }
+  ],
+  hasProfile: true,
+  banners: []
+}
+const VAL_RESULT = { ...VAL_UNIT, exitCode: 0, total: 12, passed: 12, failed: 0, skipped: 0 }
+const VAL_VERDICT = { head: HEAD, halt: false, reason: null, context: 'final', unit: { counts: { total: 12, passed: 12, failed: 0, skipped: 0 } }, skipped: VAL_PLAN.skipped, signals: [], banners: [] }
+const VAL_EXEC = { ...VAL_UNIT, exitCode: 0, durationMs: 102300, at: '2026-11-23T08:00:00.000Z' }
+const VAL_TITLE = 'Widgets render in the catalogue'
+const VAL_CHECK = 'build (node 20)'
+
+/**
+ * Write one pass's records into a fresh directory and return their paths and the
+ * flags that name them. A key set to `null` leaves that record out.
+ */
+function valRecords(over = {}) {
+  seq += 1
+  const d = join(dir, `val-${seq}`)
+  mkdirSync(d, { recursive: true })
+  const files = {}
+  const put = (key, name, value, raw = false) => {
+    if (value === null) return
+    files[key] = join(d, name)
+    writeFileSync(files[key], raw ? value : JSON.stringify(value))
+  }
+  put('plan', 'plan.json', over.plan === undefined ? VAL_PLAN : over.plan, typeof over.plan === 'string')
+  put('results', 'results.json', over.results === undefined ? [VAL_RESULT] : over.results, typeof over.results === 'string')
+  put('verify', 'verify.json', over.verify === undefined ? VAL_VERDICT : over.verify, typeof over.verify === 'string')
+  put('exec', 'exec.jsonl', over.exec === undefined ? null : over.exec.map(e => JSON.stringify(e)).join('\n') + '\n', true)
+  put('pipeline', 'pipeline.json', over.pipeline === undefined ? null : over.pipeline)
+  put('handoff', 'handoff.json', over.handoff === undefined ? null : over.handoff)
+  put('review', 'review.json', over.review === undefined ? null : over.review)
+  put('coverage', 'coverage.json', over.coverage === undefined ? null : over.coverage)
+  return { dir: d, files }
+}
+
+/** The command's argv for the records `valRecords` wrote; `omit` drops flags by name. */
+function valArgs(rec, { head = HEAD, omit = [], extra = [] } = {}) {
+  const args = []
+  if (!omit.includes('head')) args.push('--head', head)
+  for (const key of ['plan', 'results', 'verify', 'exec', 'pipeline', 'handoff', 'review', 'coverage']) {
+    if (rec.files[key] && !omit.includes(key)) args.push(`--${key}`, rec.files[key])
+  }
+  return [...args, ...extra]
+}
+
+const VAL_CHECKED_HANDOFF = {
+  ok: true,
+  checked: true,
+  head: HEAD,
+  detail: 'Read lib/widgets.mjs.',
+  scenariosChecked: 2,
+  scenariosUnconfirmed: 0,
+  requirementsChecked: 0,
+  requirementsUnconfirmed: 0,
+  claimed: { scenariosChecked: 2, scenariosUnconfirmed: 0, requirementsChecked: 0, requirementsUnconfirmed: 0 },
+  rows: [
+    { id: 'C1', kind: 'scenario', title: VAL_TITLE, artifact: 'specs/widgets/spec.md', line: 12, claimed: 'confirmed', status: 'confirmed', cite: 'lib/widgets.mjs:10-20', reason: null },
+    { id: 'C2', kind: 'scenario', title: 'Widgets collapse', artifact: 'specs/widgets/spec.md', line: 30, claimed: 'confirmed', status: 'confirmed', cite: 'lib/widgets.mjs:30', reason: null }
+  ],
+  living: { skipped: null, partial: null, omitted: 0 },
+  unknownRows: []
+}
+const VAL_PIPELINE = { sha: HEAD, checks: [{ name: VAL_CHECK, state: 'pass', required: true }], excluded: [] }
+const VAL_REVIEW = { head: HEAD, surviving: [], proof: { proven: true, reason: null, dimensions: ['qa'], unproven: [], unread: [], uncited: [] } }
+const VAL_COVERAGE = { unreportedFiles: [] }
+
+const validation = (args, opts) => settle('validation', args, opts)
+const SECTION_HEADINGS = ['### Commands run', '### Platform checks', '### Spec adherence', '### What these checks would not catch']
+
+test('validation cli: a green run reads every optional file and prints the comment', () => {
+  const rec = valRecords({ exec: [VAL_EXEC], pipeline: VAL_PIPELINE, handoff: VAL_CHECKED_HANDOFF, review: VAL_REVIEW, coverage: VAL_COVERAGE })
+  const r = validation(valArgs(rec, { extra: ['--changed', 'lib/a.mjs'] }))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const lines = r.stdout.split('\n')
+  assert.equal(lines[0], `## Validation — ${HEAD}`)
+  let at = 0
+  for (const heading of SECTION_HEADINGS) {
+    const i = lines.indexOf(heading)
+    assert.ok(i > at, `${heading} should follow the section before it:\n${r.stdout}`)
+    at = i
+  }
+  assert.ok(r.stdout.includes(VAL_CHECK), 'the pipeline input was read')
+  assert.ok(r.stdout.includes(VAL_TITLE), 'the checked handoff was read')
+  assert.ok(r.stdout.includes('npm test'), 'the plan was read')
+  assert.ok(!r.stdout.includes('session-recorded'), 'with an exec entry the exit code is the observed one')
+})
+
+test('validation cli: a missing required flag exits 1 naming it, with the usage line and nothing on stdout', () => {
+  for (const flag of ['head', 'plan', 'results', 'verify']) {
+    const rec = valRecords()
+    const r = validation(valArgs(rec, { omit: [flag] }))
+    assert.equal(r.code, 1, `--${flag} missing: expected exit 1, got ${r.code}`)
+    assert.equal(r.stdout, '', `--${flag} missing: nothing on standard output`)
+    assert.ok(r.stderr.includes(`--${flag}`), `--${flag} missing: stderr should name it: ${r.stderr}`)
+    assert.ok(r.stderr.includes('usage: interlock settle validation'), `--${flag} missing: the usage line: ${r.stderr}`)
+  }
+})
+
+test('validation cli: an unreadable --results and a --plan that is not JSON exit 1 naming the flag, with nothing on stdout', () => {
+  const rec = valRecords()
+  const gone = join(rec.dir, 'no-such-results.json')
+  const a = validation(valArgs(rec, { omit: ['results'], extra: ['--results', gone] }))
+  assert.equal(a.code, 1)
+  assert.equal(a.stdout, '')
+  assert.ok(a.stderr.includes('--results') && a.stderr.includes(gone), `stderr should name the flag and the file: ${a.stderr}`)
+  const bad = valRecords({ plan: 'this is not json' })
+  const b = validation(valArgs(bad))
+  assert.equal(b.code, 1)
+  assert.equal(b.stdout, '')
+  assert.ok(b.stderr.includes('--plan') && b.stderr.includes(bad.files.plan), `stderr should name the flag and the file: ${b.stderr}`)
+})
+
+test('validation cli: a verdict for another commit, and one with no head, exit 1 with nothing on stdout', () => {
+  const other = valRecords({ verify: { ...VAL_VERDICT, head: OTHER_HEAD } })
+  const a = validation(valArgs(other))
+  assert.equal(a.code, 1)
+  assert.equal(a.stdout, '')
+  assert.ok(a.stderr.includes(HEAD) && a.stderr.includes(OTHER_HEAD), `stderr should name both commits: ${a.stderr}`)
+  const { head, ...headless } = VAL_VERDICT
+  const none = valRecords({ verify: headless })
+  const b = validation(valArgs(none))
+  assert.equal(b.code, 1)
+  assert.equal(b.stdout, '')
+  assert.ok(/head/i.test(b.stderr) && !b.stderr.includes(OTHER_HEAD), `stderr should say the verdict records no head: ${b.stderr}`)
+})
+
+test('validation cli: a results entry and an exec entry that disagree exit 0 with the comment on stdout', () => {
+  const rec = valRecords({ exec: [{ ...VAL_EXEC, exitCode: 1 }] })
+  const r = validation(valArgs(rec))
+  assert.equal(r.code, 0, `a disagreement is said, never refused; stderr: ${r.stderr}`)
+  assert.equal(r.stdout.split('\n')[0], `## Validation — ${HEAD}`)
+  const line = r.stdout.split('\n').find(l => l.startsWith('RESULT DISAGREES:'))
+  assert.ok(line, `no RESULT DISAGREES: line:\n${r.stdout}`)
+  assert.ok(line.includes('unit'), line)
+})
+
+test('validation cli: a halted verdict exits 0 with the comment on stdout', () => {
+  const halted = { ...VAL_VERDICT, halt: true, reason: 'unit exited 1 on the pushed head', unit: { counts: { total: 12, passed: 11, failed: 1, skipped: 0 } } }
+  const rec = valRecords({ verify: halted, results: [{ ...VAL_RESULT, exitCode: 1, passed: 11, failed: 1 }] })
+  const r = validation(valArgs(rec))
+  assert.equal(r.code, 0, `a halt is said, never refused; stderr: ${r.stderr}`)
+  assert.equal(r.stdout.split('\n')[0], `## Validation — ${HEAD}`)
+  assert.ok(r.stdout.includes('unit exited 1 on the pushed head'), `the halt's reason is shown:\n${r.stdout}`)
+})
+
+test('validation cli: --summary prints three lines, the observed exit code with --exec and the session-recorded one without', () => {
+  const withExec = valRecords({ exec: [VAL_EXEC] })
+  const a = validation(valArgs(withExec, { extra: ['--summary'] }))
+  assert.equal(a.code, 0, `stderr: ${a.stderr}`)
+  const lines = a.stdout.trimEnd().split('\n')
+  assert.equal(lines.length, 3, `three lines:\n${a.stdout}`)
+  assert.ok(lines[0].startsWith('- Ran:'), lines[0])
+  assert.ok(lines[1].startsWith('- Not run:'), lines[1])
+  assert.ok(lines[2].startsWith('- Proof:'), lines[2])
+  assert.ok(lines[0].includes('npm test') && /exit\s+`?0`?/.test(lines[0]), lines[0])
+  assert.ok(!lines[0].includes('session-recorded'), 'with --exec the code is the observed one')
+  assert.ok(lines[1].includes('typecheck') && lines[1].includes('e2e'), lines[1])
+  assert.ok(lines[2].includes(HEAD) && lines[2].includes('latest'), lines[2])
+
+  const bare = valRecords()
+  const b = validation(valArgs(bare, { extra: ['--summary'] }))
+  assert.equal(b.code, 0, `stderr: ${b.stderr}`)
+  assert.equal(b.stdout.trimEnd().split('\n').length, 3)
+  assert.ok(b.stdout.split('\n')[0].includes('session-recorded'), `without --exec the code is marked session-recorded:\n${b.stdout}`)
+
+  // The same flags print the comment's code in the summary: the observed 1 over the session's 0.
+  const split = valRecords({ exec: [{ ...VAL_EXEC, exitCode: 1 }] })
+  const c = validation(valArgs(split, { extra: ['--summary'] }))
+  assert.equal(c.code, 0, `stderr: ${c.stderr}`)
+  assert.ok(c.stdout.split('\n')[0].includes('RESULT DISAGREES:'), c.stdout)
+  assert.ok(/exit\s+`?1`?/.test(c.stdout.split('\n')[0]), c.stdout)
+})
+
+test('validation cli: --summary --unposted says not posted and not latest; --unposted alone is refused', () => {
+  const rec = valRecords({ exec: [VAL_EXEC] })
+  const a = validation(valArgs(rec, { extra: ['--summary', '--unposted'] }))
+  assert.equal(a.code, 0, `stderr: ${a.stderr}`)
+  const lines = a.stdout.trimEnd().split('\n')
+  assert.equal(lines.length, 3, `three lines:\n${a.stdout}`)
+  assert.ok(lines[2].startsWith('- Proof:') && lines[2].includes('not posted') && lines[2].includes(HEAD), lines[2])
+  assert.ok(!lines[2].includes('latest'), lines[2])
+  const b = validation(valArgs(rec, { extra: ['--unposted'] }))
+  assert.equal(b.code, 1)
+  assert.equal(b.stdout, '')
+  assert.ok(b.stderr.includes('--unposted'), `stderr should name the flag: ${b.stderr}`)
+})
+
+test('validation cli: a --changed - list is read from standard input', () => {
+  const rec = valRecords({ exec: [VAL_EXEC] })
+  const listed = validation(valArgs(rec, { extra: ['--changed', '-'] }), { input: 'src/ui/Button.tsx\nlib/a.mjs\n' })
+  assert.equal(listed.code, 0, `stderr: ${listed.stderr}`)
+  assert.ok(listed.stdout.includes('### Visual check owed'), `the screen is listed:\n${listed.stdout}`)
+  assert.ok(listed.stdout.includes('src/ui/Button.tsx'), 'the path read from standard input is named')
+  const none = validation(valArgs(rec, { extra: ['--changed', '-'] }), { input: 'lib/a.mjs\n' })
+  assert.equal(none.code, 0, `stderr: ${none.stderr}`)
+  assert.ok(!none.stdout.includes('### Visual check owed'), 'no screen, no section')
 })
 
 // ── the stop signal ─────────────────────────────────────────────────────────

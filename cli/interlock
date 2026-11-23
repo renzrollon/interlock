@@ -461,7 +461,7 @@ Usage:
   interlock verify unit --result <file>     Judge a unit result on its own
   interlock verify spill --run-id <id> --kind <k> --input <f>
                                            Spill oversized stdout/stderr to disk
-  interlock verify exec --kind <k> --command <cmd>
+  interlock verify exec --kind <k> --command <cmd> [--record <file>]
                                            Run one planned check and time it
   interlock verify baseline [--report <lcov>] [--baseline <file>]
                                            Record a coverage report's project total
@@ -1204,6 +1204,7 @@ verify exec:
   --kind <k>             The planned step this runs, e.g. typecheck/unit/lint (required)
   --command <cmd>        The planned command, verbatim; run through the shell (required)
   --cwd <dir>            Directory to run it in (default: the current one)
+  --record <file>        Also append the same line to <file> (a failed write is a stderr warning)
   Runs the command with its stdout, stderr and exit code passed through
   unchanged, and appends { kind, exitCode, durationMs, command, at } to
   .claude/ship/verify-timings.jsonl. \`run judge\` folds those durations into
@@ -4352,6 +4353,15 @@ async function main() {
           // its precision (the judge falls back to the round trip, and says
           // so), never the check its result.
           process.stderr.write(`interlock: verify timing not recorded: ${(err && err.message) || err}\n`)
+        }
+        if (typeof flags.record === 'string' && flags.record) {
+          const at = resolve(root, flags.record)
+          try {
+            mkdirSync(dirname(at), { recursive: true })
+            appendFileSync(at, JSON.stringify({ kind, command, exitCode, durationMs, at: new Date().toISOString() }) + '\n')
+          } catch (err) {
+            process.stderr.write(`interlock: exec record not written to ${at}: ${(err && err.message) || err}\n`)
+          }
         }
         process.exit(exitCode)
       } else if (sub === 'baseline') {
