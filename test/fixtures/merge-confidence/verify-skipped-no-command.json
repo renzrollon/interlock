@@ -137,16 +137,21 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "skipped": [
       {
         "kind": "unit",
         "reason": "no-detectable-command",
         "detail": "profile has no unit.command"
-      },
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
       }
     ],
     "signals": [
@@ -155,16 +160,9 @@
         "kind": "unit",
         "reason": "no-detectable-command",
         "message": "unit: VERIFICATION SKIPPED: reason=no-detectable-command (profile has no unit.command)"
-      },
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
       }
     ],
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "VERIFICATION SKIPPED: reason=no-detectable-command"
     ]
   },

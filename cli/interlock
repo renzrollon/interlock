@@ -1108,7 +1108,9 @@ verify plan:
   --budget-ms <n>        Soft budget; past it, typecheck only. The inter-wave default is derived
                          from the profile and floored at the published budget
   --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')}. inter-wave omits e2e and
-                         coverage by default (typecheck, unit, lint only).
+                         coverage by default (typecheck, unit, lint only). The
+                         build is planned at the final gate only; between waves it
+                         is skipped as final-gate-only.
   --changed <files...>   Repo-relative paths the last wave touched. When every
                          path is documentation, the plan emits no steps.
 
@@ -1117,8 +1119,8 @@ verify judge:
   --results <file>       JSON array of { kind, exitCode, ... } an agent reported
   --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')} (default final). Load-bearing:
                          inter-wave halts on typecheck AND unit, final halts on
-                         unit only, so a red typecheck stops the next wave but
-                         does not stop the commit.
+                         unit AND build, so a red typecheck stops the next wave
+                         but does not stop the commit, and a red build does.
   --baseline <file>      Counts captured before the change, for the weakened-suite check
   --pre-existing         Excuse every failure as pre-existing
   --pre-existing-signatures <file>   JSON array of signatures known red beforehand
@@ -1201,7 +1203,7 @@ verify coverage:
   on stdout. Runs no coverage command unless --compute-base asks it to.
 
 verify exec:
-  --kind <k>             The planned step this runs, e.g. typecheck/unit/lint (required)
+  --kind <k>             The planned step this runs, e.g. typecheck/unit/lint/build (required)
   --command <cmd>        The planned command, verbatim; run through the shell (required)
   --cwd <dir>            Directory to run it in (default: the current one)
   --record <file>        Also append the same line to <file> (a failed write is a stderr warning)

@@ -139,12 +139,17 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "skipped": [
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
-      },
       {
         "kind": "e2e",
         "reason": "e2e-not-enabled"
@@ -153,19 +158,12 @@
     "signals": [
       {
         "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
-      },
-      {
-        "level": "info",
         "kind": "e2e",
         "reason": "e2e-not-enabled",
         "message": "e2e: VERIFICATION SKIPPED: reason=e2e-not-enabled"
       }
     ],
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "VERIFICATION SKIPPED: reason=e2e-not-enabled"
     ]
   },

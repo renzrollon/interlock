@@ -154,13 +154,17 @@
       "exitCode": 2,
       "passed": false
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "signals": [
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
-      },
       {
         "level": "warn",
         "kind": "typecheck",
@@ -169,16 +173,9 @@
       }
     ],
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "TYPECHECK FAILED (non-blocking at the final gate): exit 2"
     ],
-    "skipped": [
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
-      }
-    ]
+    "skipped": []
   },
   "checklist": {
     "skipped": false,

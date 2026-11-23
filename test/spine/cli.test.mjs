@@ -865,7 +865,101 @@ test('--context is load-bearing: a red typecheck halts inter-wave but not final'
   // And the default is the permissive-documented one.
   const dflt = runJson(['verify', 'judge', '--plan', planFile, '--results', paths.redTypecheck], 0)
   assert.equal(dflt.context, 'final')
-  assert.deepEqual(dflt.haltingKinds, ['unit'])
+  // Moved by let-tooling-own-the-small-checks: the default context's halting kinds
+  // now pin the verify requirement "A failed build SHALL halt the final gate, and a
+  // failed lint SHALL halt nothing".
+  assert.deepEqual(dflt.haltingKinds, ['unit', 'build'])
+})
+
+// --- build kind: the sixth kind, planned at the final gate only (spec: verify) ---------------
+
+const BUILD_PROFILE = {
+  ...PROFILE,
+  lint: { command: 'npm run lint' },
+  build: { command: 'npm run build', cwd: '.', timeout_ms: 300000 }
+}
+
+/** The text of one `--help` section: from its heading line to the next heading at column zero. */
+function usageSection(heading) {
+  const lines = run(['--help']).stdout.split('\n')
+  const from = lines.findIndex(l => l === heading)
+  assert.ok(from > -1, `USAGE has no "${heading}" section`)
+  const rest = lines.slice(from + 1)
+  const end = rest.findIndex(l => /^\S/.test(l))
+  return rest.slice(0, end === -1 ? rest.length : end).join('\n')
+}
+
+test('build kind: verify plan --context final holds the build step from the profile, and inter-wave skips it', () => {
+  const profileFile = file('profile-build.json', BUILD_PROFILE)
+  const final = runJson(['verify', 'plan', '--profile', profileFile, '--context', 'final'])
+  const build = final.steps.find(s => s.kind === 'build')
+  assert.ok(build, 'the final plan holds a build step')
+  assert.equal(build.command, 'npm run build')
+  assert.equal(build.blocking, true)
+  assert.equal(build.timeoutMs, 300000)
+  const kinds = final.steps.map(s => s.kind)
+  assert.ok(kinds.indexOf('build') > kinds.indexOf('lint') && kinds.indexOf('lint') > kinds.indexOf('unit'), kinds.join())
+
+  const interWave = runJson(['verify', 'plan', '--profile', profileFile, '--context', 'inter-wave'])
+  assert.ok(interWave.steps.every(s => s.kind !== 'build'))
+  assert.equal(interWave.skipped.find(s => s.kind === 'build').reason, 'final-gate-only')
+})
+
+test('build kind: a malformed build section exits 1 naming the field, with nothing on standard output', () => {
+  for (const [name, build, field] of [
+    ['profile-build-bad-command.json', { command: 42 }, 'build.command'],
+    ['profile-build-bad-timeout.json', { command: 'npm run build', timeout_ms: '300000' }, 'build.timeout_ms']
+  ]) {
+    const r = run(['verify', 'plan', '--profile', file(name, { ...PROFILE, build }), '--json'])
+    assert.equal(r.code, 1, `${name}: ${r.stdout}`)
+    assert.equal(r.stdout, '', `${name}: a refused profile prints no plan`)
+    assert.ok(r.stderr.includes(field), `${name}: ${r.stderr}`)
+  }
+})
+
+test('build kind: verify judge --context final exits 1 with the verdict on standard output when the build exited 2', () => {
+  const plan = file('vplan-build.json', runJson(['verify', 'plan', '--profile', file('profile-build-judge.json', BUILD_PROFILE), '--context', 'final']))
+  const results = file('results-red-build.json', [
+    { kind: 'unit', exitCode: 0, total: 10, passed: 10, failed: 0 },
+    { kind: 'build', exitCode: 2 }
+  ])
+  const r = run(['verify', 'judge', '--plan', plan, '--results', results, '--context', 'final', '--json'])
+  assert.equal(r.code, 1, r.stderr)
+  const verdict = JSON.parse(r.stdout)
+  assert.equal(verdict.halt, true)
+  assert.match(verdict.reason, /build failed \(exit 2\)/)
+  assert.deepEqual(verdict.build, { ran: true, exitCode: 2, passed: false })
+  assert.deepEqual(verdict.haltingKinds, ['unit', 'build'])
+})
+
+test('build kind: the verify plan and verify judge usage text name the build', () => {
+  assert.match(usageSection('verify plan:'), /\bbuild\b/)
+  assert.match(usageSection('verify judge:'), /\bbuild\b/)
+})
+
+// --- suite four: the judge's own output read by the merge verdict (spec: review/merge-confidence) ---
+
+/** Plan a profile with unit, lint and build commands at the final gate, judge `extra` with a green unit result, and read the merge verdict from the judge's own output. */
+function suiteFourAssessment(name, extra, judgeCode, mergeCode = 0) {
+  const plan = file(`vplan-${name}.json`, runJson(['verify', 'plan', '--profile', file(`profile-${name}.json`, BUILD_PROFILE), '--context', 'final']))
+  const results = file(`results-${name}.json`, [{ kind: 'unit', exitCode: 0, total: 10, passed: 10, failed: 0 }, ...extra])
+  const judged = run(['verify', 'judge', '--plan', plan, '--results', results, '--context', 'final', '--json'])
+  assert.equal(judged.code, judgeCode, judged.stderr)
+  const verdictFile = file(`verdict-${name}.json`, judged.stdout)
+  const out = runJson(mergeArgs('--verify', verdictFile), mergeCode)
+  return signalIn(out, 'verify.suite')
+}
+
+test('suite four: a build that exited 2, judged and handed to merge-confidence, reads red and names the build', () => {
+  const entry = suiteFourAssessment('sf-red-build', [{ kind: 'lint', exitCode: 0 }, { kind: 'build', exitCode: 2 }], 1, 1)
+  assert.equal(entry.band, 'red')
+  assert.match(entry.reason, /build failed/)
+})
+
+test('suite four: a build at 0 and a lint at 1, judged and handed to merge-confidence, reads amber', () => {
+  const entry = suiteFourAssessment('sf-amber-lint', [{ kind: 'lint', exitCode: 1 }, { kind: 'build', exitCode: 0 }], 0)
+  assert.equal(entry.band, 'amber')
+  assert.match(entry.reason, /lint failed/)
 })
 
 test('verify judge rejects an unknown context instead of picking a default', () => {

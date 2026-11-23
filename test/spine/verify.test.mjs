@@ -13,6 +13,8 @@ import {
   SKIP_REASONS,
   BANNERS,
   VERIFY_CONTEXTS,
+  VERIFY_KINDS,
+  BLOCKING_KINDS,
   DEFAULT_VERIFY_CONTEXT,
   checkResultFieldSizes,
   foldCheckTimings,
@@ -538,7 +540,7 @@ test('docs-only --changed skips every kind', () => {
     typecheckCommand: 'tsc --noEmit'
   })
   assert.deepEqual(plan.steps, [])
-  for (const kind of ['typecheck', 'unit', 'lint', 'coverage', 'e2e']) {
+  for (const kind of ['typecheck', 'unit', 'lint', 'build', 'coverage', 'e2e']) {
     assert.equal(skipFor(plan, kind).reason, SKIP_REASONS.DOCS_ONLY)
   }
 })
@@ -671,9 +673,13 @@ test('an unrecognized context is an error, never the permissive branch', () => {
   )
 })
 
-test('only the unit suite can halt the final verdict', () => {
-  // The assertion that catches the next person adding a fourth hard halt.
-  assert.deepEqual(VERIFY_CONTEXTS.final.haltingKinds, ['unit'])
+test('only the unit suite and the build can halt the final verdict, and the lint halts nothing', () => {
+  // The assertion that catches the next person adding a fifth hard halt. Moved by
+  // let-tooling-own-the-small-checks: it now pins the verify requirement "A failed
+  // build SHALL halt the final gate, and a failed lint SHALL halt nothing".
+  assert.deepEqual(VERIFY_CONTEXTS.final.haltingKinds, ['unit', 'build'])
+  assert.deepEqual(VERIFY_CONTEXTS['inter-wave'].haltingKinds, ['typecheck', 'unit'])
+  for (const context of Object.values(VERIFY_CONTEXTS)) assert.ok(!context.haltingKinds.includes('lint'))
 })
 
 // --- the verdict carries the type check's own result (spec: verify) ---------
@@ -723,13 +729,17 @@ test('no type-check result reported leaves the field present and empty, and ever
   const verdict = judgeVerification(typecheckPlan(), [{ kind: 'unit', exitCode: 0, failed: 0 }])
   assert.ok(Object.prototype.hasOwnProperty.call(verdict, 'typecheck'), 'the field is present')
   assert.equal(verdict.typecheck, null)
+  // Moved by let-tooling-own-the-small-checks: the key list now pins the verify
+  // requirement "The verification verdict SHALL carry the lint's and the build's own results".
   assert.deepEqual(Object.keys(verdict).sort(), [
     'banners',
+    'build',
     'context',
     'coverage',
     'e2e',
     'halt',
     'haltingKinds',
+    'lint',
     'reason',
     'signals',
     'skipped',
@@ -923,4 +933,181 @@ test('foldCheckTimings sums every timed run of each planned check, and names the
   assert.deepEqual(foldCheckTimings(steps, []), { ms: 0, missing: ['typecheck', 'unit', 'lint'] })
   assert.deepEqual(foldCheckTimings([], timings), { ms: 0, missing: [] })
   assert.deepEqual(foldCheckTimings(undefined, undefined), { ms: 0, missing: [] })
+})
+
+// --- build kind: the sixth kind, planned at the final gate only (spec: verify) ---------------
+
+const buildSection = (over = {}) => ({ command: 'npm run build', cwd: '.', timeout_ms: 300000, ...over })
+const withBuild = (over = {}, extra = {}) => profile({ build: buildSection(over), ...extra })
+const kindsOf = plan => plan.steps.map(s => s.kind)
+
+test('build kind: the three lists and the skip reason are the ones the design gives', () => {
+  assert.deepEqual(VERIFY_KINDS, ['typecheck', 'unit', 'lint', 'build', 'coverage', 'e2e'])
+  assert.deepEqual(BLOCKING_KINDS, ['typecheck', 'unit', 'build'])
+  assert.deepEqual(VERIFY_CONTEXTS['inter-wave'].haltingKinds, ['typecheck', 'unit'])
+  assert.deepEqual(VERIFY_CONTEXTS.final.haltingKinds, ['unit', 'build'])
+  assert.equal(SKIP_REASONS.FINAL_ONLY, 'final-gate-only')
+})
+
+test('build kind: the validator accepts a build section and refuses a malformed one naming the field', () => {
+  assert.doesNotThrow(() => planVerification(withBuild()))
+  assert.doesNotThrow(() => planVerification(profile({ build: null })))
+  assert.throws(() => planVerification(withBuild({ command: 42 })), /"build\.command" must be a string or null/)
+  assert.throws(() => planVerification(withBuild({ timeout_ms: '300000' })), /"build\.timeout_ms" must be an integer/)
+  assert.throws(() => planVerification(profile({ build: 'npm run build' })), /"build" must be an object/)
+})
+
+test('build kind: a final plan holds the build step, verbatim, blocking, after unit and lint and before coverage and e2e', () => {
+  const p = withBuild(
+    { cwd: 'packages/app' },
+    {
+      lint: { command: 'npm run lint' },
+      coverage: { enabled: true, command: 'npm run coverage' },
+      e2e: { enabled: true, command: 'npm run e2e', cwd: '.' }
+    }
+  )
+  const plan = planVerification(p, { context: 'final', e2e: true, typecheckCommand: 'tsc --noEmit' })
+  assert.deepEqual(kindsOf(plan), ['typecheck', 'unit', 'lint', 'build', 'coverage', 'e2e'])
+  assert.deepEqual(stepFor(plan, 'build'), {
+    id: 'build',
+    kind: 'build',
+    command: 'npm run build',
+    blocking: true,
+    cwd: 'packages/app',
+    timeoutMs: 300000
+  })
+  assert.equal(skipFor(plan, 'build'), null)
+})
+
+test('build kind: a build with no time allowance carries timeoutMs null, and a plan with no context plans it as a final one does', () => {
+  const plan = planVerification(withBuild({ timeout_ms: null }))
+  assert.equal(stepFor(plan, 'build').timeoutMs, null)
+  assert.equal(stepFor(plan, 'build').cwd, '.')
+  assert.deepEqual(plan.steps, planVerification(withBuild({ timeout_ms: null }), { context: 'final' }).steps)
+  assert.equal(stepFor(planVerification(withBuild()), 'build').timeoutMs, 300000)
+})
+
+test('build kind: no build section, a null build and no profile each skip the build as no-detectable-command', () => {
+  for (const p of [profile(), profile({ build: null }), profile({ build: { command: null } }), null]) {
+    const plan = planVerification(p, { context: 'final' })
+    assert.equal(stepFor(plan, 'build'), null, JSON.stringify(p && p.build))
+    assert.equal(skipFor(plan, 'build').reason, SKIP_REASONS.NO_COMMAND, JSON.stringify(p && p.build))
+    assert.ok(plan.banners.includes('VERIFICATION SKIPPED: reason=no-detectable-command'))
+  }
+})
+
+test('build kind: between waves the build is never planned and is skipped as final-gate-only', () => {
+  const plan = planVerification(withBuild(), { context: 'inter-wave', typecheckCommand: 'tsc --noEmit' })
+  assert.equal(stepFor(plan, 'build'), null)
+  assert.equal(skipFor(plan, 'build').reason, 'final-gate-only')
+  assert.ok(plan.banners.includes('VERIFICATION SKIPPED: reason=final-gate-only'))
+  const without = planVerification(profile(), { context: 'inter-wave', typecheckCommand: 'tsc --noEmit' })
+  assert.equal(plan.budgetMs, without.budgetMs)
+  assert.deepEqual(kindsOf(plan), kindsOf(without))
+})
+
+test('build kind: the inter-wave budget is the same for a profile with and without the section', () => {
+  // A guard: it passes today and must keep passing.
+  assert.deepEqual(interWaveVerifyBudget(withBuild()), interWaveVerifyBudget(profile()))
+  assert.deepEqual(interWaveVerifyBudget(withBuild({ timeout_ms: 999999999 })), interWaveVerifyBudget(profile()))
+})
+
+test('build kind: a documentation-only change and a spent budget skip the build with their own reasons', () => {
+  const docs = planVerification(withBuild(), { context: 'final', changed: ['docs/a.md'] })
+  assert.equal(stepFor(docs, 'build'), null)
+  assert.equal(skipFor(docs, 'build').reason, SKIP_REASONS.DOCS_ONLY)
+  const spent = planVerification(withBuild(), { context: 'final', elapsedMs: LIMITS.interWaveVerifyBudgetMs })
+  assert.equal(stepFor(spent, 'build'), null)
+  assert.equal(skipFor(spent, 'build').reason, SKIP_REASONS.BUDGET_EXCEEDED)
+})
+
+const buildPlan = (context = 'final') =>
+  planVerification(withBuild({}, { lint: { command: 'npm run lint' } }), { context, typecheckCommand: 'tsc --noEmit' })
+const greenUnit = { kind: 'unit', exitCode: 0, failed: 0 }
+
+test('build kind: a passing lint and a passing build are each recorded on the verdict', () => {
+  const verdict = judgeVerification(buildPlan(), [
+    { kind: 'typecheck', exitCode: 0 },
+    greenUnit,
+    { kind: 'lint', exitCode: 0 },
+    { kind: 'build', exitCode: 0 }
+  ])
+  assert.deepEqual(verdict.lint, { ran: true, exitCode: 0, passed: true })
+  assert.deepEqual(verdict.build, { ran: true, exitCode: 0, passed: true })
+  assert.equal(verdict.halt, false)
+  assert.deepEqual(verdict.haltingKinds, ['unit', 'build'])
+})
+
+test('build kind: a lint that did not run is recorded as not run and not passed, with a warning and no halt', () => {
+  const verdict = judgeVerification(buildPlan(), [greenUnit, { kind: 'lint', ran: false, reason: 'eslint is not installed' }])
+  assert.deepEqual(verdict.lint, { ran: false, exitCode: null, passed: false })
+  assert.equal(verdict.halt, false)
+  const warn = verdict.signals.find(s => s.level === 'warn' && s.kind === 'lint')
+  assert.ok(warn, 'a warning names the lint')
+  assert.equal(warn.message, 'lint could not run (non-blocking)')
+})
+
+test('build kind: no lint or build result leaves both fields present and empty, and the others as they were', () => {
+  const verdict = judgeVerification(buildPlan(), [greenUnit])
+  assert.ok(Object.prototype.hasOwnProperty.call(verdict, 'lint'))
+  assert.ok(Object.prototype.hasOwnProperty.call(verdict, 'build'))
+  assert.equal(verdict.lint, null)
+  assert.equal(verdict.build, null)
+  assert.equal(verdict.typecheck, null)
+  assert.equal(verdict.e2e, null)
+  assert.equal(verdict.coverage, null)
+  assert.equal(verdict.unit.status, 'green')
+})
+
+test('build kind: a build that exited 2 halts the final verdict with a reason that names the build and the exit code', () => {
+  const verdict = judgeVerification(buildPlan(), [greenUnit, { kind: 'build', exitCode: 2 }], { context: 'final' })
+  assert.equal(verdict.halt, true)
+  assert.equal(verdict.reason, 'build failed (exit 2)')
+  assert.deepEqual(verdict.build, { ran: true, exitCode: 2, passed: false })
+  assert.ok(verdict.signals.some(s => s.level === 'halt' && s.kind === 'build'))
+})
+
+test('build kind: a build that could not run halts the final verdict and says it could not be executed', () => {
+  const plain = judgeVerification(buildPlan(), [greenUnit, { kind: 'build', ran: false }])
+  assert.equal(plain.halt, true)
+  assert.equal(plain.reason, 'build failed (the build command could not be executed)')
+  assert.deepEqual(plain.build, { ran: false, exitCode: null, passed: false })
+  const told = judgeVerification(buildPlan(), [greenUnit, { kind: 'build', ran: false, reason: 'npm is not installed' }])
+  assert.equal(told.reason, 'build failed (npm is not installed)')
+})
+
+test('build kind: a failed lint halts neither context, is warned about, and is recorded as not passed', () => {
+  for (const context of ['final', 'inter-wave']) {
+    const verdict = judgeVerification(buildPlan(context), [greenUnit, { kind: 'lint', exitCode: 1 }], { context })
+    assert.equal(verdict.halt, false, context)
+    assert.deepEqual(verdict.lint, { ran: true, exitCode: 1, passed: false }, context)
+    const warn = verdict.signals.find(s => s.level === 'warn' && s.kind === 'lint')
+    assert.ok(warn, `${context}: a warning names the lint`)
+    assert.equal(warn.message, 'lint failed (non-blocking)')
+  }
+})
+
+test('build kind: a build result judged between waves does not halt, is warned about, and is recorded as not passed', () => {
+  const verdict = judgeVerification(buildPlan('inter-wave'), [greenUnit, { kind: 'build', exitCode: 2 }], { context: 'inter-wave' })
+  assert.equal(verdict.halt, false)
+  assert.deepEqual(verdict.build, { ran: true, exitCode: 2, passed: false })
+  const warn = verdict.signals.find(s => s.level === 'warn' && s.kind === 'build')
+  assert.ok(warn, 'a warning names the build')
+  assert.match(warn.message, /build/)
+  assert.deepEqual(verdict.haltingKinds, ['typecheck', 'unit'])
+})
+
+test('build kind: a failed type check beside a passing build still does not halt the final verdict', () => {
+  // A guard: it passes today and must keep passing.
+  const verdict = judgeVerification(buildPlan(), [{ kind: 'typecheck', exitCode: 2 }, greenUnit, { kind: 'build', exitCode: 0 }], {
+    context: 'final'
+  })
+  assert.equal(verdict.halt, false)
+  assert.ok(verdict.banners.some(b => b.startsWith('TYPECHECK FAILED (non-blocking at the final gate)')))
+})
+
+test('build kind: a lint result that ran and carries no exit code is refused as the type check\'s is', () => {
+  assert.throws(() => judgeVerification(buildPlan(), [greenUnit, { kind: 'lint' }]), /lint result must include a numeric exitCode/)
+  assert.throws(() => judgeVerification(buildPlan(), [greenUnit, { kind: 'typecheck' }]), /typecheck result must include a numeric exitCode/)
+  assert.throws(() => judgeVerification(buildPlan(), [greenUnit, { kind: 'build' }]), /build result must include a numeric exitCode/)
 })

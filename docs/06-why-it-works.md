@@ -223,16 +223,16 @@ Verify agents used to be the one place token economy was optional: a red suite's
 
 The subtlest piece in the codebase, and worth understanding because collapsing it breaks a published contract.
 
-`BLOCKING_KINDS` is `['typecheck', 'unit']` — short on purpose. Lint, coverage and e2e are reported, never enforced. But *which* blocking kind actually halts depends on the call site:
+`BLOCKING_KINDS` is `['typecheck', 'unit', 'build']` — short on purpose. Coverage and e2e are reported, never enforced, and the lint is reported by verification and read by the merge verdict, which a red lint lowers. But *which* blocking kind actually halts depends on the call site:
 
 ```js
 export const VERIFY_CONTEXTS = {
   'inter-wave': { haltingKinds: ['typecheck', 'unit'] },
-  final:        { haltingKinds: ['unit'] }
+  final:        { haltingKinds: ['unit', 'build'] }
 }
 ```
 
-A red typecheck **between waves** fails the checkpoint: it buys targeted fix attempts, and whatever is still red after them is handed to every implementer of the next wave, so nobody builds on broken ground without being told. It does not halt the run. A checkpoint is advisory because the next wave usually resolves what it found, and halting there threw that wave's finished work away, while the final gate already refuses to commit a red unit suite. A red typecheck **at the final gate** is loud but not a halt — because `docs/04-when-it-stops.md` publishes an exhaustive list of hard halts, and a typecheck is not on it. A check cannot silently become a fourth halt because someone tidied the constants. `final` is the default, so a caller that forgot to say which site it is acquires the *stricter-documented* behaviour, not extra halts.
+The build is planned at the final gate only and skipped between waves as `final-gate-only`. A red typecheck **between waves** fails the checkpoint: it buys targeted fix attempts, and whatever is still red after them is handed to every implementer of the next wave, so nobody builds on broken ground without being told. It does not halt the run. A checkpoint is advisory because the next wave usually resolves what it found, and halting there threw that wave's finished work away, while the final gate already refuses to commit a red unit suite. A red typecheck **at the final gate** is loud but not a halt — because `docs/04-when-it-stops.md` publishes an exhaustive list of hard halts, and a typecheck is not on it. A check cannot silently become a fourth halt because someone tidied the constants. `final` is the default, so a caller that forgot to say which site it is acquires the *stricter-documented* behaviour, not extra halts.
 
 Skip reasons are machine-readable strings printed verbatim (`no-test-profile`, `failures-are-pre-existing`, `verify-budget-exceeded`, …) — part of the contract, extended but never reworded in place.
 

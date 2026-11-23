@@ -150,16 +150,21 @@
       "signals": []
     },
     "typecheck": null,
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "skipped": [
       {
         "kind": "typecheck",
         "reason": "no-detectable-command",
         "detail": "no typecheck command in the profile or from the caller"
-      },
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
       }
     ],
     "signals": [
@@ -168,16 +173,9 @@
         "kind": "typecheck",
         "reason": "no-detectable-command",
         "message": "typecheck: VERIFICATION SKIPPED: reason=no-detectable-command (no typecheck command in the profile or from the caller)"
-      },
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
       }
     ],
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "VERIFICATION SKIPPED: reason=no-detectable-command"
     ]
   },

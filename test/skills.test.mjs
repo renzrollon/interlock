@@ -3565,3 +3565,47 @@ test('prose unread: the REVIEW.md template says the proof of coverage reads the 
   assert.ok(!text.includes('signal alone'), `${where} still says the size signal alone reads the list`)
   assert.ok(!text.includes('Only the size signal reads this list'), `${where} still says only the size signal reads the list`)
 })
+
+// --- small checks: the build, the allowance and the halt docs (spec: verify, review/settle-loop) ---
+
+test('small checks: the fix-tests paragraph that resolves typecheck.command resolves build.command too, and still never asks and never invents', () => {
+  const paragraph = paragraphWith(skillText('fix-tests'), 'typecheck.command')
+  assert.ok(paragraph, 'skills/fix-tests/SKILL.md has no paragraph naming typecheck.command')
+  for (const token of ['build.command', 'scripts.build']) {
+    assert.ok(paragraph.includes(token), `skills/fix-tests/SKILL.md: the paragraph does not name ${token}`)
+  }
+  assert.match(paragraph, /never ask/i)
+  assert.match(paragraph, /never invent/i)
+})
+
+test('small checks: shared/TEST-PROFILE.md holds the build section, its two fields, its discovery and its final-gate-only rule', () => {
+  const text = readFileSync(join(ROOT, 'shared', 'TEST-PROFILE.md'), 'utf8')
+  for (const token of ['"build"', 'build.command', 'build.timeout_ms', 'scripts.build', 'final-gate-only']) {
+    assert.ok(text.includes(token), `shared/TEST-PROFILE.md does not name ${token}`)
+  }
+})
+
+test('small checks: settle runs each final-verification step under its own allowance, and a step ended at its timeout is still a failed step', () => {
+  const where = 'skills/settle/SKILL.md'
+  const text = skillText('settle')
+  const section = sectionOfSkill(text, /^### 5f\. /m)
+  const match = /```bash\n[\s\S]*?\n```\n\n([\s\S]*?)(?:\n\n|$)/.exec(section)
+  assert.ok(match, `${where}: no paragraph follows the final verification's fenced lines`)
+  const paragraph = match[1]
+  for (const token of ['timeoutMs', 'plan.json', 'unit.timeout_ms']) {
+    assert.ok(paragraph.includes(token), `${where}: the final verification's paragraph does not name ${token}`)
+  }
+  assert.match(paragraph, /recorded as failed/, `${where}: a step ended at its timeout is no longer recorded as failed`)
+
+  // A guard: the round's own paragraph already reads the step's field, and keeps doing so.
+  const round = text.split(/\n\s*\n/).find(p => p.includes('plan-r<r>.json') && p.includes('timeoutMs'))
+  assert.ok(round, `${where}: the round's verification no longer sets its timeout from timeoutMs in plan-r<r>.json`)
+})
+
+test('small checks: docs/04 has a halt-table row that names the build, and docs/06 shows the final halting kinds with build', () => {
+  const halts = readFileSync(join(ROOT, 'docs', '04-when-it-stops.md'), 'utf8')
+  const row = halts.split('\n').find(line => line.startsWith('|') && /\bbuild\b/i.test(line.split('|')[1] || ''))
+  assert.ok(row, 'docs/04-when-it-stops.md has no halt-table row whose condition names the build')
+  const why = readFileSync(join(ROOT, 'docs', '06-why-it-works.md'), 'utf8')
+  assert.match(why, /final:\s*\{\s*haltingKinds:\s*\['unit', 'build'\]\s*\}/, 'docs/06-why-it-works.md does not show the final halting kinds with build')
+})

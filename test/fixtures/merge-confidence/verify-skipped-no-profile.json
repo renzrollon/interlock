@@ -111,15 +111,20 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "skipped": [
       {
         "kind": "unit",
         "reason": "no-test-profile"
-      },
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
       },
       {
         "kind": "coverage",
@@ -133,7 +138,6 @@
     "banners": [
       "NO TEST PROFILE: run /interlock:fix-tests --reconfigure once",
       "VERIFICATION SKIPPED: reason=no-test-profile",
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "VERIFICATION SKIPPED: reason=no-test-profile",
       "VERIFICATION SKIPPED: reason=e2e-not-requested"
     ],
@@ -143,12 +147,6 @@
         "kind": "unit",
         "reason": "no-test-profile",
         "message": "unit: VERIFICATION SKIPPED: reason=no-test-profile"
-      },
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
       },
       {
         "level": "info",

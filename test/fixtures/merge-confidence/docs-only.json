@@ -107,6 +107,8 @@
     "e2e": null,
     "coverage": null,
     "typecheck": null,
+    "lint": null,
+    "build": null,
     "skipped": [
       {
         "kind": "typecheck",
@@ -120,6 +122,11 @@
       },
       {
         "kind": "lint",
+        "reason": "docs-only-changes",
+        "detail": "2 changed path(s) are documentation"
+      },
+      {
+        "kind": "build",
         "reason": "docs-only-changes",
         "detail": "2 changed path(s) are documentation"
       },
@@ -155,6 +162,12 @@
       },
       {
         "level": "info",
+        "kind": "build",
+        "reason": "docs-only-changes",
+        "message": "build: VERIFICATION SKIPPED: reason=docs-only-changes (2 changed path(s) are documentation)"
+      },
+      {
+        "level": "info",
         "kind": "coverage",
         "reason": "docs-only-changes",
         "message": "coverage: VERIFICATION SKIPPED: reason=docs-only-changes (2 changed path(s) are documentation)"
@@ -167,6 +180,7 @@
       }
     ],
     "banners": [
+      "VERIFICATION SKIPPED: reason=docs-only-changes",
       "VERIFICATION SKIPPED: reason=docs-only-changes",
       "VERIFICATION SKIPPED: reason=docs-only-changes",
       "VERIFICATION SKIPPED: reason=docs-only-changes",

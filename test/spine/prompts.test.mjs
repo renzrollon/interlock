@@ -1065,3 +1065,118 @@ test('prose unread: a dimension prompt and the fix round\'s re-review briefing h
   const fixRule = classesLine(renderProofRules({}))
   assert.ok(fixRule && fix.includes(fixRule), 'the fix round\'s re-review briefing lacks the rule line')
 })
+
+// --- tools own: the reviewer line (spec: review/review-briefs) ----------------------------------
+
+const TOOLS_OWN = 'TOOLS OWN THE SMALL CHECKS'
+const RUBRIC_DIR = join(ROOT, 'skills', 'review-code', 'dimensions')
+const BUNDLED = readdirSync(RUBRIC_DIR)
+  .filter(f => f.endsWith('.md'))
+  .map(f => f.replace(/\.md$/, ''))
+  .sort()
+
+test('tools own: every bundled dimension\'s prompt holds the line one time, after the rubric and before the scope, and still opens on the rubric', () => {
+  assert.ok(BUNDLED.length >= 9, `expected the bundled dimensions, found ${BUNDLED.join(', ')}`)
+  for (const dimension of BUNDLED) {
+    const rubric = readFileSync(join(RUBRIC_DIR, `${dimension}.md`), 'utf8')
+    const prompt = assembleDimensionPrompt(dimensionInput({ dimension, rubric }))
+    assert.equal(countOf(prompt, TOOLS_OWN), 1, `${dimension}: the line appears once`)
+    assert.equal(prompt.split('\n')[0], rubric.split('\n')[0], `${dimension}: the first line is the rubric's own`)
+    const at = prompt.indexOf(TOOLS_OWN)
+    assert.ok(at > prompt.indexOf(rubric.trimEnd()) + rubric.trimEnd().length - 1, `${dimension}: after the rubric`)
+    assert.ok(at < prompt.indexOf('SCOPE (computed by the CLI'), `${dimension}: before the scope`)
+    const paragraph = prompt.split(/\n\s*\n/).find(p => p.includes(TOOLS_OWN))
+    assert.ok(paragraph.includes('still a finding'), `${dimension}: the same paragraph says a defect behind a tool's error is still a finding`)
+  }
+})
+
+test('tools own: the line is held one time with an answer file and a stage line, and with a re-run for uncited files', () => {
+  const stageLine = publishStageLine('review', 'add-widget', 4)
+  const variants = {
+    'answer file and stage line': { answerPath: ANSWER_AT, stageLine },
+    'a re-run for uncited files': { rerunUncited: true },
+    'policy prose and an answer file': { policyProse: 'Cite evidence for every blocker.', answerPath: ANSWER_AT }
+  }
+  for (const [label, over] of Object.entries(variants)) {
+    for (const dimension of BUNDLED) {
+      const rubric = readFileSync(join(RUBRIC_DIR, `${dimension}.md`), 'utf8')
+      const prompt = assembleDimensionPrompt(dimensionInput({ dimension, rubric, ...over }))
+      assert.equal(countOf(prompt, TOOLS_OWN), 1, `${dimension}, ${label}`)
+      assert.ok(prompt.indexOf(TOOLS_OWN) < prompt.indexOf('SCOPE (computed by the CLI'), `${dimension}, ${label}: before the scope`)
+    }
+  }
+})
+
+test('tools own: the remediation briefing and the skeptic prompts do not hold the line', () => {
+  // A guard: it passes today and must keep passing.
+  const remediate = assembleRemediatePrompt({
+    change: 'add-widget',
+    round: 1,
+    plan: { fix: { byFile: [{ file: 'lib/db.mjs', findings: [] }], unscoped: [] }, reReviewDimensions: ['language'] },
+    dimensions: [{ name: 'language', rubric: 'criteria' }],
+    policyProse: '',
+    stageLine: ''
+  })
+  assert.ok(!remediate.includes(TOOLS_OWN))
+  for (const skeptics of ['per-finding', 'per-review']) {
+    const { prompts } = assembleSkepticPrompts({
+      findings: [{ dimension: 'qa', severity: 'blocker', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }],
+      skeptics
+    })
+    assert.ok(prompts.length > 0)
+    for (const { prompt } of prompts) assert.ok(!prompt.includes(TOOLS_OWN), `${skeptics}: a skeptic prompt holds the line`)
+  }
+})
+
+// --- allowance: the verify briefing states each planned step's time allowance (spec: verify) -----
+
+const TIMED_STEPS = [
+  { kind: 'unit', command: 'npm test', timeoutMs: 120000 },
+  { kind: 'build', command: 'npm run build', timeoutMs: 300000 }
+]
+const ALLOWANCE = 'TIME ALLOWANCES'
+
+test('allowance: one paragraph names each step with its allowance, holds non-zero, and follows the run-as-written sentence', () => {
+  const prompt = assembleVerifyPrompt({ change: 'add-widget', context: 'final', steps: TIMED_STEPS, runId: 'run-7' })
+  assert.equal(countOf(prompt, ALLOWANCE), 1)
+  const paragraph = prompt.split(/\n\s*\n/).find(p => p.includes(ALLOWANCE))
+  assert.ok(paragraph.includes('unit 120000 ms'), paragraph)
+  assert.ok(paragraph.includes('build 300000 ms'), paragraph)
+  assert.ok(paragraph.includes('non-zero'), paragraph)
+  assert.ok(prompt.indexOf(ALLOWANCE) > prompt.indexOf('exactly as written'), 'after the sentence that says to run each line as written')
+  const execLines = prompt.split('\n').filter(l => l.includes('interlock verify exec --kind'))
+  assert.equal(execLines.length, TIMED_STEPS.length)
+  for (const line of execLines) assert.match(line, /^ {2}interlock verify exec --kind \S+ --command '?[^']+'?$/, `not a bare command line: ${line}`)
+  assert.ok(!execLines.some(l => l.includes('120000') || l.includes('300000')), 'no allowance rides on a planned line')
+})
+
+test('allowance: the paragraph is held one time between waves and on a fix attempt', () => {
+  const interWave = assembleVerifyPrompt({ change: 'add-widget', context: 'inter-wave', steps: TIMED_STEPS, runId: 'run-7' })
+  assert.equal(countOf(interWave, ALLOWANCE), 1)
+  const retry = assembleVerifyPrompt({
+    change: 'add-widget',
+    context: 'inter-wave',
+    steps: TIMED_STEPS,
+    runId: 'run-7',
+    fixAttempt: 1,
+    fixAttemptsRemaining: 1,
+    errors: ['unit suite is red']
+  })
+  assert.equal(countOf(retry, ALLOWANCE), 1)
+  assert.ok(retry.indexOf(ALLOWANCE) > retry.indexOf('exactly as written'))
+})
+
+test('allowance: a step with no usable allowance gets no paragraph, and the briefing is byte for byte the one without the field', () => {
+  const bare = [
+    { kind: 'typecheck', command: 'npm run typecheck' },
+    { kind: 'lint', command: 'npm run lint' }
+  ]
+  assert.ok(!assembleVerifyPrompt({ change: 'add-widget', context: 'final', steps: bare, runId: 'run-7' }).includes(ALLOWANCE))
+  const plain = [{ kind: 'unit', command: 'npm test' }]
+  const expected = assembleVerifyPrompt({ change: 'add-widget', context: 'final', steps: plain, runId: 'run-7' })
+  for (const timeoutMs of [null, 0, -5]) {
+    const given = assembleVerifyPrompt({ change: 'add-widget', context: 'final', steps: [{ kind: 'unit', command: 'npm test', timeoutMs }], runId: 'run-7' })
+    assert.ok(!given.includes(ALLOWANCE), `timeoutMs ${timeoutMs} gives no paragraph`)
+    assert.equal(given, expected, `timeoutMs ${timeoutMs} is briefed as the same step without the field`)
+  }
+})

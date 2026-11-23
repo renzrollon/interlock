@@ -55,6 +55,11 @@ the profile.
     "command": null,
     "cwd": "."
   },
+  "build": {
+    "command": null,
+    "cwd": ".",
+    "timeout_ms": null
+  },
   "known_flaky": [],
   "notes": []
 }
@@ -74,6 +79,8 @@ the profile.
 | `coverage.format` | Report format the path holds: `lcov`, `json-summary`, `cobertura`, … Only `lcov` is read by Interlock's own commands; any other value makes `interlock verify coverage` exit 1 naming the one supported format |
 | `typecheck.command` | Full shell command that type-checks the project (e.g. `npm run typecheck`). `null` = none found; the step is skipped with a reason, never guessed |
 | `lint.command` | Full shell command that lints the project (e.g. `npm run lint`). `null` = none found; the step is skipped with a reason, never guessed |
+| `build.command` | Full shell command that builds the project (e.g. `npm run build`). `null` = none found; the step is skipped with a reason, never guessed. The build is planned at the final gate only; between waves it is skipped as `final-gate-only` |
+| `build.timeout_ms` | Time allowance for the build step, written by a person: set it when the build outlasts the unit suite. `null` = the build runs under the unit suite's allowance |
 | `known_flaky` | Paths or test-name patterns that flip on re-run (recorded, not "fixed") |
 | `notes` | Short freeform caveats (≤5 lines total) |
 
@@ -158,9 +165,9 @@ in this order, stop at the first hit, and persist what you find:
 Never ask for a coverage command and never install tooling to obtain one —
 nothing found → `enabled:false`, report and continue; never block.
 
-### Typecheck and lint discovery
+### Typecheck, lint and build discovery
 
-`typecheck` and `lint` are resolved the same way `coverage` is — independently,
+`typecheck`, `lint` and `build` are resolved the same way `coverage` is — independently,
 never by asking, never by inventing a command. Without them a ship run's
 inter-wave checkpoint has no typecheck to run, and `typecheck` is a **halting**
 kind there: a type error must stop the next wave from building on top of it.
@@ -169,7 +176,7 @@ Derive in this order, stop at the first hit, and persist what you find:
 
 1. the command already in the profile → use it as-is
 2. `package.json` `scripts.typecheck`, then `scripts["type-check"]`; for lint,
-   `scripts.lint`
+   `scripts.lint`; for the build, `scripts.build`
 3. the step in the CI job that runs it (`.github/workflows/*`, `.gitlab-ci.yml`)
 
 Nothing found → `command: null`. **Never ask, and never invent one** — a guessed
@@ -177,6 +184,10 @@ Nothing found → `command: null`. **Never ask, and never invent one** — a gue
 nobody asked for. A `null` command is skipped with
 `reason=no-detectable-command`, which is a stated absence rather than a silent
 one.
+
+The build is planned at the final gate only: a ship run's inter-wave checkpoint
+skips it with `reason=final-gate-only`, and the final gate halts on it.
+`build.timeout_ms` is written by a person, never discovered.
 
 **Stale profile:** rewrite when `unit.command` no longer exists in
 `package.json` / manifests, or the command exits 127 / "not found". Otherwise

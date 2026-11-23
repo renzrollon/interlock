@@ -111,6 +111,8 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": null,
+    "build": null,
     "skipped": [
       {
         "kind": "unit",
@@ -119,6 +121,11 @@
       },
       {
         "kind": "lint",
+        "reason": "verify-budget-exceeded",
+        "detail": "61000ms of 60000ms budget spent"
+      },
+      {
+        "kind": "build",
         "reason": "verify-budget-exceeded",
         "detail": "61000ms of 60000ms budget spent"
       },
@@ -148,6 +155,12 @@
       },
       {
         "level": "info",
+        "kind": "build",
+        "reason": "verify-budget-exceeded",
+        "message": "build: VERIFICATION SKIPPED: reason=verify-budget-exceeded (61000ms of 60000ms budget spent)"
+      },
+      {
+        "level": "info",
         "kind": "coverage",
         "reason": "verify-budget-exceeded",
         "message": "coverage: VERIFICATION SKIPPED: reason=verify-budget-exceeded (61000ms of 60000ms budget spent)"
@@ -160,6 +173,7 @@
       }
     ],
     "banners": [
+      "VERIFICATION SKIPPED: reason=verify-budget-exceeded",
       "VERIFICATION SKIPPED: reason=verify-budget-exceeded",
       "VERIFICATION SKIPPED: reason=verify-budget-exceeded",
       "VERIFICATION SKIPPED: reason=verify-budget-exceeded",

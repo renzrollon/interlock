@@ -7825,6 +7825,60 @@ test('a judged final verification is recorded with the run id and the verdict', 
   }
 })
 
+// --- build kind: a red build at the final gate halts the run (spec: verify) ---------------------
+
+test('build kind: a run whose final verification reports a build that exited 2 halts with the judge\'s reason and emits no commit step', () => {
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    file(root, '.claude/testing/profile.json', {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' },
+      build: { command: 'npm run build', cwd: '.', timeout_ms: 300000 }
+    })
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    assert.ok(
+      jsonAt(root, '.claude/ship/vplan-final.json').steps.some(s => s.kind === 'build'),
+      'the final plan holds the build step'
+    )
+    const step = run(root, [...final.then.argv], {
+      results: [
+        {
+          results: [
+            { kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] },
+            { kind: 'build', exitCode: 2 }
+          ]
+        }
+      ]
+    }).step
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, /build failed \(exit 2\)/)
+    assert.notEqual(step.action, 'commit')
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    assert.equal(written.halt, true)
+    assert.deepEqual(written.build, { ran: true, exitCode: 2, passed: false })
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('build kind: a final verification whose plan holds no step records a verdict carrying lint and build as null beside the four it carries today', () => {
+  const { root, change } = repo()
+  try {
+    const verified = toTail(root, change, [])
+    assert.equal(verified.action, 'verify-final')
+    assert.equal(verified.skipped, true, 'the fixture has no test profile, so the CLI skips verification')
+    run(root, [...verified.then.argv])
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    for (const key of ['unit', 'e2e', 'coverage', 'typecheck', 'lint', 'build']) {
+      assert.ok(Object.prototype.hasOwnProperty.call(written, key), `${key} is present`)
+      assert.equal(written[key], null, `${key} did not run, so it is null and not absent`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('an inter-wave judge writes no final verification record', () => {
   const { root, batch } = verifiableRepo()
   try {
