@@ -7,9 +7,9 @@ The merge verdict has read `HUMAN` on all 19 recorded assessments, and the size 
 ## What Changes
 
 - `diff.shape` places each changed file in one class by its path alone: **prose** (a documentation path, which includes the OpenSpec tree), **test**, or **source** (every other path). The published line cap and file cap are applied to the source class. The caps keep their names and their values.
-- Test lines and prose lines are not counted toward the caps. Whether test lines count is ledger row D1, which awaits the owner; the artifacts are written to the recommended answer and say what changes if the answer is the other one.
+- Test lines and prose lines are not counted toward the caps. Whether test lines count was ledger row D1; the owner answered no on 2026-11-23, and the artifacts are written to that answer.
 - The signal's evidence carries every figure: source, test, prose and the total, each as lines and files. A reader sees what was set aside and how much of it there was.
-- `REVIEW.md` gains a third path list, `## Counts as Source`. A changed path under a listed path is source whatever its name, so a repository whose prose is behaviour can say so. The list is read from the base, as the always-human-review list is, and only `diff.shape` reads it. Whether a repository may name such paths is ledger row D7, which awaits the owner.
+- `REVIEW.md` gains a third path list, `## Counts as Source`. A changed path under a listed path is source whatever its name, so a repository whose prose is behaviour can say so. The list is read from the base, as the always-human-review list is, and only `diff.shape` reads it. Whether a repository may name such paths was ledger row D7; the owner answered yes on 2026-11-23, with `skills/`, `agents/` and `shared/` listed here and `docs/` left out.
 - This repository's `REVIEW.md` lists `skills/`, `agents/` and `shared/` under the new section.
 - When the split cannot be established, every changed line and file is counted, as today, and the evidence says why. That covers a diff with no per-file counts, a review policy the base could not supply, and a committed `## Counts as Source` section that could not be read in full.
 - The Markdown block bounds how many evidence lines one signal's table row carries and states how many it left out. The JSON and text outputs still carry every line.

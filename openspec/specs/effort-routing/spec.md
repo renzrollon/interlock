@@ -83,9 +83,9 @@ Rationale: identical to the model-clamp discipline — assigned after classifica
 
 ### Requirement: The effort-by-tier defaults are published, not restated
 
-The tier→effort mapping, the verify effort, the verify retry effort and the skeptic effort SHALL live in `lib/limits.mjs` and be surfaced by `interlock limits`, so the mapping is read at one source rather than re-stated in prose or duplicated in code that can drift.
+The tier→effort mapping, the three verify efforts, the verify model and the skeptic effort SHALL live in `lib/limits.mjs` and be surfaced by `interlock limits`, so the mapping is read at one source rather than re-stated in prose or duplicated in code that can drift.
 
-Every effort the limits surface prints SHALL be read by the code path it governs. A published effort that nothing reads SHALL fail the cap-authority check, on the same terms as every other published cap. `interlock limits` SHALL label the verify effort as governing both verify checks, and SHALL print the verify retry effort in its own row, labelled as governing an inter-wave fix attempt. `interlock limits --json` SHALL carry both.
+Every effort the limits surface prints SHALL be read by the code path it governs. A published effort that nothing reads SHALL fail the cap-authority check, on the same terms as every other published cap. `interlock limits` SHALL print the effort of the first inter-wave check, of an inter-wave fix attempt and of the final check in three rows, each labelled with the check it governs, and the verify model in a row labelled as governing the first inter-wave check. `interlock limits --json` SHALL carry all four.
 
 Rationale: "a cap written down twice is a cap that drifts" — the same reason the wave caps already live in `lib/limits.mjs`. A value that is printed and never read is the same failure from the other side: `interlock limits` printed a verify effort while the verify step ran at the host's default.
 
@@ -93,8 +93,8 @@ Rationale: "a cap written down twice is a cap that drifts" — the same reason t
 
 - **GIVEN** an operator runs `interlock limits`
 - **WHEN** they read the output
-- **THEN** it shows the tier→effort defaults, the verify effort, the verify retry effort and the skeptic effort
-- **AND** the verify row names both the inter-wave and the final check, and the retry row names the inter-wave fix attempt
+- **THEN** it shows the tier→effort defaults, the three verify efforts, the verify model and the skeptic effort
+- **AND** each verify row names the check it governs
 
 #### Scenario: Failure — no code path hardcodes a tier→effort threshold beside the published one
 
@@ -292,40 +292,51 @@ The implementer spawn SHALL carry the lane's derived effort. Every remediation s
 - **THEN** every review spawn carries that level
 - **AND** no edit to the run program was required
 
-### Requirement: A verify spawn SHALL carry the verify effort on a first attempt and the retry effort on a fix attempt
+### Requirement: A verify spawn SHALL carry the model and effort published for its check
 
-A verify spawn's first attempt, which is the inter-wave check's initial attempt or the final check, SHALL carry the verify effort published in `lib/limits.mjs`. Each inter-wave fix attempt SHALL carry the published verify retry effort. The defaults are `high` and `xhigh`. Which of the two a spawn carries MUST be derived from the step's own attempt counter. A verify spawn's model stays the session model. A host that does not apply the effort it was passed SHALL still run the spawn.
+The first attempt of an inter-wave check SHALL carry the published verify model and verify effort. Each inter-wave fix attempt SHALL carry no model, so it runs on the session model, and the published verify retry effort. The final check SHALL carry no model and the published final verify effort. The defaults are Sonnet with `medium` for the first attempt, `xhigh` for a fix attempt and `high` for the final check. The choice MUST be derived from the step's context and attempt counter.
 
-#### Scenario: Happy path — both first attempts carry the verify effort
+#### Scenario: Happy path — the first inter-wave check runs on the published model
 
-- **GIVEN** an inter-wave verify step on its initial attempt and a final verify step
-- **WHEN** each is emitted by the run program, on either driver
-- **THEN** both spawns carry the published verify effort
-- **AND** neither carries the session's effort or the retry effort
+- **GIVEN** an inter-wave verify step on its initial attempt
+- **WHEN** the run program emits it, on either driver
+- **THEN** its spawn carries the published verify model and the published verify effort
+
+#### Scenario: Happy path — a red check escalates to the session model
+
+- **GIVEN** an inter-wave verify whose first attempt reported a red unit suite
+- **WHEN** the run program emits each fix attempt of that wave
+- **THEN** each spawn carries no model and the published verify retry effort
+
+#### Scenario: Happy path — the final check stays on the session model
+
+- **GIVEN** a run that reaches its final check, which has no attempt counter
+- **WHEN** the run program emits it
+- **THEN** its spawn carries no model and the published final verify effort
 
 #### Scenario: Failure — a verify spawn emitted without an effort fails the suite
 
 - **GIVEN** a run program whose verify spawn carries no effort
-- **WHEN** the test that reaches a verify step compares the spawn's effort with the published verify effort
+- **WHEN** the test that reaches a verify step compares the spawn's effort with the published effort for that check
 - **THEN** the test fails naming the verify spawn
 - **AND** the failure is a test failure before any run, not a verify agent quietly running at a host default
 
-#### Scenario: Edge case — an inter-wave fix attempt carries the retry effort, and the first attempt does not
+#### Scenario: Failure — a published verify model nothing reads fails the suite
 
-- **GIVEN** an inter-wave verify whose first attempt reported a red unit suite
-- **WHEN** the run program emits the first attempt and then the fix attempt
-- **THEN** the first attempt's spawn carried the published verify effort
-- **AND** the fix attempt's spawn carries the published verify retry effort, as does every later fix attempt of that wave
-
-#### Scenario: Edge case — the final check carries the verify effort
-
-- **GIVEN** a run that reaches its final check, which has no attempt counter
-- **WHEN** the run program emits it
-- **THEN** its spawn carries the published verify effort, never the retry effort
+- **GIVEN** a run program whose first inter-wave check ignores the published verify model
+- **WHEN** the test compares that spawn's model with the published value
+- **THEN** the test fails naming the verify spawn
 
 #### Scenario: Edge case — a fix attempt resumed after a halt routes as it did before
 
 - **GIVEN** a run halted while a wave's second verify attempt was owed
 - **WHEN** the run is resumed and emits that attempt
-- **THEN** its spawn carries the published verify retry effort
-- **AND** the effort was derived from the step's attempt counter, not from anything the resumed process remembered
+- **THEN** its spawn carries no model and the published verify retry effort
+- **AND** both were derived from the step's attempt counter, not from anything the resumed process remembered
+
+#### Scenario: Edge case — a host that cannot apply the model or effort still runs the spawn
+
+- **GIVEN** a host with no mapping for the published verify model, or no way to apply the effort
+- **WHEN** it receives the first inter-wave check
+- **THEN** the spawn runs on the host's default
+- **AND** the routing event says what was not applied
