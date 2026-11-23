@@ -3542,3 +3542,26 @@ test('validation skill: each pin fails on a doctored copy, naming what was dropp
   // A number for the bound.
   fails(problemsOf(t => `${t}`.replace(/^(### 6d\.[^\n]*\n)/m, '$1\nThe bound is 20,000 characters.\n')), 'number for the comment bound')
 })
+
+// --- prose unread: the review skill's answer shape and the REVIEW.md template (spec: review/review-briefs) ---
+
+test('prose unread: the review skill\'s answer shape carries paths on its unread entry, and says the key is optional', () => {
+  const where = 'skills/review-code/SKILL.md'
+  const lines = fencedLines(join(SKILLS_DIR, 'review-code', 'SKILL.md'))
+  const unread = lines.find(l => l.startsWith('"unread": ['))
+  assert.ok(unread, `${where} has no unread line in its answer shape`)
+  assert.ok(unread.includes('"paths"'), `${where}: ${unread}`)
+  const paragraph = skillText('review-code').split(/\n\s*\n/).find(p => p.includes('`paths`'))
+  assert.ok(paragraph, `${where} has no paragraph naming \`paths\``)
+  assert.ok(paragraph.includes('optional'), `${where}: ${paragraph}`)
+})
+
+test('prose unread: the REVIEW.md template says the proof of coverage reads the Counts as Source list too', () => {
+  const where = 'skills/review-code/REVIEW.template.md'
+  const text = readFileSync(join(SKILLS_DIR, 'review-code', 'REVIEW.template.md'), 'utf8')
+  const guidance = text.slice(text.indexOf('## Counts as Source'))
+  assert.ok(guidance.includes('proof of coverage'), `${where}: the section guidance does not name the proof of coverage`)
+  assert.ok(text.includes('proof of coverage'), `${where} does not name the proof of coverage`)
+  assert.ok(!text.includes('signal alone'), `${where} still says the size signal alone reads the list`)
+  assert.ok(!text.includes('Only the size signal reads this list'), `${where} still says only the size signal reads the list`)
+})

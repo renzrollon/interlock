@@ -670,3 +670,46 @@ test('counts as source: the list never moves a finding through resolveReview', (
   assert.equal(listed.counts.surviving, 1)
   assert.deepEqual(listed, plain)
 })
+
+// --- prose unread: the list the proof of coverage classes by ---------------------
+
+const sourceListOf = text => core.proofSourcePaths(parseReviewPolicy(text))
+
+test('prose unread: proofSourcePaths answers the list for a policy with no problem', () => {
+  assert.deepEqual(sourceListOf('## Counts as Source\n- skills/\n- agents/\n'), ['skills', 'agents'])
+})
+
+test('prose unread: proofSourcePaths answers an empty list for the policy of an absent file', () => {
+  assert.deepEqual(core.proofSourcePaths(readReviewPolicy(tmp)), [])
+})
+
+test('prose unread: proofSourcePaths answers null for a pattern item under Counts as Source', () => {
+  assert.equal(sourceListOf('## Counts as Source\n- skills/**\n'), null)
+})
+
+test('prose unread: proofSourcePaths answers null for a copy that was not parsed', () => {
+  const unparsed = { prose: '', excludePaths: [], humanPaths: [], sourcePaths: [], owner: null, problems: ['REVIEW.md could not be read: EACCES'] }
+  assert.equal(core.proofSourcePaths(unparsed), null)
+})
+
+test('prose unread: proofSourcePaths answers null for a front-matter key the policy does not accept', () => {
+  assert.equal(sourceListOf('---\nteam: platform\n---\n\n## Counts as Source\n- skills/\n'), null)
+})
+
+test('prose unread: proofSourcePaths keeps the list when the only problems are in the other two sections', () => {
+  const text = '## Do Not Report\n- dist/**\n\n## Always Human Review\n- ../x\n\n## Counts as Source\n- skills/\n'
+  assert.ok(parseReviewPolicy(text).problems.length >= 2)
+  assert.deepEqual(sourceListOf(text), ['skills'])
+})
+
+test('prose unread: proofSourcePaths gives the same answers on a policy composePolicy built', () => {
+  const compose = (working, base) => core.composePolicy({ working: copyOf(working), base: copyOf(base), ref: 'origin/main' })
+  assert.deepEqual(core.proofSourcePaths(compose('## Counts as Source\n- docs/\n', '## Counts as Source\n- skills/\n')), ['skills'])
+  const patterned = compose('', '## Counts as Source\n- skills/**\n')
+  assert.ok(patterned.problems.length > 0 && patterned.problems.every(p => p.includes('(origin/main)')))
+  assert.equal(core.proofSourcePaths(patterned), null)
+  const front = compose('', '---\nteam: platform\n---\n')
+  assert.equal(core.proofSourcePaths(front), null)
+  const other = compose('', '## Do Not Report\n- dist/**\n\n## Counts as Source\n- skills/\n')
+  assert.deepEqual(core.proofSourcePaths(other), ['skills'])
+})

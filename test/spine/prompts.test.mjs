@@ -1018,3 +1018,50 @@ test('the remediation briefing holds the no-self-filter instruction', () => {
   })
   assert.ok(prompt.includes(NO_SELF_FILTER), 'the remediation briefing lacks the no-self-filter instruction')
 })
+
+// --- prose unread: the prompt asks for the changed files an unread entry is about -------
+
+const PROSE_RULE_MARK = 'The CLI classes'
+const proofRulesText = answerPath => renderProofRules({ changedSources: ['lib/db.mjs'], dimension: 'language', ...(answerPath ? { answerPath } : {}) })
+const classesLine = text => text.split('\n').find(line => line.includes(PROSE_RULE_MARK))
+
+test('prose unread: renderProofRules shows paths on the emit shape\'s unread entry, says it is optional, and asks for the files', () => {
+  for (const answerPath of [undefined, ANSWER_AT]) {
+    const text = proofRulesText(answerPath)
+    const unreadLine = text.split('\n').find(line => line.includes('"unread": [ {'))
+    assert.ok(unreadLine, `no unread line in the emit shape (${answerPath})`)
+    assert.ok(unreadLine.includes('"paths"'), unreadLine)
+    assert.match(text, /`paths`[^.\n]*optional|optional[^.\n]*`paths`/, `paths is not said to be optional (${answerPath})`)
+    const rule = classesLine(text)
+    assert.ok(rule, `no rule line holding "${PROSE_RULE_MARK}" (${answerPath})`)
+    assert.ok(rule.includes('`paths`') && rule.includes('`unread`'), rule)
+  }
+})
+
+test('prose unread: guard: the proof rules name neither prose nor Counts as Source, so a reviewer has no class to aim for', () => {
+  for (const answerPath of [undefined, ANSWER_AT]) {
+    const text = proofRulesText(answerPath)
+    assert.doesNotMatch(text, /prose/i, 'the proof rules name a class')
+    assert.ok(!text.includes('Counts as Source'), 'the proof rules name a policy section')
+  }
+})
+
+test('prose unread: a dimension prompt and the fix round\'s re-review briefing hold the same rule line', () => {
+  const rule = classesLine(proofRulesText(ANSWER_AT))
+  const plain = classesLine(proofRulesText())
+  assert.ok(rule && plain, 'renderProofRules prints no rule line to compare')
+  assert.ok(assembleDimensionPrompt(dimensionInput()).includes(plain), 'the dimension prompt lacks the rule line')
+  assert.ok(assembleDimensionPrompt(dimensionInput({ answerPath: ANSWER_AT })).includes(rule), 'the run\'s reviewer briefing lacks the rule line')
+  const fix = assembleRemediatePrompt({
+    change: 'add-widget',
+    round: 1,
+    plan: { fix: { byFile: [{ file: 'lib/db.mjs', findings: [] }], unscoped: [] }, reReviewDimensions: ['language'] },
+    dimensions: [{ name: 'language', rubric: 'criteria' }],
+    policyProse: '',
+    findingsPath: FINDINGS_AT,
+    verdictsPath: VERDICTS_AT,
+    stageLine: ''
+  })
+  const fixRule = classesLine(renderProofRules({}))
+  assert.ok(fixRule && fix.includes(fixRule), 'the fix round\'s re-review briefing lacks the rule line')
+})

@@ -10189,3 +10189,58 @@ test('each skeptics-step briefing names only its own verdict file, once, and dro
     cleanup(root)
   }
 })
+
+// --- prose unread: a run's review record lists apart what a reviewer left unread (spec: review/review-proof) ---
+
+/**
+ * Drive a strict run to its first review record. Every selected dimension cites
+ * what the run changed; `technical-lead` also declares `unread`. `extra` is
+ * written into the tree after the run starts, so it is a change the run observed.
+ */
+function strictWithUnread(root, change, unread, extra) {
+  const review = toTail(root, change, ['--strict'])
+  for (const [path, body] of Object.entries(extra)) file(root, path, body)
+  const answers = manifestOf(root).reviewDimensions.selected.map(dimension => ({
+    ...ledgered(dimension, [], ['README.md:1']),
+    ...(dimension === 'technical-lead'
+      ? { coverage: { checked: [{ what: 'the change', at: 'README.md:1' }], unread } }
+      : {})
+  }))
+  writeFanoutFiles(root, answers, [])
+  return finishReview(root, review).step
+}
+
+test('prose unread: a strict run lists a docs entry apart, keeps its proof, and closes with no REVIEW NOT PROVEN banner', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const entry = { input: 'the guide', reason: 'prose-only edits, not opened', paths: ['docs/guide.md'] }
+    const verified = strictWithUnread(root, change, [entry], { 'docs/guide.md': '# guide\n' })
+    assert.equal(verified.action, 'verify-final', JSON.stringify(verified))
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.proseUnread, [{ dimension: 'technical-lead', entries: [entry] }])
+    assert.deepEqual(record.proof.unread, [])
+    assert.equal(record.proof.proven, true, JSON.stringify(record.proof))
+    const handoff = run(root, [...verified.then.argv]).step
+    run(root, [...handoff.then.argv], { results: [HANDOFF_OK] })
+    const closed = closeAt(root, realCommit(root)).step
+    assert.deepEqual(closed.banners.filter(b => b.startsWith('REVIEW NOT PROVEN')), [], JSON.stringify(closed.banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('prose unread: a run started on a commit whose REVIEW.md lists skills/ keeps a skill entry unread', () => {
+  const { root, change } = shippedRepo()
+  try {
+    file(root, 'REVIEW.md', '## Counts as Source\n- skills/\n')
+    commitAll(root, 'list the skills')
+    const entry = { input: 'the skill', reason: 'not opened', paths: ['skills/settle/SKILL.md'] }
+    strictWithUnread(root, change, [entry], { 'skills/settle/SKILL.md': '# skill\n' })
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.unread, [{ dimension: 'technical-lead', entries: [entry] }])
+    assert.deepEqual(record.proof.proseUnread, [])
+    assert.equal(record.proof.proven, false)
+  } finally {
+    cleanup(root)
+  }
+})

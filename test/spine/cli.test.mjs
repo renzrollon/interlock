@@ -6112,3 +6112,140 @@ test('handoff verdict: a checked handoff reads by its counts, and its extra keys
   const without = runJson([...baseArgs(repo), '--handoff', file('mc-checked-without.json', stripped)])
   assert.deepEqual(withKeys.signals, without.signals)
 })
+
+// --- prose unread: the proof classes the files an unread entry names (spec: review/review-proof) ---
+
+const PROSE_SKILL_BASE = '## Counts as Source\n- skills/\n'
+
+/**
+ * A checkout whose first commit may hold a REVIEW.md, and whose second changes
+ * `lib/a.mjs`, `docs/a.md` and `skills/settle/SKILL.md` (and the policy file,
+ * when the head says something else). `base` is the first commit.
+ */
+function proseRepo(sub, baseReview, { headReview, skill = true } = {}) {
+  const repo = gitRepo(sub, { 'lib/a.mjs': 'one\n', ...(baseReview === null ? {} : { 'REVIEW.md': baseReview }) })
+  commitFiles(repo.root, {
+    'lib/a.mjs': 'one\ntwo\n',
+    'docs/a.md': '# doc\n',
+    ...(skill ? { 'skills/settle/SKILL.md': '# skill\n' } : {}),
+    ...(headReview === undefined ? {} : { 'REVIEW.md': headReview })
+  })
+  return { root: repo.root, base: repo.sha }
+}
+
+const DOCS_UNREAD = { input: 'the docs', reason: 'prose-only edits, not opened', paths: ['docs/a.md'] }
+const SKILL_UNREAD = { input: 'the skill', reason: 'not opened', paths: ['skills/settle/SKILL.md'] }
+
+/** One `technical-lead` answer citing `lib/a.mjs` with the given `unread` entries. */
+function proseReview(tag, repo, unread, ...extra) {
+  const answers = file(`pu-${tag}-answers.json`, [
+    { dimension: 'technical-lead', findings: [], coverage: { checked: [{ what: 'the change', at: 'lib/a.mjs:2' }], unread } }
+  ])
+  const dims = file(`pu-${tag}-dims.json`, { selected: ['technical-lead'], ran: ['technical-lead'], unavailable: [], skipped: [] })
+  return run(['review', '--findings', answers, '--verdicts', file(`pu-${tag}-v.json`, []), '--dimensions', dims, '--base', repo.base, '--root', repo.root, ...extra])
+}
+const proseJson = (tag, repo, unread, ...extra) => {
+  const r = proseReview(tag, repo, unread, ...extra, '--json')
+  assert.equal(r.code, 0, r.stderr)
+  return { out: JSON.parse(r.stdout), stderr: r.stderr }
+}
+const entriesOf = (list, dimension = 'technical-lead') => (list.find(u => u.dimension === dimension) || { entries: [] }).entries
+
+test('prose unread: a base that lists skills/ keeps the skill entry unread and lists the docs entry apart', () => {
+  const repo = proseRepo('pu-listed', PROSE_SKILL_BASE)
+  const { out } = proseJson('listed', repo, [DOCS_UNREAD, SKILL_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.proseUnread), [DOCS_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.unread), [SKILL_UNREAD])
+  assert.equal(out.proof.proven, false)
+  assert.deepEqual(out.coverage['technical-lead'].unread, [DOCS_UNREAD, SKILL_UNREAD], 'the record keeps paths on each entry')
+})
+
+test('prose unread: a head whose REVIEW.md drops skills/ does not lift its own skill entry', () => {
+  const repo = proseRepo('pu-dropped', PROSE_SKILL_BASE, { headReview: '## Do Not Report\n- dist/\n' })
+  const { out } = proseJson('dropped', repo, [DOCS_UNREAD, SKILL_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.proseUnread), [DOCS_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.unread), [SKILL_UNREAD])
+})
+
+test('prose unread: a base with no section lists the skill entry apart too', () => {
+  const repo = proseRepo('pu-nosection', null)
+  const { out } = proseJson('nosection', repo, [SKILL_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.proseUnread), [SKILL_UNREAD])
+  assert.deepEqual(out.proof.unread, [])
+  assert.equal(out.proof.proven, true)
+})
+
+test('prose unread: a section that could not be read in full lists nothing apart, and the policy problem is still reported', () => {
+  const repo = proseRepo('pu-pattern', '## Counts as Source\n- skills/**\n')
+  const { out } = proseJson('pattern', repo, [DOCS_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.unread), [DOCS_UNREAD])
+  assert.deepEqual(out.proof.proseUnread, [])
+  assert.equal(out.proof.proven, false)
+  assert.ok(out.policyProblems.some(p => p.includes('skills/**')), JSON.stringify(out.policyProblems))
+})
+
+test('prose unread: a problem in another section changes nothing', () => {
+  const repo = proseRepo('pu-other', '## Do Not Report\n- dist/**\n\n## Counts as Source\n- skills/\n')
+  const { out } = proseJson('other', repo, [DOCS_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.proseUnread), [DOCS_UNREAD])
+  assert.deepEqual(out.proof.unread, [])
+  assert.ok(out.policyProblems.length > 0, 'the other section\'s problem is still printed')
+})
+
+test('prose unread: a problem that belongs to no section lists nothing apart', () => {
+  const repo = proseRepo('pu-front', '---\nteam: platform\n---\n\n## Counts as Source\n- skills/\n')
+  const { out } = proseJson('front', repo, [DOCS_UNREAD])
+  assert.deepEqual(entriesOf(out.proof.unread), [DOCS_UNREAD])
+  assert.deepEqual(out.proof.proseUnread, [])
+  assert.equal(out.proof.proven, false)
+  assert.ok(out.policyProblems.some(p => p.includes('team')), JSON.stringify(out.policyProblems))
+})
+
+test('prose unread: the review\'s proof: line names the dimension, proven and not proven', () => {
+  const repo = proseRepo('pu-text', PROSE_SKILL_BASE, { skill: false })
+  const proven = proseReview('text-a', repo, [DOCS_UNREAD])
+  assert.equal(proven.code, 0, proven.stderr)
+  assert.ok(proven.stdout.split('\n').includes('  proof: proven (1 of 1 changed source file(s) cited; prose left unread: technical-lead)'), proven.stdout)
+  const mixed = proseReview('text-b', repo, [DOCS_UNREAD, { input: 'delta specs', reason: 'not opened' }])
+  assert.equal(mixed.code, 0, mixed.stderr)
+  assert.ok(
+    mixed.stdout.split('\n').includes('  proof: not proven (0 unproven, 1 with unread inputs, 0 uncited; prose left unread: technical-lead)'),
+    mixed.stdout
+  )
+})
+
+test('prose unread: interlock review proof prints proven, then a line naming the prose left unread', () => {
+  const repo = proseRepo('pu-proof', PROSE_SKILL_BASE, { skill: false })
+  const record = join(dir, 'pu-proof', 'review.json')
+  const written = proseReview('proof', repo, [DOCS_UNREAD], '--out', record, '--json')
+  assert.equal(written.code, 0, written.stderr)
+  const proof = run(['review', 'proof', '--review', record])
+  assert.equal(proof.code, 0, proof.stderr)
+  const lines = proof.stdout.split('\n').filter(Boolean)
+  assert.equal(lines[0], 'proven')
+  assert.match(lines[1], /technical-lead: prose left unread docs\/a\.md \(prose-only edits, not opened\)/)
+  assert.equal(lines.length, 2)
+})
+
+test('prose unread: guard: a record with no prose left unread prints proven alone, and its proof: line holds no such words', () => {
+  const repo = proseRepo('pu-none', PROSE_SKILL_BASE, { skill: false })
+  const record = join(dir, 'pu-none', 'review.json')
+  const written = proseReview('none', repo, [], '--out', record)
+  assert.equal(written.code, 0, written.stderr)
+  assert.doesNotMatch(written.stdout, /prose left unread/)
+  const proof = run(['review', 'proof', '--review', record])
+  assert.equal(proof.stdout, 'proven\n')
+})
+
+test('prose unread: a paths of the wrong shape exits 0 with no LEDGER REJECTED and the entry stays unread', () => {
+  const repo = proseRepo('pu-shape', PROSE_SKILL_BASE, { skill: false })
+  for (const [i, bad] of ['docs/a.md', [], ['docs/a.md', 3]].entries()) {
+    const entry = { input: 'the docs', reason: 'prose-only edits, not opened', paths: bad }
+    const { out, stderr } = proseJson(`shape${i}`, repo, [entry])
+    assert.doesNotMatch(stderr, /LEDGER REJECTED/, JSON.stringify(bad))
+    assert.deepEqual(out.proof.unproven, [], JSON.stringify(bad))
+    assert.deepEqual(entriesOf(out.proof.unread), [{ input: 'the docs', reason: 'prose-only edits, not opened' }], JSON.stringify(bad))
+    assert.deepEqual(out.proof.proseUnread, [], JSON.stringify(bad))
+    assert.equal(out.proof.proven, false)
+  }
+})

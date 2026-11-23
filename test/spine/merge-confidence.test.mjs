@@ -297,6 +297,7 @@ test('FLAGS is the frozen published vocabulary of design D2', () => {
       'blast-radius-skipped',
       'domain-partial',
       'blast-radius-partial',
+      'prose-unread',
       'legacy-unspecced',
       'no-graph',
       'requirements-omitted',
@@ -3138,4 +3139,145 @@ test('size docs: docs/12, docs/07 and docs/04 name the third list', () => {
   const policyRow = seven.split('\n').find(line => line.startsWith('| `interlock review-policy`'))
   assert.ok(policyRow && policyRow.includes('Counts as Source'), 'the docs/07 review-policy row does not name Counts as Source')
   assert.ok(docAt('docs/04-when-it-stops.md').includes('Counts as Source'), 'docs/04 does not name Counts as Source')
+})
+
+// --- prose unread: prose a reviewer left unread is a flag on review.ran (spec: review/merge-confidence) ---
+
+const proseEntry = (input, reason, paths) => ({ input, reason, paths })
+const DOCS_PROSE = [{ dimension: 'technical-lead', entries: [proseEntry('docs edits', 'prose-only edits, not opened', ['docs/04-when-it-stops.md'])] }]
+
+/** The all-green review input with `proof` changed by `over`, and the dimensions it names. */
+function proseReviewed(over, dimensions = ['qa', 'typescript']) {
+  const input = fixture('all-observable-green')
+  input.review.dimensions = { ...input.review.dimensions, selected: dimensions, ran: dimensions }
+  input.review.proof = { ...input.review.proof, dimensions, ...over }
+  return input
+}
+const ranOf = input => signalOf(assessMergeConfidence(input), 'review.ran')
+
+test('prose unread: a proven review with prose left unread is green and flagged, and scores below the same input without', () => {
+  const result = assessMergeConfidence(proseReviewed({ proseUnread: DOCS_PROSE }))
+  const entry = signalOf(result, 'review.ran')
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, ['prose-unread'])
+  assert.ok(FLAGS.includes('prose-unread'))
+  assert.ok(said(entry).includes('prose left unread: technical-lead: docs/04-when-it-stops.md (prose-only edits, not opened)'), said(entry))
+  assert.match(entry.reason, /technical-lead/)
+  assert.doesNotMatch(entry.reason, /recorded domain or blast-radius skip/, 'a prose skip is not read as a recorded skip')
+  const plain = assessMergeConfidence(proseReviewed({}))
+  assert.equal(result.verdict, plain.verdict)
+  assert.equal(result.worstBand, plain.worstBand)
+  assert.ok(result.score < plain.score, `${result.score} is not below ${plain.score}`)
+})
+
+test('prose unread: an unread input beside it still reads amber, and the flag stays', () => {
+  const entry = ranOf(
+    proseReviewed({
+      proven: false,
+      reason: 'gaps in coverage',
+      unread: [{ dimension: 'technical-lead', entries: [{ input: 'delta specs', reason: 'not opened' }] }],
+      proseUnread: DOCS_PROSE
+    })
+  )
+  assert.equal(entry.band, 'amber')
+  assert.equal(entry.kind, 'evidence')
+  assert.deepEqual(entry.flags, ['prose-unread'])
+  assert.ok(said(entry).includes('unread: technical-lead: delta specs (not opened)'), said(entry))
+  assert.ok(said(entry).includes('prose left unread: technical-lead: docs/04-when-it-stops.md'), said(entry))
+})
+
+test('prose unread: several dimensions and entries are joined in a fixed order', () => {
+  const entry = ranOf(
+    proseReviewed(
+      {
+        proseUnread: [
+          { dimension: 'language', entries: [proseEntry('README', 'not opened', ['README.md'])] },
+          {
+            dimension: 'technical-lead',
+            entries: [
+              proseEntry('docs a and b', 'prose-only edits, not opened', ['docs/a.md', 'docs/b.md']),
+              proseEntry('docs c', 'not opened', ['docs/c.md'])
+            ]
+          }
+        ]
+      },
+      ['language', 'technical-lead']
+    )
+  )
+  assert.deepEqual(entry.evidence.filter(line => line.startsWith('prose left unread:')), [
+    'prose left unread: language: README.md (not opened)',
+    'prose left unread: technical-lead: docs/a.md, docs/b.md (prose-only edits, not opened); docs/c.md (not opened)'
+  ])
+  assert.ok(entry.reason.endsWith('; prose left unread by language, technical-lead'), entry.reason)
+})
+
+test('prose unread: guard: a record with no such list, or one that is not a list, raises no flag', () => {
+  for (const over of [{}, { proseUnread: 'docs/a.md' }, { proseUnread: null }, { proseUnread: [] }]) {
+    const entry = ranOf(proseReviewed(over))
+    assert.equal(entry.band, 'green', JSON.stringify(over))
+    assert.deepEqual(entry.flags, [], JSON.stringify(over))
+  }
+})
+
+test('prose unread: guard: a carried dimension\'s prose-only entry reaches neither list, so the ran signal carries no flag', () => {
+  const entry = ranOf(proseReviewed({ carried: ['technical-lead'], unread: [], proseUnread: [] }, ['language']))
+  assert.equal(entry.band, 'green')
+  assert.deepEqual(entry.flags, [])
+})
+
+test('prose unread: a file that is prose by its extension alone is green with the flag until the base lists it, then amber with none', () => {
+  const req = proseEntry('the requirements', 'not opened', ['requirements.txt'])
+  const apart = ranOf(proseReviewed({ proseUnread: [{ dimension: 'technical-lead', entries: [req] }] }))
+  assert.equal(apart.band, 'green')
+  assert.deepEqual(apart.flags, ['prose-unread'])
+  const listed = ranOf(
+    proseReviewed({ proven: false, reason: 'gaps in coverage', unread: [{ dimension: 'technical-lead', entries: [req] }], proseUnread: [] })
+  )
+  assert.equal(listed.band, 'amber')
+  assert.deepEqual(listed.flags, [])
+})
+
+test('prose unread: the flag has its row under the flags table, naming review.ran', () => {
+  assert.ok(FLAGS.includes('prose-unread'))
+  const row = readFileSync(DELIVERY_PAGE, 'utf8').split('\n').find(line => line.startsWith('| `prose-unread` |'))
+  assert.ok(row, 'docs/15 has no flag row for prose-unread')
+  assert.ok(row.includes('`review.ran`'), row)
+})
+
+// --- prose unread docs: the three pages that name the rule ------------------------------
+
+const proseDoc = name => readFileSync(join(ROOT, 'docs', name), 'utf8')
+/** The lines from the heading that starts with `head` up to the next heading of the same or a higher level. */
+function proseDocSection(text, head) {
+  const lines = text.split('\n')
+  const start = lines.findIndex(line => line.startsWith(head))
+  assert.ok(start > -1, `no heading starts with ${head}`)
+  const level = head.match(/^#+/)[0].length
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex(line => new RegExp(`^#{1,${level}} `).test(line))
+  return rest.slice(0, end === -1 ? rest.length : end).join('\n')
+}
+
+test('prose unread docs: docs/15 names the flag on the review.ran row and the rule in the proof section', () => {
+  const text = proseDoc('15-merge-confidence.md')
+  const row = text.split('\n').find(line => line.startsWith('| `review.ran` |'))
+  assert.ok(row, 'docs/15 has no review.ran row')
+  assert.ok(row.includes('prose-unread'), 'the review.ran row does not name prose-unread')
+  const section = proseDocSection(text, '### The proof of coverage')
+  for (const token of ['proseUnread', '`paths`', '`openspec/`', '`.claude/`', 'Counts as Source']) {
+    assert.ok(section.includes(token), `the proof section of docs/15 does not name ${token}`)
+  }
+})
+
+test('prose unread docs: docs/07 names paths, proseUnread and the prose left unread line', () => {
+  const section = proseDocSection(proseDoc('07-cli-and-configuration.md'), '### The proof of coverage: ')
+  for (const token of ['`paths`', 'proseUnread', 'prose left unread']) {
+    assert.ok(section.includes(token), `the proof section of docs/07 does not name ${token}`)
+  }
+})
+
+test('prose unread docs: docs/12 names the proof of coverage in its Counts as Source row', () => {
+  const row = proseDoc('12-repository-review-policy.md').split('\n').find(line => line.startsWith('| **`## Counts as Source` paths**'))
+  assert.ok(row, 'docs/12 has no Counts as Source row')
+  assert.ok(row.includes('proof of coverage'), row)
 })

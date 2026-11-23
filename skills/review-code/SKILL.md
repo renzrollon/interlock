@@ -109,10 +109,10 @@ Every dimension agent returns findings in this shape:
       "specGap": true } ],
   "coverage": {
     "checked": [ { "what": "what was examined", "at": "path/to/file.ts:40-58" } ],
-    "unread": [ { "input": "what was not read", "reason": "why" } ] } }
+    "unread": [ { "input": "what was not read", "reason": "why", "paths": ["path/to/file.ts"] } ] } }
 ```
 
-`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. `coverage` is what proves the review looked: an answer without it is recorded unproven. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
+`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. `coverage` is what proves the review looked: an answer without it is recorded unproven. On an `unread` entry, `paths` is optional: it names the changed files the entry is about, as the scope lists them, and the CLI classes them. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
 This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
 

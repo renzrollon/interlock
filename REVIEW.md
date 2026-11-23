@@ -45,7 +45,7 @@ A workflow edit can grant a token or change a trigger that no diff reviewer sees
 
 ## Counts-as-source rationale
 
-Skills, agent definitions and the shared prompt fragments are model-facing prose, and they are a shipped surface: a reworded instruction is a behaviour change. The size signal sets documentation paths aside, so these three are listed below to keep their changed lines counted toward its caps.
+Skills, agent definitions and the shared prompt fragments are model-facing prose, and they are a shipped surface: a reworded instruction is a behaviour change. The size signal sets documentation paths aside, so these three are listed below to keep their changed lines counted toward its caps. The proof of coverage reads the same list, so a file under one that a reviewer left unread still fails the proof.
 
 ## Counts as Source
 

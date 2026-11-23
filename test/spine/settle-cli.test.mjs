@@ -2097,3 +2097,105 @@ test('remediate-brief: --previous for another round is refused without STOP:, na
   const first = settle('remediate-brief', [...briefArgs(file, 1), '--previous', named], { cwd: root })
   assertNoStop(first, '--previous at round 1')
 })
+
+// ── prose left unread on the comment's last line (spec: review/settle-loop) ──────
+
+const unreadEntry = (input, reason, paths) => ({ input, reason, paths })
+const DOCS_PROSE = [
+  {
+    dimension: 'technical-lead',
+    entries: [unreadEntry('docs edits', 'prose-only edits, not opened', ['docs/04-when-it-stops.md', 'docs/10-agentic-workflow-ship-and-spec.md'])]
+  }
+]
+const DELTA_UNREAD = [{ dimension: 'technical-lead', entries: [{ input: 'delta specs', reason: 'not opened' }] }]
+/** A proof that holds, with prose left unread. */
+const proseProven = proseUnread => ({ ...PROVEN, proseUnread })
+/** A proof that does not hold, with an unread input beside the prose. */
+const proseNotProven = proseUnread => ({ ...PROVEN, proven: false, reason: 'gaps in coverage', unread: DELTA_UNREAD, proseUnread })
+const lastLine = out => out.trim().split('\n').pop()
+const count = (text, word) => text.split(word).length - 1
+
+test('prose unread: a proven review\'s coverage line names the dimension and each file in a code span', () => {
+  const r = settle('comment', commentArgs(record({ surviving: TWO, proof: proseProven(DOCS_PROSE) })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const last = lastLine(r.stdout)
+  assert.match(last, /^Coverage: ran language, regression; 2 of 2 changed source file\(s\) cited; prose left unread: /)
+  assert.ok(last.includes('technical-lead'), last)
+  assert.ok(last.includes('`docs/04-when-it-stops.md`') && last.includes('`docs/10-agentic-workflow-ship-and-spec.md`'), last)
+  assert.equal(count(last, 'prose left unread'), 1)
+})
+
+test('prose unread: nothing survived, and the one sentence ends with the coverage line carrying the clause once', () => {
+  const r = settle('comment', commentArgs(record({ surviving: [], proof: proseProven(DOCS_PROSE) }), { round: 1 }))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const text = r.stdout.trim()
+  assert.ok(!/\n\s*\n/.test(text), `more than one paragraph:\n${text}`)
+  assert.equal(count(text, 'prose left unread'), 1)
+  const coverage = text.slice(text.indexOf('Coverage:'))
+  assert.ok(coverage.includes('prose left unread'), coverage)
+  assert.ok(coverage.includes('technical-lead') && coverage.includes('`docs/04-when-it-stops.md`'), coverage)
+})
+
+test('prose unread: a proof that does not hold names the gaps, then the prose, on the REVIEW NOT PROVEN line', () => {
+  const r = settle('comment', commentArgs(record({ surviving: TWO, proof: proseNotProven(DOCS_PROSE) })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const last = lastLine(r.stdout)
+  assert.match(last, /^REVIEW NOT PROVEN: /)
+  assert.ok(last.includes('delta specs'), last)
+  assert.ok(last.indexOf('delta specs') < last.indexOf('prose left unread'), last)
+  assert.ok(last.endsWith('; prose left unread: technical-lead (`docs/04-when-it-stops.md`, `docs/10-agentic-workflow-ship-and-spec.md`)'), last)
+  assert.equal(count(r.stdout, 'prose left unread'), 1)
+})
+
+test('prose unread: nothing survived and the proof does not hold, the clause once on the paragraph\'s coverage line', () => {
+  const r = settle('comment', commentArgs(record({ surviving: [], proof: proseNotProven(DOCS_PROSE) }), { round: 1 }))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const text = r.stdout.trim()
+  assert.ok(text.startsWith('REVIEW NOT PROVEN'), text)
+  assert.equal(count(text, 'prose left unread'), 1)
+  const at = text.indexOf('Coverage:')
+  assert.ok(at > -1, text)
+  const before = text.slice(0, at)
+  assert.ok(before.includes('delta specs'), before)
+  assert.ok(!before.includes('docs/04-when-it-stops.md'), before)
+  assert.ok(text.slice(at).includes('prose left unread'), text)
+})
+
+test('prose unread: several dimensions and files are joined in a fixed order, each file in its own code span', () => {
+  const proseUnread = [
+    { dimension: 'language', entries: [unreadEntry('README', 'not opened', ['README.md'])] },
+    {
+      dimension: 'technical-lead',
+      entries: [
+        unreadEntry('docs a and b', 'prose-only edits, not opened', ['docs/a.md', 'docs/b.md']),
+        unreadEntry('docs c', 'not opened', ['docs/c.md'])
+      ]
+    }
+  ]
+  const proof = { ...proseProven(proseUnread), dimensions: ['language', 'technical-lead'] }
+  const r = settle('comment', commentArgs(record({ surviving: TWO, proof })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.ok(
+    lastLine(r.stdout).endsWith(
+      'prose left unread: language (`README.md`), technical-lead (`docs/a.md`, `docs/b.md`, `docs/c.md`).'
+    ),
+    lastLine(r.stdout)
+  )
+})
+
+test('prose unread: a file name that could mention or mark up renders inside an inline code span', () => {
+  const entry = unreadEntry('notes', 'not opened', ['docs/@team notes.md'])
+  const r = settle('comment', commentArgs(record({ surviving: TWO, proof: proseProven([{ dimension: 'technical-lead', entries: [entry] }]) })))
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  assert.ok(lastLine(r.stdout).includes('`docs/@team notes.md`'), lastLine(r.stdout))
+  assert.ok(!lastLine(r.stdout).replace('`docs/@team notes.md`', '').includes('@team'))
+})
+
+test('prose unread: guard: a record with nothing listed apart, or an empty list, prints the same comment as before', () => {
+  const plain = settle('comment', commentArgs(record({ surviving: TWO, proof: PROVEN })))
+  const empty = settle('comment', commentArgs(record({ surviving: TWO, proof: { ...PROVEN, proseUnread: [] } })))
+  assert.equal(plain.code, 0, `stderr: ${plain.stderr}`)
+  assert.equal(empty.stdout.replace(/[0-9a-f]{40}/g, 'H'), plain.stdout.replace(/[0-9a-f]{40}/g, 'H'))
+  assert.match(lastLine(plain.stdout), /^Coverage: ran language, regression; 2 of 2 changed source file\(s\) cited\.$/)
+  assert.ok(!plain.stdout.includes('prose left unread'))
+})
