@@ -29,7 +29,7 @@ Constraints that shape the approach:
 
 - The size signal reads what a person must read, and shows what it set aside.
 - Whenever a fact the split needs is missing, the signal takes the stricter reading and says so.
-- Each decision that awaits the owner is one switch: answering it the other way edits a named sentence, scenario and line, and nothing else.
+- Each decision that went to the owner is one switch: answering it the other way edits a named sentence, scenario and line, and nothing else.
 
 **Non-Goals:**
 
@@ -63,7 +63,7 @@ A documentation file under a test directory is prose, because rule 2 runs before
 
 The line cap and the file cap are applied to the source class, both counted the same way (D6). The classes that count are one list in the reader, `['source']`.
 
-**D1 awaits the owner.** The artifacts are written to the recommended answer: test lines do not count. If the owner answers that they count, exactly this changes:
+**D1: the owner answered on 2026-11-23 that test lines do not count.** The artifacts are written to that answer. Had the answer been that they count, exactly this would have changed:
 
 - In the delta spec, the requirement "The size signal SHALL apply its caps to the source class" names the source and test classes, and its first scenario's test class moves under the cap.
 - In the requirement on evidence, "not counted toward the caps" is said of the prose figure alone.
@@ -79,7 +79,7 @@ Tests pin tokens, not sentences: the two cap names, the words `source`, `test` a
 
 ### The list of prose that counts as source (D7, D12, D13, D14)
 
-**D7 awaits the owner.** The artifacts are written to the recommended answer: a repository may name such paths, and this repository names `skills/`, `agents/` and `shared/`.
+**D7: the owner answered on 2026-11-23 that a repository may name such paths.** This repository names `skills/`, `agents/` and `shared/`, and not `docs/`. The artifacts are written to that answer.
 
 - The section is `## Counts as Source` and the parsed key is `sourcePaths` (D12), beside `## Do Not Report` / `excludePaths` and `## Always Human Review` / `humanPaths`.
 - It is a third descriptor for the existing `parsePathList`: same grammar, canonical form, pattern refusal and problem wording.
@@ -87,7 +87,7 @@ Tests pin tokens, not sentences: the two cap names, the words `source`, `test` a
 - Only `diff.shape` reads it (D14). The review, the gate, the risk signal and the human-paths signal do not. The policy-file capability gives the reason for the always-human list, and it holds here: one fact should not move two gates.
 - It is read from the base by the same call that reads the always-human list, so a change cannot edit the list applied to it. A ship run's close passes its start commit as the base to the same gather, so it reads the list from there with no new code.
 
-If the owner answers D7 "no": the `review/policy-file` delta is dropped whole; rule 1 of the classes, the scenarios that name the list, and the "could not be read in full" clause are removed from the `review/merge-confidence` delta; and task 2.1, the `REVIEW.md` and template edits and the `docs/12` edit are dropped. Skill prose under `skills/` would then read as prose and never count.
+A "no" to D7 would have dropped the `review/policy-file` delta whole; removed rule 1 of the classes, the scenarios that name the list, and the "could not be read in full" clause from the `review/merge-confidence` delta; and dropped task 2.1, the `REVIEW.md` and template edits and the `docs/12` edit. Skill prose under `skills/` would then have read as prose and never counted.
 
 ### When the classes cannot be established (D10, D15)
 
@@ -129,13 +129,13 @@ Only the Markdown table is cut (D17). The driving groups print reasons, not evid
 
 ### What stays as it is (D2, D3, D18, D19)
 
-**D2 awaits the owner.** The brief recommended that a reviewer's `unread` entry on a documentation path become a flag. The artifacts are written to a different recommendation: decide it in its own change. Three facts the brief did not have:
+**D2: the owner answered on 2026-11-23 to decide it in its own change.** The brief recommended that a reviewer's `unread` entry on a documentation path become a flag; the artifacts leave `review.ran` as it is. Three facts the brief did not have:
 
 - An `unread` entry is `{ input, reason }`, both free text (`lib/review-proof.mjs:76-85`). PR #43's two entries read "docs/04-when-it-stops.md and docs/10-agentic-workflow-ship-and-spec.md changed lines" and "delta specs under openspec/changes/stop-retrying-expected-red-checks/specs/ and decisions.md". The CLI has no path to classify.
 - `proof.proven` stays false while any entry exists, and the findings comment ends `REVIEW NOT PROVEN:`. Flagging the entry at the verdict alone would label a pull request `MERGE` under that line.
 - In the five other recorded settle reviews (`.claude/ship/settle-pr31/`, `settle-pr37/` and `settle/`), every one also carries an entry that is not prose: a test file not opened, a suite not run, or a host probe not possible. A prose-only rule would have lifted none of them.
 
-So the move needs a path on the entry, a prompt change, and a decision about what the proof says. That is a change of its own, and the earlier design that left the question open said the same (`openspec/changes/archive/2026-11-13-stop-proof-re-runs-for-unread-inputs/design.md:151`). The brief is `.claude/handoff/explore-flag-the-prose-a-reviewer-left-unread-20261119-173500.md`. If the owner wants it in this change instead, this change is re-specced.
+So the move needs a path on the entry, a prompt change, and a decision about what the proof says. That is a change of its own, and the earlier design that left the question open said the same (`openspec/changes/archive/2026-11-13-stop-proof-re-runs-for-unread-inputs/design.md:151`). The brief is `.claude/handoff/explore-flag-the-prose-a-reviewer-left-unread-20261119-173500.md`.
 
 D3: the verdict stays the worst band over the gating signals, and the score formula is untouched.
 
@@ -182,8 +182,8 @@ New tests carry one of four name prefixes, so each task in section 2 can run its
 - **This loosens a gate.** → The measured effect is in the proposal, the evidence shows every figure set aside, and `policy.humanPaths` still holds any path the repository names for a person. `MERGE` still claims local signals only, and the block's legend says so.
 - **The first `MERGE` this repository records could follow, and the auto-approve recipe acts on the label where installed.** → `docs/15` says what the size signal no longer counts, next to the recipe. This change alone rarely moves the label: `review.ran` was amber on four of five settle verdicts and `run.integrity` unobserved on four of five.
 - **Classes are decided by path.** Source kept under `docs/`, or behaviour written in a `.md` file, reads as prose. Everything under `.claude/` does too, a settings file or a hook script included. → A repository lists such paths under `## Counts as Source`, and a path that needs a person under `## Always Human Review`. The risk signal has read paths this way since it stopped reading prose at merge.
-- **Documentation a person does read is set aside too.** A change that only rewrites `docs/` or the README reads green on size at any length, and this repository's `REVIEW.md` keeps `docs/` in review scope. → A repository that wants its documentation counted lists it under `## Counts as Source`. Whether this one lists `docs/` is part of D7: measured on pull requests #36 to #43, it adds 0 to 63 lines each and moves none across a cap.
-- **Test lines are not counted, and a test can be wrong.** → The test figure is in the evidence on every reading, the suite signal still reads the run, and the question is D1.
+- **Documentation a person does read is set aside too.** A change that only rewrites `docs/` or the README reads green on size at any length, and this repository's `REVIEW.md` keeps `docs/` in review scope. → A repository that wants its documentation counted lists it under `## Counts as Source`. This one does not list `docs/` (D7): measured on pull requests #36 to #43, it adds 0 to 63 lines each and moves none across a cap.
+- **Test lines are not counted, and a test can be wrong.** → The test figure is in the evidence on every reading, the suite signal still reads the run, and the question was D1, which the owner answered with this in view.
 - **A generated file counts as source.** A lockfile of five thousand lines keeps `diff.shape` amber, as it does today. → Unchanged behaviour, and no exclusion list for size is added here.
 - **A branch older than the list.** The list is read from the base, so it applies to pull requests opened after it merges. The pull request that adds the section reads `policy.humanPaths` amber, because it edits `REVIEW.md`. → Intended: a change to review policy is a person's call.
 - **`cli/interlock` headroom.** → The edit there is the per-file rows and two usage lines, and the headroom test fails the suite if it grows past the warning zone.

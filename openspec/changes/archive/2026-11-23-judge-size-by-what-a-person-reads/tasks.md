@@ -6,7 +6,7 @@ Export names, return shapes, problem wording, evidence tokens and the four test-
 
 Every cap a test needs is read from `MERGE_BANDS`, never written as a number: a count over the line cap is `MERGE_BANDS.maxChangedLinesForMerge + 1`.
 
-Three ledger rows await the owner (D1, D2, D7). The tasks are written to the recommended answers. `design.md` says what is edited or dropped for each other answer.
+The owner answered ledger rows D1, D2 and D7 on 2026-11-23, each as recommended. The tasks are written to those answers. `design.md` says what each other answer would have edited or dropped.
 
 ## 1. Failing tests first
 
