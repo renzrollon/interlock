@@ -90,6 +90,16 @@ Then fetch the target branch, so the verdict is judged against what the platform
 git fetch origin <target branch>
 ```
 
+Then print the facts the description is written from (§7). Name the change when one resolved (§2); when none did, name none, and the brief prints `Change: none`:
+
+```bash
+interlock settle description-brief <change> --changed <files> --base origin/<target branch>
+# no change resolved
+interlock settle description-brief --changed <files> --base origin/<target branch>
+```
+
+It prints the `Change:` line to copy, every requirement the change's delta specs add, modify, remove or rename, the living requirements in force over the changed paths that the change does not modify (with where each sits, and how many the size bound left out), and the artifact heading and line that answers each of four sections, or `not found`. A living list it could not build is a reason it prints, not a failure. When it exits non-zero, say `DESCRIPTION FACTS UNAVAILABLE:` with the first line of its output, and still compose every section of §7 from the artifacts and the diff.
+
 ---
 
 ## 4. Push and create (`--create`)
@@ -146,7 +156,7 @@ The GitHub lines of this section ran end to end on a live pull request, PR #25 (
 
 The loop produces its evidence in a fixed order, and each step depends on the one before: a review of the pull request's diff, the findings comment, fix rounds that each commit, push, re-review the pushed head and reply, the ready mark, the confirmation, the verification, the platform's checks, and only then the assessment. Everything it writes lives under `.claude/ship/settle/`.
 
-**Stopping early.** Some steps below stop the loop early: the working tree is not clean, the platform does not hold the local head, a round fails, the fixer commits, a push fails. Each prints its own line. Then nothing more is committed or pushed, and the rest of §5 is skipped except the draft check of §5d: no ready mark, no confirmation, no verification, no wait for the checks. Go on to the assessment (§6), and pass it only the records this pass wrote.
+**Stopping early.** Some steps below stop the loop early: the working tree is not clean, the platform does not hold the local head, a review cannot spawn its reviewers, a round fails, the fixer commits, a push fails. Each prints its own line. Any `review-code` pass of the loop that prints `REVIEW FAILED:` recorded nothing: print that line, post no findings comment for that pass, and stop the loop early. Then nothing more is committed or pushed, and the rest of §5 is skipped except the draft check of §5d: no ready mark, no confirmation, no verification, no wait for the checks. Go on to the assessment (§6), and pass it only the records this pass wrote.
 
 **The working tree is clean.** Every step below that stages, reverts, commits or pushes assumes the only changes in the tree are the fixer's, so the loop starts only from a clean tree:
 
@@ -409,7 +419,9 @@ When it is a draft this pass did not create (a re-run after an interrupted pass,
 interlock settle conformance-brief <change> --changed <files> --base origin/<target branch> --head <sha>
 ```
 
-Spawn one worker with the printed briefing as its whole prompt. It answers into `.claude/ship/settle/handoff.json`, with the head beside the counts. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
+Spawn one worker as `interlock:reviewer`, with the printed briefing as its whole prompt. The plugin's definition of that type bounds its tools: it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The worker writes no file: it replies with one JSON object carrying the five counts and `head`. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
+
+Write the object the reply holds to `.claude/ship/settle/handoff.json` with the Write tool, as returned, repairing no value: a `head` that is not the pushed head is written as it came, and the assessment is what refuses it. When the reply holds no such object, print `CONFORMANCE UNREAD: <first line of the reply>`, write no handoff, and go on to §5f. When the Agent tool reports `interlock:reviewer` as an unknown type, or the spawn is refused or declined, print `CONFORMANCE SKIPPED: reviewer type unavailable — <the tool's message, or the refusal>`, spawn no other type, confirm nothing yourself, write no handoff, and go on to §5f: the confirmation never stops the loop.
 
 Only when a worker is to be spawned, first run `interlock routing settle-conformance --json` once. Pass its `model` and `effort` on the worker call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults. Name no model and no effort level in this skill or in the prompt.
 
@@ -537,6 +549,7 @@ It prints one block, beginning with its own `## Merge confidence` heading. That 
 
 ```markdown
 ## Summary
+Change: <the Change: line the brief printed in §3, copied exactly; `Change: none` when no change resolved>
 2–4 bullets: what changed and why. Lead with the why.
 
 <the block from §6c, as printed. It begins with its own "## Merge confidence" heading. Leave this section out entirely when the assessment stopped.>
@@ -546,11 +559,20 @@ Grouped by capability, using spec names as headers where possible:
 - **<capability>**: <one-line user-visible change>
   - <files or modules touched>
 
+## Must Not Change
+2–5 bullets: behaviour this change must leave as it was, each with how that was checked (a test, a spec scenario, a read of the code).
+
 ## High Risk Changes
-Production risks, each with a mitigation or rollback note. Write `None` if there are none.
+Production risks, each with its mitigation. Write `None` if there are none.
 
 ## Prerequisites to Production
-Env vars, migrations, feature flags, config. Write `None` if there are none.
+Before merging: <what must be true or done before this merges, or `none`>
+Before deploying: <env vars, migrations, feature flags, config, or `none`>
+
+## How to Roll Back
+Undo: <how to take the change back out, usually a revert of the merge commit>
+Not undone by a revert: <data, state or published effects a revert leaves behind, or `nothing`>
+Order: <what must be undone first, or `no order`>
 
 ## Testing
 - Unit: <N added / N updated> — `<command>` passing
@@ -568,7 +590,11 @@ Manual UI test plan: see PR comment.
 
 Omit that line when `--test-plan` was not passed.
 
-**`## High Risk Changes` is narrative under the CLI's verdict.** How hard a reviewer should look is stated by `## Merge confidence`, which the CLI computed. This section says in words what could go wrong in production and how it would be undone. It states no verdict, no score and no band of its own, and it never softens or contradicts the block above it.
+**Where each section comes from.** The brief from §3 holds the facts. The `Change:` line is its line, copied as printed. `## Must Not Change` starts from its held living requirements and the `design.md` `## Goals / Non-Goals` row: two to five bullets chosen from them, not the whole list. `## High Risk Changes` reads the `## Risks / Trade-offs` row, `## Prerequisites to Production` the `proposal.md` `## Impact` row, and `## How to Roll Back` the `## Migration Plan` row. A row that reads `not found` means the artifacts do not answer it: write the section from the diff.
+
+**`## Must Not Change` and `## How to Roll Back` are never a bare `None`.** Every change leaves something alone, and every change is either undone some way or cannot be: when it cannot, `Undo:` says so and why. A reason after it (`None: <why>`) is an answer; `None` alone is not, and the check in §9a refuses it. `## High Risk Changes` and `## Prerequisites to Production` may still be `None`.
+
+**`## High Risk Changes` is narrative under the CLI's verdict.** How hard a reviewer should look is stated by `## Merge confidence`, which the CLI computed. This section says in words what could go wrong in production and how each risk is mitigated; how the change is undone is `## How to Roll Back`'s to say. It states no verdict, no score and no band of its own, and it never softens or contradicts the block above it.
 
 ---
 
@@ -599,6 +625,21 @@ EOF
 ```
 
 Updating **replaces the description entirely.** If the existing description contains anything hand-written by a human, say so and confirm before overwriting it.
+
+Then read the description back from the platform and check it: the check reads what a reviewer will read, not the copy you typed. Pass `--change <change>` when a change resolved, and leave it off when none did:
+
+```bash
+# GitHub
+gh pr view <id> --json body | interlock settle description-check --file - --from-json body --change <change>
+# GitLab — not exercised: written from glab's documentation; the GitHub line is the one this repository runs
+glab mr view <id> --output json | interlock settle description-check --file - --from-json description --change <change>
+```
+
+- **Exit 0** prints `description complete:` with the `Change:` line it found. Carry on.
+- **`DESCRIPTION INCOMPLETE:`** on standard error names each missing or empty section, a bare `None`, or a wrong `Change:` line. Write what it names, publish the description again a single time with the line above, and run the check once more. When it still says `DESCRIPTION INCOMPLETE:`, report that line with its problems and carry on. Never publish a third time.
+- **Any other non-zero exit** is a check that could not run: the platform read failed, or it printed no description. Report `DESCRIPTION NOT CHECKED:` with the reason from standard error, and carry on.
+
+Neither stops the pass: the labels in §9b and everything after them run whatever the check said.
 
 ### 9b. The labels
 

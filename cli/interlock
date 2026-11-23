@@ -919,11 +919,11 @@ review:
 
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
-  --base <ref>           Read both path lists from the commit at this ref and the
-                         prose from the working tree; the output says which
+  --base <ref>           Read all three path lists from the commit at this ref and
+                         the prose from the working tree; the output says which
                          ref the lists came from and whether the copies differ.
-  --json                 Emit { prose, excludePaths, humanPaths, owner, problems }
-                         (with --base also listsFrom and differsFromBase).
+  --json                 Emit { prose, excludePaths, humanPaths, sourcePaths, owner,
+                         problems } (with --base also listsFrom and differsFromBase).
   The prose is advice a reviewer reads; it can never lower survival. The band and
   nit cap are NOT policy fields — a threshold-shaped key is reported, not adopted.
   Always exits 0; an absent REVIEW.md is the empty policy, not an error. A --base
@@ -3018,25 +3018,29 @@ function diffShape(root, base, headSha) {
   let binaryFiles = 0
   const paths = []
   const renamedFrom = []
+  // One row per file, by its path after the change, for the size signal's classes.
+  const files = []
   const tokens = out.split('\0')
   for (let i = 0; i < tokens.length; i++) {
     if (!tokens[i]) continue
     const [added, deleted, path] = tokens[i].split('\t')
+    let after = path
     if (path) {
       paths.push(path)
     } else {
       paths.push(...tokens.slice(i + 1, i + 3).filter(Boolean))
       if (tokens[i + 1]) renamedFrom.push(tokens[i + 1])
+      after = tokens[i + 2] || tokens[i + 1]
       i += 2
     }
     changedFiles += 1
-    if (added === '-' || deleted === '-') {
-      binaryFiles += 1
-      continue
-    }
-    changedLines += (Number(added) || 0) + (Number(deleted) || 0)
+    const binary = added === '-' || deleted === '-'
+    const lines = binary ? 0 : (Number(added) || 0) + (Number(deleted) || 0)
+    if (after) files.push({ path: after, lines, binary })
+    if (binary) binaryFiles += 1
+    changedLines += lines
   }
-  return { base, changedLines, changedFiles, binaryFiles, paths, renamedFrom }
+  return { base, changedLines, changedFiles, binaryFiles, paths, renamedFrom, files }
 }
 
 /**

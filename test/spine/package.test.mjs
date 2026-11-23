@@ -1117,6 +1117,7 @@ const DIRECTORY_INVENTORY = Object.freeze({
   // LOCAL_CODE_TOOL_GRANT: every skill and agent that grants beyond Read, Grep, Glob and LS. Only skills/ship/SKILL.md does not.
   toolGrantPaths: Object.freeze([
     'agents/ping.md',
+    'agents/reviewer.md',
     'agents/settle-fixer.md',
     'agents/worker.md',
     'skills/bootstrap/SKILL.md',

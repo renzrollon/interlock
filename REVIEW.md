@@ -42,3 +42,13 @@ A workflow edit can grant a token or change a trigger that no diff reviewer sees
 ## Always Human Review
 
 - .github/workflows/
+
+## Counts-as-source rationale
+
+Skills, agent definitions and the shared prompt fragments are model-facing prose, and they are a shipped surface: a reworded instruction is a behaviour change. The size signal sets documentation paths aside, so these three are listed below to keep their changed lines counted toward its caps.
+
+## Counts as Source
+
+- skills/
+- agents/
+- shared/
