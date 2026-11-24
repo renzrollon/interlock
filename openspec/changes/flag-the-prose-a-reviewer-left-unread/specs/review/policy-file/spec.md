@@ -58,6 +58,13 @@ The proof of coverage SHALL read the list to class the changed files an `unread`
 - **WHEN** the review is recorded with that base and the merge confidence is assessed
 - **THEN** the entry is under `proof.proseUnread`, and the ran signal is green with the `prose-unread` flag
 
+#### Scenario: Edge case — a file that is prose by its extension alone is listed apart until the base lists it
+
+- **GIVEN** a base whose `REVIEW.md` has no `## Counts as Source` section, and a review whose only gap is an `unread` entry naming the changed file `requirements.txt`
+- **WHEN** the review is recorded with that base and the merge confidence is assessed
+- **THEN** the entry is under `proof.proseUnread`, and the ran signal is green with the `prose-unread` flag
+- **AND** with a base that lists `requirements.txt` under `## Counts as Source`, the entry is under `proof.unread`, and the ran signal is amber with no `prose-unread` flag
+
 ## REMOVED Requirements
 
 ### Requirement: Declared counts-as-source paths SHALL be parsed like the other path lists and SHALL be read only by the size signal

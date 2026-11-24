@@ -20,6 +20,13 @@ When the review's proof lists an entry under `proseUnread`, `review.ran` SHALL a
 - **THEN** the ran signal is amber, needing more evidence, and still carries the `prose-unread` flag
 - **AND** its evidence names both the unread input and the prose left unread
 
+#### Scenario: Edge case — several dimensions and entries are joined in a fixed order
+
+- **GIVEN** a proven review of the dimensions `language` then `technical-lead`, whose `proof.proseUnread` names `language` with one entry on `README.md`, reason `not opened`, and `technical-lead` with two entries: one on `docs/a.md` and `docs/b.md`, reason `prose-only edits, not opened`, then one on `docs/c.md`, reason `not opened`
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal's evidence holds `prose left unread: language: README.md (not opened)` and then `prose left unread: technical-lead: docs/a.md, docs/b.md (prose-only edits, not opened); docs/c.md (not opened)`
+- **AND** its green reason ends `; prose left unread by language, technical-lead`
+
 #### Scenario: Edge case — the flag is published and has its row
 
 - **GIVEN** the published flag vocabulary and the delivery documentation

@@ -24,6 +24,19 @@ When the record's proof lists an entry under `proseUnread`, the comment's last l
 - **WHEN** the command runs
 - **THEN** the comment ends with a `REVIEW NOT PROVEN:` line that names the unread input, and after it `prose left unread` with `technical-lead` and the file
 
+#### Scenario: Edge case — nothing survived and the proof does not hold
+
+- **GIVEN** a record with `head` H, an empty `surviving` list, and a proof that names `technical-lead` under `unread` with the input `delta specs` and under `proseUnread` with an entry on `docs/04-when-it-stops.md`
+- **WHEN** the command runs
+- **THEN** it prints the `REVIEW NOT PROVEN` paragraph, which holds `prose left unread` once, on the coverage line it ends with
+- **AND** the paragraph's list of gaps names the unread input `delta specs` and does not name `docs/04-when-it-stops.md`
+
+#### Scenario: Edge case — several dimensions and files are joined in a fixed order
+
+- **GIVEN** a record with one surviving warning and a proof that holds, of a review that ran `language` before `technical-lead`, whose `proof.proseUnread` names `language` with one entry on `README.md`, and `technical-lead` with two entries, one on `docs/a.md` and `docs/b.md`, then one on `docs/c.md`
+- **WHEN** the command runs
+- **THEN** the coverage line ends with the clause `prose left unread: language (README.md), technical-lead (docs/a.md, docs/b.md, docs/c.md).`, in which each of the four file names is wrapped in its own inline code span and nothing else is
+
 #### Scenario: Failure — a file name cannot render as a mention or markup
 
 - **GIVEN** a record whose `proof.proseUnread` names an entry on a changed file called `docs/@team notes.md`

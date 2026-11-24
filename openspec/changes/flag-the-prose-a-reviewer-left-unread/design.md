@@ -71,6 +71,10 @@ An entry is prose-only when it carries `paths` and every path passes all three t
 - any path under `.claude/`: the review context every brief quotes (`lib/review-cli.mjs:55`), the project instructions and the test profile, all of which the documentation rule would otherwise class as prose (`lib/risk.mjs:109`);
 - the review policy file, which every brief quotes.
 
+**D21: the rule names the policy file without importing the policy module.** `lib/review-proof.mjs` does no I/O, and `lib/review-core.mjs`, where `REVIEW_POLICY_FILE` is defined today, loads `node:fs` to read and write the policy and the review records. Importing it only for a file name would pull the survival-and-policy module into the proof. The definition moves to `lib/diff-reading.mjs`, which has no I/O and which the rule imports anyway for `readingClassOf`. `lib/review-core.mjs` imports it from there and re-exports it, so `lib/review-cli.mjs`, `lib/run.mjs`, `lib/run-base.mjs`, `lib/merge-evidence.mjs` and `cli/interlock` are not edited, and `REVIEW.md` is still spelled once. The proof module already imports `lib/artifacts.mjs`, which loads `node:fs` for its readers, so the import graph was never free of it. The rule here is about not adding a second such edge, not about restoring a purity the graph never had.
+
+Alternative considered: *the callers pass the file name into `computeProof`.* Rejected. The rule would then need its own answer for a call that passes nothing, and both callers would carry a fact the proof owns.
+
 Had D2 been answered yes, the `openspec/` line would leave this list and nothing else would move. That would edit one constant in `lib/review-proof.mjs`, the three scenarios in `specs/review/review-proof/spec.md` that name an `openspec/` path, their tests and one paragraph of `docs/15-merge-confidence.md`. PR #43 round 1 would then be the one recorded review whose proof holds.
 
 Alternative considered: *a table of which dimension's rubric requires which input*, so `language` could skip delta specs and `technical-lead` could not. Rejected for this change. It is the kind-by-kind rule D3 defers, and the one recorded entry it would matter for is `technical-lead`'s own.
@@ -85,7 +89,7 @@ The delta replaces the requirement under a new name, because its old name says "
 
 Had D9 been answered no, the proof would class by the path rule with no list. That would drop `specs/review/policy-file/spec.md`, the requirement "The proof SHALL class paths with the counts-as-source list the review was adjudicated by" and the helper below. In this repository an `unread` entry on a file under `skills/` would then be listed apart, since those files are Markdown.
 
-**D12: when the list cannot be established, nothing is listed apart.** The list is not established when the policy the review read reports a problem `sectionOfProblem` attributes to `source`, or to no section (`lib/review-core.mjs:899-906`). No section is how a copy that was not parsed reads. It is also how a stray front-matter key and a threshold-shaped line in the body read (`lib/review-core.mjs:879-882`), so those switch listing apart off too. That is accepted as the stricter reading: telling them from an unparsed copy would mean matching problem wording, and the fix is to correct the file. It is the condition under which the size signal counts everything (`lib/merge-evidence.mjs:214-219`). A problem in `## Do Not Report` or `## Always Human Review` changes nothing. The entry stays under `unread`, named as today, and the review prints the policy problem as today, so nothing degrades quietly.
+**D12: when the list cannot be established, nothing is listed apart.** The list is not established when the policy the review read reports a problem `sectionOfProblem` attributes to `source`, or to no section (`lib/review-core.mjs:899-906`). No section is how a copy that was not parsed reads. It is also how a stray front-matter key and a threshold-shaped line in the body read (`lib/review-core.mjs:879-882`), so those switch listing apart off too. That is accepted as the stricter reading: telling them from an unparsed copy would mean matching problem wording, and the fix is to correct the file. It is the condition under which the size signal counts everything (`lib/merge-evidence.mjs:214-219`). A problem in `## Do Not Report` or `## Always Human Review` changes nothing. The entry stays under `unread`, named as today, and the review prints the policy problem as today, so nothing degrades quietly. The scenario "a problem that belongs to no section lists nothing apart" pins the front-matter case end to end through `interlock review`.
 
 A small pure helper beside `sectionOfProblem` answers the list or null. Both callers use it, so neither matches problem wording itself.
 
@@ -96,7 +100,7 @@ A small pure helper beside `sectionOfProblem` answers the list or null. Both cal
 Splitting, not marking, is what lets every existing reader stay right with no edit: each of them counts or prints `proof.unread`, and after the split that list still means "what keeps this proof from holding".
 
 - **D17.** A prose-only entry names no re-run and is not counted by `PROOF LEFT UNREAD`. Both read `proof.unread` (`lib/review-proof.mjs:252-259, 308-311`).
-- **D18.** Carrying and merging do not change. The proof reads `unread` entries of ran dimensions only (`lib/review-proof.mjs:173-180`); a carried ledger contributes its `checked` entries (`:195-200`). A re-run merge keeps the first entry per `input` (`:131-148`), so `paths` travels with whichever entry was kept. A first entry with no `paths` therefore stays amber after a re-run that adds them, which is the same rule that stops a clean re-run erasing a declared gap.
+- **D18.** Carrying and merging do not change. The proof reads `unread` entries of ran dimensions only (`lib/review-proof.mjs:173-180`); a carried ledger contributes its `checked` entries (`:195-200`). A re-run merge keeps the first entry per `input` (`:131-148`), so `paths` travels with whichever entry was kept. A first entry with no `paths` therefore stays amber after a re-run that adds them, which is the same rule that stops a clean re-run erasing a declared gap. A carried dimension's `unread` entries reach neither list, which the scenario "a carried dimension's prose-only entry reaches neither list" pins (see Risks).
 
 `runProofRecord` passes the list through, so a ship run's record follows the same rule.
 
@@ -141,28 +145,30 @@ The prompt asks for the changed files an `unread` entry is about, under `paths`,
 | `computeProof` result | gains `proseUnread: Array<{ dimension, entries }>`, in the order the dimensions ran, always present. `unread` holds the rest |
 | `runProofRecord` input | gains `sourcePaths`, passed through |
 | `proofSourcePaths(policy)`, in `lib/review-core.mjs` | `policy.sourcePaths`, or `null` when the list is not established (D12) |
-| required prose | a canonical path equal to or under `openspec` or `.claude`, or equal to `REVIEW_POLICY_FILE` |
-| `proseUnreadLines(proof)` | one string per dimension: `<dimension>: prose left unread <files> (<reason>)`, entries joined by `; `, files by `, ` |
-| `proseUnreadClause(proof, span)` | `''`, or `prose left unread: <dimension> (<files>)` with dimensions joined by `, `. `span` wraps each file and is the identity by default |
+| required prose | a canonical path equal to or under `openspec` or `.claude`, or equal to `REVIEW_POLICY_FILE`, imported from `lib/diff-reading.mjs` (D21) |
+| `proseUnreadLines(proof)` | one string per dimension, in the order the dimensions ran: `<dimension>: prose left unread <entries>`, each entry `<files> (<reason>)`, entries joined by `; `, an entry's files by `, ` |
+| `proseUnreadClause(proof, span)` | `''`, or `prose left unread: <dimension> (<files>)` per dimension, dimensions joined by `, `. A dimension's files are every file its entries name, in entry order, each once, joined by `, `. `span` wraps each file and is the identity by default |
 | `coverageLine(proof, { span })` | today's line. With a clause it ends `cited; <clause>.` |
 | the settle comment's not-proven line | today's line, then `; <clause>` |
 | `interlock review` text | `proof: proven (… cited; prose left unread: <dimensions>)`, and the same tail in the not-proven form |
 | the flag | `prose-unread`, in `FLAGS` after `blast-radius-partial` |
-| `review.ran` evidence | `prose left unread: <dimension>: <files> (<reason>)`, one line per dimension |
-| `review.ran` green reason | today's sentence, chosen by the skip flags as today, then `; prose left unread by <dimensions>` |
+| `review.ran` evidence | `prose left unread: <dimension>: <entries>`, one line per dimension, entries and files joined as in `proseUnreadLines` |
+| `review.ran` green reason | today's sentence, chosen by the skip flags as today, then `; prose left unread by <dimensions>`, dimensions joined by `, ` |
 | test-name prefixes | `prose unread:` and `prose unread docs:` |
+
+**D22.** Every separator above is pinned by a scenario on the surface that prints it: the three scenarios titled "several dimensions … joined in a fixed order" use one fixture (two dimensions, one of them with two entries, one entry with two files) on the proof answer, the verdict's evidence and reason, and the comment.
 
 Readers of a record take `proseUnread` defensively, as `listsOf` does for the other lists (`lib/review-proof.mjs:403-412`): absent or not a list reads as empty.
 
 ## Risks / Trade-offs
 
 - [This loosens the guard the proof was added for] → Only for changed prose outside `openspec/` and `.claude/`. The skip is named in the record, the verdict's evidence and the comment, and it lowers the score.
-- [The documentation rule goes by extension and directory] → `requirements.txt`, `CMakeLists.txt` and any file under a `docs/` directory are prose by `lib/risk.mjs:109`. A repository that needs one read lists it under `## Counts as Source`, the answer the size signal already gives.
+- [The documentation rule goes by extension and directory] → `requirements.txt`, `CMakeLists.txt` and any file under a `docs/` directory are prose by `lib/risk.mjs:109`. A repository that needs one read lists it under `## Counts as Source`, the answer the size signal already gives. The scenario "a file that is prose by its extension alone is listed apart until the base lists it" pins both halves on `requirements.txt`.
 - [One list, two effects] → A repository cannot keep a skipped document amber without also counting it toward the size caps. Accepted under D9: both effects say "this prose is behaviour here".
 - [A reviewer attaches a prose path to an entry about something else] → It gains nothing it could not gain by leaving the entry out. `unread` is self-declared.
 - [The measured effect is nil] → The change can ship and move no verdict until reviewers stop declaring the other kinds. It is stated in the proposal and on D1.
 - [Version skew] → An older CLI reading a newer record sees `proven` and raises no flag. An older CLI recording a newer reviewer's answer drops `paths` and reads amber, as today.
-- [A carried dimension's `unread` entries reach neither list] → True before this change, and not changed by it (D18). The consequence here: a scoped fix round that does not re-review a dimension drops its prose-only entry from the proof, so `prose-unread` leaves the verdict although the skip stands, exactly as a failing entry leaves `unread` today.
+- [A carried dimension's `unread` entries reach neither list] → True before this change, and not changed by it (D18). The consequence here: settle's usual second round is a scoped re-review with `--carry`, and `interlock merge-confidence` reads the last record. A round-0 prose-only skip by a dimension that round 1 carries is gone from round 1's proof, so `prose-unread` leaves the verdict although the skip stands, exactly as a failing entry leaves `unread` today. The flag is therefore a reading of the last review, not of the loop. A second carry rule for `unread` entries would change what a carried ledger means for every entry kind, which is outside this change. The scenario "a carried dimension's prose-only entry reaches neither list" pins the loss, so it cannot change silently.
 - [To undo] → Revert the commit. A record written meanwhile keeps a key older readers ignore.
 
 ## Migration Plan

@@ -107,6 +107,13 @@ An `unread` entry SHALL be prose-only when it carries `paths` and every path, in
 - **WHEN** `interlock review --base <base>` writes the record
 - **THEN** the entry is under `proof.proseUnread`
 
+#### Scenario: Failure — a problem that belongs to no section lists nothing apart
+
+- **GIVEN** a base whose `REVIEW.md` front matter sets `team: platform`, a key the policy does not accept, whose path-list sections are well formed, and an `unread` entry naming the changed file `docs/a.md`
+- **WHEN** `interlock review --base <base>` writes the record
+- **THEN** the entry is under `proof.unread`, `proof.proseUnread` is empty and `proof.proven` is false
+- **AND** the review reports the front-matter problem as it does without the entry
+
 #### Scenario: Edge case — a run's review record reads alike
 
 - **GIVEN** a strict run whose reviewers each wrote a ledger citing every changed source file, in which `technical-lead` recorded one `unread` entry naming the changed file `docs/a.md`
@@ -122,6 +129,19 @@ When a proof lists an entry under `proseUnread`, the `proof:` line of `interlock
 - **GIVEN** a record whose `proof.proven` is true and whose `proof.proseUnread` names `technical-lead` with one entry on `docs/a.md` and `docs/b.md`, reason `prose-only edits, not opened`
 - **WHEN** `interlock review proof` runs
 - **THEN** it exits 0, its first line reads `proven`, and a later line names `technical-lead`, the words `prose left unread`, both files and the reason
+
+#### Scenario: Happy path — the review's `proof:` line names the dimension
+
+- **GIVEN** a diff that changes `lib/a.mjs` and `docs/a.md`, and a `technical-lead` answer that cites `lib/a.mjs` and whose only `unread` entry names `docs/a.md`
+- **WHEN** `interlock review` prints its text output
+- **THEN** its `proof:` line reads `proof: proven (1 of 1 changed source file(s) cited; prose left unread: technical-lead)`
+- **AND** for the same answer with a second `unread` entry that carries no `paths`, the line reads `proof: not proven (0 unproven, 1 with unread inputs, 0 uncited; prose left unread: technical-lead)`
+
+#### Scenario: Edge case — several dimensions and entries are joined in a fixed order
+
+- **GIVEN** a proven record of a review that ran `language` before `technical-lead`, whose `proof.proseUnread` names `language` with one entry on `README.md`, reason `not opened`, and `technical-lead` with two entries: one on `docs/a.md` and `docs/b.md`, reason `prose-only edits, not opened`, then one on `docs/c.md`, reason `not opened`
+- **WHEN** `interlock review proof` runs
+- **THEN** the lines after `proven` are `language: prose left unread README.md (not opened)` and then `technical-lead: prose left unread docs/a.md, docs/b.md (prose-only edits, not opened); docs/c.md (not opened)`
 
 #### Scenario: Edge case — a gap and prose left unread are both named
 
@@ -232,3 +252,10 @@ When a proof lists an entry under `proseUnread`, the `proof:` line of `interlock
 - **GIVEN** a review with one prose-only `unread` entry and one changed coverable source file no dimension cited
 - **WHEN** the record is written
 - **THEN** `proof.uncited` lists the file, `proof.proven` is false, and the entry is still under `proof.proseUnread`
+
+#### Scenario: Edge case — a carried dimension's prose-only entry reaches neither list
+
+- **GIVEN** a round-0 record whose `proof.proseUnread` names `technical-lead` with one prose-only entry on the changed file `docs/a.md`, and a scoped re-review that re-runs `language` and carries `technical-lead` from that record
+- **WHEN** the round-1 record is written and the merge confidence is assessed from it
+- **THEN** the round-1 record names `technical-lead` under `proof.carried`, and neither `proof.unread` nor `proof.proseUnread` names it
+- **AND** the ran signal carries no `prose-unread` flag
