@@ -6343,3 +6343,551 @@ test('prose unread: a paths of the wrong shape exits 0 with no LEDGER REJECTED a
     assert.equal(out.proof.proven, false)
   }
 })
+
+// --- reviewing a colleague's pull request: target, bind, comment (spec: review/pull-request-review) ---
+//
+// Three prefixes, one per task that turns them green: `pr review target:` (task 2.1), `pr review bind:`
+// (task 2.2) and `pr review comment:` (task 2.3). The bind and comment tests share a temporary
+// repository whose target is built here from the shape the design gives, so they do not wait on
+// `interlock review target`.
+
+const PR_GITHUB_DOC = (base, head, over = {}) => ({
+  number: 44,
+  url: 'https://github.com/owner/repo/pull/44',
+  state: 'OPEN',
+  isDraft: false,
+  isCrossRepository: false,
+  baseRefName: 'main',
+  baseRefOid: base,
+  headRefName: 'feat/x',
+  headRefOid: head,
+  ...over
+})
+
+const PR_GITLAB_DOC = (base, head, over = {}) => ({
+  iid: 12,
+  web_url: 'https://gitlab.com/owner/repo/-/merge_requests/12',
+  state: 'opened',
+  draft: false,
+  source_project_id: 7,
+  target_project_id: 7,
+  target_branch: 'main',
+  source_branch: 'feat/y',
+  sha: head,
+  diff_refs: { base_sha: base, head_sha: head, start_sha: base },
+  ...over
+})
+
+const PR_BASE_SHA = 'a'.repeat(40)
+const PR_HEAD_SHA = 'b'.repeat(40)
+
+// --- interlock review target ---
+
+test('pr review target: --github reads a document, prints the target and writes it at the path it names under the repository', () => {
+  const repo = gitRepo('pr-target-github', { 'README.md': 'x\n' })
+  const doc = file('pr-target-github-doc.json', PR_GITHUB_DOC(PR_BASE_SHA, PR_HEAD_SHA))
+  const r = run(['review', 'target', '--github', doc, '--json'], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.platform, 'github')
+  assert.equal(out.number, 44)
+  assert.equal(out.head.sha, PR_HEAD_SHA)
+  assert.equal(out.base.sha, PR_BASE_SHA)
+  assert.equal(out.base.ref, 'main')
+  assert.equal(out.runCode, false)
+  const written = join(repo.root, out.file)
+  assert.ok(existsSync(written), `no target file at ${written}`)
+  assert.ok(written.startsWith(join(repo.root, out.dir)), 'the file sits inside the session directory')
+  assert.deepEqual(JSON.parse(readFileSync(written, 'utf8')), out)
+  assert.ok(out.worktree.startsWith('/') && out.worktree.endsWith(`/.claude/worktrees/review-pr-github-44-${PR_HEAD_SHA.slice(0, 12)}`), out.worktree)
+})
+
+test('pr review target: --gitlab reads a document the same way, and --run-code is recorded', () => {
+  const repo = gitRepo('pr-target-gitlab', { 'README.md': 'x\n' })
+  const doc = file('pr-target-gitlab-doc.json', PR_GITLAB_DOC(PR_BASE_SHA, PR_HEAD_SHA))
+  const r = run(['review', 'target', '--gitlab', doc, '--run-code', '--json'], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.platform, 'gitlab')
+  assert.equal(out.number, 12)
+  assert.equal(out.base.sha, PR_BASE_SHA, 'the base is diff_refs.base_sha')
+  assert.equal(out.runCode, true)
+  assert.deepEqual(JSON.parse(readFileSync(join(repo.root, out.file), 'utf8')), out)
+})
+
+test('pr review target: the document is read from standard input with `-`', () => {
+  const repo = gitRepo('pr-target-stdin', { 'README.md': 'x\n' })
+  const r = run(['review', 'target', '--github', '-', '--json'], { cwd: repo.root, input: JSON.stringify(PR_GITHUB_DOC(PR_BASE_SHA, PR_HEAD_SHA)) })
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(JSON.parse(r.stdout).number, 44)
+})
+
+test('pr review target: a fork document exits 1 with nothing on standard output and no file written', () => {
+  const repo = gitRepo('pr-target-fork', { 'README.md': 'x\n' })
+  const doc = file('pr-target-fork-doc.json', PR_GITHUB_DOC(PR_BASE_SHA, PR_HEAD_SHA, { isCrossRepository: true }))
+  const r = run(['review', 'target', '--github', doc, '--json'], { cwd: repo.root })
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /fork/i)
+  assert.ok(!existsSync(join(repo.root, '.claude', 'ship', 'review-pr')), 'nothing was written')
+  const lab = run(['review', 'target', '--gitlab', file('pr-target-fork-gitlab.json', PR_GITLAB_DOC(PR_BASE_SHA, PR_HEAD_SHA, { source_project_id: 9 }))], { cwd: repo.root })
+  assert.equal(lab.code, 1)
+  assert.equal(lab.stdout, '')
+  assert.ok(!existsSync(join(repo.root, '.claude', 'ship', 'review-pr')), 'nothing was written for the GitLab fork either')
+})
+
+test('pr review target: empty standard input exits 1 saying the platform CLI printed no document, on both platforms, and writes nothing', () => {
+  const repo = gitRepo('pr-target-empty', { 'README.md': 'x\n' })
+  for (const platform of ['--github', '--gitlab']) {
+    const r = run(['review', 'target', platform, '-'], { cwd: repo.root, input: '' })
+    assert.equal(r.code, 1, platform)
+    assert.equal(r.stdout, '', platform)
+    assert.match(r.stderr, /printed no document/, platform)
+  }
+  assert.ok(!existsSync(join(repo.root, '.claude', 'ship', 'review-pr')), 'nothing was written')
+})
+
+test('pr review target: a file holding text that is not JSON exits 1 with the same reason and writes nothing', () => {
+  const repo = gitRepo('pr-target-text', { 'README.md': 'x\n' })
+  const text = file('pr-target-text.txt', 'GraphQL: Could not resolve to a PullRequest with the number of 44.\n')
+  const r = run(['review', 'target', '--github', text], { cwd: repo.root })
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /printed no document/)
+  assert.ok(!existsSync(join(repo.root, '.claude', 'ship', 'review-pr')), 'nothing was written')
+})
+
+test('pr review target: the usage text names review target', () => {
+  const r = run(['--help'])
+  assert.match(r.stdout, /review target\b/)
+  assert.match(usageSection('review:'), /review target\b|--github/)
+})
+
+// --- the repository the bind and comment tests share ---
+
+/**
+ * A repository whose person's tree sits on `main` (the base commit), a branch `feat/x` holding the pull
+ * request's head commit, and the target's own worktree created by the target's own `worktreeAdd`.
+ * The head changes `lib/a.mjs` lines 2-3 and `hooks/guard-commit.mjs` line 2, adds a living-spec
+ * requirement the base lacks, and adds the OpenSpec change `add-export`, which `main` does not hold.
+ */
+function prRepo(sub, { runCode = false } = {}) {
+  const repo = gitRepo(sub, {
+    'lib/a.mjs': 'one\ntwo\n',
+    'lib/b.mjs': 'b\n',
+    [GUARD_COMMIT]: 'export {}\n',
+    [TOOL_GUARDS_PATH]: TOOL_GUARDS_SPEC
+  })
+  const base = repo.sha
+  gitAt(repo.root, 'checkout', '-q', '-b', 'feat/x')
+  const head = commitFiles(
+    repo.root,
+    {
+      'lib/a.mjs': 'one\nTWO\nthree\n',
+      [GUARD_COMMIT]: 'export {}\nexport const guarded = true\n',
+      [TOOL_GUARDS_PATH]: `${TOOL_GUARDS_SPEC}\n### Requirement: Head only\n\nText SHALL.\n`,
+      'openspec/changes/add-export/proposal.md': '# Proposal\n\nAdd an export.\n',
+      'openspec/changes/add-export/design.md': '# Design\n\nOne file.\n',
+      'openspec/changes/add-export/tasks.md': '# Tasks\n\n- [ ] 1.1 Write it\n',
+      'openspec/changes/add-export/specs/export/spec.md': '## ADDED Requirements\n\n### Requirement: Export SHALL write a file\n\nIt SHALL.\n'
+    },
+    'the pull request'
+  )
+  gitAt(repo.root, 'checkout', '-q', 'main')
+  const real = realpathSync(repo.root)
+  const short = head.slice(0, 12)
+  const tdir = `.claude/ship/review-pr/github-44-${short}`
+  const worktree = join(real, '.claude', 'worktrees', `review-pr-github-44-${short}`)
+  const target = {
+    platform: 'github',
+    number: 44,
+    url: 'https://github.com/owner/repo/pull/44',
+    draft: false,
+    base: { ref: 'main', sha: base },
+    head: { ref: 'feat/x', sha: head },
+    runCode,
+    dir: tdir,
+    file: `${tdir}/target.json`,
+    worktree,
+    commands: {
+      fetch: ['git', 'fetch', 'origin', 'refs/heads/main', 'refs/pull/44/head'],
+      worktreeAdd: ['git', 'worktree', 'add', '--detach', worktree, head],
+      changed: ['git', '-C', worktree, 'diff', '--name-only', `${base}...HEAD`],
+      worktreeRemove: ['git', 'worktree', 'remove', '--force', worktree]
+    }
+  }
+  const targetFile = join(repo.root, target.file)
+  mkdirSync(dirname(targetFile), { recursive: true })
+  writeFileSync(targetFile, JSON.stringify(target, null, 2))
+  const [cmd, ...args] = target.commands.worktreeAdd
+  const added = spawnSync(cmd, args, { cwd: repo.root, encoding: 'utf8', env: { ...process.env, ...GIT_IDENTITY } })
+  assert.equal(added.status, 0, `the target's own worktreeAdd failed: ${added.stderr}`)
+  return { root: repo.root, base, head, target, targetFile, worktree }
+}
+
+/** `git rev-parse HEAD` inside a directory. */
+const headOfDir = cwd => gitAt(cwd, 'rev-parse', 'HEAD').stdout.trim()
+
+const PR_CHANGED = 'lib/a.mjs,hooks/guard-commit.mjs'
+
+/** A dimension brief under the repository's target, run from the person's own tree. */
+const prBrief = (repo, dimension, ...more) =>
+  run(['review', 'brief', '--dimension', dimension, '--target', repo.targetFile, ...more], { cwd: repo.root })
+
+// --- bind: dimension and skeptic briefs ---
+
+test('pr review bind: a dimension brief holds REVIEW ROOT with the worktree, the target\'s base and head, and the changed file with its ranges', () => {
+  const repo = prRepo('pr-bind-brief')
+  assert.equal(headOfDir(repo.worktree), repo.head, 'the fixture\'s worktree is at the pinned head')
+  assert.notEqual(headOfDir(repo.root), repo.head, 'the person\'s own tree is on another commit')
+  const r = prBrief(repo, 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(r.stdout.includes('REVIEW ROOT'), r.stdout)
+  assert.ok(r.stdout.includes(repo.worktree), 'the worktree\'s absolute path')
+  assert.ok(r.stdout.includes(repo.base), 'the base commit')
+  assert.ok(r.stdout.includes(repo.head), 'the head commit')
+  assert.match(r.stdout, /^ {2}- lib\/a\.mjs: 2-3$/m)
+  assert.equal(r.stdout.split('\n')[0], '# Dimension: regression', 'the first line is the rubric\'s')
+})
+
+test('pr review bind: a dimension brief quotes the review context of the directory it runs in, never the worktree\'s', () => {
+  const repo = prRepo('pr-bind-context')
+  mkdirSync(join(repo.root, '.claude', 'graph'), { recursive: true })
+  writeFileSync(join(repo.root, '.claude', 'graph', 'REVIEW_CONTEXT.md'), 'PRIMER-OF-THE-PERSONS-OWN-TREE\n')
+  mkdirSync(join(repo.worktree, '.claude', 'graph'), { recursive: true })
+  writeFileSync(join(repo.worktree, '.claude', 'graph', 'REVIEW_CONTEXT.md'), 'PRIMER-INSIDE-THE-PULL-REQUEST\n')
+  const r = prBrief(repo, 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(r.stdout.includes('PRIMER-OF-THE-PERSONS-OWN-TREE'), 'the person\'s own context is quoted')
+  assert.ok(!r.stdout.includes('PRIMER-INSIDE-THE-PULL-REQUEST'), 'the worktree\'s copy is the pull request\'s, and is not read')
+})
+
+test('pr review bind: the skeptic prompts hold the same REVIEW ROOT paragraph in every prompt', () => {
+  const repo = prRepo('pr-bind-skeptics')
+  const findings = file('pr-bind-skeptics-findings.json', [
+    { dimension: 'regression', findings: [{ severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }] }
+  ])
+  const r = run(['review', 'brief', '--skeptics', '--findings', findings, '--target', repo.targetFile, '--json'], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  const { prompts } = JSON.parse(r.stdout)
+  assert.equal(prompts.length, 2)
+  const paragraphs = prompts.map(p => /REVIEW ROOT[\s\S]*?(?=\n\s*\n|$)/.exec(p.prompt)?.[0])
+  assert.ok(paragraphs.every(Boolean), 'every prompt holds a REVIEW ROOT paragraph')
+  assert.equal(paragraphs[0], paragraphs[1])
+  assert.ok(paragraphs[0].includes(repo.worktree), paragraphs[0])
+  assert.ok(prompts[0].prompt.startsWith('You are a skeptical code reviewer.\n'))
+  assert.ok(prompts[1].prompt.startsWith('You are an independent reviewer giving a second opinion.\n'))
+})
+
+test('pr review bind: a named change is resolved inside the worktree, where the person\'s own tree has none', () => {
+  const repo = prRepo('pr-bind-change')
+  assert.ok(!existsSync(join(repo.root, 'openspec', 'changes', 'add-export')), 'the person\'s tree does not hold the change')
+  const r = prBrief(repo, 'technical-lead', '--change', 'add-export', '--changed', PR_CHANGED)
+  assert.equal(r.code, 0, r.stderr)
+  for (const artifact of ['proposal.md', 'design.md', 'tasks.md']) {
+    assert.ok(r.stdout.includes(`openspec/changes/add-export/${artifact}`), `${artifact} is listed`)
+  }
+})
+
+test('pr review bind: a target does not allow code to run by default, and a target that does says so in the prompt', () => {
+  const quiet = prBrief(prRepo('pr-bind-norun'), 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(quiet.code, 0, quiet.stderr)
+  assert.ok(quiet.stdout.includes('none of it'), 'read-and-run-nothing under runCode false')
+  assert.ok(!quiet.stdout.includes('a single test file'))
+  const loud = prBrief(prRepo('pr-bind-run', { runCode: true }), 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(loud.code, 0, loud.stderr)
+  assert.ok(loud.stdout.includes('a single test file'), 'the ordinary run line under runCode true')
+  assert.ok(!loud.stdout.includes('none of it'))
+})
+
+test('pr review bind: without --target a dimension prompt and the skeptic prompts hold neither REVIEW ROOT nor preExisting', () => {
+  const repo = prRepo('pr-bind-without')
+  const brief = run(['review', 'brief', '--dimension', 'regression', '--base', repo.base, '--changed', 'lib/a.mjs', '--root', repo.worktree])
+  assert.equal(brief.code, 0, brief.stderr)
+  assert.ok(!brief.stdout.includes('REVIEW ROOT'))
+  assert.ok(!brief.stdout.includes('preExisting'))
+  const findings = file('pr-bind-without-findings.json', [{ dimension: 'regression', findings: [{ severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }] }])
+  const skeptics = run(['review', 'brief', '--skeptics', '--findings', findings, '--json'])
+  assert.equal(skeptics.code, 0, skeptics.stderr)
+  for (const { prompt } of JSON.parse(skeptics.stdout).prompts) {
+    assert.ok(!prompt.includes('REVIEW ROOT'))
+    assert.ok(!prompt.includes('preExisting'))
+  }
+  // And under a target the dimension prompt does ask for the mark, so the absence above is not vacuous.
+  assert.ok(prBrief(repo, 'regression', '--changed', 'lib/a.mjs').stdout.includes('preExisting'))
+})
+
+// --- bind: refusals ---
+
+test('pr review bind: a worktree moved to another commit exits 1 with nothing on standard output, and standard error names both commits', () => {
+  const repo = prRepo('pr-bind-moved')
+  const moved = gitAt(repo.worktree, 'checkout', '-q', '--detach', repo.base)
+  assert.equal(moved.status, 0, moved.stderr)
+  const r = prBrief(repo, 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.ok(r.stderr.includes(repo.base), `the worktree's commit: ${r.stderr}`)
+  assert.ok(r.stderr.includes(repo.head), `the target's commit: ${r.stderr}`)
+})
+
+test('pr review bind: --base beside --target exits 1 naming --base and saying the target supplies it', () => {
+  const repo = prRepo('pr-bind-base')
+  const r = prBrief(repo, 'regression', '--changed', 'lib/a.mjs', '--base', 'origin/main')
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /--base/)
+  assert.match(r.stderr, /suppl/i)
+})
+
+test('pr review bind: --root beside --target exits 1 naming --root, on brief and on domain-context', () => {
+  const repo = prRepo('pr-bind-root')
+  const brief = prBrief(repo, 'regression', '--changed', 'lib/a.mjs', '--root', repo.root)
+  assert.equal(brief.code, 1)
+  assert.equal(brief.stdout, '')
+  assert.match(brief.stderr, /--root/)
+  assert.match(brief.stderr, /suppl/i)
+  const domain = run(['domain-context', '--target', repo.targetFile, '--changed', GUARD_COMMIT, '--root', repo.root], { cwd: repo.root })
+  assert.equal(domain.code, 1)
+  assert.equal(domain.stdout, '')
+  assert.match(domain.stderr, /--root/)
+  assert.match(domain.stderr, /suppl/i)
+})
+
+test('pr review bind: --head beside --target exits 1 naming --head and writes no record', () => {
+  const repo = prRepo('pr-bind-head')
+  const findings = file('pr-bind-head-findings.json', [{ dimension: 'regression', findings: [], coverage: ledgerOf('lib/a.mjs:2-3') }])
+  const dims = file('pr-bind-head-dims.json', { selected: ['regression'], ran: ['regression'], unavailable: [], skipped: [] })
+  const out = join(dir, 'pr-bind-head', 'review.json')
+  const r = run(
+    ['review', '--target', repo.targetFile, '--head', repo.head, '--findings', findings, '--verdicts', file('pr-bind-head-v.json', []), '--changed', PR_CHANGED, '--dimensions', dims, '--out', out],
+    { cwd: repo.root }
+  )
+  assert.equal(r.code, 1)
+  assert.match(r.stderr, /--head/)
+  assert.match(r.stderr, /suppl/i)
+  assert.ok(!existsSync(out), 'no record was written')
+})
+
+test('pr review bind: a removed worktree exits 1 naming its path, and a record is not written', () => {
+  const repo = prRepo('pr-bind-removed')
+  const [cmd, ...args] = repo.target.commands.worktreeRemove
+  assert.equal(spawnSync(cmd, args, { cwd: repo.root, encoding: 'utf8' }).status, 0)
+  const brief = prBrief(repo, 'regression', '--changed', 'lib/a.mjs')
+  assert.equal(brief.code, 1)
+  assert.equal(brief.stdout, '')
+  assert.ok(brief.stderr.includes(repo.worktree), brief.stderr)
+  const out = join(dir, 'pr-bind-removed', 'review.json')
+  const record = run(
+    ['review', '--target', repo.targetFile, '--findings', file('pr-bind-removed-f.json', [{ dimension: 'regression', findings: [] }]), '--verdicts', file('pr-bind-removed-v.json', []), '--out', out],
+    { cwd: repo.root }
+  )
+  assert.equal(record.code, 1)
+  assert.ok(record.stderr.includes(repo.worktree), record.stderr)
+  assert.ok(!existsSync(out))
+})
+
+test('pr review bind: a file that is not a target exits 1 with nothing on standard output', () => {
+  const repo = prRepo('pr-bind-notatarget')
+  const notTarget = file('pr-bind-not-a-target.json', { platform: 'github', number: 44 })
+  const r = run(['review', 'brief', '--dimension', 'regression', '--target', notTarget, '--changed', 'lib/a.mjs'], { cwd: repo.root })
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.match(r.stderr, /target/i)
+  assert.match(r.stderr, /pr-bind-not-a-target\.json|not a (review )?target|invalid target/i)
+  const missing = run(['review', 'brief', '--dimension', 'regression', '--target', join(dir, 'no-such-target.json'), '--changed', 'lib/a.mjs'], { cwd: repo.root })
+  assert.equal(missing.code, 1)
+  assert.equal(missing.stdout, '')
+})
+
+// --- bind: the domain context and the record ---
+
+test('pr review bind: domain-context reads the living requirements at the target\'s base commit', () => {
+  const repo = prRepo('pr-bind-domain')
+  // The graph is an ignored file: the skill builds one in the worktree, and the person's tree may keep its own.
+  for (const root of [repo.root, repo.worktree]) writeGraph(root, [specEdge(TOOL_GUARDS_PATH, GUARD_COMMIT)])
+  const r = run(['domain-context', '--target', repo.targetFile, '--changed', GUARD_COMMIT, '--json'], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.selected, true, r.stdout)
+  assert.equal(out.ref, repo.base, 'the reference the text was read from is the target\'s base')
+  assert.ok(out.text.includes('Every guard SHALL fail open'), out.text)
+  assert.ok(!out.text.includes('Head only'), 'the head\'s own addition is not the living requirement')
+})
+
+/** Findings, verdicts and a dimension record for one surviving finding on `lib/a.mjs`, optionally marked. */
+function prAnswers(tag, { preExisting } = {}) {
+  const raised = {
+    severity: 'warning',
+    file: 'lib/a.mjs',
+    line: 1,
+    title: 'Old unguarded read',
+    description: 'It reads the value unchecked.',
+    ...(preExisting === undefined ? {} : { preExisting })
+  }
+  const verdict = { findingTitle: 'Old unguarded read', isReal: true, confidence: 0.9, reasoning: 'read it', evidence: 'lib/a.mjs:1', refinedSeverity: 'warning', qualityScore: 4, severityScore: 3 }
+  return {
+    findings: file(`${tag}-findings.json`, [
+      { dimension: 'regression', findings: [raised], coverage: { checked: [{ what: 'the change', at: 'lib/a.mjs:2-3' }, { what: 'the guard', at: 'hooks/guard-commit.mjs:2' }], unread: [] } }
+    ]),
+    verdicts: file(`${tag}-verdicts.json`, [verdict, verdict]),
+    dims: file(`${tag}-dims.json`, { selected: ['regression'], ran: ['regression'], unavailable: [], skipped: [] })
+  }
+}
+
+test('pr review bind: review --target writes a record whose head is the target\'s, judged against the target\'s changed files, and keeps the preExisting mark', () => {
+  const repo = prRepo('pr-bind-record')
+  const a = prAnswers('pr-bind-record', { preExisting: true })
+  const out = join(dir, 'pr-bind-record', 'review.json')
+  const r = run(
+    ['review', '--target', repo.targetFile, '--findings', a.findings, '--verdicts', a.verdicts, '--changed', PR_CHANGED, '--dimensions', a.dims, '--out', out, '--json'],
+    { cwd: repo.root }
+  )
+  assert.equal(r.code, 0, r.stderr)
+  const record = JSON.parse(readFileSync(out, 'utf8'))
+  assert.equal(record.head, repo.head, 'the record is bound to the platform\'s head, not the person\'s own')
+  assert.equal(record.surviving.length, 1)
+  assert.equal(record.surviving[0].preExisting, true, 'the mark is kept on the surviving finding')
+  assert.equal(record.proof.proven, true, JSON.stringify(record.proof))
+  assert.deepEqual(record.proof.uncited, [])
+  assert.ok(record.proof.changed >= 2, 'both source files the target\'s base and head differ in are in the proof')
+})
+
+test('pr review bind: --metrics under a target lands in the repository the command ran in, not inside the worktree', () => {
+  const repo = prRepo('pr-bind-metrics')
+  const a = prAnswers('pr-bind-metrics')
+  const out = join(dir, 'pr-bind-metrics', 'review.json')
+  const r = run(
+    ['review', '--target', repo.targetFile, '--findings', a.findings, '--verdicts', a.verdicts, '--changed', PR_CHANGED, '--dimensions', a.dims, '--metrics', 'add-export', '--out', out, '--json'],
+    { cwd: repo.root }
+  )
+  assert.equal(r.code, 0, r.stderr)
+  const { metrics } = JSON.parse(r.stdout)
+  assert.equal(metrics.written, true, JSON.stringify(metrics))
+  const real = realpathSync(metrics.path)
+  assert.ok(real.startsWith(join(realpathSync(repo.root), '.claude', 'metrics')), `under the person's tree: ${real}`)
+  assert.ok(!real.startsWith(repo.worktree), `not inside the worktree: ${real}`)
+  assert.ok(!existsSync(join(repo.worktree, '.claude', 'metrics')))
+})
+
+test('pr review bind: the usage text names --target', () => {
+  const help = run(['--help']).stdout
+  assert.match(help, /--target\b/)
+  assert.match(usageSection('review:'), /--target\b/)
+})
+
+// --- interlock review comment ---
+
+/** A record at `head` holding the findings, written where the comment tests read it. */
+function prRecord(tag, head, surviving, proof) {
+  return file(`${tag}-record.json`, { head, surviving, counts: { raised: surviving.length, surviving: surviving.length }, ...(proof === undefined ? {} : { proof }) })
+}
+
+const PR_PROVEN = { proven: true, dimensions: ['regression'], carried: [], unproven: [], unread: [], proseUnread: [], uncited: [], changed: 2, cited: 2, reruns: 0, rejected: [] }
+
+const prFinding = (over = {}) => ({ severity: 'warning', dimension: 'regression', file: 'lib/a.mjs', line: 1, title: 'Old unguarded read', description: 'It reads the value unchecked.', ...over })
+
+test('pr review comment: prints the comment and writes the same text to --out', () => {
+  const repo = prRepo('pr-comment-print')
+  const record = prRecord('pr-comment-print', repo.head, [prFinding({ severity: 'blocker', line: 2, title: 'Drops the last row' })], PR_PROVEN)
+  const out = join(dir, 'pr-comment-print', 'comment.md')
+  const r = run(['review', 'comment', '--review', record, '--target', repo.targetFile, '--out', out], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  assert.ok(r.stdout.startsWith(`## Automated review — ${repo.head}`), r.stdout)
+  assert.ok(r.stdout.includes('Drops the last row'))
+  assert.ok(existsSync(out), 'the file was written')
+  assert.equal(readFileSync(out, 'utf8'), r.stdout, 'the file holds what was printed')
+  assert.ok(r.stdout.includes('Reviewers read the code and ran none of it.'))
+})
+
+test('pr review comment: --json carries severity, weight and preExistingRefused, and the diff decides which marks are confirmed', () => {
+  const repo = prRepo('pr-comment-json')
+  const surviving = [
+    prFinding({ severity: 'blocker', file: 'lib/a.mjs', line: 2, title: 'Changed-line blocker' }),
+    prFinding({ severity: 'warning', file: 'lib/a.mjs', line: 1, title: 'Unchanged line, marked', preExisting: true }),
+    prFinding({ severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'Changed line, marked', preExisting: true }),
+    prFinding({ severity: 'warning', file: 'lib/b.mjs', line: 1, title: 'Untouched file, marked', preExisting: true }),
+    prFinding({ severity: 'warning', file: 'lib/b.mjs', line: 1, title: 'Untouched file, unmarked' }),
+    prFinding({ severity: 'suggestion', file: 'lib/b.mjs', line: 1, title: 'A marked nit', preExisting: true }),
+    prFinding({ severity: 'critical', file: 'lib/b.mjs', line: 1, title: 'Odd severity, marked', preExisting: true })
+  ]
+  const record = prRecord('pr-comment-json', repo.head, surviving, PR_PROVEN)
+  const r = run(['review', 'comment', '--review', record, '--target', repo.targetFile, '--json'], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.head, repo.head)
+  assert.equal(out.runCode, false)
+  assert.ok(out.proof && out.proof.proven === true)
+  const byTitle = Object.fromEntries(out.findings.map(f => [f.title, f]))
+  for (const f of out.findings) for (const key of ['id', 'key', 'severity', 'weight', 'file', 'line', 'title']) assert.ok(key in f, `${f.title} lacks ${key}`)
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(byTitle).map(([title, f]) => [title, [f.severity, f.weight]])),
+    {
+      'Changed-line blocker': ['blocker', 'Important'],
+      'Unchanged line, marked': ['warning', 'Pre-existing'],
+      'Changed line, marked': ['warning', 'Important'],
+      'Untouched file, marked': ['warning', 'Pre-existing'],
+      'Untouched file, unmarked': ['warning', 'Important'],
+      'A marked nit': ['suggestion', 'Nit'],
+      'Odd severity, marked': ['critical', 'Important']
+    }
+  )
+  assert.deepEqual(out.preExistingRefused.map(x => x.id), [byTitle['Changed line, marked'].id], 'only the mark on a changed line is refused')
+  assert.match(r.stderr, /1 pre-existing mark/i, 'standard error says one mark was refused')
+})
+
+test('pr review comment: a record of another head exits 1, names both commits and writes no file', () => {
+  const repo = prRepo('pr-comment-head')
+  const other = 'c'.repeat(40)
+  const record = prRecord('pr-comment-head', other, [prFinding()], PR_PROVEN)
+  const out = join(dir, 'pr-comment-head', 'comment.md')
+  const r = run(['review', 'comment', '--review', record, '--target', repo.targetFile, '--out', out], { cwd: repo.root })
+  assert.equal(r.code, 1)
+  assert.equal(r.stdout, '')
+  assert.ok(r.stderr.includes(other) && r.stderr.includes(repo.head), r.stderr)
+  assert.ok(!existsSync(out), 'no comment file')
+})
+
+test('pr review comment: a target whose base commit git cannot find still prints the comment, with PRE-EXISTING NOT CHECKED: on standard error and no Pre-existing row', () => {
+  const repo = prRepo('pr-comment-nobase')
+  const lost = { ...repo.target, base: { ref: 'main', sha: 'f'.repeat(40) } }
+  const targetFile = file('pr-comment-nobase-target.json', lost)
+  const record = prRecord('pr-comment-nobase', repo.head, [prFinding({ preExisting: true })], PR_PROVEN)
+  const r = run(['review', 'comment', '--review', record, '--target', targetFile], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stderr, /PRE-EXISTING NOT CHECKED:/)
+  assert.ok(r.stdout.includes('Old unguarded read'), 'the comment is still printed')
+  assert.ok(!r.stdout.includes('Pre-existing'), 'nothing reads Pre-existing when the diff could not be read')
+})
+
+test('pr review comment: an unproven record says REVIEW NOT PROVEN, and a target that allowed code says so', () => {
+  const repo = prRepo('pr-comment-unproven', { runCode: true })
+  const unproven = { ...PR_PROVEN, proven: false, unread: [{ dimension: 'regression', entries: [{ input: 'a build', reason: 'needed a run' }] }] }
+  const record = prRecord('pr-comment-unproven', repo.head, [prFinding()], unproven)
+  const r = run(['review', 'comment', '--review', record, '--target', repo.targetFile], { cwd: repo.root })
+  assert.equal(r.code, 0, r.stderr)
+  assert.match(r.stdout, /^REVIEW NOT PROVEN:/m)
+  assert.ok(r.stdout.includes("Reviewers were allowed to run a single test file and the repository's own CLI."), r.stdout)
+})
+
+test('pr review comment: a record that is not an adjudicated review, and a missing --review or --target, exit 1 with nothing on standard output', () => {
+  const repo = prRepo('pr-comment-refuse')
+  const raw = file('pr-comment-refuse-raw.json', { findings: [prFinding()] })
+  const notReview = run(['review', 'comment', '--review', raw, '--target', repo.targetFile], { cwd: repo.root })
+  assert.equal(notReview.code, 1)
+  assert.equal(notReview.stdout, '')
+  const record = prRecord('pr-comment-refuse', repo.head, [prFinding()], PR_PROVEN)
+  const noTarget = run(['review', 'comment', '--review', record], { cwd: repo.root })
+  assert.equal(noTarget.code, 1)
+  assert.equal(noTarget.stdout, '')
+  assert.match(noTarget.stderr, /--target/)
+  const noReview = run(['review', 'comment', '--target', repo.targetFile], { cwd: repo.root })
+  assert.equal(noReview.code, 1)
+  assert.equal(noReview.stdout, '')
+  assert.match(noReview.stderr, /--review/)
+})
+
+test('pr review comment: the usage text names review comment and --target', () => {
+  const help = run(['--help']).stdout
+  assert.match(help, /review comment\b/)
+  assert.match(usageSection('review:'), /review comment\b|--target\b/)
+})

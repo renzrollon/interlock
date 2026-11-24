@@ -426,6 +426,10 @@ Usage:
                                            exit 1 if the draft names no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
+  interlock review target --github <f|->   Pin a pull request from gh's (or, with
+                  [--run-code]             --gitlab, glab's) document; offline
+  interlock review comment --review <f> --target <f> [--out <f>]
+                                           Render the pull request comment
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
                                            both path lists and any parse problems.
@@ -897,6 +901,10 @@ review:
                          A verdict that a finding IS real needs no citation.
   --min-quality <n>      Quality-band floor, as for gate
   --no-tolerance         Disable the quality band
+  --target <file>        Also on review brief: the file "review target" wrote. Its
+                         worktree is the root, its commits the base and head; the
+                         worktree must be at that head, and --base, --head and
+                         --root beside it exit 1. REVIEW_CONTEXT.md stays cwd's.
   --base <ref>           Read REVIEW.md's two path lists (Do Not Report, Always
                          Human Review) from the commit at this ref instead of
                          the working tree, so a change cannot exclude its own
@@ -916,6 +924,10 @@ review:
   Always exits 0; feed "surviving" to gate to decide whether it blocks.
   "dismissalsRejected" counts refutations refused for want of a citation — a
   high number means the skeptics are asserting rather than reading.
+  review target --github|--gitlab <file|-> [--run-code]: write the target file
+  (refused: a fork, not open, a bad ref or id, no document).
+  review comment: a record of another head exits 1; marks git cannot check print
+  PRE-EXISTING NOT CHECKED: on stderr. --out is written before stdout.
 
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
@@ -937,6 +949,7 @@ domain-context:
   --base <ref>           Read the living requirement text from the commit at this
                          ref. Absent, the working tree is read and the output
                          names it as the source.
+  --target <file>        Read from the target's worktree, at its base commit.
   Selects capabilities two ways: a changed path that a reliable graph edge links
   to a living spec ("linked"), and a capability the change's delta specs modify
   that has a living spec ("declared"). The graph is found root first, then the

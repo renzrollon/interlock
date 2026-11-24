@@ -1180,3 +1180,153 @@ test('allowance: a step with no usable allowance gets no paragraph, and the brie
     assert.equal(given, expected, `timeoutMs ${timeoutMs} is briefed as the same step without the field`)
   }
 })
+
+// --- the pull-request path: a prompt printed under --target -----------------------------------
+//
+// Spec: review/review-briefs, "The prompt SHALL let the reviewer run read-only checks and SHALL ask it
+// to measure what it claims" (modified), "Under `--target` every prompt SHALL name the review root...",
+// "A prompt printed under `--target` SHALL keep the first line it has without a target", "Under
+// `--target` a dimension prompt SHALL ask for the pre-existing mark". Tokens, not sentences. Task 2.2
+// runs these by the `pr review prompt:` prefix.
+
+const PR_ROOT = '/work/repo/.claude/worktrees/review-pr-github-44-bbbbbbbbbbbb'
+const READ_ONLY_RUN_LINE = "You may run read-only commands: git, a single test file, and the repository's own CLI."
+const noRun = { root: PR_ROOT, runCode: false }
+const mayRun = { root: PR_ROOT, runCode: true }
+
+/** The blank-line delimited paragraph of `text` holding `token`. */
+const paragraphHolding = (text, token) => text.split(/\n\s*\n/).find(p => p.includes(token)) ?? null
+
+/** The `REVIEW ROOT` paragraph of a prompt: from its heading to the next blank line. */
+const reviewRootParagraph = prompt => /REVIEW ROOT[\s\S]*?(?=\n\s*\n|$)/.exec(prompt)?.[0] ?? null
+
+test('pr review prompt: a dimension prompt under a target that runs no code names the root, in the git -C and --root forms', () => {
+  const prompt = assembleDimensionPrompt({ ...dimensionInput(), target: noRun })
+  const paragraph = reviewRootParagraph(prompt)
+  assert.ok(paragraph, 'no REVIEW ROOT paragraph')
+  assert.ok(paragraph.includes(PR_ROOT), paragraph)
+  assert.ok(paragraph.includes(`git -C ${PR_ROOT}`), paragraph)
+  assert.ok(paragraph.includes(`--root ${PR_ROOT}`), paragraph)
+  assert.match(paragraph, /relative/, 'it says every path in the prompt is relative to the root')
+  assert.match(paragraph, /another (working copy|commit)/, 'it says the starting directory is another working copy at another commit')
+})
+
+test('pr review prompt: under a target that runs no code the read-only run line is replaced by the read-and-run-nothing line, and the write-nothing and measure lines stay', () => {
+  const prompt = assembleDimensionPrompt({ ...dimensionInput(), target: noRun })
+  const rule = paragraphHolding(prompt, 'none of it')
+  assert.ok(rule, 'no paragraph says the reviewer runs none of it')
+  assert.ok(rule.includes('git'), rule)
+  assert.match(rule, /graph/i, 'it names the graph\'s query commands')
+  assert.ok(!prompt.includes('a single test file'), 'no line allows a single test file')
+  assert.ok(!prompt.includes("repository's own CLI"), 'no line allows the repository\'s own CLI')
+  assert.ok(prompt.includes('You write nothing: no file, no commit, no edit to the tree you judge'), 'the write-nothing line stays')
+  assert.ok(prompt.includes('A claim about a size, a width, a count or a duration is measured'), 'the measure line stays')
+  assert.match(prompt, /`unread`[^\n]*does not run the code|does not run the code[^\n]*`unread`/, 'a measurement only a run could take goes to unread, with the reason')
+})
+
+test('pr review prompt: under a target that allows running the code the read-only run line is word for word what it is without a target', () => {
+  const plain = assembleDimensionPrompt(dimensionInput())
+  const prompt = assembleDimensionPrompt({ ...dimensionInput(), target: mayRun })
+  assert.ok(plain.includes(READ_ONLY_RUN_LINE), 'the pin itself: the line as it is today')
+  assert.ok(prompt.includes(READ_ONLY_RUN_LINE), prompt)
+  assert.ok(!prompt.includes('none of it'), 'it is not told to run nothing')
+  assert.ok(reviewRootParagraph(prompt), 'the root paragraph is printed whether or not code may run')
+})
+
+test('pr review prompt: the pre-existing instruction has both halves and the emit shape lists preExisting', () => {
+  for (const target of [noRun, mayRun]) {
+    const prompt = assembleDimensionPrompt({ ...dimensionInput(), target })
+    for (const token of ['preExisting: true', 'did not change', 'without this pull request', 'never', 'breaks', 'stale', 'fails to update']) {
+      assert.ok(prompt.includes(token), `the instruction lacks ${token} (runCode ${target.runCode})`)
+    }
+    const shape = prompt.slice(prompt.indexOf('Return exactly this shape'))
+    assert.ok(shape.includes('preExisting'), 'the emit shape does not list preExisting')
+    assert.match(shape, /optional/i)
+    assert.match(shape, /boolean/i)
+  }
+  const answered = assembleDimensionPrompt({ ...dimensionInput({ answerPath: ANSWER_AT }), target: noRun })
+  assert.ok(answered.slice(answered.indexOf('Return exactly this shape')).includes('preExisting'), 'the answer-file form lists it too')
+})
+
+test('pr review prompt: the first line is the one it has without a target, and the Dimension line comes before REVIEW ROOT, inside the scope block', () => {
+  for (const target of [noRun, mayRun]) {
+    const plain = assembleDimensionPrompt(dimensionInput())
+    const prompt = assembleDimensionPrompt({ ...dimensionInput(), target })
+    assert.equal(prompt.split('\n')[0], plain.split('\n')[0])
+    assert.equal(prompt.split('\n')[0], '# Dimension: language')
+    const at = prompt.indexOf('REVIEW ROOT')
+    assert.ok(at > prompt.indexOf('# Dimension: language'), 'the root paragraph comes after the rubric line')
+    assert.ok(at > prompt.indexOf('SCOPE (computed by the CLI'), 'the root paragraph sits inside the scope block')
+  }
+  const staged = assembleDimensionPrompt({ ...dimensionInput(), target: noRun, stageLine: 'STAGE: publish the marker first.' })
+  assert.equal(staged.split('\n')[0], 'STAGE: publish the marker first.', 'a stage line still comes first')
+})
+
+test('pr review prompt: without a target the prompt is what it was, and neither REVIEW ROOT nor preExisting appears', () => {
+  const plain = assembleDimensionPrompt(dimensionInput())
+  assert.equal(assembleDimensionPrompt({ ...dimensionInput(), target: undefined }), plain)
+  assert.equal(assembleDimensionPrompt({ ...dimensionInput(), target: null }), plain)
+  assert.ok(!plain.includes('REVIEW ROOT'))
+  assert.ok(!plain.includes('preExisting'))
+  assert.ok(plain.includes(READ_ONLY_RUN_LINE))
+  // And a target changes the prompt: the equality above is not vacuous.
+  assert.notEqual(assembleDimensionPrompt({ ...dimensionInput(), target: noRun }), plain)
+})
+
+test('pr review prompt: renderProofRules takes runCode and preExisting, each defaulting to what it printed before', () => {
+  const given = { changedSources: ['lib/db.mjs'], dimension: 'language' }
+  const plain = renderProofRules(given)
+  assert.equal(renderProofRules({ ...given, runCode: true, preExisting: false }), plain)
+  assert.ok(!plain.includes('preExisting'))
+  const noCode = renderProofRules({ ...given, runCode: false })
+  assert.ok(noCode.includes('none of it'), noCode)
+  assert.ok(!noCode.includes('a single test file'))
+  assert.ok(!noCode.includes('preExisting'), 'preExisting is its own option')
+  const marked = renderProofRules({ ...given, preExisting: true })
+  assert.ok(marked.includes('preExisting: true'), marked)
+  assert.ok(marked.includes(READ_ONLY_RUN_LINE), 'runCode stays true by default')
+})
+
+const SKEPTIC_FINDINGS = [{ dimension: 'qa', severity: 'warning', file: 'lib/a.mjs', line: 2, title: 'one', description: 'd' }]
+
+test('pr review prompt: every skeptic prompt under a target holds the paragraph and opens with the sentence it opens with without one', () => {
+  for (const skeptics of ['per-review', 'per-finding']) {
+    const without = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics }).prompts
+    for (const target of [noRun, mayRun]) {
+      const { prompts } = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics, target })
+      assert.equal(prompts.length, without.length)
+      assert.ok(prompts.length >= 2)
+      for (const [i, { prompt }] of prompts.entries()) {
+        const paragraph = reviewRootParagraph(prompt)
+        assert.ok(paragraph, `skeptic ${i} has no REVIEW ROOT paragraph`)
+        assert.ok(paragraph.includes(PR_ROOT) && paragraph.includes(`git -C ${PR_ROOT}`) && paragraph.includes(`--root ${PR_ROOT}`), paragraph)
+        assert.equal(prompt.split('\n')[0], without[i].prompt.split('\n')[0], 'the first sentence is unchanged')
+        assert.ok(prompt.indexOf('REVIEW ROOT') > 0, 'the paragraph never opens a prompt')
+        assert.ok(prompt.indexOf('REVIEW ROOT') < prompt.indexOf('FINDINGS ('), 'it comes before the findings')
+        assert.ok(prompt.includes('Write nothing else: no file, no edit to the tree.'), 'the write-nothing line stays')
+      }
+    }
+  }
+})
+
+test('pr review prompt: a skeptic prompt under a target that runs no code holds the read-and-run-nothing line', () => {
+  const { prompts } = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics: 'per-review', target: noRun })
+  for (const { prompt } of prompts) {
+    const rule = paragraphHolding(prompt, 'none of it')
+    assert.ok(rule, 'no paragraph says the reviewer runs none of it')
+    assert.ok(rule.includes('git'), rule)
+    assert.match(rule, /graph/i)
+  }
+})
+
+test('pr review prompt: without a target a skeptic prompt holds neither REVIEW ROOT nor preExisting, and is what it was', () => {
+  const plain = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics: 'per-review' })
+  const undef = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics: 'per-review', target: undefined })
+  assert.deepEqual(undef, plain)
+  for (const { prompt } of plain.prompts) {
+    assert.ok(!prompt.includes('REVIEW ROOT'))
+    assert.ok(!prompt.includes('preExisting'))
+  }
+  const withTarget = assembleSkepticPrompts({ findings: SKEPTIC_FINDINGS, skeptics: 'per-review', target: noRun })
+  assert.notDeepEqual(withTarget, plain, 'the equality above is not vacuous')
+})

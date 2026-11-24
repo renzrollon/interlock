@@ -605,7 +605,7 @@ test('a valid citation reports nothing and the finding survives as it would unci
 test('a result with no citations carries an empty requirementCitations list', () => {
   const r = resolveReview([f()], [])
   assert.deepEqual(citationsOf(r), [])
-  assert.deepEqual(Object.keys(r.anomalies).sort(), ['malformedVerdicts', 'orphanVerdicts', 'requirementCitations', 'specGapShape'])
+  assert.deepEqual(Object.keys(r.anomalies).sort(), ['malformedVerdicts', 'orphanVerdicts', 'preExistingShape', 'requirementCitations', 'specGapShape'])
 })
 
 test('a citation outside openspec/specs is reported with the check it failed, and the finding is kept', () => {
@@ -1024,7 +1024,8 @@ const RESOLVE_REVIEW_SNAPSHOT = JSON.parse(String.raw`{
     ],
     "malformedVerdicts": [],
     "requirementCitations": [],
-    "specGapShape": []
+    "specGapShape": [],
+    "preExistingShape": []
   }
 }`)
 
@@ -1097,4 +1098,49 @@ test('carryForward keeps the head a finding or ledger was first carried from whe
   // A dimension that ran at h1 and is carried at round 2 is carried from h1.
   const ran1 = { head: 'h1', surviving: [finding], coverage: { language: ledger } }
   assert.equal(carryForward(fresh(), ran1, ['qa']).carriedCoverage.language.carriedFrom, 'h1')
+})
+
+// --- preExisting: a reviewer's mark, shape-checked, never a verdict ---------------
+//
+// Task 2.2 runs these by the `pr review mark:` prefix (spec: review/pull-request-review, "A finding
+// SHALL read `Pre-existing` only when its reviewer marked it and the CLI finds its line outside the
+// diff", the scenario "a mark that is not a boolean").
+
+test('pr review mark: the finding schema lists preExisting as an optional boolean beside specGap', () => {
+  const items = FINDING_SCHEMA.properties.findings.items
+  assert.equal(items.properties.preExisting && items.properties.preExisting.type, 'boolean')
+  assert.ok(!items.required.includes('preExisting'))
+})
+
+test('pr review mark: resolveReview keeps preExisting: true on a surviving finding, and lists nothing under preExistingShape', () => {
+  const r = resolveReview(
+    raised([f({ title: 'old read', preExisting: true }), f({ title: 'new read', file: 'lib/b.ts', preExisting: false })], 'regression'),
+    [...real('old read', 'warning'), ...real('new read', 'warning')]
+  )
+  const byTitle = Object.fromEntries(r.surviving.map(x => [x.title, x]))
+  assert.equal(byTitle['old read'].preExisting, true)
+  assert.equal(byTitle['new read'].preExisting, false)
+  assert.deepEqual(r.anomalies.preExistingShape, [])
+})
+
+test('pr review mark: a non-boolean preExisting is read as absent, the finding is kept, and it is listed under anomalies.preExistingShape', () => {
+  const r = resolveReview(raised([f({ title: 'maybe old', preExisting: 'yes' })], 'regression'), real('maybe old', 'warning'))
+  assert.equal(r.counts.surviving, 1, 'the finding is kept')
+  assert.equal(r.surviving[0].title, 'maybe old')
+  assert.equal(r.surviving[0].preExisting, undefined, 'the field is read as absent')
+  assert.ok(Array.isArray(r.anomalies.preExistingShape))
+  assert.equal(r.anomalies.preExistingShape.length, 1)
+  const [a] = r.anomalies.preExistingShape
+  assert.equal(a.title, 'maybe old')
+  assert.equal(a.file, 'lib/a.ts')
+  assert.match(a.problem, /preExisting is not a boolean/)
+  assert.match(JSON.stringify(a), /string/, 'the value\'s type is named')
+  assert.deepEqual(r.anomalies.specGapShape, [], 'it sits beside the specGap check and does not displace it')
+})
+
+test('pr review mark: a finding with no mark is unchanged, and preExistingShape is empty', () => {
+  const r = resolveReview(raised([f({ title: 'plain' })], 'regression'), real('plain', 'warning'))
+  assert.equal(r.counts.surviving, 1)
+  assert.equal('preExisting' in r.surviving[0], false)
+  assert.deepEqual(r.anomalies.preExistingShape, [])
 })

@@ -273,6 +273,17 @@ export const INVENTORY = [
   { bin: I, argv: ['review', 'brief', '--dimension', 'regression', '--base', 'HEAD~1'], codes: [0], check: r => (/^# Dimension: regression$/m.test(r.stdout) ? '' : 'the bundled regression rubric was not read from the install') },
   { bin: I, argv: ['review', 'brief', '--skeptics', '--findings', '{in}/blocker.json', '--json'], codes: [0], keys: ['prompts'], check: r => (stepOf(r).prompts.length === 2 ? '' : 'not two skeptic prompts') },
   { bin: I, argv: ['review-policy', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['humanPaths', 'excludePaths'] },
+  // Pinning a colleague's pull request: offline, from the document gh printed.
+  { bin: I, argv: ['review', 'target', '--github', '{in}/pr-github.json', '--json'], codes: [0], keys: ['file', 'worktree', 'commands.fetch', 'commands.worktreeAdd'] },
+  // Its comment, from the target that entry wrote. The fixture's commits are not in the scratch
+  // repository, so the diff cannot be read: the comment still renders, with nothing Pre-existing.
+  {
+    bin: I,
+    argv: ['review', 'comment', '--review', '{in}/pr-review.json', '--target', `.claude/ship/review-pr/github-44-${'b'.repeat(12)}/target.json`, '--json'],
+    codes: [0],
+    keys: ['head', 'findings', 'proof', 'runCode', 'preExistingRefused'],
+    check: r => (stepOf(r).findings.length === 1 && /PRE-EXISTING NOT CHECKED:/.test(r.stderr) ? '' : 'the surviving finding was not listed, or the unread diff was not said')
+  },
   { bin: I, argv: ['domain-context', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['selected'] },
   { bin: I, argv: ['drift', '--changed', 'src/a.mjs', '--json'], codes: [0], keys: ['unarchived', 'stale', 'orphans'] },
   { bin: I, argv: ['ledger', CHANGE, '--json'], codes: [1], keys: ['missing', 'blocking'] },
@@ -586,6 +597,22 @@ function prepare(scratch, repo) {
   input('blocker.json', [{ dimension: 'qa', findings: [{ severity: 'blocker', file: 'src/a.mjs', line: 1, title: 't', description: 'd', evidence: 'src/a.mjs:1' }] }])
   input('empty.json', [])
   input('review-ok.json', { ok: true })
+  input('pr-review.json', {
+    head: 'b'.repeat(40),
+    surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', preExisting: true }],
+    counts: { raised: 1, surviving: 1 }
+  })
+  input('pr-github.json', {
+    number: 44,
+    url: 'https://github.com/owner/repo/pull/44',
+    state: 'OPEN',
+    isDraft: false,
+    isCrossRepository: false,
+    baseRefName: 'main',
+    baseRefOid: 'a'.repeat(40),
+    headRefName: 'feat/x',
+    headRefOid: 'b'.repeat(40)
+  })
   input('settle-review.json', {
     head: SETTLE_HEAD,
     surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', suggestion: 's' }],

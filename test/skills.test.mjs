@@ -3609,3 +3609,359 @@ test('small checks: docs/04 has a halt-table row that names the build, and docs/
   const why = readFileSync(join(ROOT, 'docs', '06-why-it-works.md'), 'utf8')
   assert.match(why, /final:\s*\{\s*haltingKinds:\s*\['unit', 'build'\]\s*\}/, 'docs/06-why-it-works.md does not show the final halting kinds with build')
 })
+
+// --- reviewing a colleague's pull request: the `--pr` section and its docs (spec: review/pull-request-review) ---
+//
+// Two prefixes, one per task that turns them green: `pr review skill:` (task 3.1) and `pr review docs:`
+// (task 3.2). Tokens, not sentences. The `--pr` section is the text from its heading to the end of the
+// file: it is the last section, so the earlier sections' first-match pins still find their own lines.
+
+const PR_HEADING = '## 6. Pull request review (--pr)'
+
+/** The `--pr` section: the heading to the end of the file, or null when the skill has none. */
+function prSectionOf(text) {
+  const at = text.indexOf(PR_HEADING)
+  return at === -1 ? null : text.slice(at)
+}
+
+/** Each fenced block's lines, trimmed, in order. */
+function fencedBlocksOf(text) {
+  const blocks = []
+  let current = null
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      if (current) {
+        blocks.push(current)
+        current = null
+      } else current = []
+      continue
+    }
+    if (current) current.push(line.trim())
+  }
+  return blocks
+}
+
+/** The lines outside every fence. */
+function proseOf(text) {
+  const out = []
+  let fenced = false
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      fenced = !fenced
+      continue
+    }
+    if (!fenced) out.push(line)
+  }
+  return out.join('\n')
+}
+
+/**
+ * The section cut into steps: a step opens at a column-zero numbered item or a third or fourth level
+ * heading outside a fence, and runs, fences and all, to the next. The text before the first is the
+ * preamble. A section that uses neither reads as one step, which only makes the pins below easier to meet.
+ */
+function stepsOf(text) {
+  const steps = ['']
+  let fenced = false
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) fenced = !fenced
+    else if (!fenced && /^(?:\d{1,2}\.\s|#{3,4}\s|\*\*\d)/.test(line)) steps.push('')
+    steps[steps.length - 1] += `${line}\n`
+  }
+  return steps
+}
+
+/** The eleven lines of design.md "The lines under a target", as the skill prints them. */
+const PR_TARGET_LINES = [
+  'interlock domain-context [<change>] --changed <files> --target <target> --json',
+  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files>',
+  'interlock review brief --skeptics --findings <f> --target <target> [--depth strict] --json',
+  'interlock review --target <target> --findings <f> --verdicts <f> --changed <files> --dimensions <dimension record> --draft --out <draft> --json',
+  'interlock review proof --review <draft>',
+  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files> --rerun-of <draft>',
+  'interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --target <target> [--depth strict] --json',
+  'interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed <files> --dimensions <dimension record> --draft --out <next draft> --json',
+  'interlock review --rerun-of <last draft> --target <target> --changed <files> [--metrics <change>] --dimensions <dimension record> --out <record> --json',
+  'interlock gate --findings <survivors.json> --json',
+  'interlock review comment --review <record> --target <target> --out <dir>/comment.md'
+]
+
+/** Tokens the section carries: the commands, the target's own argv by name, and the eight lines it prints. */
+const PR_SECTION_TOKENS = [
+  'gh auth status',
+  'glab auth status',
+  'interlock review target --github -',
+  'interlock review target --gitlab -',
+  'commands.fetch',
+  'commands.worktreeAdd',
+  'commands.changed',
+  'commands.worktreeRemove',
+  'interlock pipeline --github -',
+  'interlock-graph build',
+  'interlock review comment',
+  'gh pr comment',
+  '--body-file',
+  'glab mr note create',
+  '--resolvable=false',
+  'PULL REQUEST NOT REVIEWED: no changed files',
+  'PULL REQUEST NOT REVIEWED:',
+  'REVIEW WORKTREE NOT CREATED:',
+  'REVIEW WORKTREE LEFT:',
+  'CHECKS NOT READ:',
+  'REVIEW METRICS NOT RECORDED: no change named',
+  'COMMENT NOT RENDERED:',
+  'POST FAILED:',
+  'NOT POSTED:'
+]
+
+/** What the `--pr` path never writes: the section holds none of them, as a command or in a sentence. */
+const PR_WRITE_VERBS = [
+  'gh pr review',
+  'gh pr merge',
+  'gh pr edit',
+  'gh pr ready',
+  'gh label',
+  'git push',
+  'git commit',
+  'glab mr approve',
+  'glab mr update',
+  'glab mr merge',
+  'interlock autonomy record',
+  'interlock note derive'
+]
+
+const PR_GITHUB_MARK = '# GitHub — not exercised'
+const PR_GITLAB_MARK = '# GitLab — not exercised'
+
+/** Every way a `--pr` section can fail its pins, one string each, naming the verb, the line or the step. */
+function prSectionProblems(section) {
+  if (section === null) return [`skills/review-code/SKILL.md has no section headed "${PR_HEADING}"`]
+  const problems = []
+  const blocks = fencedBlocksOf(section)
+  const lines = blocks.flat().filter(Boolean)
+  const prose = proseOf(section)
+  const paragraphs = prose.split(/\n\s*\n/)
+  const steps = stepsOf(section)
+
+  for (const token of PR_SECTION_TOKENS) if (!section.includes(token)) problems.push(`the section does not carry ${token}`)
+  for (const verb of PR_WRITE_VERBS) if (section.includes(verb)) problems.push(`the section holds the write verb ${verb}`)
+
+  // The eleven lines, as written in the design, in one fenced block.
+  for (const line of PR_TARGET_LINES) if (!lines.includes(line)) problems.push(`the section has no fenced line: ${line}`)
+  if (!blocks.some(block => PR_TARGET_LINES.every(line => block.includes(line)))) problems.push('the eleven lines under a target are not in one fenced block')
+
+  // Which lines carry --target, and which flags no line carries.
+  for (const line of lines) {
+    const carries = /(?:^|\s)--target(?:\s|=|$)/.test(line)
+    if (/^interlock review brief\b/.test(line) || /^interlock review --/.test(line) || /^interlock domain-context\b/.test(line) || /^interlock review comment\b/.test(line)) {
+      if (!carries) problems.push(`this line does not carry --target: ${line}`)
+    }
+    if ((/^interlock review proof\b/.test(line) || /^interlock gate\b/.test(line)) && carries) problems.push(`this line carries --target and must not: ${line}`)
+    if (/(?:^|\s)--(?:base|head|carry)(?:\s|=|$)/.test(line)) problems.push(`this line carries --base, --head or --carry: ${line}`)
+    // §1's own commands stay out of the section.
+    if (line.includes('main...HEAD')) problems.push(`this line scopes the author's own diff (main...HEAD): ${line}`)
+    if (/^interlock changes\b/.test(line)) problems.push(`this line lists the person's own changes: ${line}`)
+    if (/(?:^|\s)--update(?:\s|=|$)/.test(line)) problems.push(`this line updates the person's own graph (--update): ${line}`)
+    // The comment is posted from its file.
+    if (line.includes('--message') || line.includes('$(')) problems.push(`this line passes the comment as an argument: ${line}`)
+  }
+  // --run-code is passed to the pin on both platforms, as a bracketed placeholder: the skill never adds it itself.
+  const pins = lines.filter(l => l.includes('interlock review target --github -') || l.includes('interlock review target --gitlab -'))
+  if (pins.length < 2) problems.push('the section has not both interlock review target lines (--github -, --gitlab -) among its fenced lines')
+  for (const line of pins) if (!line.includes('[--run-code]')) problems.push(`this interlock review target line lacks the bracketed [--run-code] placeholder: ${line}`)
+
+  // Every platform line sits in a block marked `not exercised`.
+  for (const block of blocks) {
+    for (const line of block) {
+      if (/^glab\s/.test(line) && !(block[0] || '').startsWith(PR_GITLAB_MARK)) problems.push(`this glab line is not in a block opened by "${PR_GITLAB_MARK}": ${line}`)
+      if (/^gh\s/.test(line) && !(block[0] || '').startsWith(PR_GITHUB_MARK)) problems.push(`this gh line is not in a block opened by "${PR_GITHUB_MARK}": ${line}`)
+    }
+  }
+
+  // Instructions that are not commands.
+  const holding = token => steps.filter(s => s.includes(token))
+  if (!holding('interlock pipeline --github -').some(s => s.includes('head.sha'))) problems.push('the step that reads the checks (interlock pipeline --github -) does not name head.sha')
+  if (!holding('POST FAILED:').some(s => s.includes('comment.md'))) problems.push('the step that holds POST FAILED: does not name comment.md')
+  if (!holding('interlock-graph build').some(s => s.includes('.claude/graph/graph.json'))) problems.push('the graph step (interlock-graph build) does not name .claude/graph/graph.json')
+  if (!paragraphs.some(p => p.includes('--base') && p.includes('--carry') && p.includes('--pr'))) problems.push('no paragraph names --base and --carry as flags that do not combine with --pr')
+  if (!paragraphs.some(p => p.includes('--post') && p.includes('--run-code') && /\bnever\b/.test(p))) problems.push('the paragraph that introduces --post and --run-code does not hold the word never')
+  if (!paragraphs.some(p => p.includes('REVIEW FAILED') && /worktree/i.test(p) && /remov/i.test(p))) problems.push('the paragraph on removing the worktree does not name REVIEW FAILED')
+  return problems
+}
+
+/** §1 sends a `--pr` reader to §6 before its first command. */
+function scopeSectionProblems(text) {
+  const at = text.indexOf('## 1. Scope the diff')
+  if (at === -1) return ['skills/review-code/SKILL.md has no section "## 1. Scope the diff"']
+  const rest = text.slice(at + 3)
+  const next = rest.indexOf('\n## ')
+  const section = next === -1 ? rest : rest.slice(0, next)
+  const firstFence = section.indexOf('```')
+  const above = firstFence === -1 ? section : section.slice(0, firstFence)
+  const problems = []
+  for (const token of ['--pr', '§6']) if (!above.includes(token)) problems.push(`§1 does not name ${token} above its first fenced block`)
+  return problems
+}
+
+const reviewSkillText = () => skillText('review-code')
+
+test('pr review skill: the argument-hint names --pr, --post and --run-code', () => {
+  const hint = parseFrontmatter(reviewSkillText()).values['argument-hint'] || ''
+  for (const token of ['--pr', '--post', '--run-code']) assert.ok(hint.includes(token), `skills/review-code/SKILL.md argument-hint lacks ${token}: ${hint}`)
+})
+
+test('pr review skill: allowed-tools grants exactly the seven gh and glab patterns, and no other beginning Bash(gh or Bash(glab', () => {
+  const tools = parseFrontmatter(reviewSkillText()).values['allowed-tools'] || ''
+  const patterns = [...tools.matchAll(/Bash\([^)]*\)/g)].map(m => m[0])
+  const platform = patterns.filter(p => /^Bash\((?:gh|glab) /.test(p)).sort()
+  assert.deepEqual(
+    platform,
+    [
+      'Bash(gh auth status)',
+      'Bash(gh pr comment *)',
+      'Bash(gh pr view *)',
+      'Bash(glab auth status)',
+      'Bash(glab ci get *)',
+      'Bash(glab mr note create *)',
+      'Bash(glab mr view *)'
+    ],
+    `allowed-tools: ${tools}`
+  )
+})
+
+test('pr review skill: the --pr section is the last section, and passes every pin', () => {
+  const text = reviewSkillText()
+  const section = prSectionOf(text)
+  assert.deepEqual(prSectionProblems(section), [])
+  assert.ok(!/\n## \d+\. /.test(section.slice(PR_HEADING.length)), 'no section follows the --pr section')
+})
+
+test('pr review skill: the --pr section\'s interlock lines carry --target by rule: brief, review, domain-context and comment do, proof and gate do not, and none carries --base, --head or --carry', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.ok(section, `no section "${PR_HEADING}"`)
+  const lines = fencedBlocksOf(section).flat()
+  const carries = line => /(?:^|\s)--target(?:\s|=|$)/.test(line)
+  const group = pattern => lines.filter(l => pattern.test(l))
+  for (const [name, pattern] of [
+    ['interlock review brief', /^interlock review brief\b/],
+    ['interlock review --', /^interlock review --/],
+    ['interlock domain-context', /^interlock domain-context\b/],
+    ['interlock review comment', /^interlock review comment\b/]
+  ]) {
+    const found = group(pattern)
+    assert.ok(found.length > 0, `the section has no fenced ${name} line`)
+    for (const line of found) assert.ok(carries(line), `${name} line without --target: ${line}`)
+  }
+  for (const [name, pattern] of [['interlock review proof', /^interlock review proof\b/], ['interlock gate', /^interlock gate\b/]]) {
+    const found = group(pattern)
+    assert.ok(found.length > 0, `the section has no fenced ${name} line`)
+    for (const line of found) assert.ok(!carries(line), `${name} line must not carry --target: ${line}`)
+  }
+  assert.deepEqual(lines.filter(l => /(?:^|\s)--(?:base|head|carry)(?:\s|=|$)/.test(l)), [])
+})
+
+test('pr review skill: §1\'s own commands stay out of the --pr section, which names them in prose only', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.ok(section, `no section "${PR_HEADING}"`)
+  const lines = fencedBlocksOf(section).flat()
+  assert.deepEqual(lines.filter(l => l.includes('main...HEAD')), [])
+  assert.deepEqual(lines.filter(l => /^interlock changes\b/.test(l)), [])
+  assert.deepEqual(lines.filter(l => /(?:^|\s)--update(?:\s|=|$)/.test(l)), [])
+  // The graph step takes its place: the section names the update flag in prose, to say the line takes none.
+  assert.ok(section.includes('interlock-graph build'))
+})
+
+test('pr review skill: §1 names --pr and §6 above its first fenced block, so a --pr reader runs none of §1', () => {
+  assert.deepEqual(scopeSectionProblems(reviewSkillText()), [])
+})
+
+test('pr review skill: no fenced line of the --pr section passes the comment as an argument', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.ok(section, `no section "${PR_HEADING}"`)
+  const lines = fencedBlocksOf(section).flat()
+  assert.deepEqual(lines.filter(l => l.includes('--message') || l.includes('$(')), [])
+  const posts = lines.filter(l => /^(?:gh pr comment|glab mr note create)\b/.test(l))
+  assert.equal(posts.length, 2, `one post line for each platform: ${posts.join(' | ')}`)
+  assert.ok(posts.some(l => /^gh pr comment\b.*--body-file\b/.test(l)), 'the GitHub post names --body-file')
+  assert.ok(posts.some(l => /^glab mr note create\b.*--resolvable=false\b.*<\s*\S*comment\.md/.test(l)), 'the GitLab post is a plain note with the file on standard input')
+})
+
+// The same pins, run on doctored copies of the real section, as the rest of this file does: each doctoring
+// is caught, and each is caught by name.
+
+test('pr review skill: a section given a write verb fails naming the verb', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.deepEqual(prSectionProblems(section), [], 'the shipped section is clean')
+  for (const verb of PR_WRITE_VERBS.filter(v => v !== 'interlock autonomy record' && v !== 'interlock note derive')) {
+    const doctored = `${section}\n\`\`\`bash\n# GitHub — not exercised\n${verb} 44\n\`\`\`\n`
+    assert.ok(prSectionProblems(doctored).some(p => p.includes(verb)), `a section given ${verb} was not caught by name`)
+  }
+})
+
+test('pr review skill: a glab line moved out of its marked block fails naming the line', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.deepEqual(prSectionProblems(section), [], 'the shipped section is clean')
+  const doctored = section.replace(PR_GITLAB_MARK, '# GitLab')
+  assert.notEqual(doctored, section, 'the section has a block opened by the GitLab mark')
+  const firstGlab = fencedBlocksOf(section).flat().find(l => /^glab\s/.test(l))
+  assert.ok(firstGlab, 'the section has a glab line')
+  assert.ok(prSectionProblems(doctored).some(p => p.includes(firstGlab)), 'the unmarked glab line was not caught by name')
+  const gh = section.replace(PR_GITHUB_MARK, '# GitHub')
+  const firstGh = fencedBlocksOf(section).flat().find(l => /^gh\s/.test(l))
+  assert.ok(prSectionProblems(gh).some(p => p.includes(firstGh)), 'the unmarked gh line was not caught by name')
+})
+
+test('pr review skill: a section given a fenced git diff --name-only main...HEAD line fails naming the line', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.deepEqual(prSectionProblems(section), [], 'the shipped section is clean')
+  const line = 'git diff --name-only main...HEAD'
+  const doctored = `${section}\n\`\`\`bash\n${line}\n\`\`\`\n`
+  assert.ok(prSectionProblems(doctored).some(p => p.includes(line)), 'the author\'s scoping line was not caught by name')
+})
+
+test('pr review skill: a post line given --message or a command substitution fails naming the line, and a pipeline step that drops head.sha fails naming the step', () => {
+  const section = prSectionOf(reviewSkillText())
+  assert.deepEqual(prSectionProblems(section), [], 'the shipped section is clean')
+  const message = `${section}\n\`\`\`bash\n# GitLab — not exercised\nglab mr note create 12 --message "$(interlock review comment --review r --target t)"\n\`\`\`\n`
+  assert.ok(prSectionProblems(message).some(p => p.includes('--message')), 'a --message post line was not caught by name')
+  const stepAt = stepsOf(section).findIndex(s => s.includes('interlock pipeline --github -'))
+  assert.ok(stepAt > -1, 'the section has a step holding the pipeline line')
+  const step = stepsOf(section)[stepAt]
+  const doctored = section.replace(step.trimEnd(), step.trimEnd().split('head.sha').join('the commit'))
+  assert.notEqual(doctored, section, 'the step holds head.sha to remove')
+  assert.ok(prSectionProblems(doctored).some(p => p.includes('interlock pipeline --github -')), 'a pipeline step that no longer names head.sha was not caught by name')
+})
+
+// --- the docs page ---
+
+const PR_DOC = 'docs/17-reviewing-a-teammates-pull-request.md'
+
+test('pr review docs: the page exists and names the flags, the weights, the limits and what was exercised', () => {
+  assert.ok(existsSync(join(ROOT, PR_DOC)), `${PR_DOC} does not exist`)
+  const text = readFileSync(join(ROOT, PR_DOC), 'utf8')
+  for (const token of ['--pr', '--post', '--run-code', 'Important', 'Nit', 'Pre-existing', 'not exercised', 'REVIEW NOT PROVEN', 'POST FAILED', 'allowed-tools', '.claude/worktrees/']) {
+    assert.ok(text.includes(token), `${PR_DOC} does not name ${token}`)
+  }
+  assert.match(text, /\bfork\b/i, `${PR_DOC} does not say fork pull requests are refused`)
+})
+
+test('pr review docs: the page lists each thing the path never does', () => {
+  assert.ok(existsSync(join(ROOT, PR_DOC)), `${PR_DOC} does not exist`)
+  const text = readFileSync(join(ROOT, PR_DOC), 'utf8').toLowerCase()
+  // The requirement "On the pull-request path the skill SHALL write nothing to the platform except one comment under --post".
+  for (const thing of ['push', 'commit', 'edit', 'label', 'description', 'ready', 'approve', 'request changes', 'resolve', 'merge']) {
+    assert.ok(text.includes(thing), `${PR_DOC} does not list "${thing}" among what the path never does`)
+  }
+})
+
+test('pr review docs: docs/07 names interlock review target, interlock review comment and --target', () => {
+  const text = readFileSync(join(ROOT, 'docs', '07-cli-and-configuration.md'), 'utf8')
+  for (const token of ['interlock review target', 'interlock review comment', '--target']) {
+    assert.ok(text.includes(token), `docs/07-cli-and-configuration.md does not name ${token}`)
+  }
+})
+
+test('pr review docs: the README links the new page', () => {
+  const text = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  assert.ok(text.includes('docs/17-reviewing-a-teammates-pull-request.md'), 'README.md does not link docs/17-reviewing-a-teammates-pull-request.md')
+})
