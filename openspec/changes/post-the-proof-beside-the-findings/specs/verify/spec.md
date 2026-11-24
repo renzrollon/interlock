@@ -4,7 +4,7 @@
 
 ### Requirement: `interlock verify exec` SHALL append what it observed to the file `--record` names, and a record it cannot write SHALL NOT change the exit code
 
-With `--record <file>`, `interlock verify exec` SHALL append one JSON line `{ kind, command, exitCode, durationMs, at }` to that file after the command ends, creating the file's directories, beside the timing it already records. Its exit code SHALL stay the command's. A record it cannot write SHALL be said on standard error and SHALL change nothing else. Without `--record` it SHALL write no such file.
+With `--record <file>`, `interlock verify exec` (`lib/verify-exec.mjs`) SHALL append one JSON line `{ kind, command, exitCode, durationMs, at }` to that file after the command ends, creating the file's directories: the timing line it already records, byte for byte. Its exit code SHALL stay the command's. A record it cannot write, and a `--record` with no file, SHALL be said on standard error and SHALL change nothing else. Without `--record` it SHALL write no such file.
 
 #### Scenario: Happy path — a command that exits 0
 
@@ -40,3 +40,9 @@ With `--record <file>`, `interlock verify exec` SHALL append one JSON line `{ ki
 - **WHEN** both have run
 - **THEN** the file holds two lines in the order the runs ended, with `exitCode` 1 and then 0
 - **AND** the first line is unchanged by the second run
+
+#### Scenario: Edge case — a `--record` with no file
+
+- **GIVEN** `--record` followed by another flag, or by a blank value, and a command that exits 2
+- **WHEN** the command runs
+- **THEN** standard error says `--record` needs a file, no record file is written, the process exits 2 and the timing line is still appended

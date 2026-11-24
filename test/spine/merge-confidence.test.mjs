@@ -3356,6 +3356,13 @@ test('suite four: a build planned and not reported, and a verdict that predates 
   assert.notEqual(olderEntry.band, 'green', 'an older verdict cannot say whether there was a build to run')
 })
 
+test('suite four: a verdict that predates the two results tells the reader to verify the head again (PR #46 review, F-0cba4cf8)', () => {
+  const entry = signalOf(assessMergeConfidence(fixture('verdict-before-lint-and-build')), 'verify.suite')
+  assert.equal(entry.band, 'unobserved')
+  assert.match(entry.reason, /verify the head again/)
+  assert.doesNotMatch(signalOf(assessMergeConfidence(fixture('build-no-result')), 'verify.suite').reason, /verify the head again/)
+})
+
 test('suite four: the worst of four holds the signal and every flag is still reported', () => {
   const entry = signalOf(assessMergeConfidence(fixture('lint-failed-no-typecheck-no-build')), 'verify.suite')
   assert.equal(entry.band, 'amber')

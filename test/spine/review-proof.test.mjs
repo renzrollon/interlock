@@ -963,3 +963,24 @@ test('prose unread: guard: the proof module imports neither review-core nor a no
     assert.doesNotMatch(line, /node:/, line)
   }
 })
+
+// --- a `paths` the proof cannot read is named, not dropped unspoken (PR #46 review, F-1436098d)
+
+test('prose unread: ignoredPathsLines names each entry whose paths has the wrong shape, and only those', () => {
+  const answers = [
+    lead([entry('docs', 'not opened', 'docs/a.md'), entry('fine', 'not opened', ['docs/b.md']), entry('none', 'not opened')]),
+    { dimension: 'language', findings: [], coverage: ledger([at('x', 'lib/a.mjs:1')], [entry('more docs', 'skipped', [])]) }
+  ]
+  const lines = proofMod.ignoredPathsLines(answers)
+  assert.equal(lines.length, 2, lines.join('\n'))
+  assert.match(lines[0], /^PATHS IGNORED: technical-lead: unread\[0\] "docs" /)
+  assert.match(lines[1], /^PATHS IGNORED: language: unread\[0\] "more docs" /)
+  for (const line of lines) assert.match(line, /read with no paths and stays unread/)
+})
+
+test('prose unread: ignoredPathsLines leaves a well-formed or absent paths, and a rejected ledger, to their own lines', () => {
+  assert.deepEqual(proofMod.ignoredPathsLines([lead([DOCS_ENTRY, entry('none', 'not opened')])]), [])
+  const rejected = { dimension: 'language', findings: [], coverage: { checked: 'nope', unread: [entry('docs', 'x', 3)] } }
+  assert.deepEqual(proofMod.ignoredPathsLines([rejected]), [], 'LEDGER REJECTED: names a ledger that does not validate')
+  assert.deepEqual(proofMod.ignoredPathsLines(undefined), [])
+})

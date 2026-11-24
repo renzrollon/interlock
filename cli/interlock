@@ -16,7 +16,6 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
-  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -30,7 +29,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { constants as osConstants, cpus, tmpdir } from 'node:os'
+import { cpus, tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import {
@@ -55,7 +54,6 @@ import {
   MANIFEST_PATH,
   RUN_SCHEMA,
   STATE_PATH,
-  VERIFY_TIMINGS_PATH,
   answeredInput,
   checkSequence,
   isCloseReplay,
@@ -143,6 +141,7 @@ import {
   checkResultFieldSizes,
   VERIFY_CONTEXTS
 } from '../lib/verify.mjs'
+import { verifyExec } from '../lib/verify-exec.mjs'
 import { spillBytes } from '../lib/spill.mjs'
 import { canonicalizePath, classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { mergeDecision, foldMutationPaths } from '../lib/merge-lanes.mjs'
@@ -253,7 +252,7 @@ Usage:
                                             it touches (see "conformance:" below)
   interlock domain-context [change]         The living requirements the domain
                   --changed <files>         review dimension judges a diff
-                  [--base <ref>]            against: which capabilities, and
+                  [--base <ref>|--target <f>]  against: which capabilities, and
                                             their bounded text (see
                                             "domain-context:" below)
   interlock spec-audit                      Count what the living specs state
@@ -401,7 +400,7 @@ Usage:
                                             failed close
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
-                  [--base <ref>]           Resolve a review against skeptic verdicts.
+                  [--base <ref>|--target <f>]  Resolve a review against skeptic verdicts.
                   [--out <f>] [--head <sha>]  --out writes the JSON to a file;
                   [--dimensions <f>]       --head records the commit reviewed;
                   [--carry <f>]            --dimensions records which dimensions
@@ -418,7 +417,7 @@ Usage:
                                            REACHED: <dims>" or "PROOF LEFT
                                            UNREAD: <dims>" (exit 0); exit 2 on a
                                            file that is not a review record
-  interlock review brief --dimension <name> --base <ref> [--change <c>] [--rerun-of <draft>]
+  interlock review brief --dimension <name> (--base <ref>|--target <f>) [--change <c>] [--rerun-of <draft>]
                                            Print one dimension's whole prompt;
                                            --rerun-of: the whole prompt for an
                                            unproven dimension, the uncited
@@ -4340,45 +4339,7 @@ async function main() {
         const command = typeof flags.command === 'string' ? flags.command : ''
         if (!command.trim()) die('--command is required')
         const cwd = typeof flags.cwd === 'string' && flags.cwd.trim() ? flags.cwd : undefined
-        // Timed here, around the command and nothing else: the inter-wave budget
-        // used to be clocked from the step's dispatch to its judgement, which
-        // charged two relays and the verify agent's own turns to "verification"
-        // and spent the whole budget on the first checkpoint of every Workflow run.
-        const started = performance.now()
-        const ran = spawnSync(command, { shell: true, stdio: 'inherit', cwd })
-        const durationMs = Math.round(performance.now() - started)
-        let exitCode
-        if (ran.error) {
-          process.stderr.write(`interlock: verify exec could not run the command: ${ran.error.message}\n`)
-          exitCode = 127
-        } else if (typeof ran.status === 'number') {
-          exitCode = ran.status
-        } else {
-          const signal = ran.signal && osConstants.signals[ran.signal]
-          exitCode = Number.isInteger(signal) ? 128 + signal : 1
-        }
-        try {
-          mkdirSync(join(root, dirname(VERIFY_TIMINGS_PATH)), { recursive: true })
-          appendFileSync(
-            join(root, VERIFY_TIMINGS_PATH),
-            JSON.stringify({ kind, exitCode, durationMs, command, at: new Date().toISOString() }) + '\n'
-          )
-        } catch (err) {
-          // A timing is a budget input, not a gate: losing it costs the budget
-          // its precision (the judge falls back to the round trip, and says
-          // so), never the check its result.
-          process.stderr.write(`interlock: verify timing not recorded: ${(err && err.message) || err}\n`)
-        }
-        if (typeof flags.record === 'string' && flags.record) {
-          const at = resolve(root, flags.record)
-          try {
-            mkdirSync(dirname(at), { recursive: true })
-            appendFileSync(at, JSON.stringify({ kind, command, exitCode, durationMs, at: new Date().toISOString() }) + '\n')
-          } catch (err) {
-            process.stderr.write(`interlock: exec record not written to ${at}: ${(err && err.message) || err}\n`)
-          }
-        }
-        process.exit(exitCode)
+        process.exit(verifyExec({ root, kind, command, cwd, record: flags.record }))
       } else if (sub === 'baseline') {
         // Record the project total of a coverage report taken on this commit, so a
         // later `verify coverage` has a base figure. Refuses, leaving any previous

@@ -1150,6 +1150,12 @@ test('allowance: one paragraph names each step with its allowance, holds non-zer
   assert.ok(!execLines.some(l => l.includes('120000') || l.includes('300000')), 'no allowance rides on a planned line')
 })
 
+test('allowance: the paragraph tells the agent to set its shell tool\'s timeout, falling back to the tool\'s maximum (PR #46 review, F-fb63062c)', () => {
+  const prompt = assembleVerifyPrompt({ change: 'add-widget', context: 'final', steps: TIMED_STEPS, runId: 'run-7' })
+  const paragraph = prompt.split(/\n\s*\n/).find(p => p.includes(ALLOWANCE))
+  for (const token of [/\btimeout\b/, /\bmaximum\b/, /\bdefault\b/, /\bnaming\b/]) assert.match(paragraph, token)
+})
+
 test('allowance: the paragraph is held one time between waves and on a fix attempt', () => {
   const interWave = assembleVerifyPrompt({ change: 'add-widget', context: 'inter-wave', steps: TIMED_STEPS, runId: 'run-7' })
   assert.equal(countOf(interWave, ALLOWANCE), 1)

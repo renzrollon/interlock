@@ -339,6 +339,17 @@ test('validation: a mention, a link, a closing tag and a command stay text', asy
   assert.equal(count('<summary>'), 2)
 })
 
+test('validation: a head that is not a sha renders in the heading as a code span, never as a line of its own', async () => {
+  const head = `${H}\n## Injected\n<img src=x onerror=alert(1)>`
+  const text = await comment(records({ head, verify: verdict({ head }) }))
+  const lines = linesOf(text)
+  assert.ok(lines[0].startsWith('## Validation — `'), `the heading holds the head as a code span: ${lines[0]}`)
+  assert.ok(lines[0].includes(H), 'the head is still shown')
+  assert.ok(!lines.some(l => l.startsWith('## Injected')), `no line of the head opens a heading:\n${text}`)
+  for (const line of bare(text)) assert.doesNotMatch(line, /<img|onerror/, 'outside a code span no markup of the head survives')
+  assert.equal(linesOf(await comment(records({ head: 'abc1234', verify: verdict({ head: 'abc1234' }) })))[0], '## Validation — abc1234', 'a short sha stays plain')
+})
+
 // --- ### Commands run -----------------------------------------------------------------
 
 test('validation: a unit step with an exec entry shows the observed exit and the four counts', async () => {

@@ -198,6 +198,25 @@ test("handoff check: a citation into the specs or the change's own directory is 
   assert.equal(byId(handoff, 'C2').status, 'confirmed')
 })
 
+test("handoff check: a citation into the specs or the change's own directory in another letter case is still own text", async () => {
+  // A case-insensitive file system (the macOS default) opens either spelling as the same file.
+  const folded = new Map(Object.entries(FILES).map(([path, n]) => [path.toLowerCase(), n]))
+  const { handoff } = await check({
+    lineCount: path => folded.get(path.toLowerCase()) ?? null,
+    brief: brief({ scenarios: ['C1', 'C2', 'C3'], living: ['L1'] }),
+    reply: reply([
+      row('L1', 'OpenSpec/specs/review/settle-loop/spec.md:40'),
+      row('C1', `${DIR.toUpperCase()}/specs/review/settle-loop/spec.md:10`),
+      row('C2', 'OpenSpec/Changes/Archive/2026-01-01-old/tasks.md:5'),
+      row('C3', 'LIB/A.mjs:5')
+    ])
+  })
+  assert.equal(byId(handoff, 'L1').reason, "the citation is the requirement's own text")
+  assert.equal(byId(handoff, 'C1').reason, "the citation is the requirement's own text")
+  assert.equal(byId(handoff, 'C2').status, 'confirmed', 'an archived change in another case is still not own text')
+  assert.equal(byId(handoff, 'C3').status, 'confirmed', 'a code file cited in another case still confirms')
+})
+
 test('handoff check: a reply with no rows confirms nothing', async () => {
   const r = reply(undefined)
   delete r.rows

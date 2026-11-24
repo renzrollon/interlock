@@ -24,6 +24,12 @@ The comment `/interlock:settle --review` posts beside the findings: what the pas
 - **THEN** each exits 1 with nothing on standard output
 - **AND** the first's standard error names both commits, and the second's says the verdict records no head
 
+#### Scenario: Failure — a head that is not a commit sha
+
+- **GIVEN** a verdict whose `head` is the same value, and `--head` holding a newline and a heading, or markup
+- **WHEN** the command runs
+- **THEN** it exits 1 with nothing on standard output, and standard error's first line says `--head` must be a commit sha and quotes the value on that one line
+
 #### Scenario: Failure — a record that cannot be read
 
 - **GIVEN** `--results` naming a file that does not exist, and separately a `--plan` that is not JSON
@@ -555,7 +561,7 @@ The skill SHALL pass each record flag only for a file this pass wrote. A pass wh
 
 ### Requirement: Both new commands SHALL be members of the `settle` family: listed, accepted, smoked, documented and pure
 
-`interlock settle --help` SHALL list `handoff-check` and `validation` with their usage lines. The CLI's accepted-flag table SHALL hold the flags of each, the post-install smoke SHALL run each, and `docs/07-cli-and-configuration.md` SHALL describe each in its settle table. Neither SHALL start a process or open a connection, and the modules holding their rules SHALL import no `node:` module.
+`interlock settle --help` SHALL list `handoff-check` and `validation` with their usage lines. The CLI's accepted-flag table SHALL hold the flags of each, the post-install smoke SHALL run each, and `docs/07-cli-and-configuration.md` SHALL describe each in its settle table. Neither SHALL start a process or open a connection, and the modules holding their rules, `lib/settle-validation.mjs` and `lib/settle-handoff.mjs`, SHALL import no `node:` module.
 
 #### Scenario: Happy path — help lists both
 

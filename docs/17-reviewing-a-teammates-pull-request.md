@@ -46,8 +46,8 @@ Three weights, in this order: `Important` (blockers first), `Pre-existing`, then
 
 ## Where things go
 
-- The worktree: `.claude/worktrees/review-pr-<platform>-<number>-<first 12 of the head>` under your working directory. It is removed on every path once it exists.
-- The session files (target, findings, verdicts, drafts, the record, the checks, `comment.md`): `.claude/ship/review-pr/<platform>-<number>-<first 12 of the head>/`.
+- The worktree: `.claude/worktrees/review-pr-<platform>-<number>-<first 12 of the head>` under your working directory. It is removed on every path the skill reaches once it exists. A session that ends before the skill's last step, a crash or a closed terminal, leaves it registered: `git worktree list` shows it, and `git worktree remove --force <path>` followed by `git worktree prune` clears it. A review of the same pull request at the same head finds it and removes it first.
+- The session files (target, findings, verdicts, drafts, the record, the checks, `comment.md`): `.claude/ship/review-pr/<platform>-<number>-<first 12 of the head>/`. They are kept on every path, under the gitignored `.claude/ship/`.
 
 A repository that does not ignore `.claude/worktrees/` lists that directory as untracked while a review runs. Add the line to `.gitignore`:
 

@@ -294,6 +294,98 @@ test('pr review target: validateTarget refuses an object with any one field remo
   }
 })
 
+/** A copy of `target` with `commands[name]` replaced, or added when the target carries no such command. */
+const withCommand = (target, name, argv) => ({ ...target, commands: { ...target.commands, [name]: argv } })
+
+test('pr review target: validateTarget accepts a reader\'s own target read back from its file, with the root anywhere absolute', async () => {
+  const { validateTarget } = await loadTarget()
+  for (const [label, r] of [
+    ['github', await github(githubDoc())],
+    ['gitlab', await gitlab(gitlabDoc({ draft: true }), { runCode: true })],
+    ['root at /', await github(githubDoc(), { root: '/' })],
+    ['root with a trailing slash', await gitlab(gitlabDoc(), { root: `${WORK}/` })],
+    ['root holding a space', await github(githubDoc(), { root: '/Users/a b/repo' })]
+  ]) {
+    assert.equal(r.ok, true, `${label}: ${JSON.stringify(r)}`)
+    const v = validateTarget(JSON.parse(JSON.stringify(r.target)))
+    assert.equal(v.ok, true, `${label}: ${JSON.stringify(v)}`)
+  }
+})
+
+test('pr review target: validateTarget refuses a target whose command was edited, naming the command', async () => {
+  const { validateTarget } = await loadTarget()
+  const { target } = await github(githubDoc())
+  const elsewhere = `/elsewhere/.claude/worktrees/review-pr-github-44-${HEAD.slice(0, 12)}`
+  const edits = [
+    ['fetch', ['git', 'push', 'origin', 'refs/heads/main', 'refs/pull/44/head']],
+    ['fetch', ['git', '-c', 'core.sshCommand=touch /tmp/x', 'fetch', 'origin', 'refs/heads/main', 'refs/pull/44/head']],
+    ['fetch', [...target.commands.fetch, 'refs/heads/other']],
+    ['worktreeAdd', ['git', 'worktree', 'add', '--detach', elsewhere, HEAD]],
+    ['worktreeAdd', ['git', 'worktree', 'add', '--detach', target.worktree, OTHER_HEAD]],
+    ['changed', ['git', '-C', elsewhere, 'diff', '--name-only', `${BASE}...HEAD`]],
+    ['changed', ['git', '-C', target.worktree, 'diff', '--name-only', '--output=/tmp/x...HEAD']],
+    ['changed', ['git', '-C', target.worktree, 'diff', '--name-only', 'HEAD~1...HEAD']],
+    ['worktreeRemove', ['git', 'worktree', 'remove', '--force', elsewhere]],
+    ['worktreeRemove', ['git', 'worktree', 'remove', '--force', '/']]
+  ]
+  for (const [name, argv] of edits) {
+    assertRefused(validateTarget(withCommand(target, name, argv)), new RegExp(`commands\\.${name}\\b`), `${name} edited to ${argv.join(' ')}`)
+  }
+  assertRefused(validateTarget(withCommand(target, 'push', ['git', 'push', 'origin'])), /commands\.push\b/, 'a command no target carries')
+})
+
+test('pr review target: validateTarget lets commands.changed start its range at another full commit id, and at nothing else', async () => {
+  const { validateTarget } = await loadTarget()
+  const { target } = await github(githubDoc())
+  const rePinned = { ...target, base: { ref: 'main', sha: OTHER_HEAD } }
+  assert.equal(validateTarget(rePinned).ok, true, 'a base re-pinned by hand keeps the range the target was written with')
+  const short = withCommand(target, 'changed', ['git', '-C', target.worktree, 'diff', '--name-only', 'abc1234...HEAD'])
+  assertRefused(validateTarget(short), /commands\.changed\b/, 'an abbreviated commit id')
+})
+
+test('pr review target: validateTarget refuses a worktree holding a ".." segment, or one its own fields do not give, naming worktree', async () => {
+  const { validateTarget } = await loadTarget()
+  const { target } = await github(githubDoc())
+  const tail = `/.claude/worktrees/review-pr-github-44-${HEAD.slice(0, 12)}`
+  for (const [label, worktree, mention] of [
+    ['the reviewers\' example', '/x/.claude/worktrees/review-pr-/../../../y', /\.\./],
+    ['a ".." before the right tail', `/x/..${tail}`, /\.\./],
+    ['a ".." at the end', `${WORK}${tail}/..`, /\.\./],
+    ['a "." segment', `${WORK}/.${tail}`, /"\."/],
+    ['an empty segment', `${WORK}/${tail}`, /empty path component/],
+    ['another head\'s worktree', `${WORK}/.claude/worktrees/review-pr-github-44-${OTHER_HEAD.slice(0, 12)}`, /does not end in/],
+    ['a prefix of the tail', `${WORK}/.claude/worktrees/review-pr-`, /does not end in/]
+  ]) {
+    assertRefused(validateTarget({ ...target, worktree }), mention, label)
+    assert.match(validateTarget({ ...target, worktree }).reason, /^worktree\b/, `${label}: the reason names worktree`)
+  }
+  // A worktree moved to another root of the same shape, with its commands left behind.
+  const moved = { ...target, worktree: `/elsewhere${tail}` }
+  assertRefused(validateTarget(moved), /commands\.worktreeAdd\b/, 'a moved worktree its commands do not name')
+})
+
+test('pr review target: validateTarget refuses a dir holding a ".." segment, or one its own fields do not give, naming dir', async () => {
+  const { validateTarget } = await loadTarget()
+  const { target } = await github(githubDoc())
+  for (const [label, dir, mention] of [
+    ['a ".." out of the session directory', '.claude/ship/review-pr/../../../etc', /\.\./],
+    ['a ".." that comes back', `.claude/ship/review-pr/x/../github-44-${HEAD.slice(0, 12)}`, /\.\./],
+    ['a "." segment', `.claude/ship/review-pr/./github-44-${HEAD.slice(0, 12)}`, /"\."/],
+    ['an empty segment', `.claude/ship/review-pr//github-44-${HEAD.slice(0, 12)}`, /empty path component/],
+    ['another pull request\'s dir', `.claude/ship/review-pr/github-45-${HEAD.slice(0, 12)}`, /not what the target's own fields give/]
+  ]) {
+    const v = validateTarget({ ...target, dir, file: `${dir}/target.json` })
+    assertRefused(v, mention, label)
+    assert.match(v.reason, /^dir\b/, `${label}: the reason names dir`)
+  }
+})
+
+test('pr review target: a root holding a ".." segment is refused, so no reader writes a target validateTarget refuses', async () => {
+  assertRefused(await github(githubDoc(), { root: '/work/../repo' }), /root.*\.\./, 'github')
+  assertRefused(await gitlab(gitlabDoc(), { root: '/work/./repo' }), /root.*"\."/, 'gitlab')
+  assertRefused(await github(githubDoc(), { root: '/work//repo' }), /root.*empty path component/, 'an empty segment')
+})
+
 // --- purity --------------------------------------------------------------------
 
 test('pr review target: lib/review-target.mjs imports no node: module', () => {

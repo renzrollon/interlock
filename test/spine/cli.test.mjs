@@ -6170,6 +6170,37 @@ test('exec record: two runs append two lines in the order they ended, the first 
   }
 })
 
+test('exec record: the record line is the timing line, byte for byte (PR #46 review, F-c2b8b6a4)', () => {
+  const root = execRoot()
+  try {
+    const record = join(root, 'exec.jsonl')
+    const r = run(['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(0)"', '--record', record], { cwd: root })
+    assert.equal(r.code, 0, r.stderr)
+    const timing = readFileSync(join(root, '.claude/ship/verify-timings.jsonl'), 'utf8')
+    assert.equal(readFileSync(record, 'utf8'), timing)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('exec record: a --record with no file is said on stderr, writes no record, and keeps the exit code and the timing', () => {
+  const root = execRoot()
+  try {
+    for (const argv of [
+      ['verify', 'exec', '--record', '--kind', 'unit', '--command', 'node -e "process.exit(2)"'],
+      ['verify', 'exec', '--kind', 'unit', '--command', 'node -e "process.exit(2)"', '--record', ' ']
+    ]) {
+      const r = run(argv, { cwd: root })
+      assert.equal(r.code, 2, r.stderr)
+      assert.match(r.stderr, /--record needs a file; no exec record will be written/)
+      assert.equal(existsSync(join(root, ' ')), false, 'a blank value names no file')
+    }
+    assert.equal(readFileSync(join(root, '.claude/ship/verify-timings.jsonl'), 'utf8').trim().split('\n').length, 2)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // A guard, not a red test: the verdict's reader already ignores the keys the
 // checked handoff adds, so this may pass before the change lands.
 test('handoff verdict: a checked handoff reads by its counts, and its extra keys change no signal', () => {
@@ -6342,6 +6373,19 @@ test('prose unread: a paths of the wrong shape exits 0 with no LEDGER REJECTED a
     assert.deepEqual(out.proof.proseUnread, [], JSON.stringify(bad))
     assert.equal(out.proof.proven, false)
   }
+})
+
+test('prose unread: a paths of the wrong shape is named on stderr as PATHS IGNORED, once per entry (PR #46 review, F-1436098d)', () => {
+  const repo = proseRepo('pu-said', PROSE_SKILL_BASE, { skill: false })
+  for (const [i, bad] of ['docs/a.md', [], ['docs/a.md', 3]].entries()) {
+    const entry = { input: 'the docs', reason: 'prose-only edits, not opened', paths: bad }
+    const { stderr } = proseJson(`said${i}`, repo, [entry])
+    const said = stderr.split('\n').filter(line => line.startsWith('PATHS IGNORED: '))
+    assert.equal(said.length, 1, `${JSON.stringify(bad)}: ${stderr}`)
+    assert.match(said[0], /^PATHS IGNORED: technical-lead: unread\[0\] "the docs" .*stays unread$/)
+  }
+  const { stderr: clean } = proseJson('said-clean', repo, [DOCS_UNREAD])
+  assert.doesNotMatch(clean, /PATHS IGNORED/)
 })
 
 // --- reviewing a colleague's pull request: target, bind, comment (spec: review/pull-request-review) ---

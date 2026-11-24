@@ -87,7 +87,7 @@ The command SHALL exit 1, print nothing on standard output and write no file whe
 
 ### Requirement: `interlock review target` SHALL refuse an input that is not a document
 
-The command SHALL exit 1, print nothing on standard output and write no file when its input is empty or is not a JSON document, and standard error SHALL say the platform's CLI printed no document. That is what the command reads when `gh` or `glab` failed in front of the pipe.
+The command SHALL exit 1, print nothing on standard output and write no file when its input is empty or is not a JSON document, and standard error SHALL say the platform's CLI printed no document. That is what the command reads when `gh` or `glab` failed in front of the pipe. The rules that pin a pull request and refuse one SHALL live in `lib/review-target.mjs`, which SHALL import no module.
 
 #### Scenario: Failure — the platform's CLI printed no document
 
@@ -118,6 +118,12 @@ Given `--target <file>`, `interlock review`, `interlock review brief` (dimension
 - **GIVEN** a target whose worktree now sits on another commit
 - **WHEN** `interlock review brief --dimension regression --target <file>` runs
 - **THEN** it exits 1 with nothing on standard output, and standard error names the worktree's commit and the target's
+
+#### Scenario: Failure — a target file whose git argv was edited
+
+- **GIVEN** a target file whose `commands.fetch` was changed by hand to another `git` argv, or whose `worktree` holds a `..` segment
+- **WHEN** `interlock review brief --dimension regression --target <file>` runs
+- **THEN** it exits 1 with nothing on standard output, and standard error says the file is not a review target and names the field
 
 #### Scenario: Failure — a base given beside the target
 
@@ -470,7 +476,7 @@ A dimension reviewer MAY mark a finding `preExisting: true`, and `interlock revi
 
 ### Requirement: A pre-existing mark SHALL change the weight of a blocker or a warning only
 
-`interlock review comment` SHALL give the weight `Pre-existing` to no finding whose stored severity is not `blocker` or `warning`. A marked finding of any other severity SHALL read by its severity, and its mark SHALL NOT be counted as refused when its line is outside the diff.
+`interlock review comment` SHALL give the weight `Pre-existing` to no finding whose stored severity is not `blocker` or `warning`. A marked finding of any other severity SHALL read by its severity, and its mark SHALL NOT be counted as refused when its line is outside the diff. `lib/review-comment.mjs` SHALL hold the rule and render the comment, with the reader-text parts `lib/comment-parts.mjs` shares with `interlock settle comment`.
 
 #### Scenario: Edge case — a marked suggestion stays a nit
 

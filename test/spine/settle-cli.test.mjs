@@ -14,7 +14,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1120,6 +1120,35 @@ test('handoff check cli: a brief or a reply that cannot be read exits 1 with not
   }
 })
 
+test('handoff check cli: a cited symlink that leaves the repository reads cited file not found, and one that stays inside confirms', () => {
+  const root = hcRepo('hc-symlink', {
+    reply: hcReply([
+      { id: 'C1', status: 'confirmed', cite: 'lib/outside.mjs:5' },
+      { id: 'C2', status: 'confirmed', cite: 'lib/inside.mjs:5' },
+      { id: 'L1', status: 'confirmed', cite: 'lib/away/b.mjs:5' }
+    ])
+  })
+  // A file and a directory beside the repository, each with lines enough to cite, linked from inside it.
+  const away = join(dir, `hc-symlink-away-${seq}`)
+  mkdirSync(away, { recursive: true })
+  const text = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  writeFileSync(join(away, 'outside.mjs'), text)
+  writeFileSync(join(away, 'b.mjs'), text)
+  symlinkSync(join(away, 'outside.mjs'), join(root, 'lib', 'outside.mjs'))
+  symlinkSync(away, join(root, 'lib', 'away'))
+  symlinkSync('a.mjs', join(root, 'lib', 'inside.mjs'))
+  const out = join(root, 'checked.json')
+  const r = settle('handoff-check', ['--brief', HC_BRIEF_REL, '--reply', HC_REPLY_REL, '--out', out], { cwd: root })
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`)
+  const rows = Object.fromEntries(readJson(out).rows.map(x => [x.id, x]))
+  assert.equal(rows.C1.status, 'unconfirmed', 'a link to a file outside the repository confirms nothing')
+  assert.equal(rows.C1.reason, 'cited file not found', 'it reads as a path outside the root does')
+  assert.equal(rows.L1.status, 'unconfirmed', 'a link to a directory outside the repository confirms nothing')
+  assert.equal(rows.L1.reason, 'cited file not found')
+  assert.equal(rows.C2.status, 'confirmed', 'a link that stays inside the repository still confirms')
+  assert.equal(rows.C2.reason, null)
+})
+
 // -- validation cli: the comment, from the pass's records -------------------------------------------
 
 const VAL_UNIT = { kind: 'unit', command: 'npm test' }
@@ -1252,6 +1281,29 @@ test('validation cli: a verdict for another commit, and one with no head, exit 1
   assert.equal(b.code, 1)
   assert.equal(b.stdout, '')
   assert.ok(/head/i.test(b.stderr) && !b.stderr.includes(OTHER_HEAD), `stderr should say the verdict records no head: ${b.stderr}`)
+})
+
+test('validation cli: a --head that is not a commit sha exits 1 naming it on one line, even when the verdict records the same value', () => {
+  for (const head of [`${HEAD}\n## Injected heading`, '<img src=x onerror=alert(1)>', 'head1']) {
+    const label = JSON.stringify(head)
+    const rec = valRecords({ verify: { ...VAL_VERDICT, head } })
+    const r = validation(valArgs(rec, { head }))
+    assert.equal(r.code, 1, `${label}: expected exit 1, got ${r.code}; stdout: ${r.stdout}`)
+    assert.equal(r.stdout, '', `${label}: nothing on standard output`)
+    const first = r.stderr.split('\n')[0]
+    assert.ok(first.includes('--head') && /\bsha\b/i.test(first), `${label}: the first line names the flag and what it must be: ${r.stderr}`)
+    assert.ok(first.includes(JSON.stringify(head)), `${label}: the first line quotes the value it refused: ${first}`)
+    assert.ok(!r.stderr.split('\n').some(l => l.startsWith('## ')), `${label}: no line of the value reaches stderr as a line of its own: ${r.stderr}`)
+  }
+})
+
+test('validation cli: a short sha and a 64-digit one are accepted as --head', () => {
+  for (const head of ['abc1234', 'f'.repeat(64)]) {
+    const rec = valRecords({ verify: { ...VAL_VERDICT, head } })
+    const r = validation(valArgs(rec, { head }))
+    assert.equal(r.code, 0, `${head}: stderr: ${r.stderr}`)
+    assert.equal(r.stdout.split('\n')[0], `## Validation — ${head}`)
+  }
 })
 
 test('validation cli: a results entry and an exec entry that disagree exit 0 with the comment on stdout', () => {

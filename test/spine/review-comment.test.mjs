@@ -306,3 +306,14 @@ test('pr review comment: a marked finding of an unrecognised severity off the di
   const text = await render([odd], { confirmed })
   assert.equal(cellsOf(text, odd)[2], 'Important')
 })
+
+test('pr review comment: a mark on a changed line of a file whose name git quotes is refused, never confirmed (PR #46 review, F-36861c89)', async () => {
+  const { changedRanges } = await import('../../lib/review-scope.mjs')
+  const quoted = ['diff --git "a/docs/\\303\\251 x.txt" "b/docs/\\303\\251 x.txt"', '--- "a/docs/\\303\\251 x.txt"', '+++ "b/docs/\\303\\251 x.txt"', '@@ -20 +20 @@', '-old', '+new'].join('\n')
+  const onChanged = marked({ file: 'docs/é x.txt', line: 20 })
+  const r = await confirm([onChanged], changedRanges(quoted))
+  assert.deepEqual(r.confirmed, [])
+  assert.equal(r.refused.length, 1)
+  const offChanged = marked({ file: 'docs/é x.txt', line: 3 })
+  assert.deepEqual((await confirm([offChanged], changedRanges(quoted))).confirmed, [findingId(offChanged)])
+})
