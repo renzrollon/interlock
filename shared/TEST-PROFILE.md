@@ -80,7 +80,7 @@ the profile.
 | `typecheck.command` | Full shell command that type-checks the project (e.g. `npm run typecheck`). `null` = none found; the step is skipped with a reason, never guessed |
 | `lint.command` | Full shell command that lints the project (e.g. `npm run lint`). `null` = none found; the step is skipped with a reason, never guessed |
 | `build.command` | Full shell command that builds the project (e.g. `npm run build`). `null` = none found; the step is skipped with a reason, never guessed. The build is planned at the final gate only; between waves it is skipped as `final-gate-only` |
-| `build.timeout_ms` | Time allowance for the build step, written by a person: set it when the build outlasts the unit suite. `null` = the build runs under the unit suite's allowance |
+| `build.timeout_ms` | Time allowance for the build step, written by a person: set it when the build outlasts the unit suite. `null` = no allowance is stated for the build: a ship run's verify briefing names none, so its agent's shell tool ends the build at the tool's default timeout, and settle's final verification runs it under `unit.timeout_ms` |
 | `known_flaky` | Paths or test-name patterns that flip on re-run (recorded, not "fixed") |
 | `notes` | Short freeform caveats (≤5 lines total) |
 

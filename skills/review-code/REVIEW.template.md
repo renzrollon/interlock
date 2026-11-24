@@ -68,7 +68,7 @@ third-party and are reviewed upstream, not here."
 ## Always Human Review
 
 <!-- Repo-relative paths (files or directories) where a change must reach a person before it merges. -->
-<!-- The merge verdict reads this list and marks any change under a listed path as needing a human. It never changes which findings survive review. The proof of coverage reads this list too, so a listed file left unread still fails the proof. -->
+<!-- The merge verdict reads this list and marks any change under a listed path as needing a human. It never changes which findings survive review. -->
 <!-- Matching is on the canonical path, as for Do Not Report. Use it for what an unreviewed mistake costs most: migrations, auth, release workflows, this file. -->
 <!-- Example entries, one per line, as list items: migrations/ and .github/workflows/ -->
 
