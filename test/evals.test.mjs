@@ -86,6 +86,9 @@ const NON_CASE_ENTRIES = new Set(['results', 'mocks', 'ship', 'history'])
 // place, which is the exact substitution this pin exists to catch. Adding a
 // case is a deliberate edit here.
 const EXPECTED_CASES = [
+  'artifact-gate-clean-pin-list',
+  'artifact-gate-recall-merge-verdict',
+  'artifact-gate-recall-shared-writer',
   'cited-cap-resolution',
   'control-plane-action',
   'evidence-locator',
@@ -740,5 +743,240 @@ test('review-recall-pr28 grants the tools review-code needs to reach its review 
   assert.match(skill, /with the Write tool/, 'review-code no longer names the Write tool for the dimension record; revisit this case')
   for (const tool of ['Skill', 'Agent', 'Bash', 'Read', 'Write']) {
     assert.ok(tools.includes(tool), `review-recall-pr28 allowed_tools must list ${tool}`)
+  }
+})
+
+
+// --- the artifact-gate cases (spec: evals/case-suite) ------------------------
+//
+// Three full-suite cases that put skills/review-artifacts/SKILL.md under load:
+// two recall cases and one false-blocker case. The structural loop above already
+// checks schema_version, provenance and grader types for every case; these tests
+// add what is particular to these three. Graders are exercised against recorded
+// texts written here, so a grader that matches everything or nothing fails.
+
+const AG_MERGE = 'artifact-gate-recall-merge-verdict'
+const AG_WRITER = 'artifact-gate-recall-shared-writer'
+const AG_PINS = 'artifact-gate-clean-pin-list'
+const AG_CASES = [AG_MERGE, AG_WRITER, AG_PINS]
+const AG_SHA_BASE = '234906b4861c7ef58a07fbdcc164085568bcaf1d'
+const AG_SHA_CHANGE = '21f7a1b72fa6debc590dc37eb780fb1a98358411'
+const AG_SHA_MERGE = '496635588f0d11ae9505970b12313d2542f4a1a9'
+
+const agDir = name => join(EVALS_DIR, name)
+const agYaml = name => readFileSync(join(agDir(name), 'case.yaml'), 'utf8')
+const agScaffold = name => readFileSync(join(agDir(name), 'scaffold.sh'), 'utf8')
+
+/** A grader's regex pattern: the single-quoted `pattern:` of its frontmatter. */
+function agPattern(text) {
+  const fm = /^---\n([\s\S]*?)\n---/.exec(text)
+  assert.ok(fm, 'grader has no frontmatter')
+  const m = /^pattern:\s*'((?:[^']|'')*)'\s*$/m.exec(fm[1])
+  assert.ok(m, 'grader has no single-quoted pattern')
+  return m[1].replace(/''/g, "'")
+}
+
+function agGraders(name) {
+  const dir = join(agDir(name), 'graders')
+  assert.ok(existsSync(dir), `${name}: has no graders/ directory`)
+  return readdirSync(dir)
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .map(f => {
+      const text = readFileSync(join(dir, f), 'utf8')
+      return { file: f, type: readGraderType(text), pattern: agPattern(text) }
+    })
+}
+
+test('the three artifact-gate cases exist in the suite', () => {
+  for (const n of AG_CASES) assert.ok(caseNames.has(n), `${n} is not a case under evals/`)
+})
+
+for (const name of AG_CASES) {
+  test(`${name}: scaffold, exercises, bounds, no smoke tag`, () => {
+    assert.ok(existsSync(join(agDir(name), 'scaffold.sh')), `${name}: has no scaffold.sh`)
+    const text = agYaml(name)
+    assert.match(text, /^\s*scaffold_script:\s*scaffold\.sh/m, `${name}: case.yaml names no scaffold_script`)
+    assert.ok(
+      readList(text, 'exercises').includes('skills/review-artifacts/SKILL.md'),
+      `${name}: exercises must name skills/review-artifacts/SKILL.md`
+    )
+    assert.ok(!readTags(text).has('smoke'), `${name}: a full-suite case carries no smoke tag`)
+    assert.match(text, /^\s+max_turns:\s*[1-9]\d*\s*$/m, `${name}: sets no max_turns`)
+    assert.match(text, /^\s+timeout_seconds:\s*[1-9]\d*\s*$/m, `${name}: sets no timeout_seconds`)
+  })
+
+  test(`${name}: only deterministic graders, each of weight 1`, { skip: JUDGED_UNAVAILABLE }, () => {
+    const dir = join(agDir(name), 'graders')
+    const files = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.md')) : []
+    assert.ok(files.length >= 1, `${name}: has no grader files`)
+    for (const f of files) {
+      const body = readFileSync(join(dir, f), 'utf8')
+      const type = readGraderType(body)
+      assert.ok(!JUDGED_GRADER_TYPES.has(type), `${name}/${f}: ${type} is a judged grader type`)
+      assert.equal(type, 'regex', `${name}/${f}: expected a regex grader`)
+      assert.match(body, /^weight:\s*1\s*$/m, `${name}/${f}: weight must be 1`)
+    }
+  })
+
+  test(`${name}: scaffold fetches every sha it checks out, 40-hex, from origin`, () => {
+    const sh = agScaffold(name)
+    assert.match(sh, /set -euo pipefail/, `${name}: scaffold must fail fast`)
+    assert.match(sh, /remote get-url origin/, `${name}: scaffold must read the origin remote`)
+    const shas = [...new Set(sh.match(/\b[0-9a-f]{40}\b/g) || [])]
+    assert.ok(shas.length >= 1, `${name}: scaffold names no 40-hex sha`)
+    const wanted = name === AG_MERGE ? [AG_SHA_MERGE] : [AG_SHA_BASE, AG_SHA_CHANGE]
+    for (const w of wanted) {
+      assert.ok(shas.includes(w), `${name}: scaffold must name ${w}`)
+      assert.match(sh, new RegExp(`git fetch[^\\n]*${w}`), `${name}: scaffold must fetch ${w}`)
+    }
+    assert.doesNotMatch(sh, /\bgit (?:fetch|checkout)[^\n]*\b[0-9a-f]{7,39}\b(?![0-9a-f])/, `${name}: an abbreviated sha`)
+  })
+}
+
+test(`${AG_MERGE}: provenance names the change, the gate's date and the blocker`, () => {
+  const text = agYaml(AG_MERGE)
+  const provenance = readTopLevel(text, 'provenance') || ''
+  assert.ok(provenance.includes('add-merge-confidence-gate'), 'provenance must name add-merge-confidence-gate')
+  assert.ok(provenance.includes('2026-10-12'), 'provenance must name the gate date 2026-10-12')
+  assert.ok(
+    provenance.includes('All-green MERGE is required and forbidden'),
+    'provenance must title the blocker "All-green MERGE is required and forbidden"'
+  )
+  assert.equal(
+    [...text.matchAll(/--caller spec/g)].length >= 1,
+    true,
+    'the prompt must run review-artifacts at spec\'s caller depth'
+  )
+})
+
+test(`${AG_WRITER}: holds seed.patch and its scaffold applies it with a check first`, () => {
+  const patch = join(agDir(AG_WRITER), 'seed.patch')
+  assert.ok(existsSync(patch), `${AG_WRITER}: has no seed.patch`)
+  assert.ok(readFileSync(patch, 'utf8').trim().length > 0, 'seed.patch is empty')
+  const sh = agScaffold(AG_WRITER)
+  const check = sh.search(/git apply[^\n]*--check|git apply --check/)
+  const apply = sh.search(/git apply(?![^\n]*--check)[^\n]*seed\.patch/)
+  assert.ok(check >= 0, 'the scaffold must run `git apply --check` on seed.patch')
+  assert.ok(apply >= 0, 'the scaffold must apply seed.patch')
+  assert.ok(check < apply, 'the check must come before the apply')
+  assert.match(sh, />&2/, 'a patch that does not apply must fail with a named reason on standard error')
+})
+
+test(`${AG_PINS}: and the other two cases carry no patch`, () => {
+  assert.ok(!existsSync(join(agDir(AG_PINS), 'seed.patch')), `${AG_PINS} must not seed a patch`)
+  assert.ok(!existsSync(join(agDir(AG_MERGE), 'seed.patch')), `${AG_MERGE} must not seed a patch`)
+})
+
+// Recorded texts, written here. Each blocker has a text that names it and a text
+// that is a real-looking review of something else.
+const MERGE_BLOCKERS = [
+  {
+    what: 'the all-green MERGE contradiction',
+    pass:
+      'BLOCKER specs/review/merge-confidence/spec.md:9 All-green MERGE is required and forbidden. ' +
+      'Line 9 says an all-green run SHALL give MERGE, while line 142 says MERGE is never given, so no input can satisfy both.',
+    fail:
+      'BLOCKER specs/review/merge-confidence/spec.md:50 The score band names no owner. ' +
+      'WARNING design.md:12 The decision table is long.'
+  },
+  {
+    what: 'a blocking kind with no result read as unobserved and as amber',
+    pass:
+      'BLOCKER specs/review/merge-confidence/spec.md:103 A blocking kind that has no result is unobserved here, ' +
+      'but the table at line 194 reads the same missing result as amber.',
+    fail: 'BLOCKER specs/review/merge-confidence/spec.md:60 A result file is read with no named path.'
+  },
+  {
+    what: 'conformance.delta with no requirement',
+    pass:
+      'BLOCKER specs/review/merge-confidence/spec.md:269 conformance.delta has no requirement in the specs, ' +
+      'although design.md:85 names it as a kind.',
+    fail: 'BLOCKER tasks.md:12 Task 2.3 names two files it does not own.'
+  },
+  {
+    what: 'the failed final typecheck that never reaches the suite signal',
+    pass:
+      'BLOCKER design.md:85 A failed final typecheck never reaches the suite signal: the final context halts only on the unit result, ' +
+      'so a red typecheck cannot block the merge.',
+    fail: 'BLOCKER design.md:40 The rollback section does not say what a revert removes.'
+  }
+]
+
+test(`${AG_MERGE}: four graders, each matches its blocker's recorded text and misses an unrelated one`, () => {
+  const graders = agGraders(AG_MERGE)
+  assert.equal(graders.length, 4, 'one grader per blocker of the 2026-10-12 gate')
+  for (const b of MERGE_BLOCKERS) {
+    const hit = graders.filter(g => new RegExp(g.pattern).test(b.pass))
+    assert.ok(hit.length >= 1, `no grader matches the recorded passing text for ${b.what}`)
+    for (const g of hit) {
+      assert.ok(!new RegExp(g.pattern).test(b.fail), `${g.file} matches the failing text for ${b.what}`)
+    }
+  }
+  // Each grader belongs to exactly one blocker: a grader that matches every
+  // recorded passing text would pass whichever blocker the gate found.
+  for (const g of graders) {
+    const matched = MERGE_BLOCKERS.filter(b => new RegExp(g.pattern).test(b.pass))
+    assert.equal(matched.length, 1, `${g.file} must match exactly one blocker's text, matched ${matched.length}`)
+  }
+})
+
+test(`${AG_MERGE}: a gate that misses the contradiction fails that grader whatever the rest say`, () => {
+  const graders = agGraders(AG_MERGE)
+  const others = MERGE_BLOCKERS.slice(1).map(b => b.pass).join('\n')
+  const contradiction = graders.filter(g => new RegExp(g.pattern).test(MERGE_BLOCKERS[0].pass))
+  assert.equal(contradiction.length, 1)
+  assert.ok(!new RegExp(contradiction[0].pattern).test(others), 'the contradiction grader matched the other three blockers')
+})
+
+test(`${AG_WRITER}: the grader matches a shared-writer blocker and misses an unrelated one`, () => {
+  const graders = agGraders(AG_WRITER)
+  assert.equal(graders.length, 1)
+  const re = new RegExp(graders[0].pattern)
+  const pass =
+    'BLOCKER design.md:60 Parallel lanes each read, modify and rewrite the one shared JSON file, ' +
+    'so concurrent writers lose an update. SUMMARY: 1 blockers, 0 warnings, 0 suggestions'
+  const fail =
+    'BLOCKER design.md:12 The rollout names no owner. WARNING tasks.md:5 A task spans two capabilities. ' +
+    'SUMMARY: 1 blockers, 1 warnings, 0 suggestions'
+  assert.ok(re.test(pass), 'the grader must match the recorded passing text')
+  assert.ok(!re.test(fail), 'the grader must miss a gate that raised no blocker about the shared file')
+})
+
+const PIN_PASS =
+  'BLOCKER design.md:30 The rollback section does not say what a revert removes.\n' +
+  'SUMMARY: 1 blockers, 0 warnings, 0 suggestions\n'
+const PIN_FAIL_BLOCKER =
+  'BLOCKER tasks.md:3 The test pin list is incomplete: it does not name every existing test that pins the changed wording.\n' +
+  'SUMMARY: 1 blockers, 0 warnings, 0 suggestions\n'
+const PIN_FAIL_NO_SUMMARY = 'No blockers were found in this change.\n'
+
+test(`${AG_PINS}: the grader fails a pin-list blocker, passes another blocker, and needs SUMMARY`, () => {
+  const graders = agGraders(AG_PINS)
+  assert.equal(graders.length, 1)
+  const { pattern } = graders[0]
+  const re = new RegExp(pattern)
+  assert.ok(re.test(PIN_PASS), 'a blocker on another ground followed by SUMMARY must pass')
+  assert.ok(!re.test(PIN_FAIL_BLOCKER), 'a blocker about the incomplete pin list must fail')
+  assert.ok(!re.test(PIN_FAIL_NO_SUMMARY), 'an output with no SUMMARY line must fail')
+  assert.ok(pattern.startsWith('(?<![\\s\\S])'), 'the pattern opens with the start-of-text anchor (D34)')
+})
+
+test(`${AG_PINS}: the grader decides the same compiled with and without the m flag (D34)`, () => {
+  const { pattern } = agGraders(AG_PINS)[0]
+  const plain = new RegExp(pattern)
+  const multi = new RegExp(pattern, 'm')
+  const texts = [
+    PIN_PASS,
+    PIN_FAIL_BLOCKER,
+    PIN_FAIL_NO_SUMMARY,
+    '',
+    'SUMMARY: 0 blockers, 0 warnings, 0 suggestions\n',
+    'Review notes first.\nBLOCKER tasks.md:3 the pin list is incomplete.\nSUMMARY: 1 blockers, 0 warnings, 0 suggestions\n',
+    'Review notes first.\nSUMMARY: 0 blockers, 0 warnings, 0 suggestions\n',
+    'BLOCKER a.md:1 other ground.\n\nBLOCKER tasks.md:3 pin list incomplete.\nSUMMARY: 2 blockers, 0 warnings, 0 suggestions\n'
+  ]
+  for (const t of texts) {
+    assert.equal(multi.test(t), plain.test(t), `m flag changes the answer for: ${JSON.stringify(t)}`)
   }
 })

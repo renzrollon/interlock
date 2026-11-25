@@ -150,6 +150,19 @@ Every problem either section reports names it in quotes, so it is classed as an 
 
 With a base, `composePolicy` takes both lists from it beside the path lists, and the artifact brief reads them from `HEAD`, so a change being spec'd cannot edit the checks it is judged under. `interlock review-policy` prints `artifact lenses: …` and `artifact checks: <n>`, and its JSON carries `artifactLenses` and `artifactChecks`. The shipped template carries both headings empty.
 
+## What `review-policy suggest` reads
+
+`interlock review-policy suggest` reads the repository's own history and lists rules `REVIEW.md` might gain. It never writes `REVIEW.md`: the owner does, because a rule that changes what the gate blocks is a decision. Four triggers raise a candidate:
+
+- the same file escapes the spec in the compound-note rows of several changes;
+- an artifact gate passes and the next gate of that change finds a blocker, read by a different reader;
+- blockers carry the same `check` tag across several changes;
+- an archived decision ledger row cites a human decision.
+
+A fifth list names the checks that sat in the brief and caught nothing across enough gates. The counts those lines need are published by `interlock limits` (`minSuggestChanges`, `staleCheckGates`), not restated here.
+
+**The window.** Evidence counts from the last commit that touched `REVIEW.md`, because revising the file is the owner acting on it, so the list shrinks when the owner acts. `--all` opens the window to every record, and so does a repository with no such commit; the output says which. Each source degrades aloud on its own status line. `/interlock:spec` and `/interlock:settle` print the one-line `--summary` form and continue when it is unavailable.
+
 ## The `blast-radius` dimension and its recorded skip
 
 `review-code` has nine bundled dimensions, and `blast-radius` is the one that asks who else a change touches. For every exported symbol or shared value the diff changes it asks, with `interlock-graph consumers <symbol>` before it reads any code, who calls it outside the diff, what those callers see before and after, what the change does to data and concurrency, and whether it can be rolled back alone. It reports in the shared finding schema under `dimension: "blast-radius"`, with the same three severities, and names the observing caller's file. It raises nothing for a change only the diff itself observes (additive plumbing), and nothing for a symbol with no consumer outside the diff; it says that in its summary. Because it is a dimension, its findings get the two skeptics, the quality band, the nit cap and `REVIEW.md`'s do-not-report paths like any other, and reach the merge verdict through the same file. One difference in the evidence gate follows from where its findings point: a skeptic who refutes a blast-radius finding may cite the observing caller's file, the finding's own `file`, which lies outside the diff. For any other dimension a citation outside the diff still dismisses nothing.

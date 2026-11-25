@@ -45,7 +45,7 @@ test('writes the review counts under .claude/metrics', () => {
   assert.match(payload.timestamp, /^\d{4}-\d{2}-\d{2}T/)
 })
 
-test('the payload has exactly eight keys and four counts — nothing else', () => {
+test('the payload has exactly nine keys and four counts — nothing else', () => {
   const r = writeReviewMetrics(tmp, { change: 'c', counts })
   const payload = JSON.parse(readFileSync(r.path, 'utf8'))
   // Updated by brief-and-record-the-artifact-gate task 2.5 (bounded pin rule): the
@@ -53,10 +53,13 @@ test('the payload has exactly eight keys and four counts — nothing else', () =
   // "A review-metrics record SHALL name the stage, depth, reader and lenses that
   // produced it, or `null` for each it was not told". The four are written even
   // when null, and nothing else rides along.
+  // Updated by scope-suggest-and-evaluate-the-artifact-gate task 2.2 (bounded pin
+  // rule): the payload gains `findings`, null when no findings file is named.
   assert.deepEqual(Object.keys(payload).sort(), [
     'change',
     'counts',
     'depth',
+    'findings',
     'lenses',
     'reviewer',
     'schema',
@@ -304,6 +307,9 @@ test('interlock gate with --reviewer human records null for it and moves nothing
     const strip = out => {
       const parsed = JSON.parse(out)
       delete parsed.metrics
+      // Updated by scope-suggest-and-evaluate-the-artifact-gate task 2.2 (bounded pin
+      // rule): this line writes a snapshot whose path names each run's own root.
+      delete parsed.snapshot
       return parsed
     }
     assert.deepEqual(strip(bad.stdout), strip(without.stdout), 'passed and every other output field are what the line gives without the flag')
@@ -395,4 +401,86 @@ test('interlock review --metrics from a dimension record with no depth records d
   assert.equal(none.stage, 'code')
   assert.equal(none.reviewer, 'agent')
   assert.equal(none.depth, null)
+})
+
+// --- scope-suggest-and-evaluate-the-artifact-gate: the record names its findings file ---------
+//
+// Spec `review/metrics-emission`: "A gate's review-metrics record SHALL name the findings file
+// it read, or `null`". Every test below fails until task 2.2 lands. Note for 2.2: the earlier
+// `recordFieldsOf` tests above deep-equal a four-key result, and the record's key list is pinned
+// at the top of this file; both gain `findings` under the bounded pin rule.
+
+const findingsOf = payload => payload.findings
+
+test('writeReviewMetrics copies findings by name, and writes null when it is absent', () => {
+  const given = JSON.parse(
+    readFileSync(writeReviewMetrics(tmp, { change: 'c', counts, findings: '.claude/metrics/review-artifacts-c-20261125-120000.json' }).path, 'utf8')
+  )
+  assert.equal(findingsOf(given), '.claude/metrics/review-artifacts-c-20261125-120000.json')
+  const none = JSON.parse(readFileSync(writeReviewMetrics(tmp, { change: 'c', counts }).path, 'utf8'))
+  assert.ok(Object.hasOwn(none, 'findings'), 'the key is written, as null')
+  assert.equal(findingsOf(none), null)
+  assert.equal(none.schema, 'interlock.review-metrics/1', 'the schema id does not change')
+})
+
+test('recordFieldsOf makes --findings root-relative with / separators when it names a file inside the root, and null otherwise', () => {
+  const rel = '.claude/metrics/review-artifacts-c-20261125-120000.json'
+  const warned = []
+  assert.equal(recordFieldsOf({ findings: rel }, m => warned.push(m), tmp).findings, rel)
+  assert.equal(recordFieldsOf({ findings: join(tmp, rel) }, m => warned.push(m), tmp).findings, rel)
+  assert.equal(recordFieldsOf({ findings: '-' }, m => warned.push(m), tmp).findings, null)
+  assert.equal(recordFieldsOf({ findings: join(tmp, '..', 'elsewhere.json') }, m => warned.push(m), tmp).findings, null)
+  assert.equal(recordFieldsOf({}, m => warned.push(m), tmp).findings, null)
+  assert.equal(recordFieldsOf({ findings: true }, m => warned.push(m), tmp).findings, null)
+  assert.deepEqual(warned, [], 'a findings path that is not recordable is null, not a warning')
+})
+
+test('interlock gate records findings as the root-relative path for a relative and for an absolute --findings', () => {
+  const rel = '.claude/metrics/review-artifacts-x-20261125-120000.json'
+  mkdirp(join(tmp, '.claude', 'metrics'))
+  writeFileSync(join(tmp, rel), JSON.stringify(GATE_FINDINGS))
+  for (const flag of [rel, join(tmp, rel)]) {
+    for (const f of readdirSync(join(tmp, METRICS_DIR))) if (f.startsWith('review-x-')) rmSync(join(tmp, METRICS_DIR, f))
+    const r = spawnSync(process.execPath, [CLI, 'gate', '--findings', flag, '--metrics', 'x', '--root', tmp, '--json'], { cwd: tmp, encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    const file = readdirSync(join(tmp, METRICS_DIR)).find(f => f.startsWith('review-x-'))
+    assert.equal(JSON.parse(readFileSync(join(tmp, METRICS_DIR, file), 'utf8')).findings, rel, flag)
+  }
+})
+
+test('interlock gate records findings null for standard input and for a file outside the root', () => {
+  const stdin = spawnSync(process.execPath, [CLI, 'gate', '--findings', '-', '--metrics', 'x', '--root', tmp, '--json'], {
+    cwd: tmp,
+    encoding: 'utf8',
+    input: JSON.stringify(GATE_FINDINGS)
+  })
+  assert.equal(stdin.status, 0, stdin.stderr)
+  const first = readdirSync(join(tmp, METRICS_DIR))
+  assert.equal(first.length, 1)
+  const record = JSON.parse(readFileSync(join(tmp, METRICS_DIR, first[0]), 'utf8'))
+  assert.equal(record.findings, null)
+  assert.deepEqual(record.counts, { raised: 1, dismissed: 0, droppedByQuality: 0, surviving: 1 }, 'its counts are what the gate counted')
+
+  const outside = mkdtempSync(join(tmpdir(), 'interlock-metrics-outside-'))
+  try {
+    const elsewhere = join(outside, 'findings.json')
+    writeFileSync(elsewhere, JSON.stringify(GATE_FINDINGS))
+    const root = mkdtempSync(join(tmpdir(), 'interlock-metrics-inside-'))
+    try {
+      const r = spawnSync(process.execPath, [CLI, 'gate', '--findings', elsewhere, '--metrics', 'x', '--root', root, '--json'], { cwd: root, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+      const dir = join(root, METRICS_DIR)
+      assert.equal(JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), 'utf8')).findings, null)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('interlock review --metrics writes findings null', () => {
+  const record = reviewWith(tmp, { selected: ['language'], ran: ['language'], unavailable: [], skipped: [] })
+  assert.ok(Object.hasOwn(record, 'findings'), 'the key is written, as null')
+  assert.equal(record.findings, null)
 })

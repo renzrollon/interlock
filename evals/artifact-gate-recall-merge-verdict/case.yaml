@@ -1,0 +1,39 @@
+# Gap class: artifact-gate recall. The artifact gate that ran over the
+# `add-merge-confidence-gate` change on 2026-10-12 raised four blockers that a
+# later reading of the same files confirmed. This case runs
+# /interlock:review-artifacts over those artifacts as commit 4966355 holds them
+# and asks whether the four come back.
+#
+# Deterministic regex graders, one per known blocker, each naming the blocker's
+# own subject and written to tolerate phrasing. Each has weight 1. Full suite
+# only (no smoke tag): one gate costs more than the smoke cap. Metered only where
+# a credential is configured; the structural gate in test/evals.test.mjs runs
+# regardless. The findings corpus is not in the repository, so the provenance
+# cites the gate by change, date and the title of its first blocker.
+#
+# Provenance: change add-merge-confidence-gate, artifact gate of 2026-10-12,
+# blocker "All-green MERGE is required and forbidden", artifacts at commit
+# 496635588f0d11ae9505970b12313d2542f4a1a9.
+schema_version: "1.0"
+name: artifact-gate-recall-merge-verdict
+provenance: "add-merge-confidence-gate, artifact gate of 2026-10-12, blocker \"All-green MERGE is required and forbidden\" (artifacts at 496635588f0d11ae9505970b12313d2542f4a1a9)"
+exercises: ["skills/review-artifacts/SKILL.md", "lib/prompts/artifact-review.mjs"]
+runs: 1
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: |
+    Run /interlock:review-artifacts add-merge-confidence-gate --caller spec.
+    The workspace is a scratch clone checked out at the commit where that change
+    is an active change. Review the artifacts only; change no file and do not
+    commit.
+
+    When the review ends, report every finding it kept, each with its severity,
+    its file and line, and what is wrong, in prose or a table. Report the
+    findings themselves, not a summary of how the review ran. End with the
+    review's own SUMMARY: line.
+  max_turns: 60
+  timeout_seconds: 3000
+  # Skill loads /interlock:review-artifacts; Agent is the spawn a strict read uses;
+  # Write is the tool the gate's findings record is written with.
+  allowed_tools: [Skill, Agent, Bash, Read, Write, Glob, Grep]

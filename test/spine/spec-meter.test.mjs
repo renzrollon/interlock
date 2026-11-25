@@ -779,7 +779,9 @@ const UNREAD_BY_NAME = [
   // brief-and-record-the-artifact-gate design §1: the routing line now forwards the
   // caller and the depth, and the brief line is relayed, not metered.
   'interlock routing artifact-reviewer [--caller spec] [--depth <strict|lean>] --json',
-  'interlock review brief --artifacts <change> [--lens <a,b>] [--since <findings file>]'
+  'interlock review brief --artifacts <change> [--lens <a,b>] [--since <findings file>]',
+  // scope-suggest-and-evaluate-the-artifact-gate: the suggest summary is relayed, not metered.
+  'interlock review-policy suggest --summary'
 ]
 
 test('every fenced openspec and interlock line in the three skills is one the meter classifies or names as unread', () => {

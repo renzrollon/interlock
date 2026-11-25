@@ -633,7 +633,11 @@ test('--since adds RE-GATE: and the bundled re-gate rules after the base rubric;
   writeFileSync(prior, '{"findings":[]}\n')
   const plain = printed(repo)
   const out = printed(repo, ['--since', prior])
-  assert.equal(lineOf(openingOf(out), 'RE-GATE:'), `RE-GATE: since ${prior}`)
+  // Pin updated by task 2.4 (spec `spec/artifact-re-gate`, D7): with no snapshot beside the file, the line names that.
+  assert.equal(
+    lineOf(openingOf(out), 'RE-GATE:'),
+    `RE-GATE: since ${prior}; no snapshot beside it; the re-gate rules' git scoping applies`
+  )
   const regate = bundled('re-gate.md')
   assert.ok(out.includes(regate), 'the re-gate rules, as the bundled file holds them')
   assert.ok(out.indexOf(regate) > out.indexOf(bundled('rubric.md')), 'after the base rubric')
@@ -666,4 +670,232 @@ test('the run rules bound the reader, say who writes the findings file, and the 
   assert.ok(tail.includes('artifacts'), 'the dimension is artifacts')
   assert.ok(tail.includes('agentic-harness.<n>'), 'the selected lens\'s form of check')
   assert.ok(tail.includes('review-md.<n>'), 'the Artifact Check form of check')
+})
+
+// =============================================================================
+// The scoped re-gate (change `scope-suggest-and-evaluate-the-artifact-gate`,
+// spec `spec/artifact-re-gate` and `review/evidence-gate`, design §2, D7-D10, D28, D31)
+// =============================================================================
+//
+// Each case writes a findings file and its snapshot by hand, beside it, so none of
+// these tests needs the gate. Every test fails until task 2.4 lands.
+//
+// What the brief prints is pinned here, so the implementer reads one place:
+//
+//   opening block   RE-GATE: since <file>; <share>% rework (<a> line(s) added, <r> removed; <k> of <n> file(s) changed)
+//                   RE-GATE: since <file>; nothing changed since that gate
+//                   RE-GATE REWORK: <share>% of the change differs from the snapshot of <file>, over the <bound>% bound; a full gate is the owner's call
+//                   RE-GATE: since <file>; no snapshot beside it; the re-gate rules' git scoping applies
+//                   RE-GATE: since <file>; snapshot unreadable — <reason>; the re-gate rules' git scoping applies
+//                   RE-GATE: since <file>; snapshot is of <other change>; the re-gate rules' git scoping applies
+//   the data block  its frame label holds `Changed since <file>`; inside it
+//                     `<path>: lines <from>-<to>` (or `line <n>`) for a hunk with changed current lines, or
+//                     `<path>: removed lines <from>-<to> of the snapshot, after line <n>` (`before line 1` at the top);
+//                     each hunk line is `+ <text>`, `- <text>` or two spaces and the text, for context;
+//                     `added: <path>` and `removed: <path>` lines; one `unchanged: <a>, <b>` line.
+
+const SINCE_NAME = 'review-artifacts-demo-change-20261125-120000.json'
+const SECTION = n => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+const countLines = text => (text === '' ? 0 : text.replace(/\n$/, '').split('\n').length)
+const REL = ['proposal.md', 'design.md', 'tasks.md', 'decisions.md', 'specs/widget/spec.md']
+
+/** A repository whose design.md is 60 lines, with a `--since` findings file and no snapshot yet. */
+function regateRepo(sub, files = {}) {
+  const repo = makeRepo(sub, { files: { [`openspec/changes/${CHANGE}/design.md`]: SECTION(60), ...files } })
+  const since = join(repo.root, '.claude', 'metrics', SINCE_NAME)
+  put(repo.root, `.claude/metrics/${SINCE_NAME}`, '{"dimension":"artifacts","findings":[]}\n')
+  return { ...repo, since }
+}
+
+const changeFile = (repo, rel) => join(repo.root, 'openspec', 'changes', CHANGE, rel)
+const setChange = (repo, rel, text) => writeFileSync(changeFile(repo, rel), text)
+
+/** Write the snapshot beside the findings file, from the change as it is on disk now. */
+function snapshotNow(repo, over = {}) {
+  const files = REL.filter(rel => {
+    try {
+      readFileSync(changeFile(repo, rel))
+      return true
+    } catch {
+      return false
+    }
+  }).map(rel => ({ path: rel, sha256: 'unchecked', text: readFileSync(changeFile(repo, rel), 'utf8') }))
+  const payload = { schema: 'interlock.artifact-snapshot/1', change: CHANGE, findings: SINCE_NAME, takenAt: '2026-11-25T12:00:00.000Z', files, ...over }
+  put(repo.root, `.claude/metrics/snapshots/${SINCE_NAME}`, JSON.stringify(payload))
+  return files
+}
+
+const sinceBrief = (repo, more = []) => printed(repo, ['--since', repo.since, ...more])
+
+/** The `Changed since` data block: from its label to the next quoted block. */
+// The bundled re-gate rules name `Changed since` too (task 2.9), so the label is matched with the file it names.
+function changedSinceOf(out) {
+  const at = out.search(new RegExp(`Changed since [^\\n]*${SINCE_NAME}`))
+  assert.ok(at >= 0, 'the brief holds a Changed since block')
+  const next = out.indexOf('REPOSITORY REVIEW POLICY', at)
+  return out.slice(at, next === -1 ? undefined : next)
+}
+
+test('under --since the parts run rubric, re-gate rules, lens, Changed since, then every other data block, the rules and the emit shape', () => {
+  const repo = regateRepo('regate-order')
+  snapshotNow(repo)
+  setChange(repo, 'design.md', SECTION(60).replace('line 40', 'edited 40'))
+  const out = sinceBrief(repo, ['--lens', 'agentic-harness'])
+  const rubric = bundled('rubric.md')
+  const regate = bundled('re-gate.md')
+  const lens = bundled('lenses/agentic-harness.md')
+  const changed = out.indexOf(`Changed since ${repo.since}`)
+  assert.ok(out.indexOf(rubric) >= 0 && out.indexOf(regate) > out.indexOf(rubric), 'the re-gate rules follow the rubric')
+  assert.ok(out.indexOf(lens) > out.indexOf(regate), 'the lens follows the re-gate rules')
+  assert.ok(changed > out.indexOf(lens) + lens.length, 'Changed since follows every selected lens')
+  for (const marker of ['PROSE-MARKER', 'CHECK-TWO', 'CONTEXT-MARKER-B', 'NOTE-MARKER', 'A widget SHALL render its label.']) {
+    assert.ok(out.indexOf(marker) > changed, `${marker} follows the Changed since block (D28)`)
+  }
+  const rules = out.slice(changed).search(/read-only/i)
+  assert.ok(rules >= 0)
+  assert.ok(out.lastIndexOf('"severity"') > changed + rules, 'the emit shape follows the run rules')
+  assert.ok(inFrame(out, 'edited 40'), 'the block is framed as every data block is')
+})
+
+test('one edited section gives one hunk naming the current lines 40-44, context outside the range, and the other four files unchanged', () => {
+  const repo = regateRepo('regate-one-edit')
+  snapshotNow(repo)
+  const lines = SECTION(60).split('\n').slice(0, 60)
+  lines.splice(39, 5, 'new 40', 'new 41', 'new 42', 'new 43', 'new 44')
+  setChange(repo, 'design.md', lines.join('\n') + '\n')
+  const block = changedSinceOf(sinceBrief(repo))
+  assert.ok(block.includes(`Changed since ${repo.since}`), 'the label names the --since file as given')
+  assert.equal((block.match(/design\.md: lines? /g) || []).length, 1, 'one hunk for design.md')
+  assert.match(block, /design\.md: lines 40-44/)
+  for (let n = 40; n <= 44; n++) {
+    assert.ok(block.includes(`- line ${n}`), `line ${n} is marked removed`)
+    assert.ok(block.includes(`+ new ${n}`), `new ${n} is marked added`)
+  }
+  for (const ctx of ['line 38', 'line 39', 'line 45', 'line 46']) {
+    assert.ok(block.includes(`  ${ctx}`), `${ctx} is printed as context`)
+    assert.ok(!block.includes(`- ${ctx}`) && !block.includes(`+ ${ctx}`), `${ctx} is not marked changed`)
+  }
+  assert.ok(!block.includes('line 37') && !block.includes('line 47'), 'only two context lines either side')
+  const unchanged = lineOf(block.slice(block.indexOf('unchanged:')), 'unchanged:')
+  for (const rel of ['proposal.md', 'tasks.md', 'decisions.md', 'specs/widget/spec.md']) assert.ok(unchanged.includes(rel), `${rel} is listed unchanged`)
+  assert.ok(!unchanged.includes('design.md'))
+})
+
+test('a removal only of lines 10-12 names the snapshot lines and the current line it follows', () => {
+  const repo = regateRepo('regate-removal')
+  snapshotNow(repo)
+  const lines = SECTION(60).split('\n').slice(0, 60)
+  lines.splice(9, 3)
+  setChange(repo, 'design.md', lines.join('\n') + '\n')
+  const block = changedSinceOf(sinceBrief(repo))
+  assert.match(block, /design\.md: removed lines 10-12 of the snapshot, after line 9/)
+  for (const n of [10, 11, 12]) assert.ok(block.includes(`- line ${n}`))
+  assert.ok(!/design\.md: lines /.test(block), 'no current range is named for a pure removal')
+})
+
+test('an added file is named with its whole text as one hunk, and a removed file is named', () => {
+  const repo = regateRepo('regate-add-remove')
+  snapshotNow(repo)
+  put(repo.root, `openspec/changes/${CHANGE}/specs/gadget/spec.md`, '## ADDED Requirements\n\nGADGET-LINE-ONE\nGADGET-LINE-TWO\n')
+  rmSync(changeFile(repo, 'decisions.md'))
+  const block = changedSinceOf(sinceBrief(repo))
+  assert.match(block, /added: specs\/gadget\/spec\.md/)
+  assert.match(block, /specs\/gadget\/spec\.md: lines 1-4/)
+  assert.ok(block.includes('+ GADGET-LINE-ONE') && block.includes('+ GADGET-LINE-TWO'))
+  assert.match(block, /removed: decisions\.md/)
+})
+
+test('nothing changed says so in the opening block and lists every file as unchanged', () => {
+  const repo = regateRepo('regate-nothing')
+  snapshotNow(repo)
+  const out = sinceBrief(repo)
+  assert.equal(lineOf(openingOf(out), 'RE-GATE:'), `RE-GATE: since ${repo.since}; nothing changed since that gate`)
+  const unchanged = lineOf(changedSinceOf(out).slice(changedSinceOf(out).indexOf('unchanged:')), 'unchanged:')
+  for (const rel of REL) assert.ok(unchanged.includes(rel), `${rel} is listed unchanged`)
+  assert.equal(linesOf(openingOf(out), 'RE-GATE REWORK:').length, 0)
+})
+
+test('the RE-GATE: line states the share, the added and removed counts and the changed-file count', () => {
+  const repo = regateRepo('regate-share')
+  const before = snapshotNow(repo)
+  // Ten lines become twenty: 20 added, 10 removed, one file of five.
+  const lines = SECTION(60).split('\n').slice(0, 60)
+  lines.splice(39, 10, ...Array.from({ length: 20 }, (_, i) => `rework ${i + 1}`))
+  setChange(repo, 'design.md', lines.join('\n') + '\n')
+  const totalBefore = before.reduce((n, f) => n + countLines(f.text), 0)
+  const share = Math.round((100 * 20) / (totalBefore + 10))
+  const out = sinceBrief(repo)
+  assert.equal(lineOf(openingOf(out), 'RE-GATE:'), `RE-GATE: since ${repo.since}; ${share}% rework (20 line(s) added, 10 removed; 1 of 5 file(s) changed)`)
+})
+
+test('a share over LIMITS.maxRegateReworkPercent adds a RE-GATE REWORK: line and still carries the rules and the block', () => {
+  const bound = LIMITS.maxRegateReworkPercent
+  assert.equal(typeof bound, 'number', 'the bound lives in lib/limits.mjs')
+  assert.ok(bound > 0 && bound < 100)
+  const repo = regateRepo('regate-over')
+  snapshotNow(repo)
+  // Every file is rewritten whole, so the share is 100.
+  for (const rel of REL) setChange(repo, rel, `${rel}\nrewritten ${rel}\n`)
+  const out = sinceBrief(repo)
+  assert.equal(
+    lineOf(openingOf(out), 'RE-GATE REWORK:'),
+    `RE-GATE REWORK: 100% of the change differs from the snapshot of ${repo.since}, over the ${bound}% bound; a full gate is the owner's call`
+  )
+  assert.ok(out.includes(bundled('re-gate.md')), 'the scoped re-gate rules are still carried')
+  assert.ok(out.includes(`Changed since ${repo.since}`), 'and the changed hunks')
+})
+
+test('a share at or under the bound adds no RE-GATE REWORK: line', () => {
+  const repo = regateRepo('regate-under')
+  snapshotNow(repo)
+  setChange(repo, 'design.md', SECTION(60).replace('line 40', 'edited 40'))
+  const out = sinceBrief(repo)
+  assert.equal(linesOf(openingOf(out), 'RE-GATE REWORK:').length, 0)
+  assert.match(lineOf(openingOf(out), 'RE-GATE:'), /^RE-GATE: since .+; \d+% rework \(1 line\(s\) added, 1 removed; 1 of 5 file\(s\) changed\)$/)
+})
+
+test('no usable snapshot: each case is named on the RE-GATE: line, git scoping applies, no block is printed and the exit is 0', () => {
+  const GIT = "the re-gate rules' git scoping applies"
+  const cases = [
+    ['absent', repo => {}, /; no snapshot beside it; /],
+    ['not json', repo => put(repo.root, `.claude/metrics/snapshots/${SINCE_NAME}`, 'this is not json'), /; snapshot unreadable — .+; /],
+    [
+      'another schema',
+      repo => snapshotNow(repo, { schema: 'interlock.artifact-snapshot/2' }),
+      /; snapshot unreadable — .+; /
+    ],
+    ['another change', repo => snapshotNow(repo, { change: 'y' }), /; snapshot is of y; /]
+  ]
+  for (const [name, arrange, shape] of cases) {
+    const repo = regateRepo(`regate-fallback-${name.replace(/ /g, '-')}`)
+    arrange(repo)
+    const r = brief(repo, ['--since', repo.since])
+    assert.equal(r.code, 0, `${name}: ${r.stderr}`)
+    const line = lineOf(openingOf(r.stdout), 'RE-GATE:')
+    assert.ok(line.startsWith(`RE-GATE: since ${repo.since}`), `${name}: ${line}`)
+    assert.match(line, shape, name)
+    assert.ok(line.endsWith(GIT), `${name}: ${line}`)
+    assert.ok(!r.stdout.includes(`Changed since ${repo.since}`), `${name}: no Changed since block`)
+    assert.ok(r.stdout.includes(bundled('re-gate.md')), `${name}: the re-gate rules are in the brief`)
+  }
+})
+
+test('the emit shape names passage and says a blocker carries a line or a passage', () => {
+  const out = printed(makeRepo('emit-passage'))
+  const tail = out.slice(out.lastIndexOf('"severity"') - 400)
+  assert.ok(tail.includes('"passage"'), 'the shape names the field')
+  assert.match(tail, /blocker carries a `?line`? or a `?passage`?/)
+  assert.match(tail, /malformed/)
+  for (const entry of PROMPTS_ENTRY_SAMPLES()) assert.ok(entry.includes('"passage"'), 'every registered sample prints it')
+})
+
+/** The assembled output of each registered sample. */
+function PROMPTS_ENTRY_SAMPLES() {
+  return entry.inputs.map(input => entry.assemble(input))
+}
+
+test('interlock limits --json carries maxRegateReworkPercent', () => {
+  const r = run(['limits', '--json'], { cwd: ROOT })
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(typeof JSON.parse(r.stdout).limits.maxRegateReworkPercent, 'number')
 })

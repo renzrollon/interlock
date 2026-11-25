@@ -252,6 +252,8 @@ interlock validate "<name>" --json
 - `width` absent (an older CLI): print `CHANGE WIDTH: not reported by this CLI` and continue to the gate.
 - `width.wide` false: continue to the gate.
 
+**Wording.** Read `wording` from the validate JSON. Print each entry's `message` verbatim as a warning; a wording warning never stops the run. `wording` absent (an older CLI): print `WORDING: not reported by this CLI` and continue.
+
 ---
 
 ## 5. Gate: artifact review
@@ -292,7 +294,15 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-Without `--continue`, the run ended here. First print the checkpoint card:
+Without `--continue`, the run ended here. Before the card, ask the review policy whether its history now suggests a rule:
+
+```bash
+interlock review-policy suggest --summary
+```
+
+Print its output verbatim, and nothing when it prints nothing. On a non-zero exit print `REVIEW POLICY SUGGEST UNAVAILABLE: <first line of its output>` and continue; it never blocks the checkpoint.
+
+Then print the checkpoint card:
 
 ```bash
 interlock checkpoint "<change-name>"

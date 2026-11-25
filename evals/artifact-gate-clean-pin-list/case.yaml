@@ -1,0 +1,40 @@
+# Gap class: artifact-gate false blocker. The change
+# bound-the-reviewers-by-agent-type passed its one artifact gate (2026-11-19).
+# Its tasks.md line 3 states the bounded pin rule and says its list of pinned
+# assertions is "the known ones, not a complete list". An earlier gate raised
+# that incomplete list as a blocker, which was a false blocker: the rule exists so
+# a pin the list misses is updated in the task that changes its meaning. This
+# case runs the gate over the unmodified change and fails only when that blocker
+# comes back.
+#
+# One narrow negative grader. A fresh reader of any change can find a real
+# blocker, so failing on any blocker would make the case flaky; the grader fails
+# only on a blocker whose text is about the pin list, and it fails an output with
+# no SUMMARY: line, which means the gate never ran. Weight 1. Full suite only (no
+# smoke tag). Metered only where a credential is configured; the structural gate
+# in test/evals.test.mjs runs regardless.
+#
+# Provenance: change bound-the-reviewers-by-agent-type, artifact gate of
+# 2026-11-19, false blocker on the incomplete test-pin list (restored from
+# 21f7a1b72fa6debc590dc37eb780fb1a98358411 onto 234906b4861c7ef58a07fbdcc164085568bcaf1d).
+schema_version: "1.0"
+name: artifact-gate-clean-pin-list
+provenance: "bound-the-reviewers-by-agent-type, artifact gate of 2026-11-19, false blocker on an incomplete test-pin list (tasks.md:3); change restored from 21f7a1b72fa6debc590dc37eb780fb1a98358411 onto 234906b4861c7ef58a07fbdcc164085568bcaf1d"
+exercises: ["skills/review-artifacts/SKILL.md", "lib/prompts/artifact-review.mjs"]
+runs: 1
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: |
+    Run /interlock:review-artifacts bound-the-reviewers-by-agent-type --caller spec.
+    The workspace is a scratch clone in which that change is an active change.
+    Review the artifacts only; change no file and do not commit.
+
+    When the review ends, report every finding it kept, each with its severity,
+    its file and line, and what is wrong, in prose or a table. Report the
+    findings themselves, not a summary of how the review ran. Your reply MUST end
+    with the review's own SUMMARY: line, in the form
+    SUMMARY: N blockers, N warnings, N suggestions.
+  max_turns: 60
+  timeout_seconds: 3000
+  allowed_tools: [Skill, Agent, Bash, Read, Write, Glob, Grep]

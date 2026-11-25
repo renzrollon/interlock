@@ -91,14 +91,14 @@ Write `.claude/metrics/review-artifacts-<change>-<YYYYMMDD-HHMMSS>.json` in this
 { "dimension": "artifacts",
   "findings": [
     { "severity": "blocker|warning|suggestion",
-      "file": "path/to/artifact.md", "line": 42,
+      "file": "path/to/artifact.md", "line": 42, "passage": "the quoted text",
       "title": "short claim",
       "description": "what is wrong and why",
       "suggestion": "how to fix it" }
   ] }
 ```
 
-`severity`, `file`, `title` and `description` are required; `line` and `suggestion` are optional. Map BLOCKER→`blocker`, WARNING→`warning`, SUGGESTION→`suggestion`. A finding may carry the optional `check` tag the brief's emit shape names. Create `.claude/metrics/` if it does not exist. This is the complete emit contract — do not read `lib/findings.mjs` to rediscover it.
+`severity`, `file`, `title` and `description` are required; `line`, `passage` and `suggestion` are optional, but a blocker carries a `line` (a positive integer) or a `passage` (the quoted text). A blocker with neither is reported under `malformed`, is not counted as a blocker, and the gate does not pass. Map BLOCKER→`blocker`, WARNING→`warning`, SUGGESTION→`suggestion`. A finding may carry the optional `check` tag the brief's emit shape names. Create `.claude/metrics/` if it does not exist. This is the complete emit contract — do not read `lib/findings.mjs` to rediscover it.
 
 Then let the deterministic gate decide, rather than deciding in prose:
 

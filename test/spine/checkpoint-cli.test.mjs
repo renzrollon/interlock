@@ -62,7 +62,8 @@ function fixture(name, { design = true, ledger = true, findings = true } = {}) {
       join(metrics, `review-artifacts-${name}-20261106-101500.json`),
       JSON.stringify({
         dimension: 'artifacts',
-        findings: [{ severity: 'blocker', file: 'design.md', title: 'A decision with no owner', description: 'd' }]
+        // `line` cites the blocker: an uncited artifact blocker is malformed (review/evidence-gate).
+        findings: [{ severity: 'blocker', file: 'design.md', line: 3, title: 'A decision with no owner', description: 'd' }]
       })
     )
     writeFileSync(join(metrics, `review-artifacts-${name}-more-20261107-120000.json`), JSON.stringify({ dimension: 'artifacts', findings: [] }))

@@ -131,6 +131,7 @@ import {
   formatReviewPolicy
 } from '../lib/review-core.mjs'
 import { writeReviewMetrics, recordFieldsOf } from '../lib/metrics.mjs'
+import { snapshotForGate } from '../lib/artifact-snapshot.mjs'
 import {
   planVerification,
   interWaveVerifyBudget,
@@ -195,6 +196,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { reviewPolicySuggestCommand } from '../lib/review-policy-cli.mjs'
 import { checkpointCommand } from '../lib/checkpoint-cli.mjs'
 import { runLogFollow } from '../lib/run-follow-cli.mjs'
 import { openspecCommand } from '../lib/openspec-cli.mjs'
@@ -438,6 +440,8 @@ Usage:
                   [--run-code]             --gitlab, glab's) document; offline
   interlock review comment --review <f> --target <f> [--out <f>]
                                            Render the pull request comment
+  interlock review-policy suggest [--all] [--summary]
+                                           REVIEW.md lines the records suggest
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
                                            the path lists, the artifact lenses and
@@ -937,6 +941,8 @@ review:
   (refused: a fork, not open, a bad ref or id, no document).
   review comment: a record of another head exits 1; marks git cannot check print
   PRE-EXISTING NOT CHECKED: on stderr. --out is written before stdout.
+
+review-policy suggest: read-only; --all opens the evidence window, --summary prints one line or nothing.
 
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
@@ -3417,15 +3423,21 @@ async function main() {
             droppedByQuality: result.droppedByQuality,
             surviving
           },
-          ...recordFieldsOf(flags, warn)
+          ...recordFieldsOf(flags, warn, root)
         })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
+      // The artifact gate's snapshot: dispatch only. The module decides whether
+      // its conditions hold (null when they do not) and warns once on a failure.
+      // Like metrics, it never touches the verdict or the exit code.
+      const snapshot = snapshotForGate(root, flags, warn)
+
       const text =
         formatGate(result) +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
-      emit(json, { ...result, ...(metrics ? { metrics } : {}) }, text)
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
+        (snapshot ? `  snapshot: ${snapshot.written ? snapshot.path : `not written (${snapshot.reason})`}\n` : '')
+      emit(json, { ...result, ...(metrics ? { metrics } : {}), ...(snapshot ? { snapshot } : {}) }, text)
       if (!result.passed) process.exit(1)
       break
     }
@@ -3914,6 +3926,10 @@ async function main() {
       break
 
     case 'review-policy': {
+      if (positional[1] === 'suggest') {
+        reviewPolicySuggestCommand({ ...reviewIo(root, flags), home: corpusHome(root, flags).home }, root, flags, json)
+        break
+      }
       // Read-only view of the parsed REVIEW.md, so the workflow can inject the
       // prose + owner into the reviewer instructions without re-parsing the file
       // (the runtime cannot import lib modules). Always exits 0: a missing or

@@ -251,6 +251,8 @@ interlock evals triage --results evals-results.json   # regression / variance / 
 - **No schedule until a credential exists.** Neither `evals.yml` nor `ship-outcome-eval.yml` has a `schedule:` trigger; the `full` job runs on `workflow_dispatch` alone. A weekly run that skipped for want of a key finished green, and a green that measured nothing reads as a passing eval; failing weekly instead would go red for good if the key is never provisioned. Adding a cron back is the edit that records the credential's arrival. The pull-request smoke still skips quietly, so a fork stays mergeable.
 - **The canary is the one scheduled workflow, and it can be switched off without a word.** `.github/workflows/canary.yml` runs daily and model-free, re-validating the shipped bundle under the newest Claude Code; its failed run is the notification. GitHub disables a public repository's scheduled workflows after 60 days with no repository activity, and a disabled canary fails nothing. If the repository goes quiet for that long, re-enable it by hand on the Actions tab (Canary, then Enable workflow).
 
+Three cases cover the artifact gate, `artifact-gate-recall-shared-writer`, `artifact-gate-recall-merge-verdict` and `artifact-gate-clean-pin-list`: two seed a defect the gate should block and grade recall, and one is a clean change that grades whether the gate stays quiet. Each is a scaffolded repository the model reviews, graded by deterministic graders.
+
 The cases each encode a reproduced failure: tier read-scope, cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt, skill routing, and evidence-locator fabrication. Each case cites the failure it encodes.
 
 ### Transcript, outcome, process

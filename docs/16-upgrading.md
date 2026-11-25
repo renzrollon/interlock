@@ -125,6 +125,19 @@ From 1.15.0 Interlock makes no network call and sends no push of its own (the me
 - `interlock run close --notify` and `interlock notify --title` were accepted through 1.15.x, sent nothing and printed `push: removed — interlock sends no notifications`. From 1.16.0 both are refused as unknown, exit 2, so remove them from your scripts. A close from a driver older than the CLI on PATH that still passes `--notify` fails before it records a receipt; align the plugin and the CLI first ([above](#bring-the-cli-to-the-plugins-version)).
 - Stop using the topic: anyone who knows it can still read what was sent to it.
 
+## A newer plugin on an older CLI
+
+The artifact gate's newer skill lines degrade aloud against an older `interlock`, and nothing stops:
+
+| Skill line | Older CLI answers | What the skill does |
+|---|---|---|
+| `/interlock:review-artifacts <change> --since <findings file>` | no snapshot beside the findings file | the brief's `RE-GATE:` line says no snapshot could be used, and the re-gate scopes by git |
+| `interlock review-policy suggest --summary` | refuses the subcommand or flag | prints `REVIEW POLICY SUGGEST UNAVAILABLE:` and its first line, and continues |
+| `interlock validate <change> --json` | no `wording` field | prints `WORDING: not reported by this CLI` and continues |
+| a blocker with no `line` or `passage` | the blocker stands | an older CLI does not report it under `malformed` |
+
+Records already written with `findings`, and snapshots already on disk, stay readable by an older CLI, which ignores both.
+
 ## Evals no longer run on a schedule
 
 The model-eval workflows no longer have a `schedule:` trigger, because the credential they need is not provisioned and a weekly green skip reads as a passing eval. They run on `workflow_dispatch`, and the pull-request smoke still skips quietly in a fork. [14](./14-evals.md) has the posture.
