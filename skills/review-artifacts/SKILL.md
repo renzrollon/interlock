@@ -41,7 +41,7 @@ Print every line of `banners` verbatim, then print `GATE DEPTH: <depth>` from th
 interlock review brief --artifacts <change> [--lens <a,b>] [--since <findings file>]
 ```
 
-Print the opening block, every line before the first blank line, verbatim, and name the lenses it reports for the gate line. The brief carries the rubric, the lenses, the repository's policy, the living requirements and the run rules; this skill adds no rubric of its own. When the command exits non-zero, print `ARTIFACT BRIEF UNAVAILABLE: <first line of its output>` and read inline: Read `${CLAUDE_SKILL_DIR}/rubric.md` (and `${CLAUDE_SKILL_DIR}/re-gate.md` under `--since`) and review the artifacts `interlock validate` resolved against it. That read uses no lens, so the gate line says `--reviewer session --lenses none`.
+Print the opening block, every line before the first blank line, verbatim, and name the lenses it reports for the gate line. The brief carries the rubric, the lenses, the repository's policy, the living requirements and the run rules; this skill adds no rubric of its own. When the command exits non-zero, print `ARTIFACT BRIEF UNAVAILABLE: <first line of its output>` and read inline: Read `${CLAUDE_SKILL_DIR}/rubric.md` (and `${CLAUDE_SKILL_DIR}/re-gate.md` under `--since`, whose git-scoping branch applies, since no `RE-GATE:` line printed) and review the artifacts `interlock validate` resolved against it. That read uses no lens, so the gate line says `--reviewer session --lenses none`.
 
 At a depth other than `strict`, the session reads the brief, performs the review it describes, composes the reply object its run rules name, writes the findings file from that object and goes to **Emit structured findings**.
 

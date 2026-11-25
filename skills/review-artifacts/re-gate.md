@@ -6,7 +6,7 @@ Without `--since` the gate reads the whole change, once. With it, the gate judge
 2. **Read only what changed since that file was written.** Two branches, chosen by the `RE-GATE:` line the brief printed.
 
    - **A `Changed since` block is printed.** Its hunks are what changed since the earlier gate: the snapshot the gate kept is compared with the files as they are now. Raise a new finding only in a changed hunk. Context lines, the two unchanged lines either side of a hunk, are there to be read, not reopened. A file the block lists as `unchanged` is not reread, and a passage the earlier review did not flag is not reopened. Run no `git diff` for it.
-   - **The `RE-GATE:` line says no snapshot could be used** (none beside the findings file, one unreadable, or one of another change). Read what git says changed. For a tracked change, the hunks that differ from the commit the earlier gate read (the working tree against `HEAD` when nothing was committed since):
+   - **The `RE-GATE:` line says no snapshot could be used** (none beside the findings file, one unreadable, or one of another change), **or no brief printed at all** (`ARTIFACT BRIEF UNAVAILABLE:`, so there is no `RE-GATE:` line and no `Changed since` block to choose by). Read what git says changed. For a tracked change, the hunks that differ from the commit the earlier gate read (the working tree against `HEAD` when nothing was committed since):
 
      ```bash
      git diff -- openspec/changes/<change>/
