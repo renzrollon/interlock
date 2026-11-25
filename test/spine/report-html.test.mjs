@@ -356,3 +356,64 @@ test('a report object from before the state home existed still renders, and says
   assert.ok(doc.includes('<span class="k">STATE HOME</span><span>unstated</span>'))
   assert.match(doc, /Coverage — what the corpora can and cannot answer/)
 })
+
+// --- brief-and-record-the-artifact-gate: the stage groups ------------------------------------
+
+function stagedRoot() {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-html-staged-'))
+  const metrics = join(dir, '.claude', 'metrics')
+  mkdirSync(metrics, { recursive: true })
+  const record = (n, over, counts) =>
+    writeFileSync(
+      join(metrics, `review-x-${n}.json`),
+      JSON.stringify({ schema: REVIEW_METRICS_SCHEMA, timestamp: `2026-08-26T13:00:0${n}.000Z`, change: 'x', counts, ...over })
+    )
+  record(1, { stage: 'artifacts', depth: 'strict', reviewer: 'agent' }, { raised: 5, dismissed: 2, droppedByQuality: 1, surviving: 2 })
+  record(2, { stage: 'artifacts', depth: 'lean', reviewer: 'session' }, { raised: 3, dismissed: 1, droppedByQuality: 0, surviving: 2 })
+  record(3, { stage: 'code', depth: 'strict', reviewer: 'agent' }, { raised: 11, dismissed: 4, droppedByQuality: 2, surviving: 5 })
+  record(4, {}, { raised: 6, dismissed: 1, droppedByQuality: 1, surviving: 4 })
+  return dir
+}
+
+/** The document as text: tags dropped, whitespace collapsed, entities left alone. */
+const textOf = doc => doc.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+
+test('by stage: the HTML names the same groups with the same file counts and four counts as the report object', () => {
+  withRoot(stagedRoot, dir => {
+    const report = buildReport(dir)
+    const { byStage } = report.indicators.reviewFindings.fromMetrics
+    assert.deepEqual(Object.keys(byStage).sort(), ['artifacts', 'code', 'unrecorded'])
+    const text = textOf(renderReportHtml(report))
+    for (const [name, group] of Object.entries(byStage)) {
+      const c = group.counts
+      const ordered = new RegExp(
+        `\\b${name}\\b.{0,200}?\\b${group.files}\\b.{0,200}?\\b${c.raised}\\b.{0,100}?\\b${c.dismissed}\\b.{0,100}?\\b${c.droppedByQuality}\\b.{0,100}?\\b${c.surviving}\\b`
+      )
+      assert.match(text, ordered, `${name}: the HTML carries the group's file count and four counts`)
+    }
+    for (const reader of ['strict/agent', 'lean/session']) {
+      assert.ok(text.includes(reader), `the HTML names the reader group ${reader}`)
+    }
+  })
+})
+
+test('by stage: an empty corpus renders no group', () => {
+  withRoot(emptyRoot, dir => {
+    const report = buildReport(dir)
+    assert.deepEqual(report.indicators.reviewFindings.fromMetrics.byStage, {})
+    assert.doesNotMatch(textOf(renderReportHtml(report)), /unrecorded\/|strict\/agent/)
+  })
+})
+
+test('by stage: a report object with no fromMetrics.byStage renders with no group and no error (guard)', () => {
+  withRoot(stagedRoot, dir => {
+    const report = buildReport(dir)
+    delete report.indicators.reviewFindings.fromMetrics.byStage
+    let doc
+    assert.doesNotThrow(() => {
+      doc = renderReportHtml(report)
+    })
+    assert.doesNotMatch(textOf(doc), /strict\/agent|lean\/session/)
+    assert.match(doc, /<\/html>\s*$/)
+  })
+})

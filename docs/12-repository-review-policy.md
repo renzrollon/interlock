@@ -15,13 +15,14 @@ it.
 
 ## The split: advice vs. enforced
 
-`REVIEW.md` has exactly four consumers, one per part of the file, and they sit at two trust levels.
+`REVIEW.md` has exactly five consumers, one per part of the file, and they sit at two trust levels.
 
 | Part of the file | Consumer | Trust | Effect | Read from |
 |---|---|---|---|---|
 | **Prose** — `## Owner` / front-matter `owner:`, `## What "Important" means`, `## Exclusions rationale` | the reviewer prompt | **advice** | reviewers read it as repository context; it can never lower survival | the working tree |
 | **`## Do Not Report` paths** | `interlock review` (the CLI) | **enforced** | findings whose file lies under a listed path are dropped before the band is applied | the base ref (`--base`), or the run's start commit; the working tree when neither exists |
 | **`## Always Human Review` paths** | `interlock merge-confidence` (the CLI), and no other consumer | **enforced** | a change that touches a listed path, or edits `REVIEW.md` itself, reads amber on the `policy.humanPaths` signal and needs a person | the base ref (`--base`); unobserved without one |
+| **`## Artifact Review Lenses` and `## Artifact Checks`** | the artifact gate's brief (`interlock review brief --artifacts`), and `interlock review-policy suggest`, which reads the checks to name the stale ones | **advice** | the lens names replace the detected lenses; each check is quoted to the gate's reader, numbered `review-md.<n>`. Neither can set a threshold or move a verdict ([below](#the-artifact-sections)) | `HEAD`; the working tree when the repository has no commit, which then reads neither section |
 | **`## Counts as Source` paths** | the `diff.shape` signal of `interlock merge-confidence` (the CLI), and the proof of coverage in `interlock review` | **enforced** | a changed file under a listed path is counted as source toward the size caps, whatever its name, where it would otherwise be set aside as a test or as prose; the proof of coverage reads it too, so an unread entry on a listed file stays unread. It can only keep an entry unread, never lift one | the base ref (`--base`); a ship run's close reads it from the run's start commit |
 
 The line that keeps this on-thesis: **a model is never handed a path list as
@@ -49,7 +50,7 @@ Source` would take its own lines out of the size count. So the lists are read
 from a **base**:
 
 - **`interlock review --base <ref>`** and **`interlock review-policy --base <ref>`**
-  read all three lists from the commit at the ref. `merge-confidence --base` reads
+  read all three lists, and the two artifact sections the brief and `review-policy suggest` read, from the commit at the ref. `merge-confidence --base` reads
   the always-human-review and counts-as-source lists from the base **tip**, as GitHub reads `CODEOWNERS`
   from the base branch. A branch that predates a policy change reads amber on
   the signal until it is rebased, which is the safe direction: reading the merge
@@ -140,6 +141,27 @@ mirroring the default filesystem:
   ([15](15-merge-confidence.md#always-human-review-paths-and-why-they-are-read-from-the-base)).
   The same item under `## Counts as Source` does not move it either: it makes
   `diff.shape` count every changed line and file, naming the item.
+
+## The artifact sections
+
+`## Artifact Review Lenses` and `## Artifact Checks` govern the artifact gate (`/interlock:review-artifacts`), never a code review. Each is a list of `- ` items with the path lists' structure rules: a code fence, or content with no list item, declares nothing and is reported, and text mixed with items is reported while the items are read. Unlike a path list, an item is **read as written**: it is not canonicalized as a path and is not refused as a pattern, so a check may end in `?` or name a glob such as `lib/*.mjs`. A threshold-shaped item (`- nitCap: 0`) is reported and never read, as in every other section.
+
+Every problem either section reports names it in quotes, so it is classed as an `artifact` problem. A heading that names an artifact section but is neither known one, such as `## Artifact Lenses` or `## Artifacts Checks`, is reported too, naming itself and the two known headings, and declares nothing. The test is that its words hold `artifact` or `artifacts` with `lens`, `lenses`, `check`, `checks` or `review`, and that its last word is not `rationale`: `## Artifact checks rationale` is prose and stays ignored, as every other unknown heading does. An `artifact` problem reaches `interlock review-policy` and the brief, and moves neither the proof of coverage's counts-as-source list nor the merge verdict's `policy.humanPaths` signal: a typo in an advisory heading changes no enforced signal. A threshold-shaped line written without a `- ` is still caught by the body-wide scan, whose problem names no section, as it does anywhere in the file.
+
+With a base, `composePolicy` takes both lists from it beside the path lists, and the artifact brief reads them from `HEAD`, so a change being spec'd cannot edit the checks it is judged under. `interlock review-policy` prints `artifact lenses: …` and `artifact checks: <n>`, and its JSON carries `artifactLenses` and `artifactChecks`. The shipped template carries both headings empty.
+
+## What `review-policy suggest` reads
+
+`interlock review-policy suggest` reads the repository's own history and lists rules `REVIEW.md` might gain. It never writes `REVIEW.md`: the owner does, because a rule that changes what the gate blocks is a decision. Four triggers raise a candidate:
+
+- the same file escapes the spec in the compound-note rows of several changes;
+- an artifact gate passes and the next gate of that change finds a blocker, read by a different reader;
+- blockers carry the same `check` tag across several changes;
+- an archived decision ledger row cites a human decision.
+
+A fifth list names the checks that sat in the brief and caught nothing across enough gates. The counts those lines need are published by `interlock limits` (`minSuggestChanges`, `staleCheckGates`), not restated here.
+
+**The window.** Evidence counts from the last commit that touched `REVIEW.md`, because revising the file is the owner acting on it, so the list shrinks when the owner acts. `--all` opens the window to every record, and so does a repository with no such commit; the output says which. Each source degrades aloud on its own status line. `/interlock:spec` and `/interlock:settle` print the one-line `--summary` form and continue when it is unavailable.
 
 ## The `blast-radius` dimension and its recorded skip
 

@@ -28,7 +28,7 @@ Their correctness is already asserted more strongly than a reviewer could: the t
 
 Nothing else is excluded. In particular `docs/` stays in scope — a wrong doc is a real defect, and this repository has shipped stale doc claims that survived review. `evals/` stays in scope too; its prompts and graders are real assets.
 
-One boundary worth knowing, because it is invisible from this file: the path list below is read by `interlock review` and by `interlock review-policy`, and **not** by `interlock gate`. Artifact review reaches its verdict through `gate`, so an exclusion added here governs `review-code` and is inert for `review-artifacts`. That costs nothing today — artifact review reads change artifacts and never reports on fixtures — but a path added here expecting to quiet artifact review would be silently ignored.
+One boundary worth knowing, because it is invisible from this file: this file's prose now reaches the artifact gate too, quoted in the brief `interlock review brief --artifacts` prints, but the path lists below stay code-review only. They are read by `interlock review` and by `interlock review-policy`, and **not** by `interlock gate`, so an exclusion added here governs `review-code` and does not quiet artifact review. That costs nothing today — artifact review reads change artifacts and never reports on fixtures.
 
 ## Do Not Report
 

@@ -680,3 +680,36 @@ test('a review record is read from its surviving list: an empty one passes, a bl
   assert.equal(blocked.ready, false)
   assert.ok(codes(blocked).includes('REVIEW_BLOCKERS'), codes(blocked).join(', '))
 })
+
+// --- scope-suggest-and-evaluate-the-artifact-gate: readiness names the missing citation (D29) ---
+//
+// Spec `review/evidence-gate`: findings holding only an uncited artifact blocker refuse
+// readiness with REVIEW_FINDINGS_MALFORMED, and the reason names the missing citation and
+// does not say a severity is outside the defined set. Fails until task 2.3 lands.
+
+test('an uncited artifact blocker refuses readiness as malformed, naming the missing citation and not a severity', () => {
+  makeChange()
+  const r = withFindings({ dimension: 'artifacts', findings: [reviewFinding()] })
+  assert.equal(r.ready, false, formatReadiness(r))
+  assert.ok(codes(r).includes('REVIEW_FINDINGS_MALFORMED'), codes(r).join(','))
+  const reason = r.blockers.find(b => b.code === 'REVIEW_FINDINGS_MALFORMED').reason
+  assert.match(reason, /line/)
+  assert.match(reason, /passage/)
+  assert.doesNotMatch(reason, /severity/i)
+  assert.doesNotMatch(reason, /outside the defined set/)
+})
+
+test('a malformed severity still says the severity is outside the defined set, and a mix names both causes', () => {
+  makeChange()
+  const sev = withFindings({ dimension: 'artifacts', findings: [reviewFinding({ severity: 'critical', line: 3 })] })
+  const sevReason = sev.blockers.find(b => b.code === 'REVIEW_FINDINGS_MALFORMED').reason
+  assert.match(sevReason, /severity/i)
+  assert.doesNotMatch(sevReason, /neither a line nor a passage|cite/i)
+  const mixed = withFindings({
+    dimension: 'artifacts',
+    findings: [reviewFinding({ severity: 'critical', line: 3 }), reviewFinding({ title: 'uncited' })]
+  })
+  const mixedReason = mixed.blockers.find(b => b.code === 'REVIEW_FINDINGS_MALFORMED').reason
+  assert.match(mixedReason, /severity/i)
+  assert.match(mixedReason, /passage/)
+})

@@ -996,6 +996,8 @@ test('SPAWN_ROUTING and REVIEW_DEPTH are read under lib/, and the bare forward i
   // An indexed or entry read is a reader; `routing: SPAWN_ROUTING` is a forward.
   assert.deepEqual(readers(/\bSPAWN_ROUTING\[|Object\.\w+\(SPAWN_ROUTING\)/), ['lib/routing.mjs'])
   assert.deepEqual(readers(/\bREVIEW_DEPTH\[|\bREVIEW_DEPTH\.default\b/), ['lib/routing.mjs'])
+  // brief-and-record-the-artifact-gate 1.2: the caller-depth table has the same single reader.
+  assert.deepEqual(readers(/\bCALLER_DEPTH\[|Object\.\w+\(CALLER_DEPTH\)/), ['lib/routing.mjs'])
   // The forward exists, so the sweep must be refusing it on purpose.
   const cli = readFileSync(join(ROOT, 'cli', 'interlock'), 'utf8')
   assert.match(cli, /routing: SPAWN_ROUTING/)

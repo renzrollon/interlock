@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- `/interlock:spec` now gates its artifacts at the strict depth by default: it passes `--caller spec`, and the CLI's caller table answers `strict`, so one routed `interlock:reviewer` reads the artifacts in place of the session. `--lean` asks for the session's own read, `--strict` still forces the subagent, and a standalone `/interlock:review-artifacts` keeps the published default.
+
+### Added
+
+- `interlock review-policy suggest [--all] [--summary] [--json]` lists the rules `REVIEW.md` might gain from the evidence since its last commit: repeated spec escapes in the compound notes, a gate that passed and was then overturned by a different reader, repeated `check` tags, and archived human decisions, plus the checks that caught nothing. It writes nothing, and the owner writes `REVIEW.md`. `/interlock:spec` and `/interlock:settle` print its `--summary` line, or `REVIEW POLICY SUGGEST UNAVAILABLE:` when it fails.
+- The artifact gate writes a snapshot of the change beside its findings file, the review record gains a `findings` path, and `--since` re-gates print a `Changed since` block so a new finding is raised only inside a changed hunk; without a snapshot the brief says so and scopes by git. A blocker must cite a `line` or a `passage`, or it is reported under `malformed`.
+- `interlock validate --json` carries `wording`, requirement wording a reader could not test, and `/interlock:spec` prints each message as a warning that never stops the run.
+- Three artifact-gate eval cases: `artifact-gate-recall-shared-writer`, `artifact-gate-recall-merge-verdict` and `artifact-gate-clean-pin-list`. `docs/10-agentic-workflow-ship-and-spec.md` no longer says no case touches `review-artifacts`. New caps `maxRegateReworkPercent`, `minSuggestChanges` and `staleCheckGates` are read from `interlock limits`.
+
+- `interlock review brief --artifacts <change>` prints the artifact gate's brief: status lines, the rubric, the lenses (`agentic-harness`, `web-ui`; `--lens <a,b>` names them), the repository's `REVIEW.md` policy, living requirements and compound notes, and the run rules. `/interlock:review-artifacts` relays it instead of carrying its own rubric.
+- `interlock gate` takes `--stage`, `--depth`, `--reviewer` and `--lenses`, and the review record writes them; `interlock report` splits the review indicators by stage and reader. A gate with no verdict prints `GATE UNAVAILABLE:`.
+
 ## [1.20.0] - 2026-11-25
 
 ### Added

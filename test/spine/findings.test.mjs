@@ -493,3 +493,101 @@ test('findingKey: whitespace before trailing punctuation is stripped with it', (
   assert.equal(findingKey({ file: 'a', title: 'Title . ! ' }), 'a\u0000title')
   assert.equal(findingId({ file: 'a', title: 'Title .' }), findingId({ file: 'a', title: 'Title' }))
 })
+
+// --- scope-suggest-and-evaluate-the-artifact-gate: cited artifact blockers ---------
+//
+// Spec `review/evidence-gate` (design §6, D2, D20, D21): a blocker whose dimension is
+// `artifacts` carries a `line` that is a positive integer or a non-empty `passage`;
+// one that carries neither is reported under `malformed` with `cause` `citation`, is not
+// counted as a blocker, still counts toward `autonomyOutcome.blockers`, and never passes.
+//
+// Tests marked (guard) pin behaviour that already holds and must keep holding. Every
+// other test fails until task 2.3 lands.
+
+const artifact = (over = {}) => f({ severity: 'blocker', file: 'design.md', title: 'a decision with no owner', ...over })
+const artifactGate = (...list) => evaluateGate({ dimension: 'artifacts', findings: list })
+
+test('an artifact blocker cited by line 85 blocks and is not malformed', () => {
+  const r = artifactGate(artifact({ line: 85 }))
+  assert.equal(r.blockers.length, 1)
+  assert.deepEqual(r.malformed, [])
+  assert.equal(r.counts.blocker, 1)
+  assert.equal(r.passed, false)
+})
+
+test('an artifact blocker cited by passage alone blocks and is not malformed', () => {
+  const r = artifactGate(artifact({ passage: 'All-green MERGE is required' }))
+  assert.equal(r.blockers.length, 1)
+  assert.deepEqual(r.malformed, [])
+  assert.equal(r.passed, false)
+})
+
+test('an artifact blocker with neither is malformed with cause citation, uncounted as a blocker, and the gate does not pass', () => {
+  const r = artifactGate(artifact())
+  assert.equal(r.blockers.length, 0)
+  assert.equal(r.counts.blocker, 0)
+  assert.equal(r.malformed.length, 1)
+  assert.equal(r.malformed[0].cause, 'citation')
+  assert.match(r.malformed[0].reason, /line/)
+  assert.match(r.malformed[0].reason, /passage/)
+  assert.doesNotMatch(r.malformed[0].reason, /severity/i, 'the reason is about the citation, not a severity')
+  assert.equal(r.passed, false)
+})
+
+test('a line of 0, -3, or "intro" with no passage is malformed; a blank passage does not cite either', () => {
+  for (const line of [0, -3, 'intro', 1.5, null]) {
+    const r = artifactGate(artifact({ line }))
+    assert.equal(r.malformed.length, 1, `line ${JSON.stringify(line)} must be malformed`)
+    assert.equal(r.malformed[0].cause, 'citation')
+    assert.equal(r.blockers.length, 0)
+  }
+  const blank = artifactGate(artifact({ passage: '   ' }))
+  assert.equal(blank.malformed.length, 1, 'a passage that is only whitespace cites nothing')
+})
+
+test('a bad line is rescued by a passage', () => {
+  const r = artifactGate(artifact({ line: 'intro', passage: 'the quoted sentence' }))
+  assert.equal(r.blockers.length, 1)
+  assert.deepEqual(r.malformed, [])
+})
+
+test('an uncited artifact blocker still counts toward autonomyOutcome.blockers, so it never reads as a clean run', () => {
+  const only = artifactGate(artifact())
+  assert.equal(only.passed, false)
+  assert.equal(only.autonomyOutcome.blockers, 1)
+  const mixed = artifactGate(artifact({ line: 4 }), artifact({ title: 'second, uncited' }))
+  assert.equal(mixed.blockers.length, 1)
+  assert.equal(mixed.autonomyOutcome.blockers, 2)
+})
+
+test('a malformed severity carries cause severity and does not count toward autonomyOutcome.blockers', () => {
+  const r = artifactGate(artifact({ severity: 'critical', line: 3 }))
+  assert.equal(r.malformed.length, 1)
+  assert.equal(r.malformed[0].cause, 'severity')
+  assert.equal(r.autonomyOutcome.blockers, 0)
+  assert.equal(r.passed, false)
+})
+
+test('a blocker with no dimension artifacts and no citation stays a blocker (guard)', () => {
+  const r = evaluateGate({ dimension: 'qa', findings: [f({ severity: 'blocker' })] })
+  assert.equal(r.blockers.length, 1)
+  assert.deepEqual(r.malformed, [])
+  assert.equal(r.autonomyOutcome.blockers, 1)
+  const bare = evaluateGate([f({ severity: 'blocker' })])
+  assert.equal(bare.blockers.length, 1)
+  assert.deepEqual(bare.malformed, [])
+})
+
+test('uncited artifact warnings and suggestions are counted under their severity (guard)', () => {
+  const r = artifactGate(artifact({ severity: 'warning' }), artifact({ severity: 'suggestion', title: 'a nicety' }))
+  assert.equal(r.counts.warning, 1)
+  assert.equal(r.counts.suggestion, 1)
+  assert.deepEqual(r.malformed, [])
+  assert.equal(r.passed, true)
+})
+
+test('an unknown severity is malformed and not counted in autonomyOutcome.blockers (guard)', () => {
+  const r = evaluateGate({ dimension: 'qa', findings: [f({ severity: 'critical' })] })
+  assert.equal(r.malformed.length, 1)
+  assert.equal(r.autonomyOutcome.blockers, 0)
+})

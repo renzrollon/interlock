@@ -18,7 +18,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -156,8 +156,14 @@ test('every flag cli/interlock reads is in the global set or some subcommand set
   // specifier is a path, and the lookbehind keeps it from reading as `flags.mjs`.
   // `flags.x`, `flags['x']` and `num(flags, 'x')` are the three spellings a
   // handler reads a flag by. A helper that receives the whole object is scanned
-  // too: note-cli is handed `flags` through the entry file's io bundle.
-  const sources = [join(ROOT, 'cli', 'interlock'), join(ROOT, 'lib', 'note-cli.mjs')]
+  // too: note-cli is handed `flags` through the entry file's io bundle, and so is
+  // every other command module the entry file hands its handlers out to (the
+  // `lib/*-cli.mjs` files, plus the metrics and snapshot helpers the gate calls
+  // with the whole object), so a flag a handler there reads is checked as well.
+  const handlers = readdirSync(join(ROOT, 'lib'))
+    .filter(name => name.endsWith('-cli.mjs'))
+    .concat(['metrics.mjs', 'artifact-snapshot.mjs'])
+  const sources = [join(ROOT, 'cli', 'interlock'), ...handlers.map(name => join(ROOT, 'lib', name))]
   const read = new Map()
   for (const file of sources) {
     const text = readFileSync(file, 'utf8')

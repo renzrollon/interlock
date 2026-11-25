@@ -36,14 +36,23 @@ owner: <name or role, e.g. "Priya (platform)">
       never from the working copy being judged, so a change cannot edit the list
       it is held to. The prose is read from the working copy.
 
-    - The three path-list sections at the end are shipped EMPTY: their guidance
-      and examples sit inside single-line HTML comments, which the parser
-      skips, so a copied template parses with no problem. Add real entries as
-      `- path` list items beneath the comments, one per line.
+    - The `## Artifact Review Lenses` and `## Artifact Checks` lists are read
+      by the artifact gate (`/interlock:review-artifacts`), never by a code
+      review: the lens names it applies to a change's artifacts, and one-line
+      checks it quotes to its reader. They are advice, read from HEAD, so a
+      change being spec'd cannot edit the checks it is judged under. An item is
+      read as written, never as a path, so a check may end in `?`.
+
+    - The path-list and artifact sections at the end are shipped EMPTY: their
+      guidance and examples sit inside single-line HTML comments, which the
+      parser skips, so a copied template parses with no problem. Add real
+      entries as `- item` list items beneath the comments, one per line.
 
   A malformed file is reported (in `interlock review` output and via
   `interlock review-policy`) and the run proceeds under default policy — a typo
-  never silently changes or blocks a review. Unknown `##` sections are ignored.
+  never silently changes or blocks a review. Unknown `##` sections are ignored,
+  except one that names an artifact section but is not one of the two known
+  headings, which is reported.
 -->
 
 ## What "Important" means
@@ -78,3 +87,15 @@ third-party and are reviewed upstream, not here."
 <!-- The size signal sets documentation and test paths aside; list prose that is behaviour here, such as model-facing prompts or skills. It never changes which findings survive review. -->
 <!-- Matching is on the canonical path, as for Do Not Report. -->
 <!-- Example entries, one per line, as list items: skills/ and prompts/ -->
+
+## Artifact Review Lenses
+
+<!-- Lens names the artifact gate applies, in place of the ones it detects. A `--lens` flag still wins over this list. -->
+<!-- A name is a bundled lens file's name, under the plugin's skills/review-artifacts/lenses/. An unknown name is reported and selects nothing, never a refusal. -->
+<!-- Example entries, one per line, as list items: agentic-harness and web-ui -->
+
+## Artifact Checks
+
+<!-- One-line checks the artifact gate quotes to its reader, numbered in file order as review-md.1, review-md.2 and so on. -->
+<!-- A check is advice: it cannot set a threshold, and a threshold-shaped item is reported and ignored. -->
+<!-- Example entries, one per line, as list items: Does every task name how it is verified? -->

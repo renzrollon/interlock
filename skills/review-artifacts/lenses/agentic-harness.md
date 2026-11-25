@@ -1,0 +1,20 @@
+## Lens: agentic-harness
+
+**Perspective.** Read as the person who operates this harness in someone else's repository: an older plugin installed, a run halted halfway and resumed, two lanes writing at once, and a model following every reworded line of prose literally. Walk one run of the changed flow three times: clean, interrupted at the worst point, and beside a parallel sibling. At each step ask what is written, who else reads it, and what the person sees.
+
+**First, produce the table.** One row per step of the changed flow: what it writes, how it halts, how it could degrade without saying so, and what the person sees. A row the artifacts cannot fill is a finding. Then ask:
+
+1. **Decision boundary.** Is every decision a machine can make (a count, a cap, a verdict, a merge of records, a triage rule) made by the CLI and pinned by a test? Does any skill, agent or prompt restate a number? Would a deterministic step do where the design adds an agent, a spawn or a round?
+2. **Shared state.** For each file the change writes: who else writes it at the same time (parallel lanes, parallel Bash calls, a second session), and what a previous run left there? A read-modify-write shared by parallel callers is a blocker.
+3. **Provenance.** Does every figure the change reports say which run, head and command it came from? Can a stale or foreign record pass for this run's own?
+4. **Absent is not zero.** When an input is missing, unreadable or unparseable, does the design say unobserved, with the reason? Is every degraded path printed?
+5. **Re-run, resume, stop.** If a step runs twice, or resumes after a crash, is it the same result, and what does a crash halfway leave behind? Does every loop and every agent have a stated stopping condition and a retry cap, and does a re-run keep the results already adjudicated?
+6. **Tool and permission bounds.** Does each spawned agent's type bound its tools? Does `allowed-tools` cover every command the body runs, and only those? Does the design claim a permission or a sandbox allowance the host does not give? Where it says "the sandbox handles it", does it state the assumption and the risk that remains? Does every guard requirement carry its "if it cannot establish X, then it allows" scenario?
+7. **Prose is an API.** For each new or reworded skill or prompt instruction: which task pins its tokens in `test/skills.test.mjs`? Do the greppable lines (`... UNAVAILABLE:`, `GOAL MET:`, `CHANGE WIDE:`) keep their spelling? Read each instruction as the model that must follow it with no other context: one action, an observable trigger, and what to print when it fails.
+8. **Version and host skew.** Does it hold when the installed plugin, the CLI on PATH, OpenSpec or the host adapter (`claude-cli`, `acp`, `codex`, `qwen`) is older or lacks a capability? Is the missing capability declared in `lib/host/` and printed as a banner? What happens to a run already in flight when the plugin updates underneath it?
+9. **Offline tests and real verification.** Can every test the tasks name run with no network, model or credential? Where is the injection seam for each external dependency? What does each verifier the change adds check beyond "the tests pass"? Is model-in-the-loop behaviour covered by an eval case, with deterministic graders where possible?
+10. **Context and cost.** What does the change add per run to prompts, briefs, spawns or rounds? Is the bound published by `interlock limits`? Does any cap meet a "never cut" section?
+11. **Checkpoint and halt.** Does the human checkpoint survive? Does every halt print the owed command, and does every stage marker the change sets have a sanctioned way to clear?
+12. **Untrusted input.** Does any prompt the change builds quote text other people or tools wrote (a pull request body, a fetched file, a tool's output, a findings file)? Is it labelled as data, never as instructions?
+
+Severity follows the blocker definition in `rubric.md` ("What a blocker is"). For example, question 2's read-modify-write is a blocker when the parallel caller exists in the artifacts as written.

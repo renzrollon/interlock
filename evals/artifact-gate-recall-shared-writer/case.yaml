@@ -1,0 +1,35 @@
+# Gap class: artifact-gate recall, harness hazards. A change that passed its
+# artifact gate (bound-the-reviewers-by-agent-type, 2026-11-19) has a seeded
+# defect added to its design.md by seed.patch: parallel lanes each read, modify
+# and rewrite one shared JSON file, which loses an update. The agentic-harness
+# lens exists for this class of hazard, and it is the largest class among the
+# gate's recorded blockers. This case asks whether the gate names it.
+#
+# One deterministic regex grader: the file or a shared writer, together with a
+# word for concurrent writers and a lost update. Weight 1. Full suite only (no
+# smoke tag). Metered only where a credential is configured; the structural gate
+# in test/evals.test.mjs runs regardless.
+#
+# Provenance: change bound-the-reviewers-by-agent-type (restored from
+# 21f7a1b72fa6debc590dc37eb780fb1a98358411 onto 234906b4861c7ef58a07fbdcc164085568bcaf1d),
+# artifact gate of 2026-11-19, seeded with this case's seed.patch.
+schema_version: "1.0"
+name: artifact-gate-recall-shared-writer
+provenance: "bound-the-reviewers-by-agent-type, artifact gate of 2026-11-19, with a seeded shared-writer hazard (seed.patch); change restored from 21f7a1b72fa6debc590dc37eb780fb1a98358411 onto 234906b4861c7ef58a07fbdcc164085568bcaf1d"
+exercises: ["skills/review-artifacts/SKILL.md", "lib/prompts/artifact-review.mjs"]
+runs: 1
+context:
+  scaffold_script: scaffold.sh
+execution:
+  prompt: |
+    Run /interlock:review-artifacts bound-the-reviewers-by-agent-type --caller spec.
+    The workspace is a scratch clone in which that change is an active change.
+    Review the artifacts only; change no file and do not commit.
+
+    When the review ends, report every finding it kept, each with its severity,
+    its file and line, and what is wrong, in prose or a table. Report the
+    findings themselves, not a summary of how the review ran. End with the
+    review's own SUMMARY: line.
+  max_turns: 60
+  timeout_seconds: 3000
+  allowed_tools: [Skill, Agent, Bash, Read, Write, Glob, Grep]

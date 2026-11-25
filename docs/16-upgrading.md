@@ -30,6 +30,9 @@ The `!` runs the command from the Claude Code prompt, so it resolves `interlock`
 | a binary whose version could not be read | `fail`: `CLI VERSION SKEW: the version of interlock on PATH (<path>) could not be read (<reason>), plugin is <y>` | `--version` timed out, was killed, exited non-zero without `Unknown command`, or printed no `major.minor.patch`. Run `<path> --version` and read its answer. |
 | newer than the plugin | `warn` | A mismatch worth saying, with two known breaks. 1.16.0 refuses `interlock run close --notify`, which a 1.14.x or earlier plugin's ship driver passes on every close: the close exits 2 with `unknown flag --notify`, records no receipt, and leaves the run open with its stage marker, so `git commit` stays blocked in that session until `interlock run close` is run without the flag. The other: 1.8.0 removed `interlock advisor`, which a 1.7.0 plugin's `/interlock:spec` still calls after a clean artifact review. The call exits 1 with `Unknown command`, and the skill reports it and goes on to the hand-off, so the spec finishes with no `advisor.md`. Update the plugin to the CLI's version, or update both together. |
 | older than the settle skill's `verify exec --record` | exit 2 naming `unknown flag` from `interlock verify exec` | The settle skill prints that line and stops; it never records the exit as a unit result. Bring the CLI to the plugin's version. |
+| older than the artifact brief (no `interlock review brief --artifacts`) | `ARTIFACT BRIEF UNAVAILABLE: <first line>` | `/interlock:review-artifacts` reads `rubric.md` inline and gates with `--reviewer session --lenses none`: no lens, no policy prose, no living requirements, no compound notes reach the read. |
+| older than `--caller` on `interlock routing` | `ROUTING UNAVAILABLE: <first line>` | The gate prints no `GATE DEPTH:` line and the session performs the inline read, so `/interlock:spec` loses its subagent default; `--strict` still spawns the reviewer at the session defaults. |
+| older than the gate's recording flags (`--stage`, `--depth`, `--reviewer`, `--lenses`) | `GATE UNAVAILABLE: <error>` | The skill reruns the gate once without the four flags and reads the verdict from the rerun. The review record carries no stage, depth, reader or lenses, so `interlock report` counts it as unrecorded. A gate whose output has no verdict for another reason stops, and `/interlock:spec` writes no autonomy line. |
 | the same version, or the plugin's own `cli/` | `ok` | Nothing to do. |
 | not on `PATH` at all | `skip`: `interlock is not on PATH; the bundled binary runs` | Whether that is a problem is the `binaries` row's call. |
 | an npm copy, with no plugin to compare it with | `skip`: `the doctor ran outside a plugin session, so there was no plugin to compare …` | The doctor found no plugin root: none passed, no `CLAUDE_PLUGIN_ROOT`, and no plugin `cli/` later on `PATH`. Run it from the Claude Code prompt, or set `CLAUDE_PLUGIN_ROOT` to the plugin's directory. |
@@ -121,6 +124,19 @@ From 1.15.0 Interlock makes no network call and sends no push of its own (the me
 - An `INTERLOCK_NTFY_TOPIC` or `INTERLOCK_NTFY_URL` still exported in your shell is ignored by the 1.15.0 CLI. Unset it. While it stays set, a global npm copy older than 1.15.0 that your shell finds first still pushes through it. The preflight's `cli-version` row reports that copy as `CLI VERSION SKEW`, and the fix is the one [above](#bring-the-cli-to-the-plugins-version).
 - `interlock run close --notify` and `interlock notify --title` were accepted through 1.15.x, sent nothing and printed `push: removed — interlock sends no notifications`. From 1.16.0 both are refused as unknown, exit 2, so remove them from your scripts. A close from a driver older than the CLI on PATH that still passes `--notify` fails before it records a receipt; align the plugin and the CLI first ([above](#bring-the-cli-to-the-plugins-version)).
 - Stop using the topic: anyone who knows it can still read what was sent to it.
+
+## A newer plugin on an older CLI
+
+The artifact gate's newer skill lines mostly degrade aloud against an older `interlock`, and nothing stops. The last row does not: an older CLI passes it through silently.
+
+| Skill line | Older CLI answers | What the skill does |
+|---|---|---|
+| `/interlock:review-artifacts <change> --since <findings file>` | no snapshot beside the findings file | the brief's `RE-GATE:` line says no snapshot could be used, and the re-gate scopes by git |
+| `interlock review-policy suggest --summary` | refuses the subcommand or flag | prints `REVIEW POLICY SUGGEST UNAVAILABLE:` and its first line, and continues |
+| `interlock validate <change> --json` | no `wording` field | prints `WORDING: not reported by this CLI` and continues |
+| a blocker with no `line` or `passage` | the blocker stands | an older CLI does not report it under `malformed` |
+
+Records already written with `findings`, and snapshots already on disk, stay readable by an older CLI, which ignores both.
 
 ## Evals no longer run on a schedule
 

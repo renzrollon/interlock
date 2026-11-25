@@ -2675,7 +2675,7 @@ test('spec §1b says spec spawns nothing and names the routed explore role', () 
   const section = sectionOfSkill(text, /^### 1b\. /m)
   assertRoutingTokens(
     section,
-    ['spawns nothing itself', 'interlock routing explore-investigator'],
+    ['spawns nothing itself', 'interlock routing explore-investigator', 'interlock routing artifact-reviewer'],
     'skills/spec/SKILL.md §1b'
   )
 })
@@ -2934,10 +2934,30 @@ test('spec gates once and states the bounded pin rule; review-artifacts offers t
   assert.match(allowed, /Bash\(git diff \*\)/, `${where} instructs git diff in its re-gate but does not admit it`)
   assert.match(allowed, /Bash\(git status \*\)/, `${where} instructs git status in its re-gate but does not admit it`)
   assert.doesNotMatch(allowed, /Bash\(git \*\)/, `${where}'s grant must stay narrowed to the two verbs the re-gate uses`)
+  // brief-and-record-the-artifact-gate design §1: the re-gate rules and the blocker
+  // definition moved into the bundled files the brief prints; each pin follows its text.
   const since = sectionOfSkill(review, /^## A scoped re-gate: `--since <findings file>`$/m)
-  assertRoutingTokens(since, ['judges the fix', 'changed hunk', 'Re-check each earlier blocker'], `${where} --since section`)
+  assertRoutingTokens(since, ['judges the fix', 'person\'s call', '--since'], `${where} --since section`)
+  const regate = readFileSync(join(ROOT, 'skills', 'review-artifacts', 're-gate.md'), 'utf8')
+  assertRoutingTokens(regate, ['judges the fix', 'changed hunk', 'Re-check each earlier blocker'], 'skills/review-artifacts/re-gate.md')
   const output = sectionOfSkill(review, /^## Output$/m)
-  assertRoutingTokens(output, ['fail its own verification', 'bounded pin rule', 'never a blocker'], `${where} Output`)
+  assertRoutingTokens(output, ['SUGGESTION', 'rubric'], `${where} Output`)
+  const rubric = readFileSync(join(ROOT, 'skills', 'review-artifacts', 'rubric.md'), 'utf8')
+  assertRoutingTokens(rubric, ['fail its own verification', 'bounded pin rule', 'never a blocker'], 'skills/review-artifacts/rubric.md')
+})
+
+test('review-artifacts re-gate rules split into the snapshot branch and the git fallback, and the emit section names the citation rule', () => {
+  // scope-suggest-and-evaluate-the-artifact-gate, spec `spec/artifact-re-gate` and
+  // `review/evidence-gate`. Tokens, not sentences.
+  const regate = readFileSync(join(ROOT, 'skills', 'review-artifacts', 're-gate.md'), 'utf8')
+  assertRoutingTokens(
+    regate,
+    ['Changed since', 'changed hunk', 'RE-GATE:', 'git diff -- openspec/changes/<change>/', 'Re-check each earlier blocker'],
+    'skills/review-artifacts/re-gate.md'
+  )
+  const review = skillText('review-artifacts')
+  const emit = sectionOfSkill(review, /^## Emit structured findings$/m)
+  assertRoutingTokens(emit, ['passage', 'malformed'], 'skills/review-artifacts/SKILL.md emit section')
 })
 
 test('review-artifacts routes one strict reviewer by role, and spec passes --strict through to the gate', () => {
@@ -2952,8 +2972,13 @@ test('review-artifacts routes one strict reviewer by role, and spec passes --str
   assertRoutingTokens(
     depth,
     [
-      'interlock routing artifact-reviewer --json',
-      'interlock routing artifact-reviewer --depth strict --json',
+      'interlock routing artifact-reviewer [--caller spec] [--depth <strict|lean>] --json',
+      'interlock review brief --artifacts <change>',
+      'opening block',
+      'first blank line',
+      'ARTIFACT BRIEF UNAVAILABLE:',
+      '--caller spec',
+      '--lean',
       'GATE DEPTH',
       'ROUTING UNAVAILABLE',
       'STRICT REVIEW UNREAD',
@@ -2966,11 +2991,50 @@ test('review-artifacts routes one strict reviewer by role, and spec passes --str
     ],
     `${where} Depth`
   )
+  assert.ok(!/^## Reviewer 1/m.test(review), `${where} must not carry a Reviewer 1 section: the rubric is the brief's`)
+  assert.match(fm.values['allowed-tools'] || '', /Bash\(interlock-graph \*\)/, `${where} must admit interlock-graph`)
+  assert.doesNotMatch(fm.values['allowed-tools'] || '', /Bash\(openspec \*\)/, `${where} reads artifacts through the brief, not openspec`)
+  for (const flag of ['--lean', '--caller spec', '--lens']) {
+    assert.ok((fm.values['argument-hint'] || '').includes(flag), `${where} argument-hint must offer ${flag}`)
+  }
+  const gateLine = review.split('\n').find(l => l.startsWith('interlock gate --findings'))
+  assert.ok(gateLine, `${where} has no gate line`)
+  for (const tok of ['--metrics <change>', '--stage artifacts', '--depth', '--reviewer', '--lenses', '--json']) {
+    assert.ok(gateLine.includes(tok), `${where}'s gate line must carry ${tok}`)
+  }
+  assertRoutingTokens(review, ['GATE UNAVAILABLE:', 'unknownFlag'], `${where} gate`)
+  // review-code M12: each fallback and precedence clause is pinned by token.
+  assertRoutingTokens(
+    review,
+    [
+      'ignored `--lean`',
+      '${CLAUDE_SKILL_DIR}/rubric.md',
+      '${CLAUDE_SKILL_DIR}/re-gate.md',
+      '--reviewer session --lenses none',
+      'Drop `--depth`',
+      '--reviewer agent',
+      'blocker carries a `line`',
+      'run no further gate line',
+      'stop as on a blocker'
+    ],
+    `${where} fallbacks`
+  )
+  assertRoutingTokens(
+    readFileSync(join(ROOT, 'skills', 'review-artifacts', 're-gate.md'), 'utf8'),
+    ['ARTIFACT BRIEF UNAVAILABLE:', 'git status --short'],
+    'skills/review-artifacts/re-gate.md fallback'
+  )
   const spec = skillText('spec')
   const sfm = parseFrontmatter(spec)
   assert.ok((sfm.values['argument-hint'] || '').includes('--strict'), 'skills/spec/SKILL.md argument-hint must offer --strict')
   const gate = sectionOfSkill(spec, /^## 5\. Gate: artifact review$/m)
-  assertRoutingTokens(gate, ['/interlock:review-artifacts <name> --strict'], 'skills/spec/SKILL.md §5')
+  // brief-and-record-the-artifact-gate (spec/artifact-gate-depth): spec always passes --caller spec.
+  assertRoutingTokens(
+    gate,
+    ['/interlock:review-artifacts <name> --caller spec', '`--strict`', '`--lean`', '`--lens <a,b>`', 'GATE UNAVAILABLE:', 'write no `interlock autonomy` line', 'gave no verdict'],
+    'skills/spec/SKILL.md §5'
+  )
+  for (const flag of ['--lean', '--lens <a,b>']) assert.ok((sfm.values['argument-hint'] || '').includes(flag), `skills/spec/SKILL.md argument-hint must offer ${flag}`)
 })
 
 test('the spec skill acts on the validate width: wide stops with an epic of briefs, absent is spoken, no cap is restated', () => {
@@ -3103,8 +3167,10 @@ test('the spec skill\'s wide path runs no artifact gate and writes no autonomy l
 
 test('review-artifacts reads decisions.md, holding a needs_human row for the person and checking an agent_resolved one', () => {
   const where = 'skills/review-artifacts/SKILL.md'
-  const read = paragraphWith(skillText('review-artifacts'), '`decisions.md`')
-  assertRoutingTokens(read, ['`decisions.md` when it exists', '`needs_human`', 'not a finding', '`agent_resolved`', '`design.md`'], `${where} artifact read`)
+  // The rule moved with the rubric (brief-and-record-the-artifact-gate design §8).
+  const rubric = readFileSync(join(ROOT, 'skills', 'review-artifacts', 'rubric.md'), 'utf8')
+  const read = paragraphWith(rubric, '`needs_human`')
+  assertRoutingTokens(read, ['`decisions.md`', '`needs_human`', 'not a finding', '`agent_resolved`', '`design.md`'], `skills/review-artifacts/rubric.md (read from ${where})`)
 })
 
 /** Problems with review-artifacts' Depth section's typed strict spawn (review/reviewer-agent). */
@@ -3998,4 +4064,22 @@ test('pr review docs: docs/07 names interlock review target, interlock review co
 test('pr review docs: the README links the new page', () => {
   const text = readFileSync(join(ROOT, 'README.md'), 'utf8')
   assert.ok(text.includes('docs/17-reviewing-a-teammates-pull-request.md'), 'README.md does not link docs/17-reviewing-a-teammates-pull-request.md')
+})
+
+test('spec skill: validate wording is printed and the suggest summary line is fenced with its unavailable rule', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'spec', 'SKILL.md'), 'utf8')
+  for (const token of ['wording', 'message', 'WORDING: not reported by this CLI', 'interlock review-policy suggest --summary', 'REVIEW POLICY SUGGEST UNAVAILABLE:']) {
+    assert.ok(text.includes(token), `spec skill does not carry ${token}`)
+  }
+  assert.ok(text.includes('```bash\ninterlock review-policy suggest --summary\n```'), 'the suggest line is not fenced')
+  assert.ok(text.indexOf('interlock review-policy suggest --summary') < text.indexOf('interlock checkpoint "<change-name>"'), 'the suggest line does not come before the checkpoint card')
+})
+
+test('settle skill: the suggest summary line is fenced with its unavailable rule, after drift', () => {
+  const text = readFileSync(join(SKILLS_DIR, 'settle', 'SKILL.md'), 'utf8')
+  for (const token of ['interlock review-policy suggest --summary', 'REVIEW POLICY SUGGEST UNAVAILABLE:']) {
+    assert.ok(text.includes(token), `settle skill does not carry ${token}`)
+  }
+  assert.ok(text.includes('```bash\ninterlock review-policy suggest --summary\n```'), 'the suggest line is not fenced')
+  assert.ok(text.indexOf('interlock drift --changed <files> --json') < text.indexOf('interlock review-policy suggest --summary'), 'the suggest line does not follow the drift line')
 })

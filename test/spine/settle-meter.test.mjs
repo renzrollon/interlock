@@ -2401,3 +2401,15 @@ test('draft: a --draft line is a draft row, not the round\'s record', () => {
   assert.ok(row && row.includes('proven'), groupRows(s, 'review').join('\n'))
   assert.equal(s.reviews.size, 0, 'a draft names no round record')
 })
+
+test('a review-policy suggest summary line after the drift line keeps the endedAt the drift line set', () => {
+  const s = live()
+  cross(s, R.BASH_SETTLE_MERGE_CONFIDENCE, 1590)
+  cross(s, drift, 1599)
+  assert.equal(s.phase, 'done')
+  const endedAt = s.endedAt
+  assert.equal(settleLineKind('interlock review-policy suggest --summary'), 'review-policy')
+  cross(s, okBash('interlock review-policy suggest --summary', ''), 1650)
+  assert.equal(s.phase, 'done')
+  assert.equal(s.endedAt, endedAt)
+})
