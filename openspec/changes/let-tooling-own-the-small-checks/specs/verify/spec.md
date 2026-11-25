@@ -129,7 +129,13 @@ At the final gate a build that failed, or that could not be executed, SHALL halt
 
 ### Requirement: The verification briefing SHALL state each planned step's time allowance
 
-The briefing a ship run gives its verify agent SHALL name, in one paragraph after the planned lines, the time allowance of every planned step that carries one, and SHALL tell the agent to run that step with its shell tool's timeout set to the allowance, or to the tool's own maximum when that is lower, and to report a step ended at its timeout as failed. A plan in which no step carries an allowance SHALL be briefed as it is without the paragraph.
+The briefing a ship run gives its verify agent SHALL name, in one paragraph after the planned lines, the time allowance of every planned step that carries one. It SHALL tell the agent to set its shell tool's timeout to the larger of the tool's default and the allowance, capped at the tool's maximum, and to report a step ended at its timeout as failed. A plan with no allowance SHALL be briefed as it is without the paragraph.
+
+#### Scenario: Edge case — an allowance below the tool's default is a floor
+
+- **GIVEN** a final plan whose unit step carries an allowance of 40000, one measured green run of the suite
+- **WHEN** the verification briefing is assembled
+- **THEN** the paragraph tells the agent to use the larger of the tool's default and the allowance, and never asks for a timeout shorter than the tool's default
 
 #### Scenario: Happy path — a build's allowance reaches the agent
 

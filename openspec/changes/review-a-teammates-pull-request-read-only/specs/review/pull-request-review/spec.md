@@ -474,6 +474,54 @@ A dimension reviewer MAY mark a finding `preExisting: true`, and `interlock revi
 - **WHEN** `interlock review comment` runs
 - **THEN** no finding is listed under `Pre-existing`, standard error carries `PRE-EXISTING NOT CHECKED:` with git's reason, and the comment is still printed
 
+### Requirement: The pre-existing check SHALL read a diff the person's git configuration cannot reshape
+
+`interlock review comment` SHALL diff the target's base and head with no external diff or textconv driver, no relative mode and the `a/` and `b/` prefixes, whatever the person's git configuration says. When the diff names a file git does not list as changed for the same range, the command SHALL confirm no mark and SHALL say `PRE-EXISTING NOT CHECKED:` on standard error.
+
+#### Scenario: Edge case — a configured prefix or an external diff driver
+
+- **GIVEN** a blocker marked `preExisting: true` on a line the pull request changes, and the person's git configuration sets `diff.srcPrefix` and `diff.dstPrefix`, `diff.noprefix`, `diff.relative` or `diff.external`
+- **WHEN** `interlock review comment` runs
+- **THEN** the mark is refused and the finding is listed under `Important`, as it is with no such configuration
+
+### Requirement: A pre-existing mark SHALL be refused unless its file and line exist at the head and the change did not touch them
+
+`interlock review comment` SHALL refuse a mark whose file cannot be placed inside the repository once the review worktree's or the person's tree's prefix is dropped, whose file git lists as changed and the diff gave no lines for, whose file the pull request deletes, whose line is below 1 or borders lines the pull request removes, or whose file or line the head does not hold.
+
+#### Scenario: Failure — the worktree's absolute path on a changed line
+
+- **GIVEN** a warning marked `preExisting: true` at `<worktree>/lib/a.mjs:20`, or at `lib//a.mjs:20`, where the diff changes `lib/a.mjs` in line 20
+- **WHEN** the command runs
+- **THEN** the mark is refused and the finding is listed under `Important`
+
+#### Scenario: Failure — a file or a line the head does not have
+
+- **GIVEN** a warning marked `preExisting: true` on a file the diff does not touch, at a line past that file's end at the head, and another on a file the head does not hold
+- **WHEN** the command runs
+- **THEN** both marks are refused, each with its reason on standard error
+
+#### Scenario: Failure — a deleted file and a removal's edge
+
+- **GIVEN** a warning marked `preExisting: true` on a file the pull request deletes, and another on the line just after lines the pull request removes
+- **WHEN** the command runs
+- **THEN** both marks are refused
+
+### Requirement: The comment SHALL name no path on the person's machine and SHALL fit its published bound
+
+`interlock review comment` SHALL name every file relative to the repository, replacing the review worktree's path and the person's tree's path wherever reviewer text holds them. The comment SHALL fit `maxReviewerCommentChars`, published by `interlock limits`: over it, the nits' bodies go first, then the nits' rows, then the leading findings' bodies, and a `CUT:` line says what went. The rows of `Important` and `Pre-existing` findings are never cut.
+
+#### Scenario: Edge case — a finding written under the worktree's absolute path
+
+- **GIVEN** a finding whose file, title and description name `<worktree>/lib/a.mjs` and the person's own tree
+- **WHEN** the command runs
+- **THEN** the comment reads `lib/a.mjs` and holds neither absolute path, and the finding keeps the id the record gives it
+
+#### Scenario: Edge case — a review too long for one comment
+
+- **GIVEN** a record of a hundred findings with 400-character descriptions
+- **WHEN** the command runs
+- **THEN** the comment is no longer than `maxReviewerCommentChars`, every `Important` row is listed, and a `CUT:` line before the proof paragraph names what was left out
+
 ### Requirement: A pre-existing mark SHALL change the weight of a blocker or a warning only
 
 `interlock review comment` SHALL give the weight `Pre-existing` to no finding whose stored severity is not `blocker` or `warning`. A marked finding of any other severity SHALL read by its severity, and its mark SHALL NOT be counted as refused when its line is outside the diff. `lib/review-comment.mjs` SHALL hold the rule and render the comment, with the reader-text parts `lib/comment-parts.mjs` shares with `interlock settle comment`.

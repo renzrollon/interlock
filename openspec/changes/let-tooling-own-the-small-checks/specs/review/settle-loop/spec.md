@@ -4,7 +4,13 @@
 
 ### Requirement: The pass's final verification SHALL run each planned step under that step's own time allowance
 
-For the pass's final verification the settle skill SHALL run each planned step with the tool's timeout set to that step's own time allowance when the plan carries one, and to the profile's `unit.timeout_ms` otherwise. With no profile the tool's default SHALL apply. A step the tool ended at its timeout SHALL still be recorded as failed, with the step and the timeout named in the report.
+For the pass's final verification the settle skill SHALL run each planned step with the tool's timeout set to the larger of the tool's default and that step's own time allowance when the plan carries one, or the profile's `unit.timeout_ms` otherwise, capped at the tool's maximum and never below its default. With no profile the tool's default SHALL apply. A step the tool ended at its timeout SHALL still be recorded as failed, with the step and the timeout named in the report.
+
+#### Scenario: Edge case — an allowance is a floor, never a ceiling
+
+- **GIVEN** the same paragraph
+- **WHEN** the skill suite reads it
+- **THEN** it says the timeout is the larger of the tool's default and the allowance, never below the tool's default
 
 #### Scenario: Happy path — a step with an allowance of its own runs under it
 

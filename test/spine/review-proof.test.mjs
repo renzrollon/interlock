@@ -926,6 +926,18 @@ test('prose unread: proseUnreadClause joins dimensions and files in a fixed orde
   )
 })
 
+test('prose unread: a dimension name holding a newline or a mention goes through the span, and a plain name stays itself (M15)', () => {
+  const odd = 'qa\n@octocat [x](http://evil.example)'
+  const proof = { ...ORDER_PROOF, dimensions: ['qa', odd], carried: [odd], proseUnread: [{ dimension: odd, entries: [entry('a', 'r', ['docs/a.md'])] }] }
+  const span = text => `<<${text}>>`
+  const line = coverageLine(proof, { span })
+  assert.ok(line.startsWith(`Coverage: ran qa, <<${odd}>>; carried: <<${odd}>>;`), line)
+  assert.ok(line.endsWith(`prose left unread: <<${odd}>> (<<docs/a.md>>).`), line)
+  assert.equal(proofMod.proseUnreadClause(proof, span), `prose left unread: <<${odd}>> (<<docs/a.md>>)`)
+  // Without a span the line is the plain-text one it always was.
+  assert.ok(coverageLine(proof).startsWith(`Coverage: ran qa, ${odd};`))
+})
+
 test('prose unread: proseUnreadClause names a file once however many entries name it', () => {
   const twice = {
     ...ORDER_PROOF,

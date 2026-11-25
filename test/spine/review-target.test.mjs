@@ -227,6 +227,21 @@ test('pr review target: a branch name holding a colon, a space or `..` is refuse
   assertRefused(await gitlab(gitlabDoc({ source_branch: 'a b' })), /source_branch/, 'gitlab space')
 })
 
+test('pr review target: a base branch holding a character a shell would read is refused naming the field, and the head is not (M3)', async () => {
+  for (const base of ['x$(id)', 'main;curl${IFS}x|sh', 'a`id`', "it's", 'a&b', 'a>b', 'a{b}', 'a!b', 'a"b']) {
+    assertRefused(await github(githubDoc({ baseRefName: base })), /baseRefName[\s\S]*a shell would read/, `github base ${base}`)
+    assertRefused(await gitlab(gitlabDoc({ target_branch: base })), /target_branch[\s\S]*a shell would read/, `gitlab base ${base}`)
+  }
+  // The head is fetched by its numbered ref and placed in no command: a name git accepts is pinned.
+  const head = await github(githubDoc({ headRefName: 'feat/(x)' }))
+  assert.equal(head.ok, true, JSON.stringify(head))
+  const { validateTarget } = await loadTarget()
+  assert.deepEqual(validateTarget(head.target), { ok: true })
+  // A target file whose base was edited to one is refused when it is read back.
+  const edited = { ...head.target, base: { ...head.target.base, ref: 'x$(id)' } }
+  assertRefused(validateTarget(edited), /base\.ref holds a character a shell would read/, 'edited base')
+})
+
 test('pr review target: a draft is pinned with draft true on both platforms', async () => {
   const g = await github(githubDoc({ isDraft: true }))
   assert.equal(g.ok, true, JSON.stringify(g))

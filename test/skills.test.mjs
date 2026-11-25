@@ -481,6 +481,7 @@ test('fix-tests resolves the typecheck and lint commands, the only supplier a sh
   for (const token of ['"typecheck"', '"lint"', 'typecheck.command', 'lint.command']) {
     assert.ok(contract.includes(token), `shared/TEST-PROFILE.md no longer defines ${token}`)
   }
+  assert.ok(contract.includes('never discovered'), 'shared/TEST-PROFILE.md no longer says build.timeout_ms is never discovered')
 })
 
 test('fix-tests mirrors into an existing .claude/CLAUDE.md, never recreating a root one', () => {
@@ -3432,14 +3433,14 @@ function validationSkillProblems(text) {
   const check = fencedAt(/^interlock settle handoff-check\b/)
   if (check === -1) problems.push('no fenced `interlock settle handoff-check` line')
   else {
-    needFlags(check, ['--brief', '--reply .claude/ship/settle/handoff-reply.json', '--out .claude/ship/settle/handoff.json'], 'the `handoff-check` line')
+    needFlags(check, ['--brief', '--reply .claude/ship/settle/handoff-reply.json', '--out .claude/ship/settle/handoff.json', '--head'], 'the `handoff-check` line')
     const finalPlan = fencedAt(/^interlock verify plan\b[^\n]*--context final/)
     if (brief !== -1 && check < brief) problems.push('the `handoff-check` line comes before the `conformance-brief` line')
     if (finalPlan === -1 || check > finalPlan) problems.push('the `handoff-check` line does not come before the final verification lines')
   }
   const s5e = sectionOf(/^###\s+5e\b/, 3)
   if (!s5e) problems.push('no §5e section')
-  else needTokens(s5e.text, ['handoff-reply.json', 'CONFORMANCE UNCHECKED:', 'by no other means', 'CONFORMANCE UNREAD', 'as returned'], '§5e')
+  else needTokens(s5e.text, ['handoff-reply.json', 'CONFORMANCE UNCHECKED:', 'CONFIRMATION NOT CITED:', 'by no other means', 'CONFORMANCE UNREAD', 'as returned'], '§5e')
 
   // The exec record: the final verification writes it, the round does not.
   const s5f = sectionOf(/^###\s+5f\b/, 3)
@@ -3455,7 +3456,7 @@ function validationSkillProblems(text) {
   const summaryLine = fencedAt(/^interlock settle validation\b[^\n]*--summary/)
   if (posting === -1) problems.push('no fenced `interlock settle validation … | gh pr comment … --body-file -` line')
   else {
-    needFlags(posting, ['--head', '--plan', '--results', '--verify', '--exec .claude/ship/settle/exec.jsonl', '--changed'], 'the posting line')
+    needFlags(posting, ['--head', '--plan', '--results', '--verify', '--exec .claude/ship/settle/exec.jsonl', '--pipeline', '--handoff', '--review', '--coverage', '--changed'], 'the posting line')
     if (markdown === -1 || posting < markdown) problems.push('the posting line does not come after the `interlock merge-confidence … --markdown` line')
     if (summaryLine === -1 || posting > summaryLine) problems.push('the posting line does not come before the `--summary` line')
     const section = sectionOf(/^###\s+6d\b/, 3)
@@ -3474,6 +3475,11 @@ function validationSkillProblems(text) {
       if (gh && paragraphAt(gh.i).includes('not exercised')) problems.push('the GitHub posting line is marked not exercised')
     }
   }
+
+  // §11: the report names a validation comment that was not posted.
+  const s11 = sectionOf(/^##\s+11\./, 2)
+  if (!s11) problems.push('no §11 section')
+  else needTokens(s11.text, ['VALIDATION NOT POSTED:'], '§11')
 
   // §7: the summary line and the instruction beside it.
   const s7 = sectionOf(/^##\s+7\./, 2)
@@ -3596,10 +3602,16 @@ test('small checks: settle runs each final-verification step under its own allow
     assert.ok(paragraph.includes(token), `${where}: the final verification's paragraph does not name ${token}`)
   }
   assert.match(paragraph, /recorded as failed/, `${where}: a step ended at its timeout is no longer recorded as failed`)
+  assert.match(paragraph, /larger of/, `${where}: the final verification's allowance is no longer a floor`)
+  assert.match(paragraph, /never below the tool's default/, `${where}: the final verification's allowance can drop below the tool's default`)
+  assert.match(paragraph, /unknown flag/, `${where}: an older CLI's unknown-flag exit is no longer told apart from a result`)
+  assert.match(paragraph, /never record/, `${where}: an unknown-flag exit may be recorded as a result`)
 
   // A guard: the round's own paragraph already reads the step's field, and keeps doing so.
   const round = text.split(/\n\s*\n/).find(p => p.includes('plan-r<r>.json') && p.includes('timeoutMs'))
   assert.ok(round, `${where}: the round's verification no longer sets its timeout from timeoutMs in plan-r<r>.json`)
+  assert.match(round, /larger of/, `${where}: the round's allowance is no longer a floor`)
+  assert.match(round, /never below the tool's default/, `${where}: the round's allowance can drop below the tool's default`)
 })
 
 test('small checks: docs/04 has a halt-table row that names the build, and docs/06 shows the final halting kinds with build', () => {
@@ -3671,17 +3683,20 @@ function stepsOf(text) {
   return steps
 }
 
-/** The eleven lines of design.md "The lines under a target", as the skill prints them. */
+/**
+ * The eleven lines of design.md "The lines under a target", as the skill prints them. Every line that takes
+ * the changed files reads them on standard input from the file step 5 writes, never typed after the flag (M3).
+ */
 const PR_TARGET_LINES = [
-  'interlock domain-context [<change>] --changed <files> --target <target> --json',
-  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files>',
+  'interlock domain-context [<change>] --changed - --target <target> --json < <dir>/changed.txt',
+  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed - < <dir>/changed.txt',
   'interlock review brief --skeptics --findings <f> --target <target> [--depth strict] --json',
-  'interlock review --target <target> --findings <f> --verdicts <f> --changed <files> --dimensions <dimension record> --draft --out <draft> --json',
+  'interlock review --target <target> --findings <f> --verdicts <f> --changed - --dimensions <dimension record> --draft --out <draft> --json < <dir>/changed.txt',
   'interlock review proof --review <draft>',
-  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files> --rerun-of <draft>',
+  'interlock review brief --dimension <name> --target <target> [--change <change>] --changed - --rerun-of <draft> < <dir>/changed.txt',
   'interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --target <target> [--depth strict] --json',
-  'interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed <files> --dimensions <dimension record> --draft --out <next draft> --json',
-  'interlock review --rerun-of <last draft> --target <target> --changed <files> [--metrics <change>] --dimensions <dimension record> --out <record> --json',
+  'interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed - --dimensions <dimension record> --draft --out <next draft> --json < <dir>/changed.txt',
+  'interlock review --rerun-of <last draft> --target <target> --changed - [--metrics <change>] --dimensions <dimension record> --out <record> --json < <dir>/changed.txt',
   'interlock gate --findings <survivors.json> --json',
   'interlock review comment --review <record> --target <target> --out <dir>/comment.md'
 ]
@@ -3711,7 +3726,20 @@ const PR_SECTION_TOKENS = [
   'REVIEW METRICS NOT RECORDED: no change named',
   'COMMENT NOT RENDERED:',
   'POST FAILED:',
-  'NOT POSTED:'
+  'NOT POSTED:',
+  // Each command runs as the one quoted line the target prints, and the changed files travel on standard input (M3).
+  'lines.fetch',
+  'lines.worktreeAdd',
+  'lines.changed',
+  'lines.worktreeRemove',
+  '<lines.changed> > <dir>/changed.txt',
+  'interlock surface --changed - --json < <dir>/changed.txt',
+  // The graph step reads the files it was given, inside the worktree (M17).
+  'interlock-graph covers --changed - --root <worktree> < <dir>/changed.txt',
+  '--root <worktree>',
+  // The post-once rule and the not-proven word the comment can carry (M6).
+  'never run again',
+  'REVIEW NOT PROVEN:'
 ]
 
 /** What the `--pr` path never writes: the section holds none of them, as a command or in a sentence. */
@@ -3786,6 +3814,12 @@ function prSectionProblems(section) {
   if (!paragraphs.some(p => p.includes('--base') && p.includes('--carry') && p.includes('--pr'))) problems.push('no paragraph names --base and --carry as flags that do not combine with --pr')
   if (!paragraphs.some(p => p.includes('--post') && p.includes('--run-code') && /\bnever\b/.test(p))) problems.push('the paragraph that introduces --post and --run-code does not hold the word never')
   if (!paragraphs.some(p => p.includes('REVIEW FAILED') && /worktree/i.test(p) && /remov/i.test(p))) problems.push('the paragraph on removing the worktree does not name REVIEW FAILED')
+  // The step that keeps a colleague's blocker off this repository's ladder and notes (M6).
+  if (!paragraphs.some(p => p.includes('autonomy line') && p.includes('not run'))) problems.push('the paragraph that names the autonomy line does not say it is not run')
+  // The graph step names what a failed covers line prints (M17).
+  if (!holding('interlock-graph covers').some(st => /\bcovers\b[^.]*BLAST RADIUS SKIPPED|BLAST RADIUS SKIPPED[^.]*\bcovers\b/.test(proseOf(st)))) {
+    problems.push('the graph step does not say a failed covers line prints BLAST RADIUS SKIPPED')
+  }
   return problems
 }
 
@@ -3939,7 +3973,7 @@ const PR_DOC = 'docs/17-reviewing-a-teammates-pull-request.md'
 test('pr review docs: the page exists and names the flags, the weights, the limits and what was exercised', () => {
   assert.ok(existsSync(join(ROOT, PR_DOC)), `${PR_DOC} does not exist`)
   const text = readFileSync(join(ROOT, PR_DOC), 'utf8')
-  for (const token of ['--pr', '--post', '--run-code', 'Important', 'Nit', 'Pre-existing', 'not exercised', 'REVIEW NOT PROVEN', 'POST FAILED', 'allowed-tools', '.claude/worktrees/']) {
+  for (const token of ['--pr', '--post', '--run-code', 'Important', 'Nit', 'Pre-existing', 'not exercised', 'REVIEW NOT PROVEN', 'POST FAILED', 'allowed-tools', '.claude/worktrees/', 'metrics']) {
     assert.ok(text.includes(token), `${PR_DOC} does not name ${token}`)
   }
   assert.match(text, /\bfork\b/i, `${PR_DOC} does not say fork pull requests are refused`)

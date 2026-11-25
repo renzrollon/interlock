@@ -288,7 +288,7 @@ glab mr view <ref> --output json | interlock review target --gitlab - [--run-cod
 
    A non-zero exit prints `PULL REQUEST NOT REVIEWED:` with the reason and stops. A fork and a pull request that is not open are refused there. When the platform's CLI itself failed, `interlock review target` says it printed no document: give the platform CLI's message as the reason. From here `<target>` is the printed `file`, `<dir>` its `dir`, `<worktree>` its `worktree`, and `<record>` is `<dir>/review.json` or the `--out` file. Type no commit and no ref: each comes from the target.
 
-3. Run `commands.fetch`, then `commands.worktreeAdd`, exactly as the target prints them. A failed fetch prints `PULL REQUEST NOT REVIEWED:` with git's message and stops; nothing exists to remove yet. A failed add prints `REVIEW WORKTREE NOT CREATED:`. When a sandbox refused the write, run that same command once outside it. When the path is already a worktree from an interrupted run, run `commands.worktreeRemove` and then the add again, one time. A second failure stops.
+3. Run `commands.fetch`, then `commands.worktreeAdd`, each as the target prints it under `lines`: `lines.fetch`, then `lines.worktreeAdd`. Each `lines.<name>` is that command's argv as one line, every word that needs it already quoted for the shell, and the same holds for `lines.changed` and `lines.worktreeRemove` below: run the printed line itself, never one assembled from the argv, and type no ref and no path into it. A failed fetch prints `PULL REQUEST NOT REVIEWED:` with git's message and stops; nothing exists to remove yet. A failed add prints `REVIEW WORKTREE NOT CREATED:`. When a sandbox refused the write, run that same command once outside it. When the path is already a worktree from an interrupted run, run `lines.worktreeRemove` and then the add again, one time. A second failure stops.
 
 4. Read the checks. The line the command prints names the commit the checks are for; the check summary is printed only when that commit is the target's `head.sha`. When it is another commit, the pull request moved after it was pinned: print `CHECKS NOT READ:` naming both commits in place of the summary. A refusal prints `CHECKS NOT READ:` with its reason. In every case the review goes on, on the pinned head.
 
@@ -305,13 +305,19 @@ glab ci get --merge-request <iid> --output json | interlock pipeline --gitlab - 
 
    The second GitLab line runs only when the first printed `pending`, as the `settle` skill's pipeline input does. The skill runs no test, build or lint itself, with or without `--run-code`.
 
-5. Run `commands.changed` for the changed files. When it prints none, print `PULL REQUEST NOT REVIEWED: no changed files` and stop; the person's own diff is never read. Otherwise run `interlock surface --changed <files> --json` on them. When the person named a change, read its OpenSpec artifacts under `<worktree>`, where the pull request's copy is, never from the person's own tree.
+5. Run `commands.changed` as its printed `lines.changed`, writing the changed files to `<dir>/changed.txt`:
 
-6. When `.claude/graph/graph.json` exists in the person's own tree, build one inside the worktree and check it covers the files. The graph was just built, so the covers line takes no update flag, and nothing under the person's own `.claude/graph/` is written. Without a person's graph, or after a failed build, run no `blast-radius` reviewer, print the `BLAST RADIUS SKIPPED` line of §2 and record the skip.
+```bash
+<lines.changed> > <dir>/changed.txt
+```
+
+   When the file holds no path, print `PULL REQUEST NOT REVIEWED: no changed files` and stop; the person's own diff is never read. Every line below that takes the changed files reads them from that file on standard input, as `--changed - < <dir>/changed.txt`, and never as names typed after the flag: a file name is the pull request's text, and typed into a line it is a word a shell reads. Run `interlock surface --changed - --json < <dir>/changed.txt` on them. When the person named a change, read its OpenSpec artifacts under `<worktree>`, where the pull request's copy is, never from the person's own tree.
+
+6. When `.claude/graph/graph.json` exists in the person's own tree, build one inside the worktree and check it covers the files. The graph was just built, so the covers line takes no update flag, and nothing under the person's own `.claude/graph/` is written. Without a person's graph, or after a failed build or a failed covers line, run no `blast-radius` reviewer, print the `BLAST RADIUS SKIPPED` line of §2 and record the skip. Write `<worktree>` on these two lines single-quoted, as the printed lines quote a path.
 
 ```bash
 interlock-graph build <worktree>
-interlock-graph covers --changed - --root <worktree>
+interlock-graph covers --changed - --root <worktree> < <dir>/changed.txt
 ```
 
 7. Ask for the domain context with the first line of the block below. Routing is read in the person's own tree, unchanged. `REVIEW_CONTEXT.md` is read from the directory the command runs in, never from the worktree.
@@ -319,15 +325,15 @@ interlock-graph covers --changed - --root <worktree>
 8. Follow §2 and §3 for what to spawn and what to collect, running their `interlock` lines as this block spells them. Every scratch file goes under `<dir>`. Spawn every reviewer and skeptic as `interlock:reviewer`; a spawn that fails prints the `REVIEW FAILED: reviewer type unavailable` line of §2.
 
 ```bash
-interlock domain-context [<change>] --changed <files> --target <target> --json
-interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files>
+interlock domain-context [<change>] --changed - --target <target> --json < <dir>/changed.txt
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - < <dir>/changed.txt
 interlock review brief --skeptics --findings <f> --target <target> [--depth strict] --json
-interlock review --target <target> --findings <f> --verdicts <f> --changed <files> --dimensions <dimension record> --draft --out <draft> --json
+interlock review --target <target> --findings <f> --verdicts <f> --changed - --dimensions <dimension record> --draft --out <draft> --json < <dir>/changed.txt
 interlock review proof --review <draft>
-interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files> --rerun-of <draft>
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - --rerun-of <draft> < <dir>/changed.txt
 interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --target <target> [--depth strict] --json
-interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed <files> --dimensions <dimension record> --draft --out <next draft> --json
-interlock review --rerun-of <last draft> --target <target> --changed <files> [--metrics <change>] --dimensions <dimension record> --out <record> --json
+interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed - --dimensions <dimension record> --draft --out <next draft> --json < <dir>/changed.txt
+interlock review --rerun-of <last draft> --target <target> --changed - [--metrics <change>] --dimensions <dimension record> --out <record> --json < <dir>/changed.txt
 interlock gate --findings <survivors.json> --json
 interlock review comment --review <record> --target <target> --out <dir>/comment.md
 ```
@@ -352,7 +358,7 @@ glab mr note create <iid> --resolvable=false < <dir>/comment.md
 
    The GitLab note is posted from the comment file on standard input, never as an argument, and with `--resolvable=false` so it holds no merge back. A post that exits non-zero prints `POST FAILED:` with the platform CLI's message and the path of `<dir>/comment.md`. It is never run again and never sent another way: the skill cannot tell whether the platform took the comment, and a second attempt could post it twice. The person posts the file by hand or runs the review again.
 
-12. Run `commands.worktreeRemove`. A failure prints `REVIEW WORKTREE LEFT:` with the path. The worktree is removed after any stop once it exists, including a stop on `REVIEW FAILED:`, a refused promote line and a failed post.
+12. Run `commands.worktreeRemove` as its printed `lines.worktreeRemove`. A failure prints `REVIEW WORKTREE LEFT:` with the path. The worktree is removed after any stop once it exists, including a stop on `REVIEW FAILED:`, a refused promote line and a failed post.
 
 ### What takes §1's place
 
@@ -361,7 +367,7 @@ glab mr note create <iid> --resolvable=false < <dir>/comment.md
 | Listing the person's own changes | Not run. The change is the one the person named, or none. |
 | The author's own diff of the working tree | `commands.changed`, which diffs the pinned base against the worktree's head (step 5). |
 | Stopping when that diff is empty | Stops when `commands.changed` prints no file, with `PULL REQUEST NOT REVIEWED: no changed files`. |
-| `interlock surface --changed <files> --json` | The same line, on the files of step 5. |
+| `interlock surface --changed <files> --json` | The same command, reading the files of step 5 from `<dir>/changed.txt` with `--changed -`. |
 | Reading the change's OpenSpec artifacts | Read under `<worktree>`. |
 | Updating the graph with the author's diff | Step 6: a graph built inside the worktree and read with `--root <worktree>`. The person's own graph is never updated. |
 

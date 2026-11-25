@@ -28,7 +28,7 @@ On this path the skill writes to the platform nothing but the one comment, under
 - resolves a thread, or merges it;
 - switches, stashes, resets or cleans your own tree, or writes to your own graph.
 
-It also writes nothing to the repository's own records: no autonomy line and no compound note, so a blocker on a colleague's change does not reset this repository's ship ladder.
+It writes no autonomy line and no compound note, so a blocker on a colleague's change does not reset this repository's ship ladder. The one record it writes is the review-metrics row, and only when you name a change: the skill then passes `--metrics <change>`, and the row lands in your own review-metrics corpus beside your own reviews. With no change named it records nothing and says `REVIEW METRICS NOT RECORDED: no change named`.
 
 **What holds that list.** The skill's instructions, a test that fails the `--pr` section if it holds a write verb, and a write-nothing line in every reviewer prompt. Not a tool bound: the skill's `allowed-tools` belongs to the skill and not to the flag, so it still holds the shell and file writes the author's path needs, and the reviewer type keeps the shell. What a shell command may do beyond the three is for your own permission settings to decide. Likewise the read-and-run-nothing rule and the review root are lines in a prompt, not tool bounds.
 
@@ -40,7 +40,9 @@ The `allowed-tools` list gains only seven patterns: `gh auth status`, `gh pr vie
 
 Three weights, in this order: `Important` (blockers first), `Pre-existing`, then the `Nit`s inside one collapsed block headed by their count. A blocker or a warning reads `Important`; a suggestion reads `Nit`. The stored severities do not change, and `--json` carries both. The comment has no gate word, verdict, score or label, and ends by saying it is not an approval.
 
-**The Pre-existing rule has two halves.** The reviewer marks a finding `preExisting` only when the defect is on a line the diff did not change and would be there without this pull request, never for what the change breaks or leaves stale. Then `interlock review comment` confirms the mark: the finding needs a file and a line outside every changed range of that file, or a file outside the diff. A mark it cannot confirm is refused and counted, and the finding reads by its severity. An unmarked finding never reads `Pre-existing`. When git cannot produce the diff, nothing does, and standard error says `PRE-EXISTING NOT CHECKED:`.
+**The Pre-existing rule has two halves.** The reviewer marks a finding `preExisting` only when the defect is on a line the diff did not change and would be there without this pull request, never for what the change breaks or leaves stale. Then `interlock review comment` confirms the mark: the finding needs a file inside the repository and a line the head holds, outside every changed range of that file and not beside lines the pull request removes, or a file outside the diff. A file the pull request deletes, or one git lists as changed with no lines the diff could read (a binary file, a rename with no edit), confirms nothing. The diff is pinned against your git configuration: an external diff driver or a configured prefix changes nothing. A mark it cannot confirm is refused and counted, and the finding reads by its severity. An unmarked finding never reads `Pre-existing`. When git cannot produce the diff, or the diff names a file git does not list as changed, nothing does, and standard error says `PRE-EXISTING NOT CHECKED:`.
+
+**The comment names no path on your machine.** A reviewer reads the code at the worktree's absolute path; the comment names every file relative to the repository, whatever the reviewer wrote. It fits `maxReviewerCommentChars` (`interlock limits`): over it, the nits' bodies go first, then their rows, then the leading findings' bodies, and a `CUT:` line says what went. The record keeps every finding whole.
 
 ---
 

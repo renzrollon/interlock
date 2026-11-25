@@ -317,3 +317,147 @@ test('pr review comment: a mark on a changed line of a file whose name git quote
   const offChanged = marked({ file: 'docs/é x.txt', line: 3 })
   assert.deepEqual((await confirm([offChanged], changedRanges(quoted))).confirmed, [findingId(offChanged)])
 })
+
+// --- PR #46 review M1, M2, M10, M11: absence from the diff is never proof on its own ----------
+
+const WORKTREE = '/home/someone/repo/.claude/worktrees/review-pr-github-44-bbbbbbbbbbbb'
+const PERSON = '/home/someone/repo'
+
+async function confirmWith(findings, ranges, options) {
+  const { confirmPreExisting } = await loadComment()
+  return confirmPreExisting(findings, ranges, options)
+}
+
+test('pr review comment: a mark on a changed line is refused under every spelling of its path, the worktree\'s absolute one included (M2)', async () => {
+  for (const file of [`${WORKTREE}/lib/a.mjs`, 'lib//a.mjs', './lib/a.mjs', 'lib\\a.mjs', 'lib/./a.mjs', `${PERSON}/lib/a.mjs`]) {
+    const f = marked({ file, line: 20 })
+    const r = await confirmWith([f], RANGES, { roots: [WORKTREE, PERSON] })
+    assert.deepEqual(r.confirmed, [], `${file} is lib/a.mjs line 20, a changed line`)
+    assert.equal(r.refused.length, 1, file)
+  }
+})
+
+test('pr review comment: a mark whose file is outside the repository is refused, never confirmed (M2)', async () => {
+  for (const file of ['/etc/passwd', '../elsewhere/x.mjs', WORKTREE, '/home/someone/other/lib/a.mjs']) {
+    const r = await confirmWith([marked({ file, line: 3 })], RANGES, { roots: [WORKTREE, PERSON] })
+    assert.deepEqual(r.confirmed, [], file)
+    assert.match(r.refused[0].reason, /not a path inside the repository/, file)
+  }
+})
+
+test('pr review comment: a file listed as changed that the parsed diff gave no lines for is refused (M1)', async () => {
+  const binary = marked({ file: 'img/logo.png', line: 1 })
+  const r = await confirmWith([binary], RANGES, { changedNames: ['lib/a.mjs', 'img/logo.png'] })
+  assert.deepEqual(r.confirmed, [])
+  assert.match(r.refused[0].reason, /no changed lines/)
+  const untouched = marked({ file: 'lib/untouched.mjs', line: 5 })
+  assert.deepEqual(
+    (await confirmWith([untouched], RANGES, { changedNames: ['lib/a.mjs', 'img/logo.png'] })).confirmed,
+    [findingId(untouched)],
+    'a file not listed as changed is still off the diff'
+  )
+})
+
+test('pr review comment: a line the head does not have, a file the head does not hold and a line below 1 are refused (M11)', async () => {
+  const lineCount = p => ({ 'lib/a.mjs': 300, 'lib/short.mjs': 4 })[p] ?? null
+  const cases = [
+    [marked({ file: 'lib/short.mjs', line: 5 }), /has 4 lines/],
+    [marked({ file: 'lib/gone.mjs', line: 2 }), /holds no file/],
+    [marked({ file: 'LIB/a.mjs', line: 210 }), /holds no file/],
+    [marked({ file: 'lib/a.mjs', line: 0 }), /no file has/],
+    [marked({ file: 'lib/a.mjs', line: 2.5 }), /no file has/]
+  ]
+  for (const [f, reason] of cases) {
+    const r = await confirmWith([f], RANGES, { lineCount })
+    assert.deepEqual(r.confirmed, [], `${f.file}:${f.line}`)
+    assert.match(r.refused[0].reason, reason, `${f.file}:${f.line}`)
+  }
+  const fine = marked({ file: 'lib/short.mjs', line: 4 })
+  assert.deepEqual((await confirmWith([fine], RANGES, { lineCount })).confirmed, [findingId(fine)], 'the last line is a line')
+})
+
+test('pr review comment: a mark on a file the pull request deletes, or beside lines it removes, is refused (M11)', async () => {
+  const { changedRanges } = await import('../../lib/review-scope.mjs')
+  const diff = [
+    'diff --git a/lib/old.mjs b/lib/old.mjs',
+    'deleted file mode 100644',
+    '--- a/lib/old.mjs',
+    '+++ /dev/null',
+    '@@ -1,3 +0,0 @@',
+    '-a',
+    '-b',
+    '-c',
+    'diff --git a/lib/a.mjs b/lib/a.mjs',
+    '--- a/lib/a.mjs',
+    '+++ b/lib/a.mjs',
+    '@@ -10,3 +9,0 @@',
+    '-x',
+    '-y',
+    '-z'
+  ].join('\n')
+  const ranges = changedRanges(diff, [], { marks: true })
+  assert.deepEqual(changedRanges(diff), [{ path: 'lib/old.mjs', ranges: [] }, { path: 'lib/a.mjs', ranges: [] }], 'without marks the entries are unchanged')
+  const deleted = await confirmWith([marked({ file: 'lib/old.mjs', line: 2 })], ranges)
+  assert.match(deleted.refused[0].reason, /deletes lib\/old\.mjs/)
+  for (const line of [9, 10]) {
+    const r = await confirmWith([marked({ file: 'lib/a.mjs', line })], ranges)
+    assert.deepEqual(r.confirmed, [], `line ${line} borders the removal`)
+    assert.match(r.refused[0].reason, /borders lines the pull request removes/)
+  }
+  for (const line of [8, 11]) {
+    const f = marked({ file: 'lib/a.mjs', line })
+    assert.deepEqual((await confirmWith([f], ranges)).confirmed, [findingId(f)], `line ${line} is clear of the removal`)
+  }
+})
+
+test('pr review comment: the rendered comment names files relative to the repository and never holds the worktree or the person\'s path (M2)', async () => {
+  const f = finding({
+    file: `${WORKTREE}/lib/a.mjs`,
+    title: `Reads ${WORKTREE}/lib/b.mjs unguarded`,
+    description: `See ${PERSON}/lib/c.mjs and ${WORKTREE}.`,
+    suggestion: `Guard it in ${WORKTREE}/lib/a.mjs.`
+  })
+  const text = await render([f], { roots: [WORKTREE, PERSON] })
+  assert.ok(!text.includes('/home/someone'), text)
+  assert.ok(text.includes('lib/a.mjs:10'), text)
+  assert.ok(text.includes('Reads lib/b.mjs unguarded'), text)
+  assert.ok(text.includes(findingId(f)), "the id is still the record's")
+  const plain = await render([finding()])
+  assert.equal(await render([finding()], { roots: [WORKTREE, PERSON] }), plain, 'a comment with no machine path is unchanged')
+})
+
+test('pr review comment: a comment over its bound drops nit bodies, then nit rows, then finding bodies, keeps every leading row and ends the findings on CUT: (M10)', async () => {
+  const { LIMITS } = await import('../../lib/limits.mjs')
+  assert.ok(Number.isInteger(LIMITS.maxReviewerCommentChars) && LIMITS.maxReviewerCommentChars > 0)
+  const long = 'x'.repeat(400)
+  const leads = Array.from({ length: 5 }, (_, i) => finding({ severity: 'blocker', file: `lib/l${i}.mjs`, title: `Lead ${i}`, description: long }))
+  const nits = Array.from({ length: 100 }, (_, i) => finding({ severity: 'suggestion', file: `lib/n${i}.mjs`, title: `Nit ${i}`, description: long }))
+  const whole = await render([...leads, ...nits], { bound: 1e9 })
+  assert.ok(!whole.includes('CUT:'), 'nothing is cut under a bound it fits')
+  for (const bound of [30000, 8000, 2500]) {
+    const text = await render([...leads, ...nits], { bound })
+    if (bound > 2500) assert.ok(text.length <= bound, `${text.length} > ${bound}`)
+    for (const l of leads) assert.ok(cellsOf(text, l), `the row of ${l.title} is kept`)
+    const lines = text.trimEnd().split('\n')
+    assert.equal(lines.at(-1), 'This is an automated review, not an approval. A person decides whether this merges.')
+    const cut = lines.find(l => l.startsWith('CUT: '))
+    assert.ok(cut, `a CUT: line under ${bound}`)
+    assert.ok(text.indexOf(cut) < text.indexOf(COVERAGE), 'the cut line precedes the proof paragraph')
+  }
+  const shallow = await render([...leads, ...nits], { bound: 30000 })
+  assert.match(shallow, /CUT: \d+ nits' bodies/)
+  assert.ok(!/findings' bodies/.test(shallow), 'leading bodies stay while nit bodies can go')
+  const deep = await render([...leads, ...nits], { bound: 2500 })
+  assert.match(deep, /nits' rows/)
+  assert.match(deep, /finding(?:'s|s') bod/)
+})
+
+test('pr review comment: at the published bound, 100 findings with 400-character descriptions render within it (M10)', async () => {
+  const { LIMITS } = await import('../../lib/limits.mjs')
+  const long = 'y'.repeat(400)
+  const many = Array.from({ length: 100 }, (_, i) =>
+    finding({ severity: i % 3 ? 'suggestion' : 'warning', file: `lib/f${i}.mjs`, title: `Finding ${i}`, description: long, suggestion: long })
+  )
+  const text = await render(many)
+  assert.ok(text.length <= LIMITS.maxReviewerCommentChars, `${text.length} characters`)
+})

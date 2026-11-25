@@ -63,7 +63,7 @@ Field mapping:
 
 For GitLab the base is `diff_refs.base_sha` (D26), the commit GitLab's own diff starts from. GitLab fills `diff_refs` shortly after a pull request is created; a document where it is still empty is refused with a line saying so.
 
-The fetch names full refs (`refs/heads/<base.ref>`, `refs/pull/<number>/head`), so a branch name can never be read as an option. Commit ids are checked to be full hexadecimal ids before they are placed in an argv. A branch name holding a colon, whitespace, a control character or `..` is refused: none of those can be in a git ref name, and a colon would turn a fetch argument into a refspec with a local destination. The commands are argv arrays and never pass through a shell.
+The fetch names full refs (`refs/heads/<base.ref>`, `refs/pull/<number>/head`), so a branch name can never be read as an option. Commit ids are checked to be full hexadecimal ids before they are placed in an argv. A branch name holding a colon, whitespace, a control character or `..` is refused: none of those can be in a git ref name, and a colon would turn a fetch argument into a refspec with a local destination. The commands are argv arrays, and the CLI never passes one through a shell. The skill does: it runs each as the one line `interlock review target` prints under `lines`, every word that needs it single-quoted, so a root holding a space stays one word, and a base branch holding a character a shell would read (`;`, `$`, a backtick, a pipe, a quote, a parenthesis, a brace, `&`, `<`, `>`, `!`) is refused at the pin. The changed files reach every later line on standard input from `<dir>/changed.txt` (`--changed -`), never typed into one.
 
 When the pull request belongs to another repository than `origin` (a URL pasted into the wrong clone), the fetch brings other commits, the pinned head is not among them, and the worktree command fails. That failure is printed. No separate repository check is added.
 
@@ -212,15 +212,15 @@ The paragraphs of §1 that describe a flag, or what the CLI does with `REVIEW.md
 The first draft of this design put `--target` on "every line that carries `--base` or `--head`". That left the skeptics line without it, since it carries neither, and skeptics with no review root judge findings against the person's own tree. Saying "every `interlock review` line" fails the other way: `interlock review proof` accepts only `--review`. So the section spells every line in full, and a test pins each:
 
 ```bash
-interlock domain-context [<change>] --changed <files> --target <target> --json
-interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files>
+interlock domain-context [<change>] --changed - --target <target> --json < <dir>/changed.txt
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - < <dir>/changed.txt
 interlock review brief --skeptics --findings <f> --target <target> [--depth strict] --json
-interlock review --target <target> --findings <f> --verdicts <f> --changed <files> --dimensions <dimension record> --draft --out <draft> --json
+interlock review --target <target> --findings <f> --verdicts <f> --changed - --dimensions <dimension record> --draft --out <draft> --json < <dir>/changed.txt
 interlock review proof --review <draft>
-interlock review brief --dimension <name> --target <target> [--change <change>] --changed <files> --rerun-of <draft>
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - --rerun-of <draft> < <dir>/changed.txt
 interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --target <target> [--depth strict] --json
-interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed <files> --dimensions <dimension record> --draft --out <next draft> --json
-interlock review --rerun-of <last draft> --target <target> --changed <files> [--metrics <change>] --dimensions <dimension record> --out <record> --json
+interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed - --dimensions <dimension record> --draft --out <next draft> --json < <dir>/changed.txt
+interlock review --rerun-of <last draft> --target <target> --changed - [--metrics <change>] --dimensions <dimension record> --out <record> --json < <dir>/changed.txt
 interlock gate --findings <survivors.json> --json
 interlock review comment --review <record> --target <target> --out <dir>/comment.md
 ```

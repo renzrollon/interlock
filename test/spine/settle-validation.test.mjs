@@ -529,6 +529,17 @@ test('validation: twelve passing checks are counted and collapsed', async () => 
   }
 })
 
+test('validation: a check state that is not a known word goes through the inert cell, and a known one stays itself (M15)', async () => {
+  const odd = 'fail @octocat\n| x |'
+  const text = await comment(records({ pipeline: pipeline([check('test (20)', odd, true), check('lint (20)', 'fail')]) }))
+  const lines = section(text, 'Platform checks')
+  const row = lines.find(l => l.includes('`test (20)`'))
+  assert.ok(row, 'the check is a row')
+  assert.ok(row.includes('| `fail @octocat \\| x \\|` |'), row)
+  assert.ok(!lines.some(l => l.trim() === '| x |' || /^[^`]*@octocat/.test(l)), 'the state posted as live markup')
+  assert.ok(lines.some(l => l.includes('`lint (20)`') && l.includes('| fail |')), 'a known state is printed as itself')
+})
+
 test('validation: a failing required check and a pending one are rows before the block', async () => {
   const checks = [check('test (20)', 'fail', true), check('lint (20)', 'pending'), check('build', 'pass', true)]
   const text = await comment(records({ pipeline: pipeline(checks) }))

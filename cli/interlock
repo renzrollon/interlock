@@ -904,8 +904,8 @@ review:
                          worktree is the root, its commits the base and head; the
                          worktree must be at that head, and --base, --head and
                          --root beside it exit 1. REVIEW_CONTEXT.md stays cwd's.
-  --base <ref>           Read REVIEW.md's two path lists (Do Not Report, Always
-                         Human Review) from the commit at this ref instead of
+  --base <ref>           Read REVIEW.md's path lists (Do Not Report, Always
+                         Human Review, Counts as Source) from the commit at this ref instead of
                          the working tree, so a change cannot exclude its own
                          paths by editing the copy applied to it. The prose
                          still comes from the working tree. A working copy that
@@ -1782,6 +1782,9 @@ function rejectOversized(results, context) {
     unit: null,
     e2e: null,
     coverage: null,
+    typecheck: null,
+    lint: null,
+    build: null,
     signals: [{ level: 'halt', kind: 'oversized-result', message: reason }],
     banners: [reason],
     skipped: []

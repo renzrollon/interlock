@@ -10283,6 +10283,20 @@ test('prose unread: a strict run lists a docs entry apart, keeps its proof, and 
   }
 })
 
+test('prose unread: a string `paths` on the ship path is bannered as PATHS IGNORED and the entry stays unread', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const entry = { input: 'the guide', reason: 'not opened', paths: 'docs/guide.md' }
+    const verified = strictWithUnread(root, change, [entry], { 'docs/guide.md': '# guide\n' })
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.proseUnread, [])
+    const all = JSON.stringify([verified, manifestOf(root).banners])
+    assert.ok(all.includes('PATHS IGNORED: technical-lead: unread[0]'), all)
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('prose unread: a run started on a commit whose REVIEW.md lists skills/ keeps a skill entry unread', () => {
   const { root, change } = shippedRepo()
   try {

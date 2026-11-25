@@ -3399,7 +3399,7 @@ test('suite four: docs/07 names both flags in its flags sentence and both result
   const text = proseDoc('07-cli-and-configuration.md')
   const flags = text.split('\n').find(line => line.startsWith('**Flags.** The published list is'))
   assert.ok(flags, 'docs/07 has no flags sentence')
-  for (const flag of ['no-lint', 'no-build']) assert.ok(flags.includes(`\`${flag}\``), `the flags sentence does not name ${flag}`)
+  for (const flag of FLAGS) assert.ok(flags.includes(`\`${flag}\``), `the flags sentence does not name ${flag}`)
   const verifyRow = text.split('\n').find(line => line.startsWith('| `--verify <file>` |'))
   assert.ok(verifyRow, 'docs/07 has no --verify row')
   for (const field of ['lint', 'build']) assert.ok(verifyRow.includes(`\`${field}\``), `the --verify row does not name the ${field} field`)
