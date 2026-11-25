@@ -164,24 +164,28 @@ Rationale: at the spec stage prose is all there is, and a keyword read that fail
 
 ### Requirement: The verification signals SHALL read the final verification verdict, one band per outcome
 
-The suite signal (`verify.suite`) SHALL read the unit suite's and the type check's own results in the final verification verdict, whatever that verdict's halting set, and SHALL take the worse of the two. For each of them:
+The suite signal (`verify.suite`) SHALL read the unit suite's, the type check's, the lint's and the build's own results in the final verification verdict, whatever that verdict's halting set, and SHALL take the worst of the four. For each of them:
 
-- a failure SHALL be red, including a type check that failed at the final gate, where the ship loop reports it without halting;
+- a failure of the unit suite, the type check or the build SHALL be red, including a type check that failed at the final gate, where the ship loop reports it without halting;
+- a lint failure SHALL be amber, marked as needing a fix, and SHALL never be red;
 - unit failures the verdict excused as pre-existing SHALL be amber, marked as needing a person;
 - a skip because every changed path is documentation SHALL be green with the docs-only flag;
 - a unit skip for want of a test profile or a unit command SHALL be amber with no flag;
 - a type-check skip for want of a type-check command SHALL be green with the flag naming the absent type checker;
-- a skip because the verification budget was spent, and a planned step with no reported result, SHALL be unobserved;
+- a lint skip for want of a lint command SHALL be green with the flag naming the absent linter (`no-lint`), and a build skip for want of a build command SHALL be green with the flag naming the absent build (`no-build`);
+- a skip because the verification budget was spent, a planned step with no reported result, and a verdict that records neither a result nor a skip for a kind SHALL be unobserved;
 - any other skip reason SHALL be amber;
 - a pass SHALL be green.
 
+The band, the mark and the reason SHALL come from the worst of the four, and the flags from all four, so a flag is still reported when another kind holds the signal at a worse band.
+
 The end-to-end signal (`verify.e2e`) SHALL be amber, marked as needing a fix, when the suite ran and failed; green with the flag naming the absent suite when the repository has no enabled end-to-end suite or the caller did not request one; green with no flag when it was skipped because every changed path is documentation; unobserved when the budget was spent or a planned run has no reported result; and green when it passed. A verification verdict that is not from the final gate SHALL make both verification signals unobserved.
 
-Rationale: the final gate declines to halt on a failed type check because the ship loop publishes an exhaustive list of hard halts, and that is a statement about whether the run stops, not about whether the result can be merged.
+Rationale: the final gate declines to halt on a failed type check because the ship loop publishes an exhaustive list of hard halts, and that is a statement about whether the run stops, not about whether the result can be merged. A lint failure is a defect a tool found and a fix clears without a product decision, so it holds the verdict for a person and does not block; a change that does not build cannot be merged. A verdict that says nothing about a kind was written before the kind was read, or lost its result, and either way it is not evidence that the kind passed.
 
 #### Scenario: Happy path — a green final verdict with no e2e suite
 
-- **GIVEN** a final verification verdict in which the unit suite and type check passed and end-to-end was skipped as not configured
+- **GIVEN** a final verification verdict in which the unit suite, the type check, the lint and the build passed and end-to-end was skipped as not configured
 - **WHEN** the merge confidence is assessed
 - **THEN** the suite signal is green with no flag
 - **AND** the end-to-end signal is green with the flag naming the absent suite
@@ -201,7 +205,7 @@ Rationale: the final gate declines to halt on a failed type check because the sh
 
 #### Scenario: Edge case — an end-to-end suite that ran and failed is amber, not red
 
-- **GIVEN** a final verification verdict in which the unit suite passed and the end-to-end suite ran and failed
+- **GIVEN** a final verification verdict in which the unit suite, the type check, the lint and the build passed and the end-to-end suite ran and failed
 - **WHEN** the merge confidence is assessed
 - **THEN** the suite signal is green and the end-to-end signal is amber
 - **AND** the verdict is `HUMAN`, with the end-to-end failure named as needing a fix
@@ -220,6 +224,49 @@ Rationale: the final gate declines to halt on a failed type check because the sh
 - **THEN** the first reads the suite signal green with the docs-only flag
 - **AND** the second and third read it amber with no flag
 - **AND** the fourth and fifth read it unobserved, each with a reason naming the kind
+
+#### Scenario: Failure — a red build is red
+
+- **GIVEN** a final verification verdict that halted on the build, in which the unit suite, the type check and the lint passed
+- **WHEN** the merge confidence is assessed
+- **THEN** the suite signal is red, marked as needing a fix, and the verdict is `BLOCK`
+- **AND** the evidence names the build failure and its exit code
+
+#### Scenario: Failure — a red lint is amber and needs a fix
+
+- **GIVEN** a final verification verdict that did not halt, in which the unit suite, the type check and the build passed and the lint failed
+- **WHEN** the merge confidence is assessed
+- **THEN** the suite signal is amber, marked as needing a fix, and the verdict is `HUMAN`
+- **AND** the signal is not red, and its reason names the lint failure
+
+#### Scenario: Edge case — no lint command and no build command are flags, not bands
+
+- **GIVEN** a final verification verdict in which the unit suite and the type check passed, and the lint and the build were each skipped because the profile names no command for them
+- **WHEN** the merge confidence is assessed with every other signal green and clean
+- **THEN** the suite signal is green and carries `no-lint` and `no-build`, and the verdict is `MERGE`
+- **AND** the score is strictly below the score of the same input with a passing lint and a passing build
+
+#### Scenario: Edge case — a verdict that records nothing for the lint or the build is unobserved
+
+- **GIVEN** a final verification verdict written before these results existed, in which the unit suite and the type check passed and nothing is recorded for the build: no result and no skip
+- **AND** separately a final verdict whose plan held a build step for which no result was reported
+- **WHEN** each is assessed
+- **THEN** each reads the suite signal unobserved, with a reason that names the build
+- **AND** neither reads green, and the verdict is `HUMAN`
+
+#### Scenario: Edge case — the worst of four holds the signal, and every flag is still reported
+
+- **GIVEN** a final verification verdict in which the unit suite passed, the lint failed, and the type check and the build were each skipped because the profile names no command for them
+- **WHEN** the merge confidence is assessed
+- **THEN** the suite signal is amber, marked as needing a fix, with a reason that names the lint
+- **AND** it carries `no-typecheck` and `no-build`
+
+#### Scenario: Edge case — a lint the caller turned off is amber, not a flag
+
+- **GIVEN** a final verification verdict in which the unit suite, the type check and the build passed, and the lint was skipped because the caller turned it off
+- **WHEN** the merge confidence is assessed
+- **THEN** the suite signal is amber, marked as needing more evidence, with a reason that names the lint and its skip reason
+- **AND** it carries no `no-lint` flag, because the project has a linter and this verdict did not run it
 
 ### Requirement: The coverage signal SHALL judge the change against the base, not against an absolute bar
 
@@ -1241,3 +1288,40 @@ When `diff.shape` cannot establish the classes it SHALL apply the caps to every 
 - **WHEN** each is assessed
 - **THEN** each reads the diff-shape signal green on its source class
 - **AND** neither evidence says that every changed line and file was counted
+
+### Requirement: Prose a reviewer left unread SHALL be a flag on the ran signal, not a band
+
+When the review's proof lists an entry under `proseUnread`, `review.ran` SHALL add the `prose-unread` flag and SHALL leave its band as the rest of the record decides it. Its evidence SHALL name each such dimension with the files and the reason of each entry, and a green reason SHALL say which dimensions left prose unread. `prose-unread` SHALL be in the published flag vocabulary.
+
+#### Scenario: Happy path — a proven review with prose left unread is green and flagged
+
+- **GIVEN** a review whose every selected dimension ran, whose proof holds, and whose `proof.proseUnread` names `technical-lead` with one entry on `docs/04-when-it-stops.md`, reason `prose-only edits, not opened`
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is green with the `prose-unread` flag, and scores below the same input with nothing listed apart
+- **AND** its evidence names `technical-lead`, `docs/04-when-it-stops.md` and the reason, and its reason names `technical-lead`
+
+#### Scenario: Edge case — an unread input beside it still reads amber, and the flag stays
+
+- **GIVEN** a review whose proof names `technical-lead` under `unread` with the input `delta specs`, and under `proseUnread` with an entry on `docs/04-when-it-stops.md`
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal is amber, needing more evidence, and still carries the `prose-unread` flag
+- **AND** its evidence names both the unread input and the prose left unread
+
+#### Scenario: Edge case — several dimensions and entries are joined in a fixed order
+
+- **GIVEN** a proven review of the dimensions `language` then `technical-lead`, whose `proof.proseUnread` names `language` with one entry on `README.md`, reason `not opened`, and `technical-lead` with two entries: one on `docs/a.md` and `docs/b.md`, reason `prose-only edits, not opened`, then one on `docs/c.md`, reason `not opened`
+- **WHEN** the merge confidence is assessed
+- **THEN** the ran signal's evidence holds `prose left unread: language: README.md (not opened)` and then `prose left unread: technical-lead: docs/a.md, docs/b.md (prose-only edits, not opened); docs/c.md (not opened)`
+- **AND** its green reason ends `; prose left unread by language, technical-lead`
+
+#### Scenario: Edge case — the flag is published and has its row
+
+- **GIVEN** the published flag vocabulary and the delivery documentation
+- **WHEN** the merge-confidence suite reads both
+- **THEN** `prose-unread` is in the vocabulary, and `docs/15-merge-confidence.md` carries its row under `## The flags`, naming `review.ran`
+
+#### Scenario: Failure — a record with no such list raises no flag
+
+- **GIVEN** a proven review record written before this change, which carries no `proseUnread`, and another whose `proseUnread` is not a list
+- **WHEN** each is assessed
+- **THEN** the ran signal is green with no `prose-unread` flag, and the command does not fail on either
