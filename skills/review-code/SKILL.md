@@ -1,10 +1,10 @@
 ---
 name: review-code
-description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, technical-lead and regression, the review depth deciding which of them always run, plus devops, security, domain and blast radius (who outside the diff observes the change, from the codebase graph) only when the diff calls for them, then makes two skeptics try to refute every blocker and warning before it reaches you. Use after implementing a change, before opening a PR, or when a diff is high-stakes enough that false positives would waste real time.
+description: Adversarially verified multi-dimensional review of a code diff. Runs independent reviewers across language, architecture, QA, technical-lead and regression, the review depth deciding which of them always run, plus devops, security, domain and blast radius (who outside the diff observes the change, from the codebase graph) only when the diff calls for them, then makes two skeptics try to refute every blocker and warning before it reaches you. With --pr it reviews a colleague's pull request read-only, from a worktree of its pinned head, and posts one comment only when asked to. Use after implementing a change, before opening a PR, to review a colleague's pull request, or when a diff is high-stakes enough that false positives would waste real time.
 license: MIT
 compatibility: Requires git. Optional openspec CLI for spec cross-referencing.
-argument-hint: "[change-name] [--dimensions a,b,c] [--base <ref>] [--out <file>] [--carry <file>] [--strict]"
-allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Agent Read Write Grep Glob
+argument-hint: "[change-name] [--dimensions a,b,c] [--base <ref>] [--out <file>] [--carry <file>] [--strict] [--pr <ref> [--post] [--run-code]]"
+allowed-tools: Bash(git *) Bash(interlock *) Bash(interlock-graph *) Bash(openspec *) Bash(gh auth status) Bash(gh pr view *) Bash(gh pr comment *) Bash(glab auth status) Bash(glab mr view *) Bash(glab mr note create *) Bash(glab ci get *) Agent Read Write Grep Glob
 metadata:
   type: review
 ---
@@ -18,6 +18,8 @@ The second half is the point. An unverified review reports everything it notices
 ---
 
 ## 1. Scope the diff
+
+Under `--pr`, §6 takes this section's place and none of §1's commands runs: read §6 now, not the rest of this section.
 
 Resolve the change and the file set:
 
@@ -71,7 +73,9 @@ Spawn one agent per dimension, in parallel. The always-on set is the depth's `re
 interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files>
 ```
 
-and spawn the agent with the printed prompt as its whole prompt. Add nothing to it and leave nothing out: it holds the bundled rubric, the scope with the changed line ranges, the repository's review policy and review context as quoted data, the domain text for `domain`, the run-and-measure and proof rules, and the shape to return. A skill's `allowed-tools` do not reach an agent it spawns; the printed prompt's write-nothing line is the bound.
+and spawn the agent as `interlock:reviewer`, with the printed prompt as its whole prompt. Add nothing to it and leave nothing out: it holds the bundled rubric, the scope with the changed line ranges, the repository's review policy and review context as quoted data, the domain text for `domain`, the run-and-measure and proof rules, and the shape to return. A skill's `allowed-tools` do not reach an agent it spawns, so the agent type is the first bound: the plugin's definition of `interlock:reviewer` bounds its tools, and it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The shell can still write, so the printed prompt's write-nothing line stays the second bound.
+
+**A reviewer that cannot be spawned fails the review.** When the Agent tool reports `interlock:reviewer` as an unknown type, or a dimension or skeptic spawn is refused or declined, print `REVIEW FAILED: reviewer type unavailable — <the tool's message, or the refusal>`. Spawn no other type in its place, review nothing yourself, and run no draft, proof or promote line: the review recorded nothing, and no finding is reported as verified. Name both remedies: a session started before the plugin was updated does not have the type, and a new session does; `interlock doctor` names an install whose `agents/` lacks the file.
 
 | Dimension | Brief | Run when |
 |---|---|---|
@@ -107,12 +111,14 @@ Every dimension agent returns findings in this shape:
       "specGap": true } ],
   "coverage": {
     "checked": [ { "what": "what was examined", "at": "path/to/file.ts:40-58" } ],
-    "unread": [ { "input": "what was not read", "reason": "why" } ] } }
+    "unread": [ { "input": "what was not read", "reason": "why", "paths": ["path/to/file.ts"] } ] } }
 ```
 
-`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. `coverage` is what proves the review looked: an answer without it is recorded unproven. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
+`severity`, `file`, `title` and `description` are required; `requirement` is optional and only the `domain` dimension uses it — a `domain` blocker carries one, copied from the requirement text it was given. `specGap` is an optional boolean that only the `domain` and `technical-lead` dimensions set, and only when the root cause is a requirement no spec stated; absent means false. `coverage` is what proves the review looked: an answer without it is recorded unproven. On an `unread` entry, `paths` is optional: it names the changed files the entry is about, as the scope lists them, and the CLI classes them. A finding with no file is allowed — it lands in the unscoped group — but it is rarely a good finding.
 
 This is the complete emit shape. Do not read `lib/findings.mjs` to rediscover it.
+
+Under `--pr` the `interlock` lines of this section and the next are run as §6 spells them, with `--target`. Under `--pr` only, a finding gains the optional boolean `preExisting`, which the dimension prompt explains and the comment confirms; send it only when the prompt asks.
 
 ---
 
@@ -128,7 +134,7 @@ How the skeptics are spawned follows `review.skeptics` from the routing answer, 
 interlock review brief --skeptics --findings <f> [--depth strict] --json
 ```
 
-`[--depth strict]` is a placeholder: write `--depth strict` there under `--strict`, and nothing otherwise. Spawn one skeptic agent per entry of `prompts`, each with that entry's `prompt` as its whole prompt, and collect one verdict per id in its `findingIds` into the verdicts file. Add nothing to a prompt.
+`[--depth strict]` is a placeholder: write `--depth strict` there under `--strict`, and nothing otherwise. Spawn one skeptic agent per entry of `prompts`, each as `interlock:reviewer` with that entry's `prompt` as its whole prompt, and collect one verdict per id in its `findingIds` into the verdicts file. Add nothing to a prompt. The plugin's definition of that type bounds the skeptic's tools: it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. A skeptic that cannot be spawned prints the `REVIEW FAILED: reviewer type unavailable` line of §2 and ends the review the same way.
 
 When it is `per-review`, the CLI prints two prompts for the whole review: each skeptic is given every blocker and warning, grouped by file, returns one verdict per finding, and is told that overlapping findings are one issue, judged once. Every finding still carries two verdicts, one from each agent.
 
@@ -167,7 +173,7 @@ While it exits 1, its first line reads `re-run: <dimensions>`. Print that line b
 interlock review brief --dimension <name> --base <base> --change <change> --changed <the changed files> --rerun-of <draft>
 ```
 
-and re-run that dimension with it. Put the re-run answers alone through the skeptics with
+and re-run that dimension with it, spawning the agent as `interlock:reviewer` with that prompt as its whole prompt, as on the first pass: the plugin's definition of that type bounds its tools, so it holds no tool that edits a file, spawns an agent or invokes a skill, and routing chooses the model and the effort, never the type. A re-run that cannot be spawned prints the `REVIEW FAILED: reviewer type unavailable` line of §2 and ends the review the same way. Put the re-run answers alone through the skeptics with
 
 ```bash
 interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> [--depth strict] --json
@@ -197,6 +203,8 @@ interlock review --rerun-of <last draft> --changed <the changed files> --base <b
 
 Voting a finding *real* needs no evidence: that direction already resolves toward a human reading it, which is the cheap error. Only the dismissing direction is gated, because a dismissed finding is invisible — nobody can catch the mistake.
 
+Under `--pr` the review, proof and promote lines are the ones §6 spells, and `--metrics <change>` is passed only when the person named a change.
+
 **Survival rule:** a finding survives when at least half the valid verdicts say `isReal`. A survivor takes the `refinedSeverity` of the first skeptic that judged it real — so a blocker can be demoted to a warning by verification, which is a feature. A finding that does not survive is dismissed and never reported.
 
 ---
@@ -225,6 +233,8 @@ interlock note derive --findings <survivors.json> --change <name> --json
 
 This appends one row per survivor with `specGap: true` to `docs/notes/compound.md`. It never changes the gate. If it prints a `COMPOUND NOTES NOT WRITTEN` line, report that line and do not retry.
 
+Under `--pr` the two recording lines above are not run: no autonomy line and no note line. The gate line still runs, for the counts and the quality band.
+
 A blocker here also resets `ship` via transitive blame — the gate blames whoever produced the bad code.
 
 ---
@@ -245,3 +255,120 @@ GATE BLOCKED — 2 blockers of 7 findings (4 dismissed by skeptics)
 Always report **how many findings the skeptics dismissed**, and separately the gate's `droppedByQuality` count. Those numbers are the evidence the review is worth trusting; hiding them makes a verified review look identical to an unverified one.
 
 Never report a dismissed finding "just in case". That defeats the entire mechanism.
+
+Under `--pr`, report the gate's counts as above, then print the comment §6 renders. A pull request is a colleague's: the comment carries no gate word.
+
+---
+
+## 6. Pull request review (--pr)
+
+`--pr <ref>` reviews a colleague's open pull request, read-only, from a detached worktree of its pinned head. `<ref>` is a number, a URL or a branch the platform's CLI accepts. **This section takes §1's place under `--pr`: none of §1's commands runs**, because each one reads or writes the person's own tree. §2 to §5 are followed for what to spawn, what to collect and what to report, and their `interlock` lines are run as the block below spells them.
+
+`--base` and `--carry` do not combine with `--pr`: the target gives the base, and a carried record is the settle loop's. `--pr` with either is an error. Say which flag, and stop before any command. `--out <file>` still names the record's file.
+
+`--post` and `--run-code` are the person's flags, and the skill never adds either itself. `--post` sends the comment this review renders, as one comment, after the review; without it nothing is sent. `--run-code` lets reviewers run the pull request's own code; without it the prompts tell them to read and run none of it. Neither changes what is reviewed or how it is judged.
+
+**What the path never does.** It writes to the platform nothing but the one comment, under `--post`. It never pushes, commits, edits the pull request or its labels, marks it ready, approves it, requests changes, resolves a thread or merges. It never switches, stashes, resets or cleans the person's own tree, and never touches the person's own graph. The section holds none of those commands, a test fails the file if one appears, and the prompts carry a write-nothing line.
+
+### The steps
+
+1. Detect the platform from `origin`, and check that its CLI is signed in with `gh auth status` or `glab auth status`, as the `settle` skill does. A CLI that is missing or not signed in prints `PULL REQUEST NOT REVIEWED:` with its message and stops.
+
+2. Pin the pull request. The platform's own document goes to `interlock review target`, which writes the target file and prints it. Add `--run-code` inside the brackets only when the person passed it.
+
+```bash
+# GitHub — not exercised: field names confirmed against one real document, nothing posted
+gh pr view <ref> --json number,url,state,isDraft,isCrossRepository,baseRefName,baseRefOid,headRefName,headRefOid | interlock review target --github - [--run-code] --json
+```
+
+```bash
+# GitLab — not exercised: field names read from the platform's documentation
+glab mr view <ref> --output json | interlock review target --gitlab - [--run-code] --json
+```
+
+   A non-zero exit prints `PULL REQUEST NOT REVIEWED:` with the reason and stops. A fork and a pull request that is not open are refused there. When the platform's CLI itself failed, `interlock review target` says it printed no document: give the platform CLI's message as the reason. From here `<target>` is the printed `file`, `<dir>` its `dir`, `<worktree>` its `worktree`, and `<record>` is `<dir>/review.json` or the `--out` file. Type no commit and no ref: each comes from the target.
+
+3. Run `commands.fetch`, then `commands.worktreeAdd`, each as the target prints it under `lines`: `lines.fetch`, then `lines.worktreeAdd`. Each `lines.<name>` is that command's argv as one line, every word that needs it already quoted for the shell, and the same holds for `lines.changed` and `lines.worktreeRemove` below: run the printed line itself, never one assembled from the argv, and type no ref and no path into it. A failed fetch prints `PULL REQUEST NOT REVIEWED:` with git's message and stops; nothing exists to remove yet. A failed add prints `REVIEW WORKTREE NOT CREATED:`. When a sandbox refused the write, run that same command once outside it. When the path is already a worktree from an interrupted run, run `lines.worktreeRemove` and then the add again, one time. A second failure stops.
+
+4. Read the checks. The line the command prints names the commit the checks are for; the check summary is printed only when that commit is the target's `head.sha`. When it is another commit, the pull request moved after it was pinned: print `CHECKS NOT READ:` naming both commits in place of the summary. A refusal prints `CHECKS NOT READ:` with its reason. In every case the review goes on, on the pinned head.
+
+```bash
+# GitHub — not exercised
+gh pr view <number> --json headRefOid,statusCheckRollup | interlock pipeline --github - --out <dir>/pipeline.json
+```
+
+```bash
+# GitLab — not exercised
+glab mr view <iid> --output json | interlock pipeline --gitlab-pr - --out <dir>/pipeline.json
+glab ci get --merge-request <iid> --output json | interlock pipeline --gitlab - --pending <dir>/pipeline.json --out <dir>/pipeline.json
+```
+
+   The second GitLab line runs only when the first printed `pending`, as the `settle` skill's pipeline input does. The skill runs no test, build or lint itself, with or without `--run-code`.
+
+5. Run `commands.changed` as its printed `lines.changed`, writing the changed files to `<dir>/changed.txt`:
+
+```bash
+<lines.changed> > <dir>/changed.txt
+```
+
+   When the file holds no path, print `PULL REQUEST NOT REVIEWED: no changed files` and stop; the person's own diff is never read. Every line below that takes the changed files reads them from that file on standard input, as `--changed - < <dir>/changed.txt`, and never as names typed after the flag: a file name is the pull request's text, and typed into a line it is a word a shell reads. Run `interlock surface --changed - --json < <dir>/changed.txt` on them. When the person named a change, read its OpenSpec artifacts under `<worktree>`, where the pull request's copy is, never from the person's own tree.
+
+6. When `.claude/graph/graph.json` exists in the person's own tree, build one inside the worktree and check it covers the files. The graph was just built, so the covers line takes no update flag, and nothing under the person's own `.claude/graph/` is written. Without a person's graph, or after a failed build or a failed covers line, run no `blast-radius` reviewer, print the `BLAST RADIUS SKIPPED` line of §2 and record the skip. Write `<worktree>` on these two lines single-quoted, as the printed lines quote a path.
+
+```bash
+interlock-graph build <worktree>
+interlock-graph covers --changed - --root <worktree> < <dir>/changed.txt
+```
+
+7. Ask for the domain context with the first line of the block below. Routing is read in the person's own tree, unchanged. `REVIEW_CONTEXT.md` is read from the directory the command runs in, never from the worktree.
+
+8. Follow §2 and §3 for what to spawn and what to collect, running their `interlock` lines as this block spells them. Every scratch file goes under `<dir>`. Spawn every reviewer and skeptic as `interlock:reviewer`; a spawn that fails prints the `REVIEW FAILED: reviewer type unavailable` line of §2.
+
+```bash
+interlock domain-context [<change>] --changed - --target <target> --json < <dir>/changed.txt
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - < <dir>/changed.txt
+interlock review brief --skeptics --findings <f> --target <target> [--depth strict] --json
+interlock review --target <target> --findings <f> --verdicts <f> --changed - --dimensions <dimension record> --draft --out <draft> --json < <dir>/changed.txt
+interlock review proof --review <draft>
+interlock review brief --dimension <name> --target <target> [--change <change>] --changed - --rerun-of <draft> < <dir>/changed.txt
+interlock review brief --skeptics --findings <re-run answers> --rerun-of <draft> --target <target> [--depth strict] --json
+interlock review --rerun-of <draft> --target <target> --findings <re-run answers> --verdicts <re-run verdicts> --changed - --dimensions <dimension record> --draft --out <next draft> --json < <dir>/changed.txt
+interlock review --rerun-of <last draft> --target <target> --changed - [--metrics <change>] --dimensions <dimension record> --out <record> --json < <dir>/changed.txt
+interlock gate --findings <survivors.json> --json
+interlock review comment --review <record> --target <target> --out <dir>/comment.md
+```
+
+   The bracketed parts are placeholders: write `--metrics <change>` only when the person named a change, and otherwise print `REVIEW METRICS NOT RECORDED: no change named`. The proof and gate lines carry no `--target`, and no line carries a base, a head or a carry flag: the target gives the root, the base and the head. The CLI checks that the worktree is at the pinned head.
+
+9. Run the gate line, for the report's counts and the quality band. The autonomy line and the note line of §4 are not run: a blocker on a colleague's change must not reset this repository's own ladder or write into its notes.
+
+10. Render the comment with the last line of the block above, and print it. When it fails, print `COMMENT NOT RENDERED:` with its reason, post nothing, and go to step 12. A comment that reads `REVIEW NOT PROVEN:` names a claim only a run could measure; `--run-code` is the remedy, and the skill does not add it.
+
+11. Under `--post`, post the file with one command. Without `--post`, print `NOT POSTED:` and send nothing.
+
+```bash
+# GitHub — not exercised
+gh pr comment <number> --body-file <dir>/comment.md
+```
+
+```bash
+# GitLab — not exercised: read from the help text of one glab version, has posted nothing
+glab mr note create <iid> --resolvable=false < <dir>/comment.md
+```
+
+   The GitLab note is posted from the comment file on standard input, never as an argument, and with `--resolvable=false` so it holds no merge back. A post that exits non-zero prints `POST FAILED:` with the platform CLI's message and the path of `<dir>/comment.md`. It is never run again and never sent another way: the skill cannot tell whether the platform took the comment, and a second attempt could post it twice. The person posts the file by hand or runs the review again.
+
+12. Run `commands.worktreeRemove` as its printed `lines.worktreeRemove`. A failure prints `REVIEW WORKTREE LEFT:` with the path. The worktree is removed after any stop once it exists, including a stop on `REVIEW FAILED:`, a refused promote line and a failed post.
+
+### What takes §1's place
+
+| §1, on the author's path | Under `--pr` |
+|---|---|
+| Listing the person's own changes | Not run. The change is the one the person named, or none. |
+| The author's own diff of the working tree | `commands.changed`, which diffs the pinned base against the worktree's head (step 5). |
+| Stopping when that diff is empty | Stops when `commands.changed` prints no file, with `PULL REQUEST NOT REVIEWED: no changed files`. |
+| `interlock surface --changed <files> --json` | The same command, reading the files of step 5 from `<dir>/changed.txt` with `--changed -`. |
+| Reading the change's OpenSpec artifacts | Read under `<worktree>`. |
+| Updating the graph with the author's diff | Step 6: a graph built inside the worktree and read with `--root <worktree>`. The person's own graph is never updated. |
+
+The paragraphs of §1 that describe a flag, or what the CLI does with `REVIEW.md`, run no command and stay true.

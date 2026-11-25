@@ -141,7 +141,7 @@ Two commands per change, and you read the spec between them. Settle and archive 
 | Command | Use it to |
 |---|---|
 | `/interlock:explore` | Investigate the repo with parallel read-only investigators |
-| `/interlock:review-code` | Run the adversarial review on its own |
+| `/interlock:review-code` | Run the adversarial review on its own, or with `--pr <ref>` on a colleague's pull request, read-only |
 | `/interlock:fix-tests` | Repair a red suite by root cause, without weakening a test |
 | `/interlock:graph` | Build and query the code graph |
 | `/interlock:report` | Read the indicators over the run corpora. It gates nothing |
@@ -294,7 +294,7 @@ Interlock makes no network request of its own and reads no credential. The plugi
 The plugin puts all three on Claude Code's `PATH`. To put them on yours:
 
 ```bash
-npm install --location=global @renzrollon/interlock@1.19.0
+npm install --location=global @renzrollon/interlock@1.20.0
 ```
 
 The reference and every environment variable are in [07](docs/07-cli-and-configuration.md).
@@ -325,6 +325,7 @@ Start with **[01 — The first hour](docs/01-first-hour.md)**, and keep [04 — 
 | [14 — Evals](docs/14-evals.md) | What a consumer's run is checked by, why no model evals run in your CI, how to file a failure |
 | [15 — Merge confidence](docs/15-merge-confidence.md) | What the `MERGE` / `HUMAN` / `BLOCK` verdict reads, signal by signal, and how it reaches a pull request or a CI job |
 | [16 — Upgrading](docs/16-upgrading.md) | What an upgrade keeps, what a resume across versions does, and how to keep the CLI at the plugin's version |
+| [17 — Reviewing a teammate's pull request](docs/17-reviewing-a-teammates-pull-request.md) | `review-code --pr`: what it writes, what it never does, the weights, and what has not been exercised |
 </details>
 
 ## Development

@@ -16,7 +16,6 @@
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
-  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -30,7 +29,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { constants as osConstants, cpus, tmpdir } from 'node:os'
+import { cpus, tmpdir } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import {
@@ -55,7 +54,6 @@ import {
   MANIFEST_PATH,
   RUN_SCHEMA,
   STATE_PATH,
-  VERIFY_TIMINGS_PATH,
   answeredInput,
   checkSequence,
   isCloseReplay,
@@ -143,6 +141,7 @@ import {
   checkResultFieldSizes,
   VERIFY_CONTEXTS
 } from '../lib/verify.mjs'
+import { verifyExec } from '../lib/verify-exec.mjs'
 import { spillBytes } from '../lib/spill.mjs'
 import { canonicalizePath, classifyRisk, formatRisk } from '../lib/risk.mjs'
 import { mergeDecision, foldMutationPaths } from '../lib/merge-lanes.mjs'
@@ -253,7 +252,7 @@ Usage:
                                             it touches (see "conformance:" below)
   interlock domain-context [change]         The living requirements the domain
                   --changed <files>         review dimension judges a diff
-                  [--base <ref>]            against: which capabilities, and
+                  [--base <ref>|--target <f>]  against: which capabilities, and
                                             their bounded text (see
                                             "domain-context:" below)
   interlock spec-audit                      Count what the living specs state
@@ -401,7 +400,7 @@ Usage:
                                             failed close
   interlock remediate --findings <file>     Plan one remediation round, or the verdict
   interlock review --findings <f> --verdicts <f>
-                  [--base <ref>]           Resolve a review against skeptic verdicts.
+                  [--base <ref>|--target <f>]  Resolve a review against skeptic verdicts.
                   [--out <f>] [--head <sha>]  --out writes the JSON to a file;
                   [--dimensions <f>]       --head records the commit reviewed;
                   [--carry <f>]            --dimensions records which dimensions
@@ -418,7 +417,7 @@ Usage:
                                            REACHED: <dims>" or "PROOF LEFT
                                            UNREAD: <dims>" (exit 0); exit 2 on a
                                            file that is not a review record
-  interlock review brief --dimension <name> --base <ref> [--change <c>] [--rerun-of <draft>]
+  interlock review brief --dimension <name> (--base <ref>|--target <f>) [--change <c>] [--rerun-of <draft>]
                                            Print one dimension's whole prompt;
                                            --rerun-of: the whole prompt for an
                                            unproven dimension, the uncited
@@ -426,6 +425,10 @@ Usage:
                                            exit 1 if the draft names no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
+  interlock review target --github <f|->   Pin a pull request from gh's (or, with
+                  [--run-code]             --gitlab, glab's) document; offline
+  interlock review comment --review <f> --target <f> [--out <f>]
+                                           Render the pull request comment
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
                                            both path lists and any parse problems.
@@ -461,7 +464,7 @@ Usage:
   interlock verify unit --result <file>     Judge a unit result on its own
   interlock verify spill --run-id <id> --kind <k> --input <f>
                                            Spill oversized stdout/stderr to disk
-  interlock verify exec --kind <k> --command <cmd>
+  interlock verify exec --kind <k> --command <cmd> [--record <file>]
                                            Run one planned check and time it
   interlock verify baseline [--report <lcov>] [--baseline <file>]
                                            Record a coverage report's project total
@@ -897,8 +900,12 @@ review:
                          A verdict that a finding IS real needs no citation.
   --min-quality <n>      Quality-band floor, as for gate
   --no-tolerance         Disable the quality band
-  --base <ref>           Read REVIEW.md's two path lists (Do Not Report, Always
-                         Human Review) from the commit at this ref instead of
+  --target <file>        Also on review brief: the file "review target" wrote. Its
+                         worktree is the root, its commits the base and head; the
+                         worktree must be at that head, and --base, --head and
+                         --root beside it exit 1. REVIEW_CONTEXT.md stays cwd's.
+  --base <ref>           Read REVIEW.md's path lists (Do Not Report, Always
+                         Human Review, Counts as Source) from the commit at this ref instead of
                          the working tree, so a change cannot exclude its own
                          paths by editing the copy applied to it. The prose
                          still comes from the working tree. A working copy that
@@ -916,14 +923,18 @@ review:
   Always exits 0; feed "surviving" to gate to decide whether it blocks.
   "dismissalsRejected" counts refutations refused for want of a citation — a
   high number means the skeptics are asserting rather than reading.
+  review target --github|--gitlab <file|-> [--run-code]: write the target file
+  (refused: a fork, not open, a bad ref or id, no document).
+  review comment: a record of another head exits 1; marks git cannot check print
+  PRE-EXISTING NOT CHECKED: on stderr. --out is written before stdout.
 
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
-  --base <ref>           Read both path lists from the commit at this ref and the
-                         prose from the working tree; the output says which
+  --base <ref>           Read all three path lists from the commit at this ref and
+                         the prose from the working tree; the output says which
                          ref the lists came from and whether the copies differ.
-  --json                 Emit { prose, excludePaths, humanPaths, owner, problems }
-                         (with --base also listsFrom and differsFromBase).
+  --json                 Emit { prose, excludePaths, humanPaths, sourcePaths, owner,
+                         problems } (with --base also listsFrom and differsFromBase).
   The prose is advice a reviewer reads; it can never lower survival. The band and
   nit cap are NOT policy fields — a threshold-shaped key is reported, not adopted.
   Always exits 0; an absent REVIEW.md is the empty policy, not an error. A --base
@@ -937,6 +948,7 @@ domain-context:
   --base <ref>           Read the living requirement text from the commit at this
                          ref. Absent, the working tree is read and the output
                          names it as the source.
+  --target <file>        Read from the target's worktree, at its base commit.
   Selects capabilities two ways: a changed path that a reliable graph edge links
   to a living spec ("linked"), and a capability the change's delta specs modify
   that has a living spec ("declared"). The graph is found root first, then the
@@ -1108,7 +1120,9 @@ verify plan:
   --budget-ms <n>        Soft budget; past it, typecheck only. The inter-wave default is derived
                          from the profile and floored at the published budget
   --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')}. inter-wave omits e2e and
-                         coverage by default (typecheck, unit, lint only).
+                         coverage by default (typecheck, unit, lint only). The
+                         build is planned at the final gate only; between waves it
+                         is skipped as final-gate-only.
   --changed <files...>   Repo-relative paths the last wave touched. When every
                          path is documentation, the plan emits no steps.
 
@@ -1117,8 +1131,8 @@ verify judge:
   --results <file>       JSON array of { kind, exitCode, ... } an agent reported
   --context <ctx>        ${Object.keys(VERIFY_CONTEXTS).join('|')} (default final). Load-bearing:
                          inter-wave halts on typecheck AND unit, final halts on
-                         unit only, so a red typecheck stops the next wave but
-                         does not stop the commit.
+                         unit AND build, so a red typecheck stops the next wave
+                         but does not stop the commit, and a red build does.
   --baseline <file>      Counts captured before the change, for the weakened-suite check
   --pre-existing         Excuse every failure as pre-existing
   --pre-existing-signatures <file>   JSON array of signatures known red beforehand
@@ -1201,9 +1215,10 @@ verify coverage:
   on stdout. Runs no coverage command unless --compute-base asks it to.
 
 verify exec:
-  --kind <k>             The planned step this runs, e.g. typecheck/unit/lint (required)
+  --kind <k>             The planned step this runs, e.g. typecheck/unit/lint/build (required)
   --command <cmd>        The planned command, verbatim; run through the shell (required)
   --cwd <dir>            Directory to run it in (default: the current one)
+  --record <file>        Also append the same line to <file> (a failed write is a stderr warning)
   Runs the command with its stdout, stderr and exit code passed through
   unchanged, and appends { kind, exitCode, durationMs, command, at } to
   .claude/ship/verify-timings.jsonl. \`run judge\` folds those durations into
@@ -1767,6 +1782,9 @@ function rejectOversized(results, context) {
     unit: null,
     e2e: null,
     coverage: null,
+    typecheck: null,
+    lint: null,
+    build: null,
     signals: [{ level: 'halt', kind: 'oversized-result', message: reason }],
     banners: [reason],
     skipped: []
@@ -3018,25 +3036,29 @@ function diffShape(root, base, headSha) {
   let binaryFiles = 0
   const paths = []
   const renamedFrom = []
+  // One row per file, by its path after the change, for the size signal's classes.
+  const files = []
   const tokens = out.split('\0')
   for (let i = 0; i < tokens.length; i++) {
     if (!tokens[i]) continue
     const [added, deleted, path] = tokens[i].split('\t')
+    let after = path
     if (path) {
       paths.push(path)
     } else {
       paths.push(...tokens.slice(i + 1, i + 3).filter(Boolean))
       if (tokens[i + 1]) renamedFrom.push(tokens[i + 1])
+      after = tokens[i + 2] || tokens[i + 1]
       i += 2
     }
     changedFiles += 1
-    if (added === '-' || deleted === '-') {
-      binaryFiles += 1
-      continue
-    }
-    changedLines += (Number(added) || 0) + (Number(deleted) || 0)
+    const binary = added === '-' || deleted === '-'
+    const lines = binary ? 0 : (Number(added) || 0) + (Number(deleted) || 0)
+    if (after) files.push({ path: after, lines, binary })
+    if (binary) binaryFiles += 1
+    changedLines += lines
   }
-  return { base, changedLines, changedFiles, binaryFiles, paths, renamedFrom }
+  return { base, changedLines, changedFiles, binaryFiles, paths, renamedFrom, files }
 }
 
 /**
@@ -4320,36 +4342,7 @@ async function main() {
         const command = typeof flags.command === 'string' ? flags.command : ''
         if (!command.trim()) die('--command is required')
         const cwd = typeof flags.cwd === 'string' && flags.cwd.trim() ? flags.cwd : undefined
-        // Timed here, around the command and nothing else: the inter-wave budget
-        // used to be clocked from the step's dispatch to its judgement, which
-        // charged two relays and the verify agent's own turns to "verification"
-        // and spent the whole budget on the first checkpoint of every Workflow run.
-        const started = performance.now()
-        const ran = spawnSync(command, { shell: true, stdio: 'inherit', cwd })
-        const durationMs = Math.round(performance.now() - started)
-        let exitCode
-        if (ran.error) {
-          process.stderr.write(`interlock: verify exec could not run the command: ${ran.error.message}\n`)
-          exitCode = 127
-        } else if (typeof ran.status === 'number') {
-          exitCode = ran.status
-        } else {
-          const signal = ran.signal && osConstants.signals[ran.signal]
-          exitCode = Number.isInteger(signal) ? 128 + signal : 1
-        }
-        try {
-          mkdirSync(join(root, dirname(VERIFY_TIMINGS_PATH)), { recursive: true })
-          appendFileSync(
-            join(root, VERIFY_TIMINGS_PATH),
-            JSON.stringify({ kind, exitCode, durationMs, command, at: new Date().toISOString() }) + '\n'
-          )
-        } catch (err) {
-          // A timing is a budget input, not a gate: losing it costs the budget
-          // its precision (the judge falls back to the round trip, and says
-          // so), never the check its result.
-          process.stderr.write(`interlock: verify timing not recorded: ${(err && err.message) || err}\n`)
-        }
-        process.exit(exitCode)
+        process.exit(verifyExec({ root, kind, command, cwd, record: flags.record }))
       } else if (sub === 'baseline') {
         // Record the project total of a coverage report taken on this commit, so a
         // later `verify coverage` has a base figure. Refuses, leaving any previous
