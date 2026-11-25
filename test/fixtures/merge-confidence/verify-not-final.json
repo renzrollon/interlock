@@ -129,22 +129,28 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": null,
     "signals": [
       {
         "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
+        "kind": "build",
+        "reason": "final-gate-only",
+        "message": "build: VERIFICATION SKIPPED: reason=final-gate-only (the build runs at the final gate only)"
       }
     ],
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command"
+      "VERIFICATION SKIPPED: reason=final-gate-only"
     ],
     "skipped": [
       {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
+        "kind": "build",
+        "reason": "final-gate-only",
+        "detail": "the build runs at the final gate only"
       }
     ]
   },

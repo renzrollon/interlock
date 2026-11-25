@@ -23,7 +23,7 @@ The merge-confidence verdict in the description, and the labels beside it, are *
 | Flag | Effect |
 |------|--------|
 | `--create` | Push the branch, then create the PR instead of updating an existing one (§4). With `--review` it is created as a draft |
-| `--review` | Once the pull request exists, run the review loop (§5): review its diff, post the findings, fix them in rounds that commit and push, reply, confirm the scenarios, verify the head and wait for the checks, then assess with that evidence |
+| `--review` | Once the pull request exists, run the review loop (§5): review its diff, post the findings, fix them in rounds that commit and push, reply, confirm the scenarios, verify the head and wait for the checks, then assess with that evidence and post the validation comment beside the findings (§6d) |
 | `--test-plan` | Also post the full manual test plan **as a comment** |
 | `--explain` | Also post a per-file teaching walkthrough **as a comment** |
 | `--confidence-comment` | Also post the merge-confidence block **as a comment**, so each assessment leaves one entry in the timeline naming its commit |
@@ -340,7 +340,7 @@ Plan the round's verification over those paths, with the round's profile copy (w
 interlock verify plan --profile .claude/ship/settle/profile-r<r>.json --context inter-wave --changed <staged paths> --json > .claude/ship/settle/plan-r<r>.json
 ```
 
-Run each planned step exactly as the plan gives it, once per step, each with the Bash tool's timeout set to that step's `timeoutMs` in `plan-r<r>.json` (or the tool's own maximum, when that is lower; a step whose `timeoutMs` is null keeps the tool's default):
+Run each planned step exactly as the plan gives it, once per step, each with the Bash tool's timeout set to the larger of the tool's default and that step's `timeoutMs` in `plan-r<r>.json`, capped at the tool's own maximum, never below the tool's default (a step whose `timeoutMs` is null keeps the tool's default):
 
 ```bash
 interlock verify exec --kind <kind> --command "<command>"
@@ -416,12 +416,18 @@ When it is a draft this pass did not create (a re-run after an interrupted pass,
 `<files>` is the changed-file list of §3, read again now against `origin/<target branch>`, because the rounds may have added to it.
 
 ```bash
-interlock settle conformance-brief <change> --changed <files> --base origin/<target branch> --head <sha>
+interlock settle conformance-brief <change> --changed <files> --base origin/<target branch> --head <sha> --out .claude/ship/settle/conformance-brief.json
 ```
 
-Spawn one worker as `interlock:reviewer`, with the printed briefing as its whole prompt. The plugin's definition of that type bounds its tools: it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The worker writes no file: it replies with one JSON object carrying the five counts and `head`. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
+Spawn one worker as `interlock:reviewer`, with the printed briefing as its whole prompt. The plugin's definition of that type bounds its tools: it holds no tool that edits a file, spawns an agent or invokes a skill. Routing chooses the model and the effort, never the type: after `ROUTING UNAVAILABLE` the call still names `interlock:reviewer`. The worker writes no file: it replies with one JSON object carrying the five counts, `head` and one cited row per briefed id. `--out` keeps the briefing's record, the ids the check below reads. When it exits 0 with nothing on standard output and `nothing to confirm` on standard error, there is nothing to confirm: spawn no worker and write no handoff. Exit 1 names a change it could not resolve: report it, and write no handoff.
 
-Write the object the reply holds to `.claude/ship/settle/handoff.json` with the Write tool, as returned, repairing no value: a `head` that is not the pushed head is written as it came, and the assessment is what refuses it. When the reply holds no such object, print `CONFORMANCE UNREAD: <first line of the reply>`, write no handoff, and go on to §5f. When the Agent tool reports `interlock:reviewer` as an unknown type, or the spawn is refused or declined, print `CONFORMANCE SKIPPED: reviewer type unavailable — <the tool's message, or the refusal>`, spawn no other type, confirm nothing yourself, write no handoff, and go on to §5f: the confirmation never stops the loop.
+Write the object the reply holds to `.claude/ship/settle/handoff-reply.json` with the Write tool, as returned, repairing no value: a `head` that is not the pushed head is written as it came, and the assessment is what refuses it. When the reply holds no such object, print `CONFORMANCE UNREAD: <first line of the reply>`, write no reply file, run no check, and go on to §5f. Then check the reply's rows against the briefing's record and the working tree:
+
+```bash
+interlock settle handoff-check --brief .claude/ship/settle/conformance-brief.json --reply .claude/ship/settle/handoff-reply.json --out .claude/ship/settle/handoff.json --head <sha>
+```
+
+Print every line it prints: the counts, and a `CONFIRMATION NOT CITED:` line naming each confirmation it refused, with its reason. A refused row is a count, not a failure, and the check exits 0. When it exits non-zero, print `CONFORMANCE UNCHECKED: <first line of its standard error>` and go on to §5f. The assessment is handed `--handoff` only when the check wrote the file, and the skill writes `.claude/ship/settle/handoff.json` by no other means: never copy the reply there. When the Agent tool reports `interlock:reviewer` as an unknown type, or the spawn is refused or declined, print `CONFORMANCE SKIPPED: reviewer type unavailable — <the tool's message, or the refusal>`, spawn no other type, confirm nothing yourself, write no handoff, and go on to §5f: the confirmation never stops the loop.
 
 Only when a worker is to be spawned, first run `interlock routing settle-conformance --json` once. Pass its `model` and `effort` on the worker call; a `null` means omit that parameter, and the host's default applies. Print every line of its `banners` verbatim before the spawn. When the command exits non-zero, print `ROUTING UNAVAILABLE: <first line of its output>` and spawn at the session defaults. Name no model and no effort level in this skill or in the prompt.
 
@@ -431,12 +437,12 @@ Plan the final verification, run each planned step exactly as the plan gives it,
 
 ```bash
 interlock verify plan --profile .claude/testing/profile.json --context final --changed <files> --json > .claude/ship/settle/plan.json
-interlock verify exec --kind <kind> --command "<command>"
+interlock verify exec --kind <kind> --command "<command>" --record .claude/ship/settle/exec.jsonl
 interlock verify judge --plan .claude/ship/settle/plan.json --results .claude/ship/settle/results.json --context final --head <sha> --json > .claude/ship/settle/verify.json.tmp
 test -s .claude/ship/settle/verify.json.tmp && mv .claude/ship/settle/verify.json.tmp .claude/ship/settle/verify.json || rm -f .claude/ship/settle/verify.json.tmp
 ```
 
-With no profile, plan with `--no-profile` in place of `--profile`. Run `interlock verify exec` once per step the plan lists, each with the Bash tool's timeout set to the profile's `unit.timeout_ms` (or the tool's own maximum, when that is lower); with no profile, leave the tool's default. Write one `{ kind, exitCode }` entry per step, with the counts you can read, to `.claude/ship/settle/results.json`. A step the tool killed at its timeout is recorded as failed, with a non-zero `exitCode`, and the report names the step and the timeout as the reason.
+With no profile, plan with `--no-profile` in place of `--profile`. Run `interlock verify exec` once per step the plan lists, each with the Bash tool's timeout set to that step's `timeoutMs` in `.claude/ship/settle/plan.json` when its entry carries one, and to the profile's `unit.timeout_ms` when it does not, each the larger of the tool's default and that value, capped at the tool's own maximum, never below the tool's default; with no profile, leave the tool's default. When `verify exec` exits 2 naming an `unknown flag`, the CLI is older than this skill: print that line and stop, and never record it as a step's result. Write one `{ kind, exitCode }` entry per step, with the counts you can read, to `.claude/ship/settle/results.json`. A step the tool killed at its timeout, a build among them, is recorded as failed, with a non-zero `exitCode`, and the report names the step and the timeout as the reason. `--record` appends what the CLI itself observed of each run, its exit code and duration, to `.claude/ship/settle/exec.jsonl`, which the validation comment (§6d) reads; only this final verification writes that file, and a round's `verify exec` line (§5c) carries no `--record`.
 
 The judge writes to a temporary file, and the `test -s` line moves it into place only when it holds something. An exit 1 from `verify judge` with a verdict on standard output is a halting verdict, not a failed command: the file is kept, and the assessment reads it. An exit with nothing on standard output leaves an empty file, which the same line removes, so an empty verification record never lands.
 
@@ -512,7 +518,7 @@ interlock merge-confidence <change> --base origin/<target branch> --changed <fil
 ```
 
 - Pass `--run .claude/ship/merge-confidence.json` only when that file exists (Glob for it). It is the evidence a ship run's close wrote. The command decides whether it may be used, and says why on standard error when it takes nothing from it, or when it carries the run record to a later commit and drops the rest: report that reason.
-- Pass `--review`, `--verify` and `--handoff` only with `--review`, and only for files this pass of the loop wrote. `<last>` is the round of the last re-review (§5c), the highest-numbered `review-r<r>.json` in `.claude/ship/settle/`: the record whose head is the pushed head. It is `review-r0.json` only when no round pushed a fix. Pass `--handoff` only when §5e wrote the file.
+- Pass `--review`, `--verify` and `--handoff` only with `--review`, and only for files this pass of the loop wrote. `<last>` is the round of the last re-review (§5c), the highest-numbered `review-r<r>.json` in `.claude/ship/settle/`: the record whose head is the pushed head. It is `review-r0.json` only when no round pushed a fix. Pass `--handoff` only when §5e's `handoff-check` wrote the file.
 - Pass `--coverage .claude/ship/settle/coverage.json` under the same condition as `--run`: only when that file exists (Glob for it), which is only when the loop's verification ran a coverage step (§5f).
 - The command refuses a review, verification or handoff record that describes another commit, and says so on standard error: report that reason.
 - Without `--review`, pass nothing from `.claude/ship/settle/`. Never pass a review, verification, handoff or coverage file left in the working directory by any other means.
@@ -543,9 +549,40 @@ interlock merge-confidence <change> --base origin/<target branch> --changed <fil
 
 It prints one block, beginning with its own `## Merge confidence` heading. That block goes into the description **as printed**: no line changed, reordered, summarised or dropped. It names the commit and the base it was computed for.
 
+### 6d. The validation comment
+
+Only with `--review`, on every pass that reached the final verification. Without `--review` no validation comment is posted, and this step runs nothing.
+
+The comment says, for the pushed head, what each planned command returned, the platform's checks, which scenarios the confirmation confirmed and with what citation, and what none of it would catch. The CLI renders all of it, bound to `<sha>`; the skill pipes it to the platform as printed and writes no part of it by hand. It is posted here, before the description is composed, so `## Testing` (§7) never names a comment that does not exist.
+
+Pass each record flag only for a file this pass wrote: `--exec` only when §5f ran a step, `--pipeline` only when §6a wrote the pipeline input, `--handoff` only when §5e's check wrote the file, `--review` the same `review-r<last>.json` §6b was passed, and `--coverage` only when that file exists. `<files>` is the changed-file list §5e read again after the rounds, the one the confirmation and the assessment are passed, and not the list of §3: a screen a fix round added is listed. When the loop did not start, or stopped early before §5f, this pass wrote no verdict: print `VALIDATION NOT POSTED: the loop did not start` or `VALIDATION NOT POSTED: the loop stopped early, before the final verification`, and run no posting line. Whatever `.claude/ship/settle/` still holds an earlier pass wrote, and nothing of it is rendered.
+
+```bash
+interlock settle validation --head <sha> --plan .claude/ship/settle/plan.json --results .claude/ship/settle/results.json --verify .claude/ship/settle/verify.json --exec .claude/ship/settle/exec.jsonl --pipeline .claude/ship/pipeline.json --handoff .claude/ship/settle/handoff.json --review .claude/ship/settle/review-r<last>.json --coverage .claude/ship/settle/coverage.json --changed <files> | gh pr comment <n> --body-file -
+```
+
+On GitLab the same command pipes into a note, not exercised: written from glab's documentation, and the GitHub line is the one this repository runs.
+
+```bash
+# GitLab — not exercised: `glab mr note create` reads the body from standard input
+interlock settle validation --head <sha> --plan .claude/ship/settle/plan.json --results .claude/ship/settle/results.json --verify .claude/ship/settle/verify.json --exec .claude/ship/settle/exec.jsonl --pipeline .claude/ship/pipeline.json --handoff .claude/ship/settle/handoff.json --review .claude/ship/settle/review-r<last>.json --coverage .claude/ship/settle/coverage.json --changed <files> | glab mr note create <iid> --resolvable=false
+```
+
+When `interlock settle validation` exits non-zero it rendered nothing: print `VALIDATION NOT POSTED: <first line of its standard error>`, and post nothing in its place. When the platform refuses the post, print `VALIDATION NOT POSTED: <the platform's message>`. Either way the pass carries on: the comment never stops it, and §7 marks the summary line `--unposted`. A disagreement between the session's exit code and the observed one, or a halted verification, is said inside the comment, which is posted all the same. The comment fits the bound `interlock limits` publishes; past it the CLI drops the least useful rows and says how many.
+
+Each pass posts its own comment and edits or removes no earlier one, as the round comments are left: two passes on one commit leave two, and the `latest` one for a commit is the one `## Testing` names.
+
 ---
 
 ## 7. Compose the description
+
+**`## Testing` under `--review`** is the three lines this prints, for the same head and records as §6d:
+
+```bash
+interlock settle validation --head <sha> --plan .claude/ship/settle/plan.json --results .claude/ship/settle/results.json --verify .claude/ship/settle/verify.json --summary --exec .claude/ship/settle/exec.jsonl
+```
+
+Pass `--exec` under §6d's condition, and add `--unposted` whenever §6d printed `VALIDATION NOT POSTED:`, whether the render or the post failed: the third line then says the comment was not posted for the commit. Copy the three lines under `## Testing` as printed. The one line the skill may add is `Manual UI test plan: see PR comment.`, when it posts a plan; no other line is added, changed or removed. When the command exits non-zero, or the pass ran no final verification of its own (the loop did not start, or stopped early before §5f), print `TESTING SUMMARY UNAVAILABLE: <reason>` and write the hand-written form below instead, `Verified locally` and `Not covered` among it; it never stops the description from being published. Without `--review` there are no records, and `## Testing` is the hand-written form.
 
 ```markdown
 ## Summary
@@ -711,7 +748,7 @@ Both are **comment-only, always.** Neither ever enters the description — a rev
 
 ## 11. Close the loop: say what still needs archiving
 
-This is the last point the change is in your hands, so it is where the spec lifecycle gets a mention.
+This is the last point the change is in your hands, so it is where the spec lifecycle gets a mention. With `--review`, the report also says whether §6d posted the validation comment, and repeats any `VALIDATION NOT POSTED:` line.
 
 Pass the changed-file list you already resolved in §3:
 

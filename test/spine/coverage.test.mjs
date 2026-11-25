@@ -91,6 +91,30 @@ test('parseAddedLines on an empty diff is an empty map', () => {
   assert.equal(coverage.parseAddedLines('').size, 0)
 })
 
+test('parseAddedLines reads a name git quotes, and one holding a space, by the name the review scope reads (PR #46 blast radius, B8)', async () => {
+  const { changedRanges } = await import('../../lib/review-scope.mjs')
+  const diff = [
+    'diff --git "a/lib/\\303\\251.mjs" "b/lib/\\303\\251.mjs"',
+    '--- "a/lib/\\303\\251.mjs"',
+    '+++ "b/lib/\\303\\251.mjs"',
+    '@@ -1 +1,2 @@',
+    '-x',
+    '+y',
+    '+z',
+    'diff --git a/lib/a b.mjs b/lib/a b.mjs',
+    '--- a/lib/a b.mjs\t',
+    '+++ b/lib/a b.mjs\t',
+    '@@ -3 +3 @@',
+    '-p',
+    '+q'
+  ].join('\n')
+  const added = coverage.parseAddedLines(diff)
+  assert.deepEqual([...added.keys()].sort(), ['lib/a b.mjs', 'lib/é.mjs'])
+  assert.deepEqual([...added.get('lib/é.mjs')], [1, 2])
+  assert.deepEqual([...added.get('lib/a b.mjs')], [3])
+  assert.deepEqual(changedRanges(diff).map(f => f.path).sort(), [...added.keys()].sort(), 'both parsers name the same files')
+})
+
 // --- changed-line coverage -------------------------------------------------
 
 test('changed-line coverage counts only the added lines the report instruments', () => {

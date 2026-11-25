@@ -2539,6 +2539,35 @@ test('the test-profile row fails every profile the verification refuses', () => 
   }
 })
 
+test('build kind: a profile with a well-formed build section leaves the test-profile row as it is without one', () => {
+  // A guard: it passes today, because a section the validator does not name is ignored,
+  // and it must keep passing once the validator names it.
+  const dir = tmp()
+  try {
+    const bare = { version: 1, unit: { command: 'npm test', timeout_ms: 120000 } }
+    file(dir, '.claude/testing/profile.json', bare)
+    const without = byId(diagnose(dir, baseOpts(dir)), 'test-profile')
+    file(dir, '.claude/testing/profile.json', { ...bare, build: { command: 'npm run build', cwd: '.', timeout_ms: 300000 } })
+    const withBuild = byId(diagnose(dir, baseOpts(dir)), 'test-profile')
+    assert.equal(withBuild.status, 'ok')
+    assert.equal(withBuild.status, without.status)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('build kind: a profile whose build.command is a number fails the test-profile row, naming the field', () => {
+  const dir = tmp()
+  try {
+    file(dir, '.claude/testing/profile.json', { version: 1, unit: { command: 'npm test' }, build: { command: 42 } })
+    const row = byId(diagnose(dir, baseOpts(dir)), 'test-profile')
+    assert.equal(row.status, 'fail')
+    assert.match(row.detail, /build\.command/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('profileProblem returns the message verification throws, and null for a sound profile', async () => {
   const { profileProblem, planVerification } = await import('../../lib/verify.mjs')
   assert.equal(typeof profileProblem, 'function', 'lib/verify.mjs must export profileProblem')

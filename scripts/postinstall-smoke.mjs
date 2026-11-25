@@ -273,6 +273,17 @@ export const INVENTORY = [
   { bin: I, argv: ['review', 'brief', '--dimension', 'regression', '--base', 'HEAD~1'], codes: [0], check: r => (/^# Dimension: regression$/m.test(r.stdout) ? '' : 'the bundled regression rubric was not read from the install') },
   { bin: I, argv: ['review', 'brief', '--skeptics', '--findings', '{in}/blocker.json', '--json'], codes: [0], keys: ['prompts'], check: r => (stepOf(r).prompts.length === 2 ? '' : 'not two skeptic prompts') },
   { bin: I, argv: ['review-policy', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['humanPaths', 'excludePaths'] },
+  // Pinning a colleague's pull request: offline, from the document gh printed.
+  { bin: I, argv: ['review', 'target', '--github', '{in}/pr-github.json', '--json'], codes: [0], keys: ['file', 'worktree', 'commands.fetch', 'commands.worktreeAdd'] },
+  // Its comment, from the target that entry wrote. The fixture's commits are not in the scratch
+  // repository, so the diff cannot be read: the comment still renders, with nothing Pre-existing.
+  {
+    bin: I,
+    argv: ['review', 'comment', '--review', '{in}/pr-review.json', '--target', `.claude/ship/review-pr/github-44-${'b'.repeat(12)}/target.json`, '--json'],
+    codes: [0],
+    keys: ['head', 'findings', 'proof', 'runCode', 'preExistingRefused'],
+    check: r => (stepOf(r).findings.length === 1 && /PRE-EXISTING NOT CHECKED:/.test(r.stderr) ? '' : 'the surviving finding was not listed, or the unread diff was not said')
+  },
   { bin: I, argv: ['domain-context', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['selected'] },
   { bin: I, argv: ['drift', '--changed', 'src/a.mjs', '--json'], codes: [0], keys: ['unarchived', 'stale', 'orphans'] },
   { bin: I, argv: ['ledger', CHANGE, '--json'], codes: [1], keys: ['missing', 'blocking'] },
@@ -357,6 +368,23 @@ export const INVENTORY = [
     argv: ['settle', 'conformance-brief', CHANGE, '--changed', 'src/a.mjs', '--base', 'HEAD~1', '--head', SETTLE_HEAD, '--json'],
     codes: [0],
     check: r => (r.stdout === '' && /nothing to confirm/.test(r.stderr) ? '' : 'did not take the nothing-to-confirm exit')
+  },
+  // The confirmation's check: the worker's cited row against the record the
+  // briefing kept, resolved in the scratch tree, written to the handoff the verdict reads.
+  {
+    bin: I,
+    argv: ['settle', 'handoff-check', '--brief', '{in}/settle-conformance-brief.json', '--reply', '{in}/settle-handoff-reply.json', '--out', '{in}/settle-handoff.json', '--json'],
+    codes: [0],
+    keys: ['checked', 'head', 'rows', 'claimed', 'living', 'unknownRows'],
+    check: r => (stepOf(r).scenariosChecked === 1 && stepOf(r).scenariosUnconfirmed === 0 ? '' : 'the cited row was not read confirmed')
+  },
+  // The comment the pass posts beside the findings, from its records, bound to the head.
+  {
+    bin: I,
+    argv: ['settle', 'validation', '--head', SETTLE_HEAD, '--plan', '{in}/settle-plan.json', '--results', '{in}/settle-results.json', '--verify', '{in}/settle-verify.json', '--exec', '{in}/settle-exec.jsonl', '--changed', 'src/a.mjs', '--json'],
+    codes: [0],
+    keys: ['head', 'commands', 'checks', 'adherence', 'gaps', 'visual', 'cut'],
+    check: r => (stepOf(r).commands.rows.length === 1 && stepOf(r).commands.rows[0].exit === 0 ? '' : 'the planned step was not shown with its observed exit')
   },
   // The description the settle skill writes: the facts it is written from, and the
   // check of the copy the platform holds, piped in as `gh pr view <id> --json body` prints it.
@@ -569,11 +597,50 @@ function prepare(scratch, repo) {
   input('blocker.json', [{ dimension: 'qa', findings: [{ severity: 'blocker', file: 'src/a.mjs', line: 1, title: 't', description: 'd', evidence: 'src/a.mjs:1' }] }])
   input('empty.json', [])
   input('review-ok.json', { ok: true })
+  input('pr-review.json', {
+    head: 'b'.repeat(40),
+    surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', preExisting: true }],
+    counts: { raised: 1, surviving: 1 }
+  })
+  input('pr-github.json', {
+    number: 44,
+    url: 'https://github.com/owner/repo/pull/44',
+    state: 'OPEN',
+    isDraft: false,
+    isCrossRepository: false,
+    baseRefName: 'main',
+    baseRefOid: 'a'.repeat(40),
+    headRefName: 'feat/x',
+    headRefOid: 'b'.repeat(40)
+  })
   input('settle-review.json', {
     head: SETTLE_HEAD,
     surviving: [{ severity: 'warning', dimension: 'qa', file: 'src/a.mjs', line: 2, title: 'y is unused', description: 'd', suggestion: 's' }],
     counts: { raised: 1, surviving: 1 }
   })
+  input('settle-conformance-brief.json', {
+    change: CHANGE,
+    dir: `openspec/changes/${CHANGE}`,
+    head: SETTLE_HEAD,
+    resultPath: '.claude/ship/settle/handoff-reply.json',
+    scenarios: [{ id: 'C1', artifact: 'specs/thing/spec.md', line: 1, title: 'a thing', body: '' }],
+    living: { skipped: null, partial: null, omitted: [], requirements: [] },
+    briefing: ''
+  })
+  input('settle-handoff-reply.json', {
+    ok: true,
+    scenariosChecked: 1,
+    scenariosUnconfirmed: 0,
+    requirementsChecked: 0,
+    requirementsUnconfirmed: 0,
+    detail: 'read src/a.mjs',
+    head: SETTLE_HEAD,
+    rows: [{ id: 'C1', status: 'confirmed', cite: 'src/a.mjs:2' }]
+  })
+  input('settle-plan.json', { steps: [{ kind: 'unit', command: 'npm test', cwd: '.' }], skipped: [{ kind: 'e2e', reason: 'e2e-not-requested' }], hasProfile: true, banners: [] })
+  input('settle-results.json', [{ kind: 'unit', command: 'npm test', exitCode: 0, total: 1, passed: 1, failed: 0, skipped: 0 }])
+  input('settle-verify.json', { head: SETTLE_HEAD, halt: false, reason: null, context: 'final', skipped: [{ kind: 'e2e', reason: 'e2e-not-requested' }], signals: [], banners: [] })
+  input('settle-exec.jsonl', JSON.stringify({ kind: 'unit', command: 'npm test', exitCode: 0, durationMs: 1200, at: '2026-11-23T08:00:00.000Z' }) + '\n')
   input('batch.json', batchResults())
   input('lcov.info', 'TN:\nSF:src/a.mjs\nDA:1,1\nDA:2,0\nLF:2\nLH:1\nend_of_record\n')
   input('big.txt', 'x'.repeat(20000))

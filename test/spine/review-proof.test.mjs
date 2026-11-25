@@ -597,3 +597,402 @@ test('an extensionless executable under cli/ is a source file the proof counts, 
   })
   assert.deepEqual(cited.uncited, [])
 })
+
+// --- prose unread: an `unread` entry that names the changed prose it did not read ------
+//
+// Spec: review/review-proof, flag-the-prose-a-reviewer-left-unread. Reached through
+// the namespace so a missing export fails only the test that uses it.
+import * as proofMod from '../../lib/review-proof.mjs'
+import { FINDING_SCHEMA } from '../../lib/findings.mjs'
+
+const PROSE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const entry = (input, reason, paths) => ({ input, reason, ...(paths === undefined ? {} : { paths }) })
+const lead = (unread, checked = [at('the reader', 'lib/a.mjs:1')]) => ({
+  dimension: 'technical-lead',
+  findings: [],
+  coverage: ledger(checked, unread)
+})
+const proofOf = (answers, changedPaths, sourcePaths = [], extra = {}) =>
+  computeProof({ ran: answers.map(a => a.dimension), answers, changedPaths, sourcePaths, ...extra })
+const DOCS_ENTRY = entry('docs edits', 'prose-only edits, not opened', ['docs/04-when-it-stops.md', 'docs/10-agentic-workflow-ship-and-spec.md'])
+const DOCS_CHANGED = ['lib/a.mjs', 'docs/04-when-it-stops.md', 'docs/10-agentic-workflow-ship-and-spec.md']
+
+/** The fixture the three "joined in a fixed order" scenarios share (design D22). */
+const ORDER_PROOF = {
+  proven: true,
+  reason: null,
+  dimensions: ['language', 'technical-lead'],
+  unproven: [],
+  unread: [],
+  uncited: [],
+  changed: 1,
+  cited: 1,
+  carried: [],
+  reruns: 0,
+  proseUnread: [
+    { dimension: 'language', entries: [entry('README', 'not opened', ['README.md'])] },
+    {
+      dimension: 'technical-lead',
+      entries: [
+        entry('docs a and b', 'prose-only edits, not opened', ['docs/a.md', 'docs/b.md']),
+        entry('docs c', 'not opened', ['docs/c.md'])
+      ]
+    }
+  ]
+}
+
+test('prose unread: validateLedger keeps a well-formed paths, each string trimmed', () => {
+  const read = proofMod.validateLedger({ checked: [], unread: [entry('docs', 'not opened', [' docs/a.md ', 'docs/b.md'])] })
+  assert.equal(read.ok, true)
+  assert.deepEqual(read.ledger.unread, [{ input: 'docs', reason: 'not opened', paths: ['docs/a.md', 'docs/b.md'] }])
+})
+
+test('prose unread: guard: validateLedger drops a paths of the wrong shape and the ledger is still ok', () => {
+  for (const bad of ['docs/a.md', [], ['docs/a.md', 3]]) {
+    const read = proofMod.validateLedger({ checked: [], unread: [entry('docs', 'not opened', bad)] })
+    assert.equal(read.ok, true, JSON.stringify(bad))
+    assert.deepEqual(read.ledger.unread, [{ input: 'docs', reason: 'not opened' }], JSON.stringify(bad))
+    assert.equal('paths' in read.ledger.unread[0], false, 'no paths key at all')
+  }
+})
+
+test('prose unread: two changed documentation files are listed apart and the proof holds', () => {
+  const proof = proofOf([lead([DOCS_ENTRY])], DOCS_CHANGED)
+  assert.deepEqual(proof.proseUnread, [{ dimension: 'technical-lead', entries: [DOCS_ENTRY] }])
+  assert.deepEqual(proof.unread, [])
+  assert.equal(proof.proven, true)
+})
+
+test('prose unread: the change\'s delta specs stay unread', () => {
+  const specs = entry('delta specs', 'not opened', ['openspec/changes/a-change/specs/waves/spec.md', 'openspec/changes/a-change/decisions.md'])
+  const proof = proofOf([lead([specs])], ['lib/a.mjs', ...specs.paths])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [specs] }])
+  assert.deepEqual(proof.proseUnread, [])
+  assert.equal(proof.proven, false)
+})
+
+test('prose unread: the PR #43 round-1 record names the docs entry apart and the delta specs entry unread', () => {
+  const docs = entry('docs/04-when-it-stops.md and docs/10-agentic-workflow-ship-and-spec.md changed lines', 'prose-only edits, not opened', [
+    'docs/04-when-it-stops.md',
+    'docs/10-agentic-workflow-ship-and-spec.md'
+  ])
+  const specs = entry(
+    'delta specs under openspec/changes/stop-retrying-expected-red-checks/specs/ and decisions.md',
+    'not opened; scenarios judged against design.md and the passing tests only',
+    ['openspec/changes/stop-retrying-expected-red-checks/specs/waves/spec.md', 'openspec/changes/stop-retrying-expected-red-checks/decisions.md']
+  )
+  const proof = proofOf([lead([docs, specs])], ['lib/a.mjs', ...docs.paths, ...specs.paths])
+  assert.deepEqual(proof.proseUnread, [{ dimension: 'technical-lead', entries: [docs] }])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [specs] }])
+  assert.equal(proof.proven, false)
+})
+
+test('prose unread: the review context, the policy file, a living spec and an archived change are required prose', () => {
+  const required = [
+    '.claude/graph/REVIEW_CONTEXT.md',
+    'REVIEW.md',
+    'openspec/specs/review/review-proof/spec.md',
+    'openspec/changes/archive/2026-11-13-a-change/design.md'
+  ]
+  const proof = proofOf([lead(required.map(p => entry(`read ${p}`, 'not opened', [p])))], ['lib/a.mjs', ...required])
+  assert.deepEqual(proof.unread[0].entries.map(e => e.paths[0]), required)
+  assert.deepEqual(proof.proseUnread, [])
+  assert.equal(proof.proven, false)
+})
+
+test('prose unread: one file that is not prose keeps the whole entry unread', () => {
+  const mixed = entry('docs and a test', 'not opened', ['docs/a.md', 'test/spine/a.test.mjs'])
+  const proof = proofOf([lead([mixed])], ['lib/a.mjs', 'docs/a.md', 'test/spine/a.test.mjs'])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [mixed] }])
+  assert.deepEqual(proof.proseUnread, [])
+})
+
+test('prose unread: a file the diff does not change, and a directory, stay unread', () => {
+  const unchanged = entry('an unchanged doc', 'not opened', ['docs/unchanged.md'])
+  const dir = entry('the docs directory', 'not opened', ['docs/'])
+  const proof = proofOf([lead([unchanged, dir])], ['lib/a.mjs', 'docs/a.md', 'docs/b.md'])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [unchanged, dir] }])
+  assert.deepEqual(proof.proseUnread, [])
+})
+
+test('prose unread: a path is matched in canonical form', () => {
+  const dotted = entry('a doc', 'not opened', ['./docs/a.md'])
+  const proof = proofOf([lead([dotted])], ['lib/a.mjs', 'docs/a.md'])
+  assert.equal(proof.proseUnread.length, 1)
+  assert.deepEqual(proof.unread, [])
+})
+
+test('prose unread: an entry with no paths reads as it always did', () => {
+  const bare = entry('delta specs', 'not opened')
+  const proof = proofOf([lead([bare])], ['lib/a.mjs'])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [bare] }])
+  assert.deepEqual(proof.proseUnread, [])
+  assert.equal('paths' in proof.unread[0].entries[0], false)
+  assert.equal(proof.proven, false)
+})
+
+test('prose unread: a prose-only entry is listed apart and the proof holds with nothing else open', () => {
+  const proof = proofOf([lead([DOCS_ENTRY])], DOCS_CHANGED)
+  assert.deepEqual(proof.unproven, [])
+  assert.deepEqual(proof.unread, [])
+  assert.deepEqual(proof.uncited, [])
+  assert.equal(proof.proseUnread[0].dimension, 'technical-lead')
+  assert.equal(proof.proven, true)
+})
+
+test('prose unread: a dimension with both kinds of entry is named in both lists', () => {
+  const bare = entry('delta specs', 'not opened')
+  const proof = proofOf([lead([DOCS_ENTRY, bare])], DOCS_CHANGED)
+  assert.deepEqual(proof.proseUnread, [{ dimension: 'technical-lead', entries: [DOCS_ENTRY] }])
+  assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [bare] }])
+  assert.equal(proof.proven, false)
+})
+
+test('prose unread: a prose-only entry does not make up for an uncited source file', () => {
+  const proof = proofOf([lead([DOCS_ENTRY])], [...DOCS_CHANGED, 'lib/b.mjs'])
+  assert.deepEqual(proof.uncited, ['lib/b.mjs'])
+  assert.equal(proof.proven, false)
+  assert.equal(proof.proseUnread.length, 1)
+})
+
+test('prose unread: a carried dimension\'s prose-only entry reaches neither list', () => {
+  const carried = { 'technical-lead': ledger([at('the reader', 'lib/a.mjs:1')], [DOCS_ENTRY]) }
+  const proof = computeProof({
+    ran: ['language'],
+    answers: [{ dimension: 'language', findings: [], coverage: ledger([at('a', 'lib/a.mjs:2')]) }],
+    changedPaths: DOCS_CHANGED,
+    sourcePaths: [],
+    carried
+  })
+  assert.deepEqual(proof.carried, ['technical-lead'])
+  assert.deepEqual(proof.unread, [])
+  assert.deepEqual(proof.proseUnread, [])
+})
+
+test('prose unread: proseUnread is an empty list when nothing is listed apart', () => {
+  const proof = proofOf([lead([])], ['lib/a.mjs'])
+  assert.deepEqual(proof.proseUnread, [])
+})
+
+test('prose unread: a sourcePaths that is undefined or null lists nothing apart', () => {
+  for (const sourcePaths of [undefined, null]) {
+    const proof = computeProof({ ran: ['technical-lead'], answers: [lead([DOCS_ENTRY])], changedPaths: DOCS_CHANGED, sourcePaths })
+    assert.deepEqual(proof.proseUnread, [], String(sourcePaths))
+    assert.deepEqual(proof.unread, [{ dimension: 'technical-lead', entries: [DOCS_ENTRY] }], String(sourcePaths))
+  }
+})
+
+test('prose unread: a listed path keeps its entry unread, and with an empty list it is listed apart', () => {
+  const skill = entry('the skill', 'not opened', ['skills/settle/SKILL.md'])
+  const changed = ['lib/a.mjs', 'skills/settle/SKILL.md']
+  const listed = proofOf([lead([skill])], changed, ['skills'])
+  assert.deepEqual(listed.unread, [{ dimension: 'technical-lead', entries: [skill] }])
+  assert.deepEqual(listed.proseUnread, [])
+  const unlisted = proofOf([lead([skill])], changed, [])
+  assert.deepEqual(unlisted.proseUnread, [{ dimension: 'technical-lead', entries: [skill] }])
+  assert.deepEqual(unlisted.unread, [])
+})
+
+test('prose unread: a file that is prose by its extension alone is listed apart until the list names it', () => {
+  const req = entry('the requirements', 'not opened', ['requirements.txt'])
+  const changed = ['lib/a.mjs', 'requirements.txt']
+  assert.equal(proofOf([lead([req])], changed, []).proseUnread.length, 1)
+  const listed = proofOf([lead([req])], changed, ['requirements.txt'])
+  assert.deepEqual(listed.proseUnread, [])
+  assert.equal(listed.unread.length, 1)
+})
+
+test('prose unread: with no changed list nothing is listed apart', () => {
+  for (const changedPaths of [[], null]) {
+    const proof = computeProof({ ran: ['technical-lead'], answers: [lead([DOCS_ENTRY])], changedPaths, sourcePaths: [] })
+    assert.deepEqual(proof.proseUnread, [])
+    assert.equal(proof.proven, false)
+  }
+})
+
+test('prose unread: coverageRecord keeps paths on the entry', () => {
+  const record = proofMod.coverageRecord([lead([DOCS_ENTRY])])
+  assert.deepEqual(record['technical-lead'].unread, [DOCS_ENTRY])
+})
+
+test('prose unread: a re-run keeps the first entry for an input, with or without its files', () => {
+  const changedPaths = ['lib/a.mjs', 'docs/a.md']
+  const run = (first, second) => {
+    const draftAnswers = [{ dimension: 'regression', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')], [first]) }]
+    const draftProof = computeProof({ ran: ['regression'], answers: draftAnswers, changedPaths, sourcePaths: [] })
+    const merged = mergeRerun(
+      { inputs: { answers: draftAnswers, verdicts: [] }, proof: draftProof },
+      { answers: [{ dimension: 'regression', findings: [], coverage: ledger([at('a', 'lib/a.mjs:1')], [second]) }] }
+    )
+    const after = computeProof({ ran: ['regression'], answers: merged.answers, changedPaths, sourcePaths: [] })
+    return { merged, after }
+  }
+  const bare = entry('docs edits', 'not opened')
+  const withPaths = entry('docs edits', 'not opened', ['docs/a.md'])
+  const one = run(bare, withPaths)
+  assert.deepEqual(one.merged.answers[0].coverage.unread, [bare], 'the first entry has no paths and keeps none')
+  assert.deepEqual(one.after.unread, [{ dimension: 'regression', entries: [bare] }])
+  assert.deepEqual(one.after.proseUnread, [])
+  const other = run(withPaths, bare)
+  assert.deepEqual(other.merged.answers[0].coverage.unread, [withPaths], 'the first entry keeps its paths')
+  assert.deepEqual(other.after.proseUnread, [{ dimension: 'regression', entries: [withPaths] }])
+  assert.deepEqual(other.after.unread, [])
+})
+
+test('prose unread: runProofRecord passes sourcePaths on, and a record whose only entry is prose-only has no banner', () => {
+  const findings = [lead([DOCS_ENTRY])]
+  const record = proofMod.runProofRecord({
+    findings,
+    ran: ['technical-lead'],
+    changedPaths: DOCS_CHANGED,
+    sourcePaths: [],
+    hashOf: () => 'h'
+  })
+  assert.deepEqual(record.proof.proseUnread, [{ dimension: 'technical-lead', entries: [DOCS_ENTRY] }])
+  assert.equal(record.proof.proven, true)
+  assert.equal(record.banner, null)
+  assert.deepEqual(record.coverage['technical-lead'].unread, [DOCS_ENTRY])
+})
+
+test('prose unread: proofAnswer names the prose after proven and still exits 0', () => {
+  const answer = proofAnswer(recordOf({ ...ORDER_PROOF, proseUnread: [ORDER_PROOF.proseUnread[1]] }))
+  assert.equal(answer.exit, 0)
+  assert.equal(answer.first, 'proven')
+  assert.equal(answer.reasons.length, 1)
+  assert.match(answer.reasons[0], /^technical-lead: prose left unread docs\/a\.md, docs\/b\.md \(prose-only edits, not opened\)/)
+})
+
+test('prose unread: several dimensions and entries are joined in a fixed order', () => {
+  const answer = proofAnswer(recordOf(ORDER_PROOF))
+  assert.equal(answer.first, 'proven')
+  assert.deepEqual(answer.reasons, [
+    'language: prose left unread README.md (not opened)',
+    'technical-lead: prose left unread docs/a.md, docs/b.md (prose-only edits, not opened); docs/c.md (not opened)'
+  ])
+  assert.deepEqual(proofMod.proseUnreadLines(ORDER_PROOF), answer.reasons)
+})
+
+test('prose unread: a gap and prose left unread are both named, the gap first', () => {
+  const proof = {
+    ...ORDER_PROOF,
+    proven: false,
+    reason: 'gaps in coverage',
+    dimensions: ['technical-lead'],
+    unread: [{ dimension: 'technical-lead', entries: [entry('delta specs', 'not opened')] }],
+    proseUnread: [ORDER_PROOF.proseUnread[1]]
+  }
+  const answer = proofAnswer(recordOf(proof))
+  assert.equal(answer.exit, 0)
+  assert.equal(answer.first, 'PROOF LEFT UNREAD: technical-lead')
+  assert.equal(answer.reasons[0], 'technical-lead: unread delta specs (not opened)')
+  assert.match(answer.reasons[1], /^technical-lead: prose left unread /)
+  assert.equal(answer.reasons.length, 2)
+})
+
+test('prose unread: prose left unread names no dimension on the first line and makes no re-run', () => {
+  const proof = {
+    ...ORDER_PROOF,
+    proven: false,
+    reason: 'gaps in coverage',
+    dimensions: ['security', 'technical-lead'],
+    unread: [{ dimension: 'security', entries: [entry('context', 'absent')] }],
+    proseUnread: [ORDER_PROOF.proseUnread[1]]
+  }
+  const answer = proofAnswer(recordOf(proof))
+  assert.equal(answer.first, 'PROOF LEFT UNREAD: security')
+  assert.equal(answer.reasons.some(line => line.startsWith('re-run:')), false)
+  assert.equal(answer.first.includes('technical-lead'), false)
+  assert.ok(answer.reasons.some(line => line.startsWith('technical-lead: prose left unread ')), 'the prose line follows the gap lines')
+})
+
+test('prose unread: a record with no such list prints as it always did', () => {
+  const { proseUnread: _p, ...old } = ORDER_PROOF
+  assert.deepEqual(proofAnswer(recordOf(old)), { exit: 0, first: 'proven', reasons: [] })
+  assert.deepEqual(proofMod.proseUnreadLines(old), [])
+  assert.deepEqual(proofMod.proseUnreadLines({ ...old, proseUnread: 'x' }), [])
+  assert.equal(proofMod.proseUnreadClause(old), '')
+  assert.equal(proofMod.proseUnreadClause({ ...old, proseUnread: [] }), '')
+})
+
+test('prose unread: proseUnreadClause joins dimensions and files in a fixed order, and wraps each file and nothing else', () => {
+  assert.equal(
+    proofMod.proseUnreadClause(ORDER_PROOF),
+    'prose left unread: language (README.md), technical-lead (docs/a.md, docs/b.md, docs/c.md)'
+  )
+  const wrapped = proofMod.proseUnreadClause(ORDER_PROOF, file => `<<${file}>>`)
+  assert.equal(
+    wrapped,
+    'prose left unread: language (<<README.md>>), technical-lead (<<docs/a.md>>, <<docs/b.md>>, <<docs/c.md>>)'
+  )
+})
+
+test('prose unread: a dimension name holding a newline or a mention goes through the span, and a plain name stays itself (M15)', () => {
+  const odd = 'qa\n@octocat [x](http://evil.example)'
+  const proof = { ...ORDER_PROOF, dimensions: ['qa', odd], carried: [odd], proseUnread: [{ dimension: odd, entries: [entry('a', 'r', ['docs/a.md'])] }] }
+  const span = text => `<<${text}>>`
+  const line = coverageLine(proof, { span })
+  assert.ok(line.startsWith(`Coverage: ran qa, <<${odd}>>; carried: <<${odd}>>;`), line)
+  assert.ok(line.endsWith(`prose left unread: <<${odd}>> (<<docs/a.md>>).`), line)
+  assert.equal(proofMod.proseUnreadClause(proof, span), `prose left unread: <<${odd}>> (<<docs/a.md>>)`)
+  // Without a span the line is the plain-text one it always was.
+  assert.ok(coverageLine(proof).startsWith(`Coverage: ran qa, ${odd};`))
+})
+
+test('prose unread: proseUnreadClause names a file once however many entries name it', () => {
+  const twice = {
+    ...ORDER_PROOF,
+    proseUnread: [{ dimension: 'language', entries: [entry('a', 'r', ['docs/a.md']), entry('b', 'r', ['docs/a.md', 'docs/b.md'])] }]
+  }
+  assert.equal(proofMod.proseUnreadClause(twice), 'prose left unread: language (docs/a.md, docs/b.md)')
+})
+
+test('prose unread: coverageLine ends with the clause when one exists, and is today\'s line without', () => {
+  const plain = coverageLine({ ...ORDER_PROOF, proseUnread: [] })
+  assert.equal(plain, 'Coverage: ran language, technical-lead; 1 of 1 changed source file(s) cited.')
+  const withClause = coverageLine(ORDER_PROOF, { span: file => `\`${file}\`` })
+  assert.equal(
+    withClause,
+    'Coverage: ran language, technical-lead; 1 of 1 changed source file(s) cited; prose left unread: ' +
+      'language (`README.md`), technical-lead (`docs/a.md`, `docs/b.md`, `docs/c.md`).'
+  )
+  assert.ok(coverageLine(ORDER_PROOF).endsWith('technical-lead (docs/a.md, docs/b.md, docs/c.md).'))
+})
+
+test('prose unread: the unread item of the answer schema lists paths under properties and not under required', () => {
+  const item = FINDING_SCHEMA.properties.coverage.properties.unread.items
+  assert.ok('paths' in item.properties, 'paths is a listed property')
+  assert.equal(item.properties.paths.type, 'array')
+  assert.equal(item.required.includes('paths'), false)
+  assert.deepEqual(item.required, ['input', 'reason'])
+})
+
+test('prose unread: guard: the proof module imports neither review-core nor a node: module', () => {
+  const source = readFileSync(join(PROSE_ROOT, 'lib', 'review-proof.mjs'), 'utf8')
+  const imports = source.split('\n').filter(line => /^import\b/.test(line))
+  assert.ok(imports.length > 0)
+  for (const line of imports) {
+    assert.doesNotMatch(line, /review-core\.mjs/, line)
+    assert.doesNotMatch(line, /node:/, line)
+  }
+})
+
+// --- a `paths` the proof cannot read is named, not dropped unspoken (PR #46 review, F-1436098d)
+
+test('prose unread: ignoredPathsLines names each entry whose paths has the wrong shape, and only those', () => {
+  const answers = [
+    lead([entry('docs', 'not opened', 'docs/a.md'), entry('fine', 'not opened', ['docs/b.md']), entry('none', 'not opened')]),
+    { dimension: 'language', findings: [], coverage: ledger([at('x', 'lib/a.mjs:1')], [entry('more docs', 'skipped', [])]) }
+  ]
+  const lines = proofMod.ignoredPathsLines(answers)
+  assert.equal(lines.length, 2, lines.join('\n'))
+  assert.match(lines[0], /^PATHS IGNORED: technical-lead: unread\[0\] "docs" /)
+  assert.match(lines[1], /^PATHS IGNORED: language: unread\[0\] "more docs" /)
+  for (const line of lines) assert.match(line, /read with no paths and stays unread/)
+})
+
+test('prose unread: ignoredPathsLines leaves a well-formed or absent paths, and a rejected ledger, to their own lines', () => {
+  assert.deepEqual(proofMod.ignoredPathsLines([lead([DOCS_ENTRY, entry('none', 'not opened')])]), [])
+  const rejected = { dimension: 'language', findings: [], coverage: { checked: 'nope', unread: [entry('docs', 'x', 3)] } }
+  assert.deepEqual(proofMod.ignoredPathsLines([rejected]), [], 'LEDGER REJECTED: names a ledger that does not validate')
+  assert.deepEqual(proofMod.ignoredPathsLines(undefined), [])
+})

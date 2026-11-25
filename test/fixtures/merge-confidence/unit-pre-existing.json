@@ -161,24 +161,19 @@
       "exitCode": 0,
       "passed": true
     },
-    "signals": [
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
-      }
-    ],
-    "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command"
-    ],
-    "skipped": [
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
-      }
-    ]
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "signals": [],
+    "banners": [],
+    "skipped": []
   },
   "checklist": {
     "skipped": false,

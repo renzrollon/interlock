@@ -161,25 +161,21 @@
       "exitCode": 0,
       "passed": true
     },
+    "lint": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
+    "build": {
+      "ran": true,
+      "exitCode": 0,
+      "passed": true
+    },
     "banners": [
-      "VERIFICATION SKIPPED: reason=no-detectable-command",
       "E2E FAILED (non-blocking by policy): 3 failing"
     ],
-    "signals": [
-      {
-        "level": "info",
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "message": "lint: VERIFICATION SKIPPED: reason=no-detectable-command (no lint command in the profile or from the caller)"
-      }
-    ],
-    "skipped": [
-      {
-        "kind": "lint",
-        "reason": "no-detectable-command",
-        "detail": "no lint command in the profile or from the caller"
-      }
-    ]
+    "signals": [],
+    "skipped": []
   },
   "checklist": {
     "skipped": false,

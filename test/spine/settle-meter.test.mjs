@@ -1709,7 +1709,10 @@ const UNKEYED_PREFIXES = [
 // The description brief and check open no section and end no run; the guard test
 // below pins that they draw nothing. Exact verbs only, so any other new verb
 // still fails the skill-lines pin.
-const UNKEYED_SETTLE_VERBS = ['description-brief', 'description-check']
+// Moved pin (change post-the-proof-beside-the-findings, design D17): the meter keys
+// neither `handoff-check` nor `validation`, and the `validation meter:` guard test
+// pins that their lines draw nothing, as it does for the description verbs.
+const UNKEYED_SETTLE_VERBS = ['description-brief', 'description-check', 'handoff-check', 'validation']
 const isUnkeyedSettleVerb = stage => UNKEYED_SETTLE_VERBS.some(v => stage.startsWith(`interlock settle ${v} `))
 
 test('the skill-lines pin: every stage of every fenced line of the settle and review-code skills is keyed or written down', () => {
@@ -1762,6 +1765,28 @@ test('the description lines open no section and end no run, with and without --c
       ['--create --review', () => Object.assign(freshSettle({ review: true, create: true }), { phase: 'live', startedAt: at(0) })]
     ]) {
       for (const result of [okBash(line, 'description complete: Change: none'), errBash(line, 1, 'interlock: DESCRIPTION INCOMPLETE: missing section: ## Testing')]) {
+        const s = make()
+        const was = JSON.stringify(s.groups)
+        cross(s, result, 2)
+        assert.equal(s.phase, 'live', `${what}: ${line} ended the run`)
+        assert.equal(JSON.stringify(s.groups), was, `${what}: ${line} drew a row or opened a section`)
+      }
+    }
+  }
+})
+
+test('validation meter: the handoff-check, summary and posting lines are unkeyed, draw no row and end no run', () => {
+  const lines = fencedLines('skills/settle/SKILL.md', ['interlock', 'gh', 'glab']).filter(l => /\binterlock settle (?:handoff-check|validation)\b/.test(l.line))
+  assert.ok(lines.some(l => l.line.startsWith('interlock settle handoff-check ')), 'the shipped skill carries no fenced handoff-check line')
+  assert.ok(lines.some(l => l.line.startsWith('interlock settle validation ') && l.line.includes('--summary')), 'no fenced --summary line')
+  assert.ok(lines.some(l => l.line.startsWith('interlock settle validation ') && !l.line.includes('--summary') && l.line.includes('| gh pr comment ')), 'no fenced posting line piped into gh pr comment')
+  for (const { line } of lines) {
+    for (const { kind, segment } of settleLines(line)) assert.equal(kind ?? null, null, `${segment} is keyed`)
+    for (const [what, make] of [
+      ['--review', () => live(0, true)],
+      ['no --review', () => live(0, false)]
+    ]) {
+      for (const result of [okBash(line, 'handoff: 3 scenarios checked'), errBash(line, 1, 'interlock: could not read --reply')]) {
         const s = make()
         const was = JSON.stringify(s.groups)
         cross(s, result, 2)

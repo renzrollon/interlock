@@ -7825,6 +7825,60 @@ test('a judged final verification is recorded with the run id and the verdict', 
   }
 })
 
+// --- build kind: a red build at the final gate halts the run (spec: verify) ---------------------
+
+test('build kind: a run whose final verification reports a build that exited 2 halts with the judge\'s reason and emits no commit step', () => {
+  const { root, batch } = verifiableRepo({ tasks: THREE_GROUPS.tasks.filter(t => t.group === 1) })
+  try {
+    file(root, '.claude/testing/profile.json', {
+      version: 1,
+      unit: { command: 'node --test', cwd: '.', single_file: 'node --test <path>' },
+      build: { command: 'npm run build', cwd: '.', timeout_ms: 300000 }
+    })
+    const final = completeBatch(root, batch)
+    assert.equal(final.action, 'verify-final')
+    assert.ok(
+      jsonAt(root, '.claude/ship/vplan-final.json').steps.some(s => s.kind === 'build'),
+      'the final plan holds the build step'
+    )
+    const step = run(root, [...final.then.argv], {
+      results: [
+        {
+          results: [
+            { kind: 'unit', exitCode: 0, total: 3, passed: 3, failed: 0, failures: [] },
+            { kind: 'build', exitCode: 2 }
+          ]
+        }
+      ]
+    }).step
+    assert.equal(step.action, 'halt')
+    assert.match(step.reason, /build failed \(exit 2\)/)
+    assert.notEqual(step.action, 'commit')
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    assert.equal(written.halt, true)
+    assert.deepEqual(written.build, { ran: true, exitCode: 2, passed: false })
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('build kind: a final verification whose plan holds no step records a verdict carrying lint and build as null beside the four it carries today', () => {
+  const { root, change } = repo()
+  try {
+    const verified = toTail(root, change, [])
+    assert.equal(verified.action, 'verify-final')
+    assert.equal(verified.skipped, true, 'the fixture has no test profile, so the CLI skips verification')
+    run(root, [...verified.then.argv])
+    const written = jsonAt(root, VERIFY_FINAL_JSON)
+    for (const key of ['unit', 'e2e', 'coverage', 'typecheck', 'lint', 'build']) {
+      assert.ok(Object.prototype.hasOwnProperty.call(written, key), `${key} is present`)
+      assert.equal(written[key], null, `${key} did not run, so it is null and not absent`)
+    }
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('an inter-wave judge writes no final verification record', () => {
   const { root, batch } = verifiableRepo()
   try {
@@ -10185,6 +10239,75 @@ test('each skeptics-step briefing names only its own verdict file, once, and dro
       })
       assert.ok(!sp.prompt.includes('Write nothing else: no file, no edit to the tree.'), sp.label)
     })
+  } finally {
+    cleanup(root)
+  }
+})
+
+// --- prose unread: a run's review record lists apart what a reviewer left unread (spec: review/review-proof) ---
+
+/**
+ * Drive a strict run to its first review record. Every selected dimension cites
+ * what the run changed; `technical-lead` also declares `unread`. `extra` is
+ * written into the tree after the run starts, so it is a change the run observed.
+ */
+function strictWithUnread(root, change, unread, extra) {
+  const review = toTail(root, change, ['--strict'])
+  for (const [path, body] of Object.entries(extra)) file(root, path, body)
+  const answers = manifestOf(root).reviewDimensions.selected.map(dimension => ({
+    ...ledgered(dimension, [], ['README.md:1']),
+    ...(dimension === 'technical-lead'
+      ? { coverage: { checked: [{ what: 'the change', at: 'README.md:1' }], unread } }
+      : {})
+  }))
+  writeFanoutFiles(root, answers, [])
+  return finishReview(root, review).step
+}
+
+test('prose unread: a strict run lists a docs entry apart, keeps its proof, and closes with no REVIEW NOT PROVEN banner', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const entry = { input: 'the guide', reason: 'prose-only edits, not opened', paths: ['docs/guide.md'] }
+    const verified = strictWithUnread(root, change, [entry], { 'docs/guide.md': '# guide\n' })
+    assert.equal(verified.action, 'verify-final', JSON.stringify(verified))
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.proseUnread, [{ dimension: 'technical-lead', entries: [entry] }])
+    assert.deepEqual(record.proof.unread, [])
+    assert.equal(record.proof.proven, true, JSON.stringify(record.proof))
+    const handoff = run(root, [...verified.then.argv]).step
+    run(root, [...handoff.then.argv], { results: [HANDOFF_OK] })
+    const closed = closeAt(root, realCommit(root)).step
+    assert.deepEqual(closed.banners.filter(b => b.startsWith('REVIEW NOT PROVEN')), [], JSON.stringify(closed.banners))
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('prose unread: a string `paths` on the ship path is bannered as PATHS IGNORED and the entry stays unread', () => {
+  const { root, change } = shippedRepo()
+  try {
+    const entry = { input: 'the guide', reason: 'not opened', paths: 'docs/guide.md' }
+    const verified = strictWithUnread(root, change, [entry], { 'docs/guide.md': '# guide\n' })
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.proseUnread, [])
+    const all = JSON.stringify([verified, manifestOf(root).banners])
+    assert.ok(all.includes('PATHS IGNORED: technical-lead: unread[0]'), all)
+  } finally {
+    cleanup(root)
+  }
+})
+
+test('prose unread: a run started on a commit whose REVIEW.md lists skills/ keeps a skill entry unread', () => {
+  const { root, change } = shippedRepo()
+  try {
+    file(root, 'REVIEW.md', '## Counts as Source\n- skills/\n')
+    commitAll(root, 'list the skills')
+    const entry = { input: 'the skill', reason: 'not opened', paths: ['skills/settle/SKILL.md'] }
+    strictWithUnread(root, change, [entry], { 'skills/settle/SKILL.md': '# skill\n' })
+    const record = JSON.parse(readFileSync(join(root, '.claude/ship/review.json'), 'utf8'))
+    assert.deepEqual(record.proof.unread, [{ dimension: 'technical-lead', entries: [entry] }])
+    assert.deepEqual(record.proof.proseUnread, [])
+    assert.equal(record.proof.proven, false)
   } finally {
     cleanup(root)
   }
