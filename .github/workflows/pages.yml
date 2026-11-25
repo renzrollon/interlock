@@ -36,10 +36,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # Upload and deploy run in separate jobs. deploy-pages finds the artifact by
+  # listing this run's artifacts, and that listing lags the upload: in one job
+  # the lookup lands a few hundred milliseconds after the upload finalizes and
+  # comes back empty, "No artifacts named github-pages" (actions/deploy-pages#451,
+  # most runs from 2026-11-24). A job boundary puts seconds between the two.
+  # It also makes "Re-run failed jobs" work: only deploy re-runs and finds the
+  # one artifact build left. Re-running build as well uploads a second
+  # `github-pages` to the run, and the lookup then fails on "Multiple artifacts";
+  # start a new run (workflow_dispatch) instead.
+  build:
     # `workflow_run` names its upstream by `name:` alone, and a fork's pull
     # request can add a workflow called Release. Only a tag push in this
-    # repository, from release.yml, is a release.
+    # repository, from release.yml, is a release. deploy needs build, so it
+    # skips with it.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -47,9 +57,6 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.path == '.github/workflows/release.yml')
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -65,5 +72,25 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
+    steps:
+      # One retry if the lookup still lags. The lookup runs before deploy-pages
+      # creates a Pages deployment, so a retry after it does not deploy twice;
+      # a retry after a later failure redeploys the same artifact. Only the
+      # retry can fail the job.
       - id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+      - if: steps.deployment.outcome == 'failure'
+        run: |
+          echo "::warning::deploy-pages failed once; retrying in 20 s (actions/deploy-pages#451)"
+          sleep 20
+      - id: deployment-retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v5
