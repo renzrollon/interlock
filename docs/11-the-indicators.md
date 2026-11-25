@@ -21,7 +21,7 @@ Interlock writes three corpora and, until this command, read none of them.
 |---|---|---|
 | `.claude/learning/outcomes.jsonl` | `interlock outcomes append` | one line per planning→ship attempt, partitioned into what the run **observed** and what an agent **reported** |
 | `.claude/ship/runs/*.jsonl` | `interlock wave-state`, `verify`, `run-log append` | one trajectory per run: wave actions, command exits, agent spawns, and a closing receipt |
-| `.claude/metrics/review-*.json` | `interlock review --metrics` and `interlock gate --metrics` | one review's four counts — raised, dismissed, dropped by quality, surviving |
+| `.claude/metrics/review-*.json` | `interlock review --metrics`, `interlock gate --metrics` and a ship run's review step | one review's four counts — raised, dismissed, dropped by quality, surviving — and what ran: its `stage`, `depth`, `reviewer` and `lenses` ([below](#what-a-review-record-says-ran)) |
 
 A halted run also leaves a **resume card** at
 `.claude/handoff/ship-<change>-<runId>.md`, and it is not a fourth corpus. It is
@@ -55,6 +55,29 @@ status or the existing machine-readable output; a failed write reports its
 reason and never raises. A record is attributed to the change the caller named
 and to no other — a missing name writes nothing rather than guessing one from
 the findings file's path.
+
+### What a review record says ran
+
+Each record also carries four fields that say what produced it, each `null` when
+the writer was not told a known value:
+
+| field | values | who sets it |
+|---|---|---|
+| `stage` | `artifacts`, `code` | `gate --stage`; `code` from `review --metrics` and a ship run's review step |
+| `depth` | `lean`, `strict` | `gate --depth`; `review --metrics` takes the dimension record's `depth`, `null` when it has none; a ship run's review step records `strict` |
+| `reviewer` | `session`, `agent`, `external` | `gate --reviewer`; `agent` from the two code-review writers |
+| `lenses` | a list of lens names, `[]` for none | `gate --lenses <names\|none>`; the code-review writers record `null` |
+
+They are enumerations and lens names, never finding text, so the record is still
+counts, not content. Nothing is inferred: a gate line without the flags records
+four `null`s whatever its findings or its file name say, because a record with no
+`stage` reading `unrecorded` is honest and a guessed one is not. An unknown
+value, an empty one or a flag with no value is warned on standard error and
+recorded as `null`; it never moves `passed`, the output or the exit code.
+`--lenses none` records the observed empty list, which is not the `null` of a
+line without the flag, and `none` beside a name, an empty element or a name of
+another shape records `null`. The schema id stays `interlock.review-metrics/1`:
+the fields are additive, so an older reader still recognizes the record.
 
 ## Where they live
 
@@ -300,6 +323,13 @@ Interlock's own eval layers and the rules for growing the suite live.
 - **from review metrics** — raised, dismissed, dropped by quality, surviving,
   plus a **dismissal share** where raised is non-zero. This is the trust
   evidence for adversarial review: how often a skeptic verified a finding away.
+  The same counts are also split **by stage** (`artifacts`, `code`, or
+  `unrecorded` for a record with no stage or one outside the vocabulary) and,
+  inside each stage, **by reader** (`<depth>/<reviewer>`, with `unrecorded`
+  standing in for a missing half, so `lean/session` and `strict/agent` are
+  told apart). Each group carries its file count and the four counts; the
+  groups sum to the totals above. A group is never coloured and carries no
+  threshold, and an empty corpus prints none.
 - **from receipts** — raised, surviving, blockers, warnings, plus a **survival
   share**. The receipt records what survived, not what was dismissed, so a
   dismissal share is not computed from it. Naming one would assert a count

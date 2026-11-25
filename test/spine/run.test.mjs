@@ -8886,6 +8886,25 @@ test('no graph and a cut together are still one DOMAIN REVIEW PARTIAL line, and 
   }
 })
 
+test('the ship run\'s review step writes a metrics record carrying stage code, reviewer agent and depth strict', () => {
+  const { root, change } = repo()
+  try {
+    const review = toTail(root, change, ['--review'])
+    writeGapReview(root, [false])
+    const { code } = finishReview(root, review)
+    assert.equal(code, 0)
+    const dir = join(root, '.claude', 'metrics')
+    const records = readdirSync(dir).filter(n => n.startsWith(`review-${change}-`))
+    assert.equal(records.length, 1, `one review-metrics record expected: ${records.join(', ')}`)
+    const record = JSON.parse(readFileSync(join(dir, records[0]), 'utf8'))
+    assert.equal(record.stage, 'code')
+    assert.equal(record.reviewer, 'agent')
+    assert.equal(record.depth, 'strict')
+  } finally {
+    cleanup(root)
+  }
+})
+
 // --- compound notes from review adjudication ---------------------------------
 //
 // After the review metrics are written, the adjudication derives one note per

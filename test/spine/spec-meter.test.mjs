@@ -776,8 +776,10 @@ const UNREAD_BY_NAME = [
   'openspec validate "<name>"',
   'openspec --version',
   'interlock checkpoint "<change-name>"',
-  'interlock routing artifact-reviewer --json',
-  'interlock routing artifact-reviewer --depth strict --json'
+  // brief-and-record-the-artifact-gate design §1: the routing line now forwards the
+  // caller and the depth, and the brief line is relayed, not metered.
+  'interlock routing artifact-reviewer [--caller spec] [--depth <strict|lean>] --json',
+  'interlock review brief --artifacts <change> [--lens <a,b>] [--since <findings file>]'
 ]
 
 test('every fenced openspec and interlock line in the three skills is one the meter classifies or names as unread', () => {

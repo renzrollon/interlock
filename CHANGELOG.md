@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows Keep a Changelog 1.1.0, and
 this project adheres to Semantic Versioning 2.0.0.
 
+## [Unreleased]
+
+### Changed
+
+- `/interlock:spec` now gates its artifacts at the strict depth by default: it passes `--caller spec`, and the CLI's caller table answers `strict`, so one routed `interlock:reviewer` reads the artifacts in place of the session. `--lean` asks for the session's own read, `--strict` still forces the subagent, and a standalone `/interlock:review-artifacts` keeps the published default.
+
+### Added
+
+- `interlock review brief --artifacts <change>` prints the artifact gate's brief: status lines, the rubric, the lenses (`agentic-harness`, `web-ui`; `--lens <a,b>` names them), the repository's `REVIEW.md` policy, living requirements and compound notes, and the run rules. `/interlock:review-artifacts` relays it instead of carrying its own rubric.
+- `interlock gate` takes `--stage`, `--depth`, `--reviewer` and `--lenses`, and the review record writes them; `interlock report` splits the review indicators by stage and reader. A gate with no verdict prints `GATE UNAVAILABLE:`.
+
 ## [1.20.0] - 2026-11-25
 
 ### Added

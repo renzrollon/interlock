@@ -53,7 +53,20 @@ test('an absent REVIEW.md is the empty policy with no problems', () => {
   // Updated by judge-size-by-what-a-person-reads task 2.1: the empty policy gains
   // `sourcePaths`; this now also pins "Declared counts-as-source paths SHALL be
   // parsed like the other path lists and SHALL be read only by the size signal".
-  assert.deepEqual(p, { prose: '', excludePaths: [], humanPaths: [], sourcePaths: [], owner: null, problems: [] })
+  // Updated by brief-and-record-the-artifact-gate task 2.1 (bounded pin rule): the
+  // empty policy gains `artifactLenses` and `artifactChecks`; this now also pins
+  // "`REVIEW.md` SHALL declare artifact-review lenses and checks under two known
+  // headings, read from the base" (an absent file declares neither).
+  assert.deepEqual(p, {
+    prose: '',
+    excludePaths: [],
+    humanPaths: [],
+    sourcePaths: [],
+    artifactLenses: [],
+    artifactChecks: [],
+    owner: null,
+    problems: []
+  })
 })
 
 test('a REVIEW.md in a subdirectory is not read as policy', () => {
@@ -712,4 +725,130 @@ test('prose unread: proofSourcePaths gives the same answers on a policy composeP
   assert.equal(core.proofSourcePaths(front), null)
   const other = compose('', '## Do Not Report\n- dist/**\n\n## Counts as Source\n- skills/\n')
   assert.deepEqual(core.proofSourcePaths(other), ['skills'])
+})
+
+// --- brief-and-record-the-artifact-gate: the artifact sections ------------------------------
+
+const ARTIFACT_LENSES_HEADING = '## Artifact Review Lenses'
+const ARTIFACT_CHECKS_HEADING = '## Artifact Checks'
+
+test('artifact sections: parseReviewPolicy returns artifactLenses and artifactChecks in file order', () => {
+  const p = parseReviewPolicy(
+    `${ARTIFACT_LENSES_HEADING}\n- agentic-harness\n- web-ui\n\n${ARTIFACT_CHECKS_HEADING}\n- Every task names its verification\n- A second check\n`
+  )
+  assert.deepEqual(p.artifactLenses, ['agentic-harness', 'web-ui'])
+  assert.deepEqual(p.artifactChecks, ['Every task names its verification', 'A second check'])
+  assert.deepEqual(p.problems, [])
+})
+
+test('artifact sections: an absent section declares nothing', () => {
+  const p = parseReviewPolicy('## Do Not Report\n- dist/\n')
+  assert.deepEqual(p.artifactLenses, [])
+  assert.deepEqual(p.artifactChecks, [])
+})
+
+test('artifact sections: a threshold-shaped item is a problem and is never read', () => {
+  const p = parseReviewPolicy(`${ARTIFACT_CHECKS_HEADING}\n- nitCap: 0\n- An ordinary check\n`)
+  assert.deepEqual(p.artifactChecks, ['An ordinary check'])
+  assert.equal(p.problems.length, 1, p.problems.join(' | '))
+  assert.ok(p.problems[0].includes('"Artifact Checks"'), p.problems[0])
+  assert.match(p.problems[0], /nitCap: 0/)
+})
+
+test('artifact sections: a section with text and no list items declares nothing and says so', () => {
+  const p = parseReviewPolicy(`${ARTIFACT_LENSES_HEADING}\nJust a paragraph about lenses.\n`)
+  assert.deepEqual(p.artifactLenses, [])
+  assert.equal(p.problems.length, 1, p.problems.join(' | '))
+  assert.ok(p.problems[0].includes('"Artifact Review Lenses"'), p.problems[0])
+  assert.match(p.problems[0], /no list items|no .*items/)
+  const checks = parseReviewPolicy(`${ARTIFACT_CHECKS_HEADING}\nA paragraph only.\n`)
+  assert.deepEqual(checks.artifactChecks, [])
+  assert.ok(checks.problems.some(problem => problem.includes('"Artifact Checks"')), checks.problems.join(' | '))
+})
+
+test('artifact sections: an item is read as written, never as a path or a pattern', () => {
+  const p = parseReviewPolicy(
+    `${ARTIFACT_CHECKS_HEADING}\n- Does every task name its verification?\n- Is lib/*.mjs free of node: imports?\n`
+  )
+  assert.deepEqual(p.artifactChecks, ['Does every task name its verification?', 'Is lib/*.mjs free of node: imports?'])
+  assert.deepEqual(p.problems, [])
+})
+
+test('artifact sections: a misnamed artifact heading is a problem naming it and both known headings', () => {
+  for (const heading of ['Artifact Lenses', 'Artifacts Checks']) {
+    const p = parseReviewPolicy(`## ${heading}\n- agentic-harness\n`)
+    assert.deepEqual(p.artifactLenses, [], heading)
+    assert.deepEqual(p.artifactChecks, [], heading)
+    assert.equal(p.problems.length, 1, `${heading}: ${p.problems.join(' | ')}`)
+    assert.ok(p.problems[0].includes(heading), p.problems[0])
+    assert.ok(p.problems[0].includes('Artifact Review Lenses'), p.problems[0])
+    assert.ok(p.problems[0].includes('Artifact Checks'), p.problems[0])
+  }
+})
+
+test('artifact sections: an unrelated unknown heading and a rationale heading stay ignored (guard)', () => {
+  const text = '## Notes\nAnything.\n\n## Artifact checks rationale\nWhy these checks.\n\n## Always-human rationale\nWhy.\n'
+  assert.deepEqual(parseReviewPolicy(text).problems, [])
+})
+
+test('artifact sections: sectionOfProblem answers artifact for every problem the two sections and a misnamed heading report', () => {
+  const shapes = ['- nitCap: 0\n', 'prose and no list item\n', '- kept\nand a line of prose\n', '```\n- a\n```\n']
+  for (const heading of [ARTIFACT_LENSES_HEADING, ARTIFACT_CHECKS_HEADING]) {
+    for (const shape of shapes) {
+      const { problems } = parseReviewPolicy(`${heading}\n${shape}`)
+      assert.ok(problems.length > 0, `${heading} / ${JSON.stringify(shape)}: no problem`)
+      for (const problem of problems) {
+        // A threshold-shaped item is also reported as a body line, which names no section.
+        const want = problem.startsWith('line "') ? null : 'artifact'
+        assert.equal(core.sectionOfProblem(problem), want, `${heading}: ${problem}`)
+        assert.equal(core.sectionOfProblem(`${problem} (origin/main)`), want, `${heading} labelled: ${problem}`)
+      }
+      assert.ok(problems.some(problem => core.sectionOfProblem(problem) === 'artifact'), `${heading}: ${problems.join(' | ')}`)
+    }
+  }
+  for (const heading of ['Artifact Lenses', 'Artifacts Checks']) {
+    const { problems } = parseReviewPolicy(`## ${heading}\n- x\n`)
+    assert.ok(problems.length > 0)
+    for (const problem of problems) {
+      assert.equal(core.sectionOfProblem(problem), 'artifact', problem)
+      assert.equal(core.sectionOfProblem(`${problem} (origin/main)`), 'artifact', problem)
+    }
+  }
+})
+
+test('artifact sections: a misnamed artifact heading leaves the counts-as-source list in place', () => {
+  const kept = parseReviewPolicy('## Counts as Source\n- skills/\n\n## Artifact Lenses\n- agentic-harness\n')
+  assert.ok(kept.problems.length > 0)
+  assert.deepEqual(core.proofSourcePaths(kept), ['skills'])
+  // A problem in Counts as Source itself still drops the list (guard).
+  assert.equal(core.proofSourcePaths(parseReviewPolicy('## Counts as Source\n- skills/**\n\n## Artifact Checks\n- a check\n')), null)
+})
+
+test('artifact sections: composePolicy takes both fields from the base copy, not the working copy', () => {
+  const working = `${ARTIFACT_LENSES_HEADING}\n- web-ui\n\n${ARTIFACT_CHECKS_HEADING}\n- working check\n- another working check\n`
+  const base = `${ARTIFACT_LENSES_HEADING}\n- agentic-harness\n\n${ARTIFACT_CHECKS_HEADING}\n- base check\n`
+  const composed = core.composePolicy({ working: copyOf(working), base: copyOf(base), ref: 'origin/main' })
+  assert.deepEqual(composed.artifactLenses, ['agentic-harness'])
+  assert.deepEqual(composed.artifactChecks, ['base check'])
+  const absentBase = core.composePolicy({ working: copyOf(working), base: null, ref: 'origin/main' })
+  assert.deepEqual(absentBase.artifactLenses, [])
+  assert.deepEqual(absentBase.artifactChecks, [])
+})
+
+test('artifact sections: formatReviewPolicy prints the lens names and the number of checks', () => {
+  const out = formatReviewPolicy(
+    parseReviewPolicy(`${ARTIFACT_LENSES_HEADING}\n- agentic-harness\n- web-ui\n\n${ARTIFACT_CHECKS_HEADING}\n- one\n- two\n- three\n`)
+  )
+  assert.match(out, /^ {2}artifact lenses: agentic-harness, web-ui$/m)
+  assert.match(out, /^ {2}artifact checks: 3$/m)
+})
+
+test('artifact sections: the shipped template holds both headings, parses clean and declares neither list', () => {
+  const template = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills', 'review-code', 'REVIEW.template.md'), 'utf8')
+  assert.ok(template.includes(ARTIFACT_LENSES_HEADING), 'the template lacks the lenses heading')
+  assert.ok(template.includes(ARTIFACT_CHECKS_HEADING), 'the template lacks the checks heading')
+  const p = parseReviewPolicy(template)
+  assert.deepEqual(p.problems, [])
+  assert.deepEqual(p.artifactLenses, [])
+  assert.deepEqual(p.artifactChecks, [])
 })

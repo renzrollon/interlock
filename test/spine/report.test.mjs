@@ -1486,3 +1486,113 @@ test('a fallback resolution is named with its reason, read from the root, and th
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- brief-and-record-the-artifact-gate: the review figures split by stage ------------------
+
+const stagedRecord = (over, counts, n) => ({
+  schema: REVIEW_METRICS_SCHEMA,
+  timestamp: `2026-08-26T13:00:0${n}.000Z`,
+  change: 'add-widget',
+  counts,
+  ...over
+})
+const C = (raised, dismissed, droppedByQuality, surviving) => ({ raised, dismissed, droppedByQuality, surviving })
+
+/** The corpus of the spec's happy path, plus a record from before the fields existed. */
+function stagedCorpus(dir) {
+  metricsFile(dir, 'review-a-1.json', stagedRecord({ stage: 'artifacts', depth: 'strict', reviewer: 'agent', lenses: ['agentic-harness'] }, C(5, 2, 1, 2), 1))
+  metricsFile(dir, 'review-a-2.json', stagedRecord({ stage: 'artifacts', depth: 'lean', reviewer: 'session', lenses: [] }, C(3, 1, 0, 2), 2))
+  metricsFile(dir, 'review-c-1.json', stagedRecord({ stage: 'code', depth: 'strict', reviewer: 'agent', lenses: null }, C(11, 4, 2, 5), 3))
+  metricsFile(dir, 'review-old-1.json', stagedRecord({}, C(6, 1, 1, 4), 4))
+}
+
+test('by stage: artifact gates, code reviews and records with no stage are told apart, each with a reader split', () => {
+  const dir = root()
+  try {
+    stagedCorpus(dir)
+    const { byStage } = buildReport(dir).indicators.reviewFindings.fromMetrics
+    assert.deepEqual(Object.keys(byStage).sort(), ['artifacts', 'code', 'unrecorded'])
+    assert.equal(byStage.artifacts.files, 2)
+    assert.deepEqual(byStage.artifacts.counts, C(8, 3, 1, 4))
+    assert.deepEqual(Object.keys(byStage.artifacts.byReader).sort(), ['lean/session', 'strict/agent'])
+    assert.deepEqual(byStage.artifacts.byReader['strict/agent'], { files: 1, counts: C(5, 2, 1, 2) })
+    assert.deepEqual(byStage.artifacts.byReader['lean/session'], { files: 1, counts: C(3, 1, 0, 2) })
+    assert.equal(byStage.code.files, 1)
+    assert.deepEqual(byStage.code.counts, C(11, 4, 2, 5))
+    assert.deepEqual(byStage.code.byReader, { 'strict/agent': { files: 1, counts: C(11, 4, 2, 5) } })
+    assert.equal(byStage.unrecorded.files, 1, 'a record with no stage is not a code review')
+    assert.deepEqual(byStage.unrecorded.counts, C(6, 1, 1, 4))
+    assert.deepEqual(Object.keys(byStage.unrecorded.byReader), ['unrecorded/unrecorded'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('by stage: the existing totals equal the sums over the groups, unrecorded included', () => {
+  const dir = root()
+  try {
+    stagedCorpus(dir)
+    const fm = buildReport(dir).indicators.reviewFindings.fromMetrics
+    assert.equal(fm.files, 4)
+    assert.deepEqual(fm.counts, C(25, 8, 4, 13))
+    const groups = Object.values(fm.byStage)
+    assert.equal(groups.reduce((n, g) => n + g.files, 0), fm.files)
+    for (const key of ['raised', 'dismissed', 'droppedByQuality', 'surviving']) {
+      assert.equal(groups.reduce((n, g) => n + g.counts[key], 0), fm.counts[key], key)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('by stage: an empty corpus has an empty byStage and the text prints no group line', () => {
+  const dir = root()
+  try {
+    const report = buildReport(dir)
+    assert.deepEqual(report.indicators.reviewFindings.fromMetrics.byStage, {})
+    assert.doesNotMatch(formatReport(report), /(unrecorded|artifacts|strict\/agent)[^:\n]*: [0-9]+ file\(s\):/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('by stage: a record naming its reader and not its depth reads unrecorded/session under its stage', () => {
+  const dir = root()
+  try {
+    metricsFile(dir, 'review-a-1.json', stagedRecord({ stage: 'artifacts', depth: null, reviewer: 'session', lenses: [] }, C(2, 1, 0, 1), 1))
+    const { byStage } = buildReport(dir).indicators.reviewFindings.fromMetrics
+    assert.deepEqual(Object.keys(byStage), ['artifacts'])
+    assert.deepEqual(byStage.artifacts.byReader, { 'unrecorded/session': { files: 1, counts: C(2, 1, 0, 1) } })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('by stage: a value outside the vocabulary is unrecorded, never a new group', () => {
+  const dir = root()
+  try {
+    metricsFile(dir, 'review-d-1.json', stagedRecord({ stage: 'design', depth: 'strict', reviewer: 'human' }, C(2, 1, 0, 1), 1))
+    const { byStage } = buildReport(dir).indicators.reviewFindings.fromMetrics
+    assert.deepEqual(Object.keys(byStage), ['unrecorded'])
+    assert.equal(byStage.unrecorded.files, 1)
+    assert.deepEqual(Object.keys(byStage.unrecorded.byReader), ['strict/unrecorded'])
+    assert.doesNotMatch(JSON.stringify(byStage), /design|human/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('by stage: the text names each group with its file count and four counts', () => {
+  const dir = root()
+  try {
+    stagedCorpus(dir)
+    const text = formatReport(buildReport(dir))
+    const line = (name, files, counts) =>
+      new RegExp(`^.*\\b${name}\\b.*\\b${files}\\b.*\\b${counts[0]}\\b.*\\b${counts[1]}\\b.*\\b${counts[2]}\\b.*\\b${counts[3]}\\b.*$`, 'm')
+    assert.match(text, line('artifacts', 2, [8, 3, 1, 4]))
+    assert.match(text, line('code', 1, [11, 4, 2, 5]))
+    assert.match(text, line('unrecorded', 1, [6, 1, 1, 4]))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

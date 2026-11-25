@@ -4396,6 +4396,25 @@ test('review-policy --base prints the always-human-review list from the ref besi
   assert.deepEqual(working.humanPaths, ['docs'], 'without a base both lists come from the working tree, as before')
 })
 
+test('review-policy --base reads artifactChecks from the ref and reports differsFromBase when the working copy adds one', () => {
+  const committed = '## Artifact Review Lenses\n- agentic-harness\n\n## Artifact Checks\n- Does every task name its verification?\n'
+  const repo = policyRepo('rp-artifact', committed)
+  writeFileSync(join(repo.root, 'REVIEW.md'), committed + '- A check only the working copy holds\n')
+
+  const out = JSON.parse(run(['review-policy', '--base', 'policy-base', '--root', repo.root, '--json']).stdout)
+  assert.deepEqual(out.artifactChecks, ['Does every task name its verification?'], 'read from the ref, not the working copy')
+  assert.deepEqual(out.artifactLenses, ['agentic-harness'])
+  assert.equal(out.differsFromBase, true)
+
+  const text = run(['review-policy', '--base', 'policy-base', '--root', repo.root])
+  assert.equal(text.code, 0, text.stderr)
+  assert.match(text.stdout, /artifact lenses: agentic-harness/)
+  assert.match(text.stdout, /artifact checks: 1/)
+
+  const working = JSON.parse(run(['review-policy', '--root', repo.root, '--json']).stdout)
+  assert.equal(working.artifactChecks.length, 2, 'without a base both lists come from the working tree')
+})
+
 // --- merge-confidence --base: policy.humanPaths ---------------------------------
 
 const said = signal => [signal.reason, ...(signal.evidence || [])].join('\n')

@@ -5,9 +5,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { EFFORT, SPAWN_ROUTING, REVIEW_DEPTH } from '../../lib/limits.mjs'
-import { ROUTING_ROLES, REVIEW_DEPTHS, resolveRouting, listRouting } from '../../lib/routing.mjs'
+import { ROUTING_ROLES, REVIEW_DEPTHS, RoutingError, resolveRouting, listRouting, formatRouting } from '../../lib/routing.mjs'
 
 const MODELS = ['haiku', 'sonnet', 'opus', null]
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', null]
@@ -161,4 +164,83 @@ test('listRouting returns the depth, one entry per role and the depth\'s review 
     assert.deepEqual(got.banners, [])
   }
   assert.equal(listRouting({}).depth, REVIEW_DEPTH.default)
+})
+
+// --- brief-and-record-the-artifact-gate: the caller-depth table --------------------------------
+
+test('a caller the table names resolves the role to the caller\'s depth and says which caller', () => {
+  const got = resolveRouting('artifact-reviewer', {}, { caller: 'spec' })
+  assert.equal(got.depth, 'strict')
+  assert.equal(got.caller, 'spec')
+  const strict = resolveRouting('artifact-reviewer', {}, { depth: 'strict' })
+  assert.equal(got.model, strict.model)
+  assert.equal(got.effort, strict.effort)
+})
+
+test('an answer with no caller carries caller null', () => {
+  assert.equal(resolveRouting('artifact-reviewer', {}).caller, null)
+})
+
+test('a depth given wins over the caller\'s (guard for the depth; caller is new)', () => {
+  const got = resolveRouting('artifact-reviewer', {}, { depth: 'lean', caller: 'spec' })
+  assert.equal(got.depth, 'lean')
+  assert.equal(got.caller, 'spec')
+})
+
+test('a role the table gives nothing for the caller keeps the published default depth (guard for the depth)', () => {
+  const got = resolveRouting('review-dimension', {}, { caller: 'spec' })
+  assert.equal(got.depth, REVIEW_DEPTH.default)
+  assert.equal(got.caller, 'spec')
+})
+
+test('an unknown caller throws a caller RoutingError naming spec', () => {
+  assert.throws(
+    () => resolveRouting('artifact-reviewer', {}, { caller: 'ship' }),
+    err => err instanceof RoutingError && err.kind === 'caller' && err.message.includes('spec')
+  )
+})
+
+test('a caller with no role throws a caller RoutingError naming spec', () => {
+  assert.throws(
+    () => listRouting({}, { caller: 'spec' }),
+    err => err instanceof RoutingError && err.kind === 'caller' && err.message.includes('spec')
+  )
+})
+
+test('formatRouting prints the caller', () => {
+  const text = formatRouting(resolveRouting('artifact-reviewer', {}, { caller: 'spec' }))
+  assert.match(text, /^routing artifact-reviewer \(strict, caller spec\): /m)
+})
+
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'interlock')
+const NO_OVERRIDE_ENV = { ...process.env, CLAUDE_CODE_EFFORT_LEVEL: '', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '' }
+const cli = args => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: NO_OVERRIDE_ENV })
+
+test('interlock routing artifact-reviewer --caller spec --json prints strict and the caller', () => {
+  const r = cli(['routing', 'artifact-reviewer', '--caller', 'spec', '--json'])
+  assert.equal(r.status, 0, r.stderr)
+  const out = JSON.parse(r.stdout)
+  assert.equal(out.depth, 'strict')
+  assert.equal(out.caller, 'spec')
+})
+
+test('interlock routing refuses an unknown caller, and a caller with no role, with empty stdout', () => {
+  for (const args of [
+    ['routing', 'artifact-reviewer', '--caller', 'ship', '--json'],
+    ['routing', '--caller', 'spec', '--json']
+  ]) {
+    const r = cli(args)
+    assert.notEqual(r.status, 0, args.join(' '))
+    assert.equal(r.stdout, '', args.join(' '))
+    assert.ok(r.stderr.includes('spec'), `${args.join(' ')}: ${r.stderr}`)
+  }
+})
+
+test('interlock limits --json carries callerDepth and the text carries its row', () => {
+  const json = cli(['limits', '--json'])
+  assert.equal(json.status, 0, json.stderr)
+  assert.deepEqual(JSON.parse(json.stdout).callerDepth, { 'artifact-reviewer': { spec: 'strict' } })
+  const text = cli(['limits'])
+  assert.equal(text.status, 0, text.stderr)
+  assert.match(text.stdout, /artifact-reviewer[^\n]*spec[^\n]*strict/)
 })

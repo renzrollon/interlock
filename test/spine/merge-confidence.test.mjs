@@ -3404,3 +3404,33 @@ test('suite four: docs/07 names both flags in its flags sentence and both result
   assert.ok(verifyRow, 'docs/07 has no --verify row')
   for (const field of ['lint', 'build']) assert.ok(verifyRow.includes(`\`${field}\``), `the --verify row does not name the ${field} field`)
 })
+
+// --- a misnamed artifact heading at the base leaves policy.humanPaths as it was -------
+
+/** A base commit on `target` holding `policy` as REVIEW.md; `feature` adds one source file. */
+function policyBaseRepo(sub, policy) {
+  const root = join(scratch, sub)
+  mkdirSync(root, { recursive: true })
+  git(root, 'init', '-q', '-b', 'target')
+  commit(root, { ...cliChangeFiles(), 'REVIEW.md': policy }, 'base')
+  git(root, 'checkout', '-q', '-b', 'feature')
+  commit(root, { [CLI_SOURCE]: 'export const catalogue = () => []\n' }, 'the run’s commit')
+  return { root }
+}
+
+test('a base REVIEW.md with a misnamed artifact heading gives policy.humanPaths the band it gives without it, and its problems do not name the heading', () => {
+  const human = '## Always Human Review\n- lib/release/\n'
+  const plain = policyBaseRepo('artifact-heading-plain', human)
+  const misnamed = policyBaseRepo('artifact-heading-misnamed', `${human}\n## Artifact Lenses\n- agentic-harness\n`)
+
+  const without = signalOf(assessed(plain, '--base', 'target').out, 'policy.humanPaths')
+  const withHeading = signalOf(assessed(misnamed, '--base', 'target').out, 'policy.humanPaths')
+  assert.equal(without.band, 'green', said(without))
+  assert.equal(withHeading.band, without.band, said(withHeading))
+  assert.deepEqual(withHeading.flags, without.flags)
+  assert.doesNotMatch(said(withHeading), /Artifact Lenses/, said(withHeading))
+
+  // The policy parsed at that base does report the heading.
+  const parsed = JSON.parse(cli(['review-policy', '--root', misnamed.root, '--base', 'target', '--json']).stdout)
+  assert.ok(parsed.problems.some(problem => problem.includes('Artifact Lenses')), parsed.problems.join(' | '))
+})

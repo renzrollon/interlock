@@ -115,6 +115,7 @@ import {
   MERGE_BANDS,
   SPAWN_ROUTING,
   REVIEW_DEPTH,
+  CALLER_DEPTH,
   SESSION_ADVICE,
   SESSION_ADVICE_BASIS,
   formatLimits
@@ -129,7 +130,7 @@ import {
   readReviewPolicy,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
-import { writeReviewMetrics } from '../lib/metrics.mjs'
+import { writeReviewMetrics, recordFieldsOf } from '../lib/metrics.mjs'
 import {
   planVerification,
   interWaveVerifyBudget,
@@ -227,6 +228,10 @@ Usage:
                   [--tdd|--no-tdd]           failing-test wave first)
   interlock surface --changed <files...>    Classify UI testability of changed files
   interlock gate --findings <file>          Decide whether a review gate blocks
+                  [--metrics <change>]      With --metrics, the record says what
+                  [--stage artifacts|code]  ran: stage, depth, reader and lens
+                  [--depth lean|strict]     names (none: an empty list)
+                  [--reviewer session|agent|external] [--lenses <names|none>]
   interlock validate [change]               Inspect OpenSpec change artifacts
                                             (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
@@ -286,7 +291,7 @@ Usage:
   interlock limits                          Print every cap the loop obeys
   interlock routing [<role>]                Print the model and effort a prose
                   [--depth lean|strict]     skill passes when it spawns a role,
-                                            and the review depth's shape
+                  [--caller <skill>]        and the review depth's shape
   interlock suggest [<skill>]               Print the session model and effort a
                                             skill suits, and how this session's
                                             effort compares. Advice; exits 0
@@ -425,13 +430,18 @@ Usage:
                                            exit 1 if the draft names no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
+  interlock review brief --artifacts <change> [--lens <a,b>] [--since <f>]
+                                           Print the artifact reviewer's whole
+                                           prompt; exit 1 on a change that does
+                                           not resolve or a missing bundled file
   interlock review target --github <f|->   Pin a pull request from gh's (or, with
                   [--run-code]             --gitlab, glab's) document; offline
   interlock review comment --review <f> --target <f> [--out <f>]
                                            Render the pull request comment
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
-                                           both path lists and any parse problems.
+                                           the path lists, the artifact lenses and
+                                           checks, and any parse problems.
                                            Absent → empty
   interlock risk [change]                   Classify blast radius for the continuity gate
   interlock ledger [change]                 Summarize the decision ledger
@@ -2448,7 +2458,7 @@ function reviewIo(root, flags) {
     headShaOf,
     diffShape,
     pluginRoot: PLUGIN_ROOT,
-    writeReviewMetrics: (change, counts) => writeReviewMetrics(corpusHome(root, flags).home, { change, counts })
+    writeReviewMetrics: (change, counts, fields) => writeReviewMetrics(corpusHome(root, flags).home, { ...fields, change, counts })
   }
 }
 
@@ -3406,7 +3416,8 @@ async function main() {
             dismissed: result.dismissedCount,
             droppedByQuality: result.droppedByQuality,
             surviving
-          }
+          },
+          ...recordFieldsOf(flags, warn)
         })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
@@ -3714,6 +3725,7 @@ async function main() {
           // of null-able strings, never entries of the iteration-count limits.
           routing: SPAWN_ROUTING,
           reviewDepth: REVIEW_DEPTH,
+          callerDepth: CALLER_DEPTH,
           sessionAdvice: SESSION_ADVICE,
           sessionAdviceBasis: SESSION_ADVICE_BASIS
         },
@@ -3725,7 +3737,7 @@ async function main() {
     case 'routing': {
       let out
       try {
-        const opts = { depth: flags.depth }
+        const opts = { depth: flags.depth, caller: flags.caller }
         out = positional[1] === undefined ? listRouting(process.env, opts) : resolveRouting(positional[1], process.env, opts)
       } catch (err) {
         if (!(err instanceof RoutingError)) throw err
