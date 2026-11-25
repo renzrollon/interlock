@@ -160,6 +160,36 @@ test('the diff is minimal on a moved-down block: lines kept are context or untou
   assert.equal(r.removed, 0)
 })
 
+test('a replace merged with a removal across kept lines spans both edits on each side (M10)', () => {
+  const before = numbered(12)
+  // Line 2 replaced, lines 3-4 kept, line 5 removed: one hunk.
+  const after = ['L1', 'X2', 'L3', 'L4', ...before.slice(5)]
+  const r = diffLines(before, after)
+  assert.equal(r.hunks.length, 1)
+  const [h] = r.hunks
+  assert.deepEqual(h.current, { from: 2, to: 4 }, 'the current range reaches the line the removal of L5 follows')
+  assert.deepEqual(h.snapshot, { from: 2, to: 5 }, 'the snapshot range includes the removed L5')
+  assert.equal(r.added, 1)
+  assert.equal(r.removed, 2)
+  assert.deepEqual(texts(h, 'removed'), ['L2', 'L5'])
+  assert.deepEqual(texts(h, 'added'), ['X2'])
+})
+
+test('two removals merged across kept lines are not one contiguous pure removal (M10)', () => {
+  const before = numbered(12)
+  // Lines 2 and 5 removed, lines 3-4 kept: one hunk, and lines 3-4 still exist.
+  const after = ['L1', 'L3', 'L4', ...before.slice(5)]
+  const r = diffLines(before, after)
+  assert.equal(r.hunks.length, 1)
+  const [h] = r.hunks
+  assert.deepEqual(h.current, { from: 2, to: 3 }, 'the kept L3-L4 between the removals are current lines 2-3')
+  assert.equal(h.after, null, 'a hunk with a current range is not placed after a line')
+  assert.deepEqual(h.snapshot, { from: 2, to: 5 })
+  assert.equal(r.added, 0)
+  assert.equal(r.removed, 2)
+  assert.deepEqual(texts(h, 'removed'), ['L2', 'L5'])
+})
+
 // --- the rework share ----------------------------------------------------------
 
 test('the rework share of 400 -> 410 lines with 20 added and 10 removed reads 5', () => {

@@ -127,7 +127,7 @@ From 1.15.0 Interlock makes no network call and sends no push of its own (the me
 
 ## A newer plugin on an older CLI
 
-The artifact gate's newer skill lines degrade aloud against an older `interlock`, and nothing stops:
+The artifact gate's newer skill lines mostly degrade aloud against an older `interlock`, and nothing stops. The last row does not: an older CLI passes it through silently.
 
 | Skill line | Older CLI answers | What the skill does |
 |---|---|---|

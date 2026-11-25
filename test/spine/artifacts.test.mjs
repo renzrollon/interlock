@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -671,6 +671,33 @@ test('readLivingCapabilities names an openspec/specs it could not read; a tree w
     } finally {
       chmodSync(top, 0o755)
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- PR #47 review: the wording lint is opt-in, and an unread spec is said (M8, M11) ---
+
+test('inspectChange carries wording only when asked: every caller but validate skips the spec scan', () => {
+  assert.equal('wording' in inspectChange(root, 'add-auth'), false)
+  assert.ok(Array.isArray(inspectChange(root, 'add-auth', { wording: true }).wording))
+  assert.equal('wording' in inspectChange(root, 'no-such-change'), false)
+  assert.deepEqual(inspectChange(root, 'no-such-change', { wording: true }).wording, [])
+})
+
+test('a delta spec that cannot be read is one wording entry saying its wording was not checked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'interlock-artifacts-unread-'))
+  try {
+    const change = join(dir, 'openspec', 'changes', 'c')
+    mkdirSync(join(change, 'specs', 'a'), { recursive: true })
+    writeFileSync(join(change, 'proposal.md'), '# P\n')
+    writeFileSync(join(change, 'design.md'), '# D\n')
+    writeFileSync(join(change, 'tasks.md'), '- [ ] 1.1 x\n')
+    symlinkSync(join(dir, 'nowhere.md'), join(change, 'specs', 'a', 'spec.md'))
+    const r = inspectChange(dir, 'c', { wording: true })
+    assert.deepEqual(r.specFiles, ['a/spec.md'])
+    assert.equal(r.wording.length, 1)
+    assert.match(r.wording[0].message, /^WORDING: specs\/a\/spec\.md could not be read \(ENOENT\); its wording was not checked$/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

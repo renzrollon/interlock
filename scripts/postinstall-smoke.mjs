@@ -273,6 +273,9 @@ export const INVENTORY = [
   { bin: I, argv: ['review', 'brief', '--dimension', 'regression', '--base', 'HEAD~1'], codes: [0], check: r => (/^# Dimension: regression$/m.test(r.stdout) ? '' : 'the bundled regression rubric was not read from the install') },
   { bin: I, argv: ['review', 'brief', '--skeptics', '--findings', '{in}/blocker.json', '--json'], codes: [0], keys: ['prompts'], check: r => (stepOf(r).prompts.length === 2 ? '' : 'not two skeptic prompts') },
   { bin: I, argv: ['review-policy', '--base', 'HEAD~1', '--json'], codes: [0], keys: ['humanPaths', 'excludePaths'] },
+  { bin: I, argv: ['review', 'brief', '--artifacts', CHANGE], codes: [0], check: r => (/ARTIFACT BRIEF|REVIEW LENSES:/.test(r.stdout) ? '' : 'the artifact brief did not print, or the bundled rubric was not read from the install') },
+  { bin: I, argv: ['routing', 'artifact-reviewer', '--caller', 'spec', '--json'], codes: [0], keys: ['depth', 'banners'] },
+  { bin: I, argv: ['gate', '--findings', '{in}/empty.json', '--stage', 'artifacts', '--json'], codes: [0], keys: ['passed'] },
   { bin: I, argv: ['review-policy', 'suggest', '--json'], codes: [0], keys: ['window', 'candidates', 'stale', 'sources'] },
   // Pinning a colleague's pull request: offline, from the document gh printed.
   { bin: I, argv: ['review', 'target', '--github', '{in}/pr-github.json', '--json'], codes: [0], keys: ['file', 'worktree', 'commands.fetch', 'commands.worktreeAdd'] },

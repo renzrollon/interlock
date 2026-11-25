@@ -27,6 +27,37 @@ function added(...lines) {
 
 // --- pure ---------------------------------------------------------------
 
+test('a long unclosed smart quote run is linear and quoted text is still blanked', () => {
+  const long = added('The cache ' + '“'.repeat(50000) + ' is eventually refreshed.')
+  const t0 = process.hrtime.bigint()
+  const hits = lintWording('s.md', long)
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6
+  assert.ok(ms < 200, `took ${ms} ms`)
+  assert.equal(hits.length, 1)
+  assert.equal(lintWording('s.md', added('A “eventually” closed.')).length, 0)
+  assert.equal(lintWording('s.md', added('An “unclosed eventually here.')).length, 1)
+  assert.equal(lintWording('s.md', added('“a” eventually “b” and “c eventually')).length, 1)
+})
+
+test('any other level-2 heading ends the requirement block', () => {
+  const text = added('The cache is fine.', '', '## Notes', '', 'This eventually works.')
+  assert.equal(lintWording('s.md', text).length, 0)
+})
+
+test('a fence closes only on the same char at least as long as the opener', () => {
+  const nested = added('````', '```', 'eventually', '```', '````', '', 'It is eventually done.')
+  const hits = lintWording('s.md', nested)
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0].line, 11)
+  const mixed = added('```', '~~~', 'eventually', '```', 'properly')
+  assert.deepEqual(lintWording('s.md', mixed).map(h => h.phrase), ['properly'])
+})
+
+test('a snake_case identifier containing a phrase is not flagged', () => {
+  assert.equal(lintWording('s.md', added('Call is_properly_closed first.')).length, 0)
+  assert.equal(lintWording('s.md', added('It is properly closed.')).length, 1)
+})
+
 test('a phrase at a known line is flagged with its line, reason and a WORDING: message', () => {
   const text = added('### Requirement: Cache', '', 'The cache is eventually refreshed.')
   const hits = lintWording('specs/a/spec.md', text)

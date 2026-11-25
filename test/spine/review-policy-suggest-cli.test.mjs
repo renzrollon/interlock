@@ -14,7 +14,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -194,6 +194,72 @@ test('a record with no findings field beside a findings file of the same change 
   const r = suggestJson(root)
   assert.deepEqual(r.candidates.filter(c => c.trigger === 'T2'), [])
   assert.match(r.sources.records, /\b1\b/, `the records line counts the one: ${r.sources.records}`)
+})
+
+// --- PR #47 review: what a join reads ------------------------------------------------------
+
+/** A metrics record of an artifact gate, written by hand, naming `findings`. */
+function putRecord(root, name, findings, { depth = 'lean', reviewer = 'session', timestamp = '2026-11-25T12:00:00.000Z' } = {}) {
+  put(
+    root,
+    `.claude/metrics/${name}`,
+    JSON.stringify({
+      schema: 'interlock.review-metrics/1',
+      timestamp,
+      change: 'x',
+      counts: { raised: 0, dismissed: 0, droppedByQuality: 0, surviving: 0 },
+      stage: 'artifacts',
+      depth,
+      reviewer,
+      lenses: null,
+      findings
+    })
+  )
+}
+
+test('a record whose findings file is JSON but no findings list is unreadable, never a passing gate (H3)', () => {
+  const root = makeRepo('t2-not-findings')
+  put(root, '.claude/metrics/not-findings.json', '{}')
+  putRecord(root, 'review-x-2026-11-25T12-00-00-000Z.json', '.claude/metrics/not-findings.json')
+  recordGate(root, '20261125-130000', GATE_BLOCK, ['--depth', 'strict', '--reviewer', 'agent'])
+  const r = suggestJson(root)
+  assert.deepEqual(r.candidates.filter(c => c.trigger === 'T2'), [], 'a {} file is not a pass to overturn')
+  assert.match(r.sources.records, /1 joined gate\(s\) in the window; 0 left out for naming no findings file, 1 for an unreadable findings file/)
+})
+
+test('a findings file that links out of the root is unreadable, and a record file that does not parse is counted (H3, M11)', () => {
+  const root = makeRepo('t2-link-out')
+  const outside = mkdtempSync(join(tmpdir(), 'interlock-suggest-outside-'))
+  temps.push(outside)
+  writeFileSync(join(outside, 'f.json'), JSON.stringify(GATE_PASS))
+  mkdirSync(join(root, '.claude', 'findings'), { recursive: true })
+  symlinkSync(join(outside, 'f.json'), join(root, '.claude', 'findings', 'linked.json'))
+  putRecord(root, 'review-x-2026-11-25T12-00-00-000Z.json', '.claude/findings/linked.json')
+  put(root, '.claude/metrics/review-x-broken.json', '{ not json')
+  const r = suggestJson(root)
+  assert.match(r.sources.records, /1 for an unreadable findings file; 1 record file\(s\) that do not parse/)
+})
+
+test('records in another state home join to findings files under that home when the root has none (round-0 F-a45c2a5b)', () => {
+  const root = makeRepo('t2-home-root')
+  const home = makeRepo('t2-home-home', { review: false })
+  put(home, '.claude/metrics/pass.json', JSON.stringify(GATE_PASS))
+  put(home, '.claude/metrics/block.json', JSON.stringify(GATE_BLOCK))
+  putRecord(home, 'review-x-2026-11-25T12-00-00-000Z.json', '.claude/metrics/pass.json')
+  putRecord(home, 'review-x-2026-11-25T13-00-00-000Z.json', '.claude/metrics/block.json', {
+    depth: 'strict',
+    reviewer: 'agent',
+    timestamp: '2026-11-25T13:00:00.000Z'
+  })
+  const r = suggestJson(root, ['--state-home', home])
+  assert.equal(r.candidates.filter(c => c.trigger === 'T2').length, 1, r.sources.records)
+  assert.match(r.sources.records, /2 joined gate\(s\)/)
+})
+
+test('a compound notes file that is there but does not parse is said, not read as absent (M11)', () => {
+  const root = makeRepo('notes-broken', { files: { 'docs/notes/compound.md': '# Compound notes\n\n| not | the | header |\n|--|--|--|\n' } })
+  const r = suggestJson(root)
+  assert.match(r.sources.notes, /^docs\/notes\/compound\.md: a table that does not parse, so T1 read nothing$/)
 })
 
 // --- T4 -------------------------------------------------------------------------------------

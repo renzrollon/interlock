@@ -115,6 +115,30 @@ test('a timestamped gate counts at or after the window time, not before', () => 
   assert.equal(at('2026-11-21T12:00:00.001Z').candidates.length, 0, 'the first gate is before it')
 })
 
+test('a closed window leaves out a gate with a null or unparseable timestamp; an open window keeps it', () => {
+  const closed = { all: false, since: { day: '2026-11-20', time: '2026-11-20T09:00:00.000Z' }, commit: 'abc1234' }
+  for (const timestamp of [null, 'not a time']) {
+    const gates = [gate('x', 1, PASS, { timestamp }), gate('x', 2, BLOCK, STRICT)]
+    const shut = suggestPolicy(base({ gates, window: closed, checks: ['one'] }))
+    assert.equal(shut.candidates.length, 0, `${timestamp}: the undated gate is out, so no pair`)
+    assert.match(shut.sources.records, /\b1 joined gate/, `${timestamp}: only the dated gate is read`)
+    assert.equal(suggestPolicy(base({ gates, window: { ...closed, all: true } })).candidates.length, 1, `${timestamp}: --all keeps it`)
+    assert.equal(suggestPolicy(base({ gates, window: OPEN })).candidates.length, 1, `${timestamp}: an open window keeps it`)
+  }
+})
+
+test('a closed window leaves out a note row or ledger whose date is missing or not YYYY-MM-DD', () => {
+  const closed = { all: false, since: { day: '2026-11-20', time: '2026-11-20T09:00:00.000Z' }, commit: 'abc1234' }
+  for (const date of [null, undefined, 'TBD', '2026-11-26T12:00']) {
+    const notes = { rows: [row('N1', 'a', 'lib/widget.mjs'), row('N2', 'b', 'lib/widget.mjs', { date })] }
+    assert.equal(suggestPolicy(base({ notes, window: closed })).candidates.length, 0, `${date}: the row is out`)
+    assert.equal(suggestPolicy(base({ notes, window: { ...closed, all: true } })).candidates.length, 1, `${date}: --all keeps it`)
+    const ledgers = [{ change: 'x', date, rows: [{ id: 'D1', question: 'q', class: 'needs_human', resolution: 'r', evidence: 'human decision' }] }]
+    assert.equal(suggestPolicy(base({ ledgers, window: closed })).candidates.length, 0, `${date}: the ledger is out`)
+    assert.equal(suggestPolicy(base({ ledgers, window: OPEN })).candidates.length, 1, `${date}: an open window keeps it`)
+  }
+})
+
 test('a missing anchor opens the window and says why', () => {
   const r = suggestPolicy(base({ window: { all: false, since: null, commit: null } }))
   assert.equal(r.window.open, true)
@@ -166,6 +190,15 @@ test('T2: the same reader twice raises none, and so does an unrecorded reader on
   assert.deepEqual(suggestPolicy(base({ gates: [gate('x', 1, PASS), gate('x', 2, BLOCK)] })).candidates, [])
   assert.deepEqual(suggestPolicy(base({ gates: [gate('x', 1, PASS, { depth: null, reviewer: null }), gate('x', 2, BLOCK, STRICT)] })).candidates, [])
   assert.deepEqual(suggestPolicy(base({ gates: [gate('x', 1, PASS), gate('x', 2, BLOCK, { depth: null, reviewer: null })] })).candidates, [])
+})
+
+test('T2: a field recorded on one gate only is not a different reader', () => {
+  const gates = [gate('x', 1, PASS, { depth: null, reviewer: 'session' }), gate('x', 2, BLOCK, { depth: 'lean', reviewer: 'session' })]
+  assert.deepEqual(suggestPolicy(base({ gates })).candidates, [])
+  const flipped = [gate('x', 1, PASS, { depth: 'lean', reviewer: null }), gate('x', 2, BLOCK, { depth: 'lean', reviewer: 'agent' })]
+  assert.deepEqual(suggestPolicy(base({ gates: flipped })).candidates, [])
+  const real = [gate('x', 1, PASS, { depth: null, reviewer: 'session' }), gate('x', 2, BLOCK, { depth: 'strict', reviewer: 'agent' })]
+  assert.equal(suggestPolicy(base({ gates: real })).candidates.length, 1, 'the reader recorded on both differs')
 })
 
 test('T2: a pass that follows a block is not an overturn, and a block followed by a block is not either', () => {

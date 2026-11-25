@@ -22,7 +22,7 @@ it.
 | **Prose** — `## Owner` / front-matter `owner:`, `## What "Important" means`, `## Exclusions rationale` | the reviewer prompt | **advice** | reviewers read it as repository context; it can never lower survival | the working tree |
 | **`## Do Not Report` paths** | `interlock review` (the CLI) | **enforced** | findings whose file lies under a listed path are dropped before the band is applied | the base ref (`--base`), or the run's start commit; the working tree when neither exists |
 | **`## Always Human Review` paths** | `interlock merge-confidence` (the CLI), and no other consumer | **enforced** | a change that touches a listed path, or edits `REVIEW.md` itself, reads amber on the `policy.humanPaths` signal and needs a person | the base ref (`--base`); unobserved without one |
-| **`## Artifact Review Lenses` and `## Artifact Checks`** | the artifact gate's brief (`interlock review brief --artifacts`), and no other consumer | **advice** | the lens names replace the detected lenses; each check is quoted to the gate's reader, numbered `review-md.<n>`. Neither can set a threshold or move a verdict ([below](#the-artifact-sections)) | `HEAD`; the working tree when the repository has no commit, which then reads neither section |
+| **`## Artifact Review Lenses` and `## Artifact Checks`** | the artifact gate's brief (`interlock review brief --artifacts`), and `interlock review-policy suggest`, which reads the checks to name the stale ones | **advice** | the lens names replace the detected lenses; each check is quoted to the gate's reader, numbered `review-md.<n>`. Neither can set a threshold or move a verdict ([below](#the-artifact-sections)) | `HEAD`; the working tree when the repository has no commit, which then reads neither section |
 | **`## Counts as Source` paths** | the `diff.shape` signal of `interlock merge-confidence` (the CLI), and the proof of coverage in `interlock review` | **enforced** | a changed file under a listed path is counted as source toward the size caps, whatever its name, where it would otherwise be set aside as a test or as prose; the proof of coverage reads it too, so an unread entry on a listed file stays unread. It can only keep an entry unread, never lift one | the base ref (`--base`); a ship run's close reads it from the run's start commit |
 
 The line that keeps this on-thesis: **a model is never handed a path list as
@@ -50,7 +50,7 @@ Source` would take its own lines out of the size count. So the lists are read
 from a **base**:
 
 - **`interlock review --base <ref>`** and **`interlock review-policy --base <ref>`**
-  read all three lists from the commit at the ref. `merge-confidence --base` reads
+  read all three lists, and the two artifact sections the brief and `review-policy suggest` read, from the commit at the ref. `merge-confidence --base` reads
   the always-human-review and counts-as-source lists from the base **tip**, as GitHub reads `CODEOWNERS`
   from the base branch. A branch that predates a policy change reads amber on
   the signal until it is rebased, which is the safe direction: reading the merge

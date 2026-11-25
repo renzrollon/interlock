@@ -12,7 +12,7 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -174,4 +174,68 @@ test('checkpoint names the findings file and not the snapshot', () => {
   assert.equal(r.code, 0, r.stderr)
   assert.equal(JSON.parse(r.stdout).findings, FINDINGS_REL)
   assert.ok(readdirSync(join(root, '.claude', 'metrics', 'snapshots')).includes(NAME))
+})
+
+// --- a link out of the root is never written through (PR #47 review, H2) ----------------
+
+test('a snapshots directory that links out of the root is not written through, and the verdict is untouched', () => {
+  writeFindings([WARNING])
+  const outside = mkdtempSync(join(tmpdir(), 'interlock-gate-snapshot-outside-'))
+  try {
+    symlinkSync(outside, join(root, '.claude', 'metrics', 'snapshots'))
+    const r = gate()
+    assert.equal(r.code, 0, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.snapshot.written, false)
+    assert.match(out.snapshot.reason, /outside the repository root/)
+    assert.equal(out.passed, true)
+    assert.deepEqual(readdirSync(outside), [], 'nothing was written outside the root')
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a link at the snapshot path itself is not followed, and the file it names is unchanged', () => {
+  writeFindings([WARNING])
+  const outside = mkdtempSync(join(tmpdir(), 'interlock-gate-snapshot-outside-'))
+  try {
+    const victim = join(outside, 'victim.txt')
+    writeFileSync(victim, 'keep me\n')
+    mkdirSync(join(root, '.claude', 'metrics', 'snapshots'))
+    symlinkSync(victim, join(root, SNAPSHOT_REL))
+    const out = JSON.parse(gate().stdout)
+    assert.equal(out.snapshot.written, false)
+    assert.equal(readFileSync(victim, 'utf8'), 'keep me\n')
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a change directory that links out of the root is not snapshotted', () => {
+  writeFindings([WARNING])
+  const outside = mkdtempSync(join(tmpdir(), 'interlock-gate-snapshot-outside-'))
+  try {
+    writeFileSync(join(outside, 'proposal.md'), 'SECRET\n')
+    symlinkSync(outside, join(root, 'openspec', 'changes', 'z'))
+    const out = JSON.parse(gate(['gate', '--findings', FINDINGS_REL, '--metrics', 'z', '--stage', 'artifacts', '--json']).stdout)
+    assert.equal(out.snapshot.written, false)
+    assert.match(out.snapshot.reason, /outside the repository root/)
+    assert.equal(existsSync(join(root, SNAPSHOT_REL)), false)
+  } finally {
+    rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test('a relative --findings is read against --root, the root the record and the snapshot use, from any directory', () => {
+  writeFindings([BLOCKER])
+  const elsewhere = mkdtempSync(join(tmpdir(), 'interlock-gate-snapshot-cwd-'))
+  try {
+    const r = spawnSync(process.execPath, [CLI, ...GATE, '--root', root], { cwd: elsewhere, encoding: 'utf8', input: '' })
+    assert.equal(r.status, 1, r.stderr)
+    const out = JSON.parse(r.stdout)
+    assert.equal(out.passed, false, 'the blocker in the root\'s findings file was read')
+    assert.equal(out.snapshot.written, true)
+  } finally {
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
 })

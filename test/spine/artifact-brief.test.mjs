@@ -26,7 +26,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync, execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -898,4 +898,84 @@ test('interlock limits --json carries maxRegateReworkPercent', () => {
   const r = run(['limits', '--json'], { cwd: ROOT })
   assert.equal(r.code, 0, r.stderr)
   assert.equal(typeof JSON.parse(r.stdout).limits.maxRegateReworkPercent, 'number')
+})
+
+// --- PR #47 review: nothing outside the root reaches the brief, and the re-gate block is bounded ---
+
+const SECRET = 'API_SECRET=hunter2'
+
+test('a snapshot that links out of the root is not read: the RE-GATE: line says so and quotes nothing of the file (H1)', () => {
+  const repo = regateRepo('regate-link-out')
+  const outside = temp('regate-link-out-target')
+  writeFileSync(join(outside, '.env'), `${SECRET}\n`)
+  mkdirSync(join(repo.root, '.claude', 'metrics', 'snapshots'), { recursive: true })
+  symlinkSync(join(outside, '.env'), join(repo.root, '.claude', 'metrics', 'snapshots', SINCE_NAME))
+  const out = sinceBrief(repo)
+  assert.match(lineOf(openingOf(out), 'RE-GATE:'), /snapshot unreadable — a link to a path outside the repository root; /)
+  assert.ok(!out.includes('API_SECRET'), 'the linked file is never quoted')
+})
+
+test('a snapshot that is not JSON is named unreadable without quoting its opening bytes (H1)', () => {
+  const repo = regateRepo('regate-not-json-quiet')
+  put(repo.root, `.claude/metrics/snapshots/${SINCE_NAME}`, `${SECRET}\n`)
+  const out = sinceBrief(repo)
+  assert.match(lineOf(openingOf(out), 'RE-GATE:'), /snapshot unreadable — not valid JSON; /)
+  assert.ok(!out.includes('API_SECRET'), 'the parser message, which quotes the file, is never printed')
+})
+
+test('a --since file outside the root reads no snapshot beside it, whatever that snapshot holds (H1)', () => {
+  const repo = regateRepo('regate-since-outside')
+  const outside = temp('regate-since-outside-dir')
+  writeFileSync(join(outside, SINCE_NAME), '{"dimension":"artifacts","findings":[]}\n')
+  mkdirSync(join(outside, 'snapshots'))
+  const payload = {
+    schema: 'interlock.artifact-snapshot/1',
+    change: CHANGE,
+    findings: SINCE_NAME,
+    takenAt: '2026-11-25T12:00:00.000Z',
+    files: [{ path: 'design.md', sha256: 'x', text: 'OUTSIDE-MARKER\n' }]
+  }
+  writeFileSync(join(outside, 'snapshots', SINCE_NAME), JSON.stringify(payload))
+  const out = printed(repo, ['--since', join(outside, SINCE_NAME)])
+  assert.match(lineOf(openingOf(out), 'RE-GATE:'), /the findings file is outside the repository root, so no snapshot is read; /)
+  assert.ok(!out.includes('OUTSIDE-MARKER'), 'the outside snapshot is never quoted')
+})
+
+test('a REVIEW_CONTEXT.md that links out of the root is not quoted, and its line says why (M3)', () => {
+  const repo = makeRepo('context-link-out', { files: { '.claude/graph/REVIEW_CONTEXT.md': null } })
+  const outside = temp('context-link-out-target')
+  writeFileSync(join(outside, 'secret.md'), `${SECRET}\n`)
+  mkdirSync(join(repo.root, '.claude', 'graph'), { recursive: true })
+  symlinkSync(join(outside, 'secret.md'), join(repo.root, '.claude', 'graph', 'REVIEW_CONTEXT.md'))
+  const out = printed(repo)
+  assert.match(lineOf(openingOf(out), 'REVIEW CONTEXT:'), /^REVIEW CONTEXT: unreadable — .+ is a link to a path outside the repository root$/)
+  assert.ok(!out.includes('API_SECRET'))
+})
+
+test('the Changed since block stops at LIMITS.maxRegateDiffChars, names every file and counts the hunks left out (M2)', () => {
+  const big = n => Array.from({ length: n }, (_, i) => `requirement text line ${i + 1} ${'x'.repeat(40)}`).join('\n') + '\n'
+  // Each file one hunk of about 0.6 of the budget: the first fits, the second does not.
+  const lines = Math.floor((LIMITS.maxRegateDiffChars * 0.6) / 66)
+  const repo = regateRepo('regate-budget')
+  snapshotNow(repo)
+  put(repo.root, `openspec/changes/${CHANGE}/specs/one/spec.md`, big(lines))
+  put(repo.root, `openspec/changes/${CHANGE}/specs/two/spec.md`, big(lines))
+  const out = sinceBrief(repo)
+  const line = lineOf(openingOf(out), 'RE-GATE:')
+  assert.match(line, /; 1 hunk\(s\) in 1 file\(s\) not quoted, over the LIMITS\.maxRegateDiffChars budget/)
+  const block = changedSinceOf(out)
+  assert.ok(block.includes('added: specs/one/spec.md') && block.includes('added: specs/two/spec.md'), 'both files are named')
+  assert.ok(block.length < LIMITS.maxRegateDiffChars + 2_000, `the block is bounded: ${block.length}`)
+})
+
+test('a status line blanks control characters, so a lens name or a reason cannot carry an escape sequence (M4)', () => {
+  const input = entry.inputs[0]
+  const out = entry.assemble({
+    ...input,
+    lensNotes: { ...(input.lensNotes || {}), unknown: ['evil\u001b[2J\u0000name'], capped: ['cap\u0007ped'] }
+  })
+  const opening = openingOf(out)
+  assert.ok(!/[\u0000\u0007\u001b]/.test(opening), JSON.stringify(opening))
+  assert.match(lineOf(opening, 'LENS UNKNOWN:'), /^LENS UNKNOWN: evil \[2J name /)
+  assert.match(lineOf(opening, 'LENS CAPPED:'), /^LENS CAPPED: cap ped left out/)
 })

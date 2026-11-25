@@ -980,3 +980,51 @@ test(`${AG_PINS}: the grader decides the same compiled with and without the m fl
     assert.equal(multi.test(t), plain.test(t), `m flag changes the answer for: ${JSON.stringify(t)}`)
   }
 })
+
+// Grader regression table (PR #47 M1): every branch of the pin-list grader has
+// a case that must pass (a clean review in a format the loop really emits) and a
+// case that must still fail (a real pin-list blocker).
+const PIN_SUM = 'SUMMARY: 0 blockers, 1 warnings, 0 suggestions\n'
+const PIN_LINE = 'The test pin list is incomplete: it does not name every existing test.'
+const PIN_CLEAN = [
+  ['never a blocker (rubric.md:41 wording)', `⚠ WARNING: tasks.md:3 ${PIN_LINE} This is never a blocker.\n${PIN_SUM}`],
+  ['never a blocker before the claim', `tasks.md:3 is never a blocker: ${PIN_LINE}\n${PIN_SUM}`],
+  ['NOT a blocker', `tasks.md:3 NOT a blocker: ${PIN_LINE}\n${PIN_SUM}`],
+  ['0 blockers on the claim line', `0 blockers; ${PIN_LINE}\n${PIN_SUM}`],
+  ['heading with (0)', `## Blockers (0)\nNone (${PIN_LINE})\n${PIN_SUM}`],
+  ['bold heading with (none)', `**Blockers (none)**\n${PIN_LINE}\n${PIN_SUM}`],
+  ['None line with "by design" in the section', `## Blockers\nNone (pin list is incomplete by design).\n${PIN_SUM}`],
+  ['real blocker, then pin warning under QA rule', `## Blockers\n- design.md:30 rollback is unspecified.\n\n── QA ──────────\n⚠ WARNING: ${PIN_LINE}\n${PIN_SUM}`],
+  ['real blocker, then a warning glyph line', `## Blockers\n- design.md:30 rollback is unspecified.\n⚠ WARNING: ${PIN_LINE}\n${PIN_SUM}`],
+  ['real blocker, then **Notes:**', `## Blockers\n- design.md:30 rollback is unspecified.\n**Notes:**\n- ${PIN_LINE}\n${PIN_SUM}`],
+  ['real blocker, then ---', `## Blockers\n- design.md:30 rollback is unspecified.\n---\n${PIN_LINE}\n${PIN_SUM}`],
+  ['real blocker, then a suggestion dot', `## Blockers\n- design.md:30 rollback is unspecified.\n· SUGGESTION: ${PIN_LINE}\n${PIN_SUM}`],
+  ['real blocker, then Recommendation:', `## Blockers\n- design.md:30 rollback is unspecified.\nRecommendation: pin list is incomplete by design.\n${PIN_SUM}`]
+]
+const PIN_BAD = [
+  ['branch 1: BLOCKER line', `✗ BLOCKER: tasks.md:3 ${PIN_LINE}\n${PIN_SUM}`],
+  ['branch 1: lowercase table row', `| tasks.md:3 | blocker | ${PIN_LINE} |\n${PIN_SUM}`],
+  ['branch 1: missing reading', `✗ BLOCKER: the test pins are missing for the changed wording\n${PIN_SUM}`],
+  ['branch 2: ## Blockers section', `## Blockers\n- tasks.md:3 ${PIN_LINE}\n${PIN_SUM}`],
+  ['branch 2: Blockers (1) heading, claim on a later line', `**Blockers (1)**\n- design.md:30 other.\n- tasks.md:3 ${PIN_LINE}\n${PIN_SUM}`],
+  ['branch 2: Blockers: heading', `Blockers:\n  pin list is not exhaustive\n${PIN_SUM}`]
+]
+
+test(`${AG_PINS}: clean reviews in the formats the loop emits pass`, () => {
+  const re = new RegExp(agGraders(AG_PINS)[0].pattern)
+  for (const [label, text] of PIN_CLEAN) assert.ok(re.test(text), `must pass: ${label}`)
+})
+
+test(`${AG_PINS}: a real pin-list blocker still fails, in either branch`, () => {
+  const re = new RegExp(agGraders(AG_PINS)[0].pattern)
+  for (const [label, text] of PIN_BAD) assert.ok(!re.test(text), `must fail: ${label}`)
+})
+
+test(`${AG_PINS}: the regression table decides the same with and without the m flag`, () => {
+  const { pattern } = agGraders(AG_PINS)[0]
+  const plain = new RegExp(pattern)
+  const multi = new RegExp(pattern, 'm')
+  for (const [label, text] of [...PIN_CLEAN, ...PIN_BAD]) {
+    assert.equal(multi.test(text), plain.test(text), `m flag changes the answer: ${label}`)
+  }
+})

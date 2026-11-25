@@ -2999,10 +2999,31 @@ test('review-artifacts routes one strict reviewer by role, and spec passes --str
   }
   const gateLine = review.split('\n').find(l => l.startsWith('interlock gate --findings'))
   assert.ok(gateLine, `${where} has no gate line`)
-  for (const tok of ['--metrics <change>', '--stage artifacts', '--reviewer', '--lenses', '--json']) {
+  for (const tok of ['--metrics <change>', '--stage artifacts', '--depth', '--reviewer', '--lenses', '--json']) {
     assert.ok(gateLine.includes(tok), `${where}'s gate line must carry ${tok}`)
   }
   assertRoutingTokens(review, ['GATE UNAVAILABLE:', 'unknownFlag'], `${where} gate`)
+  // review-code M12: each fallback and precedence clause is pinned by token.
+  assertRoutingTokens(
+    review,
+    [
+      'ignored `--lean`',
+      '${CLAUDE_SKILL_DIR}/rubric.md',
+      '${CLAUDE_SKILL_DIR}/re-gate.md',
+      '--reviewer session --lenses none',
+      'Drop `--depth`',
+      '--reviewer agent',
+      'blocker carries a `line`',
+      'run no further gate line',
+      'stop as on a blocker'
+    ],
+    `${where} fallbacks`
+  )
+  assertRoutingTokens(
+    readFileSync(join(ROOT, 'skills', 'review-artifacts', 're-gate.md'), 'utf8'),
+    ['ARTIFACT BRIEF UNAVAILABLE:', 'git status --short'],
+    'skills/review-artifacts/re-gate.md fallback'
+  )
   const spec = skillText('spec')
   const sfm = parseFrontmatter(spec)
   assert.ok((sfm.values['argument-hint'] || '').includes('--strict'), 'skills/spec/SKILL.md argument-hint must offer --strict')

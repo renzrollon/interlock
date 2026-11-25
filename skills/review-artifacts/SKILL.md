@@ -108,7 +108,7 @@ interlock gate --findings .claude/metrics/review-artifacts-<change>-<ts>.json --
 
 Fill the recording flags in from what ran. Drop `--depth` when no `GATE DEPTH:` line was printed. `--reviewer agent` means the strict reviewer's findings are the input; every inline read, the fallbacks included, is `session`. `--lenses` is the list the brief's `REVIEW LENSES:` line names, or `none`.
 
-The gate blocks if and only if at least one finding is a `blocker`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose. In the JSON, `passed` is that same verdict; report the entries of `blockers` and `malformed`, read `metrics.written` and `metrics.reason` for whether the record landed, and hand `autonomyOutcome.blockers` on as the blocker count the spec skill passes to `interlock autonomy record`.
+The gate blocks if and only if at least one finding is a `blocker` or `malformed`. Its exit status is the verdict: non-zero means blocked. Do not re-derive the verdict in prose. In the JSON, `passed` is that same verdict; report the entries of `blockers` and `malformed`, read `metrics.written` and `metrics.reason` for whether the record landed, and hand `autonomyOutcome.blockers` on as the blocker count the spec skill passes to `interlock autonomy record`.
 
 `--metrics <change>` is not optional decoration. It writes the four counts this gate produced — raised, dismissed, dropped by the quality band, surviving — to `.claude/metrics/` in the schema `interlock report` recognizes. Drop it and this review path becomes invisible to the report forever: the review-finding indicators read `unobserved` no matter how many gates ran. It is bookkeeping only and cannot change the verdict or the exit status.
 

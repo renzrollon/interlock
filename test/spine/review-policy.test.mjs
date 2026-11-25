@@ -791,6 +791,19 @@ test('artifact sections: an unrelated unknown heading and a rationale heading st
   assert.deepEqual(parseReviewPolicy(text).problems, [])
 })
 
+test('sectionOfProblem reads only the opening of a problem, never a REVIEW.md line it quotes', () => {
+  // A front-matter or body line is quoted into its problem verbatim, and may name a section label.
+  for (const label of ['Artifact Checks', 'Artifact Review Lenses', 'Counts as Source', 'Always Human Review']) {
+    const { problems } = parseReviewPolicy(`---\nnitCap: 0 # "${label}"\n---\nband: 3 "${label}"\n`)
+    assert.ok(problems.length >= 2, problems.join(' | '))
+    for (const problem of problems) {
+      assert.equal(core.sectionOfProblem(problem), null, problem)
+      assert.equal(core.sectionOfProblem(`${problem} (working tree)`), null, problem)
+    }
+  }
+  assert.equal(core.sectionOfProblem('front-matter line "nitCap: 0 # \\"Artifact Checks\\"" is not allowed (working tree)'), null)
+})
+
 test('artifact sections: sectionOfProblem answers artifact for every problem the two sections and a misnamed heading report', () => {
   const shapes = ['- nitCap: 0\n', 'prose and no list item\n', '- kept\nand a line of prose\n', '```\n- a\n```\n']
   for (const heading of [ARTIFACT_LENSES_HEADING, ARTIFACT_CHECKS_HEADING]) {

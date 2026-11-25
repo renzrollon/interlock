@@ -650,6 +650,9 @@ gate:
                          change name, as "review" does. A metrics failure prints
                          its reason and is never fatal — the verdict and the exit
                          code are unaffected.
+  --stage artifacts|code --depth <d> --reviewer <r> --lenses <a,b>
+                         Recorded on that record; --stage artifacts also keeps
+                         a snapshot beside --findings for a scoped re-gate.
   --min-quality <n>      Quality-band floor (default ${TOLERANCE_BAND.minQualityToReport})
   --no-tolerance         Report every surviving finding, however weak
   Findings the skeptics scored below the quality band are dropped before
@@ -668,6 +671,7 @@ routing:
   [role]                 One of the spawn roles in "interlock limits"; with none,
                          every role and the depth's review shape are printed.
   --depth lean|strict    The review depth; the published default when absent.
+  --caller <skill>       Who asks: a caller depth in "interlock limits" applies.
   A null model or effort prints as inherit (JSON: null) and the caller omits the
   parameter. A set CLAUDE_CODE_EFFORT_LEVEL or CLAUDE_CODE_SUBAGENT_MODEL_FORCE is
   printed as a banner, never changed. An unknown role or depth exits 1 naming the
@@ -946,9 +950,10 @@ review-policy suggest: read-only; --all opens the evidence window, --summary pri
 
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
-  --base <ref>           Read all three path lists from the commit at this ref and
-                         the prose from the working tree; the output says which
-                         ref the lists came from and whether the copies differ.
+  --base <ref>           Read the three path lists and the two artifact sections
+                         from the commit at this ref and the prose from the
+                         working tree; the output says which ref the lists came
+                         from and whether the copies differ.
   --json                 Emit { prose, excludePaths, humanPaths, sourcePaths, owner,
                          problems } (with --base also listsFrom and differsFromBase).
   The prose is advice a reviewer reads; it can never lower survival. The band and
@@ -3389,7 +3394,8 @@ async function main() {
     }
 
     case 'gate': {
-      const input = readFindingsInput(flags.findings)
+      // Against --root, as the metrics record and the snapshot resolve it.
+      const input = readFindingsInput(typeof flags.findings === 'string' && flags.findings !== '-' ? resolve(root, flags.findings) : flags.findings)
       const dismissed =
         typeof flags.dismissed === 'string'
           ? flags.dismissed.split(',').map(s => s.trim()).filter(Boolean)
@@ -3444,7 +3450,7 @@ async function main() {
 
     case 'validate': {
       const name = requireChange(root, requestedName(positional, flags), json)
-      const result = inspectChange(root, name)
+      const result = inspectChange(root, name, { wording: true })
       emit(json, result, formatInspection(result))
       if (!result.ready) process.exit(1)
       break
