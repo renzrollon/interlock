@@ -3,7 +3,7 @@ name: spec
 description: Take a rough intent to a reviewed, implementation-ready OpenSpec change — explore first, generate proposal, design, tasks and delta specs via the OpenSpec CLI, then gate them through an artifact review. Stops at the human checkpoint, having written nothing but specs. Use when starting a new feature, refactor, or bug fix.
 license: MIT
 compatibility: Requires the openspec CLI. Node.js >= 18 for the bundled interlock and interlock-graph CLIs.
-argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd] [--strict]"
+argument-hint: "[what you want to build] [--no-explore] [--brief <path>] [--continue] [--force-checkpoint] [--tdd] [--no-tdd] [--strict] [--lean] [--lens <a,b>]"
 allowed-tools: Bash(openspec *) Bash(interlock *) Bash(interlock-graph *) Read Write Glob Grep AskUserQuestion
 metadata:
   type: planning
@@ -29,7 +29,9 @@ This skill writes specifications. It does not write code. By default it does not
 | `--no-tdd` | Force standard implementation-first shape; no leading red section. Never relaxes a bug fix's repro-first task |
 | `--continue` | Advanced. After a clean artifact review, Read `${CLAUDE_SKILL_DIR}/continuity.md` — ask `interlock ready` whether the checkpoint may be skipped, and ship if it says yes |
 | `--continue --force-checkpoint` | Opt back out mid-flight. Always stops at the checkpoint, whatever readiness would have said |
-| `--strict` | Pass to the artifact gate: one independent reviewer, routed by role, reads the artifacts in place of the session |
+| `--strict` | Pass to the artifact gate: one independent reviewer, routed by role, reads the artifacts in place of the session. The gate already reads at that depth for this skill; the flag makes it explicit |
+| `--lean` | Pass to the artifact gate: the session reads the artifacts itself and spawns nothing |
+| `--lens <a,b>` | Pass to the artifact gate: name the review lenses in place of the detected ones |
 
 ---
 
@@ -107,7 +109,7 @@ Prefer a durable handoff over re-deriving discovery from chat. See `${CLAUDE_PLU
 
 No matching brief is fine — but if none exists and `--no-explore` was not passed, **run `/interlock:explore --autonomous` now** and require a decision-oriented brief: conclusions, a recommended direction, options with a winner, assumptions, pending clarifications, and only cited `file:line` spans. Do not ask for an inventory of every file touched. Use the brief it writes. A spec built on unexplored ground is the most expensive kind to get wrong.
 
-Spec spawns nothing itself. The only workers on this path are explore's investigators, and explore routes them by role: it reads `interlock routing explore-investigator` and passes what it prints. The cost policy is read from the CLI, never from this skill, so do not name a model or an effort level when you hand off to explore.
+Spec spawns nothing itself. The only workers on this path are explore's investigators and the artifact gate's reviewer, and each is routed by role: explore reads `interlock routing explore-investigator` and the gate reads `interlock routing artifact-reviewer`, and each passes what it prints. The cost policy is read from the CLI, never from this skill, so do not name a model or an effort level when you hand off to explore.
 
 **One change or an epic.** Decide the width before writing. A request that spans many subsystems, or one whose brief reads "cover everything", does not converge at the artifact gate, because a reader of a change that size always finds more. Split it into an epic of briefs, each brief one change with its own gate, and say the split at the checkpoint. Section 4 then measures it: `interlock validate` reports the width once the delta specs exist, and a wide change stops there.
 
@@ -250,13 +252,16 @@ interlock validate "<name>" --json
 - `width` absent (an older CLI): print `CHANGE WIDTH: not reported by this CLI` and continue to the gate.
 - `width.wide` false: continue to the gate.
 
+**Wording.** Read `wording` from the validate JSON. Print each entry's `message` verbatim as a warning; a wording warning never stops the run. `wording` absent (an older CLI): print `WORDING: not reported by this CLI` and continue.
+
 ---
 
 ## 5. Gate: artifact review
 
-Run `/interlock:review-artifacts <name>` against the change, or `/interlock:review-artifacts <name> --strict` when `--strict` was passed to this skill. The gate runs once per spec run, at the end: it is not a loop, and no second reviewer is spawned to re-read a change the first one blocked. A fresh exhaustive reader of a wide change always finds more, so re-gating the whole change does not converge; it costs a full review a round and the warnings keep arriving.
+Run `/interlock:review-artifacts <name> --caller spec` against the change, passing `--strict`, `--lean` and `--lens <a,b>` through when they were passed to this skill. `--caller spec` is always passed: the CLI's caller table answers the gate's depth for this skill, and this skill names no depth of its own. The gate runs once per spec run, at the end: it is not a loop, and no second reviewer is spawned to re-read a change the first one blocked. A fresh exhaustive reader of a wide change always finds more, so re-gating the whole change does not converge; it costs a full review a round and the warnings keep arriving.
 
 - **Blockers → HALT.** Record them, report them and stop at the checkpoint with the findings. Fix nothing and re-gate nothing: do not proceed to ship, and do not "fix and continue" silently, because a blocker at this gate means the spec was wrong and the user should see that before anything else happens. A re-gate is the person's call, run as `/interlock:review-artifacts <change> --since <findings file>`, which judges the fix rather than the whole change again.
+- **No verdict → stop at the checkpoint.** A gate with no verdict (`GATE UNAVAILABLE:` and no rerun verdict) gave no `autonomyOutcome.blockers` to read: write no `interlock autonomy` line, say at the checkpoint that the gate gave no verdict, and re-gate nothing.
 - **Clean → record it and stop at the checkpoint.**
 
 ```bash
@@ -289,7 +294,15 @@ Then say plainly: **review the spec, and run `/interlock:ship` when it looks rig
 
 If the user passed `--continue`, Read `${CLAUDE_SKILL_DIR}/continuity.md` and follow it. Do not print a spec `GOAL MET` line on that path — if readiness launches ship, `finish()` prints `GOAL MET: interlock ship`.
 
-Without `--continue`, the run ended here. First print the checkpoint card:
+Without `--continue`, the run ended here. Before the card, ask the review policy whether its history now suggests a rule:
+
+```bash
+interlock review-policy suggest --summary
+```
+
+Print its output verbatim, and nothing when it prints nothing. On a non-zero exit print `REVIEW POLICY SUGGEST UNAVAILABLE: <first line of its output>` and continue; it never blocks the checkpoint.
+
+Then print the checkpoint card:
 
 ```bash
 interlock checkpoint "<change-name>"

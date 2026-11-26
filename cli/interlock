@@ -115,6 +115,7 @@ import {
   MERGE_BANDS,
   SPAWN_ROUTING,
   REVIEW_DEPTH,
+  CALLER_DEPTH,
   SESSION_ADVICE,
   SESSION_ADVICE_BASIS,
   formatLimits
@@ -129,7 +130,8 @@ import {
   readReviewPolicy,
   formatReviewPolicy
 } from '../lib/review-core.mjs'
-import { writeReviewMetrics } from '../lib/metrics.mjs'
+import { writeReviewMetrics, recordFieldsOf } from '../lib/metrics.mjs'
+import { snapshotForGate } from '../lib/artifact-snapshot.mjs'
 import {
   planVerification,
   interWaveVerifyBudget,
@@ -194,6 +196,7 @@ import { readSettingsSources, settingsSources } from '../lib/settings-sources.mj
 import { readAdvisorConfig } from '../lib/advisor-tool.mjs'
 import { triage, formatTriage } from '../lib/evals-triage.mjs'
 import { noteCommand } from '../lib/note-cli.mjs'
+import { reviewPolicySuggestCommand } from '../lib/review-policy-cli.mjs'
 import { checkpointCommand } from '../lib/checkpoint-cli.mjs'
 import { runLogFollow } from '../lib/run-follow-cli.mjs'
 import { openspecCommand } from '../lib/openspec-cli.mjs'
@@ -227,6 +230,10 @@ Usage:
                   [--tdd|--no-tdd]           failing-test wave first)
   interlock surface --changed <files...>    Classify UI testability of changed files
   interlock gate --findings <file>          Decide whether a review gate blocks
+                  [--metrics <change>]      With --metrics, the record says what
+                  [--stage artifacts|code]  ran: stage, depth, reader and lens
+                  [--depth lean|strict]     names (none: an empty list)
+                  [--reviewer session|agent|external] [--lenses <names|none>]
   interlock validate [change]               Inspect OpenSpec change artifacts
                                             (--change <name> is the same, as a flag)
   interlock changes                         List active OpenSpec changes
@@ -286,7 +293,7 @@ Usage:
   interlock limits                          Print every cap the loop obeys
   interlock routing [<role>]                Print the model and effort a prose
                   [--depth lean|strict]     skill passes when it spawns a role,
-                                            and the review depth's shape
+                  [--caller <skill>]        and the review depth's shape
   interlock suggest [<skill>]               Print the session model and effort a
                                             skill suits, and how this session's
                                             effort compares. Advice; exits 0
@@ -425,13 +432,20 @@ Usage:
                                            exit 1 if the draft names no re-run
   interlock review brief --skeptics --findings <f> [--depth <d>] [--rerun-of <f>] --json
                                            Print { prompts } for the skeptics
+  interlock review brief --artifacts <change> [--lens <a,b>] [--since <f>]
+                                           Print the artifact reviewer's whole
+                                           prompt; exit 1 on a change that does
+                                           not resolve or a missing bundled file
   interlock review target --github <f|->   Pin a pull request from gh's (or, with
                   [--run-code]             --gitlab, glab's) document; offline
   interlock review comment --review <f> --target <f> [--out <f>]
                                            Render the pull request comment
+  interlock review-policy suggest [--all] [--summary]
+                                           REVIEW.md lines the records suggest
   interlock review-policy [--json]         Print the parsed repo-root REVIEW.md:
                   [--base <ref>]           owner + prose (advice for the reviewer),
-                                           both path lists and any parse problems.
+                                           the path lists, the artifact lenses and
+                                           checks, and any parse problems.
                                            Absent → empty
   interlock risk [change]                   Classify blast radius for the continuity gate
   interlock ledger [change]                 Summarize the decision ledger
@@ -636,6 +650,9 @@ gate:
                          change name, as "review" does. A metrics failure prints
                          its reason and is never fatal — the verdict and the exit
                          code are unaffected.
+  --stage artifacts|code --depth <d> --reviewer <r> --lenses <a,b>
+                         Recorded on that record; --stage artifacts also keeps
+                         a snapshot beside --findings for a scoped re-gate.
   --min-quality <n>      Quality-band floor (default ${TOLERANCE_BAND.minQualityToReport})
   --no-tolerance         Report every surviving finding, however weak
   Findings the skeptics scored below the quality band are dropped before
@@ -654,6 +671,7 @@ routing:
   [role]                 One of the spawn roles in "interlock limits"; with none,
                          every role and the depth's review shape are printed.
   --depth lean|strict    The review depth; the published default when absent.
+  --caller <skill>       Who asks: a caller depth in "interlock limits" applies.
   A null model or effort prints as inherit (JSON: null) and the caller omits the
   parameter. A set CLAUDE_CODE_EFFORT_LEVEL or CLAUDE_CODE_SUBAGENT_MODEL_FORCE is
   printed as a banner, never changed. An unknown role or depth exits 1 naming the
@@ -928,11 +946,14 @@ review:
   review comment: a record of another head exits 1; marks git cannot check print
   PRE-EXISTING NOT CHECKED: on stderr. --out is written before stdout.
 
+review-policy suggest: read-only; --all opens the evidence window, --summary prints one line or nothing.
+
 review-policy:
   --root <dir>           Repository root to read REVIEW.md from (default cwd).
-  --base <ref>           Read all three path lists from the commit at this ref and
-                         the prose from the working tree; the output says which
-                         ref the lists came from and whether the copies differ.
+  --base <ref>           Read the three path lists and the two artifact sections
+                         from the commit at this ref and the prose from the
+                         working tree; the output says which ref the lists came
+                         from and whether the copies differ.
   --json                 Emit { prose, excludePaths, humanPaths, sourcePaths, owner,
                          problems } (with --base also listsFrom and differsFromBase).
   The prose is advice a reviewer reads; it can never lower survival. The band and
@@ -2448,7 +2469,7 @@ function reviewIo(root, flags) {
     headShaOf,
     diffShape,
     pluginRoot: PLUGIN_ROOT,
-    writeReviewMetrics: (change, counts) => writeReviewMetrics(corpusHome(root, flags).home, { change, counts })
+    writeReviewMetrics: (change, counts, fields) => writeReviewMetrics(corpusHome(root, flags).home, { ...fields, change, counts })
   }
 }
 
@@ -3373,7 +3394,8 @@ async function main() {
     }
 
     case 'gate': {
-      const input = readFindingsInput(flags.findings)
+      // Against --root, as the metrics record and the snapshot resolve it.
+      const input = readFindingsInput(typeof flags.findings === 'string' && flags.findings !== '-' ? resolve(root, flags.findings) : flags.findings)
       const dismissed =
         typeof flags.dismissed === 'string'
           ? flags.dismissed.split(',').map(s => s.trim()).filter(Boolean)
@@ -3406,22 +3428,29 @@ async function main() {
             dismissed: result.dismissedCount,
             droppedByQuality: result.droppedByQuality,
             surviving
-          }
+          },
+          ...recordFieldsOf(flags, warn, root)
         })
         if (!metrics.written) warn(`metrics not written: ${metrics.reason}`)
       }
 
+      // The artifact gate's snapshot: dispatch only. The module decides whether
+      // its conditions hold (null when they do not) and warns once on a failure.
+      // Like metrics, it never touches the verdict or the exit code.
+      const snapshot = snapshotForGate(root, flags, warn)
+
       const text =
         formatGate(result) +
-        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '')
-      emit(json, { ...result, ...(metrics ? { metrics } : {}) }, text)
+        (metrics ? `  metrics: ${metrics.written ? metrics.path : `not written (${metrics.reason})`}\n` : '') +
+        (snapshot ? `  snapshot: ${snapshot.written ? snapshot.path : `not written (${snapshot.reason})`}\n` : '')
+      emit(json, { ...result, ...(metrics ? { metrics } : {}), ...(snapshot ? { snapshot } : {}) }, text)
       if (!result.passed) process.exit(1)
       break
     }
 
     case 'validate': {
       const name = requireChange(root, requestedName(positional, flags), json)
-      const result = inspectChange(root, name)
+      const result = inspectChange(root, name, { wording: true })
       emit(json, result, formatInspection(result))
       if (!result.ready) process.exit(1)
       break
@@ -3714,6 +3743,7 @@ async function main() {
           // of null-able strings, never entries of the iteration-count limits.
           routing: SPAWN_ROUTING,
           reviewDepth: REVIEW_DEPTH,
+          callerDepth: CALLER_DEPTH,
           sessionAdvice: SESSION_ADVICE,
           sessionAdviceBasis: SESSION_ADVICE_BASIS
         },
@@ -3725,7 +3755,7 @@ async function main() {
     case 'routing': {
       let out
       try {
-        const opts = { depth: flags.depth }
+        const opts = { depth: flags.depth, caller: flags.caller }
         out = positional[1] === undefined ? listRouting(process.env, opts) : resolveRouting(positional[1], process.env, opts)
       } catch (err) {
         if (!(err instanceof RoutingError)) throw err
@@ -3902,6 +3932,10 @@ async function main() {
       break
 
     case 'review-policy': {
+      if (positional[1] === 'suggest') {
+        reviewPolicySuggestCommand({ ...reviewIo(root, flags), home: corpusHome(root, flags).home }, root, flags, json)
+        break
+      }
       // Read-only view of the parsed REVIEW.md, so the workflow can inject the
       // prose + owner into the reviewer instructions without re-parsing the file
       // (the runtime cannot import lib modules). Always exits 0: a missing or

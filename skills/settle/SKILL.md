@@ -768,6 +768,14 @@ Four findings, in descending order of how much they deserve the reader's attenti
 - **`orphans.orphans`** — changed source files no spec describes. **Always report `orphans.coverage` alongside the count.** "2 files have no spec" is alarming; "2 of 6, in a repo where 34% of source files have one" is informative, and on a repo still being specced the second is the honest framing.
 - **`stale.aging`** — living specs older than files they cite. Weakest of the four: it compares dates on **inferred** edges, and a file can be refactored without the spec becoming wrong. Mention it only if it names a spec relevant to this change.
 
+Then ask the review policy whether its history now suggests a rule:
+
+```bash
+interlock review-policy suggest --summary
+```
+
+Print its output verbatim, and nothing when it prints nothing. On a non-zero exit print `REVIEW POLICY SUGGEST UNAVAILABLE: <first line of its output>` and continue; it never blocks.
+
 Then close with the one line that matters for *this* change: once the PR merges, run `openspec archive <this-change>`. Archive **after** the merge, not before: a change archived first can no longer be resolved, and the verdict then has no change to assess. Interlock does not archive for you, and nothing downstream will notice if nobody does.
 
 If `drift` reports nothing, say nothing. A clean lifecycle does not need a paragraph.

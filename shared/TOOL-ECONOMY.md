@@ -174,7 +174,7 @@ The six roles and their skills:
 - `explore-investigator` — `/interlock:explore`
 - `review-dimension` and `review-skeptic` — `/interlock:review-code`
 - `settle-fixer` and `settle-conformance` — `/interlock:settle`
-- `artifact-reviewer` — `/interlock:review-artifacts --strict`
+- `artifact-reviewer` — `/interlock:review-artifacts`, at the strict depth under `--strict` and by default for `/interlock:spec` (`--caller spec`)
 
 ## When NOT to apply
 
