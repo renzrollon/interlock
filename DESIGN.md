@@ -380,7 +380,7 @@ Instrument-grade: exact, labelled and unornamented. A control looks like a contr
 Five ruled cells in a 1px Rule box with 4px corners: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint cell is the only filled block, Checkpoint Cobalt at 1.5× width. Cells hover to Quiet Fill. Under 640px the strip becomes a vertical list of full-width rows, with the checkpoint row still filled.
 
 ### State machine (signature)
-An inline diagram of mono nodes with 3px corners and 1px Control Edge borders. The human node is the only accent-filled shape. Halt nodes are outlined in red. The current node has a 2px cobalt border on Cobalt Tint. Optional states are drawn at 30% opacity with a dashed outline. The stepper advances by moving the highlight, never by moving nodes.
+An inline diagram of mono nodes with 3px corners and 1px Control Edge borders. The human node is the only accent-filled shape. Halt nodes are outlined in red. The current node has a 2px cobalt border on Cobalt Tint. Optional states are drawn with a dashed `color-border-strong` outline and `color-text-muted` ink, never faded; a dimmed halt keeps `color-halt`. The stepper advances by moving the highlight, never by moving nodes.
 
 ### Proof figures and pull quotes
 Three figures in a ruled row, each a 44px numeral over a 14px Soft Ink caption, with no colour, arrow or unit, stacking under 640px. Pull quotes sit under a 24×2px cobalt lead rule, never in a box and never against a left border.

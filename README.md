@@ -37,11 +37,19 @@ Spec-driven development for [Claude Code](https://claude.com/claude-code), on [O
 
 ## Install
 
+**You need** Claude Code **2.1.154+** with [dynamic workflows](https://code.claude.com/docs/en/workflows) on, Node.js **22.12+** with npm, and a git repository with code in it. Every session opens with `interlock preflight OK` or a list of fixes. Step by step: **[01 — The first hour](docs/01-first-hour.md)**.
+
 In Claude Code, once per machine:
 
 ```text
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
+```
+
+Then check the allowlist an unattended run needs:
+
+```text
+! interlock doctor
 ```
 
 Then, in a new session in your project, once per repo:
@@ -53,8 +61,6 @@ Then, in a new session in your project, once per repo:
 It writes one spec per existing feature and builds the code graph agents query instead of re-reading files. It never changes source code.
 
 **Nothing else to install.** OpenSpec is provisioned on first use: a pinned copy from npm, checked against a lockfile the plugin carries, install scripts and telemetry off.
-
-**You need** Claude Code **2.1.154+** with [dynamic workflows](https://code.claude.com/docs/en/workflows) on, Node.js **22.12+** with npm, and a git repository with code in it. Every session opens with `interlock preflight OK` or a list of fixes. Step by step: **[01 — The first hour](docs/01-first-hour.md)**.
 
 ## Why Interlock
 

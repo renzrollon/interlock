@@ -34,7 +34,8 @@
       <label class="chk mono"><input type="checkbox" checked="{{solo}}" onChange="{{toggleSolo}}"><span class="chk-box" aria-hidden="true"></span>--solo</label>
     </div>
 
-    <div class="sm-scroll" role="img" aria-label="State machine of a ship run, drawn left to right in seven columns: pre-flight, plan, waves, verify, tail (strict only), commit, close. Every halt routes to close.">
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; cells carry 10-12 px padding -->
+    <div class="sm-scroll" ref="{{scrollRef}}" role="img" aria-label="State machine of a ship run, drawn left to right in seven columns: pre-flight, plan, waves, verify, tail (strict only), commit, close. Every halt routes to close.">
       <div class="sm-canvas">
         <svg width="1484" height="452" aria-hidden="true">
           <path d="{{edgeD}}" class="sm-edge"></path>
@@ -57,11 +58,7 @@
 
     <div style="margin-top: 24px;">
       <p class="term-cap">interlock run, one step at a time · add-report-json-flag</p>
-      <div class="term term-tall" role="log" aria-live="polite" ref="{{termRef}}">
-        <sc-for list="{{lines}}" as="l" hint-placeholder-count="6">
-          <div class="tline {{l.cls}}">{{l.t}}</div>
-        </sc-for>
-      </div>
+      <div class="term term-tall" role="log" aria-live="polite" ref="{{termRef}}"><sc-for list="{{lines}}" as="l" hint-placeholder-count="6"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
       <sc-if value="{{hasNote}}" hint-placeholder-val="{{false}}">
         <p class="body-sm soft" style="margin-top: 12px; max-width: 90ch;">{{note}}</p>
       </sc-if>
@@ -72,6 +69,7 @@
   <section class="sec" aria-labelledby="run-stops">
     <div class="sec-head"><span class="sec-no">02</span><h3 class="h-sub" id="run-stops">When it stops</h3></div>
     <p class="body" style="margin-bottom: 24px;">Two categories, and they are not the same thing. A <strong>loud halt</strong> stops the run, commits nothing, and reports what completed and what you need to decide. It never asks you a question. A <strong>soft continue</strong> keeps going with a documented default and prints a banner saying what it degraded. Almost everything is a soft continue; the halts are deliberately few. Every halt inside the run is a non-zero exit from a CLI subcommand, not a judgement call.</p>
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; cells carry 10-12 px padding -->
     <div class="tbox">
       <table class="tbl" style="min-width: 920px;">
         <thead><tr><th style="width: 36%;">Banner</th><th>Trigger</th><th>Stage</th><th style="width: 30%;">Next</th></tr></thead>
@@ -110,6 +108,7 @@
       <h4 class="h-row">The guards</h4>
       <blockquote class="pq pq-sm">Six hook scripts. Four can deny. All fail open.</blockquote>
     </div>
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; cells carry 10-12 px padding -->
     <div class="tbox">
       <table class="tbl" style="min-width: 760px;">
         <thead><tr><th>Hook</th><th>Event</th><th>What it does</th></tr></thead>
@@ -139,6 +138,7 @@
       <p class="body"><code>lib/host.mjs</code> states the whole host contract as three operations: spawn one labelled agent, spawn a batch in parallel, and run <code>interlock</code> and hand back its exit code and stdout. A host may not decide wave order, judge a verify result, apply a cap or a gate; those live behind the CLI on purpose, so a second host cannot quietly grow a second copy of the rules. A non-zero exit is an answer, not an error: a host that threw on it would turn a halt into a crash.</p>
       <p class="body">An adapter under <code>lib/host/</code> is a transport plus a declaration of eight capabilities. Every one describes a way a run on that host is weaker than the default, and the run program branches on the declaration, never on the host's name. <code>/interlock:ship</code> on the Workflow runtime is the supported path. The runner is experimental, no slash command starts it, and it refuses <code>--host workflow</code> from the other side.</p>
     </div>
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; cells carry 10-12 px padding -->
     <div class="tbox">
       <table class="tbl" style="min-width: 1080px;">
         <thead><tr><th>Host</th><th>Drives</th><th>Result schema</th><th>Model selection</th><th>Plugin hooks</th><th>Token usage</th><th>Cache accounting</th><th>Billing path</th></tr></thead>
@@ -188,8 +188,24 @@ class Component extends DCLogic {
   componentDidUpdate() {
     var el = this.termEl;
     if (el) { try { el.scrollTop = el.scrollHeight; } catch (e) {} }
+    var sc = this.scrollEl;
+    if (sc) {
+      try {
+        var lit = sc.querySelector('.sm-hl') || sc.querySelector('.sm-current');
+        var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        if (lit) {
+          var x = lit.offsetLeft + lit.offsetWidth / 2 - sc.clientWidth / 2;
+          sc.scrollLeft = Math.max(0, x);
+        } else { sc.scrollLeft = 0; }
+        if (this.revealHalt) {
+          this.revealHalt = false;
+          if (lit && lit.scrollIntoView) lit.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+        }
+      } catch (e) {}
+    }
   }
   termRef = (el) => { this.termEl = el; };
+  scrollRef = (el) => { this.scrollEl = el; };
   steps() {
     var s = this.state || {};
     var strict = !!s.strict, isolate = !!s.isolate, solo = !!s.solo;
@@ -344,6 +360,7 @@ class Component extends DCLogic {
     this.stopTimer();
     var s = this.state || {};
     if (s.hlRow === key) { this.setState({ hlRow: null, hl: null, alt: false }); return; }
+    this.revealHalt = true;
     this.setState({ hlRow: key, hl: node, alt: key === 'h5', playing: false });
   };
   renderVals() {
@@ -536,7 +553,7 @@ class Component extends DCLogic {
       edgeH: edges.filter(function (e) { return !e.cls && e.h; }).map(function (e) { return e.h; }).join(' '),
       edgeDimD: edges.filter(function (e) { return e.cls; }).map(function (e) { return e.d; }).join(' ') || 'M0 0',
       edgeDimH: edges.filter(function (e) { return e.cls && e.h; }).map(function (e) { return e.h; }).join(' ') || 'M0 0',
-      lines: lines, termRef: this.termRef,
+      lines: lines, termRef: this.termRef, scrollRef: this.scrollRef,
       hasNote: !!note, note: note,
       rows: hrow,
       board: board

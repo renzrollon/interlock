@@ -7,6 +7,16 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Bare `interlock` and `interlock help` print a grouped index of the commands, at most 30 lines. `interlock help <command>` prints what `<command> --help` prints, and `interlock help --all`, `--help --all` and `-h --all` print the full usage. An unknown command still exits 1 with `Unknown command:` first, then names the closest command it knows and points at `interlock help`.
+- `interlock changes` and every nameless change resolution skip dot-named directories such as `.claude/` and `.cache/`, so only real changes are listed. This differs from `openspec list` on purpose.
+- The `git commit` denial during a ship run names the stage marker it read. It tells an agent inside the run not to commit and not to close the run, then tells a person whose run has stopped to run `interlock run close --halt "<reason>"` when the run's manifest matches, or to remove the marker by hand when it does not.
+- A halted run's close summary says no commit is on record and prints the steps to pick the change up again. The no-manifest, unusable-manifest and already-closed summaries are unchanged.
+- When the close relay cannot be read, both ship drivers now say the close was not recorded, that the stage marker may still block `git commit`, and that `interlock run close --halt "<reason>"` from the directory the run started in clears it.
+- The README install section follows the order a new user needs: what you need, the plugin lines, `! interlock doctor`, a new session with `/interlock:bootstrap`, and nothing else to install.
+- The landing site's Run tab keeps the lit state-machine node in view and a halt-row click brings its node into view. Optional states are drawn with a dashed outline in muted ink instead of faded. A header tab click, or a load with a tab hash, scrolls the panel into view, and the selected tab stays centred in the strip. Reduced motion gets instant scrolls. The stepper terminal markup carries no whitespace between tags, and the design hook's `cramped-padding` findings are waived inline with their evidence. `site/README.md` lists each local patch and `test/site-patches.test.mjs` pins them.
+
 ## [1.21.0] - 2026-11-26
 
 ### Changed

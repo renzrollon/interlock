@@ -203,6 +203,7 @@ import { openspecCommand } from '../lib/openspec-cli.mjs'
 import { SETTLE_HELP, settleCommand } from '../lib/settle-cli.mjs'
 import { domainContextCommand, reviewCommand } from '../lib/review-cli.mjs'
 import { firstUnknownFlag, helpFor } from '../lib/cli-flags.mjs'
+import { INDEX, helpCommand, unknownCommand } from '../lib/help-cli.mjs'
 import { captureCase, formatCapture } from '../lib/evals-capture.mjs'
 import { calibrate, readGraderTypes, readLabels, formatCalibration } from '../lib/evals-calibrate.mjs'
 import { promote, formatPromotion } from '../lib/evals-promote.mjs'
@@ -239,6 +240,7 @@ Usage:
   interlock changes                         List active OpenSpec changes
   interlock version [--json]                Print the version and path of this binary
                                             (--version alone prints the bare version)
+  interlock help [<command>] [--all]        Bare: the index; with a command, its usage
   interlock doctor                          Preflight the host before a run:
                                             Node, plugin install, PATH, the
                                             openspec CLI, git, the test profile,
@@ -3254,7 +3256,7 @@ function splitPaths(value) {
 async function main() {
   const argv = process.argv.slice(2)
   if (!argv.length) {
-    process.stdout.write(USAGE)
+    process.stdout.write(INDEX)
     return
   }
 
@@ -4927,8 +4929,16 @@ async function main() {
       break
     }
 
+    case 'help': {
+      const h = helpCommand(positional, flags, USAGE, SETTLE_HELP)
+      process.stdout.write(h.stdout)
+      process.stderr.write(h.stderr)
+      if (h.code) process.exit(h.code)
+      break
+    }
+
     default:
-      process.stderr.write(`Unknown command: ${cmd}\n\n${USAGE}`)
+      process.stderr.write(unknownCommand(cmd, USAGE))
       process.exit(1)
   }
 }

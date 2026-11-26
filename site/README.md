@@ -60,10 +60,45 @@ runtime fetches the tab files, which a browser blocks over `file://`.
 
 ### Local patches
 
-One, in `index.html`'s `onHash` handler: going back to the entry URL, which
-has no hash, selects the Why tab. As exported, the back button changed the URL
-and left the tab where it was. The brief's §6 now asks for this, so a
-regeneration should carry it.
+Each entry gives the file, what the export does, what the patch does, and the
+brief section that now asks for it. A regeneration should carry every one.
+`test/site-patches.test.mjs` pins each by token.
+
+- **`onHash` selects Why on the entry URL** (`index.html`, brief §6).
+  As exported, going back to the entry URL, which has no hash, changed the URL
+  and left the tab where it was. The patch makes the `onHash` handler select
+  the Why tab when the hash is empty or `#`; an in-page anchor (`#install`,
+  `#top`) is left alone.
+- **Stepper terminal on one line** (`Run.dc.html`, brief §3 "Output panels").
+  As exported, the `.term` open tag, `<sc-for>` and `.tline` were on separate
+  lines, and the runtime kept the whitespace text nodes inside a `white-space:
+  pre` box. The patch writes them with no whitespace between the tags.
+- **State machine follows the highlight** (`Run.dc.html`, brief C.8 and §5).
+  As exported, the 1,484 px diagram did not move when a later node lit up. The
+  patch gives `.sm-scroll` a ref and `componentDidUpdate` centres the lit node
+  (`.sm-hl`, else `.sm-current`) by `scrollLeft`, or resets to 0 when nothing
+  is lit. It never scrolls the page on Step or Play.
+- **Halt-row click reveals its node** (`Run.dc.html`, brief §5). `pickHalt`
+  sets a flag and the next update calls `scrollIntoView` on the lit node, with
+  `behavior: 'auto'` under `prefers-reduced-motion`.
+- **Optional states are outlined, not faded** (`site.css`, brief §5 and C.3).
+  As exported, `.sm-dim` and the dimmed edges, heads and labels used `opacity`.
+  The patch drops it for a dashed `--color-border-strong` outline and
+  `--color-text-muted` ink; dimmed halts keep `--color-halt`; `.sm-current`
+  and `.sm-hl` are restated as `.sm-node.sm-current` and `.sm-node.sm-hl` so a
+  lit node still wins.
+- **Tab click and tab hash reveal the panel** (`index.html`, brief §6).
+  As exported, a header tab click left the panel below the fold. The patch adds
+  `revealPanel()`, called from a header tab click and from mount when the hash
+  names a tab; `#install`, `#top` and the hashless entry are untouched.
+  `behavior: 'auto'` under reduced motion.
+- **Selected tab centred in the strip** (`index.html`, brief §4). The patch
+  centres the selected tab from `componentDidUpdate`.
+- **`cramped-padding` waivers** (`Run.dc.html`, `index.html`,
+  `FirstHour.dc.html`, `Limits.dc.html`, brief §5). The design hook flagged
+  cells the rendered scans (1440 and 390 px) did not reproduce. An inline
+  `impeccable-disable-next-line cramped-padding` comment, with the evidence,
+  sits above `.sm-scroll`, each `.tbox` and the three proof-strip figures.
 
 ## The film
 

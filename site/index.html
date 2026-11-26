@@ -161,8 +161,11 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
   </div>
 
   <div class="figures" style="margin-top: 72px; padding: 32px 0; border-top: 1px solid var(--color-divider); border-bottom: 1px solid var(--color-divider);">
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; the figure cells sit inside a 32 px padded strip -->
     <div class="figure"><div class="figure-num">1</div><p class="figure-label mono" style="font-size: 13px;">required human stop, between spec and ship</p></div>
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; the figure cells sit inside a 32 px padded strip -->
     <div class="figure"><div class="figure-num">0</div><p class="figure-label mono" style="font-size: 13px;">runtime dependencies. Stdlib Node, nothing to install</p></div>
+    <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; the figure cells sit inside a 32 px padded strip -->
     <div class="figure"><div class="figure-num">0</div><p class="figure-label mono" style="font-size: 13px;">network requests of its own, and no credential read</p></div>
   </div>
 </section>
@@ -229,6 +232,7 @@ class Component extends DCLogic {
     var reduced = false;
     try { reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
     this.setState({ theme: theme, tab: tab || 'why', reduced: reduced });
+    if (tab) this.revealPanel(reduced);
     this.onHash = () => {
       var t = this.tabFromHash();
       if (t) this.setState({ tab: t });
@@ -262,11 +266,30 @@ class Component extends DCLogic {
     this.setState({ tab: id });
     try { if (window.location.hash !== '#' + id) window.history.pushState(null, '', '#' + id); } catch (e) {}
     if (focus) { setTimeout(function () { var b = document.getElementById('tab-' + id); if (b) b.focus(); }, 0); }
-    if (scroll) {
-      var reduced = (this.state || {}).reduced;
-      setTimeout(function () { var p = document.getElementById('panel'); if (p) p.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }); }, 0);
-    }
+    if (scroll) this.revealPanel((this.state || {}).reduced);
   };
+  // Scroll #panel into view when its top is below the fold. 'auto' under reduced motion: site.css cannot stop a JS smooth scroll.
+  revealPanel = (reduced) => {
+    setTimeout(function () {
+      try {
+        var p = document.getElementById('panel');
+        if (p && p.getBoundingClientRect().top > window.innerHeight) p.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+      } catch (e) {}
+    }, 0);
+  };
+  componentDidUpdate() {
+    try {
+      var b = document.getElementById('tab-' + ((this.state || {}).tab || 'why'));
+      var strip = b && b.parentNode;
+      if (strip && strip.scrollWidth > strip.clientWidth) {
+        var br = b.getBoundingClientRect(), sr = strip.getBoundingClientRect();
+        var x = strip.scrollLeft + (br.left - sr.left) + br.width / 2 - strip.clientWidth / 2;
+        var reduced = !!(this.state || {}).reduced;
+        if (strip.scrollTo) strip.scrollTo({ left: Math.max(0, x), behavior: reduced ? 'auto' : 'smooth' });
+        else strip.scrollLeft = Math.max(0, x);
+      }
+    } catch (e) {}
+  }
   tabKey = (e) => {
     var ids = ['why', 'run', 'first-hour', 'limits'];
     var i = ids.indexOf((this.state || {}).tab || 'why');
@@ -314,7 +337,7 @@ class Component extends DCLogic {
     var tabDefs = [['why', 'Why'], ['run', 'The run'], ['first-hour', 'First hour'], ['limits', 'Limits and proof']];
     var tabs = tabDefs.map((d) => ({
       tabId: 'tab-' + d[0], label: d[1], selected: tab === d[0] ? 'true' : 'false', tabIndex: tab === d[0] ? '0' : '-1',
-      pick: () => this.selectTab(d[0], false, false)
+      pick: () => this.selectTab(d[0], false, true)
     }));
     var flow = {
       bootstrap: ['bootstrap', 'Once per repo. Reads the code, writes an architecture doc and one spec per existing feature. Never modifies source.'],

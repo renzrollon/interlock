@@ -6666,6 +6666,7 @@ test('a run subcommand in a worktree with no manifest names the main checkout\'s
     assert.ok(cwdRow >= 0, closed.step.summary)
     assert.equal(lines[cwdRow + 1], `  state home: ${w.main}`)
     assert.ok(closed.step.summary.includes(there))
+    assert.doesNotMatch(closed.step.summary, /No commit is on record for this run\.|to pick this run up/, 'the no-manifest close summary is unchanged (ship/close-summary)')
 
     // No manifest anywhere: today's message, the root's path alone.
     rmSync(there)
@@ -9312,6 +9313,7 @@ test('a closed run whose close copy is lost says so, records nothing, and does n
     assert.ok(startsWithAny(bannersOf(replay.step), 'ORIGINAL CLOSE UNAVAILABLE:'))
     assert.match(replay.step.summary, /already closed at/)
     assert.ok(replay.step.summary.includes(manifest.closedAt))
+    assert.doesNotMatch(replay.step.summary, /No commit is on record for this run\.|to pick this run up/, 'closeAlreadyOnRecord summary is unchanged (ship/close-summary)')
     assert.notEqual(replay.step.summary, closed.summary)
 
     // The only thing the CLI may write is the copy of this very output.
@@ -9378,6 +9380,20 @@ test('a manifest that cannot be parsed is named unreadable, not absent', () => {
   }
 })
 
+test('closing an unparseable manifest carries neither the no-commit line nor the pick-up steps', () => {
+  const { root, change } = repo()
+  try {
+    toFirstBatch(root, change)
+    writeFileSync(join(root, MANIFEST_REL), '{"schema": "interlock.run/1", "change": ')
+    const closed = runAny(root, ['run', 'close', '--halt', 'x'])
+    const text = closed.stdout + closed.stderr
+    assert.match(text, /SHIP HALTED/, text)
+    assert.doesNotMatch(text, /No commit is on record for this run\.|to pick this run up/, 'closeUnusableManifest (unparseable) summary is unchanged (ship/close-summary)')
+  } finally {
+    cleanup(root)
+  }
+})
+
 test('closing a foreign run leaves its manifest and stage marker as they were and names the marker', () => {
   const { root, change } = repo()
   try {
@@ -9394,6 +9410,7 @@ test('closing a foreign run leaves its manifest and stage marker as they were an
     const text = closed.stdout + closed.stderr
     assert.ok(text.includes('interlock.run/2'), `the close names the foreign tag: ${text}`)
     assert.ok(text.includes(stagePath(change, '.')), `the close names the marker that still blocks a commit: ${text}`)
+    assert.doesNotMatch(text, /No commit is on record for this run\.|to pick this run up/, 'closeUnusableManifest (foreign) summary is unchanged (ship/close-summary)')
     assert.equal(readFileSync(join(root, MANIFEST_REL), 'utf8'), manifestBefore, 'the foreign manifest was rewritten')
     assert.equal(readFileSync(marker, 'utf8'), markerBefore, 'the stage marker was cleared or rewritten')
   } finally {

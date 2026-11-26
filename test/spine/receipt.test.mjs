@@ -21,6 +21,7 @@ import {
   closingFromWaveState,
   degradationLines,
   formatRunSummary,
+  pickUpSteps,
   summaryHeadline,
   tailFromManifest
 } from '../../lib/receipt.mjs'
@@ -353,6 +354,66 @@ test('the resume card row prints only when a card was actually written', () => {
     }),
     /resume card:/
   )
+})
+
+const CLOSING = 'Do not start another ship run unless the user asks.'
+
+test('a halt with no commit says so, before the closing line and after the resume card', () => {
+  const out = formatRunSummary({
+    change: 'add-thing',
+    summary: { halted: 'stopped' },
+    resumeCard: '.claude/handoff/ship-add-thing-run-9.md'
+  })
+  assert.match(out, /^No commit is on record for this run\.$/m)
+  const lines = out.split('\n')
+  assert.ok(lines.indexOf('No commit is on record for this run.') > lines.findIndex(l => l.includes('resume card:')))
+  assert.ok(lines.indexOf('No commit is on record for this run.') < lines.indexOf(CLOSING))
+})
+
+test('a halt after a recorded commit prints the commit row, not the denial', () => {
+  const out = formatRunSummary({
+    change: 'add-thing',
+    summary: { halted: 'stopped', commit: { ok: true, sha: 'abc1234' } }
+  })
+  assert.match(out, /^ {2}commit: abc1234$/m)
+  assert.doesNotMatch(out, /No commit is on record/)
+})
+
+test('a clean close carries neither the no-commit line nor the pick-up steps', () => {
+  const out = formatRunSummary({ change: 'add-thing', summary: {} })
+  assert.doesNotMatch(out, /No commit is on record/)
+  assert.doesNotMatch(out, /to pick this run up/)
+  assert.doesNotMatch(out, /\/interlock:ship add-thing/)
+})
+
+test('pick-up steps keep --ids a placeholder and never name a leftover id', () => {
+  const out = formatRunSummary({
+    change: 'add-thing',
+    summary: { halted: 'stopped' },
+    leftoverTaskIds: ['2.1', '2.2']
+  })
+  const tick = out.split('\n').find(l => l.includes('interlock tasks tick add-thing --ids'))
+  assert.ok(tick, 'the tick step prints when tasks are unticked')
+  assert.match(tick, /--ids <the ids you verified are done>/)
+  assert.doesNotMatch(tick, /2\.1|2\.2/)
+  assert.match(out, /^ {4}\d\. In a new session, run \/interlock:ship add-thing$/m)
+  assert.ok(out.split('\n').indexOf(CLOSING) > out.split('\n').indexOf(tick))
+})
+
+test('a halt with nothing unticked names the ship command and no tick step', () => {
+  const out = formatRunSummary({ change: 'add-thing', summary: { halted: 'stopped' } })
+  assert.match(out, /\/interlock:ship add-thing/)
+  assert.doesNotMatch(out, /interlock tasks tick/)
+  assert.deepEqual(pickUpSteps('add-thing', []).length, 3)
+  assert.equal(pickUpSteps('add-thing', ['1.1']).length, 4)
+})
+
+test('a halted summary and its resume card both name /interlock:ship <change>', async () => {
+  const { formatResumeCard } = await import('../../lib/resume-card.mjs')
+  const summary = formatRunSummary({ change: 'add-thing', summary: { halted: 'stopped' } })
+  assert.match(summary, /\/interlock:ship add-thing/)
+  const card = formatResumeCard({ change: 'add-thing', halted: 'stopped' })
+  assert.match(card, /\/interlock:ship add-thing/)
 })
 
 // --- buildReceipt: what the run observed about its agents and its home -------

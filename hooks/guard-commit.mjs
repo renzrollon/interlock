@@ -18,7 +18,8 @@
 // fi` is seen. It is a guardrail against the wrong-stage mistake, not a sandbox
 // against a determined adversary.
 
-import { readStage } from '../lib/ship-stage.mjs'
+import { readStage, owedClose } from '../lib/ship-stage.mjs'
+import { isChangeName } from '../lib/artifact-snapshot.mjs'
 import { readEvent, allow, deny, toolName, toolInput, projectRoot } from './_shared.mjs'
 
 const GUARD = 'guard-commit'
@@ -55,6 +56,74 @@ export function isGitCommit(command) {
   return false
 }
 
+// A run id the denial may quote: a plain identifier, never free text.
+const PLAIN_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+
+/**
+ * What the denial says after its first sentence, for two audiences in order:
+ * an agent inside an active run (do not commit, do not close or halt the run),
+ * then a person whose run has already stopped (the way to clear the marker).
+ *
+ * The advice to close rests on the run manifest being USABLE and MATCHING — the
+ * one condition under which `interlock run close --halt` clears this very file
+ * (`runClose` clears only `stagePath(manifest.change)`). Anything else — no
+ * manifest, an unreadable or foreign one, another change's, a marker stored
+ * outside its own change's directory, a read that threw — names the marker to
+ * remove by hand and no run id. A failed read changes this text, never the
+ * decision to deny. The denied command is never quoted, so two different commit
+ * commands give one reason.
+ *
+ * @returns {Promise<{ text: string, change?: string, runId?: string, error?: string }>}
+ */
+async function wayOut(marker, root) {
+  const path = typeof marker.path === 'string' ? marker.path : null
+  const change = isChangeName(marker.change) ? marker.change : null
+  const where = path ? `the stage marker at ${path}` : 'the stage marker'
+  const inRun =
+    `If you are an agent inside an active run: do not commit, and do not close or halt the run — ` +
+    `the run's own commit step makes the commit. `
+
+  let runId = null
+  let error = null
+  let usable = false
+  try {
+    if (change && path === `.claude/ship/${change}/stage.json`) {
+      const { inspectManifest } = await import('../lib/run.mjs')
+      const inspected = inspectManifest(root)
+      if (inspected.status === 'ok' && inspected.manifest && inspected.manifest.change === change) {
+        usable = true
+        const id = inspected.manifest.runId
+        if (typeof id === 'string' && PLAIN_RUN_ID.test(id)) runId = id
+      }
+    }
+  } catch (err) {
+    usable = false
+    runId = null
+    error = (err && err.message) || String(err)
+  }
+
+  const subject = change ? `the run for change ${change}${runId ? ` (run ${runId})` : ''}` : 'the run'
+  if (usable && path) {
+    const { command } = owedClose(path)
+    return {
+      text:
+        inRun +
+        `If you are a person and ${subject} has already stopped: run \`${command}\` to clear ${where}.`,
+      change,
+      runId,
+      error
+    }
+  }
+  return {
+    text:
+      inRun +
+      `If you are a person and ${change ? `the run for change ${change}` : 'the run'} has already stopped: ` +
+      `remove ${where} by hand.`,
+    change,
+    error
+  }
+}
+
 try {
   const event = await readEvent()
   if (toolName(event) !== 'Bash') allow()
@@ -62,15 +131,23 @@ try {
   const command = toolInput(event).command
   if (!isGitCommit(command)) allow()
 
-  const { stage } = readStage({ root: projectRoot(event) })
+  const marker = readStage({ root: projectRoot(event) })
+  const { stage } = marker
   if (stage === 'commit') allow() // the commit stage is exactly when a commit is legal
   if (stage === 'unknown') allow() // no active run to bound — the human's own shell is not our business
+
+  const way = await wayOut(marker, projectRoot(event))
+  const detail = { guard: GUARD, command: String(command), stage }
+  if (way.change) detail.change = way.change
+  if (way.runId) detail.runId = way.runId
+  if (way.error) detail.manifestError = way.error
 
   deny(
     `${GUARD}: \`git commit\` is blocked during the ${stage} stage of a ship run — commits are made ` +
       `only in the commit stage, by the commit step, as one feature-level commit. This is the ` +
-      `deterministic form of the disable-model-invocation flag on skills/commit.`,
-    { guard: GUARD, command: String(command), stage }
+      `deterministic form of the disable-model-invocation flag on skills/commit. ` +
+      way.text,
+    detail
   )
 } catch (err) {
   allow(`${GUARD}: internal error, allowing by default: ${(err && err.message) || String(err)}`)

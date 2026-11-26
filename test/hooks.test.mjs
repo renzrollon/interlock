@@ -2533,3 +2533,198 @@ test('the guard and `interlock settle test-paths` classify test/a.test.mjs under
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// guard-commit: the denial names the way out (hooks/tool-guards)
+// ---------------------------------------------------------------------------
+
+const RUN_SCHEMA_TAG = 'interlock.run/1'
+const CLOSE_COMMAND = 'interlock run close --halt'
+
+/** Plant `.claude/ship/run.json` verbatim (a string) or as JSON (anything else). */
+function plantManifest(root, value) {
+  mkdirSync(join(root, '.claude', 'ship'), { recursive: true })
+  writeFileSync(
+    join(root, '.claude', 'ship', 'run.json'),
+    typeof value === 'string' ? value : JSON.stringify(value)
+  )
+}
+
+/** Plant a marker file by hand, under any directory, with any body. */
+function plantMarker(root, dir, body) {
+  mkdirSync(join(root, '.claude', 'ship', dir), { recursive: true })
+  writeFileSync(join(root, '.claude', 'ship', dir, 'stage.json'), JSON.stringify(body) + '\n')
+}
+
+function commitDenial(root, command = 'git commit -m "wip"') {
+  const r = runGuard('guard-commit.mjs', bash(command), root)
+  assert.ok(isDeny(r), `expected deny, got ${JSON.stringify(r)}`)
+  return { reason: r.decision.hookSpecificOutput.permissionDecisionReason, detail: r.decision.interlockGuard }
+}
+
+const IN_RUN_TOKENS = [/inside an active run/, /do not commit/, /do not close or halt the run/, /commit step/]
+
+test('guard-commit: a usable matching manifest advises the close, naming change, run and marker', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-thing', 'implement', { root, pid: process.pid })
+    plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'add-thing', runId: 'r1' })
+    const { reason, detail } = commitDenial(root)
+    assert.ok(reason.startsWith('guard-commit: '), reason)
+    for (const re of IN_RUN_TOKENS) assert.match(reason, re)
+    assert.ok(reason.includes('add-thing'))
+    assert.ok(reason.includes('r1'))
+    assert.ok(reason.includes('.claude/ship/add-thing/stage.json'))
+    assert.ok(reason.includes(`${CLOSE_COMMAND} "<reason>"`))
+    // The in-run instruction comes first, the recovery for a person second.
+    assert.ok(reason.indexOf('inside an active run') < reason.indexOf(CLOSE_COMMAND))
+    assert.ok(!reason.includes('git commit -m'), 'the denied command is never quoted')
+    assert.equal(detail.stage, 'implement')
+    assert.equal(detail.change, 'add-thing')
+    assert.equal(detail.runId, 'r1')
+    assert.equal(detail.command, 'git commit -m "wip"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-commit: running the advised close against a usable manifest lets the next commit through', () => {
+  const root = tmpRoot()
+  try {
+    const change = 'add-thing'
+    mkdirSync(join(root, 'openspec', 'changes', change), { recursive: true })
+    writeFileSync(join(root, 'openspec', 'changes', change, 'proposal.md'), '# Add thing\n\nWhy: because.\n')
+    writeFileSync(join(root, 'openspec', 'changes', change, 'design.md'), '# Design\n\nD1: use the helper.\n')
+    writeFileSync(join(root, 'openspec', 'changes', change, 'tasks.md'), '# Tasks\n\n- [ ] 1.1 Add the thing to docs/guide.md\n')
+    for (const argv of [
+      ['init', '-q', '.'],
+      ['config', 'user.email', 'test@example.com'],
+      ['config', 'user.name', 'test'],
+      ['add', '-A'],
+      ['commit', '-qm', 'init']
+    ]) {
+      const g = spawnSync('git', argv, { cwd: root, encoding: 'utf8' })
+      assert.equal(g.status, 0, `git ${argv.join(' ')}: ${g.stderr}`)
+    }
+    const started = spawnSync(process.execPath, [join(ROOT, 'cli', 'interlock'), 'run', 'start', '--change', change, '--json'], {
+      cwd: root,
+      encoding: 'utf8'
+    })
+    assert.equal(started.status, 0, `run start: ${started.stdout}${started.stderr}`)
+    writeStage(change, 'implement', { root, pid: process.pid })
+
+    const { reason } = commitDenial(root)
+    assert.ok(reason.includes(CLOSE_COMMAND), reason)
+
+    // The advised command, with a reason in place of the placeholder.
+    const closed = spawnSync(
+      process.execPath,
+      [join(ROOT, 'cli', 'interlock'), 'run', 'close', '--halt', 'stopped on purpose', '--json'],
+      { cwd: root, encoding: 'utf8' }
+    )
+    assert.equal(closed.status, 1, `run close --halt: ${closed.stdout}${closed.stderr}`)
+    assert.ok(!existsSync(join(root, '.claude', 'ship', change, 'stage.json')), 'the close clears the marker')
+
+    const after = runGuard('guard-commit.mjs', bash('git commit -m "by hand"'), root)
+    assert.ok(isAllow(after), `expected allow after the close, got ${JSON.stringify(after)}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+for (const [label, plant] of [
+  ['an absent manifest', () => {}],
+  ['an unparseable run.json', root => plantManifest(root, '{ not json')],
+  ['a foreign-schema run.json', root => plantManifest(root, { schema: 'something.else/9', change: 'add-thing', runId: 'r-foreign' })]
+]) {
+  test(`guard-commit: ${label} names the marker to remove by hand, no run id, no close command`, () => {
+    const root = tmpRoot()
+    try {
+      writeStage('add-thing', 'implement', { root, pid: process.pid })
+      plant(root)
+      const { reason, detail } = commitDenial(root)
+      assert.ok(reason.startsWith('guard-commit: '))
+      for (const re of IN_RUN_TOKENS) assert.match(reason, re)
+      assert.ok(reason.includes('add-thing'))
+      assert.ok(reason.includes('.claude/ship/add-thing/stage.json'))
+      assert.match(reason, /by hand/)
+      assert.ok(!reason.includes('r-foreign'))
+      assert.ok(!reason.includes('interlock run close'))
+      assert.equal(detail.runId, undefined)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('guard-commit: a manifest for another change names neither its run nor its change', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-thing', 'implement', { root, pid: process.pid })
+    plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'other-change', runId: 'r-other' })
+    const { reason, detail } = commitDenial(root)
+    for (const re of IN_RUN_TOKENS) assert.match(reason, re)
+    assert.ok(reason.includes('add-thing'))
+    assert.ok(reason.includes('.claude/ship/add-thing/stage.json'))
+    assert.ok(!reason.includes('r-other'))
+    assert.ok(!reason.includes('other-change'))
+    assert.ok(!reason.includes('interlock run close'))
+    assert.equal(detail.runId, undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+for (const [label, change] of [
+  ['absent', undefined],
+  ['invalid', '../../etc; rm -rf x']
+]) {
+  test(`guard-commit: a marker whose change is ${label} names its real path and quotes nothing unvalidated`, () => {
+    const root = tmpRoot()
+    try {
+      plantMarker(root, 'add-thing', { stage: 'implement', ...(change === undefined ? {} : { change }), index: 1, pid: process.pid })
+      plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'add-thing', runId: 'r1' })
+      const { reason, detail } = commitDenial(root)
+      for (const re of IN_RUN_TOKENS) assert.match(reason, re)
+      assert.ok(reason.includes('.claude/ship/add-thing/stage.json'))
+      assert.ok(!reason.includes('undefined'))
+      if (change) assert.ok(!reason.includes(change))
+      assert.ok(!reason.includes('r1'))
+      assert.match(reason, /by hand/)
+      assert.ok(!reason.includes('interlock run close'))
+      assert.equal(detail.change, undefined)
+      assert.equal(detail.runId, undefined)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('guard-commit: a marker outside its own change directory is removed by hand, never closed', () => {
+  const root = tmpRoot()
+  try {
+    plantMarker(root, 'old-name', { stage: 'implement', change: 'add-thing', index: 1, pid: process.pid })
+    plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'add-thing', runId: 'r1' })
+    const { reason } = commitDenial(root)
+    for (const re of IN_RUN_TOKENS) assert.match(reason, re)
+    assert.ok(reason.includes('.claude/ship/old-name/stage.json'))
+    assert.ok(!reason.includes('r1'))
+    assert.match(reason, /by hand/)
+    assert.ok(!reason.includes('interlock run close'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('guard-commit: two different commit commands give the same reason', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-thing', 'implement', { root, pid: process.pid })
+    plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'add-thing', runId: 'r1' })
+    const a = commitDenial(root, 'git commit -m "a"').reason
+    const b = commitDenial(root, 'git -C . commit -m "b"').reason
+    assert.equal(a, b)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

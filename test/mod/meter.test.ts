@@ -71,7 +71,8 @@ const FIVE_HOUR_LINE = 'five_hour 42% used · resets 2026-10-05T23:00:00Z'
 const USAGE_REFUSED = 'the usage cannot be read'
 
 // The guards' own sentences, as hooks/guard-tests.mjs, hooks/guard-commit.mjs
-// and lib/launch-rule.mjs build them for these calls.
+// and lib/launch-rule.mjs build them for these calls (guard-commit's is the
+// form with no usable run manifest: the marker named to remove by hand).
 const TESTS_REASON =
   'guard-tests: editing the test file lib/x.test.mjs is blocked during the remediation stage — ' +
   'a run making a failing check pass must fix the code under test, not weaken the check. ' +
@@ -79,7 +80,11 @@ const TESTS_REASON =
 const COMMIT_REASON =
   'guard-commit: `git commit` is blocked during the remediation stage of a ship run — commits are made ' +
   'only in the commit stage, by the commit step, as one feature-level commit. This is the ' +
-  'deterministic form of the disable-model-invocation flag on skills/commit.'
+  'deterministic form of the disable-model-invocation flag on skills/commit. ' +
+  'If you are an agent inside an active run: do not commit, and do not close or halt the run — ' +
+  "the run's own commit step makes the commit. " +
+  'If you are a person and the run for change add-thing has already stopped: ' +
+  'remove the stage marker at .claude/ship/add-thing/stage.json by hand.'
 const RELAUNCH_REASON = denyReason('2026-10-05T06:00:00.000Z')
 const GUARD_NAMED = /guard-(tests|tasks|commit|relaunch)/
 
