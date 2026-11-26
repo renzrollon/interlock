@@ -7,6 +7,8 @@ this project adheres to Semantic Versioning 2.0.0.
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-26
+
 ### Changed
 
 - `/interlock:spec` now gates its artifacts at the strict depth by default: it passes `--caller spec`, and the CLI's caller table answers `strict`, so one routed `interlock:reviewer` reads the artifacts in place of the session. `--lean` asks for the session's own read, `--strict` still forces the subagent, and a standalone `/interlock:review-artifacts` keeps the published default.

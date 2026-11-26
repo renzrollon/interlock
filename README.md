@@ -294,7 +294,7 @@ Interlock makes no network request of its own and reads no credential. The plugi
 The plugin puts all three on Claude Code's `PATH`. To put them on yours:
 
 ```bash
-npm install --location=global @renzrollon/interlock@1.20.0
+npm install --location=global @renzrollon/interlock@1.21.0
 ```
 
 The reference and every environment variable are in [07](docs/07-cli-and-configuration.md).
