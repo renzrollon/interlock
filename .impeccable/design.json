@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-26T00:00:00Z",
+  "title": "Design System: Interlock",
+  "extensions": {
+    "colorMeta": {
+      "checkpoint-cobalt": { "role": "primary", "displayName": "Checkpoint Cobalt", "canonical": "#1d5bd6", "tonalRamp": ["#0d2a66", "#123a8c", "#174ab0", "#1d5bd6", "#3f7bea", "#75a3f5", "#a8c6fa", "#d3e2fd", "#ebf2fe"] },
+      "accent-subtle": { "role": "primary", "displayName": "Cobalt Tint", "canonical": "#ebf2fe" },
+      "halt-red": { "role": "secondary", "displayName": "Halt Red", "canonical": "#c42b1c", "tonalRamp": ["#3a1714", "#6b2a23", "#9a2418", "#c42b1c", "#e2584a", "#f2988f", "#f2b8b1", "#fdedeb"] },
+      "bg": { "role": "neutral", "displayName": "White Ground", "canonical": "#ffffff" },
+      "surface": { "role": "neutral", "displayName": "Quiet Fill", "canonical": "#f5f7fa", "tonalRamp": ["#151a21", "#2a313c", "#475161", "#5f6978", "#838d9b", "#c3cad4", "#dde2e8", "#edf1f5", "#f5f7fa"] },
+      "surface-2": { "role": "neutral", "displayName": "Pressed Fill", "canonical": "#edf1f5" },
+      "text": { "role": "neutral", "displayName": "Ink", "canonical": "#151a21" },
+      "text-soft": { "role": "neutral", "displayName": "Soft Ink", "canonical": "#475161" },
+      "text-muted": { "role": "neutral", "displayName": "Muted Ink", "canonical": "#5f6978" },
+      "divider": { "role": "neutral", "displayName": "Hairline", "canonical": "#dde2e8" },
+      "border": { "role": "neutral", "displayName": "Rule", "canonical": "#c3cad4" },
+      "border-strong": { "role": "neutral", "displayName": "Control Edge", "canonical": "#838d9b" },
+      "term-ground": { "role": "neutral", "displayName": "Terminal Ground", "canonical": "#0f141a" },
+      "term-accent": { "role": "primary", "displayName": "Terminal Cobalt", "canonical": "#79a9ff" },
+      "term-halt": { "role": "secondary", "displayName": "Terminal Halt", "canonical": "#ff8a7d" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display hero", "purpose": "The page headline, once. Measure 18ch, 24px before the lede." },
+      "headline": { "displayName": "Tab headline", "purpose": "One per tab or long page." },
+      "title": { "displayName": "Section subhead", "purpose": "A plain label under an eyebrow, at 500." },
+      "title-row": { "displayName": "Row title", "purpose": "Row titles, disclosure summaries, column labels." },
+      "numeral": { "displayName": "Proof numeral", "purpose": "A figure in the proof row, over a caption saying what was counted." },
+      "pullquote": { "displayName": "Pull quote", "purpose": "A quoted docs line under a 24x2px cobalt lead rule." },
+      "lede": { "displayName": "Lede", "purpose": "The paragraph under a headline, Soft Ink, 60ch." },
+      "body": { "displayName": "Body", "purpose": "Running copy, 60-70ch." },
+      "body-sm": { "displayName": "Small", "purpose": "Table cells, buttons, inputs, nav." },
+      "caption": { "displayName": "Caption", "purpose": "Captions and provenance; the smallest size." },
+      "label": { "displayName": "Eyebrow", "purpose": "Sentence case, cobalt, no tracking, two to six words." },
+      "wordmark": { "displayName": "Wordmark", "purpose": "INTERLOCK after a 10px cobalt square; the only tracked capitals." },
+      "mono-command": { "displayName": "Command", "purpose": "A command name, lower case, as typed." },
+      "mono-code": { "displayName": "Code / output", "purpose": "Code and output panels. site.css renders 13px today." },
+      "mono-sm": { "displayName": "Mono caption", "purpose": "The line above a panel, mono table values." },
+      "mono-tag": { "displayName": "Tag", "purpose": "skill, workflow, experimental, strict." }
+    },
+    "shadows": [
+      { "name": "shadow-sm", "value": "0 1px 2px rgba(16, 24, 40, 0.06)", "purpose": "Selected option of a segmented control. Not on the landing page." },
+      { "name": "shadow-md", "value": "0 4px 12px rgba(16, 24, 40, 0.08)", "purpose": "A card or menu floating over content." },
+      { "name": "shadow-lg", "value": "0 16px 40px rgba(16, 24, 40, 0.16)", "purpose": "Dialogs." }
+    ],
+    "motion": [
+      { "name": "fade-tab", "value": "150ms ease-out", "purpose": "Opacity fade on tab change. Off under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "640px" },
+      { "name": "header", "value": "760px" },
+      { "name": "split", "value": "860px" },
+      { "name": "hero", "value": "960px" }
+    ]
+  },
+  "components": [
+    { "name": "Primary Button", "kind": "button", "refersTo": "button-primary", "description": "The main action: Install, Adjudicate.", "html": "<button class=\"ds-btn ds-btn-primary\">Install</button>", "css": ".ds-btn { display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border: 1px solid transparent; border-radius: 4px; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 14px; font-weight: 500; line-height: 1; cursor: pointer; } .ds-btn-primary { background: #1d5bd6; color: #ffffff; } .ds-btn-primary:hover { background: #174ab0; } .ds-btn-primary:active { background: #123a8c; } .ds-btn:focus-visible { outline: 2px solid #1d5bd6; outline-offset: 2px; }" },
+    { "name": "Secondary Button", "kind": "button", "refersTo": "button-secondary", "description": "Step, Play, Reset and other non-primary actions.", "html": "<button class=\"ds-btn ds-btn-secondary\">Step</button>", "css": ".ds-btn { display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border: 1px solid transparent; border-radius: 4px; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 14px; font-weight: 500; line-height: 1; cursor: pointer; } .ds-btn-secondary { background: #ffffff; border-color: #838d9b; color: #151a21; } .ds-btn-secondary:hover { background: #f5f7fa; } .ds-btn-secondary:active { background: #edf1f5; } .ds-btn-secondary[aria-pressed=\"true\"] { background: #ebf2fe; border-color: #c3d6fa; color: #123a8c; } .ds-btn:focus-visible { outline: 2px solid #1d5bd6; outline-offset: 2px; }" },
+    { "name": "Ghost Button", "kind": "button", "refersTo": "button-ghost", "description": "A link-weight action, such as copy.", "html": "<button class=\"ds-btn-ghost\">Copy</button>", "css": ".ds-btn-ghost { display: inline-flex; align-items: center; min-height: 36px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: #1d5bd6; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; } .ds-btn-ghost:hover { background: #ebf2fe; color: #123a8c; } .ds-btn-ghost:focus-visible { outline: 2px solid #1d5bd6; outline-offset: 2px; }" },
+    { "name": "Tags", "kind": "chip", "refersTo": "tag-neutral", "description": "Names a kind; halt only for halts.", "html": "<span class=\"ds-tag ds-tag-neutral\">skill</span> <span class=\"ds-tag ds-tag-outline\">workflow</span> <span class=\"ds-tag ds-tag-accent\">strict</span> <span class=\"ds-tag ds-tag-halt\">halt</span>", "css": ".ds-tag { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 3px; border: 1px solid transparent; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 12px; font-weight: 500; line-height: 1; } .ds-tag-neutral { background: #edf1f5; color: #475161; } .ds-tag-outline { border-color: #1d5bd6; color: #1d5bd6; } .ds-tag-accent { background: #ebf2fe; border-color: #c3d6fa; color: #123a8c; } .ds-tag-halt { background: #fdedeb; border-color: #f2b8b1; color: #c42b1c; }" },
+    { "name": "Search Input", "kind": "input", "refersTo": "input", "description": "The caps-table filter.", "html": "<input class=\"ds-input\" type=\"search\" placeholder=\"Filter caps\">", "css": ".ds-input { width: 100%; max-width: 360px; min-height: 36px; padding: 7px 10px; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 14px; color: #151a21; background: #ffffff; border: 1px solid #838d9b; border-radius: 4px; } .ds-input::placeholder { color: #5f6978; } .ds-input:focus-visible { outline: none; border-color: #1d5bd6; box-shadow: 0 0 0 3px rgba(29, 91, 214, 0.22); }" },
+    { "name": "Header and Tabs", "kind": "nav", "refersTo": "tab", "description": "Sticky header: wordmark, tabs, actions.", "html": "<nav class=\"ds-hdr\"><span class=\"ds-wm\"><span class=\"ds-wm-sq\"></span>INTERLOCK</span><div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">Why</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">The run</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">First hour</button></div></nav>", "css": ".ds-hdr { display: flex; align-items: center; gap: 24px; min-height: 56px; padding: 0 24px; background: #ffffff; border-bottom: 1px solid #dde2e8; } .ds-wm { display: inline-flex; align-items: center; gap: 10px; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 15px; font-weight: 600; letter-spacing: 0.12em; color: #151a21; } .ds-wm-sq { width: 10px; height: 10px; background: #1d5bd6; } .ds-tabs { display: flex; gap: 4px; } .ds-tab { min-height: 56px; padding: 0 12px; border: 0; background: none; cursor: pointer; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 14px; font-weight: 500; color: #475161; } .ds-tab:hover { color: #151a21; } .ds-tab[aria-selected=\"true\"] { color: #151a21; box-shadow: inset 0 -2px 0 #1d5bd6; } .ds-tab:focus-visible { outline: 2px solid #1d5bd6; outline-offset: -4px; }" },
+    { "name": "Output Panel", "kind": "custom", "refersTo": "output-panel", "description": "What the tool printed, captioned with what printed it.", "html": "<div class=\"ds-term-cap\">interlock run close</div><pre class=\"ds-term\"><span class=\"ds-t-dim\"># two waves, 19 agents</span>\n<span class=\"ds-t-acc\">SHIP COMPLETE — add-report-json-flag</span>\n<span class=\"ds-t-halt\">SHIP HALTED — unit suite red</span></pre>", "css": ".ds-term-cap { margin-bottom: 8px; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 12.5px; color: #475161; } .ds-term { margin: 0; padding: 16px 20px; overflow-x: auto; background: #0f141a; color: #d6dce4; border-radius: 4px; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 13.5px; line-height: 1.6; white-space: pre; } .ds-t-dim { color: #8e98a6; } .ds-t-acc { color: #79a9ff; } .ds-t-halt { color: #ff8a7d; }" },
+    { "name": "Flow Strip", "kind": "custom", "refersTo": "flow-checkpoint", "description": "The five-step loop; the checkpoint is the only filled cell.", "html": "<div class=\"ds-flow\"><div class=\"ds-cell\"><b>bootstrap</b></div><div class=\"ds-cell\"><b>spec</b></div><div class=\"ds-cell ds-stop\">You read the spec</div><div class=\"ds-cell\"><b>ship</b></div><div class=\"ds-cell\"><b>settle</b></div></div>", "css": ".ds-flow { display: grid; grid-template-columns: 1fr 1fr 1.5fr 1fr 1fr; border: 1px solid #c3cad4; border-radius: 4px; overflow: hidden; } .ds-cell { min-height: 88px; padding: 16px; border-left: 1px solid #c3cad4; background: #ffffff; color: #151a21; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 14px; } .ds-cell:first-child { border-left: 0; } .ds-cell:hover { background: #f5f7fa; } .ds-stop { background: #1d5bd6; color: #ffffff; border-left-color: #1d5bd6; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 17px; font-weight: 600; } .ds-stop:hover { background: #174ab0; }" },
+    { "name": "Callout", "kind": "card", "refersTo": "callout", "description": "A tinted note; the only tinted block.", "html": "<div class=\"ds-callout\"><p class=\"ds-callout-t\">Experimental</p><p>interlock-run is experimental. /interlock:ship is the supported path.</p></div>", "css": ".ds-callout { padding: 20px 24px; border-radius: 4px; background: #ebf2fe; border: 1px solid #c3d6fa; font-family: \"IBM Plex Sans\", system-ui, sans-serif; font-size: 15px; color: #151a21; } .ds-callout p { margin: 0; } .ds-callout-t { margin-bottom: 6px !important; font-weight: 600; color: #123a8c; }" }
+  ],
+  "narrative": {
+    "northStar": "The Datasheet",
+    "overview": "Interlock looks like an engineering datasheet: a page you check rather than a page that pitches. Every section earns its place by showing something the tool printed or recorded, whether that is film, a still, an output panel or a table of values. Prose that shows none of those gets no box, no fill and no border. It is a subhead and paragraphs. The system exists to make a claim checkable at a glance, so its density is high and its decoration is close to zero.\n\nThe ground is plain white, with cool greys for structure and IBM Plex for every word. One cobalt accent marks the human checkpoint and what you can act on. One red means a halt and nothing else. Sections are separated by 1px hairlines and whitespace, never by tinted bands. Light is the default and dark is the reader's preference, not a mood. Revision 2 (2026-10-11) explicitly replaced the first version's warm paper, vermilion, Archivo 800 and uppercase mono kickers. Treat those as anti-references.",
+    "keyCharacteristics": [
+      "White ground, cool neutrals, one accent, one semantic red.",
+      "Two families, IBM Plex Sans and IBM Plex Mono. Nothing heavier than 600.",
+      "1px rules everywhere. The only 2px line marks a selection or a current node.",
+      "4px corners, flat surfaces and no shadow anywhere on the landing page.",
+      "Mono for everything the tool would print: commands, paths, flags, values and captions.",
+      "Near-black output panels in both themes."
+    ],
+    "rules": [
+      { "name": "The Counted Accent Rule", "body": "Cobalt appears on exactly seven things: the primary button, links (ghost buttons are links), eyebrows, the selected-tab underline, focus rings, the checkpoint block and the human node. Beyond those, cobalt may only mark a control's own state: a pressed toggle and the current state-machine node take the Cobalt Tint, a checked box fills cobalt, and the `WORKFLOW` tag on `ship` is outlined in it. Never on a bullet, an icon, a figure or a section ground.", "section": "colors" },
+      { "name": "The Halt Means Halt Rule", "body": "Red marks a halt and nothing else. It never means \"bad\", never colours a number, and never decorates.", "section": "colors" },
+      { "name": "The Cool Ground Rule", "body": "The ground is white or cool near-black. A warm or tinted page ground is the old system coming back.", "section": "colors" },
+      { "name": "The 600 Ceiling Rule", "body": "Nothing is heavier than 600. Body is 400; subheads, nav, buttons, numerals and tags are 500.", "section": "typography" },
+      { "name": "The One Heavy Line Rule", "body": "One heavy headline per screen. Every other heading is a medium-weight label, and there is no third heading level on the landing page.", "section": "typography" },
+      { "name": "The Tracked Once Rule", "body": "Uppercase tracking is used for the wordmark only. Eyebrows are sentence case.", "section": "typography" },
+      { "name": "The No Card Grid Rule", "body": "Never lay tiles out in rows. A bordered box is for a control, a code panel or a table, never for a paragraph.", "section": "layout" },
+      { "name": "The Flat Page Rule", "body": "A landing-page surface is flat at rest and in every state. If something seems to need a shadow to separate it, give it a 1px rule instead.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use the tokens by name from `site/ds/interlock/tokens.json`. Never introduce a colour, face, radius or shadow it does not define.",
+      "Do separate sections with a 1px `divider` rule and 64px of space.",
+      "Do set every command, path, flag, value and caption line in IBM Plex Mono.",
+      "Do caption every output panel with one mono line saying what printed it.",
+      "Do define each colour once as a custom property with its light value, and redefine only the tokens that change for dark.",
+      "Do give every interactive element the 2px cobalt focus outline at a 2px offset.",
+      "Do honour `prefers-reduced-motion`: the 150ms tab fade and every other animation switch off."
+    ],
+    "donts": [
+      "Don't lay tiles out in a card grid, or box a paragraph.",
+      "Don't put cobalt outside the Counted Accent Rule, or red on anything that is not a halt.",
+      "Don't cast a shadow on the landing page, or use gradients, glass, 3D, stock illustration or an icon set beyond the few control glyphs.",
+      "Don't set anything heavier than 600, add a third heading level, or track uppercase anywhere but the wordmark.",
+      "Don't round past 4px on controls and panels.",
+      "Don't draw window chrome or traffic-light dots on an output panel.",
+      "Don't draw a trend arrow, health colour, score, gauge or progress ring on an indicator, or a stat tile for a number that changes monthly.",
+      "Don't bring back revision 1: warm paper, vermilion, Archivo 800 or uppercase mono kickers."
+    ]
+  }
+}

@@ -31,7 +31,7 @@
             <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s1.copy}}" aria-label="Copy the install commands">{{s1.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s1.lines}}" as="l" hint-placeholder-count="4"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
           </div>
-          <p class="body">Interlock drives the <code>openspec</code> CLI; it does not replace it. <code>openspec init</code> creates <code>openspec/</code> and installs OpenSpec's own skills, which stay available beside Interlock's.</p>
+          <p class="body">Typed at the Claude Code prompt, once per machine. So is every command after these. Nothing else to install: Interlock drives the <code>openspec</code> CLI rather than replacing it, and the first <code>bootstrap</code> or <code>spec</code> provisions a pinned copy. An <code>openspec</code> already on your PATH is used instead. Interlock's own CLIs run on Node.js 18 or newer; the OpenSpec CLI needs 22.12.0 or newer, and npm.</p>
         </div>
       </div>
 
@@ -43,11 +43,11 @@
             <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s2.copy}}" aria-label="Copy interlock doctor">{{s2.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s2.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
           </div>
-          <p class="body">Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. <code>doctor</code> derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. The same check runs at every session start as an advisory hook.</p>
+          <p class="body">Start a new session in your project first. The <code>!</code> runs the line as a shell command in that session, and the plugin puts <code>interlock</code> on its PATH, not your own terminal's. Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. <code>doctor</code> derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. <code>/permissions</code> adds what it names. Every session runs the same check at start and prints <code>interlock preflight OK</code> or each problem with its fix.</p>
           <div>
             <p class="term-cap">interlock doctor · example of a healthy repo</p>
             <div class="term"><sc-for list="{{doctor}}" as="l" hint-placeholder-count="14"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
-            <p class="cap muted" style="margin-top: 8px; max-width: 90ch;"><code>interlock doctor</code> run on this repository on 2026-10-11 at v1.5.0, with the root replaced, four long advisory rows cut at <code>…</code>, and three trailing <code>[skip]</code> rows about the experimental runner and the eval harness left out.</p>
+            <p class="cap muted" style="margin-top: 8px; max-width: 90ch;"><code>interlock doctor</code> run on this repository on 2026-11-26 at v1.21.0, with the root replaced, four long advisory rows cut at <code>…</code>, and one trailing <code>[skip]</code> row about the eval harness left out.</p>
           </div>
         </div>
       </div>
@@ -60,7 +60,7 @@
             <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s3.copy}}" aria-label="Copy the bootstrap command">{{s3.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s3.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
           </div>
-          <p class="body">Initialises OpenSpec if the repo never was, builds the code graph, fans out read-only explorers phrased in your stack's vocabulary, and writes <code>openspec/initial-architecture.md</code> plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. <code>--quick</code> on a small repo, <code>--scope packages/api</code> on a monorepo. If the repo is Go, Rust, Java or Ruby, expect <code>GRAPH UNAVAILABLE: nothing indexable found</code>; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.</p>
+          <p class="body">Provisions OpenSpec if none resolves and initialises it if the repo never was, builds the code graph, runs read-only explorer agents in parallel, each briefed in your stack's terms, and writes <code>openspec/initial-architecture.md</code> plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. <code>--quick</code> on a small repo, <code>--scope packages/api</code> on a monorepo. If the repo is Go, Rust, Java or Ruby, expect <code>GRAPH UNAVAILABLE: nothing indexable found</code>; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.</p>
         </div>
       </div>
 
@@ -82,7 +82,7 @@
         <p class="tl-time">min 30–40</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s5.done}}" onChange="{{s5.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Read the spec</span></label>
-          <p class="body">The checkpoint. The ten-minute read below says what to read and in what order. Two cheap machine checks that do not replace reading: <code>openspec validate</code> and <code>interlock validate &lt;change-name&gt;</code>. Ship runs the second one first and refuses to start on a failure.</p>
+          <p class="body">The checkpoint. The ten-minute read below says what to read and in what order. Two cheap machine checks that do not replace reading: <code>! openspec validate &lt;change-name&gt;</code> and <code>! interlock validate &lt;change-name&gt;</code>. Ship runs the second one first and refuses to start on a failure.</p>
         </div>
       </div>
 
@@ -94,7 +94,7 @@
             <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s6.copy}}" aria-label="Copy the ship command">{{s6.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s6.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
           </div>
-          <p class="body">Runs start-to-commit without asking anything. Before a single implementer spawns it prints the plan: waves, lanes, the model per task, every clamp and every fold. At the end it prints one summary, always ending in a degradation block. Useful flags for a first run: <code>--no-commit</code> to see the diff before git touches it, <code>--apply-only</code> to stop after the waves, <code>--strict</code> to see what the review and the bill look like.</p>
+          <p class="body">Implements <code>tasks.md</code> in waves, runs your unit suite and makes one commit. Before the first agent starts it prints the plan. A wave is a set of tasks that run in parallel; a lane is one agent's slot in a wave, holding one task or several in order. Each task carries a tier, the planner's 1–5 difficulty grade, which picks its model and effort. The plan names every clamp (a model the planner capped) and every fold (tasks it merged into one lane or one wave). At the end it prints one summary. Its last block names each way the run degraded, or says that nothing did. Useful flags for a first run: <code>--no-commit</code> to see the diff before git touches it, <code>--apply-only</code> to stop after the waves, <code>--strict</code> to add the adversarial review, the handoff files and the conformance check, and see what they cost.</p>
           <div>
             <p class="term-cap">the expected ending · interlock run close</p>
             <div class="term"><sc-for list="{{summary}}" as="l" hint-placeholder-count="14"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
@@ -110,7 +110,7 @@
             <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s7.copy}}" aria-label="Copy the pull request and archive commands">{{s7.copyLabel}}</button>
             <div class="cmd-body"><sc-for list="{{s7.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
           </div>
-          <p class="body"><code>openspec archive</code> folds the change's delta specs into the living specs, so the next <code>spec</code> plans against what is now true. Interlock never archives for you. It prints <code>ARCHIVE PENDING</code> and counts the backlog in <code>interlock drift</code>.</p>
+          <p class="body"><code>settle</code> detects GitLab or GitHub from the remote, pushes the branch and opens the pull request as a draft. With <code>--review</code> it reviews the diff and fixes the findings in rounds, each at most one pushed commit. Then it marks the pull request ready and writes the CLI's verdict, <code>MERGE</code>, <code>HUMAN</code> or <code>BLOCK</code>, into the description and as a label. It never merges. With no pull request open and no <code>--create</code>, it stops and pushes nothing. After the merge, <code>openspec archive</code> folds the change's delta specs into the living specs, so the next <code>spec</code> plans against what is now true; <code>-y</code> answers its confirmation prompt up front. Interlock never archives for you. It prints <code>ARCHIVE PENDING</code> and counts the backlog in <code>interlock drift</code>.</p>
         </div>
       </div>
     </div>
@@ -119,7 +119,7 @@
       <p class="eyebrow" style="color: var(--color-text-soft);">Do not run these yet</p>
       <div class="stack-12">
         <p class="mono" style="font-size: 13.5px; line-height: 1.8; color: var(--color-text-soft);">dispatch · graph · docs-digest · explore · review-artifacts · review-code · fix-tests · manual-test-plan · explain-code · commit · spec --continue</p>
-        <p class="body-sm soft">Every one is either called by the four commands above or is a recovery tool. “Skipping the read before you have done it once is skipping the part of the loop that earns the rest.”</p>
+        <p class="body-sm soft">Each is real and supported. None is needed for a first loop, and several are only meant to be called by the commands above. “Skipping the read before you have done it once is skipping the part of the loop that earns the rest.”</p>
         <p class="mono" style="font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/01-first-hour.md">more in 01 · The first hour</a></p>
       </div>
     </div>
@@ -160,6 +160,7 @@
               <tr><td class="m">spec</td><td>What change do you want to work on?</td><td>The request is not clear enough to name a change.</td></tr>
               <tr><td class="m">spec</td><td>Real log output or the error message, <strong>and</strong> a reproduction: a failing test path or a command that triggers it</td><td>The request is a bug fix. No artifact is created until both exist. “A repro is required so the fix has a pass/fail signal; without it we are fixing a symptom.”</td></tr>
               <tr><td class="m">spec</td><td>Which version of this dependency?</td><td>The design names a dependency without one. A plausible-looking wrong pin is worse than an open question.</td></tr>
+              <tr><td class="m">spec</td><td>A question the explore brief or the design left open</td><td>Its answer decides whether the proposal is correct. Otherwise <code>spec</code> takes a default and records it in <code>decisions.md</code>.</td></tr>
               <tr><td class="m">spec</td><td>Test-first or implementation-first?</td><td><code>--tdd</code> and <code>--no-tdd</code> were both passed.</td></tr>
               <tr><td class="m">spec</td><td>Continue the existing change or start a new one?</td><td>A change with that name already exists.</td></tr>
               <tr><td class="m">spec --continue</td><td>“Continuity paused — N decisions need you”, listing only the ledger rows and blockers</td><td><code>interlock ready</code> exited 1. The last place a question is possible.</td></tr>
@@ -167,6 +168,7 @@
               <tr><td class="m">bootstrap</td><td>This project already has N specs; add specs for undocumented features without overwriting any?</td><td><code>openspec/specs/</code> is non-empty.</td></tr>
               <tr><td class="m">fix-tests</td><td>At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command</td><td>First run or <code>--reconfigure</code>. The only skill permitted to interview you about tests.</td></tr>
               <tr><td class="m">settle</td><td>GitLab or GitHub?</td><td>Only when both or neither of <code>glab</code> and <code>gh</code> resolve.</td></tr>
+              <tr><td class="m">settle</td><td>Which change does this pull request carry?</td><td>More than one change fits the branch.</td></tr>
               <tr><td class="m">settle</td><td>Overwrite this description?</td><td>It contains hand-written prose.</td></tr>
             </tbody>
           </table>
@@ -255,11 +257,12 @@ class Component extends DCLogic {
     };
     var toLines = function (arr) { return arr.map(function (t) { return { t: t === '' ? ' ' : t, cls: cls(t) }; }); };
     var doctor = [
-      'PREFLIGHT OK — 11 passed',
+      'PREFLIGHT OK — 12 passed',
       '  root: /Users/you/src/yourrepo',
-      '  [ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 22.12.0+)',
-      '  [ok  ] plugin: plugin 1.5.0 complete: workflow, both agent types, both binaries',
+      '  [ok  ] node: Node v26.12.1 (plugin requires >=18, OpenSpec requires 22.12.0+)',
+      '  [ok  ] plugin: plugin 1.21.0 complete: workflow, all four agent types, both binaries',
       '  [ok  ] binaries: interlock and interlock-graph resolve on PATH',
+      '  [ok  ] cli-version: interlock 1.21.0 on PATH matches plugin 1.21.0',
       '  [ok  ] openspec: openspec CLI available and this project is initialised',
       '  [ok  ] git: git version 2.54.0 in a work tree',
       '  [ok  ] test-profile: unit suite: npm test',
@@ -267,8 +270,9 @@ class Component extends DCLogic {
       '  [ok  ] state-home: state home is the root itself, /Users/you/src/yourrepo, surface main',
       '  [ok  ] state-dirs: every run-state directory is writable or creatable',
       '  [skip] prompt-cache: a prompt-cache lifetime is unset, so its bucket runs on the host default …',
-      '  [ok  ] claude-env: Claude Code 2.1.296; CLAUDE_CODE_SUBAGENT_MODEL=unset …',
-      '  [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …'
+      '  [skip] advisor: advisorModel not set in any settings scope read here …',
+      '  [ok  ] claude-env: Claude Code 2.1.332; CLAUDE_CODE_SUBAGENT_MODEL=unset …',
+      '  [ok  ] mods: claude 2.1.332 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …'
     ];
     var summary = [
       'SHIP COMPLETE — add-report-json-flag',
@@ -280,6 +284,7 @@ class Component extends DCLogic {
       '  run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01',
       '  project: -Users-you-src-yourrepo',
       '  cwd: /Users/you/src/yourrepo',
+      'NEXT — push the branch and open the pull request: /interlock:settle --create --review',
       'ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag',
       'Do not start another ship run unless the user asks.',
       '',
@@ -300,13 +305,13 @@ class Component extends DCLogic {
     return {
       theme: this.props.theme ?? 'light',
       doneCount: n + ' of 7 done',
-      s1: mkStep('s1', [{ c: 'npm install -g @fission-ai/openspec@latest' }, { c: 'cd your-project && openspec init' }, { c: '/plugin marketplace add renzrollon/interlock' }, { c: '/plugin install interlock@interlock' }]),
-      s2: mkStep('s2', [{ c: 'interlock doctor' }]),
+      s1: mkStep('s1', [{ c: '/plugin marketplace add renzrollon/interlock' }, { c: '/plugin install interlock@interlock' }]),
+      s2: mkStep('s2', [{ c: '! interlock doctor' }]),
       s3: mkStep('s3', [{ c: '/interlock:bootstrap' }]),
       s4: mkStep('s4', [{ c: '/interlock:spec add a --json flag to the report command' }]),
       s5: { done: !!d.s5, toggle: this.toggleDone('s5') },
       s6: mkStep('s6', [{ c: '/interlock:ship' }]),
-      s7: mkStep('s7', [{ c: '/interlock:settle --create', m: '# detects GitLab or GitHub from the remote' }, { c: 'openspec archive <change-name>', m: '# after it merges. Stock OpenSpec; Interlock does not wrap it.' }], true),
+      s7: mkStep('s7', [{ c: '/interlock:settle --create --review' }, { c: '! openspec archive <change-name> -y', m: '# after it merges' }], true),
       doctor: toLines(doctor),
       summary: toLines(summary),
       tree: tree

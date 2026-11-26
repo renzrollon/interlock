@@ -7,7 +7,7 @@
 <meta name="description" content="Interlock: spec-driven development for Claude Code. You read one spec; parallel agents ship it to a tested commit. Every cap the run obeys is a CLI you can run yourself.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://renzrollon.github.io/interlock/">
-<meta property="og:title" content="Interlock: two commands, one human checkpoint">
+<meta property="og:title" content="Interlock: read one spec, ship a tested commit">
 <meta property="og:description" content="Spec-driven development for Claude Code. You read one spec; parallel agents ship it to a tested commit.">
 <meta property="og:image" content="https://renzrollon.github.io/interlock/assets/social-preview.png">
 <meta property="og:image:width" content="1280">
@@ -61,10 +61,10 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
 <section class="wrap hero" aria-label="Interlock">
   <div class="hero-grid">
     <div style="display: flex; flex-direction: column; gap: 24px; padding-top: 8px;">
-      <p class="eyebrow">Spec-driven development for Claude Code · Layered on OpenSpec · v1.5.0</p>
-      <h1 class="h-hero">Two commands. One human checkpoint.</h1>
-      <p class="lede">Spec a change, read it, then ship it start-to-commit with parallel agents. Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.</p>
-      <p class="mono-sm" style="font-size: 13.5px; max-width: 60ch;">Every change is spec, then ship. Bootstrap runs once per repo; settle when you want the pull request.</p>
+      <p class="eyebrow">Spec-driven development for Claude Code · Layered on OpenSpec · v1.21.0</p>
+      <h1 class="h-hero">Read one spec. Parallel agents ship it to a tested commit.</h1>
+      <p class="lede">Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.</p>
+      <p class="mono-sm" style="font-size: 13.5px; max-width: 60ch;">Every change is spec, then ship. Bootstrap runs once per repo; settle takes the commit to a merge verdict.</p>
       <div style="display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px;">
         <a class="btn btn-primary" href="#install">Install</a>
         <a class="btn btn-secondary" href="https://github.com/renzrollon/interlock">View on GitHub</a>
@@ -110,11 +110,11 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
       <button type="button" class="flow-cell" role="listitem" onClick="{{goRun}}" onMouseEnter="{{fShip}}" onFocus="{{fShip}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="flow-name">ship</span>
         <span class="tag tag-outline">workflow</span>
-        <span class="flow-desc-cell">Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything.</span>
+        <span class="flow-desc-cell">Waves → verify → commit, run as a dynamic workflow: a script the Claude Code runtime executes.</span>
       </button>
       <div class="flow-cell" role="listitem" tabindex="0" onMouseEnter="{{fSettle}}" onFocus="{{fSettle}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="flow-name">settle</span>
-        <span class="flow-desc-cell">The pull request, when you want it. Ends by reminding you to archive the change.</span>
+        <span class="flow-desc-cell">Opens or updates the pull request and labels it MERGE, HUMAN or BLOCK from the CLI's verdict. With --review it reviews and fixes the diff first. Never merges.</span>
       </div>
     </div>
     <p class="flow-desc-bar" aria-live="polite"><span class="label-mono" style="margin-right: 10px;">{{flowName}}</span>{{flowDesc}}</p>
@@ -142,7 +142,7 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
         </div>
       </sc-for>
     </div>
-    <p class="cap" style="margin-top: 16px; max-width: 90ch;">Requires Claude Code v2.1.154+ with dynamic workflows enabled, the <code>openspec</code> CLI, and Node.js 18 or newer. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with <code>npm install -g @renzrollon/interlock</code>.</p>
+    <p class="cap" style="margin-top: 16px; max-width: 90ch;">Requires Claude Code v2.1.154+ with dynamic workflows enabled, Node.js 22.12 or newer with npm, and a git repository with code in it. OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The <code>!</code> runs a shell command from the Claude Code prompt; the plugin puts <code>interlock</code> on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with <code>npm install --location=global @renzrollon/interlock@1.21.0</code>.</p>
   </div>
 
   <div class="g-run" style="margin-top: 72px; gap: 40px; align-items: start;">
@@ -163,7 +163,7 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
   <div class="figures" style="margin-top: 72px; padding: 32px 0; border-top: 1px solid var(--color-divider); border-bottom: 1px solid var(--color-divider);">
     <div class="figure"><div class="figure-num">1</div><p class="figure-label mono" style="font-size: 13px;">required human stop, between spec and ship</p></div>
     <div class="figure"><div class="figure-num">0</div><p class="figure-label mono" style="font-size: 13px;">runtime dependencies. Stdlib Node, nothing to install</p></div>
-    <div class="figure"><div class="figure-num">28</div><p class="figure-label mono" style="font-size: 13px;"><code>interlock</code> subcommands, each one a decision with an exit code</p></div>
+    <div class="figure"><div class="figure-num">0</div><p class="figure-label mono" style="font-size: 13px;">network requests of its own, and no credential read</p></div>
   </div>
 </section>
 
@@ -202,14 +202,14 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
       <div style="display: flex; flex-direction: column; gap: 12px;">
         <p class="eyebrow" style="color: var(--color-text);">Docs</p>
         <div class="ftr-docs">
-          <sc-for list="{{docs}}" as="d" hint-placeholder-count="14">
+          <sc-for list="{{docs}}" as="d" hint-placeholder-count="17">
             <a href="{{d.href}}"><span class="ftr-no">{{d.no}}</span>{{d.title}}</a>
           </sc-for>
         </div>
       </div>
     </div>
     <div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; padding: 20px 0 32px; border-top: 1px solid var(--color-divider);">
-      <p class="cap muted">Interlock v1.5.0 · MIT licence</p>
+      <p class="cap muted">Interlock v1.21.0 · MIT licence</p>
       <p class="cap muted">A Claude Code plugin. Cursor and Copilot are not supported.</p>
     </div>
   </div>
@@ -320,8 +320,8 @@ class Component extends DCLogic {
       bootstrap: ['bootstrap', 'Once per repo. Reads the code, writes an architecture doc and one spec per existing feature. Never modifies source.'],
       spec: ['spec', 'Explore, then OpenSpec artifacts, then an artifact review. Stops having written specs and no code.'],
       stop: ['You read the spec.', 'Ten minutes. Four files, one question each. The only required stop.'],
-      ship: ['ship', 'Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything.'],
-      settle: ['settle', 'The pull request, when you want it. Ends by reminding you to archive the change.']
+      ship: ['ship', 'Waves → verify → commit, run as a dynamic workflow: a script the Claude Code runtime executes.'],
+      settle: ['settle', 'Opens or updates the pull request and labels it MERGE, HUMAN or BLOCK from the CLI\'s verdict. With --review it reviews and fixes the diff first. Never merges.']
     };
     var f = flow[s.flow || 'stop'];
     var setF = (k) => () => this.setState({ flow: k });
@@ -337,20 +337,19 @@ class Component extends DCLogic {
       };
     };
     var panels = [
-      mk('install', 'Install', [
-        { c: 'npm install -g @fission-ai/openspec@latest' },
-        { c: 'cd your-project && openspec init' },
+      mk('install', 'In Claude Code, once per machine', [
         { c: '/plugin marketplace add renzrollon/interlock' },
         { c: '/plugin install interlock@interlock' }
       ]),
-      mk('once', 'Once per repo', [
-        { c: 'interlock doctor', m: '# prints the exact allowlist an unattended run needs' },
-        { c: '/interlock:bootstrap', m: '# code → understanding → graph' }
+      mk('once', 'In a new session, once per repo', [
+        { c: '! interlock doctor', m: '# the allowlist an unattended run needs' },
+        { c: '/interlock:bootstrap', m: '# the code graph, then one spec per feature' }
       ]),
       mk('every', 'Every change', [
         { c: '/interlock:spec "<idea>"', m: '# explore → artifacts → review, then stops' },
         { c: '/interlock:ship', m: '# waves → verify → commit' },
-        { c: '/interlock:ship --strict', m: '# + adversarial review, remediation, handoff, conformance' }
+        { c: '/interlock:ship --strict', m: '# + adversarial review, remediation, handoff, conformance' },
+        { c: '/interlock:settle --create --review', m: '# draft PR → review → fix rounds → verdict' }
       ])
     ];
     var base = 'https://github.com/renzrollon/interlock/blob/main/docs/';
@@ -361,7 +360,9 @@ class Component extends DCLogic {
       ['07', 'CLI and configuration', '07-cli-and-configuration.md'], ['08', 'The Interlock harness', '08-harness-landscape.md'],
       ['09', 'From prompt to workflow', '09-from-prompt-to-workflow.md'], ['10', 'Ship and spec for prompt-only engineers', '10-agentic-workflow-ship-and-spec.md'],
       ['11', 'The indicators', '11-the-indicators.md'], ['12', 'Repository review policy', '12-repository-review-policy.md'],
-      ['13', 'The guards', '13-the-guards.md'], ['14', 'Evals', '14-evals.md']
+      ['13', 'The guards', '13-the-guards.md'], ['14', 'Evals', '14-evals.md'],
+      ['15', 'Merge confidence', '15-merge-confidence.md'], ['16', 'Upgrading', '16-upgrading.md'],
+      ['17', 'Reviewing a teammate\'s pull request', '17-reviewing-a-teammates-pull-request.md']
     ].map(function (d) { return { no: d[0], title: d[1], href: base + d[2] }; });
     return {
       theme: theme,
