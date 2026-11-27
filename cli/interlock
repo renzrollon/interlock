@@ -597,7 +597,8 @@ report:
   two path sets the receipt records — touched paths that the plan predicted,
   over touched paths — and every run it could not be computed over is excluded
   and counted under the reason it was excluded, rather than approximated from a
-  nearby number.
+  nearby number. The text form caps each list it prints and says how many rows
+  it left out; --json carries every row.
   --since <iso>          Keep runs whose earliest record is at or after this
   --change <name>        Keep one change's runs, outcomes and metrics
   --max-runs <n>         Lower the scan bound; the published cap is the ceiling
@@ -840,7 +841,10 @@ merge-confidence:
   ({ ref, sha }: the reference given and the merge base the diff was taken from,
   sha null when it cannot be read; null with no --base) and "labels" (the verdict
   and score labels for a pull request, each { name, color, description }, with
-  verdictNames and scorePrefix). The text form prints the two label names.
+  verdictNames and scorePrefix). The text form prints the two label names, puts
+  the reasons under the verdict line, folds the signals one absent input left
+  unobserved into one "<flag> not given:" row, and cuts a long evidence list,
+  saying how many lines it left out; --json carries every line.
   Every input not given reads unobserved with that reason, and unobserved ranks
   as amber. The command never calls gh, glab or the network. Every gating signal
   has a producer, so a clean, reviewed, verified change reads MERGE once the
@@ -4938,7 +4942,7 @@ async function main() {
     }
 
     default:
-      process.stderr.write(unknownCommand(cmd, USAGE))
+      process.stderr.write(unknownCommand(cmd, USAGE, flags))
       process.exit(1)
   }
 }

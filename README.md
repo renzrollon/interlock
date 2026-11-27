@@ -37,30 +37,48 @@ Spec-driven development for [Claude Code](https://claude.com/claude-code), on [O
 
 ## Install
 
-**You need** Claude Code **2.1.154+** with [dynamic workflows](https://code.claude.com/docs/en/workflows) on, Node.js **22.12+** with npm, and a git repository with code in it. Every session opens with `interlock preflight OK` or a list of fixes. Step by step: **[01 — The first hour](docs/01-first-hour.md)**.
+**You need:**
 
-In Claude Code, once per machine:
+- [ ] Claude Code **2.1.154+**
+- [ ] [Dynamic workflows](https://code.claude.com/docs/en/workflows) on (on a Pro plan, enable them in `/config`)
+- [ ] Node.js **22.12+** with npm
+- [ ] A git repository with code in it
+
+**1. In Claude Code, once per machine:**
 
 ```text
 /plugin marketplace add renzrollon/interlock
+```
+
+```text
 /plugin install interlock@interlock
 ```
 
-Then check the allowlist an unattended run needs:
+Pick **Install for you (user scope)** when it asks.
+
+**2. Start a new session in your project.** The plugin puts `interlock` on the shell's PATH when a session starts, so in the session you installed from, `! interlock doctor` answers `command not found`. `/clear` also starts one. From then on every session runs the doctor for you and hands Claude the verdict. A clean session shows you nothing; on Claude Code 2.1.295+, a check that fails or warns draws a band above the prompt.
+
+**3. In the new session, once per repo:**
 
 ```text
 ! interlock doctor
 ```
 
-Then, in a new session in your project, once per repo:
+Names everything that would stop an unattended run, with the fix for each, including the settings snippet that allowlists the commands a run needs. The `!` runs it as a shell command.
+
+```text
+/interlock:fix-tests
+```
+
+Finds how your tests run and saves it to `.claude/testing/profile.json`; every `ship` verifies with it. On a red suite it goes on to repair the failures by root cause; `--dry-run` stops at the diagnosis.
 
 ```text
 /interlock:bootstrap
 ```
 
-It writes one spec per existing feature and builds the code graph agents query instead of re-reading files. It never changes source code.
+Writes one spec per existing feature and builds the code graph agents query instead of re-reading files. It never changes source code.
 
-**Nothing else to install.** OpenSpec is provisioned on first use: a pinned copy from npm, checked against a lockfile the plugin carries, install scripts and telemetry off.
+**Nothing else to install.** OpenSpec is provisioned on first use: a pinned copy from npm, checked against a lockfile the plugin carries, install scripts and telemetry off. Step by step, to a first shipped change: **[01 — The first hour](docs/01-first-hour.md)**.
 
 ## Why Interlock
 
@@ -127,7 +145,7 @@ Two commands take a change to a tested commit, and you read the spec between the
 | **every change** | **You read the spec** | [Ten minutes, with a checklist](docs/02-the-checkpoint.md "Four files, one question each. The only required stop. Wrong idea? Re-spec."). The only place a human is required |
 | **every change** | `/interlock:ship` | [Parallel agents, your tests, one commit](docs/01-first-hour.md#step-4--ship-it "Parallel agents in waves, your suite, one commit. A workflow has no channel for a question, so it never asks one."). Asks nothing |
 | after the commit | `/interlock:settle --create --review` | [A reviewed pull request, labelled with the merge verdict](docs/15-merge-confidence.md "Opens or updates the pull request with the MERGE / HUMAN / BLOCK verdict in the description and labels. Never merges.") |
-| after the merge | `openspec archive <change>` | [The living specs catch up](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") |
+| after the merge | `! openspec archive <change>` | [The living specs catch up](docs/01-first-hour.md#step-6--archive-the-change-once-it-merges "After the merge: fold the delta specs into the living specs, so the next spec plans against what is now true.") |
 
 <p align="center">
   <img src="docs/assets/ship-meter.png" alt="The ship meter pane during the recorded run: wave 1 with three lanes marked ok and the model that served each, the verify checkpoint between the waves, wave 2 with two lanes running and one pending, then verify-final, commit and close." width="760">
@@ -175,7 +193,7 @@ Two commands take a change to a tested commit, and you read the spec between the
 
 The checkpoint card (`interlock checkpoint <change>`) lists the questions to ask of a spec. When a pane prints a command, it offers it as a drafted action; you submit it yourself.
 
-**In the terminal**
+**At the Claude Code prompt, after `!`**
 
 | Command | Tells you |
 |---|---|
@@ -258,11 +276,11 @@ Default `ship` trusts your test suite: a green suite, one commit. Add the rest a
 | **The doctor** | Runs at every session start. `! interlock doctor` at the Claude Code prompt prints the full report |
 | **Other hosts** | `interlock-run` is experimental, and only you start it |
 | **The network** | Interlock makes no network request of its own and reads no credential |
-| **The CLIs** | Three zero-dependency Node binaries, also on npm |
+| **The CLIs** | Three zero-dependency Node binaries and one deprecated alias, also on npm |
 
 **Your own OpenSpec** · [The first hour: install](docs/01-first-hour.md#install)
 
-- A copy already on your PATH is used as it is. `interlock openspec which` prints which copy resolves.
+- A copy already on your PATH is used as it is. `interlock openspec which` prints which copy resolves, and its full path: a provisioned copy is on Claude Code's PATH only, so from your own terminal run `openspec archive` by that path.
 - Otherwise the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`: about 16 MB from the npm registry, into the plugin's data directory and nowhere else.
 - To install it yourself instead:
 
@@ -283,7 +301,7 @@ npm install --location=global @fission-ai/openspec@2.0.0
 - Two caveats, both bannered by the runner:
   - **Billing.** `claude -p`, the Agent SDK and ACP are the usage Anthropic flagged for separate metered credit. The Workflow runtime behind `/interlock:ship` is the exempted path.
   - **Model tiers.** Codex and Qwen need the planner's model tiers mapped with `INTERLOCK_MODEL_MAP`. An unmapped tier is bannered, never silently run on your default.
-- The older `interlock-ship-acp` still works, prints a deprecation line, and is removed in the next minor.
+- The older `interlock-ship-acp` still works: it prints a deprecation line and runs `interlock-run --host acp`. It has been deprecated since 1.7.0, and no release is set to remove it.
 - Code Mode is out of scope.
 
 **The network**
@@ -305,8 +323,9 @@ Interlock makes no network request of its own and reads no credential. The plugi
 | `interlock` | The policy engine. Every gating subcommand exits 1 when it blocks |
 | `interlock-graph` | A local, deterministic code graph. No vector store, no network |
 | `interlock-run` | The experimental runner above |
+| `interlock-ship-acp` | The runner's old name, deprecated: it runs `interlock-run --host acp` |
 
-The plugin puts all three on Claude Code's `PATH`. To put them on yours:
+The plugin puts all four on Claude Code's `PATH`, and `openspec` too when it provisioned it. To put the four on yours:
 
 ```bash
 npm install --location=global @renzrollon/interlock@1.21.0

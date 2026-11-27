@@ -24,11 +24,21 @@
   --term-ground: #161c24;
 }
 .il *, .il *::before, .il *::after { box-sizing: border-box; }
-.il p { margin: 0; text-wrap: pretty; }
+/* The paragraph reset carries no more weight than one class: as `.il p` it outranked `.stack-*`, `.term-cap`
+   and `.flow-desc-bar`, and every paragraph gap they set collapsed to zero. */
+.il :where(p) { margin: 0; }
+.il p { text-wrap: pretty; }
+/* In dark the canvas behind the page and the browser's own surfaces follow the theme. The literal is
+   color-bg (dark): the tokens live on .il, which the root cannot read. */
+.il[data-theme="dark"] { color-scheme: dark; }
+html:has(.il[data-theme="dark"]), html:has(.il[data-theme="dark"]) body { color-scheme: dark; background: #0d1117; }
 .il h1, .il h2, .il h3, .il h4 { margin: 0; font-family: var(--font-body); color: var(--color-text); text-wrap: balance; }
 .il a { color: var(--color-accent); text-decoration: none; text-underline-offset: 3px; }
 .il a:hover { color: var(--color-accent-hover); text-decoration: underline; }
-.il code { font-family: var(--font-mono); font-size: 0.9em; }
+/* Inline code moves to the next line whole rather than breaking inside a flag or path at its hyphen
+   (`-` / `p`, `--` / `location=global`). It wraps inside itself only when it is longer than the line. */
+.il code { display: inline-block; font-family: var(--font-mono); font-size: 0.9em; }
+.nw { white-space: nowrap; }
 .il strong { font-weight: 600; }
 .il :focus { outline: none; }
 .il :focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
@@ -72,14 +82,30 @@
 .tab:hover { color: var(--color-text); }
 .tab[aria-selected="true"] { color: var(--color-text); box-shadow: inset 0 -2px 0 var(--color-accent); }
 .tab:focus-visible { outline-offset: -4px; }
+/* #panel takes focus (tabindex 0) and runs edge to edge, so its ring draws inside it. */
+.il [role="tabpanel"]:focus-visible { outline-offset: -2px; }
 .hdr-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .hdr-link { font-size: 14px; font-weight: 500; color: var(--color-text-soft) !important; padding: 0 8px; }
 .hdr-link:hover { color: var(--color-text) !important; text-decoration: none !important; }
+/* Below 760px the tabs take their own full-width row under the wordmark and actions:
+   48px + 1px rule + 44px + 1px rule = a 94px header, against 57px above it. In-page anchors clear it. */
+#panel { scroll-margin-top: 56px; }
+#install { scroll-margin-top: 80px; }
 @media (max-width: 760px) {
-  .hdr-in { gap: 12px; }
-  .tabs { justify-content: flex-start; }
+  #panel { scroll-margin-top: 93px; }
+  #install, .il .sm-node { scroll-margin-top: 117px; }
+  .hdr-in { flex-wrap: wrap; column-gap: 12px; row-gap: 0; min-height: 48px; }
+  .hdr-actions { margin-left: auto; min-height: 48px; }
+  .tabs { order: 1; flex: 1 0 100%; justify-content: flex-start; margin: 0 -24px; padding: 0 16px; border-top: 1px solid var(--color-divider); }
+  .tab { min-height: 44px; }
   .hdr-link { display: none; }
 }
+/* On a phone the four tabs share the row's width, and stay inside 320px. */
+@media (max-width: 640px) {
+  .tabs { margin: 0 -16px; padding: 0 8px; }
+  .tab { flex: 1 0 auto; justify-content: center; padding: 0 8px; }
+}
+@media (max-width: 360px) { .tabs { padding: 0 4px; } .tab { padding: 0 6px; } }
 
 /* buttons */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 0 14px; border: 1px solid transparent; border-radius: 4px; background: transparent; cursor: pointer; font-family: var(--font-body); font-size: 14px; font-weight: 500; line-height: 1; color: var(--color-text); white-space: nowrap; text-decoration: none !important; }
@@ -113,34 +139,50 @@
 .film { position: relative; border-radius: 4px; overflow: hidden; background: var(--term-ground); }
 .film video { width: 100%; height: auto; aspect-ratio: 1676 / 1052; object-fit: cover; }
 .film-full video { aspect-ratio: 1920 / 1206; }
-.film-play { position: absolute; left: 16px; bottom: 16px; width: 48px; height: 48px; display: grid; place-items: center; border: 0; border-radius: 4px; background: var(--color-text); color: var(--color-bg); cursor: pointer; }
+/* The loop's pause/play toggle: one place, two glyphs, always reachable by keyboard. Top right is the one
+   corner the film leaves empty (its command label sits bottom left, its speed marker bottom right).
+   Drawn on the film's own ground; the focus ring is term-accent because cobalt is near 3:1 on that ground. */
+.film-toggle { position: absolute; top: 12px; right: 12px; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border: 1px solid var(--term-dim); border-radius: 4px; background: var(--term-ground); color: var(--term-text); cursor: pointer; }
+.film-toggle:hover { border-color: var(--term-text); }
+.film-toggle svg { display: block; }
+.il .film-toggle:focus-visible { outline-color: var(--term-accent); }
 
 /* flow strip */
 .flow-labels { display: grid; grid-template-columns: 1fr 1fr 1.5fr 1fr 1fr; gap: 0; margin-bottom: 8px; }
 .flow { display: grid; grid-template-columns: 1fr 1fr 1.5fr 1fr 1fr; border: 1px solid var(--color-border); border-radius: 4px; overflow: hidden; background: var(--color-bg); }
 .flow-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; min-height: 112px; padding: 16px; border: 0; border-left: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); font: inherit; text-align: left; }
 .flow-cell:first-child { border-left: 0; }
-button.flow-cell { cursor: pointer; }
-button.flow-cell:hover { background: var(--color-surface); }
+/* spec, the checkpoint and ship: a list item holding one button that fills it, so the list keeps its
+   items and the button keeps its role. The ring draws inside the cell: .flow clips at its edge. */
+.flow-act { padding: 0; align-items: stretch; }
+.flow-btn { flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; padding: 16px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.flow-btn:hover { background: var(--color-surface); }
+.il .flow-btn:focus-visible { outline-offset: -4px; }
 .flow-stop { background: var(--color-accent) !important; color: var(--color-on-accent); border-left-color: var(--color-accent); }
-button.flow-stop:hover { background: var(--color-accent-hover) !important; }
+.flow-stop .flow-btn:hover { background: var(--color-accent-hover); }
+.il .flow-stop .flow-btn:focus-visible { outline-color: var(--color-on-accent); }
 .flow-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; }
 .flow-title { font-size: 17px; line-height: 1.3; font-weight: 600; }
 .flow-back { margin-top: auto; align-self: flex-end; font-family: var(--font-mono); font-size: 12px; opacity: 0.9; }
 .flow-desc-cell { display: none; font-size: 13px; line-height: 1.5; color: var(--color-text-soft); }
 .flow-stop .flow-desc-cell { color: var(--color-on-accent); opacity: 0.92; }
 .flow-desc-bar { min-height: 48px; margin-top: 12px; font-size: 15px; line-height: 1.55; color: var(--color-text-soft); max-width: 90ch; }
+.flow-coda { margin-top: 4px; font-size: 14px; font-weight: 500; }
 .sm-label { display: none; }
-@media (hover: none) { .flow-desc-cell { display: block; } .flow-desc-bar { display: none; } }
+/* Where the cells print their own descriptions the bar is gone, and the coda would sit 4px under the strip. */
+@media (hover: none) { .flow-desc-cell { display: block; } .flow-desc-bar { display: none; } .flow-coda { margin-top: 16px; } }
 @media (max-width: 640px) {
   .flow-labels { display: none; }
   .flow { grid-template-columns: minmax(0, 1fr); }
   .flow-cell { min-height: 0; border-left: 0; border-top: 1px solid var(--color-border); display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; }
   .flow-cell:first-child { border-top: 0; }
-  .flow-cell > * { grid-column: 1; }
+  .flow-act { display: flex; }
+  .flow-btn { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; }
+  .flow-cell > *, .flow-btn > * { grid-column: 1; }
   .flow-desc-cell { display: block; grid-column: 2; grid-row: 1 / span 3; }
   .flow-back { margin-top: 0; align-self: start; }
   .flow-desc-bar { display: none; }
+  .flow-coda { margin-top: 16px; }
   .sm-label { display: block; font-size: 12px; font-weight: 600; color: var(--color-text-muted); }
   .flow-stop .sm-label { color: var(--color-on-accent); }
 }
@@ -155,13 +197,45 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .ln-c { grid-column: 1; color: var(--color-text); }
 .ln-m { grid-column: 2; color: var(--color-text-muted); }
 .ln-solo { grid-template-columns: auto; }
-.ln-wide { grid-template-columns: 36ch auto; }
 @container (max-width: 640px) {
   .ln { grid-template-columns: minmax(0, 1fr); }
   .ln-m { grid-column: 1; grid-row: 1; white-space: pre-wrap; }
   .ln + .ln { margin-top: 6px; }
   .ln-solo + .ln-solo { margin-top: 0; }
 }
+
+/* install: requirements, then the panels in order, one copy button per command */
+.install { display: flex; flex-direction: column; gap: 16px; max-width: 880px; }
+.reqs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.reqs-lead { font-size: 13px; font-weight: 600; color: var(--color-text); }
+.reqs-list { display: grid; grid-template-columns: repeat(2, max-content); gap: 10px 48px; margin: 0; padding: 0; list-style: none; }
+@media (max-width: 720px) { .reqs-list { grid-template-columns: minmax(0, 1fr); } }
+.reqs-list .chk { align-items: flex-start; line-height: 1.45; color: var(--color-text); }
+.reqs-list .chk-box { margin-top: 2px; }
+.reqs-note { color: var(--color-text-soft); }
+.install-step { display: flex; flex-direction: column; gap: 16px; }
+.install-lead { max-width: 75ch; font-size: 14px; line-height: 1.6; color: var(--color-text-soft); }
+.install-lead strong { font-weight: 600; color: var(--color-text); }
+.cmd-rows { padding: 8px 8px 8px 16px; }
+.cmd-rows .ln { grid-template-columns: 38ch minmax(0, 1fr) auto; align-items: center; column-gap: 0; min-height: 36px; white-space: pre-wrap; }
+.cmd-rows .ln-solo { grid-template-columns: minmax(0, 1fr) auto; }
+.cmd-rows .ln + .ln { margin-top: 0; }
+.cmd-rows .ln-c { overflow-wrap: anywhere; }
+.cmd-rows .ln-m { padding-right: 12px; }
+.ln-copy { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--color-text-muted); cursor: pointer; }
+.ln-copy:hover { background: var(--color-accent-subtle); color: var(--color-accent); }
+.ln-copy:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; color: var(--color-accent); }
+.ln-copy[data-copied="true"] { color: var(--color-accent); }
+.ln-copy svg { display: block; }
+@container (max-width: 640px) {
+  .cmd-rows .ln { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; padding: 4px 0; }
+  .cmd-rows .ln-m { grid-column: 1 / -1; grid-row: 1; padding-right: 0; }
+  .cmd-rows .ln-c { grid-column: 1; grid-row: 2; }
+  .cmd-rows .ln-copy { grid-column: 2; grid-row: 2; }
+  .cmd-rows .ln-solo .ln-c, .cmd-rows .ln-solo .ln-copy { grid-row: 1; }
+  .cmd-rows .ln + .ln { margin-top: 0; }
+}
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* output panels */
 .term-cap { margin-bottom: 8px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; color: var(--color-text-soft); }
@@ -187,6 +261,13 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 
 /* tables */
 .tbox { overflow-x: auto; border: 1px solid var(--color-divider); border-radius: 4px; }
+/* Scroll cue: overlay scrollbars show only mid-scroll, which hides a wide table's last column and the
+   state machine's commit and close. A styled scrollbar stays visible at rest (Chrome, Safari, Edge). */
+.tbox::-webkit-scrollbar, .sm-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.tbox::-webkit-scrollbar-track, .sm-scroll::-webkit-scrollbar-track { background: var(--color-surface); }
+.tbox::-webkit-scrollbar-thumb, .sm-scroll::-webkit-scrollbar-thumb { background: var(--color-border-strong); border: 2px solid var(--color-surface); border-radius: 4px; }
+.tbox::-webkit-scrollbar-thumb:hover, .sm-scroll::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+@supports not selector(::-webkit-scrollbar) { .tbox, .sm-scroll { scrollbar-width: thin; scrollbar-color: var(--color-border-strong) var(--color-surface); } }
 .tbl { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.5; }
 .tbl th { text-align: left; vertical-align: bottom; font-size: 13px; font-weight: 600; color: var(--color-text-soft); background: var(--color-surface); padding: 10px 12px; border-bottom: 1px solid var(--color-border); white-space: nowrap; }
 .tbl td { padding: 10px 12px; vertical-align: top; border-bottom: 1px solid var(--color-divider); }
@@ -206,6 +287,18 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .dt-body .dt-row:hover { background: var(--color-surface); }
 .dt-break { height: 8px; background: var(--color-surface); border-bottom: 1px solid var(--color-divider); }
 .dt-caps { grid-template-columns: minmax(0, 1fr) auto; }
+.dt-capsbox { min-width: 520px; }
+.cap-k, .cap-v { font-family: var(--font-mono); font-size: 13px; }
+.cap-v { text-align: right; white-space: nowrap; }
+/* On a phone every value stays in view: a short one beside its name, a long one (routing, session) under it.
+   At 520px wide the table scrolled, and every value sat off-screen to the right of its name. */
+@media (max-width: 640px) {
+  .dt-capsbox { min-width: 0; }
+  .cap-v { max-width: 10em; white-space: normal; overflow-wrap: anywhere; }
+  .dt-caps-long { grid-template-columns: minmax(0, 1fr); }
+  .dt-caps-long .cap-k { padding-bottom: 2px; }
+  .dt-caps-long .cap-v { max-width: none; padding-top: 0; text-align: left; }
+}
 .dt-find { grid-template-columns: 40px minmax(0, 2.4fr) minmax(0, 1.6fr) minmax(0, 1.6fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 2.2fr); }
 .row-btn { all: unset; cursor: pointer; display: block; width: 100%; }
 .row-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
@@ -228,6 +321,9 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .disc > summary:hover { color: var(--color-accent); }
 .disc-body { padding: 0 0 20px 23px; max-width: 72ch; }
 .disc-mono > summary { font-family: var(--font-mono); font-size: 14.5px; }
+/* A section ends on whitespace: where another follows, its rule is the divider, so the last row or
+   disclosure draws no closing rule. Two hairlines 64px apart read as a missing row. */
+.sec:has(+ .sec) > .rows:last-child > .row:last-child, .sec:has(+ .sec) > .disc:last-child { border-bottom: 0; }
 
 /* pull quote and callout */
 .pq { margin: 0; font-size: 20px; line-height: 1.45; letter-spacing: -0.005em; font-weight: 400; color: var(--color-text); max-width: 56ch; }
@@ -270,11 +366,6 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .input::placeholder { color: var(--color-text-muted); }
 .input:focus-visible { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent); }
 
-/* code box with a corner copy button */
-.codebox { position: relative; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface); container-type: inline-size; min-width: 0; }
-.codebox .cmd-body { padding-right: 88px; }
-.codebox-copy { position: absolute; top: 6px; right: 6px; }
-
 /* timeline */
 .tl { position: relative; }
 .tl-step { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 24px; padding: 24px 0; border-top: 1px solid var(--color-divider); }
@@ -286,6 +377,8 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .sm-canvas { position: relative; width: 1484px; height: 452px; }
 .sm-canvas svg { position: absolute; inset: 0; }
 .sm-node { position: absolute; display: flex; align-items: center; padding: 4px 8px; border-radius: 3px; font-family: var(--font-mono); font-size: 10.5px; line-height: 1.25; text-align: left; overflow: hidden; }
+/* A halt-row click scrolls its node into view: land it clear of the sticky header and its rule, as #install does. */
+.sm-node { scroll-margin-top: 80px; scroll-margin-bottom: 16px; }
 .sm-lane { position: absolute; top: 12px; font-size: 12px; font-weight: 600; color: var(--color-text-soft); }
 .sm-stage { background: var(--color-bg); border: 1px solid var(--color-border-strong); color: var(--color-text); }
 .sm-term { background: var(--color-surface); border: 1px solid var(--color-border-strong); color: var(--color-text); font-weight: 600; }
@@ -305,6 +398,8 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .tline { min-height: 1.6em; }
 .sm-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }
 .sm-controls .sep { width: 1px; height: 20px; background: var(--color-divider); }
+/* Where the toggles wrap to their own row, the divider would dangle at the end of the first. */
+@media (max-width: 760px) { .sm-controls .sep { display: none; } }
 
 /* fades */
 .fade { animation: il-fade 150ms ease-out; }
@@ -320,5 +415,8 @@ button.flow-stop:hover { background: var(--color-accent-hover) !important; }
 .ftr-links a, .ftr-docs a { color: var(--color-text-soft); }
 .ftr-links a:hover, .ftr-docs a:hover { color: var(--color-text); }
 .ftr-no { font-family: var(--font-mono); font-size: 12.5px; color: var(--color-text-muted); margin-right: 8px; }
+/* A wrapped doc title hangs under its title, not under its number. */
+.ftr-docs a { display: flex; align-items: baseline; }
+.ftr-docs .ftr-no { flex: none; }
 
 @media (prefers-reduced-motion: reduce) { .il *, .il *::before, .il *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

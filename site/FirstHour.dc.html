@@ -27,9 +27,8 @@
         <p class="tl-time">min 0–2</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s1.done}}" onChange="{{s1.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Install</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s1.copy}}" aria-label="Copy the install commands">{{s1.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s1.lines}}" as="l" hint-placeholder-count="4"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s1.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body">Typed at the Claude Code prompt, once per machine. So is every command after these. Nothing else to install: Interlock drives the <code>openspec</code> CLI rather than replacing it, and the first <code>bootstrap</code> or <code>spec</code> provisions a pinned copy. An <code>openspec</code> already on your PATH is used instead. Interlock's own CLIs run on Node.js 18 or newer; the OpenSpec CLI needs 22.12.0 or newer, and npm.</p>
         </div>
@@ -39,9 +38,8 @@
         <p class="tl-time">min 2–5</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s2.done}}" onChange="{{s2.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Allowlist the commands</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s2.copy}}" aria-label="Copy interlock doctor">{{s2.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s2.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s2.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body">Start a new session in your project first. The <code>!</code> runs the line as a shell command in that session, and the plugin puts <code>interlock</code> on its PATH, not your own terminal's. Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. <code>doctor</code> derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. <code>/permissions</code> adds what it names. Every session runs the same check at start and prints <code>interlock preflight OK</code> or each problem with its fix.</p>
           <div>
@@ -53,12 +51,22 @@
       </div>
 
       <div class="tl-step">
-        <p class="tl-time">min 5–20</p>
+        <p class="tl-time">min 5–8</p>
+        <div class="stack-12">
+          <label class="chk"><input type="checkbox" checked="{{st.done}}" onChange="{{st.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Record how your tests run, once</span></label>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{st.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
+          </div>
+          <p class="body">Finds how your tests run, from your manifests, runner configs and CI, asks at most four questions for what it cannot find, and saves the answer to <code>.claude/testing/profile.json</code>. Every ship verifies with it; without it, <code>doctor</code> fails the <code>test-profile</code> check. Then it runs the suite. On a red suite it goes on to repair the failures by root cause, never by weakening a test; pass <code>--dry-run</code> to stop at the diagnosis.</p>
+        </div>
+      </div>
+
+      <div class="tl-step">
+        <p class="tl-time">min 8–20</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s3.done}}" onChange="{{s3.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Onboard the repo, once</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s3.copy}}" aria-label="Copy the bootstrap command">{{s3.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s3.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s3.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body">Provisions OpenSpec if none resolves and initialises it if the repo never was, builds the code graph, runs read-only explorer agents in parallel, each briefed in your stack's terms, and writes <code>openspec/initial-architecture.md</code> plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. <code>--quick</code> on a small repo, <code>--scope packages/api</code> on a monorepo. If the repo is Go, Rust, Java or Ruby, expect <code>GRAPH UNAVAILABLE: nothing indexable found</code>; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.</p>
         </div>
@@ -68,9 +76,8 @@
         <p class="tl-time">min 20–30</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s4.done}}" onChange="{{s4.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Spec one small change</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s4.copy}}" aria-label="Copy the spec command">{{s4.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s4.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s4.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body">Pick something genuinely small: one endpoint, one flag, one bug with a known repro. It explores first, drives the OpenSpec CLI to produce the artifacts, then reviews them. It writes:</p>
           <pre class="code">{{tree}}</pre>
@@ -90,9 +97,8 @@
         <p class="tl-time">min 40–55</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s6.done}}" onChange="{{s6.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Ship it</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s6.copy}}" aria-label="Copy the ship command">{{s6.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s6.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s6.lines}}" as="l" hint-placeholder-count="1"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body">Implements <code>tasks.md</code> in waves, runs your unit suite and makes one commit. Before the first agent starts it prints the plan. A wave is a set of tasks that run in parallel; a lane is one agent's slot in a wave, holding one task or several in order. Each task carries a tier, the planner's 1–5 difficulty grade, which picks its model and effort. The plan names every clamp (a model the planner capped) and every fold (tasks it merged into one lane or one wave). At the end it prints one summary. Its last block names each way the run degraded, or says that nothing did. Useful flags for a first run: <code>--no-commit</code> to see the diff before git touches it, <code>--apply-only</code> to stop after the waves, <code>--strict</code> to add the adversarial review, the handoff files and the conformance check, and see what they cost.</p>
           <div>
@@ -106,19 +112,19 @@
         <p class="tl-time">min 55–60</p>
         <div class="stack-12">
           <label class="chk"><input type="checkbox" checked="{{s7.done}}" onChange="{{s7.toggle}}"><span class="chk-box" aria-hidden="true"></span><span class="h-row">Pull request, then archive</span></label>
-          <div class="codebox">
-            <button type="button" class="btn btn-ghost btn-sm codebox-copy" onClick="{{s7.copy}}" aria-label="Copy the pull request and archive commands">{{s7.copyLabel}}</button>
-            <div class="cmd-body"><sc-for list="{{s7.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div></sc-for></div>
+          <div class="cmd">
+            <div class="cmd-body cmd-rows"><sc-for list="{{s7.lines}}" as="l" hint-placeholder-count="2"><div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div></sc-for></div>
           </div>
           <p class="body"><code>settle</code> detects GitLab or GitHub from the remote, pushes the branch and opens the pull request as a draft. With <code>--review</code> it reviews the diff and fixes the findings in rounds, each at most one pushed commit. Then it marks the pull request ready and writes the CLI's verdict, <code>MERGE</code>, <code>HUMAN</code> or <code>BLOCK</code>, into the description and as a label. It never merges. With no pull request open and no <code>--create</code>, it stops and pushes nothing. After the merge, <code>openspec archive</code> folds the change's delta specs into the living specs, so the next <code>spec</code> plans against what is now true; <code>-y</code> answers its confirmation prompt up front. Interlock never archives for you. It prints <code>ARCHIVE PENDING</code> and counts the backlog in <code>interlock drift</code>.</p>
         </div>
       </div>
     </div>
 
+    <p class="sr-only" aria-live="polite">{{copyNote}}</p>
     <div class="g-split" style="margin-top: 32px;">
       <p class="eyebrow" style="color: var(--color-text-soft);">Do not run these yet</p>
       <div class="stack-12">
-        <p class="mono" style="font-size: 13.5px; line-height: 1.8; color: var(--color-text-soft);">dispatch · graph · docs-digest · explore · review-artifacts · review-code · fix-tests · manual-test-plan · explain-code · commit · spec --continue</p>
+        <p class="mono" style="font-size: 13.5px; line-height: 1.8; color: var(--color-text-soft);">dispatch · graph · <span class="nw">docs-digest</span> · explore · <span class="nw">review-artifacts</span> · <span class="nw">review-code</span> · <span class="nw">manual-test-plan</span> · <span class="nw">explain-code</span> · commit · <span class="nw">spec --continue</span></p>
         <p class="body-sm soft">Each is real and supported. None is needed for a first loop, and several are only meant to be called by the commands above. “Skipping the read before you have done it once is skipping the part of the loop that earns the rest.”</p>
         <p class="mono" style="font-size: 13px;"><a href="https://github.com/renzrollon/interlock/blob/main/docs/01-first-hour.md">more in 01 · The first hour</a></p>
       </div>
@@ -165,7 +171,7 @@
               <tr><td class="m">spec</td><td>A question the explore brief or the design left open</td><td>Its answer decides whether the proposal is correct. Otherwise <code>spec</code> takes a default and records it in <code>decisions.md</code>.</td></tr>
               <tr><td class="m">spec</td><td>Test-first or implementation-first?</td><td><code>--tdd</code> and <code>--no-tdd</code> were both passed.</td></tr>
               <tr><td class="m">spec</td><td>Continue the existing change or start a new one?</td><td>A change with that name already exists.</td></tr>
-              <tr><td class="m">spec --continue</td><td>“Continuity paused — N decisions need you”, listing only the ledger rows and blockers</td><td><code>interlock ready</code> exited 1. The last place a question is possible.</td></tr>
+              <tr><td class="m nw">spec --continue</td><td>“Continuity paused — N decisions need you”, listing only the ledger rows and blockers</td><td><code>interlock ready</code> exited 1. The last place a question is possible.</td></tr>
               <tr><td class="m">bootstrap</td><td>Generate specs for all discovered features, or select some?</td><td>Always, before generating.</td></tr>
               <tr><td class="m">bootstrap</td><td>This project already has N specs; add specs for undocumented features without overwriting any?</td><td><code>openspec/specs/</code> is non-empty.</td></tr>
               <tr><td class="m">fix-tests</td><td>At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command</td><td>First run or <code>--reconfigure</code>. The only skill permitted to interview you about tests.</td></tr>
@@ -223,18 +229,21 @@ class Component extends DCLogic {
     try { window.localStorage.setItem('il-first-hour', JSON.stringify(d)); } catch (e) {}
     this.setState({ done: d });
   };
+  // One copy button per command, as on the install panels: it writes that command alone, never its comment
+  // or a neighbouring line. Two slash commands pasted together reach Claude Code as one message.
   copy = (key, text) => (e) => {
     var btn = e && e.currentTarget;
     var done = () => {
-      this.setState({ copied: key });
+      this.setState({ copied: key, copyNote: 'Copied ' + text });
       if (this.copyTimer) clearTimeout(this.copyTimer);
-      this.copyTimer = setTimeout(() => this.setState({ copied: null }), 1400);
+      this.copyTimer = setTimeout(() => this.setState({ copied: null, copyNote: '' }), 1400);
     };
-    var select = function () {
+    var select = () => {
       try {
-        var body = btn && btn.parentNode && btn.parentNode.querySelector('.cmd-body');
-        if (body) { var r = document.createRange(); r.selectNodeContents(body); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+        var c = btn && btn.parentNode && btn.parentNode.querySelector('.ln-c');
+        if (c) { var r = document.createRange(); r.selectNodeContents(c); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
       } catch (err) {}
+      this.setState({ copied: null, copyNote: 'Copy was blocked. The command is selected: press Ctrl+C, or ⌘C on a Mac.' });
     };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, select);
@@ -244,15 +253,19 @@ class Component extends DCLogic {
   renderVals() {
     var s = this.state || {};
     var d = s.done || {};
-    var mkStep = (key, lines, wide) => {
-      var w = wide ? 36 : 30;
-      var text = lines.map(function (l) { return l.m ? (l.c + ' '.repeat(Math.max(1, w - l.c.length)) + l.m) : l.c; }).join('\n');
-      return {
-        done: !!d[key], toggle: this.toggleDone(key),
-        copy: this.copy(key, text), copyLabel: s.copied === key ? 'Copied' : 'Copy',
-        lines: lines.map(function (l) { return { c: l.c, m: l.m || '', hasM: !!l.m, cls: l.m ? (wide ? 'ln ln-wide' : 'ln') : 'ln ln-solo' }; })
-      };
-    };
+    var mkStep = (key, lines) => ({
+      done: !!d[key], toggle: this.toggleDone(key),
+      lines: lines.map((l, i) => {
+        var k = key + '-' + i;
+        var copied = s.copied === k;
+        return {
+          c: l.c, m: l.m || '', hasM: !!l.m, cls: l.m ? 'ln' : 'ln ln-solo',
+          copy: this.copy(k, l.c),
+          copyAria: 'Copy ' + l.c, copyTitle: copied ? 'Copied' : 'Copy this command',
+          copied: copied ? 'true' : 'false', isCopied: copied, notCopied: !copied
+        };
+      })
+    });
     var cls = function (t) {
       if (t.indexOf('SHIP COMPLETE') === 0 || t.indexOf('PREFLIGHT OK') === 0 || t.indexOf('  commit:') === 0) return 't-acc';
       if (t.indexOf('  [skip]') === 0 || t.indexOf('LEAN SHIP') === 0) return 't-dim';
@@ -303,18 +316,20 @@ class Component extends DCLogic {
       '├── decisions.md     the decision ledger (Interlock\'s addition)',
       '└── specs/**         delta specs, Given/When/Then'
     ].join('\n');
-    var keys = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
+    var keys = ['s1', 's2', 'st', 's3', 's4', 's5', 's6', 's7'];
     var n = keys.filter(function (k) { return d[k]; }).length;
     return {
       theme: this.props.theme ?? 'light',
-      doneCount: n + ' of 7 done',
+      doneCount: n + ' of 8 done',
       s1: mkStep('s1', [{ c: '/plugin marketplace add renzrollon/interlock' }, { c: '/plugin install interlock@interlock' }]),
       s2: mkStep('s2', [{ c: '! interlock doctor' }]),
+      st: mkStep('st', [{ c: '/interlock:fix-tests' }]),
       s3: mkStep('s3', [{ c: '/interlock:bootstrap' }]),
       s4: mkStep('s4', [{ c: '/interlock:spec add a --json flag to the report command' }]),
       s5: { done: !!d.s5, toggle: this.toggleDone('s5') },
       s6: mkStep('s6', [{ c: '/interlock:ship' }]),
-      s7: mkStep('s7', [{ c: '/interlock:settle --create --review' }, { c: '! openspec archive <change-name> -y', m: '# after it merges' }], true),
+      s7: mkStep('s7', [{ c: '/interlock:settle --create --review' }, { c: '! openspec archive <change-name> -y', m: '# after it merges' }]),
+      copyNote: s.copyNote || '',
       doctor: toLines(doctor),
       summary: toLines(summary),
       tree: tree

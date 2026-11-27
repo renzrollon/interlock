@@ -239,6 +239,23 @@ test('`help <command>` prints exactly what `<command> --help` prints', () => {
   }
 })
 
+test('`help <command>` prints the command\'s own flag sections, and a prose-only section stays in --help --all', () => {
+  const report = run(['help', 'report'])
+  assert.equal(report.code, 0)
+  for (const flag of ['--since', '--change', '--max-runs', '--html']) assert.match(report.stdout, new RegExp(`^  ${flag}`, 'm'), flag)
+  assert.match(report.stdout, /^report:$/m)
+  const mc = run(['help', 'merge-confidence'])
+  assert.match(mc.stdout, /^merge-confidence:$/m, 'the section its synopsis points to ("see merge-confidence: below") follows it')
+  for (const flag of ['--run', '--require-merge', '--markdown', '--label-names']) assert.match(mc.stdout, new RegExp(`^  ${flag}`, 'm'), flag)
+  assert.doesNotMatch(mc.stdout, /^report:$/m, 'no other command\'s section')
+  assert.doesNotMatch(mc.stdout, /Exit codes:/)
+  const verify = run(['help', 'verify']).stdout
+  for (const header of ['verify plan:', 'verify judge:', 'verify coverage:']) assert.ok(verify.includes(`\n${header}`), header)
+  const doctor = run(['help', 'doctor']).stdout
+  assert.doesNotMatch(doctor, /^doctor:$/m, 'doctor\'s section is prose and names no flag')
+  for (const out of [report.stdout, mc.stdout, doctor]) assert.match(out, /interlock --help --all\n$/)
+})
+
 test('`--all` prints the full usage only when no subcommand leads', () => {
   const full = run(['--help']).stdout
   for (const args of [['help', '--all'], ['--help', '--all'], ['-h', '--all']]) {
@@ -264,6 +281,25 @@ test('an unknown command keeps its first line, names the closest command and nev
     assert.doesNotMatch(r.stderr, /Exit codes:/, label)
     if (closest) assert.match(r.stderr, new RegExp(`Did you mean: interlock ${closest}\\?`), label)
     else assert.doesNotMatch(r.stderr, /Did you mean/, label)
+  }
+})
+
+test('a line with flags and no command names the flag, never "undefined"', () => {
+  for (const [args, want] of [
+    [['--verbose'], /^No command given, and no command takes --verbose\.$/m],
+    [['--verbose', 'doctor'], /read "doctor" as its value, and doctor takes no --verbose\.\nWithout the flag: interlock doctor$/m],
+    [['--strict', 'run'], /read "run" as its value\.\nPut the flag after the command: interlock run --strict$/m],
+    [['--json'], /--json is a flag\. Put it after a command: interlock <command> --json$/m],
+    [['--root', '.'], /interlock <command> --root \.$/m],
+    [[''], /^No command given\.$/m]
+  ]) {
+    const r = run(args)
+    const label = args.join(' ')
+    assert.equal(r.code, 1, label)
+    assert.equal(r.stdout, '', label)
+    assert.match(r.stderr, want, label)
+    assert.match(r.stderr, /Run `interlock help` to list the commands\.\n$/, label)
+    assert.doesNotMatch(r.stderr, /undefined|Unknown command/, label)
   }
 })
 

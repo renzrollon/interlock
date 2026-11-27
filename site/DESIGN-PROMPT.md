@@ -2,7 +2,7 @@
 
 **How to use this file.** Open Claude Design (claude.ai/design), start a project with the **Interlock** design system attached, attach the four files in `site/assets/` so the model can see them, and paste everything from `BEGIN PROMPT` to the end of the file. Export the landing artboard as an HTML zip and install it as `site/README.md` describes ("Installing an export"); `.github/workflows/pages.yml` deploys `site/` on the next push to `main`. Every fact the page states is in the appendices, pinned to Interlock **v1.21.0**. When a fact changes, change it here first and regenerate. Never hand-edit a number into the HTML.
 
-**What is deployed.** The page under `site/` was generated from this brief on 2026-10-11 with revision 2 of the Interlock design system, and installed with the local patches `site/README.md` lists. Facts that changed since were edited here first and then copied into the page string for string; the pass on 2026-11-26 re-pinned it to v1.21.0. The state machine (C.3) no longer draws the inter-wave halt that 1.6.1 removed, but its slot in the halt row stays empty until a regeneration lays the row out again. Two things this brief says are not on the page yet, because they need a regeneration rather than a text edit: the stepper's `--isolate-waves` toggle still runs on to `SHIP COMPLETE` where C.8 now describes the Workflow host's `LANE BASE MISMATCH` halt, and the `--solo` toggle reuses the three-wave summary.
+**What is deployed.** The page under `site/` was generated from this brief on 2026-10-11 with revision 2 of the Interlock design system, and installed with the local patches `site/README.md` lists. Facts that changed since were edited here first and then copied into the page string for string; the pass on 2026-11-26 re-pinned it to v1.21.0. A harden pass on 2026-11-27 (the halt-row map in C.6, the lit node clearing the header, arrow-key reveal, a focusable panel, the flow strip's roles, the film's keyboard toggle) was written here and patched into the page together; `site/README.md` lists each patch. An onboarding pass on 2026-11-27, after a live install showed `! interlock doctor` fails in the session the plugin was installed from, rewrote A.3 (a requirements checklist, the panels stacked in order, one copy button per command, the new-session line, `fix-tests` in the once-per-repo panel) and added the `fix-tests` step to D.1, and patched both into the page. A polish pass the same day wrote §3's spacing rhythm, whole inline code, scroll cues and section ends, §4's hanging doc titles, §5's per-command rows in the First hour timeline, the stepper's opening line, the flow strip's closing line and the caps table on phones, and §6's dark canvas and copy fallback here, and patched them into the page the same way. The state machine (C.3) no longer draws the inter-wave halt that 1.6.1 removed, but its slot in the halt row stays empty until a regeneration lays the row out again. Two things this brief says are not on the page yet, because they need a regeneration rather than a text edit: the stepper's `--isolate-waves` toggle still runs on to `SHIP COMPLETE` where C.8 now describes the Workflow host's `LANE BASE MISMATCH` halt, and the `--solo` toggle reuses the three-wave summary.
 
 **What was checked, and when.** On 2026-11-26, at v1.21.0, these blocks were re-read against the repository or regenerated from its code: §0, §4, §5, §7, A.1 to A.8, B.2's subcommand count, B.4, B.5, B.8, C.3, C.6 to C.9, D.1 to D.6, E.1, E.2, E.6, E.7, F.1, F.2, F.4, G.1 to G.4 and Appendix H. A.0 describes the recording, made on plugin 1.4.2, and is unchanged. The plan previews in C.7 are `interlock waves` run on that example and came out unchanged, the summaries in C.7 and D.1 are `formatRunSummary` called on it, C.9 is `interlock waves --format board` over a fixture a test pins, G.1 is `interlock limits`, G.2 is counted at the `v1.21.0` tag, and the `doctor` block in D.1 is `interlock doctor`. B.6 is carried from the v1.5.0 check without a re-read. Everything else is carried from the v0.3.0 pin and marked **reference** in §4: B.1 to B.3, B.7, C.1, C.2, C.4, C.5, E.3 to E.5, E.8 and F.3. None of those reaches the page.
 
@@ -74,8 +74,11 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 - Section subhead (`title-lg`): 20 to 24px at **500**, a plain label of what is under it. A page where every heading is a heavy claim reads as generated; one heavy line per screen is the rule.
 - Eyebrow: 13px, 600, sentence case, `color-accent`, no tracking, no uppercase. The wordmark is the one place capitals are tracked.
 - There is no third heading level.
+- Inline code (a command, flag, path or file name in running text) never breaks inside itself: `--location=global` or `merge-lanes` moves to the next line whole, and a code span wraps inside itself only when it is longer than the whole line.
 
 **Layout language.** A datasheet. Sections are separated by 1px `color-divider` rules and whitespace. **No card grid**: no tiles laid out in rows; a bordered box is for a control, a code panel or a table, never for a paragraph. Left-aligned text. Content column 1120px, gutter 24px, 16px under 640px. 4px radius on controls and panels, nothing rounder. Nothing on the landing page casts a shadow. No gradients, no glass, no stock illustration, no 3D, no icon set beyond the few control glyphs.
+
+**Spacing keeps its rhythm.** Consecutive paragraphs sit 16px apart; a code panel and the paragraph under it, 12px; a mono caption, 8px above the panel it names. A section ends on whitespace: where another section follows, its last row or disclosure draws no closing rule, because the next section's rule is the divider. Two hairlines framing an empty band read as a missing row.
 
 **Every section earns its place by showing something the tool printed or recorded.** That is film, a still from the film, an output panel, or a table of values. A section with none of those is prose, and prose gets no box, no background and no border: it is a subhead and paragraphs.
 
@@ -83,20 +86,22 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 
 **Output panels.** A panel is `term-ground` at both themes, mono 13.5px, 4px radius, no window chrome and no traffic-light dots. Above it sits one mono caption line saying what printed it. `term-accent` marks the two or three lines that matter (`SHIP COMPLETE`, the commit, `GATE` lines), `term-halt` marks a halt, `term-dim` is the page's own narration. Long lines scroll inside the panel; the body never scrolls sideways. An output panel's markup carries no whitespace between tags, so the page's own indentation never prints as blank lines inside the panel.
 
+**Scroll cues.** A table or the state machine that scrolls sideways inside its container shows a thin scrollbar at rest, a `color-border-strong` thumb on a `color-surface` track, so a reader sees there is more to the right before trying to scroll. Overlay scrollbars that appear only mid-scroll hide the commit and close columns and every table's last column.
+
 **Diagrams.** Inline SVG. 1px strokes, 2px for the current node only. Mono labels. Boxes are rectangles. Arrows are plain lines with small closed heads. The human node is the only accent-filled shape in any diagram. Halt nodes are outlined in `color-halt`.
 
 **Motion.** Minimal. 150ms fades on tab change. A stepper animates by changing a highlighted node, not by moving things. Respect `prefers-reduced-motion`: no animation at all when set, and the hero film does not autoplay (Appendix A.0).
 
 ## 4. Page structure
 
-**Sticky header** (48 to 56px): wordmark `INTERLOCK` in tracked mono capitals after a 10px accent square, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. On phones the tab bar scrolls horizontally inside the header and the GitHub link moves to the footer. The selected tab stays centred in the strip.
+**Sticky header** (48 to 56px): wordmark `INTERLOCK` in tracked mono capitals after a 10px accent square, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. Below 760px the header takes two rows: the wordmark, `Install` and the toggle on a 48px first row, and the tab bar on its own full-width row under them, edge to edge after a 1px `color-divider` rule, its four tabs sharing the width at a 44px touch height. The GitHub link moves to the footer. Where the four still do not fit, the row scrolls horizontally and the selected tab stays centred in it. Every in-page anchor (the tab panel, `#install`, a state-machine node) lands clear of the taller header.
 
 **Hero, above the tabs**, always present on arrival. Two columns from 960px up, stacked below it:
 
 - Left: the eyebrow, the H1, the lede and the one mono line (Appendix A.1).
 - Right: **the film loop** (Appendix A.0), 34 seconds, muted, with its caption and its mono figure line beneath it. Stacked under the lede on phones.
 - Below both, full width: the **flow strip** (Appendix A.2, behaviour in §5).
-- The **install block**: three captioned code panels (Appendix A.3), one copy button per panel.
+- The **install block**: a requirements checklist, then three captioned code panels stacked in order (Appendix A.3), one copy button per command.
 - **The whole run**: the 2:34 film with its poster, duration and size in mono, and its provenance line (Appendix A.0). Click to play. Never autoplays.
 - The **proof strip**: three figures in the display face with mono captions (Appendix A.4).
 
@@ -124,27 +129,27 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 
 **Not on the page**, linked from the footer by document number instead: the layers (B.2), the step contract and corpora (B.3, B.6, B.7), plan construction (C.2, C.4, C.5), the degradation banner table in C.6, the prompt-to-workflow ladder and the four work orders (D.5, D.6), verify, drift, `REVIEW.md`, evals, cost and receipts (E.3 to E.8), and for / not for (F.3). Where one of these would have answered a reader's next question, end the section with one mono link: `more in 06 · Why it works`.
 
-**Footer**: repo link, npm package link (`https://www.npmjs.com/package/@renzrollon/interlock`), OpenSpec link (`https://github.com/Fission-AI/OpenSpec`), the seventeen docs by number and title as links into the repo's `docs/` folder (Appendix G.4), MIT licence, and the three-line mono sign-off: "The script holds the loop / the CLI holds the rules / the agents do the work".
+**Footer**: repo link, npm package link (`https://www.npmjs.com/package/@renzrollon/interlock`), OpenSpec link (`https://github.com/Fission-AI/OpenSpec`), the seventeen docs by number and title as links into the repo's `docs/` folder (Appendix G.4), MIT licence, and the three-line mono sign-off: "The script holds the loop / the CLI holds the rules / the agents do the work". A doc title that wraps hangs under its title, not under its number.
 
 ## 5. Interactions, per section
 
 Build these and no others. There is no decision lens, no layer drawer and no tooltip tour.
 
-**Hero film loop.** The markup in Appendix A.0, unchanged. It autoplays muted and loops; under `prefers-reduced-motion` it shows its poster with a play button and waits. Clicking it toggles play.
+**Hero film loop.** The markup in Appendix A.0, unchanged. It autoplays muted and loops; under `prefers-reduced-motion` it shows its poster and waits. One 36px square toggle sits in the film's top-right corner at all times, the one corner the film leaves empty (its command label is bottom left, its speed marker bottom right): a pause glyph while the loop plays, a play glyph while it waits, labelled `Pause the 34-second film` or `Play the 34-second film`, and reachable by keyboard. It is drawn on the film's own `term-ground` with a 1px `term-dim` edge and a `term-accent` focus ring, and its glyph follows the film's own play and pause events, so it stays right when autoplay is refused. Clicking the film also toggles play.
 
-**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
+**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. The strip is a list of five items: `spec`, the checkpoint and `ship` each hold one button that fills its cell, so the list keeps its items and each button keeps its role. Never put `role="listitem"` on a button. Their focus ring draws inside the cell, in `on-accent` on the checkpoint block. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." Where the descriptions are printed in the cells (touch devices, and the vertical list), nothing sits between the strip and that line, so it keeps 16px of space above it. **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
 
 **The whole run.** The markup in Appendix A.0. Poster first, native controls, `preload="none"`.
 
 **Why: the pains.** Each row is a mono label (the pain, in the reader's words), a paragraph (the mechanism, with the mono name of the command, hook or property) and one muted line (the cost). `Three more` is a native `<details>`.
 
-**The run: the state machine and stepper.** An SVG state machine from Appendix C.3, drawn left to right in columns: pre-flight, plan, waves (an inner loop), verify, tail, commit, close. Controls above it: **Step**, **Play**, **Reset**, and three toggles: `--strict` (reveals the review, remediation, verdict and handoff states, which are otherwise drawn with a dashed `color-border-strong` outline and `color-text-muted` ink, never faded; a dimmed halt keeps `color-halt`), `--isolate-waves` (adds the merge-lanes halt), `--solo` (collapses the wave loop to one lane). Below the diagram, a terminal panel whose contents advance with the stepper: it prints the blocks from Appendix C.7, in order, one per step; C.8 specifies what each control and toggle changes. On phones the diagram scrolls inside its own container and the terminal sits under it.
+**The run: the state machine and stepper.** An SVG state machine from Appendix C.3, drawn left to right in columns: pre-flight, plan, waves (an inner loop), verify, tail, commit, close. Controls above it: **Step**, **Play**, **Reset**, and three toggles: `--strict` (reveals the review, remediation, verdict and handoff states, which are otherwise drawn with a dashed `color-border-strong` outline and `color-text-muted` ink, never faded; a dimmed halt keeps `color-halt`), `--isolate-waves` (adds the merge-lanes halt), `--solo` (collapses the wave loop to one lane). Below the diagram, a terminal panel whose contents advance with the stepper: it prints the blocks from Appendix C.7, in order, one per step; C.8 specifies what each control and toggle changes. Before the first Step the terminal is never an empty panel: it holds three short narration lines, short enough for a phone because the panel does not wrap: `# Nothing has run yet.`, `# Step shows the run's first command.`, `# Play walks every step.` On phones the diagram scrolls inside its own container and the terminal sits under it; the controls wrap onto two rows there, with no divider left dangling at the end of the first.
 
-**The run: when it stops.** The loud halts as a table (banner, trigger, next). Clicking a row highlights its node in the state machine and brings that node into view. Under the table, the C.9 panel.
+**The run: when it stops.** The loud halts as a table (banner, trigger, next). Clicking a row highlights the node its halt fires at in the state machine and brings that node into view, clear of the sticky header rather than under it. A row whose halt fires at no one node is not clickable and carries a neutral `not on the diagram` tag under its banner; C.6 maps every row. Under the table, the C.9 panel.
 
-**First hour: the timeline.** A vertical timeline with seven steps (Appendix D.1), each with a mono timestamp on the left ("min 0–2"), the command in a code panel with a copy button, and the output where D.1 gives one. A checkbox on each step persists in `localStorage` so a reader can come back.
+**First hour: the timeline.** A vertical timeline with eight steps (Appendix D.1), each with a mono timestamp on the left ("min 0–2"), its commands in a code panel, and the output where D.1 gives one. The code panels follow A.3: one command per row, each with its own icon copy button that copies that command alone, never a whole panel. The install step's two commands are two rows, and the archive line in the last step is its own row with its `# after it merges` comment, because it runs after the merge and not with `settle`. A long command wraps inside its row and never runs under its button. A checkbox on each step persists in `localStorage` so a reader can come back.
 
-**Limits and proof: the caps.** Appendix G.1 as a table with one search field that filters rows as the reader types.
+**Limits and proof: the caps.** Appendix G.1 as a table with one search field that filters rows as the reader types. Under 640px every value stays in view: a number or a single word stays beside its name, which wraps; a longer value (the routing and session rows) drops under its name, left-aligned. The table never needs a sideways scroll to show a value.
 
 **Limits and proof: the adjudication simulator.** Four sample findings from Appendix E.1.6 in a table; a button **Adjudicate** runs them one by one through the rules and reveals, per finding, the two skeptic verdicts, whether a dismissal carried a `file:line` citation inside the diff, the quality band decision, and the outcome, ending with the count lines given in E.1.6, computed from the four rows, and the **Cite it** follow-up button E.1.6 describes.
 
@@ -156,12 +161,12 @@ Build these and no others. There is no decision lens, no layer drawer and no too
 - **The only requests to another origin or to `assets/`** the page may make are: Google Fonts; `assets/poster-hero.jpg`, `assets/poster-full.jpg` and `assets/ship-meter.webp` (same origin, relative paths, exactly as written); and the two `.mp4` URLs in Appendix A.0. No other host, no script, no stylesheet, no tracker, no iframe.
 - The images and films may not load inside your preview. Keep every `<img>`, `<video>`, `<source>`, `poster`, `width` and `height` exactly as Appendix A.0 gives it; the attributes hold the layout until the file arrives.
 - The page is rendered by the export's runtime, so it needs JavaScript and has no fallback without it. Write nothing that promises one.
-- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab; a header tab click, and a load with a tab hash, scroll the panel into view when its top is below the fold; `#install` and `#top` never change the tab; the browser back button moves between tabs, including back to the entry URL with no hash, which selects `#why`. An in-page anchor such as `#install` never changes the tab.
-- Tabs use `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, arrow-key navigation, and a visible focus ring.
-- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a custom property with the light values and redefine only the tokens for dark. A browser that reports no preference gets the light page.
-- **Responsive from 375px to 1600px, and there is no horizontal scroll on the body at any width.** Tables, diagrams and output panels scroll inside their own container. At 375px: the flow strip is the vertical list from §5; the proof strip stacks one figure per row; in the install panels each `#` comment drops to its own line above its command instead of being cut off; two-column sections stack.
+- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab; a header tab click, an arrow-key tab change (focus stays on the tab), and a load with a tab hash, scroll the panel into view when its top is below the fold; `#install` and `#top` never change the tab; the browser back button moves between tabs, including back to the entry URL with no hash, which selects `#why`. An in-page anchor such as `#install` never changes the tab.
+- Tabs use `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, arrow-key navigation, and a visible focus ring. The tab panel takes focus (`tabindex="0"`), because each tab opens on a headline rather than a control; it runs edge to edge, so its focus ring draws inside it.
+- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a custom property with the light values and redefine only the tokens for dark. A browser that reports no preference gets the light page. The browser's own surfaces follow the theme: in dark, `color-scheme` is dark and the canvas behind the page is `color-bg`, so an overscroll, a scrollbar or a search field never flashes white.
+- **Responsive from 375px to 1600px, and there is no horizontal scroll on the body at any width.** Tables, diagrams and output panels scroll inside their own container. At 375px: the flow strip is the vertical list from §5; the proof strip stacks one figure per row; in the install panels each `#` comment drops to its own line above its command instead of being cut off, and each command keeps its copy button; two-column sections stack.
 - Every SVG diagram has a `<title>` and its labels are real text, not paths.
-- Copy buttons use the Clipboard API and fall back to selecting the text.
+- Copy buttons use the Clipboard API and fall back to selecting the text. The fallback says so in a polite live region: "Copy was blocked. The command is selected: press Ctrl+C, or ⌘C on a Mac."
 - No analytics, no cookies, no forms.
 - Head: `<title>Interlock</title>` and the font links. The viewport meta, the description, the Open Graph tags (`og:image` is `https://renzrollon.github.io/interlock/assets/social-preview.png`) and the favicon are static tags added when the export is installed, because a crawler does not run the runtime; do not rely on `<helmet>` for them.
 - Print: nothing special required.
@@ -221,7 +226,7 @@ One real run of `/interlock:spec` then `/interlock:ship`, recorded on a demo rep
 </video>
 ```
 
-The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts, show the poster, and overlay one square play button.
+The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts and show the poster; the corner toggle from §5 then shows play.
 
 Caption under the loop, body face:
 > One real run, cut to 34 s. `spec` asks one question, writes 11 specs and 12 tasks, then stops. `ship` runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.
@@ -285,19 +290,30 @@ Mono line beneath the strip: **ship is a dynamic workflow, so there is nobody to
 
 ## A.3 Install block
 
-Three code panels, each with a copy button.
+The install block is one sequence, read top to bottom: a requirements checklist, then three captioned code panels stacked in order, with one line between the first and the second. The panels stack at every width, no wider than 880px, because the order is the content: the most common first-run mistake is running the second panel in the session the first one ran in.
 
-Every line in the three panels is typed at the Claude Code prompt; the captions say so.
+Every line in the three panels is typed at the Claude Code prompt; the captions say so. **Each command has its own copy button**, on its own row, which copies that command alone: never its `#` comment, never a neighbouring line. Two slash commands pasted together reach Claude Code as one message, so a panel-wide copy is a trap. The button is icon-only with an `aria-label` naming the command, muted at rest, and shows a check for about 1.4 s after a copy. Each `#` comment sits beside its command where the panel is wide enough and on its own line above it where it is not.
+
+Checklist above the panels, lead-in "You need", four items, each a real checkbox the reader can tick (persisted in `localStorage`, like the first-hour timeline):
+- Claude Code 2.1.154 or newer
+- Dynamic workflows on (on a Pro plan, enable them in `/config`)
+- Node.js 22.12 or newer, with npm
+- A git repository with code in it
 
 Panel 1, caption "In Claude Code, once per machine":
 ```
 /plugin marketplace add renzrollon/interlock
-/plugin install interlock@interlock
+/plugin install interlock@interlock       # pick “Install for you (user scope)”
 ```
 
-Panel 2, caption "In a new session, once per repo":
+Line between panels 1 and 2: **Then start a new session in your project.** The plugin puts `interlock` on the shell's PATH when a session starts, so in the session you installed from, `! interlock doctor` answers `command not found`. `/clear` also starts one.
+
+(Checked on 2026-11-27 with a live install of v1.21.0 into a clean home on Claude Code 2.1.332: after `/plugin install` reported the plugin active, `! interlock doctor` answered `command not found: interlock`, and `/reload-plugins` did not change that; after `/clear`, and in a fresh session, it resolved to the plugin's `cli/interlock`. On that fresh repository doctor failed three checks: `openspec`, `test-profile` with the fix `/interlock:fix-tests`, and `permissions`.)
+
+Panel 2, caption "In the new session, once per repo":
 ```
-! interlock doctor            # the allowlist an unattended run needs
+! interlock doctor            # what would stop an unattended run
+/interlock:fix-tests          # how your tests run, saved for ship
 /interlock:bootstrap          # the code graph, then one spec per feature
 ```
 
@@ -309,7 +325,7 @@ Panel 3, caption "Every change":
 /interlock:settle --create --review   # draft PR → review → fix rounds → verdict
 ```
 
-Small print under the panels: Requires Claude Code v2.1.154+ with dynamic workflows enabled, Node.js 22.12 or newer with npm, and a git repository with code in it. OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The `!` runs a shell command from the Claude Code prompt; the plugin puts `interlock` on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with `npm install --location=global @renzrollon/interlock@1.21.0`.
+Small print under the panels: OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The `!` runs a shell command from the Claude Code prompt; the plugin puts `interlock` on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with `npm install --location=global @renzrollon/interlock@1.21.0`.
 
 ## A.4 Proof strip
 
@@ -683,7 +699,7 @@ close              run close → receipt, outcome, trajectory      terminal
 settle             /interlock:settle                             human
 
 EDGES  (from → to · condition · scope)
-ship_launch → trampoline_halt     Workflow tool unavailable, or --solo with --waves         all
+ship_launch → trampoline_halt     Workflow tool unavailable                                 all
 ship_launch → run_start           Workflow() called once                                    all
 run_start → preflight_halt        interlock validate exits non-zero                         all
 run_start → close                 plan reused and every task already ticked                 all
@@ -775,7 +791,7 @@ Subhead: **When it stops**
 
 Intro: Two categories, and they are not the same thing. A **loud halt** stops the run, commits nothing, and reports what completed and what you need to decide. It never asks you a question. A **soft continue** keeps going with a documented default and prints a banner saying what it degraded. Almost everything is a soft continue; the halts are deliberately few. Every halt inside the run is a non-zero exit from a CLI subcommand, not a judgement call.
 
-Loud halts (render as the table; a row is clickable and highlights its node):
+Loud halts (render as the table; a row is clickable and highlights the node its halt fires at, mapped under the table):
 
 | Banner | Trigger | Stage | Next |
 |---|---|---|---|
@@ -793,6 +809,8 @@ Loud halts (render as the table; a row is clickable and highlights its node):
 | `RUN NOT RECONSTRUCTABLE: <problems>` (exit 1 even beside `SHIP COMPLETE`) | a sequence gap, a missing run-start, or a CLI call with no logged exit | close | `interlock run-log check`. Usually a write to `.claude/ship/` failed mid-run. `interlock doctor` probes exactly that. |
 | No banner: `/interlock:ship` stops and says it needs dynamic workflows | Workflow tool unavailable | before the run | Enable dynamic workflows (Claude Code v2.1.154+, `/config`). Everything else still works. It does not fall back to chat and does not start the experimental runner. |
 | `spec`: blockers at the artifact review | a reviewer reported a blocker | spec | Fix the cause, not the report. No silent fix-and-continue. |
+
+Row to node. Validate failed, plan omitted and waves failed light `preflight_halt`; task failures light `failure_halt`; no result and the unit suite light `unit_halt`; unresolved blockers light `blocker_halt`; merge-lanes lights `merge_halt`; not reconstructable lights `close`; the no-banner row lights `trampoline_halt`. Contradictory plan-shape flags lights `ship_launch`: the Workflow refuses `--solo` with `--waves` before `run start`, so it is not the missing-Workflow halt. The run-step cap and out-of-sequence rows can fire at any step, and the `spec` row fires before a run, so those three are not clickable and carry a `not on the diagram` tag.
 
 Reference from here to the end of C.6. Receipt lines that are not degradations: `LEAN SHIP` (the advertised default, printed so a lean run cannot look like a strict one) · `ARCHIVE PENDING` (clean completion only; a reminder, never an action) · `PLAN REUSED` / `PLAN REBUILT` (always, in one of the two forms) · `leftover tasks (boxes still unchecked)` (a report, not authorisation to relaunch) · `run:` / `project:` / `cwd:` (always; the run id is the trajectory filename) · `No degradation banners — graph, test profile, model routing, verification and e2e were all clean.` (printed when the block would otherwise be empty, so silence and cleanliness are distinguishable).
 
@@ -1088,7 +1106,7 @@ One more sentence, muted: Two of the three failures here were finished tasks who
 
 Subhead: **The commands, in order**
 
-Seven steps. Each has a mono timestamp, a one-line purpose, the command in a code panel with a copy button, and where given, the output to show.
+Eight steps. Each has a mono timestamp, a one-line purpose, its commands in a code panel with one copy button per command (§5), and where given, the output to show.
 
 **min 0–2 · Install**
 ```
@@ -1123,7 +1141,13 @@ PREFLIGHT OK — 12 passed
   [ok  ] mods: claude 2.1.332 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …
 ```
 
-**min 5–20 · Onboard the repo, once**
+**min 5–8 · Record how your tests run, once**
+```
+/interlock:fix-tests
+```
+Finds how your tests run, from your manifests, runner configs and CI, asks at most four questions for what it cannot find, and saves the answer to `.claude/testing/profile.json`. Every ship verifies with it; without it, `doctor` fails the `test-profile` check. Then it runs the suite. On a red suite it goes on to repair the failures by root cause, never by weakening a test; pass `--dry-run` to stop at the diagnosis.
+
+**min 8–20 · Onboard the repo, once**
 ```
 /interlock:bootstrap
 ```
@@ -1180,7 +1204,7 @@ GOAL MET: interlock ship returned a terminal summary.
 ```
 `settle` detects GitLab or GitHub from the remote, pushes the branch and opens the pull request as a draft. With `--review` it reviews the diff and fixes the findings in rounds, each at most one pushed commit. Then it marks the pull request ready and writes the CLI's verdict, `MERGE`, `HUMAN` or `BLOCK`, into the description and as a label. It never merges. With no pull request open and no `--create`, it stops and pushes nothing. After the merge, `openspec archive` folds the change's delta specs into the living specs, so the next `spec` plans against what is now true; `-y` answers its confirmation prompt up front. Interlock never archives for you. It prints `ARCHIVE PENDING` and counts the backlog in `interlock drift`.
 
-**Do not run these yet** (a small muted list under the timeline): `dispatch`, `graph`, `docs-digest`, `explore`, `review-artifacts`, `review-code`, `fix-tests`, `manual-test-plan`, `explain-code`, `commit`, `spec --continue`. Each is real and supported. None is needed for a first loop, and several are only meant to be called by the commands above. "Skipping the read before you have done it once is skipping the part of the loop that earns the rest."
+**Do not run these yet** (a small muted list under the timeline): `dispatch`, `graph`, `docs-digest`, `explore`, `review-artifacts`, `review-code`, `manual-test-plan`, `explain-code`, `commit`, `spec --continue`. Each is real and supported. None is needed for a first loop, and several are only meant to be called by the commands above. "Skipping the read before you have done it once is skipping the part of the loop that earns the rest."
 
 ## D.2 The ten-minute read (First hour tab, *The ten-minute read*)
 

@@ -1,22 +1,39 @@
 # Your first hour with Interlock
 
-This page takes you from install to one committed change. Onboard the repo once, then spec, read, and ship.
+This page takes you from install to one committed change. Install once per machine, start a new session, onboard the repo once, then spec, read, and ship.
 
 ## Before you start
 
-| Requirement | Why |
-|---|---|
-| [Claude Code](https://claude.com/claude-code) **v2.1.154+** | Interlock is a Claude Code plugin. Cursor and Copilot are not supported. Known-good on 2.1.229. |
-| Dynamic workflows **enabled** | `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start. |
-| `CLAUDE_CODE_SUBAGENT_MODEL` **unset** | If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. The run banners this rather than hiding it — see [when it stops](./04-when-it-stops.md#model-routing-overridden). |
-| `CLAUDE_CODE_EFFORT_LEVEL` **unset** | Its effort twin. If it is set every agent runs at that effort, whatever the plan assigned to each step. The run banners it as `EFFORT ROUTING OVERRIDDEN` — see [when it stops](./04-when-it-stops.md#effort-routing-overridden). |
-| The [`openspec`](https://github.com/Fission-AI/OpenSpec) CLI | Interlock drives it; it owns the artifact formats. Used from your PATH when present, otherwise provisioned for you (below). |
-| Node.js ≥ 18 | Runs the three bundled CLIs: `interlock`, `interlock-graph` and `interlock-run`. Provisioning OpenSpec needs Node.js 22.12+ and npm. |
-| A git repo with code in it | `bootstrap` documents what already exists. |
+- [ ] **[Claude Code](https://claude.com/claude-code) v2.1.154+.** Interlock is a Claude Code plugin. Cursor and Copilot are not supported. Known-good on 2.1.229.
+- [ ] **Dynamic workflows enabled.** `/interlock:ship` is a skill trampoline that launches a [dynamic workflow](https://code.claude.com/docs/en/workflows). Turned off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` — and on a Pro plan until you enable it in `/config` — the command exists but the run cannot start.
+- [ ] **Node.js 22.12+ with npm.** Interlock's three bundled CLIs (`interlock`, `interlock-graph`, `interlock-run`) run on Node.js 18 or newer; the OpenSpec CLI they drive needs 22.12.0 or newer, and the pinned copy is installed with npm.
+- [ ] **A git repo with code in it.** `bootstrap` documents what already exists.
+- [ ] **`CLAUDE_CODE_SUBAGENT_MODEL` unset.** If it is set it overrides every per-tier model the planner assigns, so `ship` runs entirely on that model. The run banners this rather than hiding it — see [when it stops](./04-when-it-stops.md#model-routing-overridden).
+- [ ] **`CLAUDE_CODE_EFFORT_LEVEL` unset.** Its effort twin. If it is set every agent runs at that effort, whatever the plan assigned to each step. The run banners it as `EFFORT ROUTING OVERRIDDEN` — see [when it stops](./04-when-it-stops.md#effort-routing-overridden).
+
+You do not need to install OpenSpec yourself; see [OpenSpec](#openspec) below.
 
 ## Install
 
-Interlock drives the `openspec` CLI. If one is on your PATH it is used. If not, the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`, which installs a pinned OpenSpec from the npm registry (about 16 MB; npm verifies every package against the lockfile the plugin pins, install scripts are off and telemetry is off) into the plugin's data directory. That needs Node.js 22.12+ and npm. Run `interlock openspec which` to see which copy resolves and where; use it to run a printed `openspec archive` from your own terminal. The plugin's `cli/` directory reaches the session's PATH through its SessionStart hook, and PowerShell commands get none of those session variables.
+At the Claude Code prompt, once per machine:
+
+```text
+/plugin marketplace add renzrollon/interlock
+```
+
+```text
+/plugin install interlock@interlock
+```
+
+It asks where to install; pick **Install for you (user scope)**.
+
+**Then start a new session in your project.** The plugin's `cli/` directory reaches the shell's PATH through its SessionStart hook, so the commands below resolve only in a session that started after the install. In the session you installed from, `! interlock doctor` answers `command not found: interlock`, and `/reload-plugins` does not change that; `/clear` does, and so does a new session. PowerShell commands get none of those session variables.
+
+The CLIs also ship as an npm package for use without the plugin — see [07](./07-cli-and-configuration.md#install-the-clis-without-the-plugin).
+
+### OpenSpec
+
+Interlock drives the `openspec` CLI. If one is on your PATH it is used. If not, the first `/interlock:spec` or `/interlock:bootstrap` runs `interlock openspec provision`, which installs a pinned OpenSpec from the npm registry (about 16 MB; npm verifies every package against the lockfile the plugin pins, install scripts are off and telemetry is off) into the plugin's data directory. That needs Node.js 22.12+ and npm. Run `interlock openspec which` to see which copy resolves and where; use it to run a printed `openspec archive` from your own terminal.
 
 The npm route is the alternative: install it yourself and initialize it in the repo ([OpenSpec quick start](https://github.com/Fission-AI/OpenSpec#quick-start)):
 
@@ -29,26 +46,33 @@ If no OpenSpec resolves and provisioning cannot run (no npm, a Node below 22.12.
 
 OpenSpec itself requires **Node.js 22.12.0+** (higher than Interlock's own ≥ 18) and also installs via pnpm, yarn, bun or nix. `openspec init` creates `openspec/` and installs its stock skills — Interlock composes with those rather than replacing them ([03](./03-openspec-vs-interlock.md)).
 
-Then the plugin:
+## Run the doctor
 
-```bash
-/plugin marketplace add renzrollon/interlock
-/plugin install interlock@interlock
+In the new session:
+
+```text
+! interlock doctor
 ```
 
-The CLIs also ship as an npm package for use without the plugin — see [07](./07-cli-and-configuration.md#install-the-clis-without-the-plugin).
-
-## Allowlist the commands first
-
-Worth two minutes before your first `ship`. Workflow agents inherit your own permission settings, so a command that is not allowlisted stops the run on an approval prompt — in the middle of a run that is supposed to need nothing from you, possibly while you are away from the keyboard.
+The `!` runs the line as a shell command from the Claude Code prompt. The plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. On a fresh repository expect up to three failures, each printed with its fix: `openspec` (Step 1's `bootstrap` provisions and initialises it), `test-profile` (Step 1's `fix-tests` writes it) and `permissions`.
 
 <p align="center">
   <img src="./assets/doctor.png" alt="Example output of interlock doctor: nine checks, one FAIL on the missing test profile with the command that fixes it, and the permission allowlist reported as complete." width="800">
 </p>
 
-The plugin already runs this check when each session starts, and prints `interlock preflight OK` or each problem with its fix. For the full report, run `interlock doctor` from the Claude Code prompt as `! interlock doctor`. The plugin puts the CLI on the `PATH` of Claude Code's shell, not your own terminal's. It prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names.
+The permissions check is worth two minutes before your first `ship`. Workflow agents inherit your own permission settings, so a command that is not allowlisted stops the run on an approval prompt — in the middle of a run that is supposed to need nothing from you, possibly while you are away from the keyboard. The doctor prints the exact commands your run needs allowlisted (derived from what the flow shells out to, plus your own test profile) and the settings snippet that covers them, so this page does not have to enumerate them. `/permissions` is the quickest route to add what it names. The plugin already runs this check when each session starts, and prints `interlock preflight OK` or each problem with its fix.
 
 ## Step 1 — Onboard the repo (once)
+
+First, record how your tests run:
+
+```text
+/interlock:fix-tests
+```
+
+It finds the test setup from your manifests, runner configs and CI, asks at most four questions for what it cannot find, and saves the answer to `.claude/testing/profile.json`, mirrored into the `## Testing` block of your instruction file. Every `ship` verifies with that profile; without it the doctor fails `test-profile`. Then it runs the suite. On a red suite it goes on to repair the failures by root cause, and never by weakening a test; pass `--dry-run` to stop at the diagnosis and edit no code.
+
+Then onboard the repo:
 
 ```bash
 /interlock:bootstrap
@@ -159,7 +183,7 @@ Everything below is real and supported, but none of it is part of hour one. Each
 | `/interlock:explore` | Standalone reconnaissance. `spec` runs it when it needs it. |
 | `/interlock:review-artifacts` | The gate `spec` already runs at the end of its own flow. |
 | `/interlock:review-code` | The adversarial gate. Default `ship` does not run it; pass `--review` or `--strict`, or run this after. |
-| `/interlock:fix-tests` | For a red suite. Come back when you have one. |
+| `/interlock:fix-tests` again | You ran it once in Step 1. Come back when the suite goes red, or with `--reconfigure` when the way your tests run changes. |
 | `/interlock:manual-test-plan` | `ship --handoff` / `--strict` emits this when the diff touches UI. |
 | `/interlock:explain-code` | `ship --handoff` / `--strict` writes the commit teach-in. |
 | `/interlock:commit` | `ship` calls it. Calling it directly is for recovery. |

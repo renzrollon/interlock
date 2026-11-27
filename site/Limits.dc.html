@@ -30,7 +30,7 @@
     </div>
     <!-- impeccable-disable-next-line cramped-padding -- rendered scan shows no finding at 1440 or 390 px; cells carry 10-12 px padding -->
     <div class="tbox">
-      <div class="dt" role="table" aria-label="interlock limits at v1.21.0" style="min-width: 520px;">
+      <div class="dt dt-capsbox" role="table" aria-label="interlock limits at v1.21.0">
         <div class="dt-row dt-caps dt-head" role="row"><span role="columnheader">Cap</span><span role="columnheader" style="text-align: right;">Value</span></div>
         <div class="dt-body" role="rowgroup">
           <sc-for list="{{caps}}" as="c" hint-placeholder-count="20">
@@ -38,7 +38,7 @@
               <div class="dt-break" aria-hidden="true"></div>
             </sc-if>
             <sc-if value="{{c.isRow}}" hint-placeholder-val="{{true}}">
-              <div class="dt-row dt-caps" role="row"><span role="cell" class="mono" style="font-size: 13px;">{{c.label}}</span><span role="cell" class="mono" style="font-size: 13px; text-align: right; white-space: nowrap;">{{c.value}}</span></div>
+              <div class="{{c.rowCls}}" role="row"><span role="cell" class="cap-k">{{c.label}}</span><span role="cell" class="cap-v">{{c.value}}</span></div>
             </sc-if>
           </sc-for>
           <sc-if value="{{noCaps}}" hint-placeholder-val="{{false}}">
@@ -237,7 +237,7 @@
             <tr><td>Node floor</td><td>18 or newer for Interlock; the OpenSpec CLI needs 22.12.0 or newer</td><td><code>package.json</code> engines; OpenSpec's own requirement</td></tr>
             <tr><td>Test files</td><td class="m">147</td><td><code>find test -name '*.test.mjs' | wc -l</code>. <code>npm test</code>, no model, no network, nothing to install</td></tr>
             <tr><td>Top-level <code>interlock</code> subcommands</td><td class="m">39</td><td><code>interlock --help</code>, counting each subcommand name once</td></tr>
-            <tr><td><code>interlock-graph</code> subcommands</td><td class="m">12</td><td><code>build, update, covers, report, query, consumers, path, explain, docs, context, docs-index, which</code></td></tr>
+            <tr><td><code>interlock-graph</code> subcommands</td><td class="m">12</td><td><code>build, update, covers, report, query, consumers, path, explain, docs, context, <span class="nw">docs-index</span>, which</code></td></tr>
             <tr><td>Modules under <code>lib/</code></td><td class="m">159</td><td><code>find lib -name '*.mjs' | wc -l</code>: 109 top-level, 24 graph, 17 prompts, 9 host</td></tr>
             <tr><td>Skills</td><td class="m">16</td><td><code>ls skills</code>; four are the product, the rest are called by them</td></tr>
             <tr><td>Hook scripts</td><td>6, and one hooks module</td><td>a preflight, a recorder, four guards; <code>hooks/mod.mjs</code> is the ship meter</td></tr>
@@ -292,7 +292,8 @@ class Component extends DCLogic {
       var rows = g.filter(function (r) { total++; return !q || (r[0] + ' ' + r[1]).toLowerCase().indexOf(q) !== -1; });
       if (!rows.length) return;
       if (caps.length) caps.push({ isBreak: true, isRow: false, label: '', value: '' });
-      rows.forEach(function (r) { shown++; caps.push({ isBreak: false, isRow: true, label: r[0], value: r[1] }); });
+      // A value longer than a word or a number (the routing and session rows) drops under its name on a phone.
+      rows.forEach(function (r) { shown++; caps.push({ isBreak: false, isRow: true, label: r[0], value: r[1], rowCls: 'dt-row dt-caps' + (r[1].length > 12 ? ' dt-caps-long' : '') }); });
     });
 
     var diff = ['app/api/export/route.ts', 'lib/report.mjs', 'lib/cache.mjs'];

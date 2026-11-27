@@ -75,9 +75,14 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
         <video muted="muted" autoplay="autoplay" loop="loop" playsinline="playsinline" preload="metadata" poster="assets/poster-hero.jpg" width="1676" height="1052" ref="{{heroRef}}" onClick="{{toggleHero}}" aria-label="One real run, cut to 34 seconds: /interlock:spec asks one question, writes the change and stops at the checkpoint; /interlock:ship runs two waves of parallel agents, the suite passes 180 of 180, one commit.">
           <source src="https://github.com/renzrollon/interlock/releases/download/v1.5.0/interlock-spec-and-ship-hero.mp4" type="video/mp4">
         </video>
-        <sc-if value="{{showHeroPlay}}" hint-placeholder-val="{{false}}">
-          <button type="button" class="film-play" aria-label="Play the 34-second film" onClick="{{playHero}}"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M5 3.5v11l9-5.5z" fill="currentColor"></path></svg></button>
-        </sc-if>
+        <button type="button" class="film-toggle" aria-label="{{heroToggleLabel}}" onClick="{{toggleHero}}">
+          <sc-if value="{{heroIsPaused}}" hint-placeholder-val="{{false}}">
+            <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><path d="M5 3.5v11l9-5.5z" fill="currentColor"></path></svg>
+          </sc-if>
+          <sc-if value="{{heroIsPlaying}}" hint-placeholder-val="{{true}}">
+            <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 3.5h3v11h-3zM10.5 3.5h3v11h-3z" fill="currentColor"></path></svg>
+          </sc-if>
+        </button>
       </div>
       <figcaption class="body-sm soft" style="max-width: 62ch;">One real run, cut to 34 s. <code>spec</code> asks one question, writes 11 specs and 12 tasks, then stops. <code>ship</code> runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.</figcaption>
       <p class="mono-sm">12 tasks · 2 waves · 19 agents · 13m 54s · 57 files · 2,881 lines · 180 of 180 pass · 1 commit</p>
@@ -96,53 +101,62 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
         <span class="flow-name">bootstrap</span>
         <span class="flow-desc-cell">Once per repo. Reads the code, writes an architecture doc and one spec per existing feature. Never modifies source.</span>
       </div>
-      <button type="button" class="flow-cell" role="listitem" onClick="{{goFirstHour}}" onMouseEnter="{{fSpec}}" onFocus="{{fSpec}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
+      <div class="flow-cell flow-act" role="listitem"><button type="button" class="flow-btn" onClick="{{goFirstHour}}" onMouseEnter="{{fSpec}}" onFocus="{{fSpec}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="sm-label">Then, every change</span>
         <span class="flow-name">spec</span>
         <span class="tag tag-neutral">skill</span>
         <span class="flow-desc-cell">Explore, then OpenSpec artifacts, then an artifact review. Stops having written specs and no code.</span>
-      </button>
-      <button type="button" class="flow-cell flow-stop" role="listitem" onClick="{{goFirstHour}}" onMouseEnter="{{fStop}}" onFocus="{{fStop}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
+      </button></div>
+      <div class="flow-cell flow-act flow-stop" role="listitem"><button type="button" class="flow-btn" onClick="{{goFirstHour}}" onMouseEnter="{{fStop}}" onFocus="{{fStop}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="flow-title">You read the spec.</span>
         <span class="flow-desc-cell">Ten minutes. Four files, one question each. The only required stop.</span>
-        <span class="flow-back">↺ Revise idea → re-spec</span>
-      </button>
-      <button type="button" class="flow-cell" role="listitem" onClick="{{goRun}}" onMouseEnter="{{fShip}}" onFocus="{{fShip}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
+        <span class="flow-back">↺ Revise idea → <span class="nw">re-spec</span></span>
+      </button></div>
+      <div class="flow-cell flow-act" role="listitem"><button type="button" class="flow-btn" onClick="{{goRun}}" onMouseEnter="{{fShip}}" onFocus="{{fShip}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="flow-name">ship</span>
         <span class="tag tag-outline">workflow</span>
         <span class="flow-desc-cell">Waves → verify → commit, run as a dynamic workflow: a script the Claude Code runtime executes.</span>
-      </button>
+      </button></div>
       <div class="flow-cell" role="listitem" tabindex="0" onMouseEnter="{{fSettle}}" onFocus="{{fSettle}}" onMouseLeave="{{fClear}}" onBlur="{{fClear}}">
         <span class="flow-name">settle</span>
         <span class="flow-desc-cell">Opens or updates the pull request and labels it MERGE, HUMAN or BLOCK from the CLI's verdict. With --review it reviews and fixes the diff first. Never merges.</span>
       </div>
     </div>
     <p class="flow-desc-bar" aria-live="polite"><span class="label-mono" style="margin-right: 10px;">{{flowName}}</span>{{flowDesc}}</p>
-    <p class="mono" style="margin-top: 4px; font-size: 14px; font-weight: 500;">ship is a dynamic workflow, so there is nobody to ask.</p>
+    <p class="mono flow-coda">ship is a dynamic workflow, so there is nobody to ask.</p>
   </div>
 
-  <div id="install" style="margin-top: 64px; scroll-margin-top: 80px;">
+  <div id="install" style="margin-top: 64px;">
     <div style="display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px;">
       <h2 class="h-sub">Install</h2>
     </div>
-    <div class="cmds">
+    <div class="install">
+      <div class="reqs" role="group" aria-labelledby="reqs-lead">
+        <p class="reqs-lead" id="reqs-lead">You need</p>
+        <ul class="reqs-list">
+          <sc-for list="{{reqs}}" as="r" hint-placeholder-count="4">
+            <li><label class="chk"><input type="checkbox" checked="{{r.done}}" onChange="{{r.toggle}}"><span class="chk-box" aria-hidden="true"></span><span>{{r.label}}<sc-if value="{{r.hasNote}}" hint-placeholder-val="{{false}}"><span class="reqs-note"> {{r.note}}</span></sc-if></span></label></li>
+          </sc-for>
+        </ul>
+      </div>
       <sc-for list="{{panels}}" as="p" hint-placeholder-count="3">
-        <div class="cmd">
-          <div class="cmd-head">
-            <span class="cmd-label">{{p.label}}</span>
-            <button type="button" class="btn btn-ghost btn-sm" onClick="{{p.copy}}" aria-label="{{p.copyAria}}">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg>{{p.copyLabel}}
-            </button>
-          </div>
-          <div class="cmd-body">
-            <sc-for list="{{p.lines}}" as="l" hint-placeholder-count="3">
-              <div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if></div>
-            </sc-for>
+        <div class="install-step">
+          <sc-if value="{{p.hasLead}}" hint-placeholder-val="{{false}}">
+            <p class="install-lead"><strong>Then start a new session in your project.</strong> The plugin puts <code>interlock</code> on the shell's PATH when a session starts, so in the session you installed from, <code>! interlock doctor</code> answers <code>command not found</code>. <code>/clear</code> also starts one.</p>
+          </sc-if>
+          <div class="cmd">
+            <div class="cmd-head"><span class="cmd-label">{{p.label}}</span></div>
+            <div class="cmd-body cmd-rows">
+              <sc-for list="{{p.lines}}" as="l" hint-placeholder-count="3">
+                <div class="{{l.cls}}"><span class="ln-c">{{l.c}}</span><sc-if value="{{l.hasM}}" hint-placeholder-val="{{false}}"><span class="ln-m">{{l.m}}</span></sc-if><button type="button" class="ln-copy" onClick="{{l.copy}}" aria-label="{{l.copyAria}}" title="{{l.copyTitle}}" data-copied="{{l.copied}}"><sc-if value="{{l.isCopied}}" hint-placeholder-val="{{false}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.25 3.25L13 5"></path></svg></sc-if><sc-if value="{{l.notCopied}}" hint-placeholder-val="{{true}}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1"></rect><path d="M10.5 3.5v-1h-8v8h1"></path></svg></sc-if></button></div>
+              </sc-for>
+            </div>
           </div>
         </div>
       </sc-for>
+      <p class="sr-only" aria-live="polite">{{copyNote}}</p>
     </div>
-    <p class="cap" style="margin-top: 16px; max-width: 90ch;">Requires Claude Code v2.1.154+ with dynamic workflows enabled, Node.js 22.12 or newer with npm, and a git repository with code in it. OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The <code>!</code> runs a shell command from the Claude Code prompt; the plugin puts <code>interlock</code> on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with <code>npm install --location=global @renzrollon/interlock@1.21.0</code>.</p>
+    <p class="cap" style="margin-top: 16px; max-width: 90ch;">OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The <code>!</code> runs a shell command from the Claude Code prompt; the plugin puts <code>interlock</code> on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with <code>npm install --location=global @renzrollon/interlock@1.21.0</code>.</p>
   </div>
 
   <div class="g-run" style="margin-top: 72px; gap: 40px; align-items: start;">
@@ -170,7 +184,7 @@ a{color:#1d5bd6}a:hover{color:#174ab0}
   </div>
 </section>
 
-<div id="panel" role="tabpanel" aria-labelledby="{{panelLabel}}" style="scroll-margin-top: 56px;">
+<div id="panel" role="tabpanel" aria-labelledby="{{panelLabel}}" tabindex="0">
   <sc-if value="{{isWhy}}" hint-placeholder-val="{{true}}">
     <div class="fade"><dc-import name="Why" theme="{{theme}}" hint-size="100%,3800px"></dc-import></div>
   </sc-if>
@@ -231,7 +245,9 @@ class Component extends DCLogic {
     var tab = this.tabFromHash();
     var reduced = false;
     try { reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
-    this.setState({ theme: theme, tab: tab || 'why', reduced: reduced });
+    var reqs = {};
+    try { var rawReqs = window.localStorage.getItem('il-reqs'); if (rawReqs) reqs = JSON.parse(rawReqs) || {}; } catch (e) {}
+    this.setState({ theme: theme, tab: tab || 'why', reduced: reduced, reqs: reqs });
     if (tab) this.revealPanel(reduced);
     this.onHash = () => {
       var t = this.tabFromHash();
@@ -242,16 +258,23 @@ class Component extends DCLogic {
     try { window.addEventListener('hashchange', this.onHash); } catch (e) {}
     var v = this.heroEl;
     if (v) {
+      // The toggle's glyph follows the film's own play and pause events, so it stays right when autoplay is
+      // refused, the film is clicked, or a reduced-motion play reaches the end.
+      this.onHeroPlay = () => this.setState({ heroPaused: false });
+      this.onHeroPause = () => this.setState({ heroPaused: true });
+      try { v.addEventListener('play', this.onHeroPlay); v.addEventListener('pause', this.onHeroPause); } catch (e) {}
       if (reduced) {
         try { v.removeAttribute('autoplay'); v.removeAttribute('loop'); v.loop = false; v.pause(); } catch (e) {}
         this.setState({ heroPaused: true });
       } else {
-        try { v.muted = true; v.loop = true; var p = v.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+        try { v.muted = true; v.loop = true; var p = v.play(); if (p && p.catch) p.catch(this.onHeroPause); } catch (e) {}
+        this.setState({ heroPaused: !!v.paused });
       }
     }
   }
   componentWillUnmount() {
     try { window.removeEventListener('hashchange', this.onHash); } catch (e) {}
+    try { if (this.heroEl) { this.heroEl.removeEventListener('play', this.onHeroPlay); this.heroEl.removeEventListener('pause', this.onHeroPause); } } catch (e) {}
     if (this.copyTimer) clearTimeout(this.copyTimer);
   }
   tabFromHash() {
@@ -293,42 +316,49 @@ class Component extends DCLogic {
   tabKey = (e) => {
     var ids = ['why', 'run', 'first-hour', 'limits'];
     var i = ids.indexOf((this.state || {}).tab || 'why');
-    if (e.key === 'ArrowRight') { e.preventDefault(); this.selectTab(ids[(i + 1) % 4], true); }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); this.selectTab(ids[(i + 3) % 4], true); }
-    else if (e.key === 'Home') { e.preventDefault(); this.selectTab(ids[0], true); }
-    else if (e.key === 'End') { e.preventDefault(); this.selectTab(ids[3], true); }
+    // Focus stays on the tab; the panel it now shows scrolls into view, as on a click.
+    if (e.key === 'ArrowRight') { e.preventDefault(); this.selectTab(ids[(i + 1) % 4], true, true); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); this.selectTab(ids[(i + 3) % 4], true, true); }
+    else if (e.key === 'Home') { e.preventDefault(); this.selectTab(ids[0], true, true); }
+    else if (e.key === 'End') { e.preventDefault(); this.selectTab(ids[3], true, true); }
   };
   toggleTheme = () => {
     var next = ((this.state || {}).theme === 'dark') ? 'light' : 'dark';
     try { window.localStorage.setItem('il-theme', next); } catch (e) {}
     this.setState({ theme: next });
   };
-  toggleHero = (e) => {
-    var v = e.currentTarget;
-    try { if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); this.setState({ heroPaused: false }); } else { v.pause(); this.setState({ heroPaused: true }); } } catch (err) {}
-  };
-  playHero = () => {
+  // One toggle for the film click and the corner button. The play and pause listeners set heroPaused.
+  toggleHero = () => {
     var v = this.heroEl;
-    try { if (v) { var p = v.play(); if (p && p.catch) p.catch(function () {}); } } catch (e) {}
-    this.setState({ heroPaused: false });
+    if (!v) return;
+    try { if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(this.onHeroPause); } else { v.pause(); } } catch (err) {}
   };
-  copyPanel = (key, text, e) => {
+  // One copy button per command. It writes the bare command only: two slash commands pasted together reach Claude Code as one message.
+  copyLine = (key, text, e) => {
     var btn = e && e.currentTarget;
     var done = () => {
-      this.setState({ copied: key });
+      this.setState({ copied: key, copyNote: 'Copied ' + text });
       if (this.copyTimer) clearTimeout(this.copyTimer);
-      this.copyTimer = setTimeout(() => this.setState({ copied: null }), 1400);
+      this.copyTimer = setTimeout(() => this.setState({ copied: null, copyNote: '' }), 1400);
     };
-    var select = function () {
+    // Copy refused (no permission, insecure context): select the command and say so to a screen reader.
+    var select = () => {
       try {
-        var body = btn && btn.closest('.cmd') && btn.closest('.cmd').querySelector('.cmd-body');
-        if (body) { var r = document.createRange(); r.selectNodeContents(body); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+        var c = btn && btn.parentNode && btn.parentNode.querySelector('.ln-c');
+        if (c) { var r = document.createRange(); r.selectNodeContents(c); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
       } catch (err) {}
+      this.setState({ copied: null, copyNote: 'Copy was blocked. The command is selected: press Ctrl+C, or ⌘C on a Mac.' });
     };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, select); }
       else select();
     } catch (err) { select(); }
+  };
+  toggleReq = (id) => () => {
+    var r = Object.assign({}, (this.state || {}).reqs || {});
+    r[id] = !r[id];
+    try { window.localStorage.setItem('il-reqs', JSON.stringify(r)); } catch (e) {}
+    this.setState({ reqs: r });
   };
   renderVals() {
     var s = this.state || {};
@@ -348,26 +378,30 @@ class Component extends DCLogic {
     };
     var f = flow[s.flow || 'stop'];
     var setF = (k) => () => this.setState({ flow: k });
-    var mk = (key, label, lines) => {
-      var w = 30;
-      var text = lines.map(function (l) { return l.m ? (l.c + ' '.repeat(Math.max(1, w - l.c.length)) + l.m) : l.c; }).join('\n');
-      return {
-        label: label,
-        copyLabel: s.copied === key ? 'Copied' : 'Copy',
-        copyAria: 'Copy the ' + label.toLowerCase() + ' commands',
-        copy: (e) => this.copyPanel(key, text, e),
-        lines: lines.map(function (l) { return { c: l.c, m: l.m || '', hasM: !!l.m, cls: l.m ? 'ln' : 'ln ln-solo' }; })
-      };
-    };
+    var mk = (key, label, lines, lead) => ({
+      label: label,
+      hasLead: !!lead,
+      lines: lines.map((l, i) => {
+        var k = key + i;
+        var copied = s.copied === k;
+        return {
+          c: l.c, m: l.m || '', hasM: !!l.m, cls: l.m ? 'ln' : 'ln ln-solo',
+          copy: (e) => this.copyLine(k, l.c, e),
+          copyAria: 'Copy ' + l.c, copyTitle: copied ? 'Copied' : 'Copy this command',
+          copied: copied ? 'true' : 'false', isCopied: copied, notCopied: !copied
+        };
+      })
+    });
     var panels = [
       mk('install', 'In Claude Code, once per machine', [
         { c: '/plugin marketplace add renzrollon/interlock' },
-        { c: '/plugin install interlock@interlock' }
+        { c: '/plugin install interlock@interlock', m: '# pick “Install for you (user scope)”' }
       ]),
-      mk('once', 'In a new session, once per repo', [
-        { c: '! interlock doctor', m: '# the allowlist an unattended run needs' },
+      mk('once', 'In the new session, once per repo', [
+        { c: '! interlock doctor', m: '# what would stop an unattended run' },
+        { c: '/interlock:fix-tests', m: '# how your tests run, saved for ship' },
         { c: '/interlock:bootstrap', m: '# the code graph, then one spec per feature' }
-      ]),
+      ], true),
       mk('every', 'Every change', [
         { c: '/interlock:spec "<idea>"', m: '# explore → artifacts → review, then stops' },
         { c: '/interlock:ship', m: '# waves → verify → commit' },
@@ -375,6 +409,13 @@ class Component extends DCLogic {
         { c: '/interlock:settle --create --review', m: '# draft PR → review → fix rounds → verdict' }
       ])
     ];
+    var rq = s.reqs || {};
+    var reqs = [
+      ['cc', 'Claude Code 2.1.154 or newer', ''],
+      ['wf', 'Dynamic workflows on', '(on a Pro plan, enable them in /config)'],
+      ['node', 'Node.js 22.12 or newer, with npm', ''],
+      ['git', 'A git repository with code in it', '']
+    ].map((r) => ({ label: r[1], note: r[2], hasNote: !!r[2], done: !!rq[r[0]], toggle: this.toggleReq(r[0]) }));
     var base = 'https://github.com/renzrollon/interlock/blob/main/docs/';
     var docs = [
       ['01', 'The first hour', '01-first-hour.md'], ['02', 'The checkpoint', '02-the-checkpoint.md'],
@@ -399,14 +440,14 @@ class Component extends DCLogic {
       isWhy: tab === 'why', isRun: tab === 'run', isFirst: tab === 'first-hour', isLimits: tab === 'limits',
       heroRef: this.heroRef,
       toggleHero: this.toggleHero,
-      playHero: this.playHero,
-      showHeroPlay: !!(s.reduced && s.heroPaused),
+      heroIsPaused: !!s.heroPaused, heroIsPlaying: !s.heroPaused,
+      heroToggleLabel: s.heroPaused ? 'Play the 34-second film' : 'Pause the 34-second film',
       flowName: f[0], flowDesc: f[1],
       fBootstrap: setF('bootstrap'), fSpec: setF('spec'), fStop: setF('stop'), fShip: setF('ship'), fSettle: setF('settle'),
       fClear: () => this.setState({ flow: null }),
       goRun: () => this.selectTab('run', false, true),
       goFirstHour: () => this.selectTab('first-hour', false, true),
-      panels: panels,
+      panels: panels, reqs: reqs, copyNote: s.copyNote || "",
       docs: docs
     };
   }

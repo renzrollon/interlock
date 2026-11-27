@@ -393,6 +393,12 @@ re-derives or rounds an indicator differently, so no two of them can disagree
 about a value or a denominator. A test renders one object to all three and
 compares them figure by figure.
 
+The text output caps every list it prints: a list longer than its display bound
+(`TEXT_LIST_MAX_ROWS` in `lib/report.mjs`) prints its first rows, then one line
+saying how many it left out and that `--json` names them all. Runs per change
+lists the changes with the most runs first, so the cap never hides a change that
+took several. The bound is a display constant, never a limit an indicator reads.
+
 ```bash
 interlock report --html > report.html
 interlock report --html docs/report.html
@@ -427,7 +433,8 @@ zero"*, and on these corpora that mistranslation would be near-total.
 - Metrics files are classified by their `schema` key, never by filename.
   `skills/review-artifacts` writes `review-artifacts-<change>-<stamp>.json` into
   the same directory, which the glob `review-*.json` also matches while carrying
-  finding bodies instead of counts. Unrecognized shapes are named and excluded.
+  finding bodies instead of counts. Unrecognized shapes are counted, named
+  (in the text output up to its list cap) and excluded.
 - A torn final line costs that one record and no more, in every corpus. An
   append-only log truncated by a crash is expected, not exceptional.
 - The command is offline: no model, no network.

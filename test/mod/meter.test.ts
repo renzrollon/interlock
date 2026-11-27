@@ -80,11 +80,11 @@ const TESTS_REASON =
 const COMMIT_REASON =
   'guard-commit: `git commit` is blocked during the remediation stage of a ship run — commits are made ' +
   'only in the commit stage, by the commit step, as one feature-level commit. This is the ' +
-  'deterministic form of the disable-model-invocation flag on skills/commit. ' +
-  'If you are an agent inside an active run: do not commit, and do not close or halt the run — ' +
-  "the run's own commit step makes the commit. " +
-  'If you are a person and the run for change add-thing has already stopped: ' +
-  'remove the stage marker at .claude/ship/add-thing/stage.json by hand.'
+  'deterministic form of the disable-model-invocation flag on skills/commit.\n' +
+  'agent: do not commit, and do not close or halt the run — inside an active run, ' +
+  "the run's own commit step makes the commit.\n" +
+  'person: remove the stage marker at .claude/ship/add-thing/stage.json by hand — ' +
+  'if the run for change add-thing has already stopped.'
 const RELAUNCH_REASON = denyReason('2026-10-05T06:00:00.000Z')
 const GUARD_NAMED = /guard-(tests|tasks|commit|relaunch)/
 

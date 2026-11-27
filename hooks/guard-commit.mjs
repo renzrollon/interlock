@@ -60,9 +60,11 @@ export function isGitCommit(command) {
 const PLAIN_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
 
 /**
- * What the denial says after its first sentence, for two audiences in order:
- * an agent inside an active run (do not commit, do not close or halt the run),
- * then a person whose run has already stopped (the way to clear the marker).
+ * What the denial says after its first sentence: an `agent:` line for an agent
+ * inside an active run (do not commit, do not close or halt the run), then a
+ * `person:` line for a person whose run has already stopped (the way to clear
+ * the marker). Each line leads with its remedy, and the condition it applies
+ * under comes after.
  *
  * The advice to close rests on the run manifest being USABLE and MATCHING — the
  * one condition under which `interlock run close --halt` clears this very file
@@ -80,8 +82,8 @@ async function wayOut(marker, root) {
   const change = isChangeName(marker.change) ? marker.change : null
   const where = path ? `the stage marker at ${path}` : 'the stage marker'
   const inRun =
-    `If you are an agent inside an active run: do not commit, and do not close or halt the run — ` +
-    `the run's own commit step makes the commit. `
+    `agent: do not commit, and do not close or halt the run — inside an active run, ` +
+    `the run's own commit step makes the commit.`
 
   let runId = null
   let error = null
@@ -106,9 +108,7 @@ async function wayOut(marker, root) {
   if (usable && path) {
     const { command } = owedClose(path)
     return {
-      text:
-        inRun +
-        `If you are a person and ${subject} has already stopped: run \`${command}\` to clear ${where}.`,
+      text: `${inRun}\nperson: run \`${command}\` to clear ${where} — if ${subject} has already stopped.`,
       change,
       runId,
       error
@@ -116,9 +116,8 @@ async function wayOut(marker, root) {
   }
   return {
     text:
-      inRun +
-      `If you are a person and ${change ? `the run for change ${change}` : 'the run'} has already stopped: ` +
-      `remove ${where} by hand.`,
+      `${inRun}\nperson: remove ${where} by hand — if ` +
+      `${change ? `the run for change ${change}` : 'the run'} has already stopped.`,
     change,
     error
   }
@@ -145,7 +144,7 @@ try {
   deny(
     `${GUARD}: \`git commit\` is blocked during the ${stage} stage of a ship run — commits are made ` +
       `only in the commit stage, by the commit step, as one feature-level commit. This is the ` +
-      `deterministic form of the disable-model-invocation flag on skills/commit. ` +
+      `deterministic form of the disable-model-invocation flag on skills/commit.\n` +
       way.text,
     detail
   )

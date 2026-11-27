@@ -2588,6 +2588,26 @@ test('guard-commit: a usable matching manifest advises the close, naming change,
   }
 })
 
+test('guard-commit: the denial gives an agent: line then a person: line, each leading with its remedy', () => {
+  for (const [label, plant, remedy] of [
+    ['a usable manifest', root => plantManifest(root, { schema: RUN_SCHEMA_TAG, change: 'add-thing', runId: 'r1' }), /^person: run `interlock run close --halt "<reason>"` to clear the stage marker at \.claude\/ship\/add-thing\/stage\.json — if the run for change add-thing \(run r1\) has already stopped\.$/],
+    ['no manifest', () => {}, /^person: remove the stage marker at \.claude\/ship\/add-thing\/stage\.json by hand — if the run for change add-thing has already stopped\.$/]
+  ]) {
+    const root = tmpRoot()
+    try {
+      writeStage('add-thing', 'implement', { root, pid: process.pid })
+      plant(root)
+      const lines = commitDenial(root).reason.split('\n')
+      assert.equal(lines.length, 3, `${label}: the guard's sentence, then one line per reader`)
+      assert.ok(lines[0].startsWith('guard-commit: '), label)
+      assert.match(lines[1], /^agent: do not commit, and do not close or halt the run — inside an active run/, label)
+      assert.match(lines[2], remedy, label)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
 test('guard-commit: running the advised close against a usable manifest lets the next commit through', () => {
   const root = tmpRoot()
   try {

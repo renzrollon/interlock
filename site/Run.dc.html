@@ -57,7 +57,7 @@
     <p class="cap" style="margin-top: 10px; max-width: 110ch;">Every halt routes to close: a halted run writes the same receipt, outcome record and terminal trajectory event a completion does. Only the exit code differs. Dashed states appear with their flag. Not drawn: run start → close when a stored plan is reused and every task is already ticked, and done → close under <code>--apply-only</code>.</p>
 
     <div style="margin-top: 24px;">
-      <p class="term-cap">interlock run, one step at a time · add-report-json-flag</p>
+      <p class="term-cap">interlock run, one step at a time · <span class="nw">add-report-json-flag</span></p>
       <div class="term term-tall" role="log" aria-live="polite" ref="{{termRef}}"><sc-for list="{{lines}}" as="l" hint-placeholder-count="6"><div class="tline {{l.cls}}">{{l.t}}</div></sc-for></div>
       <sc-if value="{{hasNote}}" hint-placeholder-val="{{false}}">
         <p class="body-sm soft" style="margin-top: 12px; max-width: 90ch;">{{note}}</p>
@@ -82,12 +82,12 @@
           <tr class="clk {{rows.h7.cls}}" onClick="{{rows.h7.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — unit suite is red (&lt;n&gt; failing, &lt;k&gt; root-cause cluster(s)) · unit suite was weakened (&lt;signal&gt;) · unit suite did not run</button></td><td>final verification</td><td>judge, final</td><td>Fix it, or <code>/interlock:fix-tests</code>. Ship will not weaken a test, loosen an assertion, or narrow the suite to get green.</td></tr>
           <tr class="clk {{rows.h8.cls}}" onClick="{{rows.h8.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — &lt;n&gt; unresolved blocker(s) after 2 remediation round(s)</button></td><td>strict only</td><td>verdict</td><td>Two failed rounds usually means the design was wrong, not the code. Re-spec rather than a third round.</td></tr>
           <tr class="clk {{rows.h9.cls}}" onClick="{{rows.h9.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — merge-lanes halted on wave &lt;n&gt;: real collision on &lt;paths&gt;</button></td><td>isolate-waves: two lanes wrote the same file despite a disjoint prediction</td><td>record-batch</td><td>Resolve the writes by hand from the named worktrees. Merge-lanes never applies a guess.</td></tr>
-          <tr class="clk {{rows.h10.cls}}" onClick="{{rows.h10.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — the run exceeded the published run-step cap (maxRunSteps=&lt;n&gt;) without reaching a terminal state</button></td><td>the loop is not converging</td><td>any</td><td>Read the trajectory.</td></tr>
-          <tr class="clk {{rows.h11.cls}}" onClick="{{rows.h11.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — out of sequence: the run program's last step named `interlock &lt;x&gt;` as its continuation, and this call was `interlock &lt;y&gt;`</button></td><td>a driver skipped, repeated or invented a subcommand</td><td>any</td><td>A driver bug.</td></tr>
+          <tr><td><span class="m" style="display: block;">SHIP HALTED — the run exceeded the published run-step cap (maxRunSteps=&lt;n&gt;) without reaching a terminal state</span><span class="tag tag-neutral" style="margin-top: 8px;">not on the diagram</span></td><td>the loop is not converging</td><td>any</td><td>Read the trajectory.</td></tr>
+          <tr><td><span class="m" style="display: block;">SHIP HALTED — out of sequence: the run program's last step named `interlock &lt;x&gt;` as its continuation, and this call was `interlock &lt;y&gt;`</span><span class="tag tag-neutral" style="margin-top: 8px;">not on the diagram</span></td><td>a driver skipped, repeated or invented a subcommand</td><td>any</td><td>A driver bug.</td></tr>
           <tr class="clk {{rows.h12.cls}}" onClick="{{rows.h12.pick}}"><td><button type="button" class="row-btn m">SHIP HALTED — contradictory plan-shape flags: --solo and --waves were both passed</button></td><td>both flags</td><td>parse</td><td>Pass one. Halting here costs one invocation; guessing costs a whole run of the wrong shape.</td></tr>
           <tr class="clk {{rows.h13.cls}}" onClick="{{rows.h13.pick}}"><td><button type="button" class="row-btn m">RUN NOT RECONSTRUCTABLE: &lt;problems&gt; (exit 1 even beside SHIP COMPLETE)</button></td><td>a sequence gap, a missing run-start, or a CLI call with no logged exit</td><td>close</td><td><code>interlock run-log check</code>. Usually a write to <code>.claude/ship/</code> failed mid-run. <code>interlock doctor</code> probes exactly that.</td></tr>
           <tr class="clk {{rows.h14.cls}}" onClick="{{rows.h14.pick}}"><td><button type="button" class="row-btn m">No banner: /interlock:ship stops and says it needs dynamic workflows</button></td><td>Workflow tool unavailable</td><td>before the run</td><td>Enable dynamic workflows (Claude Code v2.1.154+, <code>/config</code>). Everything else still works. It does not fall back to chat and does not start the experimental runner.</td></tr>
-          <tr class="clk {{rows.h15.cls}}" onClick="{{rows.h15.pick}}"><td><button type="button" class="row-btn m">spec: blockers at the artifact review</button></td><td>a reviewer reported a blocker</td><td>spec</td><td>Fix the cause, not the report. No silent fix-and-continue.</td></tr>
+          <tr><td><span class="m" style="display: block;">spec: blockers at the artifact review</span><span class="tag tag-neutral" style="margin-top: 8px;">not on the diagram</span></td><td>a reviewer reported a blocker</td><td>spec</td><td>Fix the cause, not the report. No silent fix-and-continue.</td></tr>
         </tbody>
       </table>
     </div>
@@ -197,9 +197,12 @@ class Component extends DCLogic {
           var x = lit.offsetLeft + lit.offsetWidth / 2 - sc.clientWidth / 2;
           sc.scrollLeft = Math.max(0, x);
         } else { sc.scrollLeft = 0; }
+        // Reveal only the node a halt row picked, never the stepper's current node. site.css gives
+        // .sm-node a scroll-margin-top, so the node lands below the sticky header rather than under it.
         if (this.revealHalt) {
           this.revealHalt = false;
-          if (lit && lit.scrollIntoView) lit.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+          var picked = sc.querySelector('.sm-hl');
+          if (picked && picked.scrollIntoView) picked.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
         }
       } catch (e) {}
     }
@@ -393,6 +396,10 @@ class Component extends DCLogic {
       });
     });
 
+    // Before the first Step the terminal says what the controls do, rather than standing 360px tall and empty.
+    // Three short lines: the panel does not wrap, and one long line was cut off at 390px.
+    if (!lines.length) ['# Nothing has run yet.', '# Step shows the run\'s first command.', '# Play walks every step.'].forEach(function (t) { lines.push({ t: t, cls: 't-dim' }); });
+
     var CX = function (c) { return 24 + c * 208; };
     var RY = function (r) { return 52 + r * 76; };
     var W = 168, HW = 160, H = 48;
@@ -511,7 +518,10 @@ class Component extends DCLogic {
       { t: 'every halt → close: receipt, outcome record, trajectory, exit 1', x: 470, y: BUS + 6, cls: '' }
     ];
     var hrow = {};
-    var map = { h1: 'preflight_halt', h2: 'preflight_halt', h3: 'preflight_halt', h4: 'failure_halt', h5: 'interwave_halt', h6: 'unit_halt', h7: 'unit_halt', h8: 'blocker_halt', h9: 'merge_halt', h10: null, h11: null, h12: 'trampoline_halt', h13: 'close', h14: 'trampoline_halt', h15: null };
+    // Each clickable row lights the node its halt fires at. h12: the Workflow refuses --solo with --waves
+    // before run start, so it lights ship_launch, not the missing-Workflow halt. h10, h11 and h15 fire at no
+    // one node; their rows are not clickable and carry a "not on the diagram" tag instead.
+    var map = { h1: 'preflight_halt', h2: 'preflight_halt', h3: 'preflight_halt', h4: 'failure_halt', h5: 'interwave_halt', h6: 'unit_halt', h7: 'unit_halt', h8: 'blocker_halt', h9: 'merge_halt', h12: 'ship_launch', h13: 'close', h14: 'trampoline_halt' };
     Object.keys(map).forEach((k) => { hrow[k] = { cls: s.hlRow === k ? 'sel' : '', pick: this.pickHalt(k, map[k]) }; });
     var board = [
       'plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted',

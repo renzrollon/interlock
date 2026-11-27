@@ -10,6 +10,7 @@ import {
   normalizeFailureSignature,
   nextRepairAction,
   formatVerification,
+  formatFailingRow,
   SKIP_REASONS,
   BANNERS,
   VERIFY_CONTEXTS,
@@ -849,6 +850,67 @@ test('formatVerification renders a unit judgement, a verdict and a repair action
 
   const action = nextRepairAction({ iterationsUsed: LIMITS.rootCauseIterations, clusters: [], halt: true })
   assert.match(formatVerification(action), /^HALT — /)
+})
+
+// --- the red-suite halt's failing: row --------------------------------------
+
+const redWith = failures => judgeUnitResult(unitResult({ exitCode: 1, failed: failures.length, failures }))
+
+test('a red judgement names its failing tests, biggest root cause first, with the file when given', () => {
+  const judgement = redWith([
+    { test: 'keeps the other', message: 'Error: lone cause' },
+    { test: 'adds the thing', file: 'test/thing.test.mjs', message: 'TypeError: x is undefined' },
+    { test: 'adds another', file: 'test/thing.test.mjs', message: 'TypeError: x is undefined' }
+  ])
+  assert.deepEqual(judgement.failing, [
+    'adds the thing (test/thing.test.mjs)',
+    'adds another (test/thing.test.mjs)',
+    'keeps the other'
+  ])
+  assert.equal(formatFailingRow(judgement), 'failing: adds the thing (test/thing.test.mjs); adds another (test/thing.test.mjs); keeps the other')
+})
+
+test('every unit judgement carries a failing list, and only a red suite gets a failing: row', () => {
+  const green = judgeUnitResult(unitResult({ exitCode: 0, failed: 0 }))
+  assert.deepEqual(green.failing, [])
+  assert.equal(formatFailingRow(green), null)
+  const notRun = judgeUnitResult({ kind: 'unit', ran: false, reason: 'command not found (exit 127)' })
+  assert.deepEqual(notRun.failing, [])
+  assert.equal(formatFailingRow(notRun), null)
+  const excused = judgeUnitResult(unitResult({ exitCode: 1, failed: 1, failures: ['Error: old'] }), { preExistingFailures: true })
+  assert.equal(formatFailingRow(excused), null)
+  assert.equal(formatFailingRow(null), null)
+})
+
+test('a failing: row past the published cap states the cut and where the whole list is', () => {
+  const cap = LIMITS.haltFailingTests
+  const failures = Array.from({ length: cap + 3 }, (_, i) => ({ test: `case ${i}`, message: `Error: cause ${i}` }))
+  const judgement = redWith(failures)
+  const row = formatFailingRow(judgement, { whole: '.claude/ship/verify-final.json' })
+  assert.equal(row.split('; ').length, cap)
+  assert.match(row, / — and 3 more, all listed in \.claude\/ship\/verify-final\.json$/)
+  assert.match(formatFailingRow(judgement), / — and 3 more$/)
+})
+
+test('a red result that named no failures says so instead of printing an empty row', () => {
+  const judgement = judgeUnitResult(unitResult({ exitCode: 1, failed: 3 }))
+  assert.equal(
+    formatFailingRow(judgement),
+    "failing: none named — the unit result reported 3 failing without test names; the runner's output lists them"
+  )
+  assert.match(formatFailingRow(judgeUnitResult(unitResult({ exitCode: 2 }))), /reported exit 2 without test names/)
+})
+
+test('UNIT HALT and VERIFY HALT print the failing: row straight under their headline', () => {
+  const failures = [{ test: 'adds the thing', message: 'TypeError: x' }]
+  const unitLines = formatVerification(redWith(failures)).split('\n')
+  assert.match(unitLines[0], /^UNIT HALT — unit suite is red/)
+  assert.equal(unitLines[1], '  failing: adds the thing')
+  const verdict = judgeVerification(planVerification(profile()), [unitResult({ exitCode: 1, failed: 1, failures })], { context: 'final' })
+  const verdictLines = formatVerification(verdict).split('\n')
+  assert.match(verdictLines[0], /^VERIFY HALT \[final\] — unit suite is red/)
+  assert.equal(verdictLines[1], '  failing: adds the thing')
+  assert.doesNotMatch(formatVerification(judgeUnitResult(unitResult({ exitCode: 0, failed: 0 }))), /failing:/)
 })
 
 test('formatVerification rejects something it cannot render', () => {
