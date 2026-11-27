@@ -18,8 +18,7 @@
 // fi` is seen. It is a guardrail against the wrong-stage mistake, not a sandbox
 // against a determined adversary.
 
-import { readStage, owedClose } from '../lib/ship-stage.mjs'
-import { isChangeName } from '../lib/artifact-snapshot.mjs'
+import { readStage, owedClose, isChangeName, isPlainMarkerPath } from '../lib/ship-stage.mjs'
 import { readEvent, allow, deny, toolName, toolInput, projectRoot } from './_shared.mjs'
 
 const GUARD = 'guard-commit'
@@ -78,9 +77,9 @@ const PLAIN_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
  * @returns {Promise<{ text: string, change?: string, runId?: string, error?: string }>}
  */
 async function wayOut(marker, root) {
-  const path = typeof marker.path === 'string' ? marker.path : null
+  const path = isPlainMarkerPath(marker.path) ? marker.path : null
   const change = isChangeName(marker.change) ? marker.change : null
-  const where = path ? `the stage marker at ${path}` : 'the stage marker'
+  const where = path ? `the stage marker at ${path}` : 'the stage marker under .claude/ship/'
   const inRun =
     `agent: do not commit, and do not close or halt the run — inside an active run, ` +
     `the run's own commit step makes the commit.`
@@ -108,7 +107,7 @@ async function wayOut(marker, root) {
   if (usable && path) {
     const { command } = owedClose(path)
     return {
-      text: `${inRun}\nperson: run \`${command}\` to clear ${where} — if ${subject} has already stopped.`,
+      text: `${inRun}\nperson: run \`${command}\` from the directory the run started in to clear ${where} — if ${subject} has already stopped.`,
       change,
       runId,
       error

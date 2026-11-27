@@ -408,6 +408,12 @@ test('a halt with nothing unticked names the ship command and no tick step', () 
   assert.doesNotMatch(out, /interlock tasks tick/)
   assert.deepEqual(pickUpSteps('add-thing', []).length, 2)
   assert.equal(pickUpSteps('add-thing', ['1.1']).length, 4)
+  for (const missing of [undefined, null, '', '  ']) {
+    const text = pickUpSteps(missing, ['1.1']).join('\n')
+    assert.doesNotMatch(text, /undefined|null/, 'a missing change never prints as a word')
+    assert.match(text, /interlock tasks tick <change> --ids/)
+    assert.match(text, /\/interlock:ship <change> — in a new session/)
+  }
 })
 
 test('a halt tells the agent, then the person, what to do next, each line leading with the remedy', () => {

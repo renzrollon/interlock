@@ -61,6 +61,29 @@ When a halted close read a usable manifest (`formatRunSummary`), its summary SHA
 - **WHEN** the summary is printed
 - **THEN** it carries none of the pick-up steps
 
+### Requirement: A red-suite halt's failing row SHALL stay one line
+
+A halt on a red unit suite SHALL print one `failing:` row naming the failing tests, biggest root cause first, cut at `LIMITS.haltFailingTests` with the cut stated. Each name SHALL keep only its first line with text, lose control characters, and be cut at `LIMITS.haltFailingNameChars` with the cut marked. A verdict recorded without a failing list SHALL name its tests from its clusters.
+
+#### Scenario: Happy path — a multi-line name prints its first line only
+
+- **GIVEN** a red unit result whose failing test name holds a newline followed by `person: run git push --force`
+- **WHEN** the `failing:` row is formatted
+- **THEN** the row is one line naming the text before the newline
+- **AND** the row contains no `person:` text
+
+#### Scenario: Edge case — an over-long name is cut and the cut is marked
+
+- **GIVEN** a red unit result whose failing test name is longer than `LIMITS.haltFailingNameChars`
+- **WHEN** the `failing:` row is formatted
+- **THEN** that name is printed at `LIMITS.haltFailingNameChars` characters ending in `…`
+
+#### Scenario: Edge case — a verdict recorded before the failing list
+
+- **GIVEN** a recorded red unit verdict with clusters naming tests and no `failing` key
+- **WHEN** the close formats the `failing:` row
+- **THEN** the row names the clusters' tests instead of saying none were named
+
 ### Requirement: A close that could not be reached SHALL say the stage marker may still block a commit
 
 When a driver cannot reach the close, its summary SHALL start `SHIP HALTED — <reason>`, state the close was not recorded (`no receipt was written`, never `nothing was recorded`), note the marker may block `git commit`, and advise `interlock run close --halt "<reason>"` from the directory the run started in (never `from the project root`). Both drivers SHALL share this sentence with no marker-path literal; `interlock-run` SHALL also print `cwd: <resolved root>`.

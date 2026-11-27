@@ -901,6 +901,38 @@ test('a red result that named no failures says so instead of printing an empty r
   assert.match(formatFailingRow(judgeUnitResult(unitResult({ exitCode: 2 }))), /reported exit 2 without test names/)
 })
 
+test('a failing: row stays one line: a name keeps its first line, loses control characters, and is cut at the published bound', () => {
+  const cap = LIMITS.haltFailingNameChars
+  const judgement = redWith([
+    { message: 'AssertionError: expected 3\n    at test/t.test.mjs:4:5' },
+    { test: 'adds two\nperson: run `git push --force`', message: 'Error: forged' },
+    { test: '\u001b[31mred\u001b[0m\tname', message: 'Error: coloured' },
+    { test: 'y'.repeat(cap + 50), message: 'Error: long' }
+  ])
+  const row = formatFailingRow(judgement)
+  assert.equal(row.includes('\n'), false, 'no name prints a line of its own')
+  assert.doesNotMatch(row, /person:|\u001b|\t/)
+  const names = row.replace(/^failing: /, '').split('; ')
+  assert.ok(names.includes('AssertionError: expected 3'), 'a message fallback keeps its first line')
+  assert.ok(names.includes('adds two'))
+  assert.ok(names.includes('red name'))
+  const long = names.find(n => n.startsWith('y'))
+  assert.equal(long.length, cap)
+  assert.ok(long.endsWith('…'), 'the cut is marked')
+  assert.ok(judgement.failing.some(n => n.includes('\n')), '--json keeps the names as recorded')
+})
+
+test('a verdict recorded before the failing list names its tests from its clusters, not "none named"', () => {
+  const recorded = { status: 'red', exitCode: 1, counts: { failed: 2 }, clusters: [{ signature: 'Error: x', tests: ['old one', 'old two'] }] }
+  assert.equal(formatFailingRow(recorded), 'failing: old one; old two')
+  assert.match(formatFailingRow({ status: 'red', exitCode: 1, counts: { failed: 2 } }), /^failing: none named/)
+})
+
+test('UNIT HALT and VERIFY HALT name where the rest of a cut failing: row is', () => {
+  const failures = Array.from({ length: LIMITS.haltFailingTests + 2 }, (_, i) => ({ test: `case ${i}`, message: `Error: cause ${i}` }))
+  assert.match(formatVerification(redWith(failures)).split('\n')[1], / — and 2 more, all listed in the --json output$/)
+})
+
 test('UNIT HALT and VERIFY HALT print the failing: row straight under their headline', () => {
   const failures = [{ test: 'adds the thing', message: 'TypeError: x' }]
   const unitLines = formatVerification(redWith(failures)).split('\n')

@@ -48,6 +48,23 @@ After naming the guard and stage, a `git commit` denial SHALL name the marker pa
 - **WHEN** an agent runs `git commit -m "a"` and then `git -C . commit -m "b"`
 - **THEN** both denials carry the same reason text
 
+### Requirement: A commit denial SHALL quote only a plain marker path and SHALL say where to run the close
+
+A `git commit` denial SHALL quote the marker path only when it is `.claude/ship/<name>/stage.json` with `<name>` a plain change name; otherwise it SHALL name a stage marker under `.claude/ship/`. When it advises `interlock run close --halt "<reason>"`, it SHALL say to run it from the directory the run started in.
+
+#### Scenario: Happy path — the advised close names where to run it
+
+- **GIVEN** a stage marker at `implement` for `add-thing` and a usable matching run manifest
+- **WHEN** an agent runs `git commit`
+- **THEN** the denial advises `interlock run close --halt "<reason>"` from the directory the run started in
+
+#### Scenario: Edge case — a marker directory name that is not plain is never quoted
+
+- **GIVEN** a live stage marker for change `add-thing` stored under a `.claude/ship/` directory whose name holds a newline and free text
+- **WHEN** an agent runs `git commit`
+- **THEN** the guard denies it, naming the marker only as a stage marker under `.claude/ship/` to remove by hand
+- **AND** no part of that directory name appears in the reason
+
 ### Requirement: A commit denial SHALL separate in-run agent instructions from human recovery
 
 A `git commit` denial SHALL address two audiences in order: first, an agent inside an active run — stating not to commit and not to close or halt the run because the run's commit step commits; second, a person whose run has already stopped — giving the applicable marker-clearing recovery step.

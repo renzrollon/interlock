@@ -393,11 +393,13 @@ re-derives or rounds an indicator differently, so no two of them can disagree
 about a value or a denominator. A test renders one object to all three and
 compares them figure by figure.
 
-The text output caps every list it prints: a list longer than its display bound
+The text output bounds every list it prints: a list longer than its display bound
 (`TEXT_LIST_MAX_ROWS` in `lib/report.mjs`) prints its first rows, then one line
 saying how many it left out and that `--json` names them all. Runs per change
-lists the changes with the most runs first, so the cap never hides a change that
-took several. The bound is a display constant, never a limit an indicator reads.
+lists the changes with the most runs first, so a change the bound hides never has
+more runs than one it shows, and the fold line counts the runs of the ones it
+hides. The bound is a display constant, never a limit an indicator reads, so
+`interlock limits` does not list it.
 
 ```bash
 interlock report --html > report.html
