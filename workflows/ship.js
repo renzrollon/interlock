@@ -665,7 +665,10 @@ async function stop(reason) {
       action: 'halt',
       summary:
         `SHIP HALTED — ${reason}\n\n` +
-        `The close itself could not be reached, so no receipt was written for this run.`
+        `The close itself could not be reached, so the close was not recorded: no receipt was written, ` +
+        `and no outcome or terminal trajectory event was recorded for this run. ` +
+        `The stage marker may still block \`git commit\`; running ` +
+        `\`interlock run close --halt "<reason>"\` from the directory the run started in clears it.`
     }
   )
 }

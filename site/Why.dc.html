@@ -42,8 +42,8 @@
       <div class="row">
         <p class="pain-label">“Two parallel agents overwrote each other.”</p>
         <div>
-          <p class="body">The planner compares each task's predicted files on the canonical path and folds any two that collide into one lane, run in order by one agent. With <code>--isolate-waves</code>, each lane runs in its own git worktree and <code>interlock merge-lanes</code> folds them back; two lanes that wrote the same file halt the run naming the path and both lanes, never last-writer-wins.</p>
-          <p class="cost"><em>Cost:</em> the file prediction is still a model's. Without the flag the race is narrowed, not closed.</p>
+          <p class="body">The planner compares each task's predicted files on the canonical path and puts any two that collide into one lane, run in order by one agent. With <code>--isolate-waves</code>, each lane runs in its own git worktree and <code>interlock merge-lanes</code> merges them back; two lanes that wrote the same file halt the run naming the path and both lanes, never last-writer-wins.</p>
+          <p class="cost"><em>Cost:</em> the file prediction is still a model's. Without the flag the race is narrowed, not closed. The flag holds on the experimental runner; on <code>/interlock:ship</code> the runtime picks the worktrees' base, so the run banners <code>ISOLATION BASE NOT CONTROLLED</code> and halts with <code>LANE BASE MISMATCH</code> at the first merge-back, until a follow-up change.</p>
         </div>
       </div>
       <div class="row">
@@ -67,7 +67,7 @@
         <div class="row">
           <p class="pain-label">“The review reports everything, so we skim it.”</p>
           <div>
-            <p class="body">Up to six review dimensions run in parallel, then two skeptics attack every blocker and warning. A finding that does not survive is never shown to you. A dismissal must cite a <code>file:line</code> inside the reviewed diff or it dismisses nothing. The report prints how many findings were dismissed and how many refutations were refused.</p>
+            <p class="body">Up to nine review dimensions run in parallel, each blind to the others, then two skeptics attack every blocker and warning. A finding that does not survive is never shown to you. A dismissal must cite a <code>file:line</code> inside the reviewed diff or it dismisses nothing. The report prints how many findings were dismissed and how many refutations were refused.</p>
             <p class="cost"><em>Cost:</em> review is opt-in (<code>--review</code>, <code>--strict</code>, or <code>/interlock:review-code</code>) and it is the expensive part of a run. Default ship does not pay for it.</p>
           </div>
         </div>
@@ -107,7 +107,7 @@
         </div>
       </div>
       <div class="row">
-        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">3</span><h4 class="h-row">Zero-touch is a property of the runtime, not a promise.</h4></div>
+        <div style="display: flex; gap: 14px;"><span class="mono muted" style="font-size: 14px; padding-top: 2px;">3</span><h4 class="h-row">The loop runs where nobody can be asked.</h4></div>
         <div class="stack-24">
           <p class="body">You cannot get autonomy by instructing a model to be autonomous. You get it by running the loop somewhere that has no channel for a question. <code>lib/run.mjs</code> emits the whole ship program as versioned steps: the agents to spawn, their briefings, and the exact argv to call next. The two drivers interpret those steps and branch on nothing.</p>
           <blockquote class="pq">“<code>ship</code> asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening.”</blockquote>
@@ -164,7 +164,7 @@
         </div>
         <div class="row">
           <p class="h-row">Surface area</p>
-          <p class="body">Twenty-eight top-level subcommands, sixteen skills, four host adapters, six hook scripts and a hooks module. The repository books this as a cost.</p>
+          <p class="body">Thirty-nine top-level subcommands, sixteen skills, four host adapters, six hook scripts and a hooks module. The repository books this as a cost.</p>
         </div>
         <div class="row">
           <p class="h-row">Review is opt-in</p>

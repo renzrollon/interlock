@@ -17,6 +17,7 @@ import {
   clearStage,
   stagePath,
   markerExists,
+  owedClose,
   STAGES,
   MARKER_FIELDS,
   SHIP_DIR,
@@ -184,4 +185,63 @@ test('writeStage returns a warning instead of throwing when the path is unwritab
 test('the exported contract stays stable (guards and the workflow depend on it)', () => {
   assert.deepEqual([...STAGES], ['implement', 'verify', 'review', 'remediation', 'fix-tests', 'commit'])
   assert.deepEqual([...MARKER_FIELDS], ['stage', 'change', 'index', 'pid'])
+})
+
+// --- the path a marker was read from, and the close it owes -----------------
+
+function plantMarker(root, dir, marker) {
+  mkdirSync(join(root, SHIP_DIR, dir), { recursive: true })
+  writeFileSync(join(root, SHIP_DIR, dir, MARKER_FILE), JSON.stringify(marker) + '\n')
+}
+
+test('readStage returns the repo-relative POSIX path of the marker it read', () => {
+  const root = tmpRoot()
+  try {
+    writeStage('add-foo', 'implement', { root })
+    assert.equal(readStage({ root }).path, '.claude/ship/add-foo/stage.json')
+    assert.equal(readStage({ root, change: 'add-foo' }).path, '.claude/ship/add-foo/stage.json')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('readStage path comes from the directory read, not the marker change field', () => {
+  const root = tmpRoot()
+  try {
+    // No change field: the path must never become .claude/ship/undefined/stage.json.
+    plantMarker(root, 'add-foo', { stage: 'implement', index: 1, pid: process.pid })
+    const absent = readStage({ root })
+    assert.equal(absent.stage, 'implement')
+    assert.equal(absent.path, '.claude/ship/add-foo/stage.json')
+    assert.ok(!absent.path.includes('undefined'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  const other = tmpRoot()
+  try {
+    // A change field that names another directory.
+    plantMarker(other, 'old-name', { stage: 'review', change: 'add-thing', index: 1, pid: process.pid })
+    const r = readStage({ root: other })
+    assert.equal(r.change, 'add-thing')
+    assert.equal(r.path, '.claude/ship/old-name/stage.json')
+  } finally {
+    rmSync(other, { recursive: true, force: true })
+  }
+})
+
+test('readStage reports no path for an unknown stage', () => {
+  const root = tmpRoot()
+  try {
+    assert.equal(readStage({ root }).path, undefined)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('owedClose returns the marker path and the close command', () => {
+  assert.deepEqual(owedClose('.claude/ship/add-foo/stage.json'), {
+    markerPath: '.claude/ship/add-foo/stage.json',
+    command: 'interlock run close --halt "<reason>"'
+  })
+  assert.equal(owedClose('.claude\\ship\\add-foo\\stage.json').markerPath, '.claude/ship/add-foo/stage.json')
 })

@@ -69,6 +69,25 @@ test('a lone change resolves without being named', () => {
   rmSync(solo, { recursive: true, force: true })
 })
 
+test('dot-named directories are not changes (cli/change-resolution)', () => {
+  const dotted = mkdtempSync(join(tmpdir(), 'interlock-dot-'))
+  const base = join(dotted, 'openspec', 'changes')
+  mkdirSync(join(base, '.claude'), { recursive: true })
+  mkdirSync(join(base, 'add-auth'), { recursive: true })
+  assert.deepEqual(listChanges(dotted), ['add-auth'])
+  assert.deepEqual(resolveChange(dotted), { name: 'add-auth' })
+  rmSync(dotted, { recursive: true, force: true })
+})
+
+test('only archive/ and a dot-named directory lists nothing', () => {
+  const bare = mkdtempSync(join(tmpdir(), 'interlock-bare-'))
+  const base = join(bare, 'openspec', 'changes')
+  mkdirSync(join(base, 'archive'), { recursive: true })
+  mkdirSync(join(base, '.cache'), { recursive: true })
+  assert.deepEqual(listChanges(bare), [])
+  rmSync(bare, { recursive: true, force: true })
+})
+
 // --- inspection -----------------------------------------------------------
 
 test('a complete change is ready, with task progress counted', () => {

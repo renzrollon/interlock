@@ -2130,6 +2130,38 @@ test('formatMergeConfidence prints the two label names on one labels: line', () 
   assert.ok(lines[0].includes(result.labels.verdict.name) && lines[0].includes(result.labels.score.name), lines[0])
 })
 
+test('formatMergeConfidence puts the reasons directly under the verdict line, before what drives it', () => {
+  const result = assessMergeConfidence(fixture('no-review'))
+  const lines = formatMergeConfidence(result).split('\n')
+  assert.ok(result.reasons.length > 0)
+  assert.deepEqual(lines.slice(1, 1 + result.reasons.length), result.reasons.map(r => `reason: ${r}`))
+  assert.equal(lines.filter(l => l.startsWith('reason: ')).length, result.reasons.length, 'each reason prints once')
+})
+
+test('formatMergeConfidence folds the driving signals one absent input leaves unobserved into one row naming that input', () => {
+  const result = assessMergeConfidence(fixture('no-review'))
+  const text = formatMergeConfidence(result)
+  const review = result.driving.filter(d => /the --review input was not given$/.test(d.reason))
+  assert.ok(review.length > 1, 'the fixture leaves several signals waiting on --review')
+  const row = text.split('\n').find(l => l.trim().startsWith('--review not given: '))
+  assert.ok(row, text)
+  for (const d of review) assert.ok(row.includes(d.id), `${d.id} is on the --review row`)
+  assert.match(row, /review\.ran \[amber\]/, 'a signal that is not merely unobserved keeps its band')
+  const signals = text.slice(text.indexOf('\nsignals:'))
+  for (const d of review) assert.ok(signals.includes(d.reason), `${d.id} keeps its own reason in the signal list`)
+})
+
+test('formatMergeConfidence cuts a long evidence list to its first lines and says how many it left out', () => {
+  const result = assessMergeConfidence(fixture('no-review'))
+  const many = Array.from({ length: 20 }, (_, k) => `agent_resolved D${k + 1}`)
+  const signals = result.signals.map(s => (s.id === 'decisions.open' ? { ...s, evidence: many } : s))
+  const text = formatMergeConfidence({ ...result, signals })
+  const printed = many.filter(line => text.split('\n').some(l => l.trim() === line))
+  assert.ok(printed.length > 0 && printed.length < many.length, `printed ${printed.length} of ${many.length}`)
+  assert.deepEqual(printed, many.slice(0, printed.length), 'the first lines, in order')
+  assert.match(text, new RegExp(`and ${many.length - printed.length} more line\\(s\\) — --json carries every line`))
+})
+
 // --- the description block (design D15) ------------------------------------------------
 
 const HEAD_GIVEN = { sha: 'abcdef0123456789abcdef0123456789abcdef01' }

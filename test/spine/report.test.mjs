@@ -38,6 +38,7 @@ import {
   NO_EVAL_RESULT,
   REPORT_SCHEMA,
   SOURCES,
+  TEXT_LIST_MAX_ROWS,
   UNATTRIBUTED
 } from '../../lib/report.mjs'
 import { REPORT_CAPS } from '../../lib/limits.mjs'
@@ -301,6 +302,44 @@ test('the first-pass indicator is never presented as a CI rate', () => {
     const report = buildReport(dir)
     assert.match(report.indicators.firstPassShip.note, /not a CI success rate/)
     assert.match(formatReport(report), /not a CI success rate/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The text surface caps each list it prints; the count and --json carry every row.
+test('the text caps the not-counted list, states how many, and --json still names every file', () => {
+  const dir = root()
+  try {
+    const extra = 3
+    const names = Array.from({ length: TEXT_LIST_MAX_ROWS + extra }, (_, k) => `review-artifacts-x${k}-20260826-120000.json`)
+    for (const name of names) metricsFile(dir, name, { dimension: 'artifacts', findings: [] })
+    const report = buildReport(dir)
+    const text = formatReport(report)
+    const named = names.filter(n => text.includes(n))
+    assert.equal(named.length, TEXT_LIST_MAX_ROWS, 'the text names the first rows only')
+    assert.match(text, new RegExp(`not counted\\s+${names.length} file\\(s\\) declare no recognized schema`))
+    assert.match(text, new RegExp(`not counted\\s+and ${extra} more — interlock report --json names every file`))
+    assert.deepEqual(report.coverage.metrics.unrecognized.map(u => u.file).sort(), [...names].sort())
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the text lists the changes with the most runs first, capped, and says how many runs the rest hold', () => {
+  const dir = root()
+  try {
+    const changes = Array.from({ length: TEXT_LIST_MAX_ROWS + 2 }, (_, k) => `change-${String.fromCharCode(97 + k)}`)
+    for (const change of changes) trajectory(dir, `run-${change}`, [{ type: 'run-start' }], { change })
+    const rework = changes.at(-1)
+    trajectory(dir, `run-${rework}-2`, [{ type: 'run-start' }], { change: rework })
+    const report = buildReport(dir)
+    const text = formatReport(report)
+    const rows = text.split('\n').filter(l => /^ +change-[a-z]: \d+ run\(s\)$/.test(l))
+    assert.equal(rows.length, TEXT_LIST_MAX_ROWS)
+    assert.equal(rows[0].trim(), `${rework}: 2 run(s)`, 'the change that took two runs leads, though it sorts last by name')
+    assert.match(text, /and 2 more change\(s\), 1 run\(s\) each — interlock report --json lists every change/)
+    assert.equal(report.indicators.rework.attemptsPerChange.changes.length, changes.length)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

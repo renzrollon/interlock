@@ -1,10 +1,10 @@
 # Claude Design prompt: the Interlock landing site
 
-**How to use this file.** Open Claude Design (claude.ai/design), start a project with the **Interlock** design system attached, attach the four files in `site/assets/` so the model can see them, and paste everything from `BEGIN PROMPT` to the end of the file. Export the landing artboard as an HTML zip and install it as `site/README.md` describes ("Installing an export"); `.github/workflows/pages.yml` deploys `site/` on the next push to `main`. Every fact the page states is in the appendices, pinned to Interlock **v1.5.0**. When a fact changes, change it here first and regenerate. Never hand-edit a number into the HTML.
+**How to use this file.** Open Claude Design (claude.ai/design), start a project with the **Interlock** design system attached, attach the four files in `site/assets/` so the model can see them, and paste everything from `BEGIN PROMPT` to the end of the file. Export the landing artboard as an HTML zip and install it as `site/README.md` describes ("Installing an export"); `.github/workflows/pages.yml` deploys `site/` on the next push to `main`. Every fact the page states is in the appendices, pinned to Interlock **v1.21.0**. When a fact changes, change it here first and regenerate. Never hand-edit a number into the HTML.
 
-**What is deployed.** The page under `site/` was generated from this brief on 2026-10-11 with revision 2 of the Interlock design system, and installed with one local patch that `site/README.md` records.
+**What is deployed.** The page under `site/` was generated from this brief on 2026-10-11 with revision 2 of the Interlock design system, and installed with the local patches `site/README.md` lists. Facts that changed since were edited here first and then copied into the page string for string; the pass on 2026-11-26 re-pinned it to v1.21.0. A harden pass on 2026-11-27 (the halt-row map in C.6, the lit node clearing the header, arrow-key reveal, a focusable panel, the flow strip's roles, the film's keyboard toggle) was written here and patched into the page together; `site/README.md` lists each patch. An onboarding pass on 2026-11-27, after a live install showed `! interlock doctor` fails in the session the plugin was installed from, rewrote A.3 (a requirements checklist, the panels stacked in order, one copy button per command, the new-session line, `fix-tests` in the once-per-repo panel) and added the `fix-tests` step to D.1, and patched both into the page. A polish pass the same day wrote §3's spacing rhythm, whole inline code, scroll cues and section ends, §4's hanging doc titles, §5's per-command rows in the First hour timeline, the stepper's opening line, the flow strip's closing line and the caps table on phones, and §6's dark canvas and copy fallback here, and patched them into the page the same way. The state machine (C.3) no longer draws the inter-wave halt that 1.6.1 removed, but its slot in the halt row stays empty until a regeneration lays the row out again. Two things this brief says are not on the page yet, because they need a regeneration rather than a text edit: the stepper's `--isolate-waves` toggle still runs on to `SHIP COMPLETE` where C.8 now describes the Workflow host's `LANE BASE MISMATCH` halt, and the `--solo` toggle reuses the three-wave summary.
 
-**What was checked, and when.** On 2026-10-11, at v1.5.0, these blocks were re-read against the repository or regenerated from its code: A.0 to A.8, B.4, B.5, B.6, B.8, C.6 (the loud halts), C.7 to C.9, D.1, D.4, E.2, E.6, F.4, G.1 to G.4, G.6 and Appendix H. The plan preview in C.7 is `interlock waves` run on that example, the summaries in C.7 and D.1 are `formatRunSummary` called on it, C.9 is `interlock waves --format board` over a fixture a test pins, G.1 is `interlock limits`, and the `doctor` block in D.1 is `interlock doctor`. Everything else is carried from the v0.3.0 pin with its version and host wording corrected and is marked **reference** in §4: B.1 to B.3, B.7, C.1 to C.5, D.2, D.3, D.5, D.6, E.1, E.3 to E.5, E.7, E.8 and F.1 to F.3. The page renders some of those (C.3, D.2, D.3, E.1, F.1, F.2), so re-verify them at the next bump; the ones §4 does not name are context and never reach the page.
+**What was checked, and when.** On 2026-11-26, at v1.21.0, these blocks were re-read against the repository or regenerated from its code: §0, §4, §5, §7, A.1 to A.8, B.2's subcommand count, B.4, B.5, B.8, C.3, C.6 to C.9, D.1 to D.6, E.1, E.2, E.6, E.7, F.1, F.2, F.4, G.1 to G.4 and Appendix H. A.0 describes the recording, made on plugin 1.4.2, and is unchanged. The plan previews in C.7 are `interlock waves` run on that example and came out unchanged, the summaries in C.7 and D.1 are `formatRunSummary` called on it, C.9 is `interlock waves --format board` over a fixture a test pins, G.1 is `interlock limits`, G.2 is counted at the `v1.21.0` tag, and the `doctor` block in D.1 is `interlock doctor`. B.6 is carried from the v1.5.0 check without a re-read. Everything else is carried from the v0.3.0 pin and marked **reference** in §4: B.1 to B.3, B.7, C.1, C.2, C.4, C.5, E.3 to E.5, E.8 and F.3. None of those reaches the page.
 
 ---
 
@@ -14,7 +14,7 @@ BEGIN PROMPT
 
 Build a single-page landing site for **Interlock**, an open-source Claude Code plugin for spec-driven development, layered on OpenSpec. Deliver it as **one landing artboard** with one component per tab (`Why`, `Run`, `FirstHour`, `Limits`) and one shared stylesheet, `site.css`. The export is installed as-is under `site/`, where the landing artboard becomes `index.html` beside a folder `assets/` that already holds the images named in Appendix A.0. It is served from GitHub Pages at `https://renzrollon.github.io/interlock/`.
 
-The page has one job: convince an engineering team that already uses Claude Code to install Interlock and run one change through it this week. It does that by **showing a real run** and then letting the reader check the claims. Everything it states must be true of Interlock v1.5.0 exactly as the appendices describe it. Do not invent features, numbers, quotes, logos, customer names, testimonials, or benchmarks. If a section would need something the appendices do not supply, leave the section out.
+The page has one job: convince an engineering team that already uses Claude Code to install Interlock and run one change through it this week. It does that by **showing a real run** and then letting the reader check the claims. Everything it states must be true of Interlock v1.21.0 exactly as the appendices describe it. Do not invent features, numbers, quotes, logos, customer names, testimonials, or benchmarks. If a section would need something the appendices do not supply, leave the section out.
 
 The appendices hold more than the page shows. §4 names every block that is rendered. A block §4 does not name is reference: it keeps what you do render accurate, and it does not appear on the page.
 
@@ -74,14 +74,19 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 - Section subhead (`title-lg`): 20 to 24px at **500**, a plain label of what is under it. A page where every heading is a heavy claim reads as generated; one heavy line per screen is the rule.
 - Eyebrow: 13px, 600, sentence case, `color-accent`, no tracking, no uppercase. The wordmark is the one place capitals are tracked.
 - There is no third heading level.
+- Inline code (a command, flag, path or file name in running text) never breaks inside itself: `--location=global` or `merge-lanes` moves to the next line whole, and a code span wraps inside itself only when it is longer than the whole line.
 
 **Layout language.** A datasheet. Sections are separated by 1px `color-divider` rules and whitespace. **No card grid**: no tiles laid out in rows; a bordered box is for a control, a code panel or a table, never for a paragraph. Left-aligned text. Content column 1120px, gutter 24px, 16px under 640px. 4px radius on controls and panels, nothing rounder. Nothing on the landing page casts a shadow. No gradients, no glass, no stock illustration, no 3D, no icon set beyond the few control glyphs.
+
+**Spacing keeps its rhythm.** Consecutive paragraphs sit 16px apart; a code panel and the paragraph under it, 12px; a mono caption, 8px above the panel it names. A section ends on whitespace: where another section follows, its last row or disclosure draws no closing rule, because the next section's rule is the divider. Two hairlines framing an empty band read as a missing row.
 
 **Every section earns its place by showing something the tool printed or recorded.** That is film, a still from the film, an output panel, or a table of values. A section with none of those is prose, and prose gets no box, no background and no border: it is a subhead and paragraphs.
 
 **No stat tile for a number that changes monthly.** The proof strip holds three figures that are true by construction (Appendix A.4). Counts that move with every release, such as test files, shipped changes and commits, live in one table row each, labelled with the version and the command that produced them (Appendix G.2).
 
-**Output panels.** A panel is `term-ground` at both themes, mono 13.5px, 4px radius, no window chrome and no traffic-light dots. Above it sits one mono caption line saying what printed it. `term-accent` marks the two or three lines that matter (`SHIP COMPLETE`, the commit, `GATE` lines), `term-halt` marks a halt, `term-dim` is the page's own narration. Long lines scroll inside the panel; the body never scrolls sideways.
+**Output panels.** A panel is `term-ground` at both themes, mono 13.5px, 4px radius, no window chrome and no traffic-light dots. Above it sits one mono caption line saying what printed it. `term-accent` marks the two or three lines that matter (`SHIP COMPLETE`, the commit, `GATE` lines), `term-halt` marks a halt, `term-dim` is the page's own narration. Long lines scroll inside the panel; the body never scrolls sideways. An output panel's markup carries no whitespace between tags, so the page's own indentation never prints as blank lines inside the panel.
+
+**Scroll cues.** A table or the state machine that scrolls sideways inside its container shows a thin scrollbar at rest, a `color-border-strong` thumb on a `color-surface` track, so a reader sees there is more to the right before trying to scroll. Overlay scrollbars that appear only mid-scroll hide the commit and close columns and every table's last column.
 
 **Diagrams.** Inline SVG. 1px strokes, 2px for the current node only. Mono labels. Boxes are rectangles. Arrows are plain lines with small closed heads. The human node is the only accent-filled shape in any diagram. Halt nodes are outlined in `color-halt`.
 
@@ -89,14 +94,14 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
 
 ## 4. Page structure
 
-**Sticky header** (48 to 56px): wordmark `INTERLOCK` in tracked mono capitals after a 10px accent square, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. On phones the tab bar scrolls horizontally inside the header and the GitHub link moves to the footer.
+**Sticky header** (48 to 56px): wordmark `INTERLOCK` in tracked mono capitals after a 10px accent square, at left; the tab bar in the centre; at right an `Install` button (scrolls to the install block), a `GitHub` link (`https://github.com/renzrollon/interlock`), and a small light/dark toggle. Below 760px the header takes two rows: the wordmark, `Install` and the toggle on a 48px first row, and the tab bar on its own full-width row under them, edge to edge after a 1px `color-divider` rule, its four tabs sharing the width at a 44px touch height. The GitHub link moves to the footer. Where the four still do not fit, the row scrolls horizontally and the selected tab stays centred in it. Every in-page anchor (the tab panel, `#install`, a state-machine node) lands clear of the taller header.
 
 **Hero, above the tabs**, always present on arrival. Two columns from 960px up, stacked below it:
 
 - Left: the eyebrow, the H1, the lede and the one mono line (Appendix A.1).
 - Right: **the film loop** (Appendix A.0), 34 seconds, muted, with its caption and its mono figure line beneath it. Stacked under the lede on phones.
 - Below both, full width: the **flow strip** (Appendix A.2, behaviour in §5).
-- The **install block**: three captioned code panels (Appendix A.3), one copy button per panel.
+- The **install block**: a requirements checklist, then three captioned code panels stacked in order (Appendix A.3), one copy button per command.
 - **The whole run**: the 2:34 film with its poster, duration and size in mono, and its provenance line (Appendix A.0). Click to play. Never autoplays.
 - The **proof strip**: three figures in the display face with mono captions (Appendix A.4).
 
@@ -117,34 +122,34 @@ Banned words and phrases: revolutionary, seamless, supercharge, unleash, effortl
    - *The ten-minute read*: D.2.
    - *Asked, and never asked*: D.3 and D.4 as two columns, stacked on phones.
 4. **Limits and proof** (Appendices G, E and F). Headline: "A cap written in prose is a suggestion."
-   - *The caps*: G.1 as a searchable table, captioned "read from `interlock limits` at v1.5.0".
+   - *The caps*: G.1 as a searchable table, captioned "read from `interlock limits` at v1.21.0".
    - *The review*: the citation rule in three sentences from E.1.3, then the adjudication simulator (E.1.6).
    - *Compared*: the landscape table (F.1) and the objections (F.2) as a disclosure list.
    - *Stated limits*: the plain list from F.4, then the provenance table from G.2.
 
 **Not on the page**, linked from the footer by document number instead: the layers (B.2), the step contract and corpora (B.3, B.6, B.7), plan construction (C.2, C.4, C.5), the degradation banner table in C.6, the prompt-to-workflow ladder and the four work orders (D.5, D.6), verify, drift, `REVIEW.md`, evals, cost and receipts (E.3 to E.8), and for / not for (F.3). Where one of these would have answered a reader's next question, end the section with one mono link: `more in 06 · Why it works`.
 
-**Footer**: repo link, npm package link (`https://www.npmjs.com/package/@renzrollon/interlock`), OpenSpec link (`https://github.com/Fission-AI/OpenSpec`), the fourteen docs by number and title as links into the repo's `docs/` folder (Appendix G.4), MIT licence, and the three-line mono sign-off: "The script holds the loop / the CLI holds the rules / the agents do the work".
+**Footer**: repo link, npm package link (`https://www.npmjs.com/package/@renzrollon/interlock`), OpenSpec link (`https://github.com/Fission-AI/OpenSpec`), the seventeen docs by number and title as links into the repo's `docs/` folder (Appendix G.4), MIT licence, and the three-line mono sign-off: "The script holds the loop / the CLI holds the rules / the agents do the work". A doc title that wraps hangs under its title, not under its number.
 
 ## 5. Interactions, per section
 
 Build these and no others. There is no decision lens, no layer drawer and no tooltip tour.
 
-**Hero film loop.** The markup in Appendix A.0, unchanged. It autoplays muted and loops; under `prefers-reduced-motion` it shows its poster with a play button and waits. Clicking it toggles play.
+**Hero film loop.** The markup in Appendix A.0, unchanged. It autoplays muted and loops; under `prefers-reduced-motion` it shows its poster and waits. One 36px square toggle sits in the film's top-right corner at all times, the one corner the film leaves empty (its command label is bottom left, its speed marker bottom right): a pause glyph while the loop plays, a play glyph while it waits, labelled `Pause the 34-second film` or `Play the 34-second film`, and reachable by keyboard. It is drawn on the film's own `term-ground` with a 1px `term-dim` edge and a `term-accent` focus ring, and its glyph follows the film's own play and pause events, so it stays right when autoplay is refused. Clicking the film also toggles play.
 
-**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
+**Hero flow strip.** Five nodes in a row: `bootstrap` → `spec` → **You read the spec** → `ship` → `settle`. The checkpoint node is the accent-filled block and is 1.5x the width of the others. `spec` carries a small `SKILL` tag; `ship` carries an accent-outlined `WORKFLOW` tag. Focusing or hovering a node shows its one-line description from A.2; on touch devices the descriptions are simply printed under each node. Clicking `ship` switches to `#run`; clicking `spec` or the checkpoint switches to `#first-hour`. The strip is a list of five items: `spec`, the checkpoint and `ship` each hold one button that fills its cell, so the list keeps its items and each button keeps its role. Never put `role="listitem"` on a button. Their focus ring draws inside the cell, in `on-accent` on the checkpoint block. Under the strip, one mono line: "ship is a dynamic workflow, so there is nobody to ask." Where the descriptions are printed in the cells (touch devices, and the vertical list), nothing sits between the strip and that line, so it keeps 16px of space above it. **Below 640px the strip is a vertical list**: five full-width rows in order, the checkpoint row accent-filled, each with its description beside it. It never wraps into a two-two-one grid.
 
 **The whole run.** The markup in Appendix A.0. Poster first, native controls, `preload="none"`.
 
 **Why: the pains.** Each row is a mono label (the pain, in the reader's words), a paragraph (the mechanism, with the mono name of the command, hook or property) and one muted line (the cost). `Three more` is a native `<details>`.
 
-**The run: the state machine and stepper.** An SVG state machine from Appendix C.3, drawn left to right in lanes: pre-flight, plan, waves (an inner loop), verify, tail, commit, close. Controls above it: **Step**, **Play**, **Reset**, and three toggles: `--strict` (reveals the review, remediation, verdict and handoff states, which are otherwise drawn at 30% opacity with a dashed outline), `--isolate-waves` (adds the merge-lanes halt), `--solo` (collapses the wave loop to one lane). Below the diagram, a terminal panel whose contents advance with the stepper: it prints the blocks from Appendix C.7, in order, one per step; C.8 specifies what each control and toggle changes. On phones the diagram scrolls inside its own container and the terminal sits under it.
+**The run: the state machine and stepper.** An SVG state machine from Appendix C.3, drawn left to right in columns: pre-flight, plan, waves (an inner loop), verify, tail, commit, close. Controls above it: **Step**, **Play**, **Reset**, and three toggles: `--strict` (reveals the review, remediation, verdict and handoff states, which are otherwise drawn with a dashed `color-border-strong` outline and `color-text-muted` ink, never faded; a dimmed halt keeps `color-halt`), `--isolate-waves` (adds the merge-lanes halt), `--solo` (collapses the wave loop to one lane). Below the diagram, a terminal panel whose contents advance with the stepper: it prints the blocks from Appendix C.7, in order, one per step; C.8 specifies what each control and toggle changes. Before the first Step the terminal is never an empty panel: it holds three short narration lines, short enough for a phone because the panel does not wrap: `# Nothing has run yet.`, `# Step shows the run's first command.`, `# Play walks every step.` On phones the diagram scrolls inside its own container and the terminal sits under it; the controls wrap onto two rows there, with no divider left dangling at the end of the first.
 
-**The run: when it stops.** The loud halts as a table (banner, trigger, next). Clicking a row highlights its node in the state machine. Under the table, the C.9 panel.
+**The run: when it stops.** The loud halts as a table (banner, trigger, next). Clicking a row highlights the node its halt fires at in the state machine and brings that node into view, clear of the sticky header rather than under it. A row whose halt fires at no one node is not clickable and carries a neutral `not on the diagram` tag under its banner; C.6 maps every row. Under the table, the C.9 panel.
 
-**First hour: the timeline.** A vertical timeline with seven steps (Appendix D.1), each with a mono timestamp on the left ("min 0–2"), the command in a code panel with a copy button, and the output where D.1 gives one. A checkbox on each step persists in `localStorage` so a reader can come back.
+**First hour: the timeline.** A vertical timeline with eight steps (Appendix D.1), each with a mono timestamp on the left ("min 0–2"), its commands in a code panel, and the output where D.1 gives one. The code panels follow A.3: one command per row, each with its own icon copy button that copies that command alone, never a whole panel. The install step's two commands are two rows, and the archive line in the last step is its own row with its `# after it merges` comment, because it runs after the merge and not with `settle`. A long command wraps inside its row and never runs under its button. A checkbox on each step persists in `localStorage` so a reader can come back.
 
-**Limits and proof: the caps.** Appendix G.1 as a table with one search field that filters rows as the reader types.
+**Limits and proof: the caps.** Appendix G.1 as a table with one search field that filters rows as the reader types. Under 640px every value stays in view: a number or a single word stays beside its name, which wraps; a longer value (the routing and session rows) drops under its name, left-aligned. The table never needs a sideways scroll to show a value.
 
 **Limits and proof: the adjudication simulator.** Four sample findings from Appendix E.1.6 in a table; a button **Adjudicate** runs them one by one through the rules and reveals, per finding, the two skeptic verdicts, whether a dismissal carried a `file:line` citation inside the diff, the quality band decision, and the outcome, ending with the count lines given in E.1.6, computed from the four rows, and the **Cite it** follow-up button E.1.6 describes.
 
@@ -156,12 +161,12 @@ Build these and no others. There is no decision lens, no layer drawer and no too
 - **The only requests to another origin or to `assets/`** the page may make are: Google Fonts; `assets/poster-hero.jpg`, `assets/poster-full.jpg` and `assets/ship-meter.webp` (same origin, relative paths, exactly as written); and the two `.mp4` URLs in Appendix A.0. No other host, no script, no stylesheet, no tracker, no iframe.
 - The images and films may not load inside your preview. Keep every `<img>`, `<video>`, `<source>`, `poster`, `width` and `height` exactly as Appendix A.0 gives it; the attributes hold the layout until the file arrives.
 - The page is rendered by the export's runtime, so it needs JavaScript and has no fallback without it. Write nothing that promises one.
-- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab and scrolls to the top of it; the browser back button moves between tabs, including back to the entry URL with no hash, which selects `#why`. An in-page anchor such as `#install` never changes the tab.
-- Tabs use `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, arrow-key navigation, and a visible focus ring.
-- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a custom property with the light values and redefine only the tokens for dark. A browser that reports no preference gets the light page.
-- **Responsive from 375px to 1600px, and there is no horizontal scroll on the body at any width.** Tables, diagrams and output panels scroll inside their own container. At 375px: the flow strip is the vertical list from §5; the proof strip stacks one figure per row; in the install panels each `#` comment drops to its own line above its command instead of being cut off; two-column sections stack.
+- Hash routing: selecting a tab sets `location.hash`; loading with a hash selects that tab; a header tab click, an arrow-key tab change (focus stays on the tab), and a load with a tab hash, scroll the panel into view when its top is below the fold; `#install` and `#top` never change the tab; the browser back button moves between tabs, including back to the entry URL with no hash, which selects `#why`. An in-page anchor such as `#install` never changes the tab.
+- Tabs use `role="tablist"`, `role="tab"`, `role="tabpanel"`, `aria-selected`, arrow-key navigation, and a visible focus ring. The tab panel takes focus (`tabindex="0"`), because each tab opens on a headline rather than a control; it runs edge to edge, so its focus ring draws inside it.
+- Theme: **light unless `prefers-color-scheme: dark` matches.** The toggle overrides and persists in `localStorage`. Define every colour once as a custom property with the light values and redefine only the tokens for dark. A browser that reports no preference gets the light page. The browser's own surfaces follow the theme: in dark, `color-scheme` is dark and the canvas behind the page is `color-bg`, so an overscroll, a scrollbar or a search field never flashes white.
+- **Responsive from 375px to 1600px, and there is no horizontal scroll on the body at any width.** Tables, diagrams and output panels scroll inside their own container. At 375px: the flow strip is the vertical list from §5; the proof strip stacks one figure per row; in the install panels each `#` comment drops to its own line above its command instead of being cut off, and each command keeps its copy button; two-column sections stack.
 - Every SVG diagram has a `<title>` and its labels are real text, not paths.
-- Copy buttons use the Clipboard API and fall back to selecting the text.
+- Copy buttons use the Clipboard API and fall back to selecting the text. The fallback says so in a polite live region: "Copy was blocked. The command is selected: press Ctrl+C, or ⌘C on a Mac."
 - No analytics, no cookies, no forms.
 - Head: `<title>Interlock</title>` and the font links. The viewport meta, the description, the Open Graph tags (`og:image` is `https://renzrollon.github.io/interlock/assets/social-preview.png`) and the favicon are static tags added when the export is installed, because a crawler does not run the runtime; do not rely on `<helmet>` for them.
 - Print: nothing special required.
@@ -170,8 +175,8 @@ Build these and no others. There is no decision lens, no layer drawer and no too
 
 These follow the project's own rules and the page breaks trust if it breaks them.
 
-- Every number on the page is from Appendix G or Appendix A.0 and is labelled v1.5.0 where it appears in a table. Do not round a cap, do not average anything.
-- The film was recorded on plugin **1.4.2**, not 1.5.0. Its provenance line says so, verbatim, wherever the film or its still appears.
+- Every number on the page is from Appendix G or Appendix A.0 and is labelled v1.21.0 where it appears in a table. Do not round a cap, do not average anything.
+- The film was recorded on plugin **1.4.2**, not 1.21.0. Its provenance line says so, verbatim, wherever the film or its still appears.
 - Present the caps as **read from `interlock limits`**, never as "the rule is". The project's principle is that thresholds live in the CLI, not in prose; the page quotes the CLI, it does not restate the rule as its own.
 - Output panels hold only what Appendices C and D give for them. Do not write a plausible line of terminal output.
 - Do not draw a trend arrow, a health colour, a score, a gauge or a progress ring on any indicator. The project's own report refuses to; the page follows.
@@ -179,7 +184,7 @@ These follow the project's own rules and the page breaks trust if it breaks them
 - State that Interlock is a Claude Code plugin and that Cursor and Copilot are not supported, on the Why tab and again under Stated limits. Do not bury it.
 - Where a tool in the comparison is better than Interlock at something, say so.
 - No testimonials, no logos, no star counts, no "trusted by".
-- Do not claim a passing-test count for Interlock's own suite. The table row says "87 test files, `npm test`, nothing to install". The `180 of 180` in the film caption is the demo repository's suite in that recorded run and is quoted only there.
+- Do not claim a passing-test count for Interlock's own suite. The table row says "147 test files, `npm test`, nothing to install". The `180 of 180` in the film caption is the demo repository's suite in that recorded run and is quoted only there.
 - If you are unsure whether a claim is in the appendices, leave it out.
 
 ## 8. Deliverable checklist
@@ -221,7 +226,7 @@ One real run of `/interlock:spec` then `/interlock:ship`, recorded on a demo rep
 </video>
 ```
 
-The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts, show the poster, and overlay one square play button.
+The `type="video/mp4"` on the `<source>` is required: the host serves the file as a generic binary. Under `prefers-reduced-motion: reduce`, remove `autoplay` and `loop` with script before the film starts and show the poster; the corner toggle from §5 then shows play.
 
 Caption under the loop, body face:
 > One real run, cut to 34 s. `spec` asks one question, writes 11 specs and 12 tasks, then stops. `ship` runs three agents in parallel across two waves and ends in a commit with the suite green, 180 of 180.
@@ -259,13 +264,13 @@ A plain text link after it, for a reader whose browser will not play it inline: 
 
 ## A.1 Hero
 
-**Eyebrow:** Spec-driven development for Claude Code · Layered on OpenSpec · v1.5.0
+**Eyebrow:** Spec-driven development for Claude Code · Layered on OpenSpec · v1.21.0
 
-**H1:** Two commands. One human checkpoint.
+**H1:** Read one spec. Parallel agents ship it to a tested commit.
 
-**Lede:** Spec a change, read it, then ship it start-to-commit with parallel agents. Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.
+**Lede:** Every cap the run obeys is a CLI you can run yourself, with no model and no network. Zero-touch is a property of the runtime, not a promise in a prompt.
 
-**Under the lede, one mono line:** Every change is spec, then ship. Bootstrap runs once per repo; settle when you want the pull request.
+**Under the lede, one mono line:** Every change is spec, then ship. Bootstrap runs once per repo; settle takes the commit to a merge verdict.
 
 ## A.2 Flow strip
 
@@ -276,8 +281,8 @@ Five nodes, left to right. The description follows each.
 | `bootstrap` | — | Once per repo. Reads the code, writes an architecture doc and one spec per existing feature. Never modifies source. |
 | `spec` | `SKILL` | Explore, then OpenSpec artifacts, then an artifact review. Stops having written specs and no code. |
 | **You read the spec.** | accent block | Ten minutes. Four files, one question each. The only required stop. |
-| `ship` | `WORKFLOW` (accent outline) | Waves → verify → commit. A dynamic workflow: the runtime takes no mid-run input, so it cannot ask you anything. |
-| `settle` | — | The pull request, when you want it. Ends by reminding you to archive the change. |
+| `ship` | `WORKFLOW` (accent outline) | Waves → verify → commit, run as a dynamic workflow: a script the Claude Code runtime executes. |
+| `settle` | — | Opens or updates the pull request and labels it MERGE, HUMAN or BLOCK from the CLI's verdict. With `--review` it reviews and fixes the diff first. Never merges. |
 
 Eyebrows above the strip, sentence case: over `bootstrap`: "Run once, after you clone"; over `spec` through `settle`: "Then, every change"; a right-aligned "↺ Revise idea → re-spec" on the checkpoint block.
 
@@ -285,20 +290,31 @@ Mono line beneath the strip: **ship is a dynamic workflow, so there is nobody to
 
 ## A.3 Install block
 
-Three code panels, each with a copy button.
+The install block is one sequence, read top to bottom: a requirements checklist, then three captioned code panels stacked in order, with one line between the first and the second. The panels stack at every width, no wider than 880px, because the order is the content: the most common first-run mistake is running the second panel in the session the first one ran in.
 
-Panel 1, caption "Install":
+Every line in the three panels is typed at the Claude Code prompt; the captions say so. **Each command has its own copy button**, on its own row, which copies that command alone: never its `#` comment, never a neighbouring line. Two slash commands pasted together reach Claude Code as one message, so a panel-wide copy is a trap. The button is icon-only with an `aria-label` naming the command, muted at rest, and shows a check for about 1.4 s after a copy. Each `#` comment sits beside its command where the panel is wide enough and on its own line above it where it is not.
+
+Checklist above the panels, lead-in "You need", four items, each a real checkbox the reader can tick (persisted in `localStorage`, like the first-hour timeline):
+- Claude Code 2.1.154 or newer
+- Dynamic workflows on (on a Pro plan, enable them in `/config`)
+- Node.js 22.12 or newer, with npm
+- A git repository with code in it
+
+Panel 1, caption "In Claude Code, once per machine":
 ```
-npm install -g @fission-ai/openspec@latest
-cd your-project && openspec init
 /plugin marketplace add renzrollon/interlock
-/plugin install interlock@interlock
+/plugin install interlock@interlock       # pick “Install for you (user scope)”
 ```
 
-Panel 2, caption "Once per repo":
+Line between panels 1 and 2: **Then start a new session in your project.** The plugin puts `interlock` on the shell's PATH when a session starts, so in the session you installed from, `! interlock doctor` answers `command not found`. `/clear` also starts one.
+
+(Checked on 2026-11-27 with a live install of v1.21.0 into a clean home on Claude Code 2.1.332: after `/plugin install` reported the plugin active, `! interlock doctor` answered `command not found: interlock`, and `/reload-plugins` did not change that; after `/clear`, and in a fresh session, it resolved to the plugin's `cli/interlock`. On that fresh repository doctor failed three checks: `openspec`, `test-profile` with the fix `/interlock:fix-tests`, and `permissions`.)
+
+Panel 2, caption "In the new session, once per repo":
 ```
-interlock doctor              # prints the exact allowlist an unattended run needs
-/interlock:bootstrap          # code → understanding → graph
+! interlock doctor            # what would stop an unattended run
+/interlock:fix-tests          # how your tests run, saved for ship
+/interlock:bootstrap          # the code graph, then one spec per feature
 ```
 
 Panel 3, caption "Every change":
@@ -306,9 +322,10 @@ Panel 3, caption "Every change":
 /interlock:spec "<idea>"      # explore → artifacts → review, then stops
 /interlock:ship               # waves → verify → commit
 /interlock:ship --strict      # + adversarial review, remediation, handoff, conformance
+/interlock:settle --create --review   # draft PR → review → fix rounds → verdict
 ```
 
-Small print under the panels: Requires Claude Code v2.1.154+ with dynamic workflows enabled, the `openspec` CLI, and Node.js 18 or newer. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with `npm install -g @renzrollon/interlock`.
+Small print under the panels: OpenSpec is provisioned on first use: a pinned copy, checked against a lockfile the plugin carries. The `!` runs a shell command from the Claude Code prompt; the plugin puts `interlock` on that shell's PATH only. Claude Code only: Cursor and Copilot are not supported. The CLIs also install on their own with `npm install --location=global @renzrollon/interlock@1.21.0`.
 
 ## A.4 Proof strip
 
@@ -318,7 +335,7 @@ Three figures in the display face, each with a mono caption. No trend arrows, no
 |---|---|
 | **1** | required human stop, between spec and ship |
 | **0** | runtime dependencies. Stdlib Node, nothing to install |
-| **28** | `interlock` subcommands, each one a decision with an exit code |
+| **0** | network requests of its own, and no credential read |
 
 ## A.5 The pain ledger (Why tab, first section)
 
@@ -337,11 +354,11 @@ Eight rows, each a mono label (the pain, in the reader's words), a paragraph (th
    *Cost:* one interruption survives: a permission prompt for a command you did not allowlist. `interlock doctor` derives the exact list from what the flow shells out to plus your own test profile, and a session-start hook runs it for you.
 
 3. **"Two parallel agents overwrote each other."**
-   The planner compares each task's predicted files on the canonical path and folds any two that collide into one lane, run in order by one agent. With `--isolate-waves`, each lane runs in its own git worktree and `interlock merge-lanes` folds them back; two lanes that wrote the same file halt the run naming the path and both lanes, never last-writer-wins.
-   *Cost:* the file prediction is still a model's. Without the flag the race is narrowed, not closed.
+   The planner compares each task's predicted files on the canonical path and puts any two that collide into one lane, run in order by one agent. With `--isolate-waves`, each lane runs in its own git worktree and `interlock merge-lanes` merges them back; two lanes that wrote the same file halt the run naming the path and both lanes, never last-writer-wins.
+   *Cost:* the file prediction is still a model's. Without the flag the race is narrowed, not closed. The flag holds on the experimental runner; on `/interlock:ship` the runtime picks the worktrees' base, so the run banners `ISOLATION BASE NOT CONTROLLED` and halts with `LANE BASE MISMATCH` at the first merge-back, until a follow-up change.
 
 4. **"The review reports everything, so we skim it."**
-   Up to six review dimensions run in parallel, then two skeptics attack every blocker and warning. A finding that does not survive is never shown to you. A dismissal must cite a `file:line` inside the reviewed diff or it dismisses nothing. The report prints how many findings were dismissed and how many refutations were refused.
+   Up to nine review dimensions run in parallel, each blind to the others, then two skeptics attack every blocker and warning. A finding that does not survive is never shown to you. A dismissal must cite a `file:line` inside the reviewed diff or it dismisses nothing. The report prints how many findings were dismissed and how many refutations were refused.
    *Cost:* review is opt-in (`--review`, `--strict`, or `/interlock:review-code`) and it is the expensive part of a run. Default ship does not pay for it.
 
 5. **"Nobody can reconstruct what the run did."**
@@ -372,7 +389,7 @@ One required stop, placed where a wrong idea is cheapest to kill, buys an uninte
 The test for what belongs in the CLI: if two competent runs could reach different answers from the same inputs and only one is right, it was never a judgement. Those decisions are subcommands with exit codes. A cap nothing reads was removed rather than wired. A removed cap is removed, not aliased, so a stale reader fails at import.
 > "A speed limit painted on the road and a governor fitted in the engine are both 'the rule'. Only one of them still holds when the driver is late."
 
-**3. Zero-touch is a property of the runtime, not a promise.**
+**3. The loop runs where nobody can be asked.**
 You cannot get autonomy by instructing a model to be autonomous. You get it by running the loop somewhere that has no channel for a question. `lib/run.mjs` emits the whole ship program as versioned steps: the agents to spawn, their briefings, and the exact argv to call next. The two drivers interpret those steps and branch on nothing.
 > "`ship` asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening."
 
@@ -405,7 +422,7 @@ Subhead: **What this costs**. Its first line, set as the pull quote: **No publis
 
 Then three stated trades, one line each:
 - Portability. Claude Code only: Cursor and Copilot are not supported. Spec Kit runs on thirty agents. Interlock runs on one, because the guarantees come from Claude Code's workflow runtime. A portable version of this would be a folder of prompts, which is the thing it exists not to be.
-- Surface area. Twenty-eight top-level subcommands, sixteen skills, four host adapters, six hook scripts and a hooks module. The repository books this as a cost.
+- Surface area. Thirty-nine top-level subcommands, sixteen skills, four host adapters, six hook scripts and a hooks module. The repository books this as a cost.
 - Review is opt-in. Lean ship trusts your unit suite. If `tasks.md` and the suite are thin, lean ship is a cost default, not a quality default.
 
 ---
@@ -440,7 +457,7 @@ The layers, top to bottom: **host · guards · prose · drivers · policy · cli
 | `lib` | the pure decision modules | policy | code | One concern each: waves, verify, findings, remediate, risk, ready, ledger, drift, receipt | I/O beyond what the module's name implies | `lib/*.mjs` |
 | `prompts` | `lib/prompts/` | policy | code | Every briefing an agent receives | Being unregistered; the suite fails | `lib/prompts/` |
 | `limits` | `lib/limits.mjs` | policy | code | Every cap, once | A cap with no reader | `lib/limits.mjs` |
-| `cli` | `cli/interlock` | cli | code | Twenty-eight subcommands; exit codes are the contract | A model or the network, except `openspec provision` (npm) | `cli/interlock` |
+| `cli` | `cli/interlock` | cli | code | Thirty-nine subcommands; exit codes are the contract | A model or the network, except `openspec provision` (npm) | `cli/interlock` |
 | `graph-cli` | `interlock-graph` | cli | code | A deterministic import, symbol and spec graph with token-budgeted retrieval | Embeddings, a vector store, the network | `cli/interlock-graph`, `lib/graph/` |
 | `report` | `interlock report` | cli | code | Indicators over the corpora, each with its denominator | Any verdict; any write | `lib/report.mjs` |
 | `hostport` | `lib/host.mjs` | port | code | Three operations: `spawn`, `mapPipeline`, `runCli` | A fourth operation | `lib/host.mjs` |
@@ -584,18 +601,18 @@ Two plugin agent types, and only the drivers spawn them. `interlock:worker` may 
 
 Subhead: **You can watch it**
 
-Intro, verbatim from the README: On Claude Code 2.1.295 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.
+Intro, checked against 07 · CLI and configuration at v1.21.0: On Claude Code 2.1.295 and later the plugin's hooks module draws the run as it goes: a status line that names the stage and stops at the checkpoint, a pane with every wave, lane and agent, and each degradation banner as a toast the moment the step that raised it prints. The pane observes; the CLI decides. On an older host the run is the same, without the pane.
 
 The still, directly under the intro: `assets/ship-meter.webp` (1400×1050, alt text in A.0). Mono caption above it: `/interlock-meter · the wave board, a frame from the recorded run`. Under it, the provenance line from A.0.
 
 What it draws, as a short definition list (mono term, one sentence each):
 
 - `status line` — `interlock: <change> · <action> · wave <w>`, plus `batch <j>/<k>` where the step carries a batch position. Cleared at the close or a halt.
-- `wave board` — the same fields `interlock waves --plan <file> --format board` prints, as one bordered card per wave. Lanes are grouped by batch under a line with the time it was dispatched and `N in parallel`. The state words are `ok`, `failed`, `current`, `pending`, `not reached` and `not recorded`.
+- `wave board` — the same fields `interlock waves --plan <file> --format board` prints, as one bordered card per wave. Lanes are grouped by batch under a line with the time it was dispatched and `N in parallel`. The state words are `ok`, `failed`, `current`, `pending`, `not reached` and `not recorded`, and `per task` for a lane whose tasks disagree.
 - `timeline` — the run in the order it happened: one line per CLI step as it crossed, each with its local time, and the agents that step spawned indented beneath it.
 - `guard denials` — when a guard refuses a call, one toast repeats the guard's own sentence from its name on (`guard-tests: …`), and the pane counts `guard denials: <n>`. Before this a denial reached only the blocked agent.
 - `quiet <n> min` — how long the run has gone without activity, and nothing more. The word names no cause: a run waiting on a plan window looks exactly like a run that hung, which is why the pane lists the plan windows beside it.
-- `at session start` — when a doctor check failed or warned, an interrupted run was spoken, or a halted run left a resume card, a band above the prompt shows those lines in the doctor's own words. `/interlock-preflight` opens the whole report; `/interlock-handoff` renders each resume card.
+- `at session start` — when a doctor check failed or warned, the preflight could not run, or an interrupted run was spoken, a band above the prompt shows those lines in the doctor's and the hook's own words. A resume card does not draw the band. `/interlock-preflight` opens the whole report; `/interlock-handoff` renders each resume card.
 
 The limits, as three plain sentences after the list:
 
@@ -650,7 +667,7 @@ halt       → checkpoint  fix the cause, then ship again
 
 ## C.3 The state machine (The run tab; render this as the interactive SVG)
 
-Draw left to right in seven lanes: **pre-flight · plan · waves · verify · tail (strict only) · commit · close**. Every halt node is accent-outlined and every halt routes to `close`, because a halted run writes the same receipt, outcome record and terminal trajectory event a completion does. Only the exit code differs.
+Draw left to right in seven columns: **pre-flight · plan · waves · verify · tail (strict only) · commit · close**. Every halt node is outlined in `color-halt` and every halt routes to `close`, because a halted run writes the same receipt, outcome record and terminal trajectory event a completion does. Only the exit code differs.
 
 ```
 NODES  (id · label · kind)
@@ -667,7 +684,6 @@ merge_halt         HALTED: merge-lanes collision (isolate)       halt
 replan             replan (one ping, max 2 per run)              stage
 interwave_verify   verify (inter-wave)                           stage
 judge_interwave    run judge --context inter-wave                decision
-interwave_halt     HALTED: inter-wave checks still red           halt
 done               done                                          decision
 review             review: dimensions + two skeptics             stage   (strict)
 reviewed           run reviewed: adjudicate                      decision (strict)
@@ -683,7 +699,7 @@ close              run close → receipt, outcome, trajectory      terminal
 settle             /interlock:settle                             human
 
 EDGES  (from → to · condition · scope)
-ship_launch → trampoline_halt     Workflow tool unavailable, or --solo with --waves         all
+ship_launch → trampoline_halt     Workflow tool unavailable                                 all
 ship_launch → run_start           Workflow() called once                                    all
 run_start → preflight_halt        interlock validate exits non-zero                         all
 run_start → close                 plan reused and every task already ticked                 all
@@ -704,8 +720,7 @@ replan → batch                    revision applied, or declined               
 interwave_verify → judge_interwave  the agent reported exit codes and counts                all
 judge_interwave → batch           green → next wave                                         all
 judge_interwave → interwave_verify  red, fix attempts remain (2 per wave)                  all
-judge_interwave → interwave_halt  budget spent and the errors block the next wave           all
-judge_interwave → batch           budget spent, reported not blocking → warn and advance    all
+judge_interwave → batch           budget spent → INTER-WAVE CHECKS UNRESOLVED, errors carried  all
 done → close                      --apply-only                                              all
 done → final_verify               lean ship (no --review)                                   default
 done → review                     --review or --strict                                      strict
@@ -726,7 +741,7 @@ close → settle                      SHIP COMPLETE → the human opens the pull
 every halt → close                receipt, outcome record, trajectory, exit 1               all
 ```
 
-Rendering notes: the four strict-only states and `handoff` are drawn at 30% opacity with dashed outlines until the `--strict` toggle is on. `batch → record_batch → batch` is the inner batch loop; `record_batch → interwave_verify → judge_interwave → batch` is the outer wave loop. Two self-loops carry counters worth labelling: inter-wave verify (2 fix attempts per wave) and remediation (2 rounds, then the verdict). `checkpoint` in the hero graph is the only node a human must pass through; inside the run there is no human node at all.
+Rendering notes: the four strict-only states and `handoff` are drawn with dashed `color-border-strong` outlines and `color-text-muted` ink (never faded; a dimmed halt keeps `color-halt`) until the `--strict` toggle is on. `batch → record_batch → batch` is the inner batch loop; `record_batch → interwave_verify → judge_interwave → batch` is the outer wave loop. Two self-loops carry counters worth labelling: inter-wave verify (2 fix attempts per wave) and remediation (2 rounds, then the verdict). `checkpoint` in the hero graph is the only node a human must pass through; inside the run there is no human node at all.
 
 ## C.4 What each state does (reference)
 
@@ -774,9 +789,9 @@ The plan is a pure function of `classified.json` plus three options: the paralle
 
 Subhead: **When it stops**
 
-Intro: Two categories, and they are not the same thing. A **loud halt** stops the run, commits nothing, and reports what completed and what you need to decide. A **soft continue** keeps going with a documented default and prints a banner saying what it degraded. Almost everything is a soft continue. The halts are deliberately few. On any halt: nothing is committed, and it will not ask you a question. Every one is a non-zero exit from a CLI subcommand rather than a judgement call.
+Intro: Two categories, and they are not the same thing. A **loud halt** stops the run, commits nothing, and reports what completed and what you need to decide. It never asks you a question. A **soft continue** keeps going with a documented default and prints a banner saying what it degraded. Almost everything is a soft continue; the halts are deliberately few. Every halt inside the run is a non-zero exit from a CLI subcommand, not a judgement call.
 
-Loud halts (render as the table; a row is clickable and highlights its node):
+Loud halts (render as the table; a row is clickable and highlights the node its halt fires at, mapped under the table):
 
 | Banner | Trigger | Stage | Next |
 |---|---|---|---|
@@ -784,21 +799,22 @@ Loud halts (render as the table; a row is clickable and highlights its node):
 | `SHIP HALTED — plan omitted unchecked tasks: <ids>` | the classifier dropped a checkbox | run classified | Re-run; if it recurs the checkbox wording is the problem. |
 | `SHIP HALTED — waves failed: <message>` | a dangling, backward or cyclic `dependsOn` | run classified | Fix the edge in `tasks.md`. |
 | `SHIP HALTED — <n> task failures accumulated across waves; more than 2 halts the run` | failures over the cap | record-batch | Repeated failures in one area mean `tasks.md` was underspecified there. Re-spec that slice. |
-| `SHIP HALTED — inter-wave checks after wave <n> still failing after 2 fix attempts, and the caller reported the errors block <next>` | fix budget spent and blocking | judge, inter-wave | Fix by hand or `/interlock:fix-tests`. |
-| `SHIP HALTED — verification reported no result for <kinds>` | a planned step nobody reported on | judge | An unverified step is not a passing one, and an unverified run does not commit. |
+| `SHIP HALTED — verification reported no result for <kinds>` | a planned step nobody reported on | judge, final | An unverified step is not a passing one, and an unverified run does not commit. |
 | `SHIP HALTED — unit suite is red (<n> failing, <k> root-cause cluster(s))` · `unit suite was weakened (<signal>)` · `unit suite did not run` | final verification | judge, final | Fix it, or `/interlock:fix-tests`. Ship will not weaken a test, loosen an assertion, or narrow the suite to get green. |
 | `SHIP HALTED — <n> unresolved blocker(s) after 2 remediation round(s)` | strict only | verdict | Two failed rounds usually means the design was wrong, not the code. Re-spec rather than a third round. |
 | `SHIP HALTED — merge-lanes halted on wave <n>: real collision on <paths>` | isolate-waves: two lanes wrote the same file despite a disjoint prediction | record-batch | Resolve the writes by hand from the named worktrees. Merge-lanes never applies a guess. |
-| `SHIP HALTED — the run exceeded the published run-step cap without reaching a terminal state` | the loop is not converging | any | Read the trajectory. |
-| `SHIP HALTED — out of sequence: the run program's last step named interlock <x> and this call was interlock <y>` | a driver skipped, repeated or invented a subcommand | any | A driver bug. |
+| `SHIP HALTED — the run exceeded the published run-step cap (maxRunSteps=<n>) without reaching a terminal state` | the loop is not converging | any | Read the trajectory. |
+| `` SHIP HALTED — out of sequence: the run program's last step named `interlock <x>` as its continuation, and this call was `interlock <y>` `` | a driver skipped, repeated or invented a subcommand | any | A driver bug. |
 | `SHIP HALTED — contradictory plan-shape flags: --solo and --waves were both passed` | both flags | parse | Pass one. Halting here costs one invocation; guessing costs a whole run of the wrong shape. |
 | `RUN NOT RECONSTRUCTABLE: <problems>` (exit 1 even beside `SHIP COMPLETE`) | a sequence gap, a missing run-start, or a CLI call with no logged exit | close | `interlock run-log check`. Usually a write to `.claude/ship/` failed mid-run. `interlock doctor` probes exactly that. |
-| Trampoline halt | Workflow tool unavailable | before the run | Enable dynamic workflows. Everything else still works. It does not fall back to chat and does not start the experimental runner. |
+| No banner: `/interlock:ship` stops and says it needs dynamic workflows | Workflow tool unavailable | before the run | Enable dynamic workflows (Claude Code v2.1.154+, `/config`). Everything else still works. It does not fall back to chat and does not start the experimental runner. |
 | `spec`: blockers at the artifact review | a reviewer reported a blocker | spec | Fix the cause, not the report. No silent fix-and-continue. |
+
+Row to node. Validate failed, plan omitted and waves failed light `preflight_halt`; task failures light `failure_halt`; no result and the unit suite light `unit_halt`; unresolved blockers light `blocker_halt`; merge-lanes lights `merge_halt`; not reconstructable lights `close`; the no-banner row lights `trampoline_halt`. Contradictory plan-shape flags lights `ship_launch`: the Workflow refuses `--solo` with `--waves` before `run start`, so it is not the missing-Workflow halt. The run-step cap and out-of-sequence rows can fire at any step, and the `spec` row fires before a run, so those three are not clickable and carry a `not on the diagram` tag.
 
 Reference from here to the end of C.6. Receipt lines that are not degradations: `LEAN SHIP` (the advertised default, printed so a lean run cannot look like a strict one) · `ARCHIVE PENDING` (clean completion only; a reminder, never an action) · `PLAN REUSED` / `PLAN REBUILT` (always, in one of the two forms) · `leftover tasks (boxes still unchecked)` (a report, not authorisation to relaunch) · `run:` / `project:` / `cwd:` (always; the run id is the trajectory filename) · `No degradation banners — graph, test profile, model routing, verification and e2e were all clean.` (printed when the block would otherwise be empty, so silence and cleanliness are distinguishable).
 
-Soft continues, the degradation banners. Not rendered: the page prints one muted line under the halts table, "Almost everything else is a soft continue: the run keeps going with a documented default and prints a banner naming what it degraded. Every banner is decoded in 04 · When it stops."
+Soft continues, the degradation banners. Not rendered: the page prints one muted line under the halts table, "Every degradation banner is decoded in 04 · When it stops."
 
 | Banner | Meaning |
 |---|---|
@@ -834,21 +850,20 @@ Three conditions that are not halts at all: the preflight (`interlock doctor`, a
 
 ## C.7 A worked example (the stepper script)
 
-The change: `add-report-json-flag`, seven tasks across two numbered sections plus two test tasks. Tasks 1.1 and 1.3 both name `lib/report.mjs`. Default lean ship, no flags. Each step names the node to highlight and the text the terminal appends.
+The change: `add-report-json-flag`, seven tasks: five implementation tasks in sections 1 and 2, and two test tasks in section 3. Tasks 1.1 and 1.3 both name `lib/report.mjs`. Default lean ship, no flags. A wave is a set of tasks that run in parallel. A lane is one agent's slot in a wave: one task, or several run in order. A tier is the planner's 1–5 difficulty grade for a task, and it picks the task's model and effort. Each step names the node to highlight and the text the terminal appends.
 
 Three kinds of line appear in the terminal, and the page keeps them visibly apart:
 
 - a line starting `$` is a command the run program named;
 - a line starting `#` is this page's narration, set in muted mono;
-- an unmarked block is output the CLI printed at v1.5.0.
+- an unmarked block is output the CLI printed at v1.21.0.
 
-Only two blocks are output: the plan preview in step 4, which is `interlock waves` run on this example on 2026-10-11, and the closing summaries, which are the CLI's own summary formatter called on it. Nothing else in the terminal is presented as output, and nothing may be added to it.
+Only two blocks are output: the plan preview in step 4, which is `interlock waves` run on this example at v1.21.0 on 2026-11-26, and the closing summaries, which are the CLI's own summary formatter called on it. Nothing else in the terminal is presented as output, and nothing may be added to it.
 
 **Step 1 · node `ship_launch`**
 ```
 $ /interlock:ship
 # The skill parses the arguments, calls the Workflow tool once, and stops narrating.
-# From here nothing can ask the human anything.
 ```
 
 **Step 2 · node `run_start`**
@@ -890,7 +905,7 @@ mode: waves (default)
   effort 3.1 → 3.2: low (tier 2)
 projected agents: 10 (5 implementers + 3 record + 2 verify)
 ```
-Three `warning:` lines that restate the folds in full sentences are cut. Read the rest: seven tasks became five implementers, not seven. 1.1 and 1.3 both write `lib/report.mjs`, so they run in one lane, in order, on one agent. The two tier-2 test tasks pack into one lane. The classifier's opus on 1.3 was clamped to sonnet.
+Three `warning:` lines that restate the folds in full sentences are cut. Seven tasks became five implementers, not seven. Tasks 1.1 and 1.3 both write `lib/report.mjs`, so they share one lane: one agent runs 1.1, then 1.3. The two tier-2 test tasks write different files, so they pack into a cohesion lane: one agent taking several small related tasks in order. The planner asked for opus on 1.3, a tier-3 task; the CLI lowers opus to sonnet on any task below tier 5 and prints the clamp.
 
 **Step 5 · node `batch`** (wave 1)
 ```
@@ -941,7 +956,6 @@ $ interlock run record-batch --results <file>
 
 **Step 12 · node `final_verify`**
 ```
-$ interlock run verify-final
 # stage marker: fix-tests. guard-tests now denies any edit to a test file.
 # one verify agent runs the profile's commands and reports
 ```
@@ -966,6 +980,7 @@ SHIP COMPLETE — add-report-json-flag
   run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01
   project: -Users-you-src-yourrepo
   cwd: /Users/you/src/yourrepo
+NEXT — push the branch and open the pull request: /interlock:settle --create --review
 ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag
 Do not start another ship run unless the user asks.
 
@@ -973,9 +988,9 @@ LEAN SHIP: skipped review, handoff, conformance — pass --review / --handoff / 
 No degradation banners — graph, test profile, model routing, verification and e2e were all clean.
 GOAL MET: interlock ship returned a terminal summary.
 ```
-Exit 0. A `--strict` run of the same change adds a review worker, up to two remediation workers, a verdict worker where blockers remain, and a handoff worker.
+Exit 0. The `NEXT` line is the follow-up: `/interlock:settle` opens or updates the pull request and labels it `MERGE`, `HUMAN` or `BLOCK` from the CLI's verdict. With `--create` it pushes the branch first; with `--review` it reviews the diff and fixes the findings in rounds before the label. It never merges. A `--strict` run of the same change adds one reviewer per dimension, two skeptics per finding, up to two fix workers and a verdict worker when findings survive review, and a handoff worker.
 
-**Alternate ending (shown when the reader clicks the inter-wave halt in the halts table):**
+**Alternate ending, retired at v1.21.0: do not render it.** The inter-wave halt it shows was removed in 1.6.1. A checkpoint still red after its fix attempts now prints `INTER-WAVE CHECKS UNRESOLVED`, the errors go to the next wave, and the final verification still gates the commit. The block is kept only as the record of what the halt printed:
 ```
 $ interlock run close
 SHIP HALTED — inter-wave checks after wave 2 still failing after 2 fix attempts, and the caller reported the errors block the test wave
@@ -998,9 +1013,10 @@ Exit 1. No commit. No question. The resume card is the one file a halted run lea
 ## C.8 Stepper behaviour
 
 - **Step** advances one step and highlights that step's node; earlier nodes stay in a visited state (ink at 60%).
+- The diagram scrolls inside its container to keep the highlighted node in view at every width, instantly (no smooth scroll) under reduced motion.
 - **Play** runs the steps at 1.2 seconds each; **Reset** clears the terminal and the highlights.
 - The `--strict` toggle, when on, inserts three steps between step 11 and step 12, each of them narration and one command:
-  - `review`: `# one reviewer per dimension, then two skeptics per finding at high` · `# four dimensions always run; devops and security are added by a rule over the changed paths`
+  - `review`: `# one reviewer per dimension; five always run, and devops, security and domain are added by rule` · `$ interlock run found --results <file>` · `# the CLI collects the findings and sends each one to two skeptics at high`
   - `reviewed`: `$ interlock run reviewed --results <file>` · `# findings that survived two skeptics go to remediation round 1`
   - `remediation`: `$ interlock run remediated --round 1 --results <file>` · `# every blocker cleared: straight to the verdict, then final verification`
 
@@ -1020,13 +1036,14 @@ SHIP COMPLETE — add-report-json-flag
   run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01
   project: -Users-you-src-yourrepo
   cwd: /Users/you/src/yourrepo
+NEXT — push the branch and open the pull request: /interlock:settle --create --review
 ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag
 Do not start another ship run unless the user asks.
 
 No degradation banners — graph, test profile, model routing, verification and e2e were all clean.
 GOAL MET: interlock ship returned a terminal summary.
 ```
-- The `--isolate-waves` toggle adds `# each lane ran in its own git worktree; interlock merge-lanes folded them back with no collision` to each record-batch step and reveals the merge halt node.
+- The `--isolate-waves` toggle adds `# under --isolate-waves each lane writes in its own git worktree; record-batch folds them back, and halts on a real collision or a lane forked from the wrong base` to each record-batch step and reveals the merge halt node. On the Workflow host at v1.21.0 the runtime, not the CLI, picks each lane worktree's base, so a batch after the first fold halts with `LANE BASE MISMATCH`; a regeneration should show that halt rather than a clean run.
 - The `--solo` toggle collapses steps 5 through 11 into one batch step and replaces the plan preview with this one, which is the same command run with `--mode solo` (seven `promoted <id>: sonnet → opus (tier <n>, solo lane)` lines, one per task, and one `warning:` line are cut):
 ```
 mode: solo (flag)
@@ -1077,7 +1094,7 @@ plan · 3 waves · 13 tasks · run 6e9d0b02 · cursor idx 1 b1 · halted
 then: verify-final → commit → close · halted: 3 task failures accumulated across waves; more than 2…
 ```
 
-Caption under it, body face: A run of this repository that halted on 7 September 2026, drawn at v1.5.0. Its plan and state are a fixture the test suite pins. The board prints only what the run recorded: `not recorded`, `not reached` and `unplaced` are its words for what it does not know, and the last line is the halt.
+Caption under it, body face: A run of this repository that halted on 7 September 2026, drawn at v1.21.0. Its plan and state are a fixture the test suite pins. The board prints only what the run recorded: `not recorded`, `not reached` and `unplaced` are its words for what it does not know, and the last line is the halt.
 
 One more sentence, muted: Two of the three failures here were finished tasks whose handoff reports ran over the character cap. Since 1.5.0 such a task is recorded ok with its report rejected, and no longer counts toward this halt.
 
@@ -1089,30 +1106,29 @@ One more sentence, muted: Two of the three failures here were finished tasks who
 
 Subhead: **The commands, in order**
 
-Seven steps. Each has a mono timestamp, a one-line purpose, the command in a code panel with a copy button, and where given, the output to show.
+Eight steps. Each has a mono timestamp, a one-line purpose, its commands in a code panel with one copy button per command (§5), and where given, the output to show.
 
 **min 0–2 · Install**
 ```
-npm install -g @fission-ai/openspec@latest
-cd your-project && openspec init
 /plugin marketplace add renzrollon/interlock
 /plugin install interlock@interlock
 ```
-Interlock drives the `openspec` CLI; it does not replace it. `openspec init` creates `openspec/` and installs OpenSpec's own skills, which stay available beside Interlock's.
+Typed at the Claude Code prompt, once per machine. So is every command after these. Nothing else to install: Interlock drives the `openspec` CLI rather than replacing it, and the first `bootstrap` or `spec` provisions a pinned copy. An `openspec` already on your PATH is used instead. Interlock's own CLIs run on Node.js 18 or newer; the OpenSpec CLI needs 22.12.0 or newer, and npm.
 
 **min 2–5 · Allowlist the commands**
 ```
-interlock doctor
+! interlock doctor
 ```
-Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. `doctor` derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. The same check runs at every session start as an advisory hook.
+Start a new session in your project first. The `!` runs the line as a shell command in that session, and the plugin puts `interlock` on its PATH, not your own terminal's. Workflow agents inherit your permission settings, so a command that is not allowlisted stops the run on an approval prompt, possibly while you are away. `doctor` derives the required list from what the flow shells out to plus whatever your own test profile runs, exits 1 when something would stop an unattended run, prints the settings snippet that fixes it, and changes nothing itself. `/permissions` adds what it names. Every session runs the same check at start and prints `interlock preflight OK` or each problem with its fix.
 
-Show this output as an example of a healthy repo. It is `interlock doctor` run on this repository on 2026-10-11 at v1.5.0, with the root replaced, four long advisory rows cut at `…`, and three trailing `[skip]` rows about the experimental runner and the eval harness left out. Say so in one muted line under the panel.
+Show this output as an example of a healthy repo. It is `interlock doctor` run on this repository on 2026-11-26 at v1.21.0, with the root replaced, four long advisory rows cut at `…`, and one trailing `[skip]` row about the eval harness left out. Say so in one muted line under the panel.
 ```
-PREFLIGHT OK — 11 passed
+PREFLIGHT OK — 12 passed
   root: /Users/you/src/yourrepo
-  [ok  ] node: Node v26.8.1 (plugin requires >=18, OpenSpec requires 22.12.0+)
-  [ok  ] plugin: plugin 1.5.0 complete: workflow, both agent types, both binaries
+  [ok  ] node: Node v26.12.1 (plugin requires >=18, OpenSpec requires 22.12.0+)
+  [ok  ] plugin: plugin 1.21.0 complete: workflow, all four agent types, both binaries
   [ok  ] binaries: interlock and interlock-graph resolve on PATH
+  [ok  ] cli-version: interlock 1.21.0 on PATH matches plugin 1.21.0
   [ok  ] openspec: openspec CLI available and this project is initialised
   [ok  ] git: git version 2.54.0 in a work tree
   [ok  ] test-profile: unit suite: npm test
@@ -1120,15 +1136,22 @@ PREFLIGHT OK — 11 passed
   [ok  ] state-home: state home is the root itself, /Users/you/src/yourrepo, surface main
   [ok  ] state-dirs: every run-state directory is writable or creatable
   [skip] prompt-cache: a prompt-cache lifetime is unset, so its bucket runs on the host default …
-  [ok  ] claude-env: Claude Code 2.1.296; CLAUDE_CODE_SUBAGENT_MODEL=unset …
-  [ok  ] mods: claude 2.1.296 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …
+  [skip] advisor: advisorModel not set in any settings scope read here …
+  [ok  ] claude-env: Claude Code 2.1.332; CLAUDE_CODE_SUBAGENT_MODEL=unset …
+  [ok  ] mods: claude 2.1.332 loads the hooks module (mods 2.1.295+): /interlock-meter draws a ship run live …
 ```
 
-**min 5–20 · Onboard the repo, once**
+**min 5–8 · Record how your tests run, once**
+```
+/interlock:fix-tests
+```
+Finds how your tests run, from your manifests, runner configs and CI, asks at most four questions for what it cannot find, and saves the answer to `.claude/testing/profile.json`. Every ship verifies with it; without it, `doctor` fails the `test-profile` check. Then it runs the suite. On a red suite it goes on to repair the failures by root cause, never by weakening a test; pass `--dry-run` to stop at the diagnosis.
+
+**min 8–20 · Onboard the repo, once**
 ```
 /interlock:bootstrap
 ```
-Initialises OpenSpec if the repo never was, builds the code graph, fans out read-only explorers phrased in your stack's vocabulary, and writes `openspec/initial-architecture.md` plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. `--quick` on a small repo, `--scope packages/api` on a monorepo. If the repo is Go, Rust, Java or Ruby, expect `GRAPH UNAVAILABLE: nothing indexable found`; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.
+Provisions OpenSpec if none resolves and initialises it if the repo never was, builds the code graph, runs read-only explorer agents in parallel, each briefed in your stack's terms, and writes `openspec/initial-architecture.md` plus one spec per feature that already exists. It confirms the feature list with you first, never overwrites an existing spec, and never modifies source. `--quick` on a small repo, `--scope packages/api` on a monorepo. If the repo is Go, Rust, Java or Ruby, expect `GRAPH UNAVAILABLE: nothing indexable found`; that is the ordinary case, not a defect. Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Nothing in the loop requires the graph.
 
 **min 20–30 · Spec one small change**
 ```
@@ -1146,13 +1169,13 @@ openspec/changes/<change-name>/
 Then it stops, having written no code. If you asked for a bug fix, it refuses to create anything until you give it real error output and a reproduction. That gate is deliberate.
 
 **min 30–40 · Read the spec**
-The checkpoint. See the table in D.2. Two cheap machine checks that do not replace reading: `openspec validate` and `interlock validate <change-name>`. Ship runs the second one first and refuses to start on a failure.
+The checkpoint. See the table in D.2. Two cheap machine checks that do not replace reading: `! openspec validate <change-name>` and `! interlock validate <change-name>`. Ship runs the second one first and refuses to start on a failure.
 
 **min 40–55 · Ship it**
 ```
 /interlock:ship
 ```
-Runs start-to-commit without asking anything. Before a single implementer spawns it prints the plan: waves, lanes, the model per task, every clamp and every fold. At the end it prints one summary, always ending in a degradation block. Useful flags for a first run: `--no-commit` to see the diff before git touches it, `--apply-only` to stop after the waves, `--strict` to see what the review and the bill look like.
+Implements `tasks.md` in waves, runs your unit suite and makes one commit. Before the first agent starts it prints the plan. A wave is a set of tasks that run in parallel; a lane is one agent's slot in a wave, holding one task or several in order. Each task carries a tier, the planner's 1–5 difficulty grade, which picks its model and effort. The plan names every clamp (a model the planner capped) and every fold (tasks it merged into one lane or one wave). At the end it prints one summary. Its last block names each way the run degraded, or says that nothing did. Useful flags for a first run: `--no-commit` to see the diff before git touches it, `--apply-only` to stop after the waves, `--strict` to add the adversarial review, the handoff files and the conformance check, and see what they cost.
 
 Show this summary as the expected ending. It is the block from C.7 step 14.
 ```
@@ -1165,6 +1188,7 @@ SHIP COMPLETE — add-report-json-flag
   run: 7f2c1b8e-3d4a-4c11-9e02-5b6a7c8d9e01
   project: -Users-you-src-yourrepo
   cwd: /Users/you/src/yourrepo
+NEXT — push the branch and open the pull request: /interlock:settle --create --review
 ARCHIVE PENDING — add-report-json-flag: after merge, run openspec archive add-report-json-flag
 Do not start another ship run unless the user asks.
 
@@ -1175,12 +1199,12 @@ GOAL MET: interlock ship returned a terminal summary.
 
 **min 55–60 · Pull request, then archive**
 ```
-/interlock:settle --create              # detects GitLab or GitHub from the remote
-openspec archive <change-name>      # after it merges. Stock OpenSpec; Interlock does not wrap it.
+/interlock:settle --create --review
+! openspec archive <change-name> -y    # after it merges
 ```
-`openspec archive` folds the change's delta specs into the living specs, so the next `spec` plans against what is now true. Interlock never archives for you. It prints `ARCHIVE PENDING` and counts the backlog in `interlock drift`.
+`settle` detects GitLab or GitHub from the remote, pushes the branch and opens the pull request as a draft. With `--review` it reviews the diff and fixes the findings in rounds, each at most one pushed commit. Then it marks the pull request ready and writes the CLI's verdict, `MERGE`, `HUMAN` or `BLOCK`, into the description and as a label. It never merges. With no pull request open and no `--create`, it stops and pushes nothing. After the merge, `openspec archive` folds the change's delta specs into the living specs, so the next `spec` plans against what is now true; `-y` answers its confirmation prompt up front. Interlock never archives for you. It prints `ARCHIVE PENDING` and counts the backlog in `interlock drift`.
 
-**Do not run these yet** (a small muted list under the timeline): `dispatch`, `graph`, `docs-digest`, `explore`, `review-artifacts`, `review-code`, `fix-tests`, `manual-test-plan`, `explain-code`, `commit`, `spec --continue`. Every one is either called by the four commands above or is a recovery tool. "Skipping the read before you have done it once is skipping the part of the loop that earns the rest."
+**Do not run these yet** (a small muted list under the timeline): `dispatch`, `graph`, `docs-digest`, `explore`, `review-artifacts`, `review-code`, `manual-test-plan`, `explain-code`, `commit`, `spec --continue`. Each is real and supported. None is needed for a first loop, and several are only meant to be called by the commands above. "Skipping the read before you have done it once is skipping the part of the loop that earns the rest."
 
 ## D.2 The ten-minute read (First hour tab, *The ten-minute read*)
 
@@ -1212,6 +1236,7 @@ Intro: `spec` is conversational where it has to be. `ship` is not, and cannot be
 | `spec` | What change do you want to work on? | The request is not clear enough to name a change. |
 | `spec` | Real log output or the error message, **and** a reproduction: a failing test path or a command that triggers it | The request is a bug fix. No artifact is created until both exist. "A repro is required so the fix has a pass/fail signal; without it we are fixing a symptom." |
 | `spec` | Which version of this dependency? | The design names a dependency without one. A plausible-looking wrong pin is worse than an open question. |
+| `spec` | A question the explore brief or the design left open | Its answer decides whether the proposal is correct. Otherwise `spec` takes a default and records it in `decisions.md`. |
 | `spec` | Test-first or implementation-first? | `--tdd` and `--no-tdd` were both passed. |
 | `spec` | Continue the existing change or start a new one? | A change with that name already exists. |
 | `spec --continue` | "Continuity paused — N decisions need you", listing only the ledger rows and blockers | `interlock ready` exited 1. The last place a question is possible. |
@@ -1219,6 +1244,7 @@ Intro: `spec` is conversational where it has to be. `ship` is not, and cannot be
 | `bootstrap` | This project already has N specs; add specs for undocumented features without overwriting any? | `openspec/specs/` is non-empty. |
 | `fix-tests` | At most four questions, once: the unit command, the single-file filter syntax, required environment, the e2e command | First run or `--reconfigure`. The only skill permitted to interview you about tests. |
 | `settle` | GitLab or GitHub? | Only when both or neither of `glab` and `gh` resolve. |
+| `settle` | Which change does this pull request carry? | More than one change fits the branch. |
 | `settle` | Overwrite this description? | It contains hand-written prose. |
 
 ## D.4 Never asked, decided in code (First hour tab, *Asked, and never asked*, right column)
@@ -1328,7 +1354,7 @@ Intro: An unverified review reports everything it notices, so you learn to skim 
 
 ### E.1.1 Dimensions
 
-Four dimensions always run: `language`, `architecture`, `qa`, `technical-lead`. Two are added by a deterministic rule over the run's observed changed paths, never by a reviewer's judgement: `devops` when a path suggests deploy, CI, config or infrastructure impact; `security` when a path matches the authentication, permissions or tenancy signal. The rule is the same classifier the rest of the loop uses, so the two places the question is answered cannot drift apart. A dimension name that resolves to no rubric file is an error that names the six, never a silent partial review.
+The always-on set depends on the review depth, and the `review depth:` rows of `interlock limits` print both. A ship run's review always runs at the strict depth: `language`, `architecture`, `qa`, `technical-lead`, `regression`. `/interlock:review-code` runs the lean depth unless given `--strict`: `language`, `technical-lead`, `regression`. Further dimensions are added by a deterministic rule, never by a reviewer's judgement: `devops` when a changed path suggests deploy, CI, config or infrastructure impact; `security` when a path matches the authentication, permissions or tenancy signal; `domain` when the change touches a capability whose living requirements it can be judged against; and, in `/interlock:review-code`, `blast-radius` when a codebase graph exists. The devops and security rules are the same classifiers the rest of the loop uses, so the two places the question is answered cannot drift apart. A dimension name that resolves to no rubric file is an error that names the nine bundled dimensions, never a silent partial review.
 
 In a ship run, the CLI spawns one reviewer per dimension at the session's model and effort, then two skeptics per finding at `high`. The rubric for each dimension is read from the plugin, not the target repo, and inlined into the briefing. A rubric that could not be read still gets a heading and a `REVIEW RUBRIC UNAVAILABLE` banner; that reviewer works from the name alone.
 
@@ -1345,7 +1371,7 @@ Both must read the file. A verdict reached from the finding text alone is worthl
 
 Voting a finding real needs nothing but the vote. That direction already ends with a human reading it, which is the cheap error.
 
-Voting a finding not real needs a citation, checked mechanically in two halves, because either alone is defeated: a `path:line` or `path:start-end` token, and a path that canonicalises to one actually present in the reviewed diff. Non-emptiness alone was once satisfied by a thumbs-up emoji; shape alone is satisfied by inventing a file that does not exist. The line is not required to still exist in the file, because a review runs against a diff. What is deliberately not checked is whether the cited span supports the claim: that needs a model, and a model there recreates the problem one layer down.
+Voting a finding not real needs a citation, checked mechanically in two halves, because either alone is defeated: a `path:line` or `path:start-end` token, and a path that names a file in the reviewed diff or, for a regression or blast-radius finding, that finding's own file. Non-emptiness alone was once satisfied by a thumbs-up emoji; shape alone is satisfied by inventing a file that does not exist. The exception is one path wide: a regression or blast-radius finding points at a reader or caller outside the diff, so a refutation has to be able to cite it, and for every other dimension a path outside the diff still refuses. The line is not required to still exist in the file, because a review runs against a diff. What is deliberately not checked is whether the cited span supports the claim: that needs a model, and a model there recreates the problem one layer down.
 
 An uncited refutation is a non-vote, never a deleted verdict. It does not dismiss, and it is not a vote to keep. Its quality score still counts, because a skeptic can be too lazy to cite and still be right that a finding is badly written. Every refused refutation is counted and printed. A high count means the skeptics are asserting rather than reading, which is itself the signal you want.
 
@@ -1377,7 +1403,7 @@ Four findings for the interactive simulator. The diff under review touched `app/
 |---|---|---|---|---|---|---|
 | 1 | blocker | `app/api/export/route.ts:31` | Unauthenticated tenant data access | real · quality 5 · severity 5 | real · quality 4 · severity 5 | **Survives.** Two real votes. Blocker stands. |
 | 2 | warning | `lib/report.mjs:88` | Unused import of `formatDate` | not real, cites `lib/report.mjs:12-14` (in the diff) · quality 2 | not real, cites `lib/report.mjs:88` (in the diff) · quality 2 | **Dismissed by skeptics.** Two cited not-real votes, zero real. Never shown. |
-| 3 | blocker | `lib/cache.mjs:40` | Cache key built from the raw email, not the canonical form | not real, evidence: "👍" · quality 3 | real · quality 4 · severity 4 | **Survives; one refutation refused.** The uncited dismissal is a non-vote. One real vote against zero counted not-real votes. Blocker stands. |
+| 3 | blocker | `lib/cache.mjs:40` | Cache key built from the raw email, not the canonical form | not real, evidence: "looks fine to me" · quality 3 | real · quality 4 · severity 4 | **Survives; one refutation refused.** The uncited dismissal is a non-vote. One real vote against zero counted not-real votes. Blocker stands. |
 | 4 | warning | `src/utils.ts:5` | Consider refactoring for clarity | real · quality 1 | real · quality 2 | **Dropped as too weak to report.** It survived the vote, but the higher score (2) is below the floor and the two scores are within drift, so the band drops it. Deferred with its reason. |
 
 When the reader presses **Adjudicate**, reveal each row's verdicts one at a time, then print:
@@ -1396,7 +1422,7 @@ Then a second button, **Cite it**, that replaces finding 3's skeptic-one evidenc
 
 Intro: Every value below lives in one file and is printed by one command. A threshold restated in a skill or a reviewer prompt is a blocker-severity finding in this repository's own review policy. A published cap that nothing reads fails a test; two were deleted on that rule rather than documented. The raw output is in Appendix G.1; this table adds the reason each cap exists.
 
-| Cap | Value at v1.5.0 | Why it exists |
+| Cap | Value at v1.21.0 | Why it exists |
 |---|---|---|
 | max parallel agents per batch | 8 | The original implementation put thirty classifier-grouped tasks into thirty concurrent agents. Waves wider than this split into batches. |
 | inter-wave fix attempts, per wave | 2 | A failed check buys bounded targeted repair; after that the run halts if the errors block the next wave, or warns and continues. |
@@ -1420,7 +1446,7 @@ Intro: Every value below lives in one file and is printed by one command. A thre
 | cohesion tier ceiling | 3 | Path-disjoint siblings pack into one lane only at or below this tier. |
 | multi-task opus floor | 4 | A lane of two or more tasks runs on opus when its hardest tier is at or above this. |
 | solo envelope | 20 tasks | The classifier supplies the shape judgement; this supplies the ceiling. The planner prompt is forbidden from naming it. |
-| reasoning effort | T1 low · T2 low · T3 medium · T4 high · T5 high · verify steps high, a fix attempt xhigh · review skeptics high | Spec-driven work starts at medium and steps to high for harder tasks; a red check earns the one step up. |
+| reasoning effort | T1 low · T2 low · T3 medium · T4 high · T5 high · first inter-wave verify medium, on sonnet · a fix attempt xhigh · final verify high · review skeptics high | Spec-driven work starts at medium and steps to high for harder tasks. The first inter-wave check almost always only runs the suite and reports, so it runs at medium on sonnet; a red check earns the step up, and the final check, the commit gate that repairs a red suite, runs at high. |
 | runtime ceilings | 16 concurrent, 1000 agents per run | The host's, not policy. The planner clamps below them rather than discovering them the hard way. |
 
 ## E.3 Verify: what red means (reference; the page links 06 · Why it works)
@@ -1472,7 +1498,7 @@ A model is never handed the path list as something to honour. A path exclusion a
 
 **No model evals run in your CI.**
 
-The deterministic spine is densely unit-tested. The prompts and skills that steer a model are regression-tested against a real model by an eval suite of eleven cases, each citing the failure it encodes: tier read scope (two cases), cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt and launch, skill routing (two cases), and evidence-locator fabrication. The case list is pinned in a test that compares it to directory discovery, on the same rule as everything else here: a list nobody asserts silently drifts.
+The deterministic spine is densely unit-tested. The prompts and skills that steer a model are regression-tested against a real model by an eval suite of fifteen cases, each citing the failure it encodes: tier read scope (two cases), cited-cap resolution, lane partial-failure reporting, handoff enum conformance, control-plane action invention, trampoline halt and launch, skill routing (two cases), evidence-locator fabrication, artifact-gate recall (two cases), an artifact-gate false blocker that must not come back, and code-review recall on a past pull request. The case list is pinned in a test that compares it to directory discovery, on the same rule as everything else here: a list nobody asserts silently drifts.
 
 The verdict is model-free. `interlock evals triage` classifies a results file as regression, variance, or no signal, with no model and no network, and its exit code is the verdict, so the one gate a model could otherwise re-argue is on the deterministic spine like every other decision. The suite is advisory pending a baseline; no blocking threshold exists because it would be a guess.
 
@@ -1485,9 +1511,9 @@ For a team running Interlock against its own product: the model-facing surface i
 Context rot is the reason; cost is the side effect. Chroma measured accuracy degradation across eighteen frontier models as context grows, even when every relevant token is present. Four mechanisms, each visible in the plan or the receipt:
 
 1. **Context tiering.** Tier 1 reads the task description and nothing else; tier 2 adds the relevant section of the design; tier 3 the relevant spec file; tier 4 and above the design and specs in full. Tiers 1 and 2 carry a stop instruction: after typecheck and lint pass, stop; do not refactor or polish. The exception is load-bearing: an agent implementing against an active change reads the proposal, design, tasks and delta specs in full. Budgeted retrieval replaces exploratory preload, not the implementation contract.
-2. **Model routing with a clamp.** For a single task: tier 1 to haiku, tiers 2 to 4 to sonnet, tier 5 to opus. A lane of several tasks follows its hardest task and the published multi-task floor. Control-plane pings run on haiku; they parse JSON and report it verbatim. Classifiers reliably over-assign opus to anything touching several files, so the planner clamps after classification and prints every clamp. Reasoning effort is tabled per tier; the verify and skeptic steps are pinned to the highest.
+2. **Model routing with a clamp.** For a single task: tier 1 to haiku, tiers 2 to 4 to sonnet, tier 5 to opus. A lane of several tasks follows its hardest task and the published multi-task floor. Control-plane pings run on haiku; they parse JSON and report it verbatim. Classifiers reliably over-assign opus to anything touching several files, so the planner clamps after classification and prints every clamp. Reasoning effort is tabled per tier, and pinned per step for verification and the skeptics; `interlock limits` prints both.
 3. **Locate before you read.** Query the graph before you grep; locate the line, then read a span. Retrieval is budgeted in tokens: the docs digest at roughly 2500, a graph context bundle at 2000, a docs query at 800, a structural query at 1500.
-4. **Spawn weight, not just spawn count.** Two named plugin agents with tool allowlists that exclude Skill, Agent and MCP, so workers stop inheriting tens of thousands of tokens of schemas per spawn. Cohesion lanes fold sixteen tier-2 test tasks into one agent reading the design once. Singleton waves fold into batches. Solo mode ships a small change on one opus agent.
+4. **Spawn weight, not just spawn count.** Named plugin agents with tool allowlists that exclude Skill, Agent and MCP (four at v1.21.0: worker, ping, reviewer and settle-fixer), so workers stop inheriting tens of thousands of tokens of schemas per spawn. Cohesion lanes fold sixteen tier-2 test tasks into one agent reading the design once. Singleton waves fold into batches. Solo mode ships a small change on one opus agent.
 
 | Tier | Work | Model after clamp | Effort |
 |---|---|---|---|
@@ -1526,7 +1552,7 @@ Intro: Read down the layer column and the map resolves. OpenClaw is a harness pl
 | Tool | Layer | Competes on | Where Interlock differs | Where it is honestly better |
 |---|---|---|---|---|
 | Spec Kit | process | phases before code; breadth of host support | caps, gate verdicts and the review band are a tested CLI with exit codes, not prompts a model follows | portability: it runs on roughly thirty agents; Interlock runs on one |
-| BMAD | process | roles and ceremony: PM, architect, dev, QA agents | no role-play; tiers, lanes and a model clamp. Judgement stays with the model, sequencing does not | the role vocabulary is legible to non-engineers |
+| BMAD | process | roles and ceremony: PM, architect, dev, QA agents | no role-play. Each task gets a difficulty grade that bounds its model, and the CLI orders the tasks into waves of parallel agents. Judgement stays with the model, sequencing does not | the role vocabulary is legible to non-engineers |
 | Kiro | IDE and process | an IDE experience around specs | a terminal plugin with CLIs on your PATH; nothing renders | the IDE. Interlock has none and is not building one |
 | OpenSpec, stock | artifact format and lifecycle | the spec contract, templates, validation, archive | Interlock composes it and does not fork it; it drives the CLI because the CLI is the stable contract | simplicity and artifact portability. For a one-line change, propose it and implement it yourself. Uninstall Interlock and `openspec/` is still valid |
 | OpenClaw | harness and channel | your assistant exists when your laptop is closed: messaging apps into one gateway | a different floor entirely. It does not know what a wave is and will not cap a remediation round | reach: start work from your phone and keep it running after you disconnect |
@@ -1550,12 +1576,12 @@ A CLAUDE.md is instructions the model reads and follows, and following is a deci
 *Limit:* CLAUDE.md is portable, always on, and costs nothing. Interlock does not replace it.
 
 **"Parallel agents will cost us a fortune."**
-Context tiering gives tier-1 tasks the task description and nothing else. The model clamp stops classifiers escalating to opus. Retrieval is token-budgeted. Workers are named plugin agents with tool allowlists that exclude the schemas they would otherwise inherit per spawn. Cohesion lanes fold sixteen small tasks into one agent reading the design once. Default ship does not pay for review at all.
-*Limit:* `--strict` is expensive. One environment variable, `CLAUDE_CODE_SUBAGENT_MODEL`, defeats the entire ladder, and Interlock banners it rather than hiding it. The prompt-cache lifetime is a setting Interlock cannot set.
+The planner grades every task from tier 1 to 5 by difficulty, and the grade sets what the task's agent reads: tier 1 gets the task description and nothing else. The grade also bounds the model. If the planner puts a task below tier 5 on opus, the CLI moves it to sonnet and prints the change. Retrieval is token-budgeted. Workers are named plugin agents whose tool allowlists leave out the schemas they would otherwise load on every spawn. Small tasks from one section can share one agent, which does them in order: sixteen test tasks that were sixteen agents became one agent that read the design once. Default ship does not pay for review at all.
+*Limit:* `--strict` is expensive. One environment variable, `CLAUDE_CODE_SUBAGENT_MODEL`, overrides every model the grades pick, and Interlock banners it rather than hiding it. The prompt-cache lifetime is a setting Interlock cannot set.
 
 **"Our repo is Go, Rust or Java. The graph won't index it."**
 Structural indexing covers JavaScript/TypeScript, Python, shell, C# and Bicep. Everything else gets docs and spec indexing, spec-to-file links, prose retrieval, and the complete workflow. Nothing in the loop requires the graph; agents fall back to grep, and the run says `GRAPH UNAVAILABLE` rather than pretending. Bootstrap phrases its explorers in your stack's vocabulary; verification runs whatever your profile names.
-*Limit:* you lose the structural half of the invariant sweep, the one gate that catches a value canonicalised in one place and still read raw in three others. The grep half still runs.
+*Limit:* you lose the structural half of the invariant sweep, the one gate that catches a value normalised in one place and still read raw in three others. The grep half still runs.
 
 **"Another spec format."**
 Interlock writes nothing Interlock-shaped. It drives the `openspec` CLI directly. The artifacts are plain markdown readable by any OpenSpec tool or a human with an editor. A change proposed by the stock skill can be shipped by Interlock; ship does not care who wrote the markdown.
@@ -1567,7 +1593,7 @@ Then do not skip the read, and the default is that you don't. One flag removes y
 
 **"What if it commits garbage?"**
 Six things stand between a wave and a commit, each an exit code. Validation refuses an unimplementable change. Inter-wave verify halts the next wave on a red typecheck or suite. Final verify halts on a red suite and repairs by root cause, bounded. The shrink check catches a suite that went green by getting smaller. More than the tolerated task failures halts. A hook denies `git commit` outside the commit stage, and the commit is one feature-level commit that never adds everything, never amends, never pushes.
-*Limit:* e2e failure is reported and never repaired, and the commit happens anyway with a banner. You have to look at that one. And lean ship never reviews the diff; it trusts your unit suite.
+*Limit:* e2e failure is reported and never repaired, and the commit happens anyway with a banner. You have to look at that one. And a default ship never reviews the diff; it trusts your unit suite.
 
 **"How do I know what it did?"**
 The summary names every default applied and carries the run id. The receipt records the host, the billing path, the spend, the paths touched and the paths predicted. The trajectory is one line per action and can be queried. The report renders indicators with their denominators as an offline HTML file.
@@ -1575,14 +1601,14 @@ The summary names every default applied and carries the run id. The receipt reco
 
 **"Reviews are noise."**
 That is the diagnosis. Every blocker and warning is attacked by two skeptics before you see it, a dismissal must cite a line in the diff, the report prints how many were dismissed and how many refutations were refused, and a quality band drops what is too vague to act on. You can own the scope with a `REVIEW.md`.
-*Limit:* opt-in and priced accordingly. Diff review is structurally blind to a value read in more than one place, which is why the invariant sweep exists as the one licensed exception to the diff leash.
+*Limit:* opt-in and priced accordingly. Diff review is structurally blind to a value read in more than one place, which is why the invariant sweep exists: it is the one check allowed to read past the diff, to every reader of a changed value.
 
 **"Does this work on our monorepo?"**
 `bootstrap --scope` restricts onboarding to a subdirectory. The planner schedules from `tasks.md` and predicted paths, not a directory layout. `REVIEW.md` at the root declares out-of-scope paths. Verification runs the commands your profile names.
 *Limit:* no monorepo-specific feature exists: no per-package specs, no package-scoped run state. Two teams shipping concurrently in one repo both append to one outcomes file, which is a merge-conflict site. This is the weakest answer on the page.
 
 **"We don't have dynamic workflows enabled."**
-Then there is no ship, and the trampoline halts rather than implementing the loop in conversation. Claude Code v2.1.154 or newer with workflows enabled; on a Pro plan, enable it in `/config`. Everything else still works: spec, both reviews, commit, settle, the graph, the full CLI.
+Then there is no ship: the ship skill halts rather than running the loop in the conversation. Claude Code v2.1.154 or newer with workflows enabled; on a Pro plan, enable it in `/config`. Everything else still works: spec, the artifact and code reviews, commit, the graph and the full CLI. So does settle, which opens or updates the pull request and labels it `MERGE`, `HUMAN` or `BLOCK` from the CLI's verdict.
 *Limit:* the runner is experimental, weaker on zero-touch, and on the Claude binary it is a metered billing path.
 
 **"Show me the benchmark."**
@@ -1622,76 +1648,135 @@ Subhead: **Stated limits**
 - Drift and conformance never block.
 - The corpora are recorded and nothing reads them to change a run.
 - No monorepo-specific features.
-- No published benchmark. Version 1.5.0.
+- No published benchmark. Version 1.21.0.
 
 ---
 
-# APPENDIX G — Numbers at v1.5.0
+# APPENDIX G — Numbers at v1.21.0
 
 ## G.1 `interlock limits`, verbatim (Limits and proof tab, *The caps*)
 
-Subhead: **The caps**. Render this block as the searchable table with the fixed caption "read from `interlock limits` at v1.5.0". One row per line, label at left, value in mono at right; a blank line in the block is a group break. Printed on 2026-10-11; the last line's machine-specific suffix (what was observed on the machine that ran it) is cut.
+Subhead: **The caps**. Render this block as the searchable table with the fixed caption "read from `interlock limits` at v1.21.0". One row per line, label at left, value in mono at right; a blank line in the block is a group break. Printed on 2026-11-26; the last line's machine-specific suffix (what was observed on the machine that ran it) is cut.
 
 ```
-  max parallel agents per batch                       8
-  inter-wave fix attempts (per wave)                  2
-  replans (per run)                                   2
-  remediation rounds                                  2
-  root-cause iterations (per run)                     5
-  task failures tolerated                             2
-  run steps (per run)                                 200
-  inter-wave verify budget (floor)                    60s
-  inter-wave verifications (per run)                  3
-  verify spill threshold (bytes)                      8192
-  verify preview budget (chars)                       4096
-  wave handoff budget (chars, per task)               2000
-  review policy scan cap (bytes)                      65536
-  resume card list rows (per list)                    40
-  launch ledger max age (ms)                          86400000
-  meter quiet after (ms)                              300000
-  meter tick (ms)                                     15000
-  handoff pane chars                                  10000
-  wave board min width (columns)                      48
-  wave board default width (columns)                  100
+  max parallel agents per batch                         8
+  inter-wave fix attempts (per wave)                    2
+  replans (per run)                                     2
+  remediation rounds                                    2
+  root-cause iterations (per run)                       5
+  task failures tolerated                               2
+  run steps (per run)                                   200
+  inter-wave verify budget (floor)                      60s
+  inter-wave verifications (per run)                    3
+  verify spill threshold (bytes)                        8192
+  verify preview budget (chars)                         4096
+  wave handoff budget (chars, per task)                 2000
+  skeptic spawns (per skeptics step)                    16
+  review policy scan cap (bytes)                        65536
+  domain spec text budget (chars)                       12000
+  note match rows (max)                                 20
+  artifact brief: lenses (max)                          3
+  artifact brief: REVIEW.md checks quoted (max)         12
+  artifact re-gate: rework bound (% of the change)      20
+  artifact re-gate: changed-since budget (chars)        24000
+  artifact re-gate: snapshot read cap (bytes)           4194304
+  review context quote cap (bytes)                      262144
+  review-policy suggest: distinct changes for T1/T3     2
+  review-policy suggest: gates before a check is stale  10
+  review proof re-runs (per pass)                       1
+  change width: max capabilities (delta specs)          8
+  change width: max tasks                               32
+  resume card list rows (per list)                      40
+  launch ledger max age (ms)                            86400000
+  meter quiet after (ms)                                300000
+  meter tick (ms)                                       15000
+  handoff pane chars                                    10000
+  wave board min width (columns)                        48
+  wave board default width (columns)                    100
+  settle pane full width (columns)                      110
+  settle pane card width (columns)                      76
+  settle row chars                                      500
+  plan diagram svg chars                                131072
+  prompt suggestion rows                                8
+  preflight list names (per list)                       40
+  validation comment (max chars)                        20000
+  pull request review comment (max chars)               60000
 
-  lane cap: tier 1 lane (also untiered)               8
-  lane cap: tier 2 lane                               8
-  lane cap: tier 3 lane                               6
-  lane cap: tier 4 lane                               4
-  lane cap: tier 5 lane                               8
-  cohesion tier ceiling (packs at or below)           3
-  multi-task opus floor (hardest tier at or above)    4
-  solo envelope (max tasks in one lane)               20
+  lane cap: tier 1 lane (also untiered)                 8
+  lane cap: tier 2 lane                                 8
+  lane cap: tier 3 lane                                 6
+  lane cap: tier 4 lane                                 4
+  lane cap: tier 5 lane                                 8
+  cohesion tier ceiling (packs at or below)             3
+  multi-task opus floor (hardest tier at or above)      4
+  solo envelope (max tasks in one lane)                 20
 
-  eval smoke cost ceiling (per PR)                    $2
-  eval full-run cost ceiling (scheduled)              $15
-  eval outcome-run cost ceiling (scheduled)           $20
-  eval cost-per-task sweep ceiling (by hand)          $40
-  eval runs per case                                  3
-  eval promotion: consecutive qualifying runs         3
-  eval promotion: trials per qualifying run           3
-  eval promotion: judge agreement floor               80%
+  merge band ceiling: green                             100
+  merge band ceiling: amber (also unobserved)           79
+  merge band ceiling: red                               39
+  merge: max surviving warnings                         2
+  merge: min skeptic verdicts per finding               2
+  merge: max coverage decline (points)                  1
+  merge: patch coverage floor (%, no baseline)          80
+  merge: min changed lines to judge coverage            20
+  merge: max changed lines                              400
+  merge: max changed files                              20
 
-  price table id                                      anthropic-list-2026-10
-  price: claude-haiku-4-5 ($/Mtok)                    in 1, out 5
-  price: claude-opus-5-5 ($/Mtok)                     in 4, out 20
-  price: claude-sonnet-5-5 ($/Mtok)                   in 2, out 10
-  cache read multiplier: claude-haiku-4-5 (x input)   0.1
-  cache read multiplier: claude-opus-5-5 (x input)    0.05
-  cache read multiplier: claude-sonnet-5-5 (x input)  0.1
-  cache write multiplier: ephemeral_1h (x input)      2
-  cache write multiplier: ephemeral_5m (x input)      1.25
+  eval smoke cost ceiling (per PR)                      $2
+  eval full-run cost ceiling (scheduled)                $15
+  eval outcome-run cost ceiling (scheduled)             $20
+  eval cost-per-task sweep ceiling (by hand)            $40
+  eval runs per case                                    3
+  eval promotion: consecutive qualifying runs           3
+  eval promotion: trials per qualifying run             3
+  eval promotion: judge agreement floor                 80%
 
-  report trajectory scan cap                          2000
+  price table id                                        anthropic-list-2026-10
+  price: claude-haiku-4-5 ($/Mtok)                      in 1, out 5
+  price: claude-opus-5-5 ($/Mtok)                       in 4, out 20
+  price: claude-sonnet-5-5 ($/Mtok)                     in 2, out 10
+  cache read multiplier: claude-haiku-4-5 (x input)     0.1
+  cache read multiplier: claude-opus-5-5 (x input)      0.05
+  cache read multiplier: claude-sonnet-5-5 (x input)    0.1
+  cache write multiplier: ephemeral_1h (x input)        2
+  cache write multiplier: ephemeral_5m (x input)        1.25
 
-  effort: tier 1 lane                                 low
-  effort: tier 2 lane                                 low
-  effort: tier 3 lane                                 medium
-  effort: tier 4 lane                                 high
-  effort: tier 5 lane                                 high
-  effort: verify step (inter-wave and final)          high
-  effort: verify retry (inter-wave fix attempt)       xhigh
-  effort: review skeptic step                         high
+  report trajectory scan cap                            2000
+
+  effort: tier 1 lane                                   low
+  effort: tier 2 lane                                   low
+  effort: tier 3 lane                                   medium
+  effort: tier 4 lane                                   high
+  effort: tier 5 lane                                   high
+  model: verify step (first inter-wave check only)      sonnet
+  effort: verify step (first inter-wave check)          medium
+  effort: verify retry (inter-wave fix attempt)         xhigh
+  effort: verify step (final check)                     high
+  effort: review skeptic step                           high
+
+  routing: explore-investigator                         model sonnet · effort medium
+  routing: review-dimension                             model sonnet · effort medium
+  routing: review-skeptic                               model inherit (session default) · effort high
+  routing: settle-fixer                                 model inherit (session default) · effort high
+  routing: settle-conformance                           model sonnet · effort inherit (session default)
+  routing: artifact-reviewer                            model inherit (session default) · effort inherit (session default)
+  routing: review-dimension (strict)                    model inherit (session default) · effort inherit (session default)
+  review depth: default                                 lean
+  review depth: lean dimensions                         language, technical-lead, regression
+  review depth: lean skeptics                           per-review
+  review depth: strict dimensions                       language, architecture, qa, technical-lead, regression
+  review depth: strict skeptics                         per-finding
+  caller depth: artifact-reviewer (caller spec)         strict
+
+  session: explore                                      model opus · effort high · best results: model fable · effort high
+  session: spec                                         model opus · effort high, up to xhigh · best results: model fable · effort high
+  session: review-artifacts                             model opus · effort high · best results: model fable · effort high
+  session: bootstrap                                    model opus · effort high · best results: model fable · effort high
+  session: ship                                         model opus · effort medium
+  session: settle                                       model opus · effort medium
+  session: review-code                                  model opus · effort medium
+  session: fix-tests                                    model opus · effort medium
+  session suggestion basis                              anthropic-model-guide-2026-11
 
 runtime ceilings: 16 concurrent, 1000 agents per run
 ```
@@ -1700,24 +1785,24 @@ One muted line under the table: Every value lives in one file and is printed by 
 
 ## G.2 Repository figures (Limits and proof tab, under *Stated limits*, as the provenance table)
 
-Table caption, mono: `counted at v1.5.0 on 2026-10-11`. Render the three columns as they are; the third is the point. These are the numbers that move, which is why they are rows here and not figures in the proof strip.
+Table caption, mono: `counted at v1.21.0 on 2026-11-26`. Render the three columns as they are; the third is the point. These are the numbers that move, which is why they are rows here and not figures in the proof strip.
 
 | Figure | Value | How established |
 |---|---|---|
-| Version | 1.5.0 | `package.json`, `plugin.json` and `marketplace.json` |
+| Version | 1.21.0 | `package.json`, `plugin.json` and `marketplace.json` |
 | Runtime dependencies | 0 | `package.json` has no `dependencies` key; CI installs nothing |
 | Node floor | 18 or newer for Interlock; the OpenSpec CLI needs 22.12.0 or newer | `package.json` engines; OpenSpec's own requirement |
-| Test files | 87 | `find test -name '*.test.mjs' \| wc -l`. `npm test`, no model, no network, nothing to install |
-| Top-level `interlock` subcommands | 28 | `interlock --help`; the table in doc 07 |
-| `interlock-graph` subcommands | 11 | `build, update, report, query, consumers, path, explain, docs, context, docs-index, which` |
-| Modules under `lib/` | 98 | `find lib -name '*.mjs' \| wc -l`: 54 top-level, 23 graph, 13 prompts, 8 host |
+| Test files | 147 | `find test -name '*.test.mjs' \| wc -l`. `npm test`, no model, no network, nothing to install |
+| Top-level `interlock` subcommands | 39 | `interlock --help`, counting each subcommand name once |
+| `interlock-graph` subcommands | 12 | `build, update, covers, report, query, consumers, path, explain, docs, context, docs-index, which` |
+| Modules under `lib/` | 159 | `find lib -name '*.mjs' \| wc -l`: 109 top-level, 24 graph, 17 prompts, 9 host |
 | Skills | 16 | `ls skills`; four are the product, the rest are called by them |
 | Hook scripts | 6, and one hooks module | a preflight, a recorder, four guards; `hooks/mod.mjs` is the ship meter |
 | Host adapters | 4 | `claude`, `acp`, `codex`, `qwen` |
-| Eval cases | 11 | pinned by name in `test/evals.test.mjs` |
-| Docs pages | 14 | numbered 01 to 14 |
-| Changes shipped through its own loop | 59 | `ls openspec/changes/archive \| wc -l`, dated 22 Aug to 7 Oct 2026 |
-| Commits | 107 | `git rev-list --count HEAD` on `main`, since the first commit on 12 Aug 2026 |
+| Eval cases | 15 | pinned by name in `test/evals.test.mjs` |
+| Docs pages | 17 | numbered 01 to 17 |
+| Changes shipped through its own loop | 100 | `ls openspec/changes/archive \| wc -l` at the tag, dated 22 Aug to 25 Nov 2026 |
+| Commits | 300 | `git rev-list --count v1.21.0`, since the first commit on 12 Aug 2026 |
 | Licence | MIT | |
 
 ## G.3 Requirements
@@ -1728,8 +1813,8 @@ Table caption, mono: `counted at v1.5.0 on 2026-10-11`. Render the three columns
 | Claude Code v2.1.295 or newer, optional | The ship meter loads only there. On an older host the run is the same, without the pane. |
 | Dynamic workflows enabled | Off via `disableWorkflows`, org policy, or `CLAUDE_CODE_DISABLE_WORKFLOWS` means no ship. On Pro, enable it in `/config`. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` unset | If set, it overrides every per-tier model, and ship banners it. |
-| The `openspec` CLI | Interlock drives it; it does not replace it. |
-| Node.js 18 or newer | For the bundled CLIs. |
+| OpenSpec | Interlock drives it and does not replace it. A copy on your PATH is used as it is; otherwise a pinned copy is installed on first use (`interlock openspec provision`). |
+| Node.js 22.12.0 or newer, with npm | The bundled CLIs run on 18 or newer; the OpenSpec CLI needs 22.12.0 or newer, and the pinned copy is installed with npm. |
 
 ## G.4 The docs, for the footer
 
@@ -1749,6 +1834,9 @@ Table caption, mono: `counted at v1.5.0 on 2026-10-11`. Render the three columns
 | 12 | Repository review policy | `12-repository-review-policy.md` |
 | 13 | The guards | `13-the-guards.md` |
 | 14 | Evals | `14-evals.md` |
+| 15 | Merge confidence | `15-merge-confidence.md` |
+| 16 | Upgrading | `16-upgrading.md` |
+| 17 | Reviewing a teammate's pull request | `17-reviewing-a-teammates-pull-request.md` |
 
 Link each to `https://github.com/renzrollon/interlock/blob/main/docs/<file>`. The in-page `more in NN · Title` links use the same URLs.
 
@@ -1773,7 +1861,7 @@ The README no longer carries a table of decisions, so the page prints no count o
 
 # APPENDIX H — Quotable lines
 
-Each was found in the named file on 2026-10-11. Use them as the tab headlines and pull quotes, verbatim, in preference to new phrasing. A line that is not here is not a quotation: set it as plain copy, without quote marks.
+Each was re-read in the named file on 2026-11-26. Use them as the tab headlines and pull quotes, verbatim, in preference to new phrasing. A line that is not here is not a quotation: set it as plain copy, without quote marks.
 
 1. "The gap is the product." (docs/10)
 2. "A skill is control flow the model can talk itself out of; a workflow is control flow it cannot." (docs/09)
@@ -1788,7 +1876,7 @@ Each was found in the named file on 2026-10-11. Use them as the tab headlines an
 11. "This is archaeology, not design. Every spec you write describes behavior that exists in the code today." (skills/bootstrap)
 12. "One call site fixed and its siblings left reading the raw value is the same bug surviving its own fix." (docs/02)
 13. "Instead of walking every room yourself with one clipboard, you hire one contractor per room." (docs/09)
-14. "Degradation is spoken, never silent." (README)
+14. "Degradation is spoken, never silent." (CLAUDE.md)
 15. "`ship` asks nothing not because it was instructed to be autonomous, but because the workflow runtime has no channel for mid-run input at all. There is nobody listening." (docs/09)
 17. "Confident prose is the single thing an LLM produces most reliably, so it is the one thing a dismissal must not rest on." (docs/06)
 19. "A corpus nobody can read is a corpus nobody notices is empty." (docs/11)
@@ -1796,10 +1884,11 @@ Each was found in the named file on 2026-10-11. Use them as the tab headlines an
 21. "A cap you can mount a plugin over is not a cap." (docs/08)
 22. "Continuity cannot catch a wrong idea. Every check it runs asks whether the change is implementable. None of them asks whether it is right." (docs/05)
 23. "If you find yourself passing `--continue` by habit, that is the signal to stop passing it." (docs/05)
-24. "A portable version of this would be a folder of prompts, which is the thing it exists not to be." (docs/06)
-25. "Cost is not the point. Degradation is. But the two are the same lever." (docs/06)
-26. "Every gate fails closed. Every degradation is spoken. Every claim an agent makes about its own work is audited against evidence." (docs/06)
+24. "A portable version would be a folder of prompts, which is the thing it exists not to be." (docs/06)
+25. "Cost is not the point — degradation is. But the two are the same lever." (docs/06)
+26. "Every gate fails closed, every degradation is spoken aloud, and every claim an agent makes about its own work is audited against evidence." (docs/06)
 28. "Two failed rounds usually means the design was wrong, not the code." (docs/04)
+29. "What you cannot see, you cannot correct." (docs/06)
 
 Taglines for the four tab headlines, in the repository's register. Three are used in §4; the rest are spares:
 - How many decisions the model is not allowed to make.

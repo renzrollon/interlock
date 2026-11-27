@@ -197,12 +197,109 @@ after(() => {
 
 // --- usage, help, unknown commands ---------------------------------------
 
-test('--help and a bare invocation print USAGE and exit 0', () => {
-  for (const args of [[], ['--help'], ['-h']]) {
+test('--help and -h print the full USAGE and exit 0', () => {
+  for (const args of [['--help'], ['-h']]) {
     const r = run(args)
     assert.equal(r.code, 0, `exit for "${args.join(' ')}"`)
     assert.match(r.stdout, /^interlock — deterministic decisions/)
     assert.match(r.stdout, /Exit codes:/)
+  }
+})
+
+// spec: cli/arguments "Bare interlock SHALL print a grouped index"
+test('a bare invocation and `help` print the index, not the full usage', () => {
+  for (const args of [[], ['help']]) {
+    const r = run(args)
+    assert.equal(r.code, 0, `exit for "${args.join(' ')}"`)
+    assert.match(r.stdout, /^interlock — deterministic decisions/)
+    assert.match(r.stdout, /interlock help <command>/)
+    assert.match(r.stdout, /interlock --help --all/)
+    assert.doesNotMatch(r.stdout, /Exit codes:/)
+    assert.equal(r.stdout, run([]).stdout)
+  }
+})
+
+test('the index is at most 30 lines and names every top-level command in USAGE', () => {
+  const index = run([]).stdout
+  assert.ok(index.trimEnd().split('\n').length <= 30, 'the index must stay within 30 lines')
+  const usage = run(['--help']).stdout
+  const commands = [...new Set([...usage.matchAll(/^ {2}interlock ([a-z][a-z0-9-]*)/gm)].map(m => m[1]))]
+  assert.ok(commands.length >= 30, `expected to parse the synopsis, found ${commands.length}`)
+  const listed = new Set(index.split(/\s+/))
+  for (const c of commands) assert.ok(listed.has(c), `the index must name "${c}"`)
+})
+
+test('`help <command>` prints exactly what `<command> --help` prints', () => {
+  for (const name of ['doctor', 'validate', 'settle', 'run']) {
+    const viaHelp = run(['help', name])
+    const viaFlag = run([name, '--help'])
+    assert.equal(viaHelp.code, 0, name)
+    assert.equal(viaHelp.stdout, viaFlag.stdout, name)
+    assert.equal(viaHelp.stderr, '', name)
+  }
+})
+
+test('`help <command>` prints the command\'s own flag sections, and a prose-only section stays in --help --all', () => {
+  const report = run(['help', 'report'])
+  assert.equal(report.code, 0)
+  for (const flag of ['--since', '--change', '--max-runs', '--html']) assert.match(report.stdout, new RegExp(`^  ${flag}`, 'm'), flag)
+  assert.match(report.stdout, /^report:$/m)
+  const mc = run(['help', 'merge-confidence'])
+  assert.match(mc.stdout, /^merge-confidence:$/m, 'the section its synopsis points to ("see merge-confidence: below") follows it')
+  for (const flag of ['--run', '--require-merge', '--markdown', '--label-names']) assert.match(mc.stdout, new RegExp(`^  ${flag}`, 'm'), flag)
+  assert.doesNotMatch(mc.stdout, /^report:$/m, 'no other command\'s section')
+  assert.doesNotMatch(mc.stdout, /Exit codes:/)
+  const verify = run(['help', 'verify']).stdout
+  for (const header of ['verify plan:', 'verify judge:', 'verify coverage:']) assert.ok(verify.includes(`\n${header}`), header)
+  const doctor = run(['help', 'doctor']).stdout
+  assert.doesNotMatch(doctor, /^doctor:$/m, 'doctor\'s section is prose and names no flag')
+  for (const out of [report.stdout, mc.stdout, doctor]) assert.match(out, /interlock --help --all\n$/)
+})
+
+test('`--all` prints the full usage only when no subcommand leads', () => {
+  const full = run(['--help']).stdout
+  for (const args of [['help', '--all'], ['--help', '--all'], ['-h', '--all']]) {
+    const r = run(args)
+    assert.equal(r.code, 0, args.join(' '))
+    assert.equal(r.stdout, full, args.join(' '))
+  }
+  const sub = run(['review-policy', 'suggest', '--all', '--help'])
+  assert.equal(sub.code, 0)
+  assert.equal(sub.stdout, run(['review-policy', '--help']).stdout)
+  assert.doesNotMatch(sub.stdout, /Exit codes:/)
+})
+
+// spec: cli/arguments "An unknown subcommand SHALL name the closest command"
+test('an unknown command keeps its first line, names the closest command and never prints the full usage', () => {
+  for (const [args, closest] of [[['valdiate'], 'validate'], [['help', 'valdiate'], 'validate'], [['xyzzy-plugh'], null]]) {
+    const r = run(args)
+    const label = args.join(' ')
+    assert.equal(r.code, 1, label)
+    assert.equal(r.stdout, '', label)
+    assert.ok(r.stderr.startsWith('Unknown command: '), label)
+    assert.match(r.stderr, /interlock help/, label)
+    assert.doesNotMatch(r.stderr, /Exit codes:/, label)
+    if (closest) assert.match(r.stderr, new RegExp(`Did you mean: interlock ${closest}\\?`), label)
+    else assert.doesNotMatch(r.stderr, /Did you mean/, label)
+  }
+})
+
+test('a line with flags and no command names the flag, never "undefined"', () => {
+  for (const [args, want] of [
+    [['--verbose'], /^No command given, and no command takes --verbose\.$/m],
+    [['--verbose', 'doctor'], /read "doctor" as its value, and doctor takes no --verbose\.\nWithout the flag: interlock doctor$/m],
+    [['--strict', 'run'], /read "run" as its value\.\nPut the flag after the command: interlock run --strict$/m],
+    [['--json'], /--json is a flag\. Put it after a command: interlock <command> --json$/m],
+    [['--root', '.'], /interlock <command> --root \.$/m],
+    [[''], /^No command given\.$/m]
+  ]) {
+    const r = run(args)
+    const label = args.join(' ')
+    assert.equal(r.code, 1, label)
+    assert.equal(r.stdout, '', label)
+    assert.match(r.stderr, want, label)
+    assert.match(r.stderr, /Run `interlock help` to list the commands\.\n$/, label)
+    assert.doesNotMatch(r.stderr, /undefined|Unknown command/, label)
   }
 })
 
