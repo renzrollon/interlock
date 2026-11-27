@@ -34,7 +34,7 @@ An unknown subcommand SHALL keep its exit code 1 and SHALL keep `Unknown command
 
 ### Requirement: Bare interlock SHALL print a grouped index of every command, not the full usage
 
-`interlock` with no arguments, and `interlock help` with no command, SHALL print an index to stdout and exit 0. The index SHALL name every top-level command the full usage documents, grouped by the part of the loop it serves, and SHALL name `interlock help <command>` and `interlock --help --all` as the ways to read more. It SHALL be at most 30 lines.
+`interlock` with no arguments, and `interlock help` with no command, SHALL print an index to stdout and exit 0. The index SHALL name every top-level command the full usage documents, grouped by the part of the loop it serves, and SHALL name `interlock help <command>` and `interlock --help --all` as the ways to read more. It SHALL be at most 30 lines. The index, the `help` subcommand and the unknown-command refusal SHALL be held in `lib/help-cli.mjs`.
 
 #### Scenario: Happy path — a first run sees the index
 
